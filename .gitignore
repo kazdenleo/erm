@@ -29,3 +29,11 @@ Thumbs.db
 # Misc
 *.tmp
 *.bak
+
+@"
+
+# Local runtime data (do not commit)
+data/
+server/data/
+server/uploads/
+"@ | Add-Content -Encoding utf8 .gitignore
