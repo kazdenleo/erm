@@ -1,0 +1,255 @@
+ .sidebar {
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  padding: 16px 12px;
+  box-shadow: var(--shadow);
+  position: relative;
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.brand {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.brand::after {
+  display: none;
+}
+
+.sidebar-user {
+  width: 100%;
+  margin-bottom: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-user-name {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-user-badge {
+  margin-left: 6px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--accent-100);
+  color: var(--accent);
+  border-radius: 4px;
+}
+
+.sidebar-user-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-link {
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 4px 0;
+}
+
+.sidebar-link:hover,
+.sidebar-link.active {
+  color: var(--primary);
+}
+
+.sidebar-logout {
+  margin-top: 4px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-logout:hover {
+  color: var(--error);
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-btn {
+  width: 100%;
+  text-align: left;
+  padding: 10px 8px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  text-decoration: none;
+  position: relative;
+  overflow: hidden;
+}
+
+.nav-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 100%;
+  background: var(--primary-50);
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 0;
+}
+
+.nav-btn:hover::before {
+  width: 100%;
+}
+
+.nav-btn:hover {
+  color: var(--text);
+  transform: translateX(2px);
+}
+
+.nav-btn:hover .nav-icon {
+  transform: scale(1.05);
+}
+
+.nav-btn.active {
+  background: var(--primary-600);
+  color: #ffffff;
+  box-shadow: var(--shadow);
+  transform: none;
+}
+
+.nav-btn.active::before {
+  display: none;
+}
+
+.nav-icon {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1;
+  position: relative;
+  font-size: 18px;
+  display: inline-block;
+  width: 32px;
+  text-align: center;
+}
+
+.nav-badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 4px 10px rgba(239, 68, 68, 0.25);
+}
+
+.nav-label {
+  display: none;
+}
+
+/* Выпадающее подменю (Настройки) */
+.nav-dropdown-wrap {
+  position: relative;
+}
+
+.nav-dropdown-trigger {
+  cursor: default;
+  pointer-events: auto;
+}
+
+.nav-dropdown-arrow {
+  font-size: 10px;
+  opacity: 0.6;
+  transition: transform 0.2s ease;
+}
+
+.nav-dropdown-wrap:hover .nav-dropdown-arrow {
+  transform: rotate(90deg);
+}
+
+.nav-dropdown {
+  position: fixed;
+  min-width: 180px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  transition: opacity 0.2s ease, visibility 0.2s ease, transform 0.2s ease;
+  z-index: 9999;
+}
+
+.nav-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.nav-dropdown-item:hover {
+  background: var(--primary-50);
+  color: var(--text);
+}
+
+.nav-dropdown-item.active {
+  background: var(--primary-100);
+  color: var(--text);
+}
+
+.nav-dropdown-item .nav-icon {
+  font-size: 18px;
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: -280px;
+    z-index: 1000;
+    transition: left 0.3s ease;
+  }
+  
+  .sidebar.open {
+    left: 0;
+  }
+}
+

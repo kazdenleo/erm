@@ -1,0 +1,37 @@
+// Theme White
+// Uses SASS variables for consistent color management
+
+// Variables
+$app-container-bg: $gray-100;
+$app-sidebar-bg: $white;
+$app-header-bg: tint-color($gray-100, 50%);
+$app-header-logo-bg: rgba($white, .9);
+
+// Content
+
+.app-theme-white {
+
+  &.app-container {
+    background: $app-container-bg;
+  }
+
+  .app-sidebar {
+    background: $app-sidebar-bg;
+  }
+
+  .app-page-title {
+    background: rgba($white, .45);
+  }
+
+  .app-footer .app-footer__inner,
+  .app-header {
+    background: $app-header-bg;
+  }
+
+  &.fixed-header {
+    .app-header__logo {
+      background: rgba($app-header-bg, .1);
+    }
+  }
+
+}

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Тест основного приложения</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        button { padding: 10px 20px; margin: 5px; background: #007cba; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #005a87; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Тест основного приложения</h1>
+    
+    <div class="section">
+        <h3>🔗 Переходы к основному приложению</h3>
+        <button onclick="window.open('http://localhost:3001', '_blank')">Открыть основное приложение</button>
+        <button onclick="window.open('http://localhost:3001#integrations', '_blank')">Открыть Интеграции</button>
+    </div>
+    
+    <div class="section">
+        <h3>📊 Проверка данных в основном приложении</h3>
+        <button onclick="testMainAppData()">Проверить данные в основном приложении</button>
+        <div id="mainAppResult"></div>
+    </div>
+    
+    <div class="section">
+        <h3>🔧 Инструкции по проверке</h3>
+        <div class="info">
+            <strong>Для проверки основного приложения:</strong><br/>
+            1. Откройте основное приложение<br/>
+            2. Перейдите в "Интеграции" → "Маркетплейсы"<br/>
+            3. Проверьте, что поля заполнены данными<br/>
+            4. Если поля пустые - нажмите F12 и проверьте консоль на ошибки<br/>
+            5. Попробуйте сохранить данные заново
+        </div>
+    </div>
+
+    <script>
+        async function testMainAppData() {
+            const result = document.getElementById('mainAppResult');
+            result.innerHTML = '<div class="info">⏳ Проверяем данные...</div>';
+            
+            try {
+                // Проверяем данные на сервере
+                const response = await fetch('http://localhost:3001/api/data');
+                const data = await response.json();
+                
+                let status = '<div class="success"><strong>✅ Данные на сервере:</strong><br/>';
+                
+                for (const [type, config] of Object.entries(data.data)) {
+                    if (Object.keys(config).length > 0) {
+                        status += `✅ ${type.toUpperCase()}: Настроено<br/>`;
+                    } else {
+                        status += `❌ ${type}: Не настроено<br/>`;
+                    }
+                }
+                
+                status += '</div>';
+                
+                // Проверяем доступность основного приложения
+                try {
+                    const mainAppResponse = await fetch('http://localhost:3001');
+                    if (mainAppResponse.ok) {
+                        status += '<div class="success">✅ Основное приложение доступно</div>';
+                    } else {
+                        status += '<div class="error">❌ Основное приложение недоступно</div>';
+                    }
+                } catch (error) {
+                    status += `<div class="error">❌ Ошибка доступа к основному приложению: ${error.message}</div>`;
+                }
+                
+                result.innerHTML = status;
+                
+            } catch (error) {
+                result.innerHTML = `<div class="error">❌ Ошибка: ${error.message}</div>`;
+            }
+        }
+    </script>
+</body>
+</html>

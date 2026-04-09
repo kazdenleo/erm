@@ -1,0 +1,83 @@
+.order-detail-header {
+  margin-bottom: 20px;
+}
+
+.order-detail-marketplace {
+  font-weight: normal;
+  color: var(--muted, #666);
+  font-size: 0.9em;
+}
+
+.order-detail-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.order-detail-section {
+  background: var(--card-bg, #f8f9fa);
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid var(--border, #eee);
+}
+
+.order-detail-section h3 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  color: var(--text-secondary, #555);
+}
+
+.detail-dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 24px;
+  align-items: baseline;
+}
+
+.detail-dl dt {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-secondary, #555);
+}
+
+.detail-dl dd {
+  margin: 0;
+}
+
+.order-detail-products {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.order-detail-products li {
+  margin-bottom: 8px;
+}
+
+.order-detail-products li:last-child {
+  margin-bottom: 0;
+}
+
+.order-detail-row-link {
+  color: var(--primary, #0d6efd);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.order-detail-row-link:hover {
+  text-decoration: underline;
+}
+
+.order-detail-product-link {
+  color: var(--primary, #0d6efd);
+  text-decoration: none;
+}
+
+.order-detail-product-link:hover {
+  text-decoration: underline;
+}
+
+.order-detail-modal-body {
+  padding-top: 8px;
+  min-height: 200px;
+}

@@ -1,0 +1,78 @@
+.admin-accounts-table {
+  font-size: 0.9rem;
+}
+
+/* Админка продукта (platform-main): явный цвет чисел в таблице */
+.platform-main .admin-accounts-table td {
+  color: var(--text, #333);
+}
+
+.admin-cabinet-detail {
+  max-height: 75vh;
+  overflow: auto;
+}
+
+.admin-cabinet-stats .badge {
+  font-weight: 500;
+}
+
+.admin-page .title { margin-bottom: 0.25rem; }
+.admin-page .subtitle { margin-bottom: 1.5rem; color: var(--muted); }
+
+.admin-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-tab {
+  padding: 0.5rem 1rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.admin-tab:hover { color: var(--text); }
+.admin-tab.active { color: var(--primary); font-weight: 600; border-bottom-color: var(--primary); }
+
+.admin-section { margin-top: 0.5rem; }
+.admin-section h2 { font-size: 1.125rem; margin: 0 0 1rem 0; }
+.admin-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.admin-section-header h2 { margin: 0; }
+.admin-hint { font-size: 0.875rem; color: var(--muted); margin: 0 0 1rem 0; }
+
+.admin-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.admin-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  background: var(--primary-50);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.admin-list-item-name { font-weight: 600; }
+.admin-list-item-actions { display: flex; gap: 0.5rem; }
+.admin-muted { color: var(--muted); font-size: 0.875rem; margin-left: 0.25rem; }
+.admin-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  background: var(--primary-100);
+  border-radius: 4px;
+  color: var(--text);
+}
+.admin-badge-profile { background: var(--accent-100); color: var(--accent); }
+.admin-form { display: flex; flex-direction: column; gap: 1rem; }
+.admin-form label { display: flex; flex-direction: column; font-size: 0.875rem; font-weight: 500; }
+.admin-form-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
+.admin-checkbox-label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 500; }
+.admin-checkbox-label input { width: auto; }
+.admin-loading, .admin-error { padding: 2rem; text-align: center; }
+.btn-danger { color: var(--error); border-color: var(--error); }

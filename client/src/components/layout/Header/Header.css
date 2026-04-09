@@ -1,0 +1,161 @@
+/* Дополнения к теме: поиск + быстрые значки справа */
+.app-header__content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 1rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.app-header__content .app-header-left {
+  flex: 1;
+  min-width: 0;
+}
+
+.header-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.header-quick-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  color: var(--muted, #6c757d);
+  text-decoration: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 1.4rem;
+  line-height: 1;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.header-quick-action:hover {
+  background: var(--primary-50, rgba(63, 106, 216, 0.1));
+  color: var(--primary, #3f6ad8);
+}
+
+.header-quick-action--active {
+  color: var(--primary, #3f6ad8);
+  background: var(--primary-50, rgba(63, 106, 216, 0.12));
+}
+
+.header-quick-action__badge {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  color: #fff;
+  background: var(--danger, #d92550);
+  border-radius: 9px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+/* Профиль: иконка справа, меню по наведению */
+.header-profile {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.header-profile__trigger {
+  position: relative;
+}
+
+.header-profile__admin-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning, #f7b924);
+  box-shadow: 0 0 0 1px var(--card, #fff);
+  pointer-events: none;
+}
+
+.header-profile__menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 11rem;
+  padding: 6px 0;
+  margin: 0;
+  list-style: none;
+  background: var(--card, #fff);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 1200;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity 0.15s ease,
+    visibility 0.15s ease,
+    transform 0.15s ease;
+}
+
+/* «Мост» для курсора между кнопкой и меню */
+.header-profile::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 100%;
+  width: 100%;
+  height: 8px;
+  z-index: 1199;
+}
+
+.header-profile:hover .header-profile__menu,
+.header-profile:focus-within .header-profile__menu {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.header-profile__item {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  text-align: left;
+  text-decoration: none;
+  color: var(--text, #212529);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s ease;
+}
+
+.header-profile__item:hover {
+  background: var(--primary-50, rgba(63, 106, 216, 0.08));
+  color: var(--primary, #3f6ad8);
+}
+
+.header-profile__item--danger:hover {
+  background: rgba(217, 37, 80, 0.08);
+  color: var(--danger, #d92550);
+}

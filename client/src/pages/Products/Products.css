@@ -1,0 +1,181 @@
+/* Стили для страницы товаров */
+.products-list-toolbar {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: var(--bs-light, #f8f9fa);
+}
+
+.products-filters-panel {
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.products-list-search-input {
+  width: 100%;
+}
+
+.products-list-refresh-hint {
+  color: var(--bs-secondary, #6c757d);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  white-space: nowrap;
+  padding-bottom: 2px;
+}
+
+.products-list-refresh-hint.is-visible {
+  opacity: 1;
+}
+
+.products-list {
+  margin: 16px 0;
+  transition: opacity 0.22s ease;
+}
+
+.products-list.products-list--refreshing {
+  opacity: 0.72;
+}
+
+.products-table tbody tr.product-row-editable {
+  cursor: pointer;
+}
+
+.products-table tbody tr.products-table-row--selected {
+  --bs-table-bg-state: rgba(13, 110, 253, 0.14);
+  background-color: rgba(13, 110, 253, 0.14) !important;
+  box-shadow: inset 3px 0 0 0 rgba(13, 110, 253, 0.75);
+}
+
+.products-table .products-table-select-cell {
+  width: 40px;
+  padding-left: 12px !important;
+  padding-right: 4px !important;
+  vertical-align: middle;
+  cursor: default;
+}
+
+.products-table thead .products-table-select-cell {
+  vertical-align: middle;
+}
+
+.products-table .product-actions-cell {
+  cursor: default;
+}
+
+.products-table .product-thumb-cell {
+  width: 58px;
+  padding-left: 12px !important;
+  padding-right: 8px !important;
+  vertical-align: middle;
+}
+
+/* Миниатюра 3:4 (портрет, как типичная карточка товара) */
+.products-table .product-thumb {
+  width: 42px;
+  aspect-ratio: 3 / 4;
+  height: auto;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.products-table .product-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.products-table .product-thumb--empty {
+  font-size: 16px;
+  color: rgba(0, 0, 0, 0.22);
+  line-height: 1;
+}
+
+.products-table .product-name {
+  font-weight: 500;
+  min-width: 200px;
+}
+
+.products-table .product-sku {
+  color: rgba(0,0,0,0.55);
+  font-size: 11px;
+  min-width: 100px;
+}
+
+.products-table .product-price {
+  font-weight: 600;
+  color: rgba(0,0,0,0.8);
+  white-space: nowrap;
+  cursor: help;
+  border-bottom: 1px dotted rgba(0,0,0,0.35);
+}
+
+.products-table .product-actions {
+  white-space: nowrap;
+  text-align: right;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.products-table .mp-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.products-table .mp-badge.ozon {
+  background: #005bff;
+  color: white;
+}
+
+.products-table .mp-badge.wb {
+  background: #cb11ab;
+  color: white;
+}
+
+.products-table .mp-badge.ym {
+  background: #fc0;
+  color: #000;
+}
+
+/* Остальное теперь стилизует ArchitectUI/Bootstrap */
+
+@media (max-width: 768px) {
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  
+  .products-table-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  .products-table {
+    font-size: 12px;
+    min-width: 800px;
+  }
+  
+  .products-table th,
+  .products-table td {
+    padding: 12px 8px;
+  }
+  
+  .table-actions {
+    flex-direction: column;
+  }
+}
+

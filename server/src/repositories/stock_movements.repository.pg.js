@@ -1,0 +1,64 @@
+/**
+ * Stock Movements Repository (PostgreSQL)
+ * Журнал движений остатков по товарам
+ */
+
+import { query } from '../config/database.js';
+
+class StockMovementsRepositoryPG {
+  /**
+   * Создать запись движения остатков
+   * @param {object} params
+   * @param {number} params.productId
+   * @param {string} params.type - 'receipt' | 'writeoff' | 'shipment' | 'reserve' | 'unreserve' | 'inventory' | 'manual'
+   * @param {number} params.quantityChange - положительное или отрицательное число
+   * @param {number|null} params.balanceAfter - остаток после операции (может быть null, если не считаем)
+   * @param {string|null} params.reason - человекочитаемое описание
+   * @param {object|null} params.meta - произвольные дополнительные данные (JSON)
+   */
+  async create({ productId, type, quantityChange, balanceAfter = null, reason = null, meta = null, warehouseId = null }) {
+    const sql = `
+      INSERT INTO stock_movements
+        (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `;
+    const params = [
+      productId,
+      type,
+      quantityChange,
+      balanceAfter,
+      reason,
+      meta ? JSON.stringify(meta) : null,
+      warehouseId != null && warehouseId !== '' ? warehouseId : null
+    ];
+    const result = await query(sql, params);
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Получить историю движений по товару
+   * @param {number|string} productId
+   * @param {object} options
+   * @param {number} [options.limit=100]
+   */
+  async findByProduct(productId, { limit = 100 } = {}) {
+    const numericId = typeof productId === 'string' ? parseInt(productId, 10) : productId;
+    if (!numericId || Number.isNaN(numericId)) {
+      return [];
+    }
+
+    const sql = `
+      SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, meta, warehouse_id
+      FROM stock_movements
+      WHERE product_id = $1
+      ORDER BY created_at DESC, id DESC
+      LIMIT $2
+    `;
+    const result = await query(sql, [numericId, limit]);
+    return result.rows || [];
+  }
+}
+
+export default new StockMovementsRepositoryPG();
+

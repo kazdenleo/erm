@@ -1,0 +1,57 @@
+[
+  {
+    "id": "rt_1775552234470_e866fd91",
+    "type": "marketplace_api_error",
+    "severity": "error",
+    "title": "WB: токен истёк (access token expired)",
+    "message": "WB API вернул \"access token expired\" при загрузке категорий/комиссий. Перевыпустите токен WB.",
+    "marketplace": "wildberries",
+    "source": "wb.cache",
+    "created_at": "2026-04-07T08:57:14.470Z",
+    "meta": null
+  },
+  {
+    "id": "rt_1775552234295_384b5ad9",
+    "type": "marketplace_api_error",
+    "severity": "error",
+    "title": "WB: токен истёк (access token expired)",
+    "message": "WB API вернул \"access token expired\" при загрузке тарифов возвратов. Перевыпустите токен WB.",
+    "marketplace": "wildberries",
+    "source": "wb.warehouses-cache",
+    "created_at": "2026-04-07T08:57:14.295Z",
+    "meta": null
+  },
+  {
+    "id": "rt_1775552234284_1888736c",
+    "type": "marketplace_api_error",
+    "severity": "error",
+    "title": "WB: токен истёк (access token expired)",
+    "message": "WB API вернул \"access token expired\" при загрузке тарифов (коробки). Перевыпустите токен WB.",
+    "marketplace": "wildberries",
+    "source": "wb.warehouses-cache",
+    "created_at": "2026-04-07T08:57:14.283Z",
+    "meta": null
+  },
+  {
+    "id": "rt_1775552233153_4c5ee4cc",
+    "type": "marketplace_api_error",
+    "severity": "error",
+    "title": "WB: токен истёк (access token expired)",
+    "message": "WB API вернул \"access token expired\" при загрузке категорий/комиссий. Перевыпустите токен WB.",
+    "marketplace": "wildberries",
+    "source": "wb.cache",
+    "created_at": "2026-04-07T08:57:13.153Z",
+    "meta": null
+  },
+  {
+    "id": "rt_1775550321345_35683954",
+    "type": "marketplace_api_error",
+    "severity": "error",
+    "title": "Ozon: API ключ деактивирован (комиссии/цены)",
+    "message": "Ozon вернул \"Api-key is deactivated\" на v5/product/info/prices. offer_id=CN1003K. Проверьте ключ в интеграции Ozon (Client-Id/Api-Key).",
+    "marketplace": "ozon",
+    "source": "ozon.prices",
+    "created_at": "2026-04-07T08:25:21.345Z",
+    "meta": null
+  }
+]

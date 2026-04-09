@@ -1,0 +1,90 @@
+// Sidebar Light
+// Uses SASS rgba() with $white variable for consistent color management
+
+.app-sidebar {
+  &.sidebar-text-light {
+    border-right: 0 !important;
+
+    .app-sidebar__heading {
+      color: rgba($white, .6);
+
+      &::before {
+        background: rgba($white, 0.5) !important;
+      }
+    }
+
+    .vertical-nav-menu {
+      li {
+        a {
+          color: rgba($white, 0.7);
+          i.metismenu-icon {
+            opacity: .5;
+          }
+
+          i.metismenu-state-icon {
+            opacity: .5;
+          }
+
+          &:hover {
+            background: rgba($white, 0.15);
+            color: $white;
+
+            i.metismenu-icon {
+              opacity: .8;
+            }
+
+            i.metismenu-state-icon {
+              opacity: 1;
+            }
+          }
+        }
+
+        a.mm-active {
+          color: rgba($white, 0.7);
+          background: rgba($white, 0.15);
+        }
+      }
+
+      ul {
+        &:before {
+          background: rgba($white, 0.1);
+        }
+
+        & > li > a {
+          color: rgba($white, 0.6);
+
+          &:hover {
+            color: $white;
+          }
+
+          &.mm-active {
+            color: $white;
+            background: rgba($white, 0.15);
+          }
+        }
+      }
+    }
+
+    .ps__thumb-y {
+      background: rgba($white, .3);
+    }
+
+    .ps__rail-y:hover {
+      .ps__thumb-y {
+        background: rgba($white, .2);
+      }
+    }
+
+    .app-header__logo {
+      .logo-src {
+        background: url('utils/images/logo.png');
+      }
+
+      .hamburger-inner,
+      .hamburger-inner::before,
+      .hamburger-inner::after {
+        background-color: rgba($white, .8);
+      }
+    }
+  }
+}

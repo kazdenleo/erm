@@ -1,0 +1,65 @@
+/* ArchitectUI / app-specific overrides */
+
+:root {
+  --erm-sidebar-width: 280px;
+  --erm-sidebar-width-closed: 80px;
+}
+
+/* Prevent modals/backdrop from covering the fixed left sidebar */
+.fixed-sidebar .modal-backdrop-erm,
+.fixed-sidebar .modal.modal-erm {
+  left: var(--erm-sidebar-width);
+  width: calc(100vw - var(--erm-sidebar-width));
+}
+
+.fixed-sidebar.closed-sidebar .modal-backdrop-erm,
+.fixed-sidebar.closed-sidebar .modal.modal-erm {
+  left: var(--erm-sidebar-width-closed);
+  width: calc(100vw - var(--erm-sidebar-width-closed));
+}
+
+/* On mobile sidebar overlay mode we want full-screen modals */
+.sidebar-mobile-open .modal-backdrop-erm,
+.sidebar-mobile-open .modal.modal-erm {
+  left: 0;
+  width: 100vw;
+}
+
+/* Fullscreen modals should also respect the sidebar offset */
+.fixed-sidebar .modal.modal-erm[data-erm-size='full'] .modal-dialog {
+  margin-left: 0;
+  margin-right: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Подменю сайдбара (Остатки, Настройки): показывать только при классе mm-show */
+.app-sidebar .vertical-nav-menu > li > ul {
+  display: none;
+}
+.app-sidebar .vertical-nav-menu > li > ul.mm-show {
+  display: block;
+}
+
+/* Кнопка сворачивания подменю — как пункт меню */
+.app-sidebar .vertical-nav-menu button.metismenu-link {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.5rem 1.25rem;
+  text-align: left;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.app-sidebar .vertical-nav-menu button.metismenu-link:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.app-sidebar .vertical-nav-menu button.metismenu-link .metismenu-icon {
+  margin-right: 0.5rem;
+}
+.app-sidebar .vertical-nav-menu button.metismenu-link .metismenu-state-icon {
+  margin-left: auto;
+}

@@ -1,0 +1,271 @@
+/* Общие стили таблиц наследуются из tables.css */
+
+.stock-levels-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.stock-levels-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.stock-levels-filter-label span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.stock-levels-filter-select {
+  min-width: 180px;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.stock-levels-filter-select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.stock-levels-table-wrapper {
+  overflow: visible !important;
+}
+
+.stock-levels-table {
+  overflow: visible !important;
+}
+
+.stock-levels-table th {
+  text-align: center;
+}
+
+.stock-levels-table td {
+  text-align: center;
+}
+
+.sku-cell {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.name-cell {
+  text-align: left;
+  font-weight: 500;
+}
+
+.total-stock-cell,
+.main-warehouse-cell {
+  font-weight: 600;
+}
+
+.stock-levels-reserved-cell {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.supplier-stock-cell {
+  position: relative;
+}
+
+.stock-cell-container {
+  display: inline-block;
+  position: relative;
+}
+
+.stock-main-value {
+  display: inline-block;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+}
+
+.stock-main-value:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.stock-main-caret {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.stock-details-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-secondary);
+  background-color: var(--bg-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 8px;
+  min-width: 220px;
+  max-width: 320px;
+  z-index: 1000;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 1;
+  /* Гарантируем непрозрачный фон */
+  background-image: none;
+}
+
+.stock-details-dropdown.dropdown-above {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+.dropdown-header {
+  font-weight: 600;
+  font-size: 11px;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.dropdown-item {
+  margin-bottom: 4px;
+  padding: 4px 6px;
+  background: rgba(16, 185, 129, 0.08);
+  border-left: 2px solid #10b981;
+  border-radius: 3px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dropdown-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dropdown-item-title {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dropdown-item-sub {
+  font-size: 9px;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.dropdown-item-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-left: 8px;
+}
+
+.dropdown-item-stock {
+  font-weight: 600;
+  font-size: 12px;
+  color: #10b981;
+}
+
+.dropdown-item-price {
+  font-size: 9px;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.dropdown-footer {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.mp-stock-cell.muted,
+.muted {
+  color: var(--muted);
+}
+
+.stock-levels-description {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.stock-levels-row-clickable {
+  cursor: pointer;
+}
+
+.stock-levels-row-clickable:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.stock-levels-history-hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
+.stock-levels-history-empty {
+  color: var(--muted);
+  margin: 0;
+}
+
+.stock-levels-history-table-wrap {
+  overflow-x: auto;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.stock-levels-history-table th,
+.stock-levels-history-table td {
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.stock-levels-history-table th:nth-child(3),
+.stock-levels-history-table th:nth-child(4),
+.stock-levels-history-table td:nth-child(3),
+.stock-levels-history-table td:nth-child(4) {
+  text-align: right;
+}
+
+.stock-change-plus {
+  color: var(--success, #10b981);
+  font-weight: 600;
+}
+
+.stock-change-minus {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.stock-levels-history-link {
+  color: var(--primary, #3b82f6);
+  text-decoration: none;
+}
+
+.stock-levels-history-link:hover {
+  text-decoration: underline;
+}
+

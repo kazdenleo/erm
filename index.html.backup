@@ -1,0 +1,2006 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Купить</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --card: #111827;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --primary: #2563eb;
+        --primary-600: #1d4ed8;
+        --ring: rgba(37, 99, 235, 0.5);
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        height: 100%;
+        margin: 0;
+        background: radial-gradient(1200px 600px at 10% 10%, #111827 0%, #0b0f14 40%, #05070a 100%);
+        color: var(--text);
+        font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      }
+
+      .container {
+        min-height: 100%;
+        display: grid;
+        grid-template-columns: 240px 1fr;
+        gap: 0;
+      }
+
+      aside.sidebar {
+        border-right: 1px solid rgba(255,255,255,0.08);
+        background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+        padding: 16px;
+      }
+      .brand { font-size: 16px; margin: 0 0 12px; color: var(--muted); }
+      .nav {
+        display: flex; flex-direction: column; gap: 8px;
+      }
+      .nav .nav-btn {
+        width: 100%; text-align: left; padding: 10px 12px; border-radius: 10px;
+        background: transparent; color: var(--text); border: 1px solid rgba(255,255,255,0.08); cursor: pointer;
+      }
+      .nav .nav-btn.active {
+        background: rgba(255,255,255,0.06);
+        border-color: rgba(255,255,255,0.12);
+      }
+
+      main.content { padding: 24px; display: grid; align-items: start; justify-content: center; }
+      .page { display: none; }
+      .page.active { display: block; }
+
+      .card {
+        width: 100%;
+        max-width: 460px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        padding: 28px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04);
+        backdrop-filter: blur(6px);
+      }
+
+      .title {
+        margin: 0 0 8px;
+        font-size: 22px;
+        letter-spacing: 0.2px;
+      }
+
+      .subtitle {
+        margin: 0 0 20px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 12px;
+      }
+
+      .btn {
+        appearance: none;
+        cursor: pointer;
+        border: 0;
+        outline: none;
+        padding: 12px 18px;
+        font-size: 15px;
+        border-radius: 12px;
+        transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, color 120ms ease;
+        will-change: transform;
+      }
+
+      .btn-primary {
+        background: linear-gradient(180deg, var(--primary), var(--primary-600));
+        color: white;
+        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35), 0 0 0 0 var(--ring);
+      }
+      .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 28px rgba(37, 99, 235, 0.45), 0 0 0 6px var(--ring);
+      }
+      .btn-primary:active {
+        transform: translateY(0);
+        box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35), 0 0 0 4px var(--ring);
+      }
+
+      .btn-secondary {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid rgba(255,255,255,0.12);
+      }
+      .btn-secondary:hover {
+        background: rgba(255,255,255,0.04);
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      /* Modal */
+      .hidden { display: none; }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        z-index: 50;
+      }
+      .modal-backdrop.hidden { pointer-events: none; }
+      .modal {
+        width: 100%;
+        max-width: 520px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 16px;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
+        backdrop-filter: blur(8px);
+        color: var(--text);
+        position: relative;
+        z-index: 100;
+        pointer-events: auto;
+      }
+      .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px 12px;
+      }
+      .modal-title {
+        margin: 0;
+        font-size: 18px;
+      }
+      .modal-close {
+        background: transparent;
+        border: 0;
+        color: var(--muted);
+        font-size: 18px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 36px;
+        min-height: 36px;
+        border-radius: 10px;
+        padding: 6px;
+        margin: -6px;
+      }
+      .modal-body { padding: 0 24px 20px; }
+      .modal-footer { padding: 12px 24px 20px; display: flex; gap: 12px; justify-content: flex-end; }
+
+      .field { margin: 12px 0; }
+      .label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+      .input, .textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(0,0,0,0.25);
+        color: var(--text);
+        outline: none;
+        transition: box-shadow 120ms ease, border-color 120ms ease;
+      }
+      .input:focus, .textarea:focus { box-shadow: 0 0 0 4px var(--ring); border-color: var(--primary); }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .error { color: #fca5a5; font-size: 12px; margin-top: 6px; min-height: 14px; }
+
+      /* Tabs */
+      .tabs { display: flex; gap: 8px; padding: 0 24px; margin-top: 4px; }
+      .tab-btn {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: var(--text);
+        padding: 8px 12px;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      .tab-btn[aria-selected="true"] {
+        background: linear-gradient(180deg, var(--primary), var(--primary-600));
+        border-color: transparent;
+        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+      }
+      .tab-btn:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 4px var(--ring);
+      }
+      .tab-panel { display: none; padding: 12px 24px 8px; }
+      .tab-panel.active { display: block; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <aside class="sidebar" role="navigation" aria-label="Основное меню">
+        <h2 class="brand">ERP Demo</h2>
+        <div class="nav">
+          <button id="navHome" class="nav-btn active" type="button">Главная</button>
+          <button id="navProducts" class="nav-btn" type="button">Товары</button>
+          <button id="navCategories" class="nav-btn" type="button">Категории</button>
+          <button id="navConnections" class="nav-btn" type="button">Подключения по API</button>
+        </div>
+      </aside>
+      <main class="content">
+        <section id="page-home" class="page active">
+          <div class="card" role="region" aria-labelledby="card-title">
+            <h1 id="card-title" class="title">Оформление заказа</h1>
+            <p class="subtitle">Нажмите, чтобы добавить товар в корзину и перейти к оплате.</p>
+            <div class="actions">
+              <button id="buyButton" class="btn btn-primary" type="button" aria-label="Купить сейчас">Купить</button>
+              <button id="detailsButton" class="btn btn-secondary" type="button">Подробнее</button>
+              <button id="mpSettingsButton" class="btn btn-secondary" type="button">Настроить маркетплейсы</button>
+            </div>
+          </div>
+        </section>
+        <section id="page-products" class="page">
+          <div class="card" role="region" aria-labelledby="products-title">
+            <h1 id="products-title" class="title">Управление товарами</h1>
+            <p class="subtitle">Просмотр, добавление и редактирование товаров в системе.</p>
+            <div id="productsList" style="margin: 16px 0;"></div>
+            <div class="actions">
+              <button id="addProductBtn" class="btn btn-primary" type="button">Добавить товар</button>
+              <button id="importProductsBtn" class="btn btn-secondary" type="button">Импорт товаров</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="page-categories" class="page">
+          <div class="card" role="region" aria-labelledby="categories-title">
+            <h1 id="categories-title" class="title">Управление категориями</h1>
+            <p class="subtitle">Создание и сопоставление категорий товаров с маркетплейсами.</p>
+            <div id="categoriesList" style="margin: 16px 0;"></div>
+            <div class="actions">
+              <button id="addCategoryBtn" class="btn btn-primary" type="button">Добавить категорию</button>
+              <button id="importCategoriesBtn" class="btn btn-secondary" type="button">Импорт категорий</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="page-connections" class="page" aria-labelledby="connections-title">
+          <div class="card" role="region">
+            <h1 id="connections-title" class="title">Подключения по API</h1>
+            <p class="subtitle">Здесь отображаются сохранённые настройки подключений к маркетплейсам.</p>
+            <div id="connectionsList" style="margin: 16px 0;"></div>
+            <div class="actions">
+              <button id="connectApiBtn" class="btn btn-primary" type="button">Подключить по API</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      (function () {
+        function init() {
+        const buyButton = document.getElementById('buyButton');
+        const detailsButton = document.getElementById('detailsButton');
+        const mpSettingsButton = document.getElementById('mpSettingsButton');
+        const navHome = document.getElementById('navHome');
+        const navProducts = document.getElementById('navProducts');
+        const navCategories = document.getElementById('navCategories');
+        const navConnections = document.getElementById('navConnections');
+        const pageHome = document.getElementById('page-home');
+        const pageProducts = document.getElementById('page-products');
+        const pageCategories = document.getElementById('page-categories');
+        const pageConnections = document.getElementById('page-connections');
+        const connectionsList = document.getElementById('connectionsList');
+        const connectApiBtn = document.getElementById('connectApiBtn');
+
+        // Modal elements
+        const modalBackdrop = document.getElementById('productModalBackdrop');
+        const modalDialog = document.getElementById('productModal');
+        const modalForm = document.getElementById('productForm');
+        const closeBtn = document.getElementById('modalCloseBtn');
+        const cancelBtn = document.getElementById('modalCancelBtn');
+
+        function openModal() {
+          if (!modalBackdrop || !modalDialog) return;
+          modalBackdrop.classList.remove('hidden');
+          modalDialog.classList.remove('hidden');
+          modalBackdrop.style.display = 'flex';
+          modalDialog.style.display = '';
+          modalBackdrop.style.pointerEvents = 'auto';
+          modalDialog.style.pointerEvents = 'auto';
+          document.body.style.overflow = 'hidden';
+          const firstInput = modalForm && modalForm.querySelector('input, textarea');
+          if (firstInput) { firstInput.focus(); }
+        }
+
+        function closeModal() {
+          if (!modalBackdrop || !modalDialog) return;
+          const active = document.activeElement;
+          if (active && modalDialog.contains(active) && active instanceof HTMLElement) { active.blur(); }
+          modalDialog.classList.add('hidden');
+          modalBackdrop.classList.add('hidden');
+          modalBackdrop.style.pointerEvents = 'none';
+          modalDialog.style.pointerEvents = 'none';
+          modalBackdrop.style.display = 'none';
+          modalDialog.style.display = 'none';
+          document.body.style.overflow = '';
+          if (buyButton) buyButton.focus();
+        }
+
+        if (buyButton) {
+          buyButton.addEventListener('click', function () {
+            openModal();
+          });
+        }
+
+        if (detailsButton) {
+          detailsButton.addEventListener('click', function () {
+            alert('Здесь могли бы быть подробности о товаре.');
+          });
+        }
+
+        if (closeBtn) closeBtn.addEventListener('click', closeModal);
+        if (cancelBtn) cancelBtn.addEventListener('click', function (e) { e.preventDefault(); closeModal(); });
+        if (modalBackdrop) {
+          modalBackdrop.addEventListener('click', function (e) {
+            if (e.target === modalBackdrop) closeModal();
+          });
+        }
+
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && modalBackdrop && !modalBackdrop.classList.contains('hidden')) {
+            closeModal();
+          }
+        });
+
+        if (modalForm) {
+          modalForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            const formData = new FormData(modalForm);
+            const payload = {
+              name: String(formData.get('name') || '').trim(),
+              sku: String(formData.get('sku') || '').trim(),
+              price: Number(formData.get('price') || 0),
+              quantity: Number(formData.get('quantity') || 1),
+              description: String(formData.get('description') || '').trim()
+            };
+
+            // Basic validation
+            const errors = [];
+            if (!payload.name) errors.push('Введите название товара');
+            if (!payload.sku) errors.push('Введите артикул');
+            if (!Number.isFinite(payload.price) || payload.price <= 0) errors.push('Цена должна быть больше 0');
+            if (!Number.isInteger(payload.quantity) || payload.quantity <= 0) errors.push('Количество должно быть целым > 0');
+
+            const errorBox = document.getElementById('formErrors');
+            if (errorBox) errorBox.textContent = errors[0] || '';
+            if (errors.length) return;
+
+            // Imitate sending to ERP API — replace with real fetch later
+            console.log('[ERP] Creating product:', payload);
+            alert('Товар сохранён в ERP: ' + payload.name + ' (SKU: ' + payload.sku + ')');
+            modalForm.reset();
+            closeModal();
+          });
+        }
+
+        // MP Settings modal logic
+        const mpBackdrop = document.getElementById('mpModalBackdrop');
+        const mpDialog = document.getElementById('mpModal');
+        const mpClose = document.getElementById('mpCloseBtn');
+        const mpCancel = document.getElementById('mpCancelBtn');
+        const wbCancel = document.getElementById('wbCancelBtn');
+        const ymCancel = document.getElementById('ymCancelBtn');
+        const tabButtons = document.querySelectorAll('[role="tab"]');
+        const tabPanels = document.querySelectorAll('[role="tabpanel"]');
+
+        function setMpOpen(isOpen) {
+          const backdropEl = document.getElementById('mpModalBackdrop');
+          const dialogEl = document.getElementById('mpModal');
+          if (!backdropEl || !dialogEl) return;
+          if (isOpen) {
+            dialogEl.removeAttribute('inert');
+            backdropEl.classList.remove('hidden');
+            dialogEl.classList.remove('hidden');
+            backdropEl.style.pointerEvents = 'auto';
+            backdropEl.style.display = 'flex';
+            dialogEl.style.display = '';
+            dialogEl.style.pointerEvents = 'auto';
+            document.body.style.overflow = 'hidden';
+            // Focus management
+            dialogEl.focus();
+            const first = dialogEl.querySelector('input, button, textarea, [tabindex]:not([tabindex="-1"])');
+            if (first) first.focus();
+          } else {
+            // Blur any active control in the dialog first
+            const active = document.activeElement;
+            if (active && dialogEl.contains(active) && active instanceof HTMLElement) { active.blur(); }
+            dialogEl.setAttribute('inert', '');
+            dialogEl.classList.add('hidden');
+            backdropEl.classList.add('hidden');
+            backdropEl.style.pointerEvents = 'none';
+            backdropEl.style.display = 'none';
+            dialogEl.style.display = 'none';
+            dialogEl.style.pointerEvents = 'none';
+            document.body.style.overflow = '';
+            if (mpSettingsButton) mpSettingsButton.focus();
+          }
+        }
+
+        function openMpModal() { setMpOpen(true); }
+        function closeMpModal() { setMpOpen(false); }
+        
+        function openMpModalForMarketplace(marketplace) {
+          setMpOpen(true);
+          // Переключаем на нужную вкладку
+          setTimeout(() => {
+            let tabId = '';
+            switch(marketplace) {
+              case 'ozon':
+                tabId = 'tab-ozon';
+                break;
+              case 'wildberries':
+              case 'wb':
+                tabId = 'tab-wb';
+                break;
+              case 'yandexmarket':
+              case 'ym':
+              case 'yandex':
+                tabId = 'tab-ym';
+                break;
+            }
+            if (tabId) {
+              const tab = document.getElementById(tabId);
+              if (tab) {
+                tab.click();
+                console.log('Opened modal for marketplace:', marketplace, 'switched to tab:', tabId);
+              } else {
+                console.warn('Tab not found:', tabId, 'for marketplace:', marketplace);
+              }
+            } else {
+              console.warn('Unknown marketplace:', marketplace);
+            }
+          }, 50);
+        }
+        // Expose fallback closer globally for inline handlers
+        window.__closeMp = closeMpModal;
+        window.openMpModalForMarketplace = openMpModalForMarketplace;
+        function activateTab(tabId) {
+          tabButtons.forEach(btn => {
+            const selected = btn.id === tabId;
+            btn.setAttribute('aria-selected', String(selected));
+            btn.tabIndex = selected ? 0 : -1;
+          });
+          tabPanels.forEach(panel => {
+            const active = panel.getAttribute('aria-labelledby') === tabId;
+            panel.classList.toggle('active', active);
+            panel.hidden = !active;
+          });
+        }
+
+        if (mpSettingsButton) mpSettingsButton.addEventListener('click', openMpModal);
+        if (mpClose) mpClose.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); closeMpModal(); });
+        if (mpCancel) mpCancel.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); closeMpModal(); });
+        if (wbCancel) wbCancel.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); closeMpModal(); });
+        if (ymCancel) ymCancel.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); closeMpModal(); });
+        // Also bind any .modal-close inside marketplace modal
+        if (mpDialog) {
+          const mpCloseBtns = mpDialog.querySelectorAll('.modal-close');
+          mpCloseBtns.forEach(function (btn) {
+            btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); closeMpModal(); });
+          });
+        }
+        if (mpBackdrop) {
+          mpBackdrop.addEventListener('click', function (e) { if (e.target === mpBackdrop) closeMpModal(); });
+        }
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape') {
+            if (mpBackdrop && !mpBackdrop.classList.contains('hidden')) closeMpModal();
+            else if (addCategoryModalBackdrop && !addCategoryModalBackdrop.classList.contains('hidden')) closeCategoryModal();
+          }
+        });
+        // Extra safety: delegate close on cross buttons
+        document.addEventListener('click', function (e) {
+          let t = e.target;
+          if (!(t instanceof Element)) return;
+          // If text node or child inside, climb up to element
+          if (t.nodeType !== 1 && t.parentElement) t = t.parentElement;
+          if (t.id === 'mpCloseBtn' || t.closest('#mpCloseBtn') || (t.closest('#mpModal') && t.classList.contains('modal-close')) || (t.closest('#mpModal') && t.getAttribute('data-action') === 'close-mp')) {
+            e.preventDefault();
+            closeMpModal();
+          }
+          if (t.id === 'modalCloseBtn' || t.closest('#modalCloseBtn') || (t.closest('#productModal') && t.classList.contains('modal-close'))) {
+            e.preventDefault();
+            closeModal();
+          }
+        });
+        const tabArray = Array.from(tabButtons);
+        tabArray.forEach((btn, index) => {
+          btn.addEventListener('click', function () { activateTab(btn.id); });
+          btn.addEventListener('keydown', function (e) {
+            const lastIdx = tabArray.length - 1;
+            let nextIndex = index;
+            if (e.key === 'ArrowRight') nextIndex = index === lastIdx ? 0 : index + 1;
+            else if (e.key === 'ArrowLeft') nextIndex = index === 0 ? lastIdx : index - 1;
+            else if (e.key === 'Home') nextIndex = 0;
+            else if (e.key === 'End') nextIndex = lastIdx;
+            else if (e.key === 'Enter' || e.key === ' ') { activateTab(btn.id); return; }
+            else return;
+            e.preventDefault();
+            const next = tabArray[nextIndex];
+            if (next) next.focus();
+          });
+        });
+
+        // Storage helpers
+        const storageKeys = {
+          ozon: 'mp:ozon',
+          wb: 'mp:wildberries',
+          ym: 'mp:yandex'
+        };
+        function saveConfig(key, obj) { localStorage.setItem(key, JSON.stringify(obj)); }
+        function loadConfig(key) {
+          try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+        }
+        
+        // Categories storage functions
+        function saveCategories(categories) { localStorage.setItem('categories', JSON.stringify(categories)); }
+        function loadCategories() {
+          try { const raw = localStorage.getItem('categories'); return raw ? JSON.parse(raw) : []; } catch { return []; }
+        }
+        function addCategory(newCategory) {
+          const categories = loadCategories();
+          categories.push(newCategory);
+          saveCategories(categories);
+          return categories;
+        }
+        
+        function deleteCategory(categoryId) {
+          const categories = loadCategories();
+          
+          // Приводим ID к числу для корректного сравнения
+          const numericId = parseInt(categoryId, 10);
+          
+          console.log('Deleting category:', categoryId, 'as numeric:', numericId);
+          console.log('Categories before deletion:', categories.length);
+          
+          // Удаляем саму категорию и все её подкатегории
+          const updatedCategories = categories.filter(cat => {
+            // Удаляем категорию с указанным ID
+            if (cat.id === numericId) {
+              console.log('Found category to delete:', cat.name, 'ID:', cat.id);
+              return false;
+            }
+            
+            // Удаляем все подкатегории этой категории
+            if (cat.parentId === numericId) {
+              console.log('Found subcategory to delete:', cat.name, 'Parent ID:', cat.parentId);
+              return false;
+            }
+            
+            return true;
+          });
+          
+          console.log('Categories after deletion:', updatedCategories.length);
+          
+          saveCategories(updatedCategories);
+          return updatedCategories;
+        }
+
+        // Bind forms
+        function bindForm(formId, key, requiredFields, testBtnId, tester) {
+          const form = document.getElementById(formId);
+          const testBtn = document.getElementById(testBtnId);
+          if (!form) return;
+
+          // Fill from storage
+          const existing = loadConfig(key);
+          Array.from(form.elements).forEach(el => {
+            if (el && 'name' in el && existing[el.name] != null) { el.value = existing[el.name]; }
+          });
+
+          form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            const data = Object.fromEntries(new FormData(form));
+            const errors = [];
+            requiredFields.forEach(f => { if (!String(data[f] || '').trim()) errors.push('Заполните поле: ' + f); });
+            const errBox = form.querySelector('.error');
+            if (errBox) errBox.textContent = errors[0] || '';
+            if (errors.length) return;
+            saveConfig(key, data);
+            alert('Настройки сохранены');
+          });
+
+          if (testBtn) {
+            testBtn.addEventListener('click', async function () {
+              const data = Object.fromEntries(new FormData(form));
+              const missing = requiredFields.filter(f => !String(data[f] || '').trim());
+              if (missing.length) { alert('Заполните обязательные поля: ' + missing.join(', ')); return; }
+              testBtn.disabled = true; const prevText = testBtn.textContent; testBtn.textContent = 'Проверка...';
+              try {
+                if (typeof tester === 'function') {
+                  const result = await tester(data);
+                  alert(result.ok ? 'Подключение успешно' : ('Ошибка: ' + (result.message || 'Неизвестная ошибка')));
+                } else {
+                  alert('Тестер не настроен');
+                }
+              } catch (e) {
+                const msg = (e && e.message) ? e.message : String(e);
+                alert('Ошибка при проверке: ' + msg);
+              } finally {
+                testBtn.disabled = false; testBtn.textContent = prevText || 'Проверить подключение';
+              }
+            });
+          }
+        }
+
+        // Testers with graceful CORS/timeout handling
+        function withTimeout(promise, ms) {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), ms);
+          return { run: (exec) => exec(ctrl, t), signal: ctrl.signal };
+        }
+
+        async function testOzon(data) {
+          const url = 'http://localhost:3001/test/ozon';
+          try {
+            const r = await fetch(url, { 
+              method: 'POST', 
+              headers: { 'Content-Type': 'application/json' }, 
+              body: JSON.stringify({ client_id: data.client_id, api_key: data.api_key }),
+              signal: AbortSignal.timeout(15000) // 15 second timeout
+            });
+            
+            if (!r.ok) {
+              const errorText = await r.text().catch(() => 'Неизвестная ошибка');
+              return { ok: false, message: `HTTP ${r.status}: ${errorText.slice(0, 200)}` };
+            }
+            
+            const json = await r.json().catch(() => ({}));
+            return { ok: json.ok === true, message: json.message || 'Подключение к Ozon успешно' };
+          } catch (e) {
+            if (e.name === 'AbortError') {
+              return { ok: false, message: 'Таймаут подключения (15 сек)' };
+            }
+            if (e.name === 'TypeError' && e.message.includes('fetch')) {
+              return { ok: false, message: 'Сервер недоступен. Убедитесь, что сервер запущен на порту 3001.' };
+            }
+            return { ok: false, message: `Ошибка подключения: ${e.message}` };
+          }
+        }
+
+        async function testWB(data) {
+          const url = 'http://localhost:3001/test/wb';
+          try {
+            const r = await fetch(url, { 
+              method: 'POST', 
+              headers: { 'Content-Type': 'application/json' }, 
+              body: JSON.stringify({ api_key: data.api_key }),
+              signal: AbortSignal.timeout(15000) // 15 second timeout
+            });
+            
+            if (!r.ok) {
+              const errorText = await r.text().catch(() => 'Неизвестная ошибка');
+              return { ok: false, message: `HTTP ${r.status}: ${errorText.slice(0, 200)}` };
+            }
+            
+            const json = await r.json().catch(() => ({}));
+            return { ok: json.ok === true, message: json.message || 'Подключение к Wildberries успешно' };
+          } catch (e) {
+            if (e.name === 'AbortError') {
+              return { ok: false, message: 'Таймаут подключения (15 сек)' };
+            }
+            if (e.name === 'TypeError' && e.message.includes('fetch')) {
+              return { ok: false, message: 'Сервер недоступен. Убедитесь, что сервер запущен на порту 3001.' };
+            }
+            return { ok: false, message: `Ошибка подключения: ${e.message}` };
+          }
+        }
+
+        async function testYM(data) {
+          const url = 'http://localhost:3001/test/ym';
+          try {
+            const r = await fetch(url, { 
+              method: 'POST', 
+              headers: { 'Content-Type': 'application/json' }, 
+              body: JSON.stringify({ 
+                api_key: data.api_key, 
+                campaign_id: data.campaign_id, 
+                business_id: data.business_id 
+              }),
+              signal: AbortSignal.timeout(15000) // 15 second timeout
+            });
+            
+            if (!r.ok) {
+              const errorText = await r.text().catch(() => 'Неизвестная ошибка');
+              return { ok: false, message: `HTTP ${r.status}: ${errorText.slice(0, 200)}` };
+            }
+            
+            const json = await r.json().catch(() => ({}));
+            return { ok: json.ok === true, message: json.message || 'Подключение к Yandex Market успешно' };
+          } catch (e) {
+            if (e.name === 'AbortError') {
+              return { ok: false, message: 'Таймаут подключения (15 сек)' };
+            }
+            if (e.name === 'TypeError' && e.message.includes('fetch')) {
+              return { ok: false, message: 'Сервер недоступен. Убедитесь, что сервер запущен на порту 3001.' };
+            }
+            return { ok: false, message: `Ошибка подключения: ${e.message}` };
+          }
+        }
+
+        bindForm('ozonForm', storageKeys.ozon, ['client_id', 'api_key'], 'ozonTestBtn', testOzon);
+        bindForm('wbForm', storageKeys.wb, ['api_key'], 'wbTestBtn', testWB);
+        bindForm('ymForm', storageKeys.ym, ['api_key', 'campaign_id', 'business_id'], 'ymTestBtn', testYM);
+
+        // Marketplace categories API
+        async function fetchOzonCategories() {
+          // Get stored Ozon credentials
+          const ozonConfig = loadConfig(storageKeys.ozon);
+          const params = new URLSearchParams();
+          if (ozonConfig.client_id) params.append('client_id', ozonConfig.client_id);
+          if (ozonConfig.api_key) params.append('api_key', ozonConfig.api_key);
+          
+          const url = `http://localhost:3001/categories/ozon?${params.toString()}`;
+          try {
+            const r = await fetch(url, { 
+              method: 'GET',
+              signal: AbortSignal.timeout(10000) // 10 second timeout
+            });
+            
+            if (!r.ok) {
+              const errorText = await r.text().catch(() => 'Неизвестная ошибка');
+              return { ok: false, data: [], message: `HTTP ${r.status}: ${errorText.slice(0, 200)}` };
+            }
+            
+            const json = await r.json().catch(() => ({}));
+            return { ok: json.ok === true, data: json.data || [], message: json.message };
+          } catch (e) {
+            if (e.name === 'AbortError') {
+              return { ok: false, data: [], message: 'Таймаут подключения (10 сек)' };
+            }
+            return { ok: false, data: [], message: `Ошибка подключения: ${e.message}` };
+          }
+        }
+
+        async function fetchWBCategories() {
+          // Get stored WB credentials
+          const wbConfig = loadConfig(storageKeys.wb);
+          const params = new URLSearchParams();
+          if (wbConfig.api_key) params.append('api_key', wbConfig.api_key);
+          
+          const url = `http://localhost:3001/categories/wb?${params.toString()}`;
+          try {
+            const r = await fetch(url, { 
+              method: 'GET',
+              signal: AbortSignal.timeout(10000) // 10 second timeout
+            });
+            
+            if (!r.ok) {
+              const errorText = await r.text().catch(() => 'Неизвестная ошибка');
+              return { ok: false, data: [], message: `HTTP ${r.status}: ${errorText.slice(0, 200)}` };
+            }
+            
+            const json = await r.json().catch(() => ({}));
+            return { ok: json.ok === true, data: json.data || [], message: json.message };
+          } catch (e) {
+            if (e.name === 'AbortError') {
+              return { ok: false, data: [], message: 'Таймаут подключения (10 сек)' };
+            }
+            return { ok: false, data: [], message: `Ошибка подключения: ${e.message}` };
+          }
+        }
+
+        async function fetchYMCategories() {
+          const url = 'http://localhost:3001/categories/ym';
+          try {
+            const r = await fetch(url, { 
+              method: 'GET',
+              signal: AbortSignal.timeout(10000) // 10 second timeout
+            });
+            
+            if (!r.ok) {
+              const errorText = await r.text().catch(() => 'Неизвестная ошибка');
+              return { ok: false, data: [], message: `HTTP ${r.status}: ${errorText.slice(0, 200)}` };
+            }
+            
+            const json = await r.json().catch(() => ({}));
+            return { ok: json.ok === true, data: json.data || [], message: json.message };
+          } catch (e) {
+            if (e.name === 'AbortError') {
+              return { ok: false, data: [], message: 'Таймаут подключения (10 сек)' };
+            }
+            return { ok: false, data: [], message: `Ошибка подключения: ${e.message}` };
+          }
+        }
+
+        // Simple SPA navigation
+        function setActivePage(page) {
+          const isHome = page === 'home';
+          const isProducts = page === 'products';
+          const isCategories = page === 'categories';
+          const isConnections = page === 'connections';
+          
+          pageHome.classList.toggle('active', isHome);
+          pageProducts.classList.toggle('active', isProducts);
+          pageCategories.classList.toggle('active', isCategories);
+          pageConnections.classList.toggle('active', isConnections);
+          
+          navHome.classList.toggle('active', isHome);
+          navProducts.classList.toggle('active', isProducts);
+          navCategories.classList.toggle('active', isCategories);
+          navConnections.classList.toggle('active', isConnections);
+          
+          if (isConnections) renderConnections();
+          if (isProducts) renderProducts();
+          if (isCategories) renderCategories();
+        }
+        if (navHome) navHome.addEventListener('click', function () { setActivePage('home'); });
+        if (navProducts) navProducts.addEventListener('click', function () { setActivePage('products'); });
+        if (navCategories) navCategories.addEventListener('click', function () { setActivePage('categories'); });
+        if (navConnections) navConnections.addEventListener('click', function () { setActivePage('connections'); });
+        if (connectApiBtn) connectApiBtn.addEventListener('click', openMpModal);
+
+        function mask(value) {
+          if (!value) return '';
+          const str = String(value);
+          if (str.length <= 6) return '***';
+          return str.slice(0, 3) + '***' + str.slice(-3);
+        }
+        async function renderConnections() {
+          if (!connectionsList) return;
+          const ozon = loadConfig(storageKeys.ozon);
+          const wb = loadConfig(storageKeys.wb);
+          const ym = loadConfig(storageKeys.ym);
+          
+          // Test connections
+          const [ozonTest, wbTest, ymTest] = await Promise.all([
+            ozon.client_id && ozon.api_key ? testOzon(ozon) : { ok: false, message: 'Не настроено' },
+            wb.api_key ? testWB(wb) : { ok: false, message: 'Не настроено' },
+            ym.api_key && ym.campaign_id && ym.business_id ? testYM(ym) : { ok: false, message: 'Не настроено' }
+          ]);
+          
+          const items = [
+            { 
+              name: 'Ozon', 
+              configured: !!(ozon.client_id && ozon.api_key),
+              connected: ozonTest.ok,
+              details: ozon.client_id ? ('Client ID: ' + mask(ozon.client_id)) : 'Не настроено',
+              message: ozonTest.message
+            },
+            { 
+              name: 'Wildberries', 
+              configured: !!(wb.api_key),
+              connected: wbTest.ok,
+              details: wb.api_key ? ('API Key: ' + mask(wb.api_key)) : 'Не настроено',
+              message: wbTest.message
+            },
+            { 
+              name: 'Yandex Market', 
+              configured: !!(ym.api_key && ym.campaign_id && ym.business_id),
+              connected: ymTest.ok,
+              details: ym.campaign_id ? ('Campaign ID: ' + ym.campaign_id + ', Business ID: ' + ym.business_id) : 'Не настроено',
+              message: ymTest.message
+            }
+          ];
+          
+          connectionsList.innerHTML = items.map(function (it) {
+            let statusText, statusColor;
+            if (!it.configured) {
+              statusText = 'Не настроено';
+              statusColor = '#fca5a5';
+            } else if (it.connected) {
+              statusText = 'Подключено';
+              statusColor = '#a7f3d0';
+            } else {
+              statusText = 'Ошибка подключения';
+              statusColor = '#fbbf24';
+            }
+            
+            return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;margin:8px 0;background:rgba(255,255,255,0.03);">'
+              + '<div><div style="font-size:14px;">' + it.name + '</div>'
+              + '<div style="font-size:12px;color:' + statusColor + '">' + statusText + '</div>'
+              + '<div style="font-size:12px;color:var(--muted);">' + it.details + '</div>'
+              + (it.message && it.message !== 'Не настроено' && !it.connected ? '<div style="font-size:11px;color:#fbbf24;margin-top:2px;">' + it.message.slice(0, 50) + (it.message.length > 50 ? '...' : '') + '</div>' : '')
+              + '</div>'
+              + '<div><button class="btn btn-secondary" type="button" onclick="openMpModalForMarketplace(\'' + it.name.toLowerCase().replace(/\s+/g, '') + '\')">Изменить</button></div>'
+              + '</div>';
+          }).join('');
+        }
+
+        // Products management
+        const productsList = document.getElementById('productsList');
+        const addProductBtn = document.getElementById('addProductBtn');
+        const importProductsBtn = document.getElementById('importProductsBtn');
+
+        function renderProducts() {
+          if (!productsList) return;
+          // Пример товаров для демонстрации
+          const products = [
+            { id: 1, name: 'Ручка гелевая синяя', sku: 'SKU-001', price: 25.50, quantity: 100, description: 'Гелевая ручка синего цвета' },
+            { id: 2, name: 'Блокнот А4', sku: 'SKU-002', price: 150.00, quantity: 50, description: 'Блокнот формата А4, 48 листов' },
+            { id: 3, name: 'Карандаш HB', sku: 'SKU-003', price: 15.00, quantity: 200, description: 'Простой карандаш твердости HB' }
+          ];
+          
+          productsList.innerHTML = products.map(function (product) {
+            return '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;margin:8px 0;background:rgba(255,255,255,0.03);">'
+              + '<div><div style="font-size:14px;font-weight:500;">' + product.name + '</div>'
+              + '<div style="font-size:12px;color:var(--muted);">SKU: ' + product.sku + ' | Цена: ' + product.price + '₽ | Остаток: ' + product.quantity + ' шт</div>'
+              + '<div style="font-size:12px;color:var(--muted);margin-top:4px;">' + product.description + '</div></div>'
+              + '<div style="display:flex;gap:8px;"><button class="btn btn-secondary" type="button" style="padding:6px 12px;font-size:12px;">Изменить</button>'
+              + '<button class="btn btn-secondary" type="button" style="padding:6px 12px;font-size:12px;color:#fca5a5;border-color:#fca5a5;">Удалить</button></div>'
+              + '</div>';
+          }).join('');
+        }
+
+        if (addProductBtn) {
+          addProductBtn.addEventListener('click', function () {
+            openModal();
+          });
+        }
+
+        if (importProductsBtn) {
+          importProductsBtn.addEventListener('click', function () {
+            alert('Функция импорта товаров будет добавлена позже.');
+          });
+        }
+
+        // Categories management
+        const categoriesList = document.getElementById('categoriesList');
+        const addCategoryBtn = document.getElementById('addCategoryBtn');
+        const importCategoriesBtn = document.getElementById('importCategoriesBtn');
+
+        function renderCategories() {
+          if (!categoriesList) return;
+          
+          // Загружаем категории из localStorage или используем дефолтные
+          let categories = loadCategories();
+          if (!categories || categories.length === 0) {
+            categories = [
+              { id: 1, name: 'Канцелярские товары', description: 'Ручки, карандаши, блокноты', productsCount: 15, parentId: null },
+              { id: 2, name: 'Офисные принадлежности', description: 'Папки, степлеры, скрепки', productsCount: 8, parentId: null },
+              { id: 3, name: 'Бумажная продукция', description: 'Бумага, конверты, этикетки', productsCount: 12, parentId: null },
+              { id: 4, name: 'Письменные принадлежности', description: 'Ручки, карандаши, маркеры', productsCount: 25, parentId: 1 },
+              { id: 5, name: 'Тетради и блокноты', description: 'Школьные и офисные тетради', productsCount: 18, parentId: 1 }
+            ];
+            saveCategories(categories);
+          }
+          
+          categoriesList.innerHTML = categories.map(function (category) {
+            const isSubcategory = category.parentId !== null;
+            const indent = isSubcategory ? '20px' : '0px';
+            const parentInfo = isSubcategory ? '<div style="font-size:11px;color:var(--muted);">↳ Подкатегория</div>' : '';
+            
+            // Check if category is mapped
+            const mapping = loadCategoryMapping(String(category.id));
+            const mappingInfo = mapping ? '<div style="font-size:11px;color:#10b981;margin-top:2px;">✓ Сопоставлено</div>' : '';
+            const mapButtonText = mapping ? 'Изменить сопоставление' : 'Сопоставить';
+            const mapButtonStyle = mapping ? 'background:rgba(16,185,129,0.1);border-color:rgba(16,185,129,0.3);color:#34d399;' : 'background:rgba(37,99,235,0.1);border-color:rgba(37,99,235,0.3);color:#60a5fa;';
+            
+            return '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;margin:8px 0;background:rgba(255,255,255,0.03);margin-left:' + indent + ';">'
+              + '<div><div style="font-size:14px;font-weight:500;">' + category.name + '</div>'
+              + '<div style="font-size:12px;color:var(--muted);">Товаров: ' + category.productsCount + '</div>'
+              + '<div style="font-size:12px;color:var(--muted);margin-top:4px;">' + category.description + '</div>'
+              + parentInfo + mappingInfo + '</div>'
+              + '<div style="display:flex;gap:8px;"><button class="btn btn-secondary" type="button" style="padding:6px 12px;font-size:12px;">Изменить</button>'
+              + '<button class="btn btn-secondary" type="button" style="padding:6px 12px;font-size:12px;">Добавить подкатегорию</button>'
+              + '<button class="btn btn-secondary map-category-btn" type="button" style="padding:6px 12px;font-size:12px;' + mapButtonStyle + '" data-category-id="' + category.id + '" data-category-name="' + category.name + '">' + mapButtonText + '</button>'
+              + '<button class="btn btn-secondary delete-category-btn" type="button" style="padding:6px 12px;font-size:12px;color:#fca5a5;border-color:#fca5a5;" data-category-id="' + category.id + '" data-category-name="' + category.name + '">Удалить</button></div>'
+              + '</div>';
+          }).join('');
+        }
+
+        if (addCategoryBtn) {
+          addCategoryBtn.addEventListener('click', function () {
+            openCategoryModal();
+          });
+        }
+
+        if (importCategoriesBtn) {
+          importCategoriesBtn.addEventListener('click', function () {
+            openImportCategoriesModal();
+          });
+        }
+
+        // Add Category Modal
+        const addCategoryModalBackdrop = document.getElementById('addCategoryModalBackdrop');
+        const addCategoryModal = document.getElementById('addCategoryModal');
+        const addCategoryForm = document.getElementById('addCategoryForm');
+        const addCategoryCloseBtn = document.getElementById('addCategoryCloseBtn');
+        const addCategoryCancelBtn = document.getElementById('addCategoryCancelBtn');
+
+        function openCategoryModal() {
+          if (addCategoryModalBackdrop && addCategoryModal) {
+            addCategoryModalBackdrop.classList.remove('hidden');
+            addCategoryModal.classList.remove('hidden');
+            addCategoryModalBackdrop.style.display = 'flex';
+            addCategoryModal.style.display = 'block';
+            addCategoryModalBackdrop.style.pointerEvents = 'auto';
+            addCategoryModal.style.pointerEvents = 'auto';
+            document.body.style.overflow = 'hidden';
+            if (addCategoryForm) {
+              addCategoryForm.reset();
+              
+              // Обновляем список родительских категорий
+              const parentSelect = document.getElementById('categoryParent');
+              if (parentSelect) {
+                const categories = loadCategories();
+                const rootCategories = categories.filter(cat => !cat.parentId);
+                parentSelect.innerHTML = '<option value="">Без родительской категории</option>';
+                rootCategories.forEach(cat => {
+                  parentSelect.innerHTML += `<option value="${cat.id}">${cat.name}</option>`;
+                });
+              }
+              
+              const nameField = document.getElementById('categoryName');
+              if (nameField) nameField.focus();
+            }
+          }
+        }
+
+        function closeCategoryModal() {
+          if (addCategoryModalBackdrop && addCategoryModal) {
+            addCategoryModalBackdrop.classList.add('hidden');
+            addCategoryModal.classList.add('hidden');
+            addCategoryModalBackdrop.style.display = 'none';
+            addCategoryModal.style.display = 'none';
+            addCategoryModalBackdrop.style.pointerEvents = 'none';
+            addCategoryModal.style.pointerEvents = 'none';
+            document.body.style.overflow = '';
+            if (addCategoryBtn) addCategoryBtn.focus();
+          }
+        }
+
+        if (addCategoryCloseBtn) {
+          addCategoryCloseBtn.addEventListener('click', closeCategoryModal);
+        }
+        if (addCategoryCancelBtn) {
+          addCategoryCancelBtn.addEventListener('click', function (e) { e.preventDefault(); closeCategoryModal(); });
+        }
+        if (addCategoryModalBackdrop) {
+          addCategoryModalBackdrop.addEventListener('click', function (e) {
+            if (e.target === addCategoryModalBackdrop) closeCategoryModal();
+          });
+        }
+        if (addCategoryForm) {
+          addCategoryForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            const formData = new FormData(addCategoryForm);
+            const name = formData.get('name');
+            const description = formData.get('description');
+            const parentId = formData.get('parentId');
+            
+            if (!name || !name.trim()) {
+              const errorDiv = addCategoryForm.querySelector('.error');
+              if (errorDiv) errorDiv.textContent = 'Введите название категории';
+              return;
+            }
+            
+            // Добавляем категорию
+            const newCategory = {
+              id: Date.now(), // Временный ID
+              name: name.trim(),
+              description: description ? description.trim() : '',
+              parentId: parentId ? parseInt(parentId) : null,
+              productsCount: 0
+            };
+            
+            addCategory(newCategory);
+            alert('Категория "' + newCategory.name + '" успешно добавлена!');
+            closeCategoryModal();
+            renderCategories(); // Перерисовываем список категорий
+          });
+        }
+
+        // Import Categories Modal Logic
+        const importCategoriesModalBackdrop = document.getElementById('importCategoriesModalBackdrop');
+        const importCategoriesModal = document.getElementById('importCategoriesModal');
+        const importCategoriesCloseBtn = document.getElementById('importCategoriesCloseBtn');
+        const importCategoriesCancelBtn = document.getElementById('importCategoriesCancelBtn');
+        const importOzonCategoriesBtn = document.getElementById('importOzonCategoriesBtn');
+        const importWBCategoriesBtn = document.getElementById('importWBCategoriesBtn');
+        const importYMCategoriesBtn = document.getElementById('importYMCategoriesBtn');
+        const applyMappingBtn = document.getElementById('applyMappingBtn');
+        const mappingSection = document.getElementById('mappingSection');
+        const mappingList = document.getElementById('mappingList');
+
+        let importedCategories = [];
+        let existingCategories = [];
+
+        function openImportCategoriesModal() {
+          if (!importCategoriesModalBackdrop || !importCategoriesModal) return;
+          importCategoriesModalBackdrop.classList.remove('hidden');
+          importCategoriesModal.classList.remove('hidden');
+          importCategoriesModalBackdrop.style.display = 'flex';
+          importCategoriesModal.style.display = '';
+          importCategoriesModalBackdrop.style.pointerEvents = 'auto';
+          importCategoriesModal.style.pointerEvents = 'auto';
+          document.body.style.overflow = 'hidden';
+          
+          // Load existing categories for mapping
+          existingCategories = [
+            { id: 1, name: 'Канцелярские товары', description: 'Ручки, карандаши, блокноты' },
+            { id: 2, name: 'Офисные принадлежности', description: 'Папки, степлеры, скрепки' },
+            { id: 3, name: 'Бумажная продукция', description: 'Бумага, конверты, этикетки' },
+            { id: 4, name: 'Письменные принадлежности', description: 'Ручки, карандаши, маркеры' },
+            { id: 5, name: 'Тетради и блокноты', description: 'Школьные и офисные тетради' }
+          ];
+          
+          // Reset state
+          importedCategories = [];
+          mappingSection.style.display = 'none';
+          
+          // Focus first tab button
+          const firstTab = importCategoriesModal.querySelector('[role="tab"]');
+          if (firstTab) firstTab.focus();
+        }
+
+        function closeImportCategoriesModal() {
+          if (!importCategoriesModalBackdrop || !importCategoriesModal) return;
+          const active = document.activeElement;
+          if (active && importCategoriesModal.contains(active) && active instanceof HTMLElement) {
+            active.blur();
+          }
+          importCategoriesModal.classList.add('hidden');
+          importCategoriesModalBackdrop.classList.add('hidden');
+          importCategoriesModalBackdrop.style.pointerEvents = 'none';
+          importCategoriesModal.style.pointerEvents = 'none';
+          importCategoriesModalBackdrop.style.display = 'none';
+          importCategoriesModal.style.display = 'none';
+          document.body.style.overflow = '';
+        }
+
+        // Tab switching for import modal
+        const importTabButtons = document.querySelectorAll('#importCategoriesModal [role="tab"]');
+        const importTabPanels = document.querySelectorAll('#importCategoriesModal [role="tabpanel"]');
+
+        function activateImportTab(tabId) {
+          importTabButtons.forEach(btn => {
+            const selected = btn.id === tabId;
+            btn.setAttribute('aria-selected', String(selected));
+            btn.tabIndex = selected ? 0 : -1;
+          });
+          importTabPanels.forEach(panel => {
+            const active = panel.getAttribute('aria-labelledby') === tabId;
+            panel.classList.toggle('active', active);
+            panel.hidden = !active;
+          });
+        }
+
+        importTabButtons.forEach((btn, index) => {
+          btn.addEventListener('click', function () { activateImportTab(btn.id); });
+        });
+
+        // Import buttons handlers
+        if (importOzonCategoriesBtn) {
+          importOzonCategoriesBtn.addEventListener('click', async function () {
+            importOzonCategoriesBtn.disabled = true;
+            importOzonCategoriesBtn.textContent = 'Импорт...';
+            
+            const result = await fetchOzonCategories();
+            
+            if (result.ok && result.data && result.data.length > 0) {
+              // Используем реальные данные из Ozon API
+              console.log('Importing real Ozon categories:', result.data.length);
+              displayImportedCategories('ozonCategoriesList', result.data, 'Ozon');
+              importedCategories = importedCategories.concat(result.data.map(cat => ({ ...cat, marketplace: 'ozon' })));
+              showMappingInterface();
+            } else if (result.ok && result.data && result.data.length === 0) {
+              alert('Категории не найдены. Возможно, используются тестовые данные.\n\nДля получения реальных категорий Ozon:\n1. Перейдите в настройки подключений (кнопка "Подключить API")\n2. Введите реальные данные Ozon:\n   - Client ID (из личного кабинета Ozon)\n   - API Key (создайте в разделе "Настройки" → "API ключи")\n3. Убедитесь, что API ключ имеет права "Product" и "Admin read-only"\n4. Повторите импорт категорий');
+            } else {
+              alert('Ошибка импорта: ' + result.message + '\n\nДля получения реальных категорий Ozon нужны валидные API ключи.\n\nПроверьте:\n1. Правильность Client ID и API Key\n2. Права доступа API ключа\n3. Статус аккаунта в Ozon');
+            }
+            
+            importOzonCategoriesBtn.disabled = false;
+            importOzonCategoriesBtn.textContent = 'Импортировать категории Ozon';
+          });
+        }
+
+        if (importWBCategoriesBtn) {
+          importWBCategoriesBtn.addEventListener('click', async function () {
+            importWBCategoriesBtn.disabled = true;
+            importWBCategoriesBtn.textContent = 'Импорт...';
+            
+            const result = await fetchWBCategories();
+            
+            if (result.ok) {
+              // Mock data for demonstration
+              const mockCategories = [
+                { id: 'wb_1', name: 'Канцтовары', path: 'Канцтовары', parentId: null },
+                { id: 'wb_2', name: 'Ручки и карандаши', path: 'Канцтовары > Ручки и карандаши', parentId: 'wb_1' },
+                { id: 'wb_3', name: 'Бумага и блокноты', path: 'Канцтовары > Бумага и блокноты', parentId: 'wb_1' },
+                { id: 'wb_4', name: 'Офисные товары', path: 'Офисные товары', parentId: null }
+              ];
+              
+              displayImportedCategories('wbCategoriesList', mockCategories, 'Wildberries');
+              importedCategories = importedCategories.concat(mockCategories.map(cat => ({ ...cat, marketplace: 'wb' })));
+              showMappingInterface();
+            } else {
+              alert('Ошибка импорта: ' + result.message);
+            }
+            
+            importWBCategoriesBtn.disabled = false;
+            importWBCategoriesBtn.textContent = 'Импортировать категории WB';
+          });
+        }
+
+        if (importYMCategoriesBtn) {
+          importYMCategoriesBtn.addEventListener('click', async function () {
+            importYMCategoriesBtn.disabled = true;
+            importYMCategoriesBtn.textContent = 'Импорт...';
+            
+            const result = await fetchYMCategories();
+            
+            if (result.ok) {
+              // Mock data for demonstration
+              const mockCategories = [
+                { id: 'ym_1', name: 'Канцелярия', path: 'Канцелярия', parentId: null },
+                { id: 'ym_2', name: 'Письменные принадлежности', path: 'Канцелярия > Письменные принадлежности', parentId: 'ym_1' },
+                { id: 'ym_3', name: 'Офисные принадлежности', path: 'Офисные принадлежности', parentId: null }
+              ];
+              
+              displayImportedCategories('ymCategoriesList', mockCategories, 'Yandex Market');
+              importedCategories = importedCategories.concat(mockCategories.map(cat => ({ ...cat, marketplace: 'ym' })));
+              showMappingInterface();
+            } else {
+              alert('Ошибка импорта: ' + result.message);
+            }
+            
+            importYMCategoriesBtn.disabled = false;
+            importYMCategoriesBtn.textContent = 'Импортировать категории YM';
+          });
+        }
+
+        function displayImportedCategories(listId, categories, marketplace) {
+          const list = document.getElementById(listId);
+          if (!list) return;
+          
+          list.style.display = 'block';
+          list.innerHTML = '<div style="font-size: 14px; margin-bottom: 12px; color: var(--text);">Найденные категории (' + categories.length + '):</div>' +
+            categories.map(cat => {
+              const indent = cat.parentId ? '20px' : '0px';
+              return '<div style="padding: 8px 12px; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; margin: 4px 0; background: rgba(255,255,255,0.02); margin-left: ' + indent + ';">' +
+                '<div style="font-size: 13px; color: var(--text);">' + cat.name + '</div>' +
+                '<div style="font-size: 11px; color: var(--muted);">' + cat.path + '</div>' +
+                '</div>';
+            }).join('');
+        }
+
+        function showMappingInterface() {
+          mappingSection.style.display = 'block';
+          renderMappingInterface();
+        }
+
+        function renderMappingInterface() {
+          if (!mappingList) return;
+          
+          mappingList.innerHTML = importedCategories.map(importedCat => {
+            const options = existingCategories.map(cat => 
+              '<option value="' + cat.id + '">' + cat.name + '</option>'
+            ).join('');
+            
+            return '<div style="display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; margin: 8px 0; background: rgba(255,255,255,0.03);">' +
+              '<div style="flex: 1; min-width: 0;">' +
+                '<div style="font-size: 13px; color: var(--text); margin-bottom: 4px;">' + importedCat.name + '</div>' +
+                '<div style="font-size: 11px; color: var(--muted);">' + importedCat.path + ' (' + importedCat.marketplace.toUpperCase() + ')</div>' +
+              '</div>' +
+              '<div style="display: flex; align-items: center; gap: 8px;">' +
+                '<label style="font-size: 12px; color: var(--muted);">Сопоставить с:</label>' +
+                '<select class="input" style="min-width: 200px; font-size: 12px;" data-imported-id="' + importedCat.id + '">' +
+                  '<option value="">-- Создать новую категорию --</option>' +
+                  options +
+                '</select>' +
+              '</div>' +
+              '</div>';
+          }).join('');
+        }
+
+        if (applyMappingBtn) {
+          applyMappingBtn.addEventListener('click', function () {
+            const mappings = [];
+            const selects = mappingList.querySelectorAll('select');
+            
+            selects.forEach(select => {
+              const importedId = select.getAttribute('data-imported-id');
+              const existingId = select.value;
+              const importedCat = importedCategories.find(cat => cat.id === importedId);
+              
+              if (importedCat) {
+                mappings.push({
+                  imported: importedCat,
+                  existingId: existingId,
+                  action: existingId ? 'map' : 'create'
+                });
+              }
+            });
+            
+            console.log('Category mappings:', mappings);
+            alert('Сопоставление применено! Создано/обновлено категорий: ' + mappings.length);
+            closeImportCategoriesModal();
+          });
+        }
+
+        // Event listeners for import modal
+        if (importCategoriesCloseBtn) {
+          importCategoriesCloseBtn.addEventListener('click', closeImportCategoriesModal);
+        }
+        
+        if (importCategoriesCancelBtn) {
+          importCategoriesCancelBtn.addEventListener('click', closeImportCategoriesModal);
+        }
+        
+        if (importCategoriesModalBackdrop) {
+          importCategoriesModalBackdrop.addEventListener('click', function (e) {
+            if (e.target === importCategoriesModalBackdrop) closeImportCategoriesModal();
+          });
+        }
+
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && importCategoriesModalBackdrop && !importCategoriesModalBackdrop.classList.contains('hidden')) {
+            closeImportCategoriesModal();
+          }
+        });
+
+        // Category Mapping Modal Logic
+        const categoryMappingModalBackdrop = document.getElementById('categoryMappingModalBackdrop');
+        const categoryMappingModal = document.getElementById('categoryMappingModal');
+        const categoryMappingCloseBtn = document.getElementById('categoryMappingCloseBtn');
+        const categoryMappingCancelBtn = document.getElementById('categoryMappingCancelBtn');
+        const erpCategoryName = document.getElementById('erpCategoryName');
+        const selectedCategoryInfo = document.getElementById('selectedCategoryInfo');
+        const selectedCategoryName = document.getElementById('selectedCategoryName');
+        const selectedCategoryPath = document.getElementById('selectedCategoryPath');
+        const selectedCategoryMarketplace = document.getElementById('selectedCategoryMarketplace');
+        const saveCategoryMappingBtn = document.getElementById('saveCategoryMappingBtn');
+        
+        // Marketplace category selects
+        const ozonCategorySelect = document.getElementById('ozonCategorySelect');
+        const wbCategorySelect = document.getElementById('wbCategorySelect');
+        const ymCategorySelect = document.getElementById('ymCategorySelect');
+        
+        // Mapping tabs
+        const mappingTabButtons = document.querySelectorAll('#categoryMappingModal .tab-button');
+        const mappingTabPanels = document.querySelectorAll('#categoryMappingModal .tab-panel');
+
+        let currentMappingCategory = null;
+        let allMarketplaceCategories = [];
+
+        // Load all marketplace categories on page load
+        async function loadAllMarketplaceCategories() {
+          try {
+            // Check if we have any configured connections
+            const ozonConfig = loadConfig(storageKeys.ozon);
+            const wbConfig = loadConfig(storageKeys.wb);
+            const ymConfig = loadConfig(storageKeys.ym);
+            
+            const hasOzonConfig = !!(ozonConfig.client_id && ozonConfig.api_key);
+            const hasWbConfig = !!(wbConfig.api_key);
+            const hasYmConfig = !!(ymConfig.campaign_id && ymConfig.token);
+            
+            if (!hasOzonConfig && !hasWbConfig && !hasYmConfig) {
+              console.log('No marketplace connections configured');
+              allMarketplaceCategories = [];
+              return;
+            }
+            
+            const promises = [];
+            if (hasOzonConfig) promises.push(fetchOzonCategories());
+            if (hasWbConfig) promises.push(fetchWBCategories());
+            if (hasYmConfig) promises.push(fetchYMCategories());
+            
+            const results = await Promise.all(promises);
+            let resultIndex = 0;
+
+            allMarketplaceCategories = [];
+            
+            if (hasOzonConfig) {
+              const ozonResult = results[resultIndex++];
+              if (ozonResult.ok && ozonResult.data.length > 0) {
+                allMarketplaceCategories = allMarketplaceCategories.concat(
+                  ozonResult.data.map(cat => ({ ...cat, marketplace: 'ozon', marketplaceName: 'Ozon' }))
+                );
+                console.log('Ozon categories loaded:', ozonResult.data.length);
+              } else {
+                console.log('Ozon: No categories available -', ozonResult.message || 'API error');
+              }
+            }
+            
+            if (hasWbConfig) {
+              const wbResult = results[resultIndex++];
+              if (wbResult.ok && wbResult.data.length > 0) {
+                allMarketplaceCategories = allMarketplaceCategories.concat(
+                  wbResult.data.map(cat => ({ ...cat, marketplace: 'wb', marketplaceName: 'Wildberries' }))
+                );
+                console.log('WB categories loaded:', wbResult.data.length);
+              } else {
+                console.log('Wildberries: No categories available -', wbResult.message || 'API error');
+              }
+            }
+            
+            if (hasYmConfig) {
+              const ymResult = results[resultIndex++];
+              if (ymResult.ok && ymResult.data.length > 0) {
+                allMarketplaceCategories = allMarketplaceCategories.concat(
+                  ymResult.data.map(cat => ({ ...cat, marketplace: 'ym', marketplaceName: 'Yandex Market' }))
+                );
+                console.log('YM categories loaded:', ymResult.data.length);
+              } else {
+                console.log('Yandex Market: No categories available -', ymResult.message || 'API error');
+              }
+            }
+
+            console.log('Total marketplace categories loaded:', allMarketplaceCategories.length);
+          } catch (e) {
+            console.error('Error loading marketplace categories:', e);
+          }
+        }
+
+        function openCategoryMappingModal(categoryId, categoryName) {
+          if (!categoryMappingModalBackdrop || !categoryMappingModal) return;
+          
+          currentMappingCategory = { id: categoryId, name: categoryName };
+          erpCategoryName.textContent = categoryName;
+          
+          // Populate each marketplace category dropdown
+          populateMarketplaceSelect(ozonCategorySelect, 'ozon');
+          populateMarketplaceSelect(wbCategorySelect, 'wb');
+          populateMarketplaceSelect(ymCategorySelect, 'ym');
+          
+          // Reset to first tab
+          activateMappingTab('mapping-tab-ozon');
+          
+          // Check if there's existing mapping and set the appropriate tab and value
+          const existingMapping = loadCategoryMapping(String(categoryId));
+          if (existingMapping && existingMapping.marketplaceCategoryId) {
+            const category = allMarketplaceCategories.find(cat => cat.id === existingMapping.marketplaceCategoryId);
+            if (category) {
+              // Switch to the correct tab
+              const tabId = `mapping-tab-${category.marketplace}`;
+              activateMappingTab(tabId);
+              
+              // Set the value in the correct select
+              const select = document.getElementById(`${category.marketplace}CategorySelect`);
+              if (select) {
+                select.value = existingMapping.marketplaceCategoryId;
+                updateSelectedCategoryInfo();
+              }
+            }
+          }
+          
+          categoryMappingModalBackdrop.classList.remove('hidden');
+          categoryMappingModal.classList.remove('hidden');
+          categoryMappingModalBackdrop.style.display = 'flex';
+          categoryMappingModal.style.display = '';
+          categoryMappingModalBackdrop.style.pointerEvents = 'auto';
+          categoryMappingModal.style.pointerEvents = 'auto';
+          document.body.style.overflow = 'hidden';
+          
+          // Focus on the first select in the active panel
+          setTimeout(() => {
+            const activePanel = document.querySelector('#categoryMappingModal .tab-panel:not([hidden])');
+            const firstSelect = activePanel ? activePanel.querySelector('select') : null;
+            if (firstSelect) firstSelect.focus();
+          }, 50);
+        }
+        
+        function populateMarketplaceSelect(select, marketplace) {
+          if (!select) return;
+          
+          select.innerHTML = '<option value="">-- Не сопоставлять --</option>';
+          
+          const marketplaceCategories = allMarketplaceCategories.filter(cat => cat.marketplace === marketplace);
+          
+          if (marketplaceCategories.length === 0) {
+            const noCategoriesOption = document.createElement('option');
+            noCategoriesOption.value = '';
+            noCategoriesOption.textContent = 'Нет доступных категорий';
+            noCategoriesOption.disabled = true;
+            select.appendChild(noCategoriesOption);
+          } else {
+            marketplaceCategories.forEach(cat => {
+              const option = document.createElement('option');
+              option.value = cat.id;
+              option.textContent = cat.name;
+              option.dataset.marketplace = cat.marketplace;
+              option.dataset.path = cat.path;
+              select.appendChild(option);
+            });
+          }
+        }
+        
+        function activateMappingTab(tabId) {
+          mappingTabButtons.forEach(btn => {
+            const selected = btn.id === tabId;
+            btn.setAttribute('aria-selected', String(selected));
+            btn.tabIndex = selected ? 0 : -1;
+            btn.classList.toggle('active', selected);
+          });
+          mappingTabPanels.forEach(panel => {
+            const active = panel.getAttribute('aria-labelledby') === tabId;
+            panel.classList.toggle('active', active);
+            panel.hidden = !active;
+          });
+        }
+
+        function closeCategoryMappingModal() {
+          if (!categoryMappingModalBackdrop || !categoryMappingModal) return;
+          
+          const active = document.activeElement;
+          if (active && categoryMappingModal.contains(active) && active instanceof HTMLElement) {
+            active.blur();
+          }
+          
+          categoryMappingModal.classList.add('hidden');
+          categoryMappingModalBackdrop.classList.add('hidden');
+          categoryMappingModalBackdrop.style.pointerEvents = 'none';
+          categoryMappingModal.style.pointerEvents = 'none';
+          categoryMappingModalBackdrop.style.display = 'none';
+          categoryMappingModal.style.display = 'none';
+          document.body.style.overflow = '';
+          
+          currentMappingCategory = null;
+        }
+
+        function updateSelectedCategoryInfo() {
+          // Find the currently active select
+          const activePanel = document.querySelector('#categoryMappingModal .tab-panel:not([hidden])');
+          const activeSelect = activePanel ? activePanel.querySelector('select') : null;
+          
+          if (!activeSelect) {
+            selectedCategoryInfo.style.display = 'none';
+            return;
+          }
+          
+          const selectedValue = activeSelect.value;
+          if (selectedValue) {
+            const category = allMarketplaceCategories.find(cat => cat.id === selectedValue);
+            
+            if (category) {
+              selectedCategoryName.textContent = category.name;
+              selectedCategoryPath.textContent = category.path;
+              selectedCategoryMarketplace.textContent = category.marketplaceName;
+              selectedCategoryInfo.style.display = 'block';
+            }
+          } else {
+            selectedCategoryInfo.style.display = 'none';
+          }
+        }
+
+        // Storage for category mappings
+        function saveCategoryMapping(erpCategoryId, marketplaceCategoryId) {
+          try {
+            const mappings = JSON.parse(localStorage.getItem('categoryMappings') || '{}');
+            if (marketplaceCategoryId) {
+              mappings[erpCategoryId] = {
+                marketplaceCategoryId,
+                mappedAt: new Date().toISOString()
+              };
+            } else {
+              delete mappings[erpCategoryId];
+            }
+            localStorage.setItem('categoryMappings', JSON.stringify(mappings));
+          } catch (e) {
+            console.error('Error saving category mapping:', e);
+          }
+        }
+
+        function loadCategoryMapping(erpCategoryId) {
+          try {
+            const mappings = JSON.parse(localStorage.getItem('categoryMappings') || '{}');
+            return mappings[erpCategoryId] || null;
+          } catch (e) {
+            console.error('Error loading category mapping:', e);
+            return null;
+          }
+        }
+
+        // Event listeners for mapping tabs
+        mappingTabButtons.forEach(btn => {
+          btn.addEventListener('click', function() {
+            activateMappingTab(this.id);
+            updateSelectedCategoryInfo();
+          });
+        });
+        
+        // Event listeners for marketplace selects
+        if (ozonCategorySelect) {
+          ozonCategorySelect.addEventListener('change', updateSelectedCategoryInfo);
+        }
+        if (wbCategorySelect) {
+          wbCategorySelect.addEventListener('change', updateSelectedCategoryInfo);
+        }
+        if (ymCategorySelect) {
+          ymCategorySelect.addEventListener('change', updateSelectedCategoryInfo);
+        }
+
+        if (saveCategoryMappingBtn) {
+          saveCategoryMappingBtn.addEventListener('click', function () {
+            if (!currentMappingCategory) return;
+            
+            // Find the currently active select
+            const activePanel = document.querySelector('#categoryMappingModal .tab-panel:not([hidden])');
+            const activeSelect = activePanel ? activePanel.querySelector('select') : null;
+            
+            if (!activeSelect) return;
+            
+            const selectedValue = activeSelect.value;
+            saveCategoryMapping(String(currentMappingCategory.id), selectedValue);
+            
+            if (selectedValue) {
+              const category = allMarketplaceCategories.find(cat => cat.id === selectedValue);
+              alert(`Сопоставление сохранено: "${currentMappingCategory.name}" → "${category.name}" (${category.marketplaceName})`);
+            } else {
+              alert(`Сопоставление удалено для категории "${currentMappingCategory.name}"`);
+            }
+            
+            closeCategoryMappingModal();
+            renderCategories(); // Refresh categories list
+          });
+        }
+
+        if (categoryMappingCloseBtn) {
+          categoryMappingCloseBtn.addEventListener('click', closeCategoryMappingModal);
+        }
+        
+        if (categoryMappingCancelBtn) {
+          categoryMappingCancelBtn.addEventListener('click', closeCategoryMappingModal);
+        }
+        
+        if (categoryMappingModalBackdrop) {
+          categoryMappingModalBackdrop.addEventListener('click', function (e) {
+            if (e.target === categoryMappingModalBackdrop) closeCategoryMappingModal();
+          });
+        }
+
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && categoryMappingModalBackdrop && !categoryMappingModalBackdrop.classList.contains('hidden')) {
+            closeCategoryMappingModal();
+          }
+        });
+
+        // Add event listeners for map category buttons
+        document.addEventListener('click', function (e) {
+          if (e.target && e.target.classList.contains('map-category-btn')) {
+            const categoryId = e.target.getAttribute('data-category-id');
+            const categoryName = e.target.getAttribute('data-category-name');
+            openCategoryMappingModal(categoryId, categoryName);
+          }
+        });
+        
+        // Add event listeners for delete category buttons
+        document.addEventListener('click', function (e) {
+          if (e.target && e.target.classList.contains('delete-category-btn')) {
+            const categoryId = e.target.getAttribute('data-category-id');
+            const categoryName = e.target.getAttribute('data-category-name');
+            
+            // Проверяем, есть ли подкатегории
+            const categories = loadCategories();
+            const subcategories = categories.filter(cat => cat.parentId === categoryId);
+            const hasSubcategories = subcategories.length > 0;
+            
+            let confirmMessage = 'Вы уверены, что хотите удалить категорию "' + categoryName + '"?';
+            if (hasSubcategories) {
+              confirmMessage += '\n\nВнимание: будут также удалены все подкатегории (' + subcategories.length + ' шт.):\n';
+              confirmMessage += subcategories.map(sub => '• ' + sub.name).join('\n');
+            }
+            confirmMessage += '\n\nЭто действие нельзя отменить.';
+            
+            // Подтверждение удаления
+            if (confirm(confirmMessage)) {
+              deleteCategory(categoryId);
+              const deletedCount = hasSubcategories ? subcategories.length + 1 : 1;
+              alert('Категория "' + categoryName + '" и связанные элементы (' + deletedCount + ' шт.) успешно удалены!');
+              renderCategories(); // Перерисовываем список категорий
+            }
+          }
+        });
+
+        // Load marketplace categories on page load
+        loadAllMarketplaceCategories();
+
+        // Enforce closed state on load to avoid stuck overlay
+        function enforceClosedState() {
+          const ids = ['productModalBackdrop','productModal','mpModalBackdrop','mpModal','importCategoriesModalBackdrop','importCategoriesModal','categoryMappingModalBackdrop','categoryMappingModal','addCategoryModalBackdrop','addCategoryModal'];
+          ids.forEach(function(id){
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (!el.classList.contains('hidden')) el.classList.add('hidden');
+            (el.style || {}).pointerEvents = 'none';
+            (el.style || {}).display = 'none';
+          });
+          document.body.style.overflow = '';
+        }
+        enforceClosedState();
+
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', init);
+        } else {
+          init();
+        }
+      })();
+    </script>
+    
+    <!-- Modal: Add Product to ERP -->
+    <div id="productModalBackdrop" class="modal-backdrop hidden">
+      <div id="productModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-hidden="true">
+        <div class="modal-header">
+          <h2 id="modalTitle" class="modal-title">Добавить товар в ERP</h2>
+          <button id="modalCloseBtn" class="modal-close" type="button" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="modal-body">
+          <form id="productForm">
+            <div class="field">
+              <label class="label" for="name">Название</label>
+              <input id="name" name="name" class="input" type="text" placeholder="Напр. Ручка гелевая" required>
+            </div>
+            <div class="grid">
+              <div class="field">
+                <label class="label" for="sku">Артикул (SKU)</label>
+                <input id="sku" name="sku" class="input" type="text" placeholder="SKU-001" required>
+              </div>
+              <div class="field">
+                <label class="label" for="price">Цена</label>
+                <input id="price" name="price" class="input" type="number" step="0.01" min="0.01" placeholder="0.00" required>
+              </div>
+            </div>
+            <div class="grid">
+              <div class="field">
+                <label class="label" for="quantity">Количество</label>
+                <input id="quantity" name="quantity" class="input" type="number" step="1" min="1" value="1" required>
+              </div>
+              <div class="field">
+                <label class="label" for="unit">Ед. изм. (необязательно)</label>
+                <input id="unit" name="unit" class="input" type="text" placeholder="шт, кг и т.д.">
+              </div>
+            </div>
+            <div class="field">
+              <label class="label" for="description">Описание</label>
+              <textarea id="description" name="description" class="textarea" rows="3" placeholder="Краткое описание"></textarea>
+            </div>
+            <div id="formErrors" class="error" aria-live="polite"></div>
+            <div class="modal-footer">
+              <button id="modalCancelBtn" class="btn btn-secondary" type="button">Отмена</button>
+              <button class="btn btn-primary" type="submit">Сохранить</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Marketplace Settings -->
+    <div id="mpModalBackdrop" class="modal-backdrop hidden">
+      <div id="mpModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="mpTitle" tabindex="-1">
+        <div class="modal-header">
+          <h2 id="mpTitle" class="modal-title">Подключение к маркетплейсам</h2>
+          <button id="mpCloseBtn" class="modal-close" type="button" aria-label="Закрыть" data-action="close-mp" onclick="window.__closeMp && window.__closeMp()">✕</button>
+        </div>
+        <div class="tabs" role="tablist" aria-label="Маркетплейсы">
+          <button id="tab-ozon" class="tab-btn" role="tab" aria-selected="true" aria-controls="panel-ozon">Ozon</button>
+          <button id="tab-wb" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-wb" tabindex="-1">Wildberries</button>
+          <button id="tab-ym" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-ym" tabindex="-1">Yandex Market</button>
+        </div>
+        <div class="modal-body">
+          <section id="panel-ozon" class="tab-panel active" role="tabpanel" aria-labelledby="tab-ozon">
+            <form id="ozonForm">
+              <div class="field">
+                <label class="label" for="ozon_client_id">Client ID</label>
+                <input id="ozon_client_id" name="client_id" class="input" type="text" placeholder="Ваш Client ID" required>
+              </div>
+              <div class="field">
+                <label class="label" for="ozon_api_key">API Key</label>
+                <input id="ozon_api_key" name="api_key" class="input" type="password" placeholder="Ваш API ключ" required>
+              </div>
+              <div class="error" aria-live="polite"></div>
+              <div class="modal-footer">
+                <button id="mpCancelBtn" class="btn btn-secondary" type="button" onclick="window.__closeMp && window.__closeMp()">Отмена</button>
+                <button id="ozonTestBtn" class="btn btn-secondary" type="button">Проверить подключение</button>
+                <button class="btn btn-primary" type="submit">Сохранить</button>
+              </div>
+            </form>
+          </section>
+
+          <section id="panel-wb" class="tab-panel" role="tabpanel" aria-labelledby="tab-wb" hidden>
+            <form id="wbForm">
+              <div class="field">
+                <label class="label" for="wb_api_key">API Key</label>
+                <input id="wb_api_key" name="api_key" class="input" type="password" placeholder="Ваш API ключ" required>
+              </div>
+              <div class="error" aria-live="polite"></div>
+              <div class="modal-footer">
+                <button id="wbCancelBtn" class="btn btn-secondary" type="button" onclick="window.__closeMp && window.__closeMp()">Отмена</button>
+                <button id="wbTestBtn" class="btn btn-secondary" type="button">Проверить подключение</button>
+                <button class="btn btn-primary" type="submit">Сохранить</button>
+              </div>
+            </form>
+          </section>
+
+          <section id="panel-ym" class="tab-panel" role="tabpanel" aria-labelledby="tab-ym" hidden>
+            <form id="ymForm">
+              <div class="field">
+                <label class="label" for="ym_api_key">Yandex API Key</label>
+                <input id="ym_api_key" name="api_key" class="input" type="password" placeholder="Ключ API от Яндекс.Маркета" required>
+              </div>
+              <div class="field">
+                <label class="label" for="ym_campaign_id">Campaign ID</label>
+                <input id="ym_campaign_id" name="campaign_id" class="input" type="text" placeholder="ID кампании" required>
+              </div>
+              <div class="field">
+                <label class="label" for="ym_business_id">Business ID</label>
+                <input id="ym_business_id" name="business_id" class="input" type="text" placeholder="ID бизнеса" required>
+              </div>
+              <div class="error" aria-live="polite"></div>
+              <div class="modal-footer">
+                <button id="ymCancelBtn" class="btn btn-secondary" type="button" onclick="window.__closeMp && window.__closeMp()">Отмена</button>
+                <button id="ymTestBtn" class="btn btn-secondary" type="button">Проверить подключение</button>
+                <button class="btn btn-primary" type="submit">Сохранить</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Import Categories from Marketplaces -->
+    <div id="importCategoriesModalBackdrop" class="modal-backdrop hidden">
+      <div id="importCategoriesModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="importCategoriesTitle" tabindex="-1">
+        <div class="modal-header">
+          <h2 id="importCategoriesTitle" class="modal-title">Импорт категорий с маркетплейсов</h2>
+          <button id="importCategoriesCloseBtn" class="modal-close" type="button" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="tabs" role="tablist" aria-label="Маркетплейсы для импорта">
+          <button id="import-tab-ozon" class="tab-btn" role="tab" aria-selected="true" aria-controls="import-panel-ozon">Ozon</button>
+          <button id="import-tab-wb" class="tab-btn" role="tab" aria-selected="false" aria-controls="import-panel-wb" tabindex="-1">Wildberries</button>
+          <button id="import-tab-ym" class="tab-btn" role="tab" aria-selected="false" aria-controls="import-panel-ym" tabindex="-1">Yandex Market</button>
+        </div>
+        <div class="modal-body">
+          <section id="import-panel-ozon" class="tab-panel active" role="tabpanel" aria-labelledby="import-tab-ozon">
+            <div class="field">
+              <p style="margin: 0 0 12px; color: var(--muted);">Импорт категорий с Ozon</p>
+              <button id="importOzonCategoriesBtn" class="btn btn-primary" type="button">Импортировать категории Ozon</button>
+            </div>
+            <div id="ozonCategoriesList" style="margin: 16px 0; max-height: 300px; overflow-y: auto; display: none;">
+              <div style="font-size: 14px; margin-bottom: 12px; color: var(--text);">Найденные категории:</div>
+            </div>
+          </section>
+
+          <section id="import-panel-wb" class="tab-panel" role="tabpanel" aria-labelledby="import-tab-wb" hidden>
+            <div class="field">
+              <p style="margin: 0 0 12px; color: var(--muted);">Импорт категорий с Wildberries</p>
+              <button id="importWBCategoriesBtn" class="btn btn-primary" type="button">Импортировать категории WB</button>
+            </div>
+            <div id="wbCategoriesList" style="margin: 16px 0; max-height: 300px; overflow-y: auto; display: none;">
+              <div style="font-size: 14px; margin-bottom: 12px; color: var(--text);">Найденные категории:</div>
+            </div>
+          </section>
+
+          <section id="import-panel-ym" class="tab-panel" role="tabpanel" aria-labelledby="import-tab-ym" hidden>
+            <div class="field">
+              <p style="margin: 0 0 12px; color: var(--muted);">Импорт категорий с Yandex Market</p>
+              <button id="importYMCategoriesBtn" class="btn btn-primary" type="button">Импортировать категории YM</button>
+            </div>
+            <div id="ymCategoriesList" style="margin: 16px 0; max-height: 300px; overflow-y: auto; display: none;">
+              <div style="font-size: 14px; margin-bottom: 12px; color: var(--text);">Найденные категории:</div>
+            </div>
+          </section>
+
+          <div id="mappingSection" style="display: none; margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08);">
+            <h3 style="margin: 0 0 12px; font-size: 16px;">Сопоставление категорий</h3>
+            <p style="margin: 0 0 16px; color: var(--muted); font-size: 14px;">Сопоставьте импортированные категории с существующими или создайте новые:</p>
+            <div id="mappingList" style="max-height: 400px; overflow-y: auto;"></div>
+            <div class="modal-footer">
+              <button id="importCategoriesCancelBtn" class="btn btn-secondary" type="button">Отмена</button>
+              <button id="applyMappingBtn" class="btn btn-primary" type="button">Применить сопоставление</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Add Category -->
+    <div id="addCategoryModalBackdrop" class="modal-backdrop hidden">
+      <div id="addCategoryModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="addCategoryTitle" tabindex="-1">
+        <div class="modal-header">
+          <h2 id="addCategoryTitle" class="modal-title">Добавить категорию</h2>
+          <button id="addCategoryCloseBtn" class="modal-close" type="button" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="modal-body">
+          <form id="addCategoryForm">
+            <div class="field">
+              <label class="label" for="categoryName">Название категории</label>
+              <input id="categoryName" name="name" class="input" type="text" placeholder="Введите название категории" required>
+            </div>
+            <div class="field">
+              <label class="label" for="categoryDescription">Описание</label>
+              <textarea id="categoryDescription" name="description" class="textarea" placeholder="Введите описание категории" rows="3"></textarea>
+            </div>
+            <div class="field">
+              <label class="label" for="categoryParent">Родительская категория</label>
+              <select id="categoryParent" name="parentId" class="input">
+                <option value="">Без родительской категории</option>
+                <option value="1">Канцелярские товары</option>
+                <option value="2">Офисные принадлежности</option>
+                <option value="3">Бумажная продукция</option>
+              </select>
+            </div>
+            <div class="error" aria-live="polite"></div>
+            <div class="modal-footer">
+              <button id="addCategoryCancelBtn" class="btn btn-secondary" type="button">Отмена</button>
+              <button class="btn btn-primary" type="submit">Добавить категорию</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Category Mapping -->
+    <div id="categoryMappingModalBackdrop" class="modal-backdrop hidden">
+      <div id="categoryMappingModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="categoryMappingTitle" tabindex="-1">
+        <div class="modal-header">
+          <h2 id="categoryMappingTitle" class="modal-title">Сопоставление категории</h2>
+          <button id="categoryMappingCloseBtn" class="modal-close" type="button" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label class="label">Категория ERP:</label>
+            <div id="erpCategoryName" style="font-size: 16px; font-weight: 500; color: var(--text); padding: 8px 12px; background: rgba(255,255,255,0.05); border-radius: 8px; margin-bottom: 16px;"></div>
+          </div>
+          
+          <div class="field">
+            <label class="label">Выберите маркетплейс и соответствующую категорию:</label>
+            
+            <!-- Tabs for marketplaces -->
+            <div class="tab-container" style="margin-bottom: 16px;">
+              <div class="tab-list" role="tablist">
+                <button id="mapping-tab-ozon" class="tab-button" role="tab" aria-selected="true" aria-controls="mapping-panel-ozon">Ozon</button>
+                <button id="mapping-tab-wb" class="tab-button" role="tab" aria-selected="false" aria-controls="mapping-panel-wb">Wildberries</button>
+                <button id="mapping-tab-ym" class="tab-button" role="tab" aria-selected="false" aria-controls="mapping-panel-ym">Yandex Market</button>
+              </div>
+              
+              <!-- Ozon Categories Panel -->
+              <section id="mapping-panel-ozon" class="tab-panel" role="tabpanel" aria-labelledby="mapping-tab-ozon">
+                <select id="ozonCategorySelect" class="input" style="margin-bottom: 12px;">
+                  <option value="">-- Не сопоставлять --</option>
+                </select>
+              </section>
+              
+              <!-- Wildberries Categories Panel -->
+              <section id="mapping-panel-wb" class="tab-panel" role="tabpanel" aria-labelledby="mapping-tab-wb" hidden>
+                <select id="wbCategorySelect" class="input" style="margin-bottom: 12px;">
+                  <option value="">-- Не сопоставлять --</option>
+                </select>
+              </section>
+              
+              <!-- Yandex Market Categories Panel -->
+              <section id="mapping-panel-ym" class="tab-panel" role="tabpanel" aria-labelledby="mapping-tab-ym" hidden>
+                <select id="ymCategorySelect" class="input" style="margin-bottom: 12px;">
+                  <option value="">-- Не сопоставлять --</option>
+                </select>
+              </section>
+            </div>
+          </div>
+          
+          <div id="selectedCategoryInfo" style="display: none; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); margin-bottom: 16px;">
+            <div style="font-size: 14px; color: var(--text); margin-bottom: 4px;">Выбранная категория:</div>
+            <div id="selectedCategoryName" style="font-size: 13px; color: var(--text); font-weight: 500;"></div>
+            <div id="selectedCategoryPath" style="font-size: 12px; color: var(--muted); margin-top: 4px;"></div>
+            <div id="selectedCategoryMarketplace" style="font-size: 11px; color: var(--muted); margin-top: 2px;"></div>
+          </div>
+          
+          <div class="modal-footer">
+            <button id="categoryMappingCancelBtn" class="btn btn-secondary" type="button">Отмена</button>
+            <button id="saveCategoryMappingBtn" class="btn btn-primary" type="button">Сохранить сопоставление</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+  </html>
+
+

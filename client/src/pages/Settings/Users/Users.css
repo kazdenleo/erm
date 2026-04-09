@@ -1,0 +1,29 @@
+.settings-users-page .subtitle { margin-bottom: 1rem; color: var(--muted); }
+
+.settings-users-list { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
+.settings-users-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  background: var(--primary-50);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.settings-users-email { font-weight: 600; }
+.settings-users-name { color: var(--muted); margin-left: 0.25rem; }
+.settings-users-role {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  background: var(--primary-100);
+  border-radius: 4px;
+  color: var(--text);
+}
+.settings-users-actions { display: flex; gap: 0.5rem; }
+.settings-users-footer { margin-top: 1rem; }
+.settings-users-form label { display: block; margin-bottom: 1rem; font-size: 0.875rem; font-weight: 500; }
+.settings-users-form .login-input { width: 100%; margin-top: 4px; }
+.settings-users-form .admin-form-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
+.settings-users-loading, .settings-users-error { padding: 2rem; text-align: center; }

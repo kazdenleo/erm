@@ -1,0 +1,36 @@
+/* Стили страницы настроек наследуются из pages.css */
+
+.settings-page .title {
+  margin-bottom: 8px;
+}
+
+.settings-page .subtitle {
+  color: var(--muted, #6b7280);
+}
+
+.settings-account-section {
+  margin-top: 1.5rem;
+  max-width: 32rem;
+}
+
+.settings-account-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.settings-account-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.settings-account-label .login-input {
+  width: 100%;
+  font-weight: normal;
+}
+
+.settings-account-actions {
+  margin-top: 0.25rem;
+}

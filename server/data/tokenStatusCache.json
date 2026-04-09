@@ -1,0 +1,70 @@
+{
+  "ozon": {
+    "marketplace": "ozon",
+    "valid": true,
+    "checked_at": "2026-04-09T13:21:52.613Z",
+    "message": "Ozon: ключ валиден",
+    "checks": [
+      {
+        "scope": "ozon_v1",
+        "valid": true,
+        "message": "Ozon: v1 OK (categories)"
+      },
+      {
+        "scope": "ozon_v5_prices",
+        "valid": true,
+        "message": "Ozon: v5 OK (prices)"
+      }
+    ],
+    "expires_at": "2026-09-28T00:00:00.000Z",
+    "days_left": 171,
+    "expired": false
+  },
+  "wildberries": {
+    "marketplace": "wildberries",
+    "valid": true,
+    "checked_at": "2026-04-09T13:21:52.879Z",
+    "message": "Wildberries: токен валиден (все проверенные сервисы)",
+    "checks": [
+      {
+        "scope": "content",
+        "valid": true,
+        "message": "Контент: OK"
+      },
+      {
+        "scope": "marketplace",
+        "valid": true,
+        "message": "Маркетплейс: OK"
+      },
+      {
+        "scope": "statistics",
+        "valid": true,
+        "message": "Статистика: OK"
+      },
+      {
+        "scope": "common",
+        "valid": true,
+        "message": "Тарифы/Общее: OK"
+      }
+    ],
+    "expires_at": "2026-09-13T00:00:00.000Z",
+    "days_left": 156,
+    "expired": false
+  },
+  "yandex": {
+    "marketplace": "yandex",
+    "valid": true,
+    "checked_at": "2026-04-09T13:21:53.178Z",
+    "message": "Яндекс.Маркет: токен валиден (Sellect). Доступы: ALL_METHODS",
+    "checks": [
+      {
+        "scope": "yandex",
+        "valid": true,
+        "message": "Доступы: ALL_METHODS"
+      }
+    ],
+    "expires_at": "2026-09-15T00:00:00.000Z",
+    "days_left": 158,
+    "expired": false
+  }
+}

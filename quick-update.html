@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Быстрое обновление данных Ozon</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 20px; 
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        input, button { 
+            padding: 15px; 
+            margin: 10px; 
+            border: 1px solid #ddd; 
+            border-radius: 5px; 
+            font-size: 16px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button { 
+            background: #007cba; 
+            color: white; 
+            border: none; 
+            cursor: pointer; 
+            font-weight: bold;
+        }
+        button:hover { background: #005a87; }
+        .result {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: monospace;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Быстрое обновление данных Ozon</h1>
+        
+        <div class="info">
+            <strong>📝 Инструкция:</strong> Введите ваш реальный API ключ Ozon и нажмите кнопки для автоматического обновления данных.
+        </div>
+
+        <div>
+            <label>🔑 API ключ Ozon:</label>
+            <input type="text" id="apiKey" placeholder="Введите ваш реальный API ключ Ozon" />
+        </div>
+
+        <div>
+            <label>🆔 Client ID (уже указан):</label>
+            <input type="text" value="2667088" readonly />
+        </div>
+
+        <button onclick="updateOzonData()">💾 Обновить данные Ozon</button>
+        <button onclick="testProductAN1048()">🧪 Проверить товар AN1048</button>
+        <button onclick="loadCategories()">📂 Загрузить категории</button>
+        <button onclick="checkAllData()">📊 Проверить все данные</button>
+
+        <div id="result"></div>
+    </div>
+
+    <script>
+        function showResult(message, type = 'info') {
+            const result = document.getElementById('result');
+            result.className = `result ${type}`;
+            result.innerHTML = message;
+        }
+
+        async function updateOzonData() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            if (!apiKey) {
+                showResult('❌ Введите API ключ Ozon!', 'error');
+                return;
+            }
+
+            showResult('⏳ Обновляем данные Ozon...', 'info');
+
+            try {
+                const response = await fetch("http://localhost:3001/api/data/ozon", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        client_id: "2667088",
+                        api_key: apiKey
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (result.ok) {
+                    showResult('✅ Ozon данные обновлены успешно!<br/>Теперь можно тестировать товары и категории.', 'success');
+                } else {
+                    showResult(`❌ Ошибка обновления: ${result.message}`, 'error');
+                }
+            } catch (error) {
+                showResult(`❌ Ошибка сети: ${error.message}`, 'error');
+            }
+        }
+
+        async function testProductAN1048() {
+            showResult('⏳ Проверяем товар AN1048...', 'info');
+
+            try {
+                const response = await fetch("http://localhost:3001/product/check/ozon?offer_id=AN1048");
+                const result = await response.json();
+                
+                if (result.data && result.data.found) {
+                    showResult(`🎉 ТОВАР AN1048 НАЙДЕН!<br/>
+                        <strong>Название:</strong> ${result.data.product.name || 'Не указано'}<br/>
+                        <strong>Цена:</strong> ${result.data.product.price || 'Не указана'}<br/>
+                        <strong>Остаток:</strong> ${result.data.product.stock || 'Не указан'}`, 'success');
+                } else {
+                    showResult(`❌ Товар AN1048 не найден<br/>Причина: ${result.data?.message || result.message}`, 'error');
+                }
+            } catch (error) {
+                showResult(`❌ Ошибка проверки товара: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadCategories() {
+            showResult('⏳ Загружаем категории Ozon...', 'info');
+
+            try {
+                const response = await fetch("http://localhost:3001/categories/ozon");
+                const result = await response.json();
+                
+                if (result.ok && Array.isArray(result.data) && result.data.length > 0) {
+                    showResult(`🎉 ЗАГРУЖЕНО ${result.data.length} КАТЕГОРИЙ!<br/>
+                        <strong>Первые категории:</strong><br/>
+                        ${result.data.slice(0, 5).map(cat => `• ${cat.name || cat.title || 'Без названия'}`).join('<br/>')}`, 'success');
+                } else {
+                    showResult('⚠️ Категории не загружены. Проверьте API ключ.', 'error');
+                }
+            } catch (error) {
+                showResult(`❌ Ошибка загрузки категорий: ${error.message}`, 'error');
+            }
+        }
+
+        async function checkAllData() {
+            showResult('⏳ Проверяем все данные на сервере...', 'info');
+
+            try {
+                const response = await fetch("http://localhost:3001/api/data");
+                const result = await response.json();
+                
+                if (result.ok) {
+                    let status = '<strong>Статус данных:</strong><br/>';
+                    for (const [type, data] of Object.entries(result.data)) {
+                        const isConfigured = Object.keys(data).length > 0;
+                        status += `${isConfigured ? '✅' : '❌'} ${type.toUpperCase()}: ${isConfigured ? 'Настроено' : 'Не настроено'}<br/>`;
+                    }
+                    showResult(status, result.data.ozon && Object.keys(result.data.ozon).length > 0 ? 'success' : 'info');
+                } else {
+                    showResult(`❌ Ошибка получения данных: ${result.message}`, 'error');
+                }
+            } catch (error) {
+                showResult(`❌ Ошибка проверки данных: ${error.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>

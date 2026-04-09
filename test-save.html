@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Тест сохранения данных</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        button { padding: 10px 20px; margin: 5px; background: #007cba; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #005a87; }
+        input { padding: 8px; margin: 5px; border: 1px solid #ddd; border-radius: 3px; width: 200px; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Тест сохранения данных</h1>
+    
+    <div class="section">
+        <h3>🔧 Тест Wildberries</h3>
+        <input id="wbApiKey" type="text" placeholder="API ключ Wildberries" />
+        <button onclick="testWBSave()">Сохранить WB</button>
+        <div id="wbResult"></div>
+    </div>
+    
+    <div class="section">
+        <h3>🔧 Тест Yandex Market</h3>
+        <input id="ymApiKey" type="text" placeholder="API ключ Yandex" />
+        <input id="ymCampaignId" type="text" placeholder="Campaign ID" />
+        <input id="ymBusinessId" type="text" placeholder="Business ID" />
+        <button onclick="testYMSave()">Сохранить YM</button>
+        <div id="ymResult"></div>
+    </div>
+    
+    <div class="section">
+        <h3>🔧 Тест Mikado</h3>
+        <input id="mikadoUserId" type="text" placeholder="User ID" />
+        <input id="mikadoPassword" type="password" placeholder="Password" />
+        <button onclick="testMikadoSave()">Сохранить Mikado</button>
+        <div id="mikadoResult"></div>
+    </div>
+    
+    <div class="section">
+        <h3>🔧 Тест Moskvorechie</h3>
+        <input id="moskvorechieUserId" type="text" placeholder="User ID" />
+        <input id="moskvorechiePassword" type="password" placeholder="Password" />
+        <button onclick="testMoskvorechieSave()">Сохранить Moskvorechie</button>
+        <div id="moskvorechieResult"></div>
+    </div>
+    
+    <div class="section">
+        <h3>📊 Проверка всех данных</h3>
+        <button onclick="checkAllData()">Проверить все данные на сервере</button>
+        <div id="allDataResult"></div>
+    </div>
+
+    <script>
+        async function testWBSave() {
+            const apiKey = document.getElementById('wbApiKey').value.trim();
+            const result = document.getElementById('wbResult');
+            
+            if (!apiKey) {
+                result.innerHTML = '<div class="error">Введите API ключ!</div>';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:3001/api/data/wildberries', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey })
+                });
+                
+                const data = await response.json();
+                if (data.ok) {
+                    result.innerHTML = '<div class="success">✅ Wildberries данные сохранены на сервере!</div>';
+                } else {
+                    result.innerHTML = `<div class="error">❌ Ошибка: ${data.message}</div>`;
+                }
+            } catch (error) {
+                result.innerHTML = `<div class="error">❌ Ошибка сети: ${error.message}</div>`;
+            }
+        }
+        
+        async function testYMSave() {
+            const apiKey = document.getElementById('ymApiKey').value.trim();
+            const campaignId = document.getElementById('ymCampaignId').value.trim();
+            const businessId = document.getElementById('ymBusinessId').value.trim();
+            const result = document.getElementById('ymResult');
+            
+            if (!apiKey || !campaignId || !businessId) {
+                result.innerHTML = '<div class="error">Заполните все поля!</div>';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:3001/api/data/yandex', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        api_key: apiKey,
+                        campaign_id: campaignId,
+                        business_id: businessId
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.ok) {
+                    result.innerHTML = '<div class="success">✅ Yandex Market данные сохранены на сервере!</div>';
+                } else {
+                    result.innerHTML = `<div class="error">❌ Ошибка: ${data.message}</div>`;
+                }
+            } catch (error) {
+                result.innerHTML = `<div class="error">❌ Ошибка сети: ${error.message}</div>`;
+            }
+        }
+        
+        async function testMikadoSave() {
+            const userId = document.getElementById('mikadoUserId').value.trim();
+            const password = document.getElementById('mikadoPassword').value.trim();
+            const result = document.getElementById('mikadoResult');
+            
+            if (!userId || !password) {
+                result.innerHTML = '<div class="error">Заполните все поля!</div>';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:3001/api/data/mikado', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        user_id: userId,
+                        password: password
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.ok) {
+                    result.innerHTML = '<div class="success">✅ Mikado данные сохранены на сервере!</div>';
+                } else {
+                    result.innerHTML = `<div class="error">❌ Ошибка: ${data.message}</div>`;
+                }
+            } catch (error) {
+                result.innerHTML = `<div class="error">❌ Ошибка сети: ${error.message}</div>`;
+            }
+        }
+        
+        async function testMoskvorechieSave() {
+            const userId = document.getElementById('moskvorechieUserId').value.trim();
+            const password = document.getElementById('moskvorechiePassword').value.trim();
+            const result = document.getElementById('moskvorechieResult');
+            
+            if (!userId || !password) {
+                result.innerHTML = '<div class="error">Заполните все поля!</div>';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:3001/api/data/moskvorechie', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        user_id: userId,
+                        password: password
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.ok) {
+                    result.innerHTML = '<div class="success">✅ Moskvorechie данные сохранены на сервере!</div>';
+                } else {
+                    result.innerHTML = `<div class="error">❌ Ошибка: ${data.message}</div>`;
+                }
+            } catch (error) {
+                result.innerHTML = `<div class="error">❌ Ошибка сети: ${error.message}</div>`;
+            }
+        }
+        
+        async function checkAllData() {
+            const result = document.getElementById('allDataResult');
+            try {
+                const response = await fetch('http://localhost:3001/api/data');
+                const data = await response.json();
+                result.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+            } catch (error) {
+                result.innerHTML = `<div class="error">❌ Ошибка: ${error.message}</div>`;
+            }
+        }
+    </script>
+</body>
+</html>

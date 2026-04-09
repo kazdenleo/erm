@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Server Status Checker</title>
+  <style>
+    body { font-family: Arial; padding: 20px; background: #f5f5f5; }
+    .status { padding: 15px; margin: 10px 0; border-radius: 5px; }
+    .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+    pre { background: #fff; padding: 10px; border-radius: 5px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Server Status Checker</h1>
+  <button onclick="checkServer()">Check Server</button>
+  <button onclick="checkTest()">Test /api/test</button>
+  <button onclick="checkLogs()">Check Logs</button>
+  
+  <div id="result"></div>
+  
+  <script>
+    async function checkServer() {
+      const result = document.getElementById('result');
+      result.innerHTML = '<div class="status">Checking...</div>';
+      
+      try {
+        const response = await fetch('http://localhost:3001/status');
+        if (response.ok) {
+          const html = await response.text();
+          result.innerHTML = '<div class="status success">✅ Server is running!</div>' + html;
+        } else {
+          result.innerHTML = '<div class="status error">❌ Server returned status: ' + response.status + '</div>';
+        }
+      } catch (error) {
+        result.innerHTML = '<div class="status error">❌ Cannot connect to server: ' + error.message + '</div>';
+      }
+    }
+    
+    async function checkTest() {
+      const result = document.getElementById('result');
+      result.innerHTML = '<div class="status">Testing /api/test...</div>';
+      
+      try {
+        const response = await fetch('http://localhost:3001/api/test');
+        const data = await response.json();
+        result.innerHTML = '<div class="status success">✅ /api/test response:</div><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+      } catch (error) {
+        result.innerHTML = '<div class="status error">❌ Error: ' + error.message + '</div>';
+      }
+    }
+    
+    async function checkLogs() {
+      const result = document.getElementById('result');
+      result.innerHTML = '<div class="status">Loading logs...</div>';
+      
+      try {
+        const response = await fetch('http://localhost:3001/api/error-log');
+        const data = await response.json();
+        if (data.length === 0) {
+          result.innerHTML = '<div class="status success">✅ No errors in log</div>';
+        } else {
+          result.innerHTML = '<div class="status">Found ' + data.length + ' log entries:</div><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+        }
+      } catch (error) {
+        result.innerHTML = '<div class="status error">❌ Error: ' + error.message + '</div>';
+      }
+    }
+    
+    // Auto-check on load
+    setTimeout(checkServer, 500);
+  </script>
+</body>
+</html>
+

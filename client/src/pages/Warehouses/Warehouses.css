@@ -1,0 +1,10 @@
+.warehouses-page {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Общие стили наследуются из tables.css и pages.css */
+
+

@@ -1,0 +1,17 @@
+{
+  "marketplaces": {
+    "ozon": {},
+    "wildberries": {},
+    "yandex": {}
+  },
+  "suppliers": {
+    "mikado": {},
+    "moskvorechie": {}
+  },
+  "products": [],
+  "categories": [],
+  "brands": [],
+  "warehouse_suppliers": [],
+  "sync_settings": {},
+  "supplier_settings": {}
+}

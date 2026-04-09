@@ -1,0 +1,28 @@
+.settings-labels .title {
+  margin-bottom: 8px;
+}
+
+.settings-labels .subtitle {
+  color: var(--muted, #6b7280);
+  margin-bottom: 20px;
+}
+
+.settings-labels-select {
+  max-width: 280px;
+}
+
+.settings-labels-select label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.settings-labels-select-el {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+}

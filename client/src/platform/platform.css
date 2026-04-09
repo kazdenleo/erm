@@ -1,0 +1,134 @@
+.platform-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--body-bg, #f1f4f6);
+}
+
+.platform-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 1.5rem;
+  padding: 0.75rem 1.25rem;
+  background: #fff;
+  border-bottom: 1px solid var(--border, #e0e0e0);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.platform-header__title {
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--text, #333);
+  text-decoration: none;
+}
+
+.platform-header__title:hover {
+  color: var(--primary, #3f6ad8);
+}
+
+.platform-header__nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  flex: 1;
+}
+
+.platform-nav-link {
+  padding: 0.4rem 0.85rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  color: var(--muted, #6c757d);
+  text-decoration: none;
+}
+
+.platform-nav-link:hover {
+  color: var(--text, #333);
+  background: var(--primary-50, rgba(63, 106, 216, 0.08));
+}
+
+.platform-nav-link--active {
+  color: var(--primary, #3f6ad8);
+  font-weight: 600;
+  background: var(--primary-50, rgba(63, 106, 216, 0.1));
+}
+
+.platform-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.platform-link-erp {
+  font-size: 0.875rem;
+  color: var(--primary, #3f6ad8);
+  text-decoration: none;
+}
+
+.platform-link-erp:hover {
+  text-decoration: underline;
+}
+
+.platform-user-email {
+  font-size: 0.8rem;
+  color: var(--muted, #6c757d);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.platform-main {
+  flex: 1;
+  padding: 1.25rem 1.25rem 2rem;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.platform-page .title {
+  margin-bottom: 0.35rem;
+}
+
+.platform-muted {
+  color: var(--muted, #6c757d);
+  font-size: 0.9rem;
+}
+
+.platform-placeholder {
+  padding: 2rem;
+  text-align: center;
+  color: var(--muted, #6c757d);
+  background: var(--primary-50, rgba(63, 106, 216, 0.06));
+  border: 1px dashed var(--border, #dee2e6);
+  border-radius: 8px;
+}
+
+.platform-inq-detail {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.platform-inq-media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.platform-inq-img {
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--border, #dee2e6);
+}
+
+.platform-inq-video {
+  max-width: 100%;
+  max-height: 360px;
+  border-radius: 6px;
+}

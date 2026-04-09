@@ -1,0 +1,121 @@
+[
+  {
+    "name": "Фильтр воздушный AN1048",
+    "sku": "AN1048",
+    "sku_wb": "AN1048",
+    "categoryId": "1",
+    "price": 227.97,
+    "volume": 3.197,
+    "barcodes": [
+      "1234567890123"
+    ],
+    "description": "Тестовый товар для проверки",
+    "unit": "шт",
+    "sku_ym": "AN1048",
+    "sku_ozon": "AN1048",
+    "minPrice": 100,
+    "buyout_rate": 100,
+    "id": 1760895284410.328,
+    "createdAt": "2025-10-19T17:34:44.410Z",
+    "updatedAt": "2025-11-25T15:28:47.797Z",
+    "mp_linked": {
+      "ozon": true,
+      "wb": true,
+      "ym": true
+    },
+    "brand": "Nordfil",
+    "quantity": 1,
+    "weight": 310,
+    "length": 240,
+    "width": 45,
+    "height": 296
+  },
+  {
+    "name": "Колодки тормозные E400049",
+    "sku": "E400049",
+    "sku_wb": "E400049",
+    "categoryId": "1760021113013",
+    "price": 150.5,
+    "volume": 0.96,
+    "barcodes": [
+      "9876543210987"
+    ],
+    "description": "????? ???????? ?????",
+    "unit": "шт",
+    "sku_ym": "E400049",
+    "sku_ozon": "E400049",
+    "minPrice": 50,
+    "buyout_rate": 95,
+    "id": 1760895769226.8987,
+    "createdAt": "2025-10-19T17:42:49.226Z",
+    "updatedAt": "2025-10-20T20:19:47.692Z",
+    "mp_linked": {
+      "ozon": true,
+      "wb": true,
+      "ym": true
+    },
+    "brand": "Miles",
+    "quantity": 1,
+    "weight": 1100,
+    "length": 88,
+    "width": 88,
+    "height": 124
+  },
+  {
+    "name": "Колодки тормозные передние E500025",
+    "sku": "E500025",
+    "brand": "Miles",
+    "price": 912,
+    "quantity": 1,
+    "description": "",
+    "categoryId": "1760021113013",
+    "unit": "шт",
+    "sku_ozon": "E500025",
+    "sku_wb": "E500025",
+    "sku_ym": "E500025",
+    "buyout_rate": 100,
+    "barcodes": [],
+    "weight": 1050,
+    "length": 118,
+    "width": 83,
+    "height": 81,
+    "volume": 0.793,
+    "id": 1761586825280.484,
+    "createdAt": "2025-10-27T17:40:25.280Z",
+    "updatedAt": "2025-10-30T21:46:50.118Z",
+    "mp_linked": {
+      "ozon": true,
+      "wb": true,
+      "ym": true
+    }
+  },
+  {
+    "name": "Фильтр воздушный AN1096",
+    "sku": "AN1096",
+    "brand": "Nordfil",
+    "price": 252.68,
+    "quantity": 1,
+    "description": null,
+    "categoryId": "1",
+    "unit": "шт",
+    "sku_ozon": "AN1096",
+    "sku_wb": "AN1096",
+    "sku_ym": "AN1096",
+    "buyout_rate": 100,
+    "barcodes": [],
+    "weight": 291,
+    "length": 350,
+    "width": 145,
+    "height": 75,
+    "volume": 3.806,
+    "id": 1761603626713.7747,
+    "createdAt": "2025-10-27T22:20:26.713Z",
+    "updatedAt": "2025-11-25T15:04:24.565Z",
+    "mp_linked": {
+      "ozon": true,
+      "wb": true,
+      "ym": true
+    },
+    "minPrice": null
+  }
+]

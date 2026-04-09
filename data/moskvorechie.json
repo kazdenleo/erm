@@ -1,0 +1,13 @@
+{
+  "user_id": "kazakovdenis",
+  "password": "MyIdKgsjn",
+  "warehouses": [
+    {
+      "name": "Юг",
+      "time": "16:00"
+    }
+  ],
+  "sameDayDelivery": true,
+  "updatedAt": "2025-10-27T17:29:21.875Z",
+  "apiKey": "lu8q94Efg8m16ucpj11EBOQMktHTSdKrz1PlBW0XZ5QTTS4L5TP6AmSOzVrgOMjg"
+}

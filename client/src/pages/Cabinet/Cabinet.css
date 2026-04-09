@@ -1,0 +1,91 @@
+.cabinet-page .title { margin-bottom: 0.25rem; }
+.cabinet-page .subtitle { margin-bottom: 1.5rem; color: var(--muted); }
+
+.cabinet-section { margin-bottom: 2rem; }
+.cabinet-section h2 { font-size: 1.125rem; margin: 0 0 0.5rem 0; }
+.cabinet-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+.cabinet-section-header h2 { margin: 0; }
+.cabinet-hint { font-size: 0.875rem; color: var(--muted); margin: 0 0 0.75rem 0; }
+
+.cabinet-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.cabinet-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  background: var(--primary-50);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.cabinet-list-item-actions { flex-wrap: wrap; }
+.cabinet-item-name { font-weight: 600; }
+.cabinet-muted { color: var(--muted); font-size: 0.875rem; margin-left: 0.25rem; }
+.cabinet-actions { display: flex; gap: 0.5rem; }
+.cabinet-loading, .cabinet-error { padding: 2rem; text-align: center; }
+
+.cabinet-section-title {
+  font-size: 1.125rem;
+  margin: 0 0 0.5rem 0;
+}
+
+.cabinet-section--account {
+  padding-bottom: 1.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.cabinet-subtitle {
+  font-size: 1rem;
+  margin: 1rem 0 0.35rem 0;
+}
+
+.cabinet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.cabinet-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.cabinet-value {
+  font-size: 1rem;
+}
+
+.cabinet-form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 28rem;
+}
+
+.cabinet-input-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.cabinet-input-label .login-input {
+  width: 100%;
+  font-weight: normal;
+}
+
+.cabinet-input-label input:disabled {
+  opacity: 0.85;
+  cursor: not-allowed;
+}
+
+.cabinet-hint.small {
+  font-size: 0.8125rem;
+}
+
+.cabinet-error-msg {
+  color: #b91c1c;
+  margin-bottom: 1rem;
+}

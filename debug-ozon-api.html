@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug Ozon API</title>
+</head>
+<body>
+    <h1>Debug Ozon API</h1>
+    <button onclick="testAPI()">Тест API для AN1048</button>
+    <div id="output"></div>
+
+    <script>
+        async function testAPI() {
+            console.log('=== ТЕСТ OZON API ДЛЯ AN1048 ===');
+            
+            try {
+                const response = await fetch('/product/prices/ozon', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        offer_id: 'AN1048'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                console.log('=== ПОЛНЫЙ ОТВЕТ ОТ СЕРВЕРА ===');
+                console.log(JSON.stringify(data, null, 2));
+                
+                if (data.ok && data.data) {
+                    console.log('=== ДАННЫЕ ТОВАРА ===');
+                    console.log('Found:', data.data.found);
+                    
+                    if (data.data.calculator) {
+                        console.log('=== КАЛЬКУЛЯТОР ДАННЫЕ ===');
+                        console.log(JSON.stringify(data.data.calculator, null, 2));
+                    }
+                    
+                    if (data.data.items && data.data.items[0]) {
+                        console.log('=== СЫРЫЕ ДАННЫЕ ИЗ API ===');
+                        console.log(JSON.stringify(data.data.items[0], null, 2));
+                        
+                        if (data.data.items[0].commissions) {
+                            console.log('=== КОМИССИИ ===');
+                            console.log(JSON.stringify(data.data.items[0].commissions, null, 2));
+                        }
+                    }
+                } else {
+                    console.log('=== ОШИБКА ===');
+                    console.log(data.error || 'Неизвестная ошибка');
+                }
+                
+                document.getElementById('output').innerHTML = `
+                    <h3>Результат:</h3>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+                
+            } catch (error) {
+                console.error('Ошибка:', error);
+                document.getElementById('output').innerHTML = `<p>Ошибка: ${error.message}</p>`;
+            }
+        }
+        
+        // Автоматически запустить тест при загрузке
+        window.onload = function() {
+            testAPI();
+        };
+    </script>
+</body>
+</html>

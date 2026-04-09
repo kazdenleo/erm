@@ -1,0 +1,36 @@
+{
+  "name": "erm-label-print-helper",
+  "version": "1.0.0",
+  "description": "Локальный сервис для тихой печати этикеток после сборки заказа (без диалога браузера)",
+  "main": "index.cjs",
+  "bin": "index.cjs",
+  "scripts": {
+    "start": "node index.cjs",
+    "run": "node index.cjs",
+    "build:exe": "node build-exe.cjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0",
+    "pdf-lib": "^1.17.1",
+    "systray2": "^2.1.4"
+  },
+  "devDependencies": {
+    "pdf-to-printer": "^5.7.0",
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "scripts": "index.cjs",
+    "assets": [
+      "node_modules/systray2/traybin/tray_windows_release.exe"
+    ],
+    "targets": [
+      "node16-win-x64"
+    ],
+    "outputPath": "dist"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

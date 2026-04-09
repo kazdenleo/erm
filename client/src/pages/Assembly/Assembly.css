@@ -1,0 +1,253 @@
+.assembly-page .subtitle {
+  margin-bottom: 20px;
+}
+
+.assembly-scan-block {
+  background: var(--surface, #f8f9fa);
+  border: 1px solid var(--border, #dee2e6);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.assembly-scan-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.assembly-scan-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text, #212529);
+  margin-bottom: 4px;
+  width: 100%;
+}
+
+.assembly-scan-input {
+  flex: 1;
+  min-width: 200px;
+  padding: 10px 14px;
+  font-size: 16px;
+  border: 1px solid var(--border, #dee2e6);
+  border-radius: 6px;
+}
+
+.assembly-scan-input:focus {
+  outline: none;
+  border-color: var(--primary, #0d6efd);
+  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
+}
+
+.assembly-scan-error {
+  margin: 12px 0 0;
+  color: var(--danger, #dc3545);
+  font-size: 14px;
+}
+
+.assembly-current-order {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border, #dee2e6);
+}
+
+.assembly-current-title {
+  font-size: 18px;
+  margin: 0 0 8px;
+  color: var(--text, #212529);
+}
+
+.assembly-current-product {
+  margin: 0 0 12px;
+  color: var(--muted, #666);
+  font-size: 14px;
+}
+
+.assembly-current-product-with-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.assembly-composition {
+  margin: 0 0 12px;
+}
+
+.assembly-composition-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text, #212529);
+  margin-bottom: 6px;
+}
+
+.assembly-composition-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  color: var(--text, #212529);
+  line-height: 1.45;
+}
+
+.assembly-table-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assembly-table-line {
+  line-height: 1.35;
+}
+
+.assembly-table-line-qty {
+  color: var(--muted, #666);
+}
+
+.assembly-table-order-ids {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.assembly-composition-progress {
+  color: var(--muted, #666);
+  font-weight: 400;
+}
+
+.assembly-label-link-inline {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
+.assembly-section-title {
+  font-size: 1.15rem;
+  margin: 28px 0 8px;
+  color: var(--text, #212529);
+}
+
+.assembly-section-hint {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--muted, #666);
+}
+
+.assembly-empty-muted {
+  padding: 20px 16px;
+  background: var(--surface, #f8f9fa);
+  border-radius: 8px;
+  border: 1px solid var(--border, #dee2e6);
+}
+
+.assembly-remaining span {
+  font-weight: 500;
+}
+
+.assembly-remaining ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.assembly-remaining-hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted, #666);
+}
+
+.assembly-ready {
+  margin-top: 8px;
+}
+
+.assembly-ready-text {
+  font-weight: 500;
+  color: var(--success, #198754);
+  margin: 0 0 12px;
+}
+
+.assembly-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 24px;
+  margin-bottom: 20px;
+}
+
+.assembly-filters,
+.assembly-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.assembly-filter-label {
+  font-size: 14px;
+  color: var(--muted, #666);
+  margin-right: 4px;
+}
+
+.assembly-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--muted, #666);
+}
+
+.assembly-table-wrap {
+  overflow-x: auto;
+}
+
+.assembly-table th,
+.assembly-table td {
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.assembly-order-link {
+  color: var(--primary, #0d6efd);
+  text-decoration: none;
+}
+.assembly-order-link:hover {
+  text-decoration: underline;
+}
+
+.assembly-product-link {
+  color: var(--primary, #0d6efd);
+  text-decoration: none;
+}
+
+.assembly-product-link:hover {
+  text-decoration: underline;
+}
+
+.assembly-label-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary, #0d6efd);
+  text-decoration: none;
+  font-size: 14px;
+}
+button.assembly-label-link {
+  font: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.assembly-label-link:hover {
+  color: var(--primary-dark, #0a58ca);
+  text-decoration: none;
+}
+.assembly-label-link:hover svg {
+  opacity: 0.9;
+}
+
+.assembly-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

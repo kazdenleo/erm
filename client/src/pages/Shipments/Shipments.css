@@ -1,0 +1,184 @@
+.shipments-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.shipments-page-header .subtitle {
+  margin: 4px 0 0;
+}
+
+.shipments-page .shipments-page-header + .shipments-sections .subtitle {
+  margin-bottom: 0;
+}
+
+.shipments-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.shipments-section {
+  background: var(--card-bg, #f8f9fa);
+  border-radius: 10px;
+  padding: 20px;
+  border: 1px solid var(--border, #eee);
+}
+
+.shipments-section-title {
+  margin: 0 0 16px;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shipments-section-icon {
+  font-size: 1.2rem;
+}
+
+.shipments-section-count {
+  font-weight: normal;
+  color: var(--muted, #666);
+  font-size: 0.95rem;
+}
+
+.shipments-empty {
+  margin: 0;
+  color: var(--muted, #666);
+}
+
+.shipments-table {
+  width: 100%;
+}
+
+.shipments-table th,
+.shipments-table td {
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.shipments-modal-form label,
+.shipments-add-orders label {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.shipments-select,
+.shipments-input {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+}
+
+.shipments-modal-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.shipments-orders-list {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.shipments-order-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+
+.shipments-order-row input {
+  margin: 0;
+}
+
+.shipments-order-product {
+  color: var(--muted, #666);
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.shipments-muted {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted, #666);
+}
+
+.shipments-name-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--primary, #0d6efd);
+  cursor: pointer;
+  text-decoration: none;
+  text-align: left;
+}
+.shipments-name-link:hover {
+  text-decoration: underline;
+}
+
+.shipments-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.shipments-qr-link {
+  color: var(--primary, #0d6efd);
+  text-decoration: none;
+  font-size: 14px;
+}
+.shipments-qr-link:hover {
+  text-decoration: underline;
+}
+
+.shipments-detail { }
+.shipments-detail-meta {
+  margin: 0 0 12px;
+  color: var(--muted, #666);
+  font-size: 0.95rem;
+}
+.shipments-orders-in-shipment p {
+  margin: 0 0 8px;
+}
+.shipments-detail-orders-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+}
+.shipments-detail-order-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border, #eee);
+}
+.shipments-detail-order-row:last-child {
+  border-bottom: none;
+}
+.shipments-detail-order-id {
+  font-family: var(--mono, monospace);
+  font-size: 0.95rem;
+}

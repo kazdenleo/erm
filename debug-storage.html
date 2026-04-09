@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Отладка хранилища данных</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        button { padding: 10px 20px; margin: 5px; background: #007cba; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #005a87; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 5px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Отладка хранилища данных</h1>
+    
+    <div class="section">
+        <h3>📱 Данные в localStorage браузера</h3>
+        <button onclick="showLocalStorage()">Показать localStorage</button>
+        <div id="localStorageData"></div>
+    </div>
+    
+    <div class="section">
+        <h3>🖥️ Данные на сервере</h3>
+        <button onclick="showServerData()">Показать серверные данные</button>
+        <div id="serverData"></div>
+    </div>
+    
+    <div class="section">
+        <h3>🔄 Миграция данных</h3>
+        <button onclick="migrateAllData()">Перенести все данные на сервер</button>
+        <div id="migrationResult"></div>
+    </div>
+
+    <script>
+        function showLocalStorage() {
+            const container = document.getElementById('localStorageData');
+            const data = {};
+            
+            // Собираем все ключи localStorage
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key) {
+                    try {
+                        data[key] = JSON.parse(localStorage.getItem(key));
+                    } catch {
+                        data[key] = localStorage.getItem(key);
+                    }
+                }
+            }
+            
+            container.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        }
+        
+        async function showServerData() {
+            const container = document.getElementById('serverData');
+            try {
+                const response = await fetch('http://localhost:3001/api/data');
+                const result = await response.json();
+                container.innerHTML = `<pre class="success">${JSON.stringify(result, null, 2)}</pre>`;
+            } catch (error) {
+                container.innerHTML = `<pre class="error">Ошибка: ${error.message}</pre>`;
+            }
+        }
+        
+        async function migrateAllData() {
+            const container = document.getElementById('migrationResult');
+            container.innerHTML = '<div class="info">⏳ Мигрируем данные...</div>';
+            
+            const results = [];
+            
+            // Ключи для миграции
+            const keysToMigrate = [
+                'mp:wildberries',
+                'mp:yandex', 
+                'supplier:mikado',
+                'supplier:moskvorechie'
+            ];
+            
+            for (const key of keysToMigrate) {
+                try {
+                    const localData = localStorage.getItem(key);
+                    if (localData) {
+                        const data = JSON.parse(localData);
+                        const serverKey = key.replace('mp:', '').replace('supplier:', '');
+                        
+                        const response = await fetch(`http://localhost:3001/api/data/${serverKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(data)
+                        });
+                        
+                        const result = await response.json();
+                        results.push(`${serverKey}: ${result.ok ? '✅ Успешно' : '❌ Ошибка'}`);
+                    }
+                } catch (error) {
+                    results.push(`${key}: ❌ Ошибка - ${error.message}`);
+                }
+            }
+            
+            container.innerHTML = `<div class="success"><strong>Результаты миграции:</strong><br/>${results.join('<br/>')}</div>`;
+        }
+    </script>
+</body>
+</html>

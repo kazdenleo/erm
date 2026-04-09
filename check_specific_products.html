@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Проверка товаров AN1048 и E500014</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .product-item {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background: #f8f9fa;
+        }
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            background: #fff;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .success { border-left: 4px solid #28a745; }
+        .error { border-left: 4px solid #dc3545; }
+        .info { border-left: 4px solid #17a2b8; }
+        .warning { border-left: 4px solid #ffc107; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        .product-info {
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .supplier-result {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Проверка товаров у поставщиков</h1>
+        <p>Проверяем наличие и цены для товаров: <strong>AN1048</strong> и <strong>E500014</strong></p>
+        
+        <div id="products-list">
+            <p>Загружаем товары...</p>
+        </div>
+    </div>
+
+    <script>
+        // Функция для загрузки товаров из localStorage
+        function loadProducts() {
+            try {
+                const raw = localStorage.getItem('products');
+                return raw ? JSON.parse(raw) : [];
+            } catch (e) {
+                console.error('Ошибка загрузки товаров:', e);
+                return [];
+            }
+        }
+
+        // Функция для запроса цены у Mikado
+        async function testMikado(article, brand, productId) {
+            const resultId = 'result-' + productId;
+            const resultDiv = document.getElementById(resultId);
+            const button = event.target;
+            
+            button.disabled = true;
+            button.textContent = 'Запрашиваем...';
+            resultDiv.innerHTML = '<div class="supplier-result">🔄 Отправляем запрос к Mikado...</div>';
+            
+            try {
+                console.log(`[Test] Запрашиваем цену у Mikado для: ${article}, ${brand}`);
+                
+                // Прямой запрос к серверу
+                const url = `http://localhost:3001/supplier/mikado/price?code=${encodeURIComponent(article)}&brand=${encodeURIComponent(brand)}&client_id=test_client&password=test_password`;
+                
+                console.log(`[Test] URL: ${url}`);
+                
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/xml, text/xml, */*'
+                    }
+                });
+                
+                console.log(`[Test] Response status: ${response.status}`);
+                
+                const responseText = await response.text();
+                console.log(`[Test] Response text (first 1000 chars):`, responseText.substring(0, 1000));
+                
+                // Парсим XML ответ
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(responseText, 'text/xml');
+                
+                // Проверяем на ошибки парсинга
+                const parserError = xml.querySelector('parsererror');
+                if (parserError) {
+                    resultDiv.innerHTML = `
+                        <div class="supplier-result error">
+                            ❌ Mikado - Ошибка парсинга XML:
+                            ${parserError.textContent}
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // Извлекаем данные
+                const items = xml.getElementsByTagName('CodeBrandLine');
+                console.log(`[Test] Found CodeBrandLine elements:`, items.length);
+                
+                if (items.length === 0) {
+                    // Проверяем сообщение об ошибке
+                    const messageElement = xml.getElementsByTagName('Message')[0];
+                    const message = messageElement ? messageElement.textContent : 'Неизвестная ошибка';
+                    resultDiv.innerHTML = `
+                        <div class="supplier-result error">
+                            ❌ Mikado - Товар не найден:
+                            ${message}
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // Берем первый элемент и извлекаем данные
+                const firstItem = items[0];
+                const priceElement = firstItem.getElementsByTagName('PriceRUR')[0];
+                const stockElement = firstItem.getElementsByTagName('StockQTY')[0];
+                const stockNameElement = firstItem.getElementsByTagName('StokName')[0];
+                const deliveryElement = firstItem.getElementsByTagName('DeliveryDays')[0];
+                
+                const price = priceElement ? parseFloat(priceElement.textContent) : null;
+                const stock = stockElement ? parseInt(stockElement.textContent) : null;
+                const stockName = stockNameElement ? stockNameElement.textContent : '';
+                const deliveryDays = deliveryElement ? parseInt(deliveryElement.textContent) : 1;
+                
+                if (!price || isNaN(price)) {
+                    resultDiv.innerHTML = `
+                        <div class="supplier-result error">
+                            ❌ Mikado - Цена не найдена в ответе
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // Проверяем настройки поставщика
+                const supplierSettings = JSON.parse(localStorage.getItem('supplierSettings_mikado') || '{}');
+                const minDays = supplierSettings.minDeliveryDays || 0;
+                const maxDays = supplierSettings.maxDeliveryDays || 365;
+                const preferInStock = supplierSettings.preferInStock !== false;
+                
+                let settingsCheck = '';
+                if (deliveryDays < minDays || deliveryDays > maxDays) {
+                    settingsCheck = `⚠️ Срок доставки ${deliveryDays} дней не входит в диапазон ${minDays}-${maxDays} дней`;
+                } else if (preferInStock && (!stock || stock <= 0)) {
+                    settingsCheck = `⚠️ Товар не в наличии, а приоритет отдается товарам в наличии`;
+                } else {
+                    settingsCheck = `✅ Товар соответствует настройкам поставщика`;
+                }
+                
+                resultDiv.innerHTML = `
+                    <div class="supplier-result success">
+                        ✅ <strong>Mikado - Товар найден!</strong><br>
+                        💰 Цена: ${price.toLocaleString('ru-RU')} ₽<br>
+                        📦 Остаток: ${stock || 0} шт.<br>
+                        🏪 Склад: ${stockName || 'Не указан'}<br>
+                        🚚 Доставка: ${deliveryDays} дней<br>
+                        ${settingsCheck}
+                    </div>
+                `;
+                
+            } catch (error) {
+                console.error('[Test] Error:', error);
+                resultDiv.innerHTML = `
+                    <div class="supplier-result error">
+                        ❌ Mikado - Ошибка: ${error.message}
+                    </div>
+                `;
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Запросить цену у Mikado';
+            }
+        }
+
+        // Отображаем товары
+        function displayProducts() {
+            const products = loadProducts();
+            const productsList = document.getElementById('products-list');
+            
+            if (products.length === 0) {
+                productsList.innerHTML = '<p>Товары не найдены в localStorage. Добавьте товары в основном приложении.</p>';
+                return;
+            }
+            
+            // Фильтруем только нужные товары
+            const targetArticles = ['AN1048', 'E500014'];
+            const targetProducts = products.filter(product => 
+                targetArticles.includes(product.article)
+            );
+            
+            if (targetProducts.length === 0) {
+                productsList.innerHTML = '<p>Товары AN1048 и E500014 не найдены в системе.</p>';
+                return;
+            }
+            
+            let html = `<h2>Найдено целевых товаров: ${targetProducts.length}</h2>`;
+            
+            targetProducts.forEach((product, index) => {
+                html += `
+                    <div class="product-item">
+                        <h3>Товар: ${product.article} - ${product.name || 'Без названия'}</h3>
+                        <div class="product-info">
+                            <p><strong>ID:</strong> ${product.id}</p>
+                            <p><strong>Артикул:</strong> ${product.article || 'Не указан'}</p>
+                            <p><strong>Бренд:</strong> ${product.brand || 'Не указан'}</p>
+                            <p><strong>Описание:</strong> ${product.description || 'Не указано'}</p>
+                            <p><strong>Цена:</strong> ${product.price ? product.price.toLocaleString('ru-RU') + ' ₽' : 'Не указана'}</p>
+                        </div>
+                        <button onclick="testMikado('${(product.article || '').replace(/'/g, "\\'")}', '${(product.brand || '').replace(/'/g, "\\'")}', '${product.id}')">
+                            🏭 Запросить цену у Mikado
+                        </button>
+                        <div id="result-${product.id}" class="result info">Нажмите кнопку для запроса цены у поставщика</div>
+                    </div>
+                `;
+            });
+            
+            productsList.innerHTML = html;
+        }
+
+        // Загружаем товары при загрузке страницы
+        document.addEventListener('DOMContentLoaded', displayProducts);
+    </script>
+</body>
+</html>

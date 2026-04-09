@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ручное обновление данных на сервере</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 20px; 
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .code-block {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            overflow-x: auto;
+            position: relative;
+        }
+        .copy-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #007cba;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .copy-btn:hover { background: #005a87; }
+        button { 
+            padding: 15px 30px; 
+            margin: 10px; 
+            background: #007cba; 
+            color: white; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            font-size: 16px;
+            font-weight: bold;
+        }
+        button:hover { background: #005a87; }
+        .step {
+            margin: 20px 0;
+            padding: 15px;
+            border-left: 4px solid #007cba;
+            background: #f8f9fa;
+        }
+        .warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Ручное обновление данных на сервере</h1>
+        
+        <div class="warning">
+            <strong>⚠️ Важно:</strong> Замените "ВАШ_РЕАЛЬНЫЙ_API_КЛЮЧ" на настоящие данные из вашего аккаунта Ozon.
+        </div>
+
+        <div class="step">
+            <h3>📋 Шаг 1: Откройте консоль браузера</h3>
+            <p>1. Откройте <a href="http://localhost:3001" target="_blank">http://localhost:3001</a></p>
+            <p>2. Нажмите <strong>F12</strong> или <strong>Ctrl+Shift+I</strong></p>
+            <p>3. Перейдите на вкладку <strong>Console</strong></p>
+        </div>
+
+        <div class="step">
+            <h3>🚀 Шаг 2: Обновите данные Ozon</h3>
+            <p>Скопируйте и выполните этот код в консоли:</p>
+            <div class="code-block">
+                <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+                <div id="ozon-code">
+// Обновление данных Ozon
+fetch("http://localhost:3001/api/data/ozon", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    client_id: "2667088",
+    api_key: "ВАШ_РЕАЛЬНЫЙ_API_КЛЮЧ_OZON"
+  })
+}).then(r => r.json()).then(result => {
+  console.log("Результат обновления Ozon:", result);
+  if (result.ok) {
+    console.log("✅ Ozon данные обновлены успешно!");
+  } else {
+    console.log("❌ Ошибка обновления Ozon:", result.message);
+  }
+});
+                </div>
+            </div>
+        </div>
+
+        <div class="step">
+            <h3>🧪 Шаг 3: Протестируйте товар AN1048</h3>
+            <p>После обновления данных выполните этот код:</p>
+            <div class="code-block">
+                <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+                <div id="test-code">
+// Тестирование товара AN1048
+fetch("http://localhost:3001/product/check/ozon?offer_id=AN1048")
+.then(r => r.json())
+.then(result => {
+  console.log("Результат проверки товара AN1048:", result);
+  if (result.data.found) {
+    console.log("🎉 ТОВАР AN1048 НАЙДЕН НА OZON!");
+    console.log("Детали товара:", result.data.product);
+  } else {
+    console.log("❌ Товар AN1048 не найден");
+    console.log("Причина:", result.data.message);
+  }
+});
+                </div>
+            </div>
+        </div>
+
+        <div class="step">
+            <h3>📂 Шаг 4: Проверьте категории Ozon</h3>
+            <p>Загрузите категории с Ozon:</p>
+            <div class="code-block">
+                <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+                <div id="categories-code">
+// Загрузка категорий Ozon
+fetch("http://localhost:3001/categories/ozon")
+.then(r => r.json())
+.then(result => {
+  console.log("Результат загрузки категорий:", result);
+  if (result.ok && Array.isArray(result.data) && result.data.length > 0) {
+    console.log(`🎉 ЗАГРУЖЕНО ${result.data.length} КАТЕГОРИЙ С OZON!`);
+    console.log("Первые 5 категорий:", result.data.slice(0, 5));
+  } else {
+    console.log("⚠️ Категории не загружены");
+  }
+});
+                </div>
+            </div>
+        </div>
+
+        <div class="step">
+            <h3>📊 Шаг 5: Проверьте все данные на сервере</h3>
+            <p>Посмотрите текущее состояние всех данных:</p>
+            <div class="code-block">
+                <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+                <div id="check-code">
+// Проверка всех данных на сервере
+fetch("http://localhost:3001/api/data")
+.then(r => r.json())
+.then(result => {
+  console.log("Все данные на сервере:", result);
+  if (result.ok) {
+    for (const [type, data] of Object.entries(result.data)) {
+      if (Object.keys(data).length > 0) {
+        console.log(`✅ ${type.toUpperCase()}: Настроено`);
+      } else {
+        console.log(`❌ ${type}: Не настроено`);
+      }
+    }
+  }
+});
+                </div>
+            </div>
+        </div>
+
+        <div class="success">
+            <strong>🎯 Цель:</strong> Получить информацию о товаре AN1048 с Ozon и загрузить категории маркетплейса.
+        </div>
+    </div>
+
+    <script>
+        function copyCode(button) {
+            const codeBlock = button.nextElementSibling;
+            const text = codeBlock.textContent;
+            
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(text).then(() => {
+                    button.textContent = 'Скопировано!';
+                    setTimeout(() => {
+                        button.textContent = 'Копировать';
+                    }, 2000);
+                });
+            } else {
+                // Fallback для старых браузеров
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                button.textContent = 'Скопировано!';
+                setTimeout(() => {
+                    button.textContent = 'Копировать';
+                }, 2000);
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+/**
+ * CSS Variables
+ * Переменные для темизации
+ */
+
+:root {
+  --bg: #f5f7fb;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #6b7280;
+  --primary: #0f172a;
+  --primary-600: #0f766e;
+  --primary-50: #ecfdf5;
+  --primary-100: #d1fae5;
+  --primary-500: #059669;
+  --accent: #22c55e;
+  --accent-50: #ecfdf3;
+  --accent-100: #dcfce7;
+  --ring: rgba(31, 41, 55, 0.1);
+  --border: #E5E7EB;
+  --hover: #F9FAFB;
+  --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+}
+
+/* Dark theme отключена - всегда используем белый стиль */
+/* @media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111827;
+    --card: #1f2937;
+    --text: #f9fafb;
+    --muted: #9ca3af;
+    --border: #374151;
+    --hover: #374151;
+  }
+} */
+

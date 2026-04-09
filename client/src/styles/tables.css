@@ -1,0 +1,132 @@
+/**
+ * Common Table Styles
+ * Общие стили для всех таблиц в приложении
+ */
+
+/* Общие стили для всех таблиц */
+.table,
+.products-table,
+.orders-table,
+.warehouses-table,
+.suppliers-table,
+.stock-levels-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: white;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  position: relative;
+  table-layout: auto;
+  margin: 20px 0;
+}
+
+.table thead,
+.products-table thead,
+.orders-table thead,
+.warehouses-table thead,
+.suppliers-table thead,
+.stock-levels-table thead {
+  background: #f8fafc;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.table th,
+.products-table th,
+.orders-table th,
+.warehouses-table th,
+.suppliers-table th,
+.stock-levels-table th {
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.table td,
+.products-table td,
+.orders-table td,
+.warehouses-table td,
+.suppliers-table td,
+.stock-levels-table td {
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--text);
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: top;
+}
+
+.table tbody tr,
+.products-table tbody tr,
+.orders-table tbody tr,
+.warehouses-table tbody tr,
+.suppliers-table tbody tr,
+.stock-levels-table tbody tr {
+  transition: background 0.2s;
+}
+
+.table tbody tr:hover,
+.products-table tbody tr:hover,
+.orders-table tbody tr:hover,
+.warehouses-table tbody tr:hover,
+.suppliers-table tbody tr:hover,
+.stock-levels-table tbody tr:hover {
+  background: var(--hover);
+}
+
+.table tbody tr:last-child td,
+.products-table tbody tr:last-child td,
+.orders-table tbody tr:last-child td,
+.warehouses-table tbody tr:last-child td,
+.suppliers-table tbody tr:last-child td,
+.stock-levels-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Контейнер для таблиц с прокруткой */
+.table-container,
+.products-table-container,
+.orders-list,
+.warehouses-list,
+.suppliers-list,
+.stock-levels-table-wrapper {
+  overflow-x: auto;
+  margin: 20px 0;
+}
+
+/* Адаптивность */
+@media (max-width: 768px) {
+  .table,
+  .products-table,
+  .orders-table,
+  .warehouses-table,
+  .suppliers-table,
+  .stock-levels-table {
+    font-size: 12px;
+    min-width: 800px;
+  }
+  
+  .table th,
+  .table td,
+  .products-table th,
+  .products-table td,
+  .orders-table th,
+  .orders-table td,
+  .warehouses-table th,
+  .warehouses-table td,
+  .suppliers-table th,
+  .suppliers-table td,
+  .stock-levels-table th,
+  .stock-levels-table td {
+    padding: 12px 8px;
+  }
+}
+

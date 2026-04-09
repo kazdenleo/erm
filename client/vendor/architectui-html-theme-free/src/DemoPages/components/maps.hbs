@@ -1,0 +1,55 @@
+{{#> base }}
+    {{> AppSidebar/sidebar components-maps=this }}
+    <div class="app-main__outer">
+        <div class="app-main__inner">
+            {{> AppMain/page-title }}
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="main-card mb-3 card">
+                        <div class="card-body">
+                            <div class="card-title">Satellite Map - Tokyo, Japan</div>
+                            <div id="map" class="map-container"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="main-card mb-3 card">
+                        <div class="card-body">
+                            <div class="card-title">Standard Map - New York, USA</div>
+                            <div id="gmap-example" class="map-container"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="main-card mb-3 card">
+                        <div class="card-body">
+                            <div class="card-title">City Map - London, UK</div>
+                            <div id="map-multiple-markers" class="map-container"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="main-card mb-3 card">
+                        <div class="card-body">
+                            <div class="card-title">Location Map - Paris, France</div>
+                            <div id="map-custom-styles" class="map-container"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="main-card mb-3 card">
+                        <div class="card-body">
+                            <div class="card-title">City Map - San Francisco, USA</div>
+                            <div id="map-interactive-demo" class="map-container"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {{> AppFooter/footer }}
+    </div>
+{{/ base }}

@@ -1,0 +1,161 @@
+/* Общие стили наследуются из tables.css и pages.css */
+
+.order-detail-row-link {
+  color: var(--primary, #0d6efd);
+  text-decoration: none;
+}
+.order-detail-row-link:hover {
+  text-decoration: underline;
+}
+
+.orders-col-checkbox {
+  width: 48px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.orders-col-num {
+  width: 2.5rem;
+  text-align: right;
+  color: var(--muted, #666);
+  font-variant-numeric: tabular-nums;
+}
+
+.orders-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.orders-checkbox-label input {
+  cursor: pointer;
+}
+
+.orders-checkbox-caption {
+  font-size: 12px;
+  color: var(--muted, #666);
+}
+
+.orders-row-selected {
+  background: rgba(13, 110, 253, 0.08);
+}
+
+.orders-row-clickable {
+  cursor: pointer;
+}
+.orders-row-clickable:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.orders-row-clickable.orders-row-selected:hover {
+  background: rgba(13, 110, 253, 0.12);
+}
+
+.orders-multi-products {
+  display: inline-block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.orders-col-article .orders-multi-products {
+  max-width: 200px;
+}
+
+/* Составной заказ: товар / артикул / количество — по строкам, напротив друг друга */
+.orders-stacked-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.orders-stacked-lines--qty {
+  align-items: flex-end;
+}
+.orders-stacked-line {
+  line-height: 1.35;
+}
+.orders-stacked-line--product .orders-stacked-line-text {
+  display: block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orders-stacked-line--ellipsis {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orders-col-qty {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.orders-col-qty .orders-stacked-lines {
+  white-space: normal;
+}
+.orders-row-multi td {
+  vertical-align: top;
+}
+
+.orders-th-sortable {
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.orders-th-sortable-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: inherit;
+  width: 100%;
+}
+.orders-th-sortable-btn:hover {
+  text-decoration: underline;
+}
+.orders-th-sortable--active .orders-th-sortable-btn {
+  font-weight: 600;
+}
+
+.orders-col-label {
+  text-align: center;
+  width: 2.5rem;
+}
+
+.orders-label-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary, #0d6efd);
+  text-decoration: none;
+}
+.orders-label-link:hover {
+  color: var(--primary-dark, #0a58ca);
+}
+
+.orders-add-form .form-group {
+  margin-bottom: 14px;
+}
+.orders-add-form .label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 500;
+  font-size: 14px;
+}
+.orders-add-form .form-control {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 14px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+}
+

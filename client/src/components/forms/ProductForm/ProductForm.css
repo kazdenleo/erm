@@ -1,0 +1,5 @@
+/* ProductForm now uses ArchitectUI/Bootstrap classes. */
+.product-form {
+  max-width: 980px;
+}
+

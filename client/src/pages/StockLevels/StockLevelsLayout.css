@@ -1,0 +1,42 @@
+/* Табы склада + панели операций не обрезаем overflow:hidden у глобального .card */
+.stock-levels-layout.card {
+  overflow: visible;
+}
+
+.stock-levels-layout .stock-levels-subnav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stock-levels-subnav--wrap {
+  flex-wrap: wrap;
+}
+
+.stock-levels-tab {
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  transition: background 0.2s, color 0.2s;
+}
+
+.stock-levels-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.stock-levels-tab.active {
+  color: var(--text);
+  background: var(--primary-50);
+  border: 1px solid var(--primary);
+}
+
+.stock-levels-content {
+  margin-top: 0;
+}

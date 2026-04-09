@@ -1,0 +1,55 @@
+.register-account-admin-page {
+  max-width: 520px;
+}
+
+.register-account-admin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.register-account-admin-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text, #333);
+  margin: 0;
+}
+
+.register-account-admin-input:focus {
+  border-color: var(--primary-500, #3f6ad8);
+  box-shadow: 0 0 0 2px var(--ring, rgba(63, 106, 216, 0.2));
+}
+
+.register-account-admin-input:disabled {
+  background: var(--primary-50, #f1f4f6);
+  cursor: not-allowed;
+}
+
+.register-account-admin-req {
+  color: var(--error, #c0392b);
+  font-weight: 600;
+}
+
+.register-account-admin-error {
+  padding: 0.5rem 0.75rem;
+  background: var(--accent-50, #fff5f5);
+  color: var(--error, #c0392b);
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.register-account-admin-hint {
+  margin: -0.5rem 0 0 0;
+}
+
+.register-account-admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
