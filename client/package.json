@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "ERP System Frontend (React)",
   "private": true,
+  "overrides": {
+    "yaml": "2.8.3"
+  },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
