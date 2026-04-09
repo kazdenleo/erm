@@ -25,6 +25,21 @@ async function createMigrationsTable() {
   `);
 }
 
+/**
+ * Старый раннер хранил только числовой префикс (018), из‑за чего разные файлы
+ * с одинаковым номером конфликтовали по UNIQUE. Приводим к виду 018_add_feature.
+ */
+async function normalizeLegacyMigrationVersions() {
+  const r = await query(`
+    UPDATE schema_migrations
+    SET version = version || '_' || name
+    WHERE version ~ '^[0-9]+$'
+  `);
+  if (r.rowCount > 0) {
+    console.log(`[Migration] Normalized ${r.rowCount} legacy version row(s) to id_name form`);
+  }
+}
+
 // Получить список выполненных миграций
 async function getExecutedMigrations() {
   const result = await query('SELECT version FROM schema_migrations ORDER BY version');
@@ -84,9 +99,11 @@ function getMigrationFiles() {
     if (!match) {
       throw new Error(`Invalid migration file name: ${file}`);
     }
+    const num = match[1];
+    const name = match[2];
     return {
-      version: match[1],
-      name: match[2],
+      version: `${num}_${name}`,
+      name,
       file: file,
       path: path.join(MIGRATIONS_DIR, file)
     };
@@ -98,6 +115,7 @@ async function runAllMigrations() {
   console.log('[Migration] Starting migrations...');
   
   await createMigrationsTable();
+  await normalizeLegacyMigrationVersions();
   const executed = await getExecutedMigrations();
   const files = getMigrationFiles();
   
