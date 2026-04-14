@@ -188,6 +188,20 @@ export function WarehouseStocks() {
     });
   };
 
+  /** Подгрузка остатков по конкретному складу (инвентаризация без подстановки «первого склада» при «Все склады»). */
+  const reloadProductsWithWarehouse = useCallback(
+    (warehouseId) => {
+      const w = warehouseId != null && warehouseId !== '' ? String(warehouseId) : '';
+      loadProducts({
+        ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
+        ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
+        ...(w ? { warehouseId: w } : {}),
+        silent: true
+      });
+    },
+    [loadProducts, filterOrganizationId, filterCategoryId]
+  );
+
   useEffect(() => {
     loadProducts({
       ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
@@ -252,7 +266,8 @@ export function WarehouseStocks() {
       <WarehouseOperations
         products={products}
         mainWarehouseName={mainWarehouseName}
-        inventoryWarehouseId={stockWarehouseId || (ownWarehouses[0] ? String(ownWarehouses[0].id) : '')}
+        inventoryWarehouseId={stockWarehouseId || ''}
+        reloadProductsWithWarehouse={reloadProductsWithWarehouse}
         onRefresh={loadProducts}
         loading={productsLoading}
         activeTab={activeTab}

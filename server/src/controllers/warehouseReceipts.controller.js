@@ -31,12 +31,14 @@ class WarehouseReceiptsController {
 
   async create(req, res, next) {
     try {
-      const { documentType, organizationId, supplierId, lines } = req.body || {};
+      const { documentType, organizationId, supplierId, lines, warehouseId, warehouse_id } = req.body || {};
+      const whRaw = warehouseId ?? warehouse_id ?? null;
       const linesArr = Array.isArray(lines) ? lines : [];
       if (documentType === 'return') {
         const result = await warehouseReceiptsService.createReturn({
           organizationId: organizationId || null,
           supplierId: supplierId || null,
+          warehouseId: whRaw,
           lines: linesArr
         });
         return res.status(200).json({ ok: true, data: result });
@@ -44,6 +46,7 @@ class WarehouseReceiptsController {
       if (documentType === 'customer_return') {
         const result = await warehouseReceiptsService.createCustomerReturn({
           organizationId: organizationId || null,
+          warehouseId: whRaw,
           lines: linesArr
         });
         return res.status(200).json({ ok: true, data: result });
@@ -51,6 +54,7 @@ class WarehouseReceiptsController {
       const result = await warehouseReceiptsService.createReceipt({
         organizationId: organizationId || null,
         supplierId: supplierId || null,
+        warehouseId: whRaw,
         lines: linesArr
       });
       return res.status(200).json({ ok: true, data: result });

@@ -420,6 +420,7 @@ async function maybeDeleteOrphanWarehouseReceiptInTx(client, whId) {
  * Откат остатков по завершённой приёмке (по stock_movements.meta.purchase_receipt_id).
  */
 async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
+  const touchedProducts = new Set();
   // Только «исходные» проводки документа; строки сторно (reversal_of) не трогаем — нельзя откатить откат.
   const movements = await client.query(
     `SELECT id, product_id, type, quantity_change, warehouse_id, meta
@@ -449,6 +450,7 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
     const whRaw = m.warehouse_id;
     const wh = whRaw != null ? Number(whRaw) : null;
     if (m.type === 'receipt' && ch > 0) {
+      touchedProducts.add(pid);
       if (wh && Number.isFinite(wh)) {
         await client.query(
           `UPDATE product_warehouse_stock
@@ -482,6 +484,7 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
         ]
       );
     } else if (m.type === 'incoming' && ch < 0) {
+      touchedProducts.add(pid);
       const addBack = -ch;
       await client.query(`SELECT id FROM products WHERE id = $1 FOR UPDATE`, [pid]);
       await client.query(
@@ -527,23 +530,42 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
       await trimWarehouseReceiptLinesQtyInTx(client, whId, productId, qty);
     }
   }
+  return [...touchedProducts];
 }
 
 /** Удалить незавершённую приёмку (scanning/draft/cancelled): строки склада и документ. */
 async function deleteScanningPurchaseReceiptInTx(client, rid) {
+  const touchedProducts = new Set();
   const head = await client.query(`SELECT id, warehouse_receipt_id FROM purchase_receipts WHERE id = $1 FOR UPDATE`, [rid]);
-  if (!head.rows?.[0]) return;
+  if (!head.rows?.[0]) return [];
   const whId = head.rows[0].warehouse_receipt_id ?? null;
   const items = await client.query(`SELECT product_id, scanned_quantity FROM purchase_receipt_items WHERE receipt_id = $1`, [rid]);
   if (whId) {
     for (const row of items.rows || []) {
       const pid = Number(row.product_id);
       const sq = Math.max(0, parseInt(row.scanned_quantity, 10) || 0);
-      if (pid && sq > 0) await trimWarehouseReceiptLinesQtyInTx(client, whId, pid, sq);
+      if (pid && sq > 0) {
+        touchedProducts.add(pid);
+        await trimWarehouseReceiptLinesQtyInTx(client, whId, pid, sq);
+      }
     }
   }
   await client.query(`DELETE FROM purchase_receipts WHERE id = $1`, [rid]);
   await maybeDeleteOrphanWarehouseReceiptInTx(client, whId);
+  return [...touchedProducts];
+}
+
+/** Убрать строки сканирования по товару в приёмках закупки в статусе scanning (согласовано со снятием ожидания по строке). */
+async function deleteScanningReceiptItemsForPurchaseProductInTx(client, purchaseId, productId) {
+  const p = Number(purchaseId);
+  const pr = Number(productId);
+  if (!Number.isFinite(p) || p < 1 || !Number.isFinite(pr) || pr < 1) return;
+  await client.query(
+    `DELETE FROM purchase_receipt_items ri
+     USING purchase_receipts r
+     WHERE ri.receipt_id = r.id AND r.purchase_id = $1 AND r.status = 'scanning' AND ri.product_id = $2`,
+    [p, pr]
+  );
 }
 
 async function recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId) {
@@ -1147,9 +1169,12 @@ class PurchasesService {
   }
 
   /**
-   * Удалить строку закупки (только непринятый остаток): снять incoming, связанные заказы → «Новый» при отсутствии другой закупки.
+   * Уменьшить ожидание по строке на reduceBy шт. (целое, не больше непринятого).
+   * Без reduceBy — снимается всё непринятое (принято без изменений).
+   * incoming −= reduceBy; expected −= reduceBy; source_orders обрезается до нового expected, хвост заказов → «Новый».
+   * Черновик сканирования по товару очищается только если ожидание сравнялось с принятым или строка удалена.
    */
-  async removeDraftLineItem(purchaseId, itemId, { profileId } = {}) {
+  async removeDraftLineItem(purchaseId, itemId, { profileId, reduceBy: reduceByRaw } = {}) {
     const pid = normalizeProfileId(profileId);
     if (pid == null) {
       const err = new Error('Профиль не определён');
@@ -1164,7 +1189,11 @@ class PurchasesService {
       throw err;
     }
 
-    let sourceList = [];
+    let sourceListDeleted = [];
+    let ordersToRelease = [];
+    let mode = 'deleted';
+    let reduceByFinal = 0;
+    let newExpectedOut = 0;
 
     await transaction(async (client) => {
       await assertPurchaseInProfile(client, purId, pid);
@@ -1185,29 +1214,96 @@ class PurchasesService {
         err.statusCode = 404;
         throw err;
       }
-      const rec = Math.max(0, parseInt(row.received_quantity, 10) || 0);
-      if (rec > 0) {
-        const err = new Error('Нельзя удалить строку с уже принятым количеством');
+      const rec = Math.max(0, Math.floor(Number(row.received_quantity) || 0));
+      const expected = Math.max(0, Math.floor(Number(row.expected_quantity) || 0));
+
+      if (rec > expected) {
+        const err = new Error(
+          'По строке «принято» больше, чем «ожидалось» (излишек или рассинхрон). Увеличьте в учёте «ожидалось» до количества принятого или обратитесь к администратору — уменьшить ожидание нельзя, пока принято не ≤ ожидаемого.'
+        );
         err.statusCode = 400;
         throw err;
       }
 
-      const expected = Math.max(0, parseInt(row.expected_quantity, 10) || 0);
-      const remIncoming = Math.max(0, expected - rec);
-      const productId = Number(row.product_id);
-      if (remIncoming > 0 && productId) {
-        await subtractIncomingForPurchaseLineRemovalInTx(client, purId, productId, remIncoming);
+      const maxReduce = Math.max(0, expected - rec);
+
+      if (maxReduce <= 0) {
+        const err = new Error('Нет непринятого количества по строке — снимать ожидание нечего');
+        err.statusCode = 400;
+        throw err;
       }
 
-      sourceList = parseSourceOrdersJson(row.source_orders);
+      let reduceBy = maxReduce;
+      if (reduceByRaw != null && reduceByRaw !== '') {
+        const n =
+          typeof reduceByRaw === 'number'
+            ? reduceByRaw
+            : parseFloat(String(reduceByRaw).replace(',', '.'));
+        const ni = Math.floor(Number.isFinite(n) ? n : 0);
+        if (ni <= 0) {
+          const err = new Error('Укажите целое положительное число — на сколько уменьшить ожидание');
+          err.statusCode = 400;
+          throw err;
+        }
+        reduceBy = Math.min(ni, maxReduce);
+      } else {
+        reduceBy = maxReduce;
+      }
 
-      await client.query(`DELETE FROM purchase_items WHERE id = $1`, [lineId]);
+      reduceBy = Math.floor(Math.min(Math.max(1, reduceBy), maxReduce));
 
-      await revertInProcurementOrdersFromSourceListInTx(client, sourceList, { profileId: pid });
+      const newExpected = expected - reduceBy;
+      if (newExpected < rec) {
+        const err = new Error(
+          'Нельзя уменьшить ожидание ниже уже принятого по строке. Обновите страницу: «ожидалось» должно быть не меньше «принято».'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+
+      reduceByFinal = reduceBy;
+      newExpectedOut = newExpected;
+
+      const productId = Number(row.product_id);
+      const fullSource = parseSourceOrdersJson(row.source_orders);
+
+      let keptSource = fullSource;
+      let revertSlice = [];
+      if (fullSource.length > newExpected) {
+        keptSource = fullSource.slice(0, newExpected);
+        revertSlice = fullSource.slice(newExpected);
+      }
+
+      const clearScanning = productId && (newExpected === 0 || newExpected === rec);
+      if (clearScanning) {
+        await deleteScanningReceiptItemsForPurchaseProductInTx(client, purId, productId);
+      }
+
+      if (productId) {
+        await subtractIncomingForPurchaseLineRemovalInTx(client, purId, productId, reduceBy);
+      }
+
+      if (newExpected === 0 && rec === 0) {
+        mode = 'deleted';
+        sourceListDeleted = fullSource;
+        ordersToRelease = fullSource;
+        await client.query(`DELETE FROM purchase_items WHERE id = $1`, [lineId]);
+        await revertInProcurementOrdersFromSourceListInTx(client, fullSource, { profileId: pid });
+      } else {
+        mode = newExpected === rec ? 'shrink' : 'reduce';
+        await client.query(
+          `UPDATE purchase_items SET expected_quantity = $1, source_orders = $2::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
+          [newExpected, JSON.stringify(keptSource), lineId]
+        );
+        if (revertSlice.length > 0) {
+          await revertInProcurementOrdersFromSourceListInTx(client, revertSlice, { profileId: pid });
+        }
+        ordersToRelease = revertSlice;
+      }
     });
 
     const uniqRel = new Map();
-    for (const o of sourceList) {
+    for (const o of ordersToRelease) {
       const k = `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
       if (!k.endsWith('|')) uniqRel.set(k, o);
     }
@@ -1215,7 +1311,13 @@ class PurchasesService {
       await releaseReservesAfterRevertForSourceOrder(o.marketplace, o.orderId);
     }
 
-    return { ok: true, returnedOrders: sourceList };
+    return {
+      ok: true,
+      mode,
+      reduceBy: reduceByFinal,
+      newExpected: newExpectedOut,
+      returnedOrders: mode === 'deleted' ? sourceListDeleted : ordersToRelease
+    };
   }
 
   /**
@@ -1806,6 +1908,7 @@ class PurchasesService {
     }
 
     let purchaseIdOut = null;
+    const trimProducts = new Set();
     await transaction(async (client) => {
       const r = await client.query(
         `SELECT r.id, r.status, r.purchase_id, r.warehouse_receipt_id
@@ -1827,14 +1930,25 @@ class PurchasesService {
       const whId = row.warehouse_receipt_id != null ? Number(row.warehouse_receipt_id) : null;
 
       if (st === 'completed') {
-        await reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId);
+        const pids = await reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId);
+        for (const x of pids) trimProducts.add(x);
         await client.query(`DELETE FROM purchase_receipts WHERE id = $1`, [rid]);
         await maybeDeleteOrphanWarehouseReceiptInTx(client, whId);
         await recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId);
       } else {
-        await deleteScanningPurchaseReceiptInTx(client, rid);
+        const pids = await deleteScanningPurchaseReceiptInTx(client, rid);
+        for (const x of pids) trimProducts.add(x);
       }
     });
+
+    for (const prodId of trimProducts) {
+      await ordersService
+        .trimExcessReservesForProduct(prodId, {
+          reason: `Откат/удаление приёмки по закупке`,
+          meta: { purchase_receipt_id: rid }
+        })
+        .catch(() => {});
+    }
 
     return { ok: true, purchaseId: purchaseIdOut };
   }
@@ -1857,6 +1971,7 @@ class PurchasesService {
     }
 
     let sourceList = [];
+    let productIdsToTrim = [];
     await transaction(async (client) => {
       await assertPurchaseInProfile(client, id, prof);
       const ph = await client.query('SELECT id FROM purchases WHERE id = $1 FOR UPDATE', [id]);
@@ -1865,6 +1980,14 @@ class PurchasesService {
         err.statusCode = 404;
         throw err;
       }
+
+      const piRows = await client.query(
+        `SELECT DISTINCT product_id FROM purchase_items WHERE purchase_id = $1`,
+        [id]
+      );
+      productIdsToTrim = (piRows.rows || [])
+        .map((row) => Number(row.product_id))
+        .filter((n) => Number.isFinite(n) && n > 0);
 
       const receipts = await client.query(
         `SELECT id, status FROM purchase_receipts WHERE purchase_id = $1 ORDER BY id ASC`,
@@ -1901,6 +2024,15 @@ class PurchasesService {
     }
     for (const o of uniq.values()) {
       await releaseReservesAfterRevertForSourceOrder(o.marketplace, o.orderId);
+    }
+
+    for (const prodId of [...new Set(productIdsToTrim)]) {
+      await ordersService
+        .trimExcessReservesForProduct(prodId, {
+          reason: `Удаление закупки и снятие ожидания (incoming)`,
+          meta: { purchase_id: id }
+        })
+        .catch(() => {});
     }
 
     return { ok: true, releasedOrders: [...uniq.values()] };

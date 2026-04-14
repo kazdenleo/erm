@@ -69,7 +69,8 @@ class PurchasesController {
     try {
       const { id, itemId } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const data = await purchasesService.removeDraftLineItem(id, itemId, { profileId });
+      const reduceBy = req.body?.reduceBy ?? req.query?.reduceBy;
+      const data = await purchasesService.removeDraftLineItem(id, itemId, { profileId, reduceBy });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {

@@ -7,7 +7,10 @@ import api from './api';
 export const receiptsApi = {
   getList: async (params = {}) => {
     const response = await api.get('/receipts', { params });
-    return response.data;
+    const body = response.data || {};
+    const list = Array.isArray(body.data) ? body.data : [];
+    const total = typeof body.total === 'number' ? body.total : list.length;
+    return { list, total };
   },
 
   getById: async (id) => {

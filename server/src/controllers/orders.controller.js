@@ -4,7 +4,7 @@
  */
 
 import fs from 'fs';
-import ordersService from '../services/orders.service.js';
+import ordersService, { orderEligibleForProcurement } from '../services/orders.service.js';
 import ordersSyncService from '../services/orders.sync.service.js';
 import {
   setOrdersFbsBackgroundSyncPaused,
@@ -227,16 +227,6 @@ class OrdersController {
     }
   }
 
-  async rebuildProcurementReserves(req, res, next) {
-    try {
-      const data = await ordersService.rebuildProcurementReserves();
-      return res.status(200).json({ ok: true, data });
-    } catch (error) {
-      if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
-      next(error);
-    }
-  }
-
   /**
    * Вернуть заказ в статус «Новый» (сборка / собран).
    * PUT /orders/:marketplace/:orderId/return-to-new
@@ -266,8 +256,20 @@ class OrdersController {
       if (!order) {
         return res.status(404).json({ ok: false, message: 'Заказ не найден' });
       }
-      if (order.status !== 'new') {
-        return res.status(400).json({ ok: false, message: 'В статус «В закупке» можно перевести только заказ в статусе «Новый»' });
+      const stNorm = String(order.status ?? '').trim().toLowerCase();
+      if (stNorm === 'in_procurement') {
+        return res.status(200).json({
+          ok: true,
+          data: { message: 'Заказ уже в статусе «В закупке»', alreadyInProcurement: true }
+        });
+      }
+      if (!orderEligibleForProcurement(order)) {
+        return res.status(400).json({
+          ok: false,
+          message:
+            'В статус «В закупке» можно перевести заказ в статусе «Новый» (для Wildberries также — пока статус заказа ещё не получен из API).',
+          currentStatus: order.status ?? null
+        });
       }
       await ordersService.setOrderToProcurement(marketplace, orderId);
       return res.status(200).json({ ok: true, data: { message: 'Статус заказа изменён на «В закупке»' } });

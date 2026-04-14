@@ -1323,6 +1323,18 @@ class ProductsRepositoryPG {
     return await this.getDefaultOwnWarehouseId();
   }
 
+  /** Склад обязателен: без fallback на склад по умолчанию. */
+  async resolveStrictOwnWarehouseId(warehouseId) {
+    if (warehouseId == null || warehouseId === '') return null;
+    const n = typeof warehouseId === 'string' ? parseInt(warehouseId, 10) : Number(warehouseId);
+    if (!Number.isFinite(n) || n < 1) return null;
+    const r = await query(
+      `SELECT id FROM warehouses WHERE id = $1 AND type = 'warehouse' AND supplier_id IS NULL`,
+      [n]
+    );
+    return r.rows?.length ? n : null;
+  }
+
   async getWarehouseFreeStock(productId, warehouseId) {
     const r = await query(
       `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2`,

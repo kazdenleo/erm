@@ -137,6 +137,43 @@ export const productsApi = {
   },
 
   /**
+   * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).
+   */
+  appendBarcode: async (productId, barcode) => {
+    const add = String(barcode || '').trim();
+    if (!add) {
+      const err = new Error('Пустой штрихкод');
+      err.statusCode = 400;
+      throw err;
+    }
+    const id = Number(productId);
+    if (!Number.isFinite(id) || id < 1) {
+      const err = new Error('Некорректный товар');
+      err.statusCode = 400;
+      throw err;
+    }
+    const wrap = await api.get(`/products/${id}`);
+    const body = wrap.data;
+    const p = body?.data ?? body;
+    if (!p?.id) {
+      const err = new Error('Товар не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+    const existing = Array.isArray(p.barcodes)
+      ? p.barcodes.map((b) => String(b).trim()).filter(Boolean)
+      : [];
+    if (existing.includes(add)) {
+      return p;
+    }
+    const merged = [...existing, add];
+    await api.put(`/products/${id}`, { barcodes: merged });
+    const wrap2 = await api.get(`/products/${id}`);
+    const body2 = wrap2.data;
+    return body2?.data ?? body2;
+  },
+
+  /**
    * Изображения товара
    */
   getImages: async (id) => {

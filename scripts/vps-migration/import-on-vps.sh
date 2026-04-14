@@ -37,11 +37,16 @@ DB_USER="$(read_env_val DB_USER)"
 echo "[import] Останавливаем API..."
 pm2 stop erm-api 2>/dev/null || true
 
-echo "[import] pg_restore в $DB_NAME (от пользователя postgres)..."
+# postgres не может читать файлы в /root (mode 700); копируем дамп в /tmp
+DUMP_WORK="$(mktemp /tmp/erp-restore-XXXXXX.dump)"
+cp "$DUMP" "$DUMP_WORK"
+chmod 644 "$DUMP_WORK"
+echo "[import] pg_restore в $DB_NAME (от пользователя postgres), временный файл: $DUMP_WORK"
 # --no-owner --no-acl: дамп с ПК не тащит владельцев Windows; права дальше выдаём $DB_USER
-sudo -u postgres pg_restore -d "$DB_NAME" --clean --if-exists --no-owner --no-acl -v "$DUMP" || {
+sudo -u postgres pg_restore -d "$DB_NAME" --clean --if-exists --no-owner --no-acl -v "$DUMP_WORK" || {
   echo "[import] pg_restore вернул ненулевой код — просмотрите лог (часть WARNING допустима)."
 }
+rm -f "$DUMP_WORK"
 
 echo "[import] Права для $DB_USER..."
 sudo -u postgres psql -d "$DB_NAME" -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA public TO \"$DB_USER\";"

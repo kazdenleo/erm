@@ -13,8 +13,17 @@ import { suppliersApi } from '../../services/suppliers.api';
 import { stockProblemsApi } from '../../services/stockProblems.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
-import { orderStatusLabels, getOrderStatusLabel } from '../../constants/orderStatuses';
+import {
+  orderStatusLabels,
+  getOrderStatusLabel,
+  isOrderStatusEligibleForProcurement,
+} from '../../constants/orderStatuses';
 import { OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
+import {
+  normalizeMarketplaceForUI,
+  orderGroupKey,
+  singleOrderListGroupKey
+} from '../../utils/orderListGroupKey';
 import './Orders.css';
 import './OrderDetail.css';
 
@@ -24,45 +33,18 @@ function orderKey(o) {
 }
 
 /**
- * Ключ группы заказа (Яндекс, ручные, WB по orderUid): всегда строка.
- * Иначе Map/сравнения ломаются, если у позиций одного заказа gid число vs строка.
+ * Один запрос to-procurement на группу в БД: по сырому order_group_id, даже если UI не склеивает строки
+ * (например, ненадёжный WB uid в orderGroupKey возвращает пустую строку).
  */
-function orderGroupKey(o) {
+function procurementStatusUpdateDedupeKey(o) {
   if (!o) return '';
-  const raw = o.orderGroupId ?? o.order_group_id;
-  if (raw == null) return '';
-  const s = String(raw).trim();
-  if (s === '') return '';
-
-  // WB: иногда orderUid (hash) может быть переиспользован/приехать одинаковым для разных заказов.
-  // Чтобы два разных заказа не склеивались в одну строку, добавляем в ключ дату создания (день).
-  const mp = normalizeMarketplaceForUI(o.marketplace);
-  if (mp === 'wildberries') {
-    const looksLikeHash = /^[a-f0-9]{24,}$/i.test(s);
-    if (looksLikeHash) {
-      const rawDt = o.createdAt ?? o.created_at ?? null;
-      const d = rawDt ? new Date(rawDt) : null;
-      const day = d && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : '';
-      if (day) return `${s}|${day}`;
-    }
+  const rawGid = o.orderGroupId ?? o.order_group_id;
+  const gid = rawGid != null ? String(rawGid).trim() : '';
+  if (gid !== '') {
+    const mp = normalizeMarketplaceForUI(o.marketplace);
+    return `procgrp|${mp}|${gid}`;
   }
-
-  return s;
-}
-
-/**
- * Ключ строки списка без order_group_id: для Яндекса позиции одного заказа — id и «id:offerId».
- */
-function singleOrderListGroupKey(o) {
-  const mp = normalizeMarketplaceForUI(o.marketplace);
-  const oid = String(o.orderId ?? '').trim();
-  if (!oid) return `single-${mp}-`;
-  if (mp === 'yandex') {
-    const i = oid.indexOf(':');
-    const base = i >= 0 ? oid.slice(0, i) : oid;
-    return `single-${mp}-${base}`;
-  }
-  return `single-${mp}-${oid}`;
+  return orderKey(o);
 }
 
 /** Выделенные заказы с полным разворотом групп (все строки БД), как для «Отправить на сборку» */
@@ -105,13 +87,6 @@ function representativesForGroupScopedApi(toSend) {
     }
   }
   return [...byGid.values(), ...singles];
-}
-
-function normalizeMarketplaceForUI(marketplace) {
-  let mp = String(marketplace || '').toLowerCase();
-  if (mp === 'wb') mp = 'wildberries';
-  if (mp === 'ym' || mp === 'yandexmarket') mp = 'yandex';
-  return mp;
 }
 
 /** Артикул для списка: внутренний SKU каталога, иначе offer_id / id на МП */
@@ -343,7 +318,6 @@ export function Orders() {
   const [selectedKeys, setSelectedKeys] = useState(new Set());
   const [assemblyLoading, setAssemblyLoading] = useState(false);
   const [assemblyMessage, setAssemblyMessage] = useState(null);
-  const [rebuildReservesLoading, setRebuildReservesLoading] = useState(false);
   const [addOrderOpen, setAddOrderOpen] = useState(false);
   const [addOrderItems, setAddOrderItems] = useState([{ productId: '', quantity: 1 }]);
   const [addOrderLoading, setAddOrderLoading] = useState(false);
@@ -743,8 +717,15 @@ export function Orders() {
           note,
         });
       }
+      const seenProcKeys = new Set();
       for (const r of sourceRows) {
-        await ordersApi.setToProcurement(r.first.marketplace, r.first.orderId);
+        for (const o of ordersArrayForPurchaseRow(r)) {
+          const dk = procurementStatusUpdateDedupeKey(o);
+          if (seenProcKeys.has(dk)) continue;
+          seenProcKeys.add(dk);
+          if (!isOrderStatusEligibleForProcurement(o.marketplace, o.status)) continue;
+          await ordersApi.setToProcurement(o.marketplace, o.orderId);
+        }
       }
       setSelectedKeys((prev) => {
         const next = new Set(prev);
@@ -1068,7 +1049,7 @@ export function Orders() {
         let skipped = 0;
         const errors = [];
         for (const o of reps) {
-          if (o.status !== 'new') {
+          if (!isOrderStatusEligibleForProcurement(o.marketplace, o.status)) {
             skipped += 1;
             continue;
           }
@@ -1082,7 +1063,7 @@ export function Orders() {
         setAssemblyMessage(
           [
             `В «В закупке» переведено: ${ok}.`,
-            skipped ? ` Пропущено (не статус «Новый»): ${skipped}.` : '',
+            skipped ? ` Пропущено (нет права из текущего статуса): ${skipped}.` : '',
             errors.length ? ` Ошибки: ${errors.slice(0, 8).join('; ')}` : '',
           ].join('')
         );
@@ -1113,12 +1094,12 @@ export function Orders() {
     }
   };
 
-  /** Выбранные целиком строки в статусе «Новый» — доступны для массовой закупки (после sortedGroupedDisplayRows) */
+  /** Выбранные целиком строки, готовые к закупке (новый / у WB — pending до резолва статуса). */
   const bulkProcurementSelectedRows = useMemo(() => {
     return sortedGroupedDisplayRows.filter((row) => {
       const keys = row.orders.map(orderKey);
       if (!keys.every((k) => selectedKeys.has(k))) return false;
-      return row.orders.every((o) => o.status === 'new');
+      return row.orders.every((o) => isOrderStatusEligibleForProcurement(o.marketplace, o.status));
     });
   }, [sortedGroupedDisplayRows, selectedKeys]);
 
@@ -1126,7 +1107,7 @@ export function Orders() {
     const rows = bulkProcurementSelectedRows;
     if (rows.length === 0) {
       setAssemblyMessage(
-        'Отметьте чекбоксами целые строки заказов в статусе «Новый», затем снова нажмите «В закупку».'
+        'Отметьте чекбоксами целые строки заказов, доступных к закупке (статус «Новый» или у WB — пока статус не получен), затем снова нажмите «В закупку».'
       );
       return;
     }
@@ -1240,29 +1221,6 @@ export function Orders() {
             title="Полная загрузка заказов с Ozon, Wildberries и Яндекс.Маркет (обходит ограничение «не чаще раза в минуту»)"
           >
             {syncLoading && syncKind === 'import' ? 'Импорт...' : '📥 Импортировать заказы'}
-          </Button>
-          <Button
-            variant="secondary"
-            size="small"
-            onClick={async () => {
-              try {
-                setRebuildReservesLoading(true);
-                setAssemblyMessage(null);
-                const res = await ordersApi.rebuildProcurementReserves();
-                setAssemblyMessage(
-                  `Резервы исправлены: обработано заказов ${res?.ordersProcessed ?? '—'}, снято ${res?.clearedOrders ?? '—'}, поставлено заново ${res?.reappliedOrders ?? '—'}.`
-                );
-                await loadOrders({ silent: true });
-              } catch (e) {
-                setAssemblyMessage(`Ошибка исправления резервов: ${e.response?.data?.message || e.message}`);
-              } finally {
-                setRebuildReservesLoading(false);
-              }
-            }}
-            disabled={rebuildReservesLoading || syncLoading || assemblyLoading}
-            title="Снять все резервы по заказам «В закупке» и поставить заново по текущим правилам"
-          >
-            {rebuildReservesLoading ? '...' : '🧹 Исправить резервы'}
           </Button>
           {assembledCount > 0 && (
             <Button
@@ -1875,6 +1833,10 @@ export function Orders() {
                 const reservedQty = Number(first.reservedQty ?? first.reserved_qty ?? 0) || 0;
                 const needQty = Number(first.quantity) || 1;
                 const reserveProgressBadge = (first.status === 'in_procurement' || first.status === 'new') && reservedQty > 0;
+                const groupStatusLabelsMixed =
+                  isGroup &&
+                  groupOrders &&
+                  new Set(groupOrders.map((o) => String(o.status ?? ''))).size > 1;
                 return (
                 <tr
                   key={row.key + idx}
@@ -1938,7 +1900,17 @@ export function Orders() {
                   <td>{priceDisplay}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span>{getOrderStatusLabel(first.status)}</span>
+                      {groupStatusLabelsMixed ? (
+                        <div className="orders-stacked-lines">
+                          {groupOrders.map((o) => (
+                            <div key={orderKey(o)} className="orders-stacked-line">
+                              {getOrderStatusLabel(o.status)}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span>{getOrderStatusLabel(first.status)}</span>
+                      )}
                       {reserveProgressBadge && (
                         <span
                           className="badge"
@@ -2028,7 +2000,9 @@ export function Orders() {
                   </td>
                   <td onClick={e => e.stopPropagation()}>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                      {first.status === 'new' && (
+                      {groupOrders.some((o) =>
+                        isOrderStatusEligibleForProcurement(o.marketplace, o.status)
+                      ) && (
                         <Button
                           variant="secondary"
                           size="small"

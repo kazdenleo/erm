@@ -1,0 +1,75 @@
+.link-barcode-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.link-barcode-modal__scanned {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+}
+
+.link-barcode-modal__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #fff);
+}
+
+.link-barcode-modal__code {
+  font-size: 15px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.link-barcode-modal__label-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.link-barcode-modal__search {
+  max-width: none;
+}
+
+.link-barcode-modal__cap-hint {
+  margin: -4px 0 0;
+  font-size: 12px;
+}
+
+.link-barcode-modal__existing {
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  padding: 12px;
+  min-height: 72px;
+}
+
+.link-barcode-modal__barcode-list {
+  margin: 8px 0 0;
+  padding-left: 1.2rem;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.link-barcode-modal__barcode-list li {
+  margin-bottom: 4px;
+}
+
+.link-barcode-modal__barcode-list code {
+  font-size: 13px;
+}
+
+.link-barcode-modal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}

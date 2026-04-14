@@ -27,59 +27,112 @@ function marketplaceToOrdersDb(marketplace) {
   return m === 'ozon' ? 'ozon' : m;
 }
 
+/** Перевод в «В закупке»: не только strict `new` — у WB допускаем pending/unknown до резолва статуса. */
+export function orderEligibleForProcurement(order) {
+  if (!order) return false;
+  const sNorm = String(order.status ?? '').trim().toLowerCase();
+  if (sNorm === 'new') return true;
+  const sRaw = String(order.status ?? '').trim();
+  const mp = String(order.marketplace ?? '').toLowerCase();
+  if (mp === 'wildberries' || mp === 'wb') {
+    return sRaw === '__wb_status_pending__' || sNorm === 'wb_status_unknown';
+  }
+  return false;
+}
+
+/** Числовой orders.id для meta.order_id; Pg отдаёт bigint как string/BigInt — иначе резерв не попадает в выборку списка заказов. */
+function orderRowDbId(row) {
+  const rid = row?.id;
+  if (rid == null) return null;
+  if (typeof rid === 'bigint') {
+    const n = Number(rid);
+    return Number.isSafeInteger(n) && n >= 1 ? n : null;
+  }
+  const n = typeof rid === 'number' ? rid : parseInt(String(rid), 10);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return n;
+}
+
 class OrdersService {
   constructor() {
     this.repository = repositoryFactory.getOrdersRepository();
   }
 
   /**
-   * Исправление резервов: снять все резервы по заказам «В закупке» и поставить заново по текущим правилам.
-   * Нужна для очистки "старых" резервов, которые могли ставиться до появления incoming/остатка.
+   * Если зарезервировано больше, чем покрывает остаток + «в пути», снимаем лишнее с заказов
+   * (сначала с самых новых по created_at).
+   * Вызывается: из stockMovements.applyChange (списание, отгрузка, приёмка, ручные движения и т.д.),
+   * после инвентаризации; для отката приёмки/удаления закупки в purchases.service — отдельно (там прямой SQL в БД).
    */
-  async rebuildProcurementReserves() {
-    if (!repositoryFactory.isUsingPostgreSQL()) {
-      const err = new Error('Операция доступна только для PostgreSQL');
-      err.statusCode = 400;
-      throw err;
-    }
-    const r = await query(
-      `SELECT id
-       FROM orders
-       WHERE status = 'in_procurement'
-       ORDER BY id ASC
-       LIMIT 5000`
+  async trimExcessReservesForProduct(productId, { reason = null, meta = {} } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return { released: 0, ordersTouched: 0 };
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return { released: 0, ordersTouched: 0 };
+
+    const pr = await query(
+      `SELECT COALESCE(quantity, 0)::bigint AS quantity,
+              COALESCE(incoming_quantity, 0)::bigint AS incoming_quantity,
+              COALESCE(reserved_quantity, 0)::bigint AS reserved_quantity
+       FROM products WHERE id = $1`,
+      [pid]
     );
-    const ids = (r.rows || []).map((x) => Number(x.id)).filter((n) => Number.isFinite(n) && n > 0);
-    let cleared = 0;
-    let reapplied = 0;
-    for (const id of ids) {
-      const reservedQty = await this._getReservedQtyForOrder(id);
-      if (reservedQty <= 0) continue;
-      const mv = await query(
-        `SELECT product_id FROM stock_movements
-         WHERE type = 'reserve' AND quantity_change < 0
-           AND (meta->>'order_id')::bigint = $1::bigint
-         ORDER BY id DESC LIMIT 1`,
-        [id]
-      );
-      const productId = mv.rows?.[0]?.product_id != null ? Number(mv.rows[0].product_id) : null;
-      if (!productId) continue;
-      await stockMovementsService.applyChange(productId, {
-        delta: reservedQty,
+    const row = pr.rows?.[0];
+    if (!row) return { released: 0, ordersTouched: 0 };
+    const qty = Number(row.quantity) || 0;
+    const incoming = Number(row.incoming_quantity) || 0;
+    const reserved = Number(row.reserved_quantity) || 0;
+    const supplyCap = qty + incoming;
+    let excess = reserved - supplyCap;
+    if (excess <= 0) return { released: 0, ordersTouched: 0 };
+
+    const ordRes = await query(
+      `WITH nets AS (
+         SELECT (sm.meta->>'order_id')::bigint AS oid,
+           GREATEST(0,
+             COALESCE(SUM(CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change ELSE 0 END), 0) -
+             COALESCE(SUM(CASE WHEN sm.type = 'unreserve' THEN sm.quantity_change ELSE 0 END), 0)
+           )::int AS net_r
+         FROM stock_movements sm
+         WHERE sm.product_id = $1
+           AND (sm.type = 'reserve' OR sm.type = 'unreserve')
+           AND sm.meta ? 'order_id'
+         GROUP BY (sm.meta->>'order_id')::bigint
+       )
+       SELECT o.id AS order_row_id, o.order_id, o.marketplace, n.net_r
+       FROM nets n
+       JOIN orders o ON o.id = n.oid
+       WHERE n.net_r > 0
+       ORDER BY o.created_at DESC NULLS LAST, o.id DESC`,
+      [pid]
+    );
+
+    let released = 0;
+    let ordersTouched = 0;
+    const baseReason = reason || 'Снятие избыточного резерва (недостаточно остатка и «в пути»)';
+    for (const orow of ordRes.rows || []) {
+      if (excess <= 0) break;
+      const orderDbId = Number(orow.order_row_id);
+      const netForOrder = Number(orow.net_r) || 0;
+      if (netForOrder <= 0 || !Number.isFinite(orderDbId)) continue;
+      const unreserveQty = Math.min(netForOrder, excess);
+      const orderIdStr = String(orow.order_id ?? '');
+      await stockMovementsService.applyChange(pid, {
+        delta: unreserveQty,
         type: 'unreserve',
-        reason: `Исправление резерва (пересборка)`,
-        meta: { order_id: id, rebuild: true }
+        reason: baseReason,
+        meta: {
+          order_id: orderDbId,
+          orderId: orderIdStr,
+          trim_excess: true,
+          marketplace: orow.marketplace ?? null,
+          ...meta
+        }
       });
-      cleared++;
+      released += unreserveQty;
+      excess -= unreserveQty;
+      ordersTouched++;
     }
-    for (const id of ids) {
-      const full = await this.repository.findById(id);
-      const before = await this._getReservedQtyForOrder(id);
-      await this._applyReserveForOrderIfAbsent(full);
-      const after = await this._getReservedQtyForOrder(id);
-      if (after > before) reapplied++;
-    }
-    return { ok: true, ordersProcessed: ids.length, clearedOrders: cleared, reappliedOrders: reapplied };
+    return { released, ordersTouched };
   }
 
   /**
@@ -115,7 +168,7 @@ class OrdersService {
 
   async _reserveForOrderIfStockAvailable(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
-    const id = orderRow.id;
+    const id = orderRowDbId(orderRow);
     if (!id) return;
     if (await this._hasDbReserveForOrder(id)) return;
 
@@ -125,13 +178,10 @@ class OrdersService {
     if (!Number.isFinite(productId) || productId < 1) return;
 
     const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
-    const metaOrderId = Number.isFinite(Number(id)) ? Number(id) : id;
+    const metaOrderId = id;
 
-    // Для "Новый": автозакрепляем ТОЛЬКО фактический остаток (quantity - reserved).
-    // incoming предназначен для заказов в "В закупке", иначе "Новые" начинают видеть "товар есть",
-    // хотя он уже в пути и закреплён под другие закупочные заказы.
-    //
-    // Для "В закупке": можно резервировать и из incoming (quantity + incoming - reserved).
+    // Общее правило как у _applyReserveForOrder: доступно quantity + incoming − reserved
+    // (ручные и «Новые» с МП тоже могут резервировать «в пути», если факта недостаточно).
     const pr = await query(
       `SELECT COALESCE(quantity, 0) AS quantity,
               COALESCE(incoming_quantity, 0) AS incoming_quantity,
@@ -145,8 +195,7 @@ class OrdersService {
     const actual = row?.quantity != null ? Number(row.quantity) : 0;
     const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
     const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
-    const st = String(orderRow.status ?? orderRow.order_status ?? '').toLowerCase();
-    const supply = st === 'in_procurement' ? (actual + incoming) : actual;
+    const supply = actual + incoming;
     const availableSupply = Math.max(0, supply - reserved);
     if (availableSupply < qty) return;
 
@@ -232,7 +281,7 @@ class OrdersService {
   /** Резерв для строки заказа из БД, если ещё нет резерва с тем же orders.id (идемпотентно). */
   async _applyReserveForOrderIfAbsent(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
-    const id = orderRow.id;
+    const id = orderRowDbId(orderRow);
     const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
     const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
     if (!id) return;
@@ -268,10 +317,8 @@ class OrdersService {
     const reserveNow = Math.min(need, Math.floor(availableSupply));
     if (reserveNow <= 0) return;
 
-    const orderRowDbId = typeof id === 'bigint' ? Number(id) : Number(id);
-    const metaOrderId = Number.isFinite(orderRowDbId) ? orderRowDbId : id;
     await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
-      order_id: metaOrderId,
+      order_id: id,
       orderId: orderIdStr,
       partial: reserveNow < need
     });
@@ -344,18 +391,12 @@ class OrdersService {
     const availableSupply = Math.max(0, actual + incoming - reserved);
     if (availableSupply <= 0) return;
 
-    // FIFO по времени создания заказа: более ранние заказы в «В закупке» должны получить резерв раньше.
-    const orders = await query(
-      `SELECT *
-       FROM orders
-       WHERE status = 'in_procurement'
-         AND product_id = $1
-       ORDER BY created_at ASC, id ASC
-       LIMIT 500`,
-      [pid]
-    );
-    for (const o of orders.rows || []) {
-      // _applyReserveForOrderIfAbsent внутри сам ограничит резерв доступностью и сделает частичный резерв при необходимости.
+    // FIFO: сначала более ранние «Новый» и «В закупке»; учёт совпадения по SKU при пустом product_id (как в репозитории).
+    const queue =
+      typeof this.repository.findReserveQueueOrdersByProductId === 'function'
+        ? await this.repository.findReserveQueueOrdersByProductId(pid, 500)
+        : [];
+    for (const o of queue) {
       await this._applyReserveForOrderIfAbsent(o).catch(() => {});
     }
   }
@@ -449,15 +490,19 @@ class OrdersService {
       throw error;
     }
     const created = await this.repository.create(orderData);
+    const oid = orderRowDbId(created);
     const productId = created?.productId ?? created?.product_id ?? orderData.product_id;
-    const quantity = created?.quantity ?? orderData.quantity ?? 1;
-    const orderId = created?.orderId ?? created?.order_id ?? orderData.order_id;
-    if (productId) {
-      const rid = created?.id;
-      const metaOid = rid != null && Number.isFinite(Number(rid)) ? Number(rid) : rid;
-      await this._applyReserveForOrder(productId, quantity, orderId, {
-        order_id: metaOid,
-        orderId: orderId
+    if (oid && productId) {
+      await this._reserveForOrderIfStockAvailable({
+        id: oid,
+        orderId: created?.orderId ?? orderData.order_id,
+        order_id: created?.orderId ?? orderData.order_id,
+        productId,
+        product_id: productId,
+        quantity: created?.quantity ?? orderData.quantity ?? 1,
+        status: created?.status ?? orderData.status ?? 'new',
+        marketplace: created?.marketplace ?? orderData.marketplace,
+        deliveryAddress: created?.deliveryAddress ?? orderData.delivery_address
       });
     }
     return created;
@@ -504,13 +549,21 @@ class OrdersService {
         status: 'new'
       };
       const row = await this.repository.create(orderData);
-      const rid = row?.id;
-      const metaOid = rid != null && Number.isFinite(Number(rid)) ? Number(rid) : rid;
-      await this._applyReserveForOrder(productId, quantity, orderId, {
-        order_id: metaOid,
-        orderId,
-        order_group_id: orderGroupId
-      });
+      const oid = orderRowDbId(row);
+      if (oid) {
+        await this._reserveForOrderIfStockAvailable({
+          id: oid,
+          orderId,
+          order_id: orderId,
+          productId,
+          product_id: productId,
+          quantity,
+          status: 'new',
+          marketplace: 'manual',
+          deliveryAddress: null,
+          orderGroupId: orderGroupId
+        });
+      }
       created.push(row);
     }
     return { orderGroupId, orders: created };
@@ -769,9 +822,18 @@ class OrdersService {
             status: 'new'
           });
         }
+        const groupRows = await this.repository.findByOrderGroupId(order.orderGroupId);
+        for (const row of groupRows || []) {
+          if (String(row.status || '').toLowerCase() === 'new') {
+            await this._reserveForOrderIfStockAvailable(row).catch(() => {});
+          }
+        }
         return order;
       }
-      return await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'new' });
+      await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'new' });
+      const refreshed = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
+      if (refreshed) await this._reserveForOrderIfStockAvailable(refreshed).catch(() => {});
+      return refreshed ?? order;
     }
     const { readData, writeData } = await import('../utils/storage.js');
     const data = await readData('orders');
@@ -794,7 +856,9 @@ class OrdersService {
     if (repositoryFactory.isUsingPostgreSQL()) {
       const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
       if (!order) return null;
-      if (order.status !== 'new') return null;
+      const stNorm = String(order.status ?? '').trim().toLowerCase();
+      if (stNorm === 'in_procurement') return order;
+      if (!orderEligibleForProcurement(order)) return null;
       let rows = [order];
       if (order.orderGroupId) {
         rows = await this.repository.findByOrderGroupId(order.orderGroupId);
@@ -816,7 +880,8 @@ class OrdersService {
     const key = `${marketplace}|${orderId}`;
     const order = orders.find(o => `${o.marketplace}|${o.orderId}` === key);
     if (!order) return null;
-    if (order.status !== 'new') return null;
+    if (String(order.status ?? '').trim().toLowerCase() === 'in_procurement') return order;
+    if (!orderEligibleForProcurement(order)) return null;
     order.status = 'in_procurement';
     order.returnedToNewAt = null;
     await writeData('orders', { ...data, orders, lastSync: new Date().toISOString() });

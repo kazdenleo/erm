@@ -2,6 +2,11 @@
   margin-bottom: 24px;
 }
 
+.warehouse-ops-required-star {
+  color: #c62828;
+  font-weight: 600;
+}
+
 .warehouse-ops-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -293,20 +298,28 @@
 .warehouse-ops-receipt-list-table td {
   padding: 10px 12px;
   text-align: left;
+  vertical-align: middle;
 }
 
-.warehouse-ops-receipt-list-table th:nth-child(3),
-.warehouse-ops-receipt-list-table td:nth-child(3) {
+/* Списки документов (дата, номер, контрагенты…) — без «центрировать 3-ю колонку» */
+.warehouse-ops-receipt-list-table--documents th,
+.warehouse-ops-receipt-list-table--documents td {
+  text-align: left;
+}
+
+/* Таблицы строк товара: Артикул | Наименование | Кол-во | … | действие */
+.warehouse-ops-receipt-list-table--line-items th:nth-child(3),
+.warehouse-ops-receipt-list-table--line-items td:nth-child(3) {
   text-align: center;
+}
+
+.warehouse-ops-receipt-list-table--line-items td:last-child {
+  text-align: right;
 }
 
 .warehouse-ops-receipt-list-table .warehouse-ops-qty-input {
   width: 72px;
   text-align: center;
-}
-
-.warehouse-ops-receipt-list-table td:last-child {
-  text-align: right;
 }
 
 .warehouse-ops-remove-btn {

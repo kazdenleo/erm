@@ -29,3 +29,18 @@ export function getOrderStatusLabel(status) {
   }
   return orderStatusLabels[status] || status || '—';
 }
+
+/**
+ * Можно ли перевести в «В закупке» (согласовано с сервером orders.service).
+ * Для WB строка может быть ещё в pending/unknown, пока не пришёл финальный «Новый» из синка.
+ */
+export function isOrderStatusEligibleForProcurement(marketplace, status) {
+  const sNorm = String(status ?? '').trim().toLowerCase();
+  if (sNorm === 'new') return true;
+  const sRaw = String(status ?? '').trim();
+  const mp = String(marketplace || '').toLowerCase();
+  if (mp === 'wb' || mp === 'wildberries') {
+    return sRaw === '__wb_status_pending__' || sNorm === 'wb_status_unknown';
+  }
+  return false;
+}

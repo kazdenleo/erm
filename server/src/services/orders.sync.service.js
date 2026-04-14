@@ -13,7 +13,7 @@ import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { readData, writeData } from '../utils/storage.js';
 import repositoryFactory from '../config/repository-factory.js';
 import integrationsService from './integrations.service.js';
-import ordersService from './orders.service.js';
+import ordersService, { orderEligibleForProcurement } from './orders.service.js';
 import logger from '../utils/logger.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 
@@ -461,10 +461,11 @@ class OrdersSyncService {
           if ((order.marketplace === 'wildberries' || order.marketplace === 'wb') && statusByWbId.has(String(order.orderId || order.order_id))) {
             const prev = order.status;
             const apiSt = statusByWbId.get(String(order.orderId || order.order_id));
-            order.status = apiSt;
-            if (prev === 'in_assembly' && apiSt === 'assembled') {
-              order.status = 'in_assembly';
-            }
+            const existingBeforeWbPoll = { status: prev };
+            // Иначе ответ /orders/status (confirm → in_assembly) перезаписывает «Новый» после preventAutoInAssembly в основном merge.
+            let next = preserveLocalInAssemblyAgainstMpAssembled(existingBeforeWbPoll, apiSt);
+            next = preventAutoInAssembly(existingBeforeWbPoll, next);
+            order.status = next;
           }
         }
         for (const [key, order] of ordersMap.entries()) {
@@ -524,12 +525,11 @@ class OrdersSyncService {
         throw err;
       }
 
-      // Авто-резерв для новых заказов: если товар сопоставлен с каталогом (product_id или product_skus),
-      // сразу фиксируем резерв по строке заказа (meta.order_id = orders.id).
+      // Авто-резерв для новых заказов (и «ожидающих» WB до резолва статуса): product_id или сопоставление по SKU.
       // Идемпотентно: reserve создаётся только если его ещё нет.
       for (const o of allOrders) {
         try {
-          if (!o || o.status !== 'new') continue;
+          if (!o || !orderEligibleForProcurement(o)) continue;
           if (!o.marketplace || o.orderId == null) continue;
           const row = await ordersRepo.findByMarketplaceAndOrderId(o.marketplace, String(o.orderId));
           if (!row) continue;
@@ -1235,10 +1235,13 @@ function wildberriesOrderGroupIdFromRaw(order) {
   const s = u != null ? String(u).trim() : '';
   if (s === '') return null;
 
-  // WB orderUid часто выглядит как хэш и на практике может приводить к неверной склейке разных заказов.
-  // Поэтому для hash-uid НЕ используем его как order_group_id — показываем каждую строку WB отдельным заказом.
-  const looksLikeHash = /^[a-f0-9]{24,}$/i.test(s);
-  if (looksLikeHash) {
+  // WB orderUid часто выглядит как хэш (или r + hex, или префикс вроде ide + hex) и на практике может
+  // давать неверную склейку разных заказов. Такие uid НЕ используем как order_group_id — группируем по order_id.
+  const looksLikeHashUid =
+    /^[a-f0-9]{24,}$/i.test(s) ||
+    /^r[a-f0-9]{24,}$/i.test(s) ||
+    /^[a-z]{3}[a-f0-9]{24,}$/i.test(s);
+  if (looksLikeHashUid) {
     return null;
   }
 
@@ -1386,7 +1389,7 @@ async function fetchWildberriesFBSOrders(config) {
       return {
         marketplace: 'wildberries',
         orderId: (order.id?.toString && order.id?.toString()) || order.id || order.orderUid || '',
-        ...(wbOrderGroupId ? { orderGroupId: wbOrderGroupId } : {}),
+        orderGroupId: wbOrderGroupId,
         // Для сопоставления с вашим каталогом используем:
         // - offerId: vendorCode/артикул продавца (order.article), т.к. обычно он заведён в product_skus
         // - sku (marketplace_sku): nmId (число), если заведено сопоставление по nmId
@@ -1487,7 +1490,7 @@ async function fetchWildberriesFBSOrdersByPeriod(config, daysBack = 90) {
     return {
       marketplace: 'wildberries',
       orderId: (order.id?.toString && order.id?.toString()) || order.id || order.orderUid || '',
-      ...(wbOrderGroupId ? { orderGroupId: wbOrderGroupId } : {}),
+      orderGroupId: wbOrderGroupId,
       // сопоставление с product_skus: offer_id обычно хранит артикул продавца
       offerId: sellerArticle || sellerSku || nmId,
       sku: nmId || '',

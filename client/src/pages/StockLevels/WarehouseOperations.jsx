@@ -3,12 +3,14 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
 import { productsApi } from '../../services/products.api';
 import { stockMovementsApi } from '../../services/stockMovements.api';
 import { receiptsApi } from '../../services/receipts.api';
 import { inventorySessionsApi } from '../../services/inventorySessions.api';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
+import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import './WarehouseOperations.css';
@@ -34,7 +36,10 @@ const KNOWN_MODES = new Set([
 export function WarehouseOperations({
   products,
   mainWarehouseName,
+  /** Выбранный склад на вкладке «Остатки» (подсказка для полей склада) */
   inventoryWarehouseId,
+  /** Перезагрузить товары с фильтром по складу (для пересчёта «в системе» при инвентаризации) */
+  reloadProductsWithWarehouse,
   onRefresh,
   loading,
   activeTab,
@@ -45,6 +50,14 @@ export function WarehouseOperations({
 }) {
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
+  const { warehouses } = useWarehouses();
+  const ownWarehouses = useMemo(
+    () =>
+      (warehouses || []).filter(
+        (w) => w && String(w.type || '').toLowerCase() !== 'supplier' && !w.supplierId
+      ),
+    [warehouses]
+  );
   const [internalMode, setInternalMode] = useState(MODE_TABLE);
   const mode =
     typeof activeTab === 'string' && KNOWN_MODES.has(activeTab) ? activeTab : internalMode;
@@ -64,10 +77,15 @@ export function WarehouseOperations({
   const [listQty, setListQty] = useState(1);
   const [receiptSupplierId, setReceiptSupplierId] = useState('');
   const [receiptOrganizationId, setReceiptOrganizationId] = useState('');
+  /** Обязательный склад приёмки (поступление / возвраты) */
+  const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
+  const [returnWarehouseId, setReturnWarehouseId] = useState('');
+  const [customerReturnWarehouseId, setCustomerReturnWarehouseId] = useState('');
   // Список для поступления: { productId, sku, name, quantity, cost }
   const [receiptList, setReceiptList] = useState([]);
   const scanDebounceRef = useRef(null);
   const scanValueRef = useRef('');
+  const manualSearchDebounceRef = useRef(null);
   const [receiptsList, setReceiptsList] = useState([]);
   const [receiptsTotal, setReceiptsTotal] = useState(0);
   const [receiptsLoading, setReceiptsLoading] = useState(false);
@@ -102,20 +120,146 @@ export function WarehouseOperations({
   const [inventoryNewScanValue, setInventoryNewScanValue] = useState('');
   const [inventoryNewSelectedProductId, setInventoryNewSelectedProductId] = useState('');
   const [inventoryNewSearch, setInventoryNewSearch] = useState('');
+  const [linkBarcodeModalOpen, setLinkBarcodeModalOpen] = useState(false);
+  const [linkBarcodeScanned, setLinkBarcodeScanned] = useState('');
+  const linkBarcodeContinueRef = useRef(null);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestTitle, setSuggestTitle] = useState('');
+  const [suggestList, setSuggestList] = useState([]);
+  const [suggestContext, setSuggestContext] = useState('');
+  const suggestOnPickRef = useRef(null);
+
+  const closeLinkBarcodeModal = useCallback(() => {
+    setLinkBarcodeModalOpen(false);
+    setLinkBarcodeScanned('');
+    linkBarcodeContinueRef.current = null;
+  }, []);
+
+  const closeSuggest = useCallback(() => {
+    setSuggestOpen(false);
+    setSuggestTitle('');
+    setSuggestList([]);
+    setSuggestContext('');
+    suggestOnPickRef.current = null;
+  }, []);
+
+  const openSuggest = useCallback((context, title, list, onPick) => {
+    setSuggestContext(String(context || ''));
+    setSuggestTitle(String(title || 'Выберите товар'));
+    setSuggestList(Array.isArray(list) ? list : []);
+    suggestOnPickRef.current = typeof onPick === 'function' ? onPick : null;
+    setSuggestOpen(true);
+  }, []);
+
+  const normalizeQuery = (value) => String(value || '').trim();
+  const isLikelyBarcodeScan = (raw) => {
+    const v = String(raw || '').trim();
+    if (!v) return false;
+    // Если есть буквы — это почти всегда ручной поиск (название/артикул), не скан.
+    // Сканер обычно даёт цифры (EAN/Code128) быстро и полностью.
+    if (/[a-zа-я]/i.test(v)) return false;
+    // Сканер может давать и символы (например, '-' в внутренних кодах), но для автосрабатывания
+    // держим строгий критерий, чтобы не мешать ручному вводу.
+    if (/^\d{6,}$/.test(v)) return true;
+    return false;
+  };
+  const findLocalMatches = useCallback((query) => {
+    const q = normalizeQuery(query).toLowerCase();
+    if (!q) return [];
+    // Точное совпадение SKU — приоритетнее (часто сканер/ручной ввод артикула).
+    const exactSku = (products || []).filter((p) => String(p?.sku || '').trim().toLowerCase() === q);
+    if (exactSku.length) return exactSku;
+    // Иначе — частичное по SKU/названию.
+    const scored = (products || [])
+      .map((p) => {
+        const sku = String(p?.sku || '').toLowerCase();
+        const name = String(p?.name || '').toLowerCase();
+        const hitSku = sku.includes(q);
+        const hitName = name.includes(q);
+        if (!hitSku && !hitName) return null;
+        const score = (hitSku ? 2 : 0) + (hitName ? 1 : 0) + (sku.startsWith(q) ? 1 : 0);
+        return { p, score };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+    return scored.map((x) => x.p).slice(0, 30);
+  }, [products]);
+
+  const openLinkBarcode = useCallback((code, continueFn) => {
+    setLinkBarcodeScanned(String(code || '').trim());
+    linkBarcodeContinueRef.current = typeof continueFn === 'function' ? continueFn : null;
+    setLinkBarcodeModalOpen(true);
+  }, []);
+
+  const lookupProductByAny = useCallback(async (value, { title = 'Выберите товар', allowLinkBarcode = false } = {}) => {
+    const v = normalizeQuery(value);
+    if (!v) {
+      throw new Error('Введите штрихкод / артикул / название');
+    }
+    // 1) Штрихкод — самый точный (быстро и однозначно).
+    try {
+      const res = await productsApi.getByBarcode(v);
+      const product = res?.data ?? res;
+      if (product && (product.id || product.sku)) return product;
+    } catch (_) {
+      // ignore → fallback
+    }
+
+    // 2) Локальный поиск по SKU/названию (по уже загруженному списку).
+    const matches = findLocalMatches(v);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      return await new Promise((resolve, reject) => {
+        openSuggest('global', title, matches, (p) => {
+          closeSuggest();
+          if (!p) reject(new Error('Товар не выбран'));
+          else resolve(p);
+        });
+      });
+    }
+
+    // 3) Если ввели штрихкод вручную и товара нет — предложим привязать штрихкод к товару (только там, где это уместно).
+    if (allowLinkBarcode) {
+      return await new Promise((resolve, reject) => {
+        openLinkBarcode(v, (p) => {
+          if (!p) reject(new Error('Товар не выбран'));
+          else resolve(p);
+        });
+      });
+    }
+
+    throw new Error('Товар не найден');
+  }, [findLocalMatches, openSuggest, closeSuggest, openLinkBarcode]);
+
+  const handleLinkBarcodeLinked = useCallback(
+    async (product) => {
+      const fn = linkBarcodeContinueRef.current;
+      linkBarcodeContinueRef.current = null;
+      setLinkBarcodeModalOpen(false);
+      setLinkBarcodeScanned('');
+      try {
+        if (typeof onRefresh === 'function') await Promise.resolve(onRefresh());
+      } catch (_) {
+        /* ignore */
+      }
+      if (fn && product) {
+        window.setTimeout(() => fn(product), 0);
+      }
+    },
+    [onRefresh]
+  );
   const inventoryNewScanDebounceRef = useRef(null);
   const inventoryNewScanValueRef = useRef('');
   const inventoryNewScanInputRef = useRef(null);
+  /** Склад, по которому ведётся новая инвентаризация (обязателен до сохранения) */
+  const [inventorySessionWarehouseId, setInventorySessionWarehouseId] = useState('');
 
   const loadReceiptsList = useCallback(() => {
     setReceiptsLoading(true);
     receiptsApi.getList({ limit: 200 })
-      .then(res => {
-        const raw = res?.data ?? res;
-        const list = Array.isArray(raw)
-          ? raw
-          : (Array.isArray(raw?.list) ? raw.list : (Array.isArray(raw?.data) ? raw.data : []));
-        setReceiptsList(list);
-        setReceiptsTotal(res?.total ?? raw?.total ?? list.length);
+      .then(({ list, total }) => {
+        setReceiptsList(Array.isArray(list) ? list : []);
+        setReceiptsTotal(typeof total === 'number' ? total : (Array.isArray(list) ? list.length : 0));
       })
       .catch(err => {
         console.warn('[WarehouseOperations] loadReceiptsList failed:', err?.message || err);
@@ -123,6 +267,13 @@ export function WarehouseOperations({
       })
       .finally(() => setReceiptsLoading(false));
   }, []);
+
+  const receiptRowTotalUnits = (r) => {
+    const q = r?.total_quantity ?? r?.totalQuantity;
+    if (q == null || q === '') return '—';
+    const n = Number(q);
+    return Number.isFinite(n) ? n : '—';
+  };
 
   useEffect(() => {
     if (mode === MODE_RECEIPT && setMode) {
@@ -141,6 +292,7 @@ export function WarehouseOperations({
       if (returnScanDebounceRef.current) clearTimeout(returnScanDebounceRef.current);
       if (customerReturnScanDebounceRef.current) clearTimeout(customerReturnScanDebounceRef.current);
       if (inventoryNewScanDebounceRef.current) clearTimeout(inventoryNewScanDebounceRef.current);
+      if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
     };
   }, []);
 
@@ -215,25 +367,10 @@ export function WarehouseOperations({
   }, [openReceiptId]);
 
   const lookupByBarcodeOrSku = async (value) => {
-    const v = String(value || '').trim();
-    if (!v) {
-      setFoundProduct(null);
-      setLookupError('Введите штрихкод или артикул');
-      return;
-    }
     setLookupError(null);
     setFoundProduct(null);
     try {
-      let product = null;
-      try {
-        const res = await productsApi.getByBarcode(v);
-        product = res?.data ?? res;
-        if (product && !product.id && product.sku === undefined) product = null;
-      } catch (_) {
-        // По штрихкоду не найден — ищем по артикулу в загруженном списке
-        const bySku = products.find(p => (p.sku || '').toString().trim() === v);
-        if (bySku) product = bySku;
-      }
+      const product = await lookupProductByAny(value, { title: 'Выберите товар для операции' });
       if (product && (product.id || product.sku)) {
         setFoundProduct(product);
         setQtyInput(1);
@@ -241,7 +378,7 @@ export function WarehouseOperations({
         setLookupError('Товар не найден');
       }
     } catch (e) {
-      setLookupError(e.message || 'Ошибка поиска');
+      setLookupError(e?.message || 'Ошибка поиска');
     }
   };
 
@@ -268,12 +405,15 @@ export function WarehouseOperations({
             : item
         );
       }
+      const pc = product?.cost;
+      const defaultCost =
+        pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : '';
       return [...prev, {
         productId: id,
         sku: product.sku || '—',
         name: product.name || 'Без названия',
         quantity: add,
-        cost: ''
+        cost: defaultCost
       }];
     });
   };
@@ -282,24 +422,16 @@ export function WarehouseOperations({
   const lookupByBarcodeOrSkuThenReceiptOne = async (value) => {
     const v = String(value || '').trim();
     if (!v) {
-      setLookupError('Отсканируйте штрихкод');
+      setLookupError('Введите штрихкод / артикул / название');
+      return;
+    }
+    if (!receiptWarehouseId) {
+      setLookupError('Сначала выберите склад приёмки');
       return;
     }
     setLookupError(null);
     try {
-      let product = null;
-      try {
-        const res = await productsApi.getByBarcode(v);
-        product = res?.data ?? res;
-        if (product && !product.id && product.sku === undefined) product = null;
-      } catch (_) {
-        const bySku = products.find(p => (p.sku || '').toString().trim() === v);
-        if (bySku) product = bySku;
-      }
-      if (!product || (!product.id && !product.sku)) {
-        setLookupError('Товар не найден');
-        return;
-      }
+      const product = await lookupProductByAny(v, { title: 'Выберите товар для поступления', allowLinkBarcode: true });
       addToReceiptList(product, 1);
       setOpMessage(`В список: +1 шт — ${product.name || product.sku}`);
       setScanValue('');
@@ -311,6 +443,10 @@ export function WarehouseOperations({
 
   /** Добавить выбранный товар в список поступления (из списка) */
   const handleReceiptFromList = () => {
+    if (!receiptWarehouseId) {
+      setOpMessage('Выберите склад приёмки');
+      return;
+    }
     const id = String(selectedProductId || '').trim();
     if (!id) {
       setOpMessage('Выберите товар');
@@ -351,6 +487,10 @@ export function WarehouseOperations({
       setOpMessage('Список пуст');
       return;
     }
+    if (!receiptWarehouseId) {
+      setOpMessage('Выберите склад приёмки');
+      return;
+    }
     setOpLoading(true);
     setOpMessage(null);
     try {
@@ -361,7 +501,12 @@ export function WarehouseOperations({
         quantity: item.quantity,
         cost: item.cost !== '' && item.cost != null ? parseFloat(String(item.cost).replace(',', '.')) : null
       }));
-      const res = await receiptsApi.create({ organizationId, supplierId, lines });
+      const res = await receiptsApi.create({
+        organizationId,
+        supplierId,
+        warehouseId: Number(receiptWarehouseId),
+        lines
+      });
       const receiptNumber = res?.data?.receipt?.receipt_number || '';
       setOpMessage(receiptNumber ? `Приёмка ${receiptNumber} оформлена` : 'Поступление оформлено');
       setReceiptList([]);
@@ -385,6 +530,18 @@ export function WarehouseOperations({
     setOpMessage('Список очищен');
   };
 
+  const handleInventorySessionWarehouseChange = (e) => {
+    const v = e.target.value;
+    if (inventoryNewRows.length > 0 && v !== inventorySessionWarehouseId) {
+      setInventoryNewRows([]);
+      setOpMessage('Список пересчёта очищен: изменён склад.');
+    }
+    setInventorySessionWarehouseId(v);
+    if (v && typeof reloadProductsWithWarehouse === 'function') {
+      reloadProductsWithWarehouse(v);
+    }
+  };
+
   /** Обработка ввода в поле скана: авто-добавление через короткую паузу (сканер вводит быстро, без Enter) */
   const handleReceiptScanChange = (e) => {
     const value = e.target.value;
@@ -397,6 +554,27 @@ export function WarehouseOperations({
       scanDebounceRef.current = null;
     }
     if (!value.trim()) return;
+    // Для ручного ввода (название/артикул) не автозапускаем и не очищаем поле — пользователь нажмёт Enter.
+    if (!isLikelyBarcodeScan(value)) {
+      // Но показываем подбор по названию/артикулу, чтобы было "по буквам".
+      if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
+      const q = value;
+      manualSearchDebounceRef.current = setTimeout(() => {
+        manualSearchDebounceRef.current = null;
+        const qq = String(q || '').trim();
+        if (qq.length < 2) return;
+        const matches = findLocalMatches(qq);
+        if (matches.length === 0) return;
+        openSuggest('receipt_scan', 'Выберите товар', matches, (p) => {
+          if (!p) return;
+          setFoundProduct(p);
+          setQtyInput(1);
+          setScanValue('');
+          scanValueRef.current = '';
+        });
+      }, 250);
+      return;
+    }
 
     const SCAN_DELAY_MS = 200;
     scanDebounceRef.current = setTimeout(() => {
@@ -454,24 +632,16 @@ export function WarehouseOperations({
   const lookupByBarcodeOrSkuThenReturnOne = async (value) => {
     const v = String(value || '').trim();
     if (!v) {
-      setLookupError('Отсканируйте штрихкод');
+      setLookupError('Введите штрихкод / артикул / название');
+      return;
+    }
+    if (!returnWarehouseId) {
+      setLookupError('Сначала выберите склад списания');
       return;
     }
     setLookupError(null);
     try {
-      let product = null;
-      try {
-        const res = await productsApi.getByBarcode(v);
-        product = res?.data ?? res;
-        if (product && !product.id && product.sku === undefined) product = null;
-      } catch (_) {
-        const bySku = products.find(p => (p.sku || '').toString().trim() === v);
-        if (bySku) product = bySku;
-      }
-      if (!product || (!product.id && !product.sku)) {
-        setLookupError('Товар не найден');
-        return;
-      }
+      const product = await lookupProductByAny(v, { title: 'Выберите товар для возврата поставщику' });
       const available = product.quantity ?? 0;
       if (available < 1) {
         setLookupError('Нет остатка на складе');
@@ -480,7 +650,7 @@ export function WarehouseOperations({
       addToReturnList(product, 1);
       setOpMessage(`В список возврата: +1 шт — ${product.name || product.sku}`);
       setReturnScanValue('');
-      scanInputRef.current?.focus();
+      returnScanInputRef.current?.focus();
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
     }
@@ -496,6 +666,24 @@ export function WarehouseOperations({
       returnScanDebounceRef.current = null;
     }
     if (!value.trim()) return;
+    if (!isLikelyBarcodeScan(value)) {
+      if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
+      const q = value;
+      manualSearchDebounceRef.current = setTimeout(() => {
+        manualSearchDebounceRef.current = null;
+        const qq = String(q || '').trim();
+        if (qq.length < 2) return;
+        const matches = findLocalMatches(qq);
+        if (matches.length === 0) return;
+        openSuggest('return_scan', 'Выберите товар для возврата поставщику', matches, (p) => {
+          if (!p) return;
+          addToReturnList(p, 1);
+          setReturnScanValue('');
+          returnScanValueRef.current = '';
+        });
+      }, 250);
+      return;
+    }
     const SCAN_DELAY_MS = 200;
     returnScanDebounceRef.current = setTimeout(() => {
       returnScanDebounceRef.current = null;
@@ -504,11 +692,15 @@ export function WarehouseOperations({
       lookupByBarcodeOrSkuThenReturnOne(toProcess);
       setReturnScanValue('');
       returnScanValueRef.current = '';
-      scanInputRef.current?.focus();
+      returnScanInputRef.current?.focus();
     }, SCAN_DELAY_MS);
   };
 
   const handleReturnFromList = () => {
+    if (!returnWarehouseId) {
+      setOpMessage('Выберите склад списания');
+      return;
+    }
     const id = String(returnSelectedProductId || '').trim();
     if (!id) {
       setOpMessage('Выберите товар');
@@ -553,6 +745,10 @@ export function WarehouseOperations({
       setOpMessage('Выберите организацию');
       return;
     }
+    if (!returnWarehouseId) {
+      setOpMessage('Выберите склад списания');
+      return;
+    }
     setOpLoading(true);
     setOpMessage(null);
     try {
@@ -569,6 +765,7 @@ export function WarehouseOperations({
         documentType: 'return',
         organizationId: Number(returnOrganizationId),
         supplierId: Number(returnSupplierId),
+        warehouseId: Number(returnWarehouseId),
         lines
       });
       const receiptNumber = res?.data?.receipt?.receipt_number || '';
@@ -606,24 +803,16 @@ export function WarehouseOperations({
   const lookupByBarcodeOrSkuThenCustomerReturnOne = async (value) => {
     const v = String(value || '').trim();
     if (!v) {
-      setLookupError('Отсканируйте штрихкод');
+      setLookupError('Введите штрихкод / артикул / название');
+      return;
+    }
+    if (!customerReturnWarehouseId) {
+      setLookupError('Сначала выберите склад приёмки возврата');
       return;
     }
     setLookupError(null);
     try {
-      let product = null;
-      try {
-        const res = await productsApi.getByBarcode(v);
-        product = res?.data ?? res;
-        if (product && !product.id && product.sku === undefined) product = null;
-      } catch (_) {
-        const bySku = products.find(p => (p.sku || '').toString().trim() === v);
-        if (bySku) product = bySku;
-      }
-      if (!product || (!product.id && !product.sku)) {
-        setLookupError('Товар не найден');
-        return;
-      }
+      const product = await lookupProductByAny(v, { title: 'Выберите товар для возврата от клиента' });
       addToCustomerReturnList(product, 1);
       setOpMessage(`В список возврата от клиента: +1 шт — ${product.name || product.sku}`);
       setCustomerReturnScanValue('');
@@ -643,6 +832,24 @@ export function WarehouseOperations({
       customerReturnScanDebounceRef.current = null;
     }
     if (!value.trim()) return;
+    if (!isLikelyBarcodeScan(value)) {
+      if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
+      const q = value;
+      manualSearchDebounceRef.current = setTimeout(() => {
+        manualSearchDebounceRef.current = null;
+        const qq = String(q || '').trim();
+        if (qq.length < 2) return;
+        const matches = findLocalMatches(qq);
+        if (matches.length === 0) return;
+        openSuggest('customer_return_scan', 'Выберите товар для возврата от клиента', matches, (p) => {
+          if (!p) return;
+          addToCustomerReturnList(p, 1);
+          setCustomerReturnScanValue('');
+          customerReturnScanValueRef.current = '';
+        });
+      }, 250);
+      return;
+    }
     const SCAN_DELAY_MS = 200;
     customerReturnScanDebounceRef.current = setTimeout(() => {
       customerReturnScanDebounceRef.current = null;
@@ -656,6 +863,10 @@ export function WarehouseOperations({
   };
 
   const handleCustomerReturnFromList = () => {
+    if (!customerReturnWarehouseId) {
+      setOpMessage('Выберите склад приёмки возврата');
+      return;
+    }
     const id = String(customerReturnSelectedProductId || '').trim();
     if (!id) {
       setOpMessage('Выберите товар');
@@ -690,6 +901,10 @@ export function WarehouseOperations({
       setOpMessage('Список пуст');
       return;
     }
+    if (!customerReturnWarehouseId) {
+      setOpMessage('Выберите склад приёмки возврата');
+      return;
+    }
     setOpLoading(true);
     setOpMessage(null);
     try {
@@ -700,6 +915,7 @@ export function WarehouseOperations({
       const res = await receiptsApi.create({
         documentType: 'customer_return',
         organizationId: customerReturnOrganizationId ? Number(customerReturnOrganizationId) : null,
+        warehouseId: Number(customerReturnWarehouseId),
         lines
       });
       const receiptNumber = res?.data?.receipt?.receipt_number || '';
@@ -748,6 +964,34 @@ export function WarehouseOperations({
     }).format(amount);
   };
 
+  /** Итог в списке инвентаризаций: чистая Σ(Δкол-во × себестоимость), строки без cost не входят; NULL → «—». */
+  const formatInventorySessionNetRubList = (raw) => {
+    if (raw == null || raw === '') return '—';
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isFinite(n)) return '—';
+    if (n === 0) {
+      return new Intl.NumberFormat('ru-RU', {
+        style: 'currency',
+        currency: 'RUB',
+        maximumFractionDigits: 0
+      }).format(0);
+    }
+    return new Intl.NumberFormat('ru-RU', {
+      style: 'currency',
+      currency: 'RUB',
+      maximumFractionDigits: 0,
+      signDisplay: 'always'
+    }).format(n);
+  };
+
+  /** Сумма в списке приёмок: Σ(кол-во × цена в строке); строки без себестоимости не входят в сумму. */
+  const formatReceiptListAmountRub = (raw) => {
+    if (raw == null || raw === '') return '—';
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isFinite(n)) return '—';
+    return formatRub(n);
+  };
+
   const inventoryNewMoneyTotals = useMemo(() => {
     let plus = 0;
     let minus = 0;
@@ -794,24 +1038,16 @@ export function WarehouseOperations({
   const lookupByBarcodeOrSkuThenInventoryNewOne = async (value) => {
     const v = String(value || '').trim();
     if (!v) {
-      setLookupError('Отсканируйте штрихкод или введите артикул');
+      setLookupError('Введите штрихкод / артикул / название');
+      return;
+    }
+    if (!inventorySessionWarehouseId) {
+      setLookupError('Сначала выберите склад инвентаризации');
       return;
     }
     setLookupError(null);
     try {
-      let product = null;
-      try {
-        const res = await productsApi.getByBarcode(v);
-        product = res?.data ?? res;
-        if (product && !product.id && product.sku === undefined) product = null;
-      } catch (_) {
-        const bySku = products.find((p) => (p.sku || '').toString().trim() === v);
-        if (bySku) product = bySku;
-      }
-      if (!product || (!product.id && !product.sku)) {
-        setLookupError('Товар не найден');
-        return;
-      }
+      const product = await lookupProductByAny(v, { title: 'Выберите товар для инвентаризации' });
       addOneToInventoryNewRow(product);
       setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       setInventoryNewScanValue('');
@@ -832,6 +1068,24 @@ export function WarehouseOperations({
       inventoryNewScanDebounceRef.current = null;
     }
     if (!value.trim()) return;
+    if (!isLikelyBarcodeScan(value)) {
+      if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
+      const q = value;
+      manualSearchDebounceRef.current = setTimeout(() => {
+        manualSearchDebounceRef.current = null;
+        const qq = String(q || '').trim();
+        if (qq.length < 2) return;
+        const matches = findLocalMatches(qq);
+        if (matches.length === 0) return;
+        openSuggest('inventory_scan', 'Выберите товар для инвентаризации', matches, (p) => {
+          if (!p) return;
+          addOneToInventoryNewRow(p);
+          setInventoryNewScanValue('');
+          inventoryNewScanValueRef.current = '';
+        });
+      }, 250);
+      return;
+    }
     const SCAN_DELAY_MS = 200;
     inventoryNewScanDebounceRef.current = setTimeout(() => {
       inventoryNewScanDebounceRef.current = null;
@@ -858,6 +1112,10 @@ export function WarehouseOperations({
   };
 
   const handleInventoryNewAddFromSelect = () => {
+    if (!inventorySessionWarehouseId) {
+      setOpMessage('Выберите склад инвентаризации');
+      return;
+    }
     const id = String(inventoryNewSelectedProductId || '').trim();
     if (!id) {
       setOpMessage('Выберите товар');
@@ -886,6 +1144,10 @@ export function WarehouseOperations({
   };
 
   const applyInventoryNew = async () => {
+    if (!inventorySessionWarehouseId) {
+      setOpMessage('Выберите склад инвентаризации');
+      return;
+    }
     if (inventoryNewRows.length === 0) {
       setOpMessage('Список пересчёта пуст');
       return;
@@ -899,7 +1161,7 @@ export function WarehouseOperations({
     setOpMessage(null);
     try {
       const res = await inventorySessionsApi.apply({
-        warehouseId: inventoryWarehouseId || undefined,
+        warehouseId: Number(inventorySessionWarehouseId),
         lines: toUpdate.map((row) => ({
           productId: row.product.id,
           quantityAfter: row.fact,
@@ -915,6 +1177,7 @@ export function WarehouseOperations({
         loadInventorySessions();
         setInventoryNewSession(false);
         setInventoryNewRows([]);
+        setInventorySessionWarehouseId('');
       }
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось сохранить'));
@@ -982,15 +1245,98 @@ export function WarehouseOperations({
           <h3 className="warehouse-ops-panel-title">Списание товара</h3>
           <p className="warehouse-ops-hint">Отсканируйте штрихкод или введите артикул, затем укажите количество к списанию.</p>
           <form onSubmit={handleScanSubmit} className="warehouse-ops-scan-form">
-            <input
-              ref={scanInputRef}
-              type="text"
-              className="warehouse-ops-scan-input"
-              placeholder="Штрихкод или артикул"
-              value={scanValue}
-              onChange={e => setScanValue(e.target.value)}
-              autoComplete="off"
-            />
+            <div style={{ position: 'relative', flex: 1 }}>
+              <input
+                ref={scanInputRef}
+                type="text"
+                className="warehouse-ops-scan-input"
+                placeholder="Штрихкод / артикул / название"
+                value={scanValue}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setScanValue(v);
+                  setLookupError(null);
+                  if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
+                  if (!v.trim() || isLikelyBarcodeScan(v)) {
+                    if (suggestContext === 'writeoff_scan') closeSuggest();
+                    return;
+                  }
+                  manualSearchDebounceRef.current = setTimeout(() => {
+                    manualSearchDebounceRef.current = null;
+                    const qq = String(v || '').trim();
+                    if (qq.length < 2) return;
+                    const matches = findLocalMatches(qq);
+                    if (matches.length === 0) {
+                      if (suggestContext === 'writeoff_scan') closeSuggest();
+                      return;
+                    }
+                    openSuggest('writeoff_scan', 'Выберите товар', matches, (p) => {
+                      if (!p) return;
+                      setFoundProduct(p);
+                      setQtyInput(1);
+                      setScanValue('');
+                      scanInputRef.current?.focus();
+                    });
+                  }, 250);
+                }}
+                onBlur={() => {
+                  // даём кликнуть по пункту списка
+                  setTimeout(() => {
+                    if (suggestContext === 'writeoff_scan') closeSuggest();
+                  }, 150);
+                }}
+                autoComplete="off"
+              />
+              {suggestOpen && suggestContext === 'writeoff_scan' && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 6px)',
+                    left: 0,
+                    right: 0,
+                    background: '#fff',
+                    border: '1px solid rgba(0,0,0,0.15)',
+                    borderRadius: 8,
+                    boxShadow: '0 10px 24px rgba(0,0,0,0.14)',
+                    maxHeight: 320,
+                    overflow: 'auto',
+                    zIndex: 10
+                  }}
+                >
+                  <div style={{ padding: '8px 10px', fontSize: 12, opacity: 0.75 }}>
+                    {suggestTitle || 'Выберите товар'}
+                  </div>
+                  {(suggestList || []).map((p) => (
+                    <button
+                      key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        const fn = suggestOnPickRef.current;
+                        closeSuggest();
+                        if (typeof fn === 'function') fn(p);
+                      }}
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        padding: '10px 10px',
+                        border: 0,
+                        background: 'transparent',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', justifyContent: 'space-between' }}>
+                        <div style={{ fontWeight: 600 }}>{p.sku || '—'}</div>
+                        <div style={{ opacity: 0.7, fontSize: 12 }}>
+                          Нал: {p.quantity ?? 0} · Ожид: {p.incoming_quantity ?? p.incomingQuantity ?? 0} · Рез: {p.reserved_quantity ?? p.reservedQuantity ?? 0}
+                        </div>
+                      </div>
+                      <div style={{ opacity: 0.85 }}>{p.name || '—'}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <Button type="submit" variant="secondary">Найти</Button>
           </form>
           {lookupError && <div className="warehouse-ops-error">{lookupError}</div>}
@@ -1024,8 +1370,25 @@ export function WarehouseOperations({
       {mode === MODE_RETURN_SUPPLIER && (
         <div className="warehouse-ops-panel return-supplier-panel">
           <h3 className="warehouse-ops-panel-title">Возврат товара поставщику</h3>
-          <p className="warehouse-ops-hint">Укажите организацию (от имени которой возврат) и поставщика, добавьте товары по скану или из списка. Возвратная накладная сохранится в общем списке приёмок.</p>
+          <p className="warehouse-ops-hint">Укажите организацию (от имени которой возврат), поставщика и склад списания; добавьте товары по скану или из списка. Возвратная накладная сохранится в общем списке приёмок.</p>
           <div className="warehouse-ops-return-org-supplier">
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Склад списания <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={returnWarehouseId}
+                onChange={(e) => setReturnWarehouseId(e.target.value)}
+                className="warehouse-ops-select"
+              >
+                <option value="">— Выберите склад —</option>
+                {ownWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>Организация (от имени которой возврат):</label>
               <select
@@ -1086,6 +1449,7 @@ export function WarehouseOperations({
                   value={returnScanValue}
                   onChange={handleReturnScanChange}
                   autoComplete="off"
+                  disabled={!returnWarehouseId}
                 />
               </form>
             </>
@@ -1117,7 +1481,10 @@ export function WarehouseOperations({
                   onChange={e => setReturnListQty(e.target.value)}
                   className="warehouse-ops-qty-input"
                 />
-                <Button onClick={handleReturnFromList} disabled={!returnSelectedProductId}>
+                <Button
+                  onClick={handleReturnFromList}
+                  disabled={!returnSelectedProductId || !returnWarehouseId}
+                >
                   В список
                 </Button>
               </div>
@@ -1134,7 +1501,7 @@ export function WarehouseOperations({
             ) : (
               <>
                 <div className="warehouse-ops-receipt-list-wrap">
-                  <table className="warehouse-ops-receipt-list-table table">
+                  <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
                     <thead>
                       <tr>
                         <th>Артикул</th>
@@ -1178,7 +1545,15 @@ export function WarehouseOperations({
                   </table>
                 </div>
                 <div className="warehouse-ops-receipt-list-actions">
-                  <Button onClick={applyReturnToSupplier} disabled={opLoading || !returnSupplierId || !returnOrganizationId}>
+                  <Button
+                    onClick={applyReturnToSupplier}
+                    disabled={
+                      opLoading ||
+                      !returnSupplierId ||
+                      !returnOrganizationId ||
+                      !returnWarehouseId
+                    }
+                  >
                     {opLoading ? 'Оформление…' : 'Оформить возврат'}
                   </Button>
                   <Button variant="secondary" onClick={clearReturnList} disabled={opLoading}>
@@ -1194,8 +1569,27 @@ export function WarehouseOperations({
       {mode === MODE_RETURN_CUSTOMER && (
         <div className="warehouse-ops-panel return-customer-panel">
           <h3 className="warehouse-ops-panel-title">Возврат товара от клиентов на склад</h3>
-          <p className="warehouse-ops-hint">Принимайте возвращённый клиентом товар: укажите организацию (при необходимости), добавьте товары по скану или из списка. Документ сохранится в общем списке приёмок.</p>
+          <p className="warehouse-ops-hint">
+            Принимайте возвращённый клиентом товар: укажите склад приёмки и организацию (при необходимости), добавьте товары по скану или из списка. Документ сохранится в общем списке приёмок.
+          </p>
           <div className="warehouse-ops-return-org-supplier">
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Склад приёмки <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={customerReturnWarehouseId}
+                onChange={(e) => setCustomerReturnWarehouseId(e.target.value)}
+                className="warehouse-ops-select"
+              >
+                <option value="">— Выберите склад —</option>
+                {ownWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>Организация (принимающая возврат):</label>
               <select
@@ -1243,6 +1637,7 @@ export function WarehouseOperations({
                   value={customerReturnScanValue}
                   onChange={handleCustomerReturnScanChange}
                   autoComplete="off"
+                  disabled={!customerReturnWarehouseId}
                 />
               </form>
             </>
@@ -1274,7 +1669,10 @@ export function WarehouseOperations({
                   onChange={e => setCustomerReturnListQty(e.target.value)}
                   className="warehouse-ops-qty-input"
                 />
-                <Button onClick={handleCustomerReturnFromList} disabled={!customerReturnSelectedProductId}>
+                <Button
+                  onClick={handleCustomerReturnFromList}
+                  disabled={!customerReturnSelectedProductId || !customerReturnWarehouseId}
+                >
                   В список
                 </Button>
               </div>
@@ -1291,7 +1689,7 @@ export function WarehouseOperations({
             ) : (
               <>
                 <div className="warehouse-ops-receipt-list-wrap">
-                  <table className="warehouse-ops-receipt-list-table table">
+                  <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
                     <thead>
                       <tr>
                         <th>Артикул</th>
@@ -1330,7 +1728,10 @@ export function WarehouseOperations({
                   </table>
                 </div>
                 <div className="warehouse-ops-receipt-list-actions">
-                  <Button onClick={applyCustomerReturnToWarehouse} disabled={opLoading}>
+                  <Button
+                    onClick={applyCustomerReturnToWarehouse}
+                    disabled={opLoading || !customerReturnWarehouseId}
+                  >
                     {opLoading ? 'Оформление…' : 'Оформить возврат на склад'}
                   </Button>
                   <Button variant="secondary" onClick={clearCustomerReturnList} disabled={opLoading}>
@@ -1365,6 +1766,11 @@ export function WarehouseOperations({
                     setInventoryNewScanValue('');
                     setInventoryNewSearch('');
                     setInventoryNewSelectedProductId('');
+                    const initWh = inventoryWarehouseId || '';
+                    setInventorySessionWarehouseId(initWh);
+                    if (initWh && typeof reloadProductsWithWarehouse === 'function') {
+                      reloadProductsWithWarehouse(initWh);
+                    }
                   }}
                   disabled={loading}
                 >
@@ -1377,15 +1783,15 @@ export function WarehouseOperations({
                 <p className="warehouse-ops-receipt-list-empty">Пока нет сохранённых инвентаризаций.</p>
               ) : (
                 <div className="warehouse-ops-receipts-list-wrap">
-                  <table className="warehouse-ops-receipt-list-table table">
+                  <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--documents table">
                     <thead>
                       <tr>
                         <th>Дата</th>
                         <th>Номер</th>
                         <th>Склад</th>
                         <th>Позиций</th>
+                        <th>Итог, ₽</th>
                         <th>Кем создано</th>
-                        <th />
                       </tr>
                     </thead>
                     <tbody>
@@ -1420,10 +1826,8 @@ export function WarehouseOperations({
                             <td>№{s.id}</td>
                             <td className="name-cell">{wh}</td>
                             <td>{s.lines_count ?? '—'}</td>
+                            <td>{formatInventorySessionNetRubList(s.net_amount_rub)}</td>
                             <td>{who}</td>
-                            <td>
-                              <span className="muted">Подробнее →</span>
-                            </td>
                           </tr>
                         );
                       })}
@@ -1454,12 +1858,34 @@ export function WarehouseOperations({
                   onClick={() => {
                     setInventoryNewSession(false);
                     setInventoryNewRows([]);
+                    setInventorySessionWarehouseId('');
                     setLookupError(null);
                   }}
                 >
                   К списку инвентаризаций
                 </Button>
               </div>
+
+              <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
+                <label>
+                  Склад инвентаризации <span className="warehouse-ops-required-star">*</span>
+                </label>
+                <select
+                  value={inventorySessionWarehouseId}
+                  onChange={handleInventorySessionWarehouseChange}
+                  className="warehouse-ops-select"
+                >
+                  <option value="">— Выберите склад —</option>
+                  {ownWarehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.address || w.name || `Склад #${w.id}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
+                «В системе» и суммы пересчёта считаются по выбранному складу; при смене склада список строк очищается.
+              </p>
 
               <p className="warehouse-ops-hint">Скан:</p>
               <form
@@ -1477,6 +1903,7 @@ export function WarehouseOperations({
                   onChange={handleInventoryNewScanChange}
                   onKeyDown={handleInventoryNewScanKeyDown}
                   autoComplete="off"
+                  disabled={!inventorySessionWarehouseId}
                 />
               </form>
 
@@ -1510,7 +1937,7 @@ export function WarehouseOperations({
                   <Button
                     type="button"
                     onClick={handleInventoryNewAddFromSelect}
-                    disabled={!inventoryNewSelectedProductId}
+                    disabled={!inventoryNewSelectedProductId || !inventorySessionWarehouseId}
                   >
                     Добавить 1 шт
                   </Button>
@@ -1631,9 +2058,20 @@ export function WarehouseOperations({
           <div className="warehouse-ops-receipts-list-header">
             <div>
               <h3 className="warehouse-ops-panel-title">Список приёмок и возвратов</h3>
-              <p className="warehouse-ops-hint">Поступления на склад (ПТ) и возвратные накладные поставщикам (ВН).</p>
+              <p className="warehouse-ops-hint">
+                Поступления на склад (ПТ) и возвратные накладные поставщикам (ВН). «Кол-во, шт» — сумма единиц по
+                строкам; «Сумма, ₽» — по строкам с указанной себестоимостью (кол-во × цена в строке), иначе «—».
+              </p>
             </div>
-            <Button onClick={() => { setReceiptList([]); setOpMessage(null); setLookupError(null); setAddReceiptModalOpen(true); }}>
+            <Button
+              onClick={() => {
+                setReceiptList([]);
+                setOpMessage(null);
+                setLookupError(null);
+                setReceiptWarehouseId(inventoryWarehouseId || '');
+                setAddReceiptModalOpen(true);
+              }}
+            >
               Добавить поступление
             </Button>
           </div>
@@ -1643,7 +2081,7 @@ export function WarehouseOperations({
             <p className="warehouse-ops-receipt-list-empty">Нет приёмок.</p>
           ) : (
             <div className="warehouse-ops-receipts-list-wrap">
-              <table className="warehouse-ops-receipt-list-table table">
+              <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--documents table">
                 <thead>
                   <tr>
                     <th>Дата</th>
@@ -1651,8 +2089,8 @@ export function WarehouseOperations({
                     <th>Тип</th>
                     <th>Организация</th>
                     <th>Поставщик</th>
-                    <th>Позиций</th>
-                    <th></th>
+                    <th>Кол-во, шт</th>
+                    <th>Сумма, ₽</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1672,8 +2110,8 @@ export function WarehouseOperations({
                       <td>{r.document_type === 'return' ? 'Возврат' : (r.document_type === 'customer_return' ? 'Возврат от клиента' : 'Приёмка')}</td>
                       <td>{r.organization_name || '—'}</td>
                       <td>{r.supplier_name || r.supplier_code || '—'}</td>
-                      <td>{r.lines_count ?? '—'}</td>
-                      <td><span className="muted">Подробнее →</span></td>
+                      <td>{receiptRowTotalUnits(r)}</td>
+                      <td>{formatReceiptListAmountRub(r.total_amount_rub ?? r.totalAmountRub)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1700,7 +2138,7 @@ export function WarehouseOperations({
             </p>
             {receiptDetail.lines && receiptDetail.lines.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
-                <table className="warehouse-ops-receipt-list-table table">
+                <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
                   <thead>
                     <tr>
                       <th>Артикул</th>
@@ -1906,6 +2344,8 @@ export function WarehouseOperations({
         )}
       </Modal>
 
+      {/* dropdown suggestions are rendered inline under inputs */}
+
       <Modal
         isOpen={addReceiptModalOpen}
         onClose={() => setAddReceiptModalOpen(false)}
@@ -1915,6 +2355,23 @@ export function WarehouseOperations({
         closeOnEscape={false}
       >
         <div className="warehouse-ops-panel receipt-panel" style={{ marginBottom: 0 }}>
+          <div className="warehouse-ops-receipt-supplier-row">
+            <label>
+              Склад приёмки <span className="warehouse-ops-required-star">*</span>
+            </label>
+            <select
+              value={receiptWarehouseId}
+              onChange={(e) => setReceiptWarehouseId(e.target.value)}
+              className="warehouse-ops-select"
+            >
+              <option value="">— Выберите склад —</option>
+              {ownWarehouses.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.address || w.name || `Склад #${w.id}`}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="warehouse-ops-receipt-modes">
             <label className="warehouse-ops-radio">
               <input
@@ -1948,6 +2405,7 @@ export function WarehouseOperations({
                   value={scanValue}
                   onChange={handleReceiptScanChange}
                   autoComplete="off"
+                  disabled={!receiptWarehouseId}
                 />
               </form>
             </>
@@ -1979,7 +2437,10 @@ export function WarehouseOperations({
                   onChange={e => setListQty(e.target.value)}
                   className="warehouse-ops-qty-input"
                 />
-                <Button onClick={handleReceiptFromList} disabled={!selectedProductId}>
+                <Button
+                  onClick={handleReceiptFromList}
+                  disabled={!selectedProductId || !receiptWarehouseId}
+                >
                   В список
                 </Button>
               </div>
@@ -2009,7 +2470,7 @@ export function WarehouseOperations({
                   </select>
                 </div>
                 <div className="warehouse-ops-receipt-list-wrap">
-                  <table className="warehouse-ops-receipt-list-table table">
+                  <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
                     <thead>
                       <tr>
                         <th>Артикул</th>
@@ -2075,6 +2536,14 @@ export function WarehouseOperations({
       </Modal>
 
       {mode === MODE_TABLE && null}
+
+      <LinkBarcodeToProductModal
+        isOpen={linkBarcodeModalOpen}
+        onClose={closeLinkBarcodeModal}
+        barcode={linkBarcodeScanned}
+        products={products}
+        onLinked={handleLinkBarcodeLinked}
+      />
     </div>
   );
 }

@@ -100,7 +100,7 @@ export function StockProblems() {
         <p className="muted">Проблемных заказов не найдено.</p>
       ) : (
         <div className="warehouse-ops-receipts-list-wrap">
-          <table className="warehouse-ops-receipt-list-table table">
+          <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--documents table">
             <thead>
               <tr>
                 <th>Маркетплейс</th>

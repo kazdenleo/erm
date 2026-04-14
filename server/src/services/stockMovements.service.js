@@ -91,6 +91,18 @@ class StockMovementsService {
       warehouseId
     });
 
+    if (type !== 'reserve' && type !== 'unreserve') {
+      try {
+        const { default: ordersService } = await import('./orders.service.js');
+        await ordersService.trimExcessReservesForProduct(idNum, {
+          reason: reason || undefined,
+          meta: { from_stock_movement_type: type }
+        });
+      } catch {
+        // не блокируем движение при сбое пересчёта резервов
+      }
+    }
+
     return {
       productId: idNum,
       quantityBefore: totalBefore,

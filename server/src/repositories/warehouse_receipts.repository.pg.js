@@ -108,12 +108,25 @@ class WarehouseReceiptsRepositoryPG {
   }
 
   async findAll({ limit = 100, offset = 0 } = {}) {
+    /* Цена в документе или из карточки товара (старые строки с NULL cost всё же показывают сумму). */
+    const amountRub = `(
+      SELECT SUM(l.quantity::numeric * COALESCE(l.cost, p.cost)::numeric)
+      FROM warehouse_receipt_lines l
+      INNER JOIN products p ON p.id = l.product_id
+      WHERE l.receipt_id = r.id
+        AND COALESCE(l.cost, p.cost) IS NOT NULL
+    ) AS total_amount_rub`;
     try {
       const r = await query(
         `SELECT r.id, r.created_at, r.receipt_number, r.supplier_id, r.organization_id, r.document_type,
                 s.name AS supplier_name, s.code AS supplier_code,
                 o.name AS organization_name,
-                (SELECT COUNT(*) FROM warehouse_receipt_lines WHERE receipt_id = r.id) AS lines_count
+                (SELECT COUNT(*)::int FROM warehouse_receipt_lines WHERE receipt_id = r.id) AS lines_count,
+                COALESCE(
+                  (SELECT SUM(l.quantity) FROM warehouse_receipt_lines l WHERE l.receipt_id = r.id),
+                  0
+                )::int AS total_quantity,
+                ${amountRub}
          FROM warehouse_receipts r
          LEFT JOIN suppliers s ON s.id = r.supplier_id
          LEFT JOIN organizations o ON o.id = r.organization_id
@@ -127,7 +140,12 @@ class WarehouseReceiptsRepositoryPG {
         const r = await query(
           `SELECT r.id, r.created_at, r.receipt_number, r.supplier_id,
                   s.name AS supplier_name, s.code AS supplier_code,
-                  (SELECT COUNT(*) FROM warehouse_receipt_lines WHERE receipt_id = r.id) AS lines_count
+                  (SELECT COUNT(*)::int FROM warehouse_receipt_lines WHERE receipt_id = r.id) AS lines_count,
+                  COALESCE(
+                    (SELECT SUM(l.quantity) FROM warehouse_receipt_lines l WHERE l.receipt_id = r.id),
+                    0
+                  )::int AS total_quantity,
+                  ${amountRub}
            FROM warehouse_receipts r
            LEFT JOIN suppliers s ON s.id = r.supplier_id
            ORDER BY r.created_at DESC, r.id DESC

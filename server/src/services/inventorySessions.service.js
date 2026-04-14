@@ -27,24 +27,29 @@ async function assertProductAllowedInProfile(client, productId, profileId) {
   }
 }
 
-async function resolveInventoryWarehouseId(client, warehouseId) {
+/** Склад инвентаризации обязателен (без подстановки «первого попавшегося»). */
+async function requireInventoryWarehouseId(client, warehouseId) {
   let wid =
     warehouseId != null && warehouseId !== ''
       ? typeof warehouseId === 'string'
         ? parseInt(warehouseId, 10)
         : Number(warehouseId)
       : null;
-  if (wid != null && !Number.isNaN(wid)) {
-    const ok = await client.query(
-      `SELECT id FROM warehouses WHERE id = $1 AND type = 'warehouse' AND supplier_id IS NULL`,
-      [wid]
-    );
-    if (ok.rows?.length) return wid;
+  if (wid == null || Number.isNaN(wid) || wid < 1) {
+    const err = new Error('Укажите склад инвентаризации');
+    err.statusCode = 400;
+    throw err;
   }
-  const d = await client.query(
-    `SELECT id FROM warehouses WHERE type = 'warehouse' AND supplier_id IS NULL ORDER BY id ASC LIMIT 1`
+  const ok = await client.query(
+    `SELECT id FROM warehouses WHERE id = $1 AND type = 'warehouse' AND supplier_id IS NULL`,
+    [wid]
   );
-  return d.rows?.[0]?.id ?? null;
+  if (!ok.rows?.length) {
+    const err = new Error('Склад не найден или недоступен для инвентаризации');
+    err.statusCode = 400;
+    throw err;
+  }
+  return wid;
 }
 
 class InventorySessionsService {
@@ -52,13 +57,22 @@ class InventorySessionsService {
     const lim = Math.min(Math.max(1, parseInt(limit, 10) || 200), 500);
     const pid = normalizeProfileId(profileId);
     const whLabel = `COALESCE(NULLIF(TRIM(w.address), ''), 'Склад #' || w.id::text)`;
+    /* Итог в ₽: Σ (после − до) × себестоимость, только строки с известной cost (как в UI деталей). */
+    const netRub = `(
+      SELECT SUM((l.quantity_after - l.quantity_before)::numeric * p.cost::numeric)
+      FROM inventory_session_lines l
+      INNER JOIN products p ON p.id = l.product_id
+      WHERE l.session_id = s.id
+        AND p.cost IS NOT NULL
+    ) AS net_amount_rub`;
     if (pid != null) {
       const res = await query(
         `SELECT s.id, s.created_at, s.lines_count, s.note, s.profile_id, s.warehouse_id,
                 s.created_by_user_id,
                 u.email AS created_by_email,
                 u.full_name AS created_by_full_name,
-                ${whLabel} AS warehouse_label
+                ${whLabel} AS warehouse_label,
+                ${netRub}
          FROM inventory_sessions s
          LEFT JOIN users u ON u.id = s.created_by_user_id
          LEFT JOIN warehouses w ON w.id = s.warehouse_id
@@ -74,7 +88,8 @@ class InventorySessionsService {
               s.created_by_user_id,
               u.email AS created_by_email,
               u.full_name AS created_by_full_name,
-              ${whLabel} AS warehouse_label
+              ${whLabel} AS warehouse_label,
+              ${netRub}
        FROM inventory_sessions s
        LEFT JOIN users u ON u.id = s.created_by_user_id
        LEFT JOIN warehouses w ON w.id = s.warehouse_id
@@ -145,13 +160,8 @@ class InventorySessionsService {
     const uid = userId != null ? parseInt(userId, 10) : null;
     const pid = normalizeProfileId(profileId);
 
-    return transaction(async (client) => {
-      const whId = await resolveInventoryWarehouseId(client, warehouseId);
-      if (!whId) {
-        const err = new Error('Не найден склад для инвентаризации (нужен склад type=warehouse без поставщика)');
-        err.statusCode = 400;
-        throw err;
-      }
+    const result = await transaction(async (client) => {
+      const whId = await requireInventoryWarehouseId(client, warehouseId);
 
       const ins = await client.query(
         `INSERT INTO inventory_sessions (created_by_user_id, profile_id, lines_count, note, warehouse_id)
@@ -162,6 +172,7 @@ class InventorySessionsService {
       const sessionId = ins.rows[0].id;
       let applied = 0;
       const reasonBase = `Инвентаризация №${sessionId}`;
+      const affectedProductIds = new Set();
 
       for (const raw of linesInput) {
         const productId = parseInt(raw.productId, 10);
@@ -207,17 +218,35 @@ class InventorySessionsService {
           ]
         );
         applied++;
+        affectedProductIds.add(productId);
       }
 
       await client.query(`UPDATE inventory_sessions SET lines_count = $1 WHERE id = $2`, [applied, sessionId]);
 
       if (applied === 0) {
         await client.query('DELETE FROM inventory_sessions WHERE id = $1', [sessionId]);
-        return { sessionId: null, linesApplied: 0, message: 'Нет расхождений с учётом — документ не создан' };
+        return { sessionId: null, linesApplied: 0, productIds: [], message: 'Нет расхождений с учётом — документ не создан' };
       }
 
-      return { sessionId, linesApplied: applied };
+      return { sessionId, linesApplied: applied, productIds: [...affectedProductIds] };
     });
+
+    if (result?.sessionId && Array.isArray(result.productIds) && result.productIds.length > 0) {
+      try {
+        const { default: ordersService } = await import('./orders.service.js');
+        const sid = result.sessionId;
+        for (const pid of result.productIds) {
+          await ordersService.trimExcessReservesForProduct(pid, {
+            reason: `После инвентаризации №${sid}`,
+            meta: { inventory_session_id: sid }
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -230,7 +259,8 @@ class InventorySessionsService {
     const pid = normalizeProfileId(profileId);
     const reason = `Аннулирование инвентаризации №${sid}`;
 
-    return transaction(async (client) => {
+    const del = await transaction(async (client) => {
+      const touchedIds = [];
       for (const line of lines || []) {
         const productId = parseInt(line.product_id, 10);
         const qb = line.quantity_before != null ? Number(line.quantity_before) : 0;
@@ -266,11 +296,25 @@ class InventorySessionsService {
             whId || null,
           ]
         );
+        touchedIds.push(productId);
       }
 
       await client.query('DELETE FROM inventory_sessions WHERE id = $1', [sid]);
-      return { deleted: true, id: sid };
+      return { deleted: true, id: sid, productIds: [...new Set(touchedIds)] };
     });
+
+    if (del?.productIds?.length) {
+      try {
+        const { default: ordersService } = await import('./orders.service.js');
+        for (const pid of del.productIds) {
+          await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return del;
   }
 }
 

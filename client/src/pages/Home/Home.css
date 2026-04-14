@@ -1,0 +1,52 @@
+/* Плашка «Остатки»: те же отступы/высота, что у соседних .card.widget-content */
+.home-stock-plate-block {
+  cursor: pointer;
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+}
+
+.home-stock-plate-block:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
+.home-stock-plate-block:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 2px;
+}
+
+/* Три зоны: заголовок | количество по центру плашки | сумма справа */
+.home-stock-plate-block .widget-content-wrapper.home-stock-plate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  width: 100%;
+}
+
+.home-stock-plate-col-center {
+  text-align: center;
+  justify-self: center;
+  white-space: nowrap;
+}
+
+.home-stock-plate-col-right {
+  text-align: right;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.home-stock-plate-num {
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.home-stock-plate-suffix {
+  font-size: 0.68em;
+  font-weight: 600;
+  opacity: 0.88;
+}
+
+.home-stock-modal-total {
+  font-size: 0.95rem;
+}

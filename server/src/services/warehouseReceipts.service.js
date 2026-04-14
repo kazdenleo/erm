@@ -12,19 +12,32 @@ class WarehouseReceiptsService {
     this.productsRepository = repositoryFactory.getProductsRepository();
   }
 
+  async _requireReceiptWarehouseId(warehouseId) {
+    const wid = await this.productsRepository.resolveStrictOwnWarehouseId(warehouseId);
+    if (!wid) {
+      const err = new Error('Укажите склад приёмки (склад хранения)');
+      err.statusCode = 400;
+      throw err;
+    }
+    return wid;
+  }
+
   /**
    * Создать приёмку: запись приёмки, строки, движения остатков, обновление себестоимости товаров
    * @param {object} params
    * @param {number|null} params.supplierId
    * @param {number|null} params.organizationId
+   * @param {number|string|null} params.warehouseId — обязательный склад размещения
    * @param {Array<{productId: number, quantity: number, cost?: number|null}>} params.lines
    */
-  async createReceipt({ supplierId = null, organizationId = null, lines = [] }) {
+  async createReceipt({ supplierId = null, organizationId = null, warehouseId = null, lines = [] }) {
     if (!lines.length) {
       const err = new Error('Добавьте хотя бы одну позицию в приёмку');
       err.statusCode = 400;
       throw err;
     }
+
+    const whId = await this._requireReceiptWarehouseId(warehouseId);
 
     const receipt = await this.receiptsRepo.create({ supplierId, organizationId, documentType: 'receipt' });
     if (!receipt) throw new Error('Не удалось создать приёмку');
@@ -62,7 +75,7 @@ class WarehouseReceiptsService {
         delta: quantity,
         type: 'receipt',
         reason,
-        meta: { receipt_id: receipt.id, receipt_number: receiptNumber }
+        meta: { receipt_id: receipt.id, receipt_number: receiptNumber, warehouse_id: whId }
       });
 
       if (cost != null && !Number.isNaN(cost) && cost >= 0) {
@@ -81,14 +94,17 @@ class WarehouseReceiptsService {
    * @param {object} params
    * @param {number|null} params.organizationId - от какой организации возврат
    * @param {number|null} params.supplierId - какому поставщику
+   * @param {number|string|null} params.warehouseId — обязательный склад списания
    * @param {Array<{productId: number, quantity: number}>} params.lines
    */
-  async createReturn({ organizationId = null, supplierId = null, lines = [] }) {
+  async createReturn({ organizationId = null, supplierId = null, warehouseId = null, lines = [] }) {
     if (!lines.length) {
       const err = new Error('Добавьте хотя бы одну позицию в возврат');
       err.statusCode = 400;
       throw err;
     }
+
+    const whId = await this._requireReceiptWarehouseId(warehouseId);
 
     const receipt = await this.receiptsRepo.create({ supplierId, organizationId, documentType: 'return' });
     if (!receipt) throw new Error('Не удалось создать возвратную накладную');
@@ -124,7 +140,12 @@ class WarehouseReceiptsService {
         delta: -quantity,
         type: 'return_to_supplier',
         reason,
-        meta: { receipt_id: receipt.id, receipt_number: receiptNumber, supplier_id: supplierId }
+        meta: {
+          receipt_id: receipt.id,
+          receipt_number: receiptNumber,
+          supplier_id: supplierId,
+          warehouse_id: whId
+        }
       });
     }
 
@@ -138,14 +159,17 @@ class WarehouseReceiptsService {
    * Создать возврат от клиента на склад: документ с типом customer_return (ВК-xxx), строки, движение остатков +quantity
    * @param {object} params
    * @param {number|null} params.organizationId - организация (принимающая возврат)
+   * @param {number|string|null} params.warehouseId — обязательный склад приёмки
    * @param {Array<{productId: number, quantity: number, cost?: number|null}>} params.lines
    */
-  async createCustomerReturn({ organizationId = null, lines = [] }) {
+  async createCustomerReturn({ organizationId = null, warehouseId = null, lines = [] }) {
     if (!lines.length) {
       const err = new Error('Добавьте хотя бы одну позицию в возврат от клиента');
       err.statusCode = 400;
       throw err;
     }
+
+    const whId = await this._requireReceiptWarehouseId(warehouseId);
 
     const receipt = await this.receiptsRepo.create({ supplierId: null, organizationId, documentType: 'customer_return' });
     if (!receipt) throw new Error('Не удалось создать документ возврата от клиента');
@@ -183,7 +207,7 @@ class WarehouseReceiptsService {
         delta: quantity,
         type: 'customer_return',
         reason,
-        meta: { receipt_id: receipt.id, receipt_number: receiptNumber }
+        meta: { receipt_id: receipt.id, receipt_number: receiptNumber, warehouse_id: whId }
       });
 
       if (cost != null && !Number.isNaN(cost) && cost >= 0) {

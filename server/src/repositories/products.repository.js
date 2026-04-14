@@ -6,6 +6,14 @@
 import { readData, writeData } from '../utils/storage.js';
 
 class ProductsRepository {
+  /** Для не-PG режима: только проверка числа (складские id в файловом хранилище не валидируются). */
+  async resolveStrictOwnWarehouseId(warehouseId) {
+    if (warehouseId == null || warehouseId === '') return null;
+    const n =
+      typeof warehouseId === 'string' ? parseInt(warehouseId, 10) : Number(warehouseId);
+    return Number.isFinite(n) && n >= 1 ? n : null;
+  }
+
   async getProductIdsGroupedByUserCategory() {
     const products = await this.findAll();
     const out = {};

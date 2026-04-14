@@ -85,12 +85,6 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
-  /** Исправить резервы для заказов «В закупке» (снять и поставить заново по текущим правилам). */
-  rebuildProcurementReserves: async () => {
-    const response = await api.post('/orders/reserves/rebuild-procurement', {});
-    return response.data?.data ?? response.data;
-  },
-
   /**
    * Ручное добавление заказа: один товар или несколько.
    * @param {{ productId?: number, quantity?: number, items?: Array<{ productId: number, quantity: number }> }} data
@@ -101,7 +95,7 @@ export const ordersApi = {
   },
 
   /**
-   * Перевести заказ в статус «В закупке» (только из статуса «Новый»).
+   * Перевести заказ в статус «В закупке» (из «Новый»; у WB также из pending/unknown до резолва API).
    */
   setToProcurement: async (marketplace, orderId) => {
     const mp = encodeURIComponent(marketplace);

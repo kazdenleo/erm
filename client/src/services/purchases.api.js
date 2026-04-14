@@ -16,9 +16,17 @@ export const purchasesApi = {
     return response.data?.data ?? response.data;
   },
 
-  /** Удалить строку (если нет принятого количества): снять incoming, заказы при необходимости → «Новый» */
-  removeDraftLineItem: async (purchaseId, itemId) => {
-    const response = await api.delete(`/purchases/${purchaseId}/items/${itemId}`);
+  /**
+   * Уменьшить ожидание по строке. reduceBy — на сколько шт. (не больше непринятого); без параметра — снять всё непринятое.
+   */
+  removeDraftLineItem: async (purchaseId, itemId, options = {}) => {
+    const { reduceBy } = options;
+    const hasExplicit =
+      reduceBy != null && reduceBy !== '' && Number.isFinite(Number(reduceBy));
+    const config = hasExplicit
+      ? { data: { reduceBy: Math.floor(Number(reduceBy)) } }
+      : {};
+    const response = await api.delete(`/purchases/${purchaseId}/items/${itemId}`, config);
     return response.data?.data ?? response.data;
   },
 

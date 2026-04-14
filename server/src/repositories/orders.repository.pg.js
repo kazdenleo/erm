@@ -440,7 +440,14 @@ class OrdersRepositoryPG {
   _orderToUpsertParams(order) {
     const marketplace = normalizeMarketplaceForDb(order.marketplace);
     const orderId = String(order.orderId || order.order_id || '');
-    const orderGroupId = order.orderGroupId ?? order.order_group_id ?? null;
+    let orderGroupId = null;
+    if (Object.prototype.hasOwnProperty.call(order, 'orderGroupId')) {
+      const v = order.orderGroupId;
+      orderGroupId = v != null && String(v).trim() !== '' ? String(v) : null;
+    } else {
+      const leg = order.order_group_id;
+      orderGroupId = leg != null && String(leg).trim() !== '' ? String(leg) : null;
+    }
     const quantity = parseInt(order.quantity, 10) || 1;
     const price = parseFloat(order.price) || 0;
     let marketplaceSku = null;
@@ -455,7 +462,7 @@ class OrdersRepositoryPG {
     return [
       marketplace,
       orderId,
-      orderGroupId ? String(orderGroupId) : null,
+      orderGroupId,
       null,
       order.offerId ?? order.offer_id ?? null,
       marketplaceSku,
@@ -488,6 +495,7 @@ class OrdersRepositoryPG {
       ON CONFLICT (marketplace, order_id) DO UPDATE SET
         order_group_id = CASE
           WHEN orders.order_group_id LIKE '%|split|%' THEN orders.order_group_id
+          WHEN EXCLUDED.marketplace = 'wb' AND EXCLUDED.order_group_id IS NULL THEN NULL
           ELSE COALESCE(EXCLUDED.order_group_id, orders.order_group_id)
         END,
         offer_id = EXCLUDED.offer_id,
@@ -534,6 +542,7 @@ class OrdersRepositoryPG {
     const setClause = `
         order_group_id = CASE
           WHEN orders.order_group_id LIKE '%|split|%' THEN orders.order_group_id
+          WHEN EXCLUDED.marketplace = 'wb' AND EXCLUDED.order_group_id IS NULL THEN NULL
           ELSE COALESCE(EXCLUDED.order_group_id, orders.order_group_id)
         END,
         offer_id = EXCLUDED.offer_id,
@@ -846,6 +855,82 @@ class OrdersRepositoryPG {
     return result.rowCount || 0;
   }
   
+  /**
+   * Заказы «Новый» и «В закупке» по товару (product_id или совпадение по SKU/МП, как у сборки).
+   * FIFO по created_at — дозаполнение резерва после поступления остатка / снятия резерва.
+   */
+  async findReserveQueueOrdersByProductId(productId, limit = 500) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return [];
+    const lim = Math.min(Math.max(1, parseInt(limit, 10) || 500), 500);
+    const byProductMatch = `
+        (
+          o.product_id = $1
+          OR EXISTS (
+            SELECT 1 FROM product_skus ps
+            WHERE ps.product_id = $1
+              AND ps.marketplace = o.marketplace
+              AND (
+                (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
+                OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
+                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
+                    AND ps.marketplace_product_id = o.marketplace_sku::bigint)
+                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
+                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
+              )
+          )
+          OR EXISTS (
+            SELECT 1 FROM products pmain
+            WHERE pmain.id = $1
+              AND (
+                (o.offer_id IS NOT NULL AND TRIM(o.offer_id) = TRIM(COALESCE(pmain.sku, '')))
+                OR (o.marketplace_sku IS NOT NULL AND TRIM(CAST(o.marketplace_sku AS TEXT)) = TRIM(COALESCE(pmain.sku, '')))
+                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1 FROM product_skus x
+                    WHERE x.product_id = pmain.id AND x.marketplace = 'ozon'
+                      AND x.marketplace_product_id IS NOT NULL
+                      AND x.marketplace_product_id = o.marketplace_sku::bigint
+                  ))
+                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL
+                  AND TRIM(COALESCE(pmain.sku, '')) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
+                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL
+                  AND TRIM(COALESCE(pmain.sku, '')) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
+              )
+          )
+          OR EXISTS (
+            SELECT 1 FROM product_skus psku
+            WHERE psku.product_id = $1
+              AND (
+                (o.offer_id IS NOT NULL AND TRIM(o.offer_id) = TRIM(psku.sku))
+                OR (o.marketplace_sku IS NOT NULL AND TRIM(CAST(o.marketplace_sku AS TEXT)) = TRIM(psku.sku))
+                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL
+                  AND psku.marketplace = 'ozon'
+                  AND psku.marketplace_product_id IS NOT NULL
+                  AND psku.marketplace_product_id = o.marketplace_sku::bigint)
+                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND psku.marketplace = 'wb'
+                  AND TRIM(psku.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
+                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND psku.marketplace = 'wb'
+                  AND TRIM(psku.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
+              )
+          )
+        )`;
+    const result = await query(
+      `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+        o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
+        o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id,
+        o.stock_problem, o.stock_problem_detected_at, o.stock_problem_details
+       FROM orders o
+       WHERE o.status IN ('new', 'in_procurement')
+         AND ${byProductMatch}
+       ORDER BY o.created_at ASC NULLS LAST, o.id ASC
+       LIMIT $2`,
+      [pid, lim]
+    );
+    return (result.rows || []).map((r) => rowToCamel(r));
+  }
+
   /**
    * Найти первый заказ на сборке (in_assembly), содержащий товар с данным productId.
    * Учитывает как прямую связь (orders.product_id), так и совпадение по product_skus

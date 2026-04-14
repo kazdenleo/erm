@@ -3,7 +3,8 @@
  * Минимальный UI: список закупок → детали → создать приёмку → сканирование.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
 import { useNavigate } from 'react-router-dom';
 import { purchasesApi } from '../../services/purchases.api';
 import { useProducts } from '../../hooks/useProducts';
@@ -28,6 +29,89 @@ function qtyCell(raw) {
   if (raw == null || raw === '') return '—';
   const n = Number(raw);
   return Number.isFinite(n) ? n : '—';
+}
+
+/** Частичное или полное уменьшение «ожидалось» по строке закупки (поле «На … шт.» + «Уменьшить»). */
+function PurchaseLineReduceControls({
+  purchaseId,
+  itemId,
+  expected,
+  received,
+  unreceived,
+  onDone,
+  setErr,
+}) {
+  const [qtyStr, setQtyStr] = useState(String(unreceived));
+
+  useEffect(() => {
+    setQtyStr(String(unreceived));
+  }, [itemId, unreceived]);
+
+  const parsed = parseInt(String(qtyStr).trim(), 10);
+  const rbCap = Math.min(Math.max(1, Number.isFinite(parsed) ? parsed : 0), unreceived);
+  const valid = Number.isFinite(parsed) && parsed >= 1 && parsed <= unreceived;
+  const newExpected = expected - rbCap;
+  const newUnreceived = newExpected - received;
+
+  return (
+    <div
+      className="purchase-line-reduce-controls"
+      style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', maxWidth: 320 }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span className="muted" style={{ fontSize: 12 }}>
+        На
+      </span>
+      <input
+        type="number"
+        className="warehouse-ops-qty-input"
+        style={{ width: 72 }}
+        min={1}
+        max={unreceived}
+        value={qtyStr}
+        onChange={(e) => setQtyStr(e.target.value)}
+      />
+      <span className="muted" style={{ fontSize: 12 }}>
+        шт.
+      </span>
+      <Button
+        variant="secondary"
+        size="small"
+        disabled={!valid}
+        title={
+          valid
+            ? `После: ожидалось ${newExpected}, непринято ${newUnreceived}`
+            : `Укажите от 1 до ${unreceived}`
+        }
+        onClick={async () => {
+          const rb = Math.min(
+            Math.max(1, parseInt(String(qtyStr).trim(), 10) || 0),
+            unreceived
+          );
+          const ne = expected - rb;
+          const nu = ne - received;
+          let msg;
+          if (received > 0) {
+            msg = `Уменьшить ожидание на ${rb} шт.? Станет «ожидалось» ${ne} (принято ${received}), непринято ${nu}. Часть заказов в привязке сверх ${ne} вернётся в «Новый», если нет другой закупки. Дальше можно снова оформить приёмку на остаток.`;
+          } else if (rb >= unreceived) {
+            msg = `Снять всё непринятое (${unreceived} шт.) и удалить строку из закупки?`;
+          } else {
+            msg = `Уменьшить ожидание на ${rb} шт.? Останется ждать ${ne} шт. по этой строке — позже можно принять их этой же закупкой.`;
+          }
+          if (!window.confirm(msg)) return;
+          try {
+            setErr(null);
+            await purchasesApi.removeDraftLineItem(purchaseId, itemId, { reduceBy: rb });
+            await onDone();
+          } catch (e) {
+            setErr(e.response?.data?.message || e.message || 'Не удалось изменить строку');
+          }
+        }}
+      >
+        Уменьшить
+      </Button>
+    </div>
+  );
 }
 
 function formatSourceOrders(raw) {
@@ -87,6 +171,9 @@ export function Purchases() {
   const [detailExpectedQtySort, setDetailExpectedQtySort] = useState(null);
   /** null | 'asc' | 'desc' — сортировка строк приёмки по отсканированному количеству */
   const [receiptScannedQtySort, setReceiptScannedQtySort] = useState(null);
+  const [linkBarcodeOpen, setLinkBarcodeOpen] = useState(false);
+  const [linkBarcodeValue, setLinkBarcodeValue] = useState('');
+  const purchaseLinkRetryRef = useRef(null);
 
   const sortedDetailItems = useMemo(() => {
     const items = detail?.items;
@@ -233,13 +320,49 @@ export function Purchases() {
       setScanMsg('Ок');
       scanRef.current?.focus();
     } catch (e) {
-      setScanMsg(e.response?.data?.message || e.message || 'Ошибка сканирования');
+      const msg = e.response?.data?.message || e.message || 'Ошибка сканирования';
+      const st = e.response?.status;
+      if (st === 404 && /не найден/i.test(String(msg))) {
+        purchaseLinkRetryRef.current = { rid, barcode: v };
+        setLinkBarcodeValue(v);
+        setLinkBarcodeOpen(true);
+        setScanMsg(null);
+      } else {
+        setScanMsg(msg);
+      }
       setScanValue('');
       scanRef.current?.focus();
     } finally {
       scanInFlightRef.current = false;
     }
   };
+
+  const handlePurchaseBarcodeLinked = useCallback(
+    async () => {
+      setLinkBarcodeOpen(false);
+      setLinkBarcodeValue('');
+      const pending = purchaseLinkRetryRef.current;
+      purchaseLinkRetryRef.current = null;
+      try {
+        await loadProducts({ limit: 2000 });
+      } catch (_) {
+        /* ignore */
+      }
+      if (pending?.rid && pending?.barcode) {
+        try {
+          setScanMsg('Сканирую…');
+          await purchasesApi.scanReceipt(pending.rid, { barcode: pending.barcode });
+          const data = await purchasesApi.getReceipt(pending.rid);
+          setReceipt(data);
+          setScanMsg('Ок');
+        } catch (e2) {
+          setScanMsg(e2.response?.data?.message || e2.message || 'Ошибка сканирования');
+        }
+      }
+      setTimeout(() => scanRef.current?.focus(), 50);
+    },
+    [loadProducts]
+  );
 
   return (
     <div className="card">
@@ -260,7 +383,7 @@ export function Purchases() {
         <p className="muted">Закупок пока нет.</p>
       ) : (
         <div className="warehouse-ops-receipts-list-wrap">
-          <table className="warehouse-ops-receipt-list-table table">
+          <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--documents table">
             <thead>
               <tr>
                 <th>Дата</th>
@@ -521,8 +644,9 @@ export function Purchases() {
             </div>
             <h4>Позиции</h4>
             <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
-              Позицию без принятого количества можно удалить: снимется ожидание (incoming), заказ из «В закупке» вернётся
-              в «Новый», если нет другой активной закупки с этим заказом.
+              Если «ожидалось» больше «принято», укажите в штуках, на сколько уменьшить ожидание (не обязательно на всё непринятое):
+              остаток по строке можно принять позже той же закупкой. Incoming уменьшится на выбранное число; уже принятое на склад не
+              затрагивается. Заказы в привязке сверх нового «ожидалось» вернутся в «Новый», если нет другой закупки.
             </p>
             {Array.isArray(detail.items) && detail.items.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
@@ -601,33 +725,36 @@ export function Purchases() {
                         <td>{it.expected_quantity}</td>
                         <td>{it.received_quantity}</td>
                         <td onClick={(e) => e.stopPropagation()}>
-                          {Number(it.received_quantity) === 0 ? (
-                            <Button
-                              variant="secondary"
-                              size="small"
-                              onClick={async () => {
-                                if (
-                                  !window.confirm(
-                                    'Удалить эту позицию из закупки? Снимется ожидание по ней; связанный заказ (если был в «В закупке» через эту строку) вернётся в «Новые», если его нет в другой закупке.'
-                                  )
-                                ) {
-                                  return;
-                                }
-                                try {
-                                  setErr(null);
-                                  await purchasesApi.removeDraftLineItem(detail.purchase.id, it.id);
+                          {(() => {
+                            const exp = Number(it.expected_quantity);
+                            const rec = Number(it.received_quantity);
+                            const expected = Math.max(
+                              0,
+                              Math.floor(Number.isFinite(exp) ? exp : 0)
+                            );
+                            const received = Math.max(
+                              0,
+                              Math.floor(Number.isFinite(rec) ? rec : 0)
+                            );
+                            const unreceived = Math.max(0, expected - received);
+                            if (unreceived <= 0) {
+                              return <span className="muted">—</span>;
+                            }
+                            return (
+                              <PurchaseLineReduceControls
+                                purchaseId={detail.purchase.id}
+                                itemId={it.id}
+                                expected={expected}
+                                received={received}
+                                unreceived={unreceived}
+                                setErr={setErr}
+                                onDone={async () => {
                                   await openDetail(detail.purchase.id);
                                   await reload();
-                                } catch (e) {
-                                  setErr(e.response?.data?.message || e.message || 'Не удалось удалить строку');
-                                }
-                              }}
-                            >
-                              Удалить
-                            </Button>
-                          ) : (
-                            <span className="muted">—</span>
-                          )}
+                                }}
+                              />
+                            );
+                          })()}
                         </td>
                       </tr>
                     ))}
@@ -641,7 +768,7 @@ export function Purchases() {
             <h4 style={{ marginTop: 14 }}>Приёмки</h4>
             {Array.isArray(detail.receipts) && detail.receipts.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
-                <table className="warehouse-ops-receipt-list-table table">
+                <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--documents table">
                   <thead>
                     <tr>
                       <th>Дата</th>
@@ -935,7 +1062,7 @@ export function Purchases() {
               Найдены излишки по закупке №{extrasToResolve.purchaseId}. Выберите действие: допринять на склад или оформить возврат поставщику.
             </p>
             <div className="warehouse-ops-receipt-list-wrap" style={{ marginTop: 10 }}>
-              <table className="warehouse-ops-receipt-list-table table">
+              <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
                 <thead>
                   <tr>
                     <th>Артикул</th>
@@ -986,6 +1113,18 @@ export function Purchases() {
           </>
         ) : null}
       </Modal>
+
+      <LinkBarcodeToProductModal
+        isOpen={linkBarcodeOpen}
+        onClose={() => {
+          setLinkBarcodeOpen(false);
+          setLinkBarcodeValue('');
+          purchaseLinkRetryRef.current = null;
+        }}
+        barcode={linkBarcodeValue}
+        products={products}
+        onLinked={handlePurchaseBarcodeLinked}
+      />
     </div>
   );
 }

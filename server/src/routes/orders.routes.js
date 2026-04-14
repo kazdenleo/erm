@@ -55,12 +55,6 @@ router.post(
   wrapAsync(ordersController.sendToAssembly.bind(ordersController))
 );
 
-// Исправить резервы (пересборка) для заказов «В закупке»
-router.post(
-  '/reserves/rebuild-procurement',
-  wrapAsync(ordersController.rebuildProcurementReserves.bind(ordersController))
-);
-
 // Вернуть заказ в статус «Новый» (со сборки / собран)
 router.put(
   '/:marketplace/:orderId/return-to-new',
