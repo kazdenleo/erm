@@ -201,6 +201,11 @@ class ProductsRepositoryPG {
     `;
     const params = [];
     let paramIndex = 1;
+
+    if (profileId != null && profileId !== '') {
+      sql += ` AND p.profile_id = $${paramIndex++}`;
+      params.push(profileId);
+    }
     
     if (brandId) {
       sql += ` AND p.brand_id = $${paramIndex++}`;
@@ -850,16 +855,19 @@ class ProductsRepositoryPG {
       const additionalExpensesVal =
         addExpRaw != null && addExpRaw !== '' && !isNaN(Number(addExpRaw)) ? Number(addExpRaw) : null;
       const mpStr = (v) => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
+      const profileIdRaw = productData.profile_id ?? productData.profileId ?? null;
       const productResult = await client.query(`
         INSERT INTO products (
+          profile_id,
           sku, name, brand_id, user_category_id, price, cost, additional_expenses, min_price, buyout_rate, buyout_rate_ozon, buyout_rate_wb, buyout_rate_ym,
           weight, length, width, height, volume, quantity, unit, description, product_type, organization_id, country_of_origin,
           mp_ozon_name, mp_ozon_description, mp_ozon_brand,
           mp_wb_vendor_code, mp_wb_name, mp_wb_description, mp_wb_brand,
           mp_ym_name, mp_ym_description
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
         RETURNING *
       `, [
+        profileIdRaw,
         productData.sku,
         productData.name,
         productData.brand_id || null,

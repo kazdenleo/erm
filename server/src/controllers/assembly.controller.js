@@ -156,7 +156,9 @@ class AssemblyController {
           message: 'Укажите marketplace и orderId в теле запроса'
         });
       }
-      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, String(orderId));
+      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, String(orderId), {
+        profileId: req.user?.profileId ?? null
+      });
       if (!order) {
         return res.status(404).json({
           ok: false,
@@ -174,7 +176,12 @@ class AssemblyController {
       }
       const assembledByUserId =
         req.user?.id != null && Number(req.user.id) > 0 ? Number(req.user.id) : null;
-      const updated = await ordersService.markOrderAsAssembled(marketplace, String(orderId), assembledByUserId);
+      const updated = await ordersService.markOrderAsAssembled(
+        marketplace,
+        String(orderId),
+        assembledByUserId,
+        req.user?.profileId ?? null
+      );
       return res.status(200).json({
         ok: true,
         data: { order: updated }

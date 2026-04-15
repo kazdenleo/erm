@@ -73,6 +73,12 @@ function toValidDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function normalizeProfileId(profileId) {
+  if (profileId == null || profileId === '') return null;
+  const n = typeof profileId === 'string' ? parseInt(profileId, 10) : Number(profileId);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 class OrdersRepositoryPG {
   /**
    * Массово выставить/снять флаг stock_problem для активных заказов.
@@ -148,10 +154,15 @@ class OrdersRepositoryPG {
    * Сопоставление с каталогом по product_skus (название товара); при ошибке или отсутствии таблицы — без него.
    */
   async findAll(options = {}) {
-    const { limit, offset, marketplace, status, productId, search, stockProblem } = options;
+    const { limit, offset, marketplace, status, productId, search, stockProblem, profileId } = options;
     const params = [];
     let paramIndex = 1;
     let whereSql = ' WHERE 1=1';
+    const pid = normalizeProfileId(profileId);
+    if (pid) {
+      whereSql += ` AND o.profile_id = $${paramIndex++}`;
+      params.push(pid);
+    }
     if (marketplace) {
       whereSql += ` AND o.marketplace = $${paramIndex++}`;
       params.push(marketplace);
@@ -365,9 +376,10 @@ class OrdersRepositoryPG {
    * Яндекс.Маркет: в БД order_id часто «число:offerId», order_group_id = числовой id заказа МП —
    * ищем также по группе и по базовому id (как getLocalOrderByMarketplaceAndOrderId в sync).
    */
-  async findByMarketplaceAndOrderId(marketplace, orderId) {
+  async findByMarketplaceAndOrderId(marketplace, orderId, profileId = null) {
     const dbMarketplace = normalizeMarketplaceForDb(marketplace);
     const oid = String(orderId ?? '').trim();
+    const pid = normalizeProfileId(profileId);
 
     const selectFull = `
       SELECT 
@@ -404,10 +416,10 @@ class OrdersRepositoryPG {
                 OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1'))) )
         LIMIT 1
       ) pm ON true
-      WHERE o.marketplace = $1 AND o.order_id = $2`;
+      WHERE o.marketplace = $1 AND o.order_id = $2${pid ? ' AND o.profile_id = $3' : ''}`;
 
     const byExact = async (mp, idStr) => {
-      const result = await query(selectFull, [mp, idStr]);
+      const result = await query(selectFull, pid ? [mp, idStr, pid] : [mp, idStr]);
       return result.rows[0] ? rowToCamel(result.rows[0]) : null;
     };
 
@@ -422,13 +434,17 @@ class OrdersRepositoryPG {
         if (row) return row;
       }
       const rGroup = await query(
-        `SELECT id FROM orders WHERE marketplace = 'ym' AND order_group_id = $1 ORDER BY id ASC LIMIT 1`,
-        [base]
+        pid
+          ? `SELECT id FROM orders WHERE marketplace = 'ym' AND profile_id = $1 AND order_group_id = $2 ORDER BY id ASC LIMIT 1`
+          : `SELECT id FROM orders WHERE marketplace = 'ym' AND order_group_id = $1 ORDER BY id ASC LIMIT 1`,
+        pid ? [pid, base] : [base]
       );
       if (rGroup.rows[0]?.id) return await this.findById(rGroup.rows[0].id);
       const rLike = await query(
-        `SELECT id FROM orders WHERE marketplace = 'ym' AND order_id LIKE $1 ORDER BY id ASC LIMIT 1`,
-        [`${base}:%`]
+        pid
+          ? `SELECT id FROM orders WHERE marketplace = 'ym' AND profile_id = $1 AND order_id LIKE $2 ORDER BY id ASC LIMIT 1`
+          : `SELECT id FROM orders WHERE marketplace = 'ym' AND order_id LIKE $1 ORDER BY id ASC LIMIT 1`,
+        pid ? [pid, `${base}:%`] : [`${base}:%`]
       );
       if (rLike.rows[0]?.id) return await this.findById(rLike.rows[0].id);
     }
@@ -440,6 +456,7 @@ class OrdersRepositoryPG {
   _orderToUpsertParams(order) {
     const marketplace = normalizeMarketplaceForDb(order.marketplace);
     const orderId = String(order.orderId || order.order_id || '');
+    const pid = normalizeProfileId(order.profileId ?? order.profile_id);
     let orderGroupId = null;
     if (Object.prototype.hasOwnProperty.call(order, 'orderGroupId')) {
       const v = order.orderGroupId;
@@ -460,6 +477,7 @@ class OrdersRepositoryPG {
     const shipmentDate = toValidDate(order.shipmentDate);
     const returnedToNewAt = toValidDate(order.returnedToNewAt ?? order.returned_to_new_at);
     return [
+      pid,
       marketplace,
       orderId,
       orderGroupId,
@@ -488,11 +506,11 @@ class OrdersRepositoryPG {
     const params = this._orderToUpsertParams(order);
     const result = await query(`
       INSERT INTO orders (
-        marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
+        profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
         customer_phone, delivery_address, created_at, in_process_at, shipment_date, returned_to_new_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-      ON CONFLICT (marketplace, order_id) DO UPDATE SET
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      ON CONFLICT (profile_id, marketplace, order_id) DO UPDATE SET
         order_group_id = CASE
           WHEN orders.order_group_id LIKE '%|split|%' THEN orders.order_group_id
           WHEN EXCLUDED.marketplace = 'wb' AND EXCLUDED.order_group_id IS NULL THEN NULL
@@ -536,7 +554,7 @@ class OrdersRepositoryPG {
   async upsertFromSyncBatch(orders) {
     if (!orders || orders.length === 0) return;
     const BATCH = 100;
-    const cols = `marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
+    const cols = `profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
         customer_phone, delivery_address, created_at, in_process_at, shipment_date, returned_to_new_at`;
     const setClause = `
@@ -578,15 +596,15 @@ class OrdersRepositoryPG {
       chunk.forEach((order, idx) => {
         const p = this._orderToUpsertParams(order);
         params.push(...p);
-        const base = idx * 17 + 1;
+        const base = idx * 18 + 1;
         placeholders.push(
-          `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16})`
+          `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16}, $${base + 17})`
         );
       });
       await query(`
         INSERT INTO orders (${cols})
         VALUES ${placeholders.join(', ')}
-        ON CONFLICT (marketplace, order_id) DO UPDATE SET ${setClause}
+        ON CONFLICT (profile_id, marketplace, order_id) DO UPDATE SET ${setClause}
       `, params);
     }
   }
@@ -621,12 +639,13 @@ class OrdersRepositoryPG {
   async create(orderData) {
     const result = await query(`
       INSERT INTO orders (
-        marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
+        profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
         customer_phone, delivery_address, created_at, in_process_at, shipment_date
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING *
     `, [
+      normalizeProfileId(orderData.profile_id ?? orderData.profileId),
       orderData.marketplace,
       orderData.order_id,
       orderData.order_group_id || null,
@@ -651,8 +670,9 @@ class OrdersRepositoryPG {
   /**
    * Найти все заказы по order_group_id (для группового ручного заказа)
    */
-  async findByOrderGroupId(orderGroupId) {
+  async findByOrderGroupId(orderGroupId, profileId = null) {
     if (!orderGroupId) return [];
+    const pid = normalizeProfileId(profileId);
     const result = await query(`
       SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, o.product_name) AS product_name,
@@ -665,17 +685,18 @@ class OrdersRepositoryPG {
       FROM orders o
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
-      WHERE o.order_group_id = $1
+      WHERE o.order_group_id = $1${pid ? ' AND o.profile_id = $2::bigint' : ''}
       ORDER BY o.id
-    `, [String(orderGroupId)]);
+    `, pid ? [String(orderGroupId), pid] : [String(orderGroupId)]);
     return result.rows.map(rowToCamel);
   }
 
   /**
    * Обновить статус всех заказов в группе
    */
-  async updateStatusByOrderGroupId(orderGroupId, status) {
+  async updateStatusByOrderGroupId(orderGroupId, status, profileId = null) {
     if (!orderGroupId) return 0;
+    const pid = normalizeProfileId(profileId);
     const clearAssembly = ['new', 'in_assembly', 'in_procurement'].includes(status);
     const result = await query(
       `
@@ -685,10 +706,10 @@ class OrdersRepositoryPG {
         assembled_at = CASE WHEN $3 THEN NULL ELSE assembled_at END,
         assembled_by_user_id = CASE WHEN $3 THEN NULL ELSE assembled_by_user_id END,
         updated_at = CURRENT_TIMESTAMP
-      WHERE order_group_id = $2::text
+      WHERE order_group_id = $2::text${pid ? ' AND profile_id = $4::bigint' : ''}
       RETURNING id
     `,
-      [status, String(orderGroupId), clearAssembly]
+      pid ? [status, String(orderGroupId), clearAssembly, pid] : [status, String(orderGroupId), clearAssembly]
     );
     return result.rowCount || 0;
   }
@@ -696,8 +717,9 @@ class OrdersRepositoryPG {
   /**
    * Отметить все строки группы как собранные (дата/время и пользователь сборки).
    */
-  async markAssembledByOrderGroupId(orderGroupId, assembledByUserId) {
+  async markAssembledByOrderGroupId(orderGroupId, assembledByUserId, profileId = null) {
     if (!orderGroupId) return;
+    const pid = normalizeProfileId(profileId);
     const uid = assembledByUserId != null && Number(assembledByUserId) > 0 ? Number(assembledByUserId) : null;
     await query(
       `
@@ -707,17 +729,18 @@ class OrdersRepositoryPG {
         assembled_at = CURRENT_TIMESTAMP,
         assembled_by_user_id = $2,
         updated_at = CURRENT_TIMESTAMP
-      WHERE order_group_id = $1
+      WHERE order_group_id = $1${pid ? ' AND profile_id = $3::bigint' : ''}
     `,
-      [String(orderGroupId), uid]
+      pid ? [String(orderGroupId), uid, pid] : [String(orderGroupId), uid]
     );
   }
 
   /**
    * Одна строка заказа — собрана.
    */
-  async markAssembledByMarketplaceAndOrderId(marketplace, orderId, assembledByUserId) {
+  async markAssembledByMarketplaceAndOrderId(marketplace, orderId, assembledByUserId, profileId = null) {
     const dbM = normalizeMarketplaceForDb(marketplace);
+    const pid = normalizeProfileId(profileId);
     const uid = assembledByUserId != null && Number(assembledByUserId) > 0 ? Number(assembledByUserId) : null;
     await query(
       `
@@ -727,9 +750,9 @@ class OrdersRepositoryPG {
         assembled_at = CURRENT_TIMESTAMP,
         assembled_by_user_id = $3,
         updated_at = CURRENT_TIMESTAMP
-      WHERE marketplace = $1 AND order_id = $2
+      WHERE marketplace = $1 AND order_id = $2${pid ? ' AND profile_id = $4::bigint' : ''}
     `,
-      [dbM, String(orderId), uid]
+      pid ? [dbM, String(orderId), uid, pid] : [dbM, String(orderId), uid]
     );
   }
   
@@ -773,10 +796,11 @@ class OrdersRepositoryPG {
    * Обновить заказ по marketplace и order_id.
    * marketplace принимается в формате API (wildberries, yandex), в БД хранится wb, ym — нормализуем.
    */
-  async updateByMarketplaceAndOrderId(marketplace, orderId, updates) {
+  async updateByMarketplaceAndOrderId(marketplace, orderId, updates, profileId = null) {
     const updateFields = [];
     const params = [];
     let paramIndex = 1;
+    const pid = normalizeProfileId(profileId);
     
     const allowedFields = [
       'product_id', 'offer_id', 'marketplace_sku', 'product_name',
@@ -808,7 +832,7 @@ class OrdersRepositoryPG {
     }
     
     if (updateFields.length === 0) {
-      return await this.findByMarketplaceAndOrderId(marketplace, orderId);
+      return await this.findByMarketplaceAndOrderId(marketplace, orderId, pid);
     }
     
     const dbMarketplace = normalizeMarketplaceForDb(marketplace);
@@ -816,9 +840,9 @@ class OrdersRepositoryPG {
     const result = await query(`
       UPDATE orders 
       SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-      WHERE marketplace = $${paramIndex++} AND order_id = $${paramIndex}
+      WHERE marketplace = $${paramIndex++} AND order_id = $${paramIndex}${pid ? ` AND profile_id = $${paramIndex + 1}::bigint` : ''}
       RETURNING *
-    `, params);
+    `, pid ? [...params, pid] : params);
     
     return result.rows[0] || null;
   }
@@ -834,11 +858,14 @@ class OrdersRepositoryPG {
   /**
    * Удалить заказ по marketplace и order_id (одна строка).
    */
-  async deleteByMarketplaceAndOrderId(marketplace, orderId) {
+  async deleteByMarketplaceAndOrderId(marketplace, orderId, profileId = null) {
     const dbMarketplace = normalizeMarketplaceForDb(marketplace);
+    const pid = normalizeProfileId(profileId);
     const result = await query(
-      'DELETE FROM orders WHERE marketplace = $1 AND order_id = $2 RETURNING id',
-      [dbMarketplace, String(orderId)]
+      pid
+        ? 'DELETE FROM orders WHERE marketplace = $1 AND order_id = $2 AND profile_id = $3 RETURNING id'
+        : 'DELETE FROM orders WHERE marketplace = $1 AND order_id = $2 RETURNING id',
+      pid ? [dbMarketplace, String(orderId), pid] : [dbMarketplace, String(orderId)]
     );
     return result.rowCount > 0;
   }
@@ -846,11 +873,14 @@ class OrdersRepositoryPG {
   /**
    * Удалить все заказы группы (по order_group_id).
    */
-  async deleteByOrderGroupId(orderGroupId) {
+  async deleteByOrderGroupId(orderGroupId, profileId = null) {
     if (!orderGroupId) return 0;
+    const pid = normalizeProfileId(profileId);
     const result = await query(
-      'DELETE FROM orders WHERE order_group_id = $1 RETURNING id',
-      [String(orderGroupId)]
+      pid
+        ? 'DELETE FROM orders WHERE order_group_id = $1 AND profile_id = $2 RETURNING id'
+        : 'DELETE FROM orders WHERE order_group_id = $1 RETURNING id',
+      pid ? [String(orderGroupId), pid] : [String(orderGroupId)]
     );
     return result.rowCount || 0;
   }

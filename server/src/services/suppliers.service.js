@@ -10,12 +10,12 @@ class SuppliersService {
     this.repository = repositoryFactory.getSuppliersRepository();
   }
 
-  async getAll() {
-    return await this.repository.findAll();
+  async getAll({ profileId = null } = {}) {
+    return await this.repository.findAll({ profileId });
   }
 
-  async getById(id) {
-    const supplier = await this.repository.findById(id);
+  async getById(id, { profileId = null } = {}) {
+    const supplier = await this.repository.findById(id, profileId);
     if (!supplier) {
       const error = new Error('Поставщик не найден');
       error.statusCode = 404;
@@ -24,16 +24,16 @@ class SuppliersService {
     return supplier;
   }
 
-  async getByCode(code) {
+  async getByCode(code, { profileId = null } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      return await this.repository.findByCode(code);
+      return await this.repository.findByCode(code, profileId);
     }
     // Для старого хранилища ищем по имени
     const suppliers = await this.repository.findAll();
     return suppliers.find(s => (s.code || s.name) === code);
   }
 
-  async create(data) {
+  async create(data, { profileId = null } = {}) {
     const name = data?.name ? String(data.name).trim() : '';
     if (!name) {
       const error = new Error('Название поставщика обязательно');
@@ -44,7 +44,7 @@ class SuppliersService {
     // Проверка на дубликаты
     if (repositoryFactory.isUsingPostgreSQL()) {
       if (data.code) {
-        const existing = await this.repository.findByCode(data.code);
+        const existing = await this.repository.findByCode(data.code, profileId);
         if (existing) {
           const error = new Error('Поставщик с таким кодом уже существует');
           error.statusCode = 400;
@@ -78,7 +78,8 @@ class SuppliersService {
         name,
         code: data.code || name.toLowerCase().replace(/\s+/g, '_'),
         api_config: apiConfig,
-        is_active: data.isActive !== undefined ? data.isActive : true
+        is_active: data.isActive !== undefined ? data.isActive : true,
+        profile_id: data.profile_id ?? data.profileId ?? profileId ?? null
       });
     } else {
       return await this.repository.create({
@@ -89,8 +90,8 @@ class SuppliersService {
     }
   }
 
-  async update(id, data) {
-    const existing = await this.repository.findById(id);
+  async update(id, data, { profileId = null } = {}) {
+    const existing = await this.repository.findById(id, profileId);
     if (!existing) {
       const error = new Error('Поставщик не найден');
       error.statusCode = 404;
@@ -127,7 +128,7 @@ class SuppliersService {
       }
       if (data.isActive !== undefined) updates.is_active = data.isActive;
       
-      const updated = await this.repository.update(id, updates);
+      const updated = await this.repository.update(id, updates, profileId);
       if (!updated) {
         const error = new Error('Поставщик не найден');
         error.statusCode = 404;
@@ -154,8 +155,8 @@ class SuppliersService {
     }
   }
 
-  async delete(id) {
-    const deleted = await this.repository.delete(id);
+  async delete(id, { profileId = null } = {}) {
+    const deleted = await this.repository.delete(id, profileId);
     if (!deleted) {
       const error = new Error('Поставщик не найден');
       error.statusCode = 404;

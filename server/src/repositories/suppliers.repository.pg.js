@@ -5,16 +5,28 @@
 
 import { query, transaction } from '../config/database.js';
 
+function normalizeProfileId(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 class SuppliersRepositoryPG {
   /**
    * Получить всех поставщиков
    */
   async findAll(options = {}) {
-    const { isActive } = options;
+    const { isActive, profileId } = options;
+    const pid = normalizeProfileId(profileId);
     
     let sql = 'SELECT * FROM suppliers WHERE 1=1';
     const params = [];
     let paramIndex = 1;
+
+    if (pid) {
+      sql += ` AND profile_id = $${paramIndex++}`;
+      params.push(pid);
+    }
     
     if (isActive !== undefined) {
       sql += ` AND is_active = $${paramIndex++}`;
@@ -61,8 +73,11 @@ class SuppliersRepositoryPG {
   /**
    * Получить поставщика по ID
    */
-  async findById(id) {
-    const result = await query('SELECT * FROM suppliers WHERE id = $1', [id]);
+  async findById(id, profileId = null) {
+    const pid = normalizeProfileId(profileId);
+    const result = pid
+      ? await query('SELECT * FROM suppliers WHERE id = $1 AND profile_id = $2', [id, pid])
+      : await query('SELECT * FROM suppliers WHERE id = $1', [id]);
     if (!result.rows[0]) {
       return null;
     }
@@ -89,8 +104,11 @@ class SuppliersRepositoryPG {
   /**
    * Получить поставщика по коду
    */
-  async findByCode(code) {
-    const result = await query('SELECT * FROM suppliers WHERE code = $1', [code]);
+  async findByCode(code, profileId = null) {
+    const pid = normalizeProfileId(profileId);
+    const result = pid
+      ? await query('SELECT * FROM suppliers WHERE LOWER(TRIM(code)) = LOWER(TRIM($1)) AND profile_id = $2', [code, pid])
+      : await query('SELECT * FROM suppliers WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))', [code]);
     if (!result.rows[0]) {
       return null;
     }
@@ -118,15 +136,17 @@ class SuppliersRepositoryPG {
    * Создать поставщика
    */
   async create(supplierData) {
+    const profileId = normalizeProfileId(supplierData.profile_id ?? supplierData.profileId);
     const result = await query(`
-      INSERT INTO suppliers (name, code, api_config, is_active)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO suppliers (name, code, api_config, is_active, profile_id)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *
     `, [
       supplierData.name,
       supplierData.code,
       JSON.stringify(supplierData.api_config || supplierData.apiConfig || {}),
-      supplierData.is_active !== undefined ? supplierData.is_active : (supplierData.isActive !== undefined ? supplierData.isActive : true)
+      supplierData.is_active !== undefined ? supplierData.is_active : (supplierData.isActive !== undefined ? supplierData.isActive : true),
+      profileId
     ]);
     
     const row = result.rows[0];
@@ -151,10 +171,11 @@ class SuppliersRepositoryPG {
   /**
    * Обновить поставщика
    */
-  async update(id, updates) {
+  async update(id, updates, profileId = null) {
     const updateFields = [];
     const params = [];
     let paramIndex = 1;
+    const pid = normalizeProfileId(profileId);
     
     const allowedFields = ['name', 'code', 'api_config', 'is_active'];
     
@@ -171,16 +192,16 @@ class SuppliersRepositoryPG {
     }
     
     if (updateFields.length === 0) {
-      return await this.findById(id);
+      return await this.findById(id, profileId);
     }
     
     params.push(id);
     const result = await query(`
       UPDATE suppliers 
       SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $${paramIndex}
+      WHERE id = $${paramIndex}${pid ? ` AND profile_id = $${paramIndex + 1}` : ''}
       RETURNING *
-    `, params);
+    `, pid ? [...params, pid] : params);
     
     if (!result.rows[0]) {
       return null;
@@ -208,8 +229,11 @@ class SuppliersRepositoryPG {
   /**
    * Удалить поставщика
    */
-  async delete(id) {
-    const result = await query('DELETE FROM suppliers WHERE id = $1 RETURNING id', [id]);
+  async delete(id, profileId = null) {
+    const pid = normalizeProfileId(profileId);
+    const result = pid
+      ? await query('DELETE FROM suppliers WHERE id = $1 AND profile_id = $2 RETURNING id', [id, pid])
+      : await query('DELETE FROM suppliers WHERE id = $1 RETURNING id', [id]);
     return result.rows.length > 0;
   }
   

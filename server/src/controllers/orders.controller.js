@@ -24,6 +24,7 @@ class OrdersController {
           ? true
           : (stockProblemRaw === '0' || stockProblemRaw === 'false' ? false : undefined);
       const orders = await ordersService.getAll({
+        ...(req.user?.profileId != null && req.user.profileId !== '' ? { profileId: req.user.profileId } : {}),
         ...(stockProblem !== undefined ? { stockProblem } : {}),
       });
       // Не кэшируем: список заказов часто меняется после синхронизации.
@@ -68,6 +69,7 @@ class OrdersController {
       }
       const orderId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const orderData = {
+        profile_id: req.user?.profileId ?? null,
         marketplace: 'manual',
         order_id: orderId,
         product_id: productIdNum,
@@ -125,7 +127,7 @@ class OrdersController {
         req.query?.force === 'true' ||
         req.body?.force === true ||
         req.body?.force === 'true';
-      const syncResult = await ordersSyncService.syncFbs({ force });
+      const syncResult = await ordersSyncService.syncFbs({ force, profileId: req.user?.profileId ?? null });
 
       if (syncResult.rateLimited && !syncResult.result) {
         return res.status(429).json({
@@ -153,7 +155,7 @@ class OrdersController {
   async refreshOzon(req, res, next) {
     try {
       const { orderId } = req.params;
-      const result = await ordersSyncService.refreshOzonOrder(orderId);
+      const result = await ordersSyncService.refreshOzonOrder(orderId, { profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);
@@ -216,7 +218,7 @@ class OrdersController {
           }
         }
       }
-      const result = await ordersService.sendToAssembly(orderIds);
+      const result = await ordersService.sendToAssembly(orderIds, req.user?.profileId ?? null);
       return res.status(200).json({
         ok: true,
         data: { ...result, shipments: shipmentsUsed, warnings }
@@ -234,11 +236,11 @@ class OrdersController {
   async returnToNew(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
-      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId);
+      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       if (!order) {
         return res.status(404).json({ ok: false, message: 'Заказ не найден' });
       }
-      await ordersService.returnOrderToNew(marketplace, orderId);
+      await ordersService.returnOrderToNew(marketplace, orderId, req.user?.profileId ?? null);
       return res.status(200).json({ ok: true, data: { message: 'Заказ возвращён в статус «Новый»' } });
     } catch (error) {
       next(error);
@@ -252,7 +254,7 @@ class OrdersController {
   async setToProcurement(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
-      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId);
+      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       if (!order) {
         return res.status(404).json({ ok: false, message: 'Заказ не найден' });
       }
@@ -271,7 +273,7 @@ class OrdersController {
           currentStatus: order.status ?? null
         });
       }
-      await ordersService.setOrderToProcurement(marketplace, orderId);
+      await ordersService.setOrderToProcurement(marketplace, orderId, req.user?.profileId ?? null);
       return res.status(200).json({ ok: true, data: { message: 'Статус заказа изменён на «В закупке»' } });
     } catch (error) {
       next(error);
@@ -302,11 +304,11 @@ class OrdersController {
   async markShipped(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
-      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId);
+      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       if (!order) {
         return res.status(404).json({ ok: false, message: 'Заказ не найден' });
       }
-      await ordersService.markOrderAsShipped(marketplace, orderId);
+      await ordersService.markOrderAsShipped(marketplace, orderId, req.user?.profileId ?? null);
       return res.status(200).json({ ok: true, data: { message: 'Статус заказа изменён на «Отгружен»' } });
     } catch (error) {
       next(error);
@@ -324,11 +326,11 @@ class OrdersController {
       if (mp !== 'manual') {
         return res.status(403).json({ ok: false, message: 'Удаление разрешено только для ручных заказов' });
       }
-      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId);
+      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       if (!order) {
         return res.status(404).json({ ok: false, message: 'Заказ не найден' });
       }
-      const deleted = await ordersService.deleteOrder(marketplace, orderId);
+      const deleted = await ordersService.deleteOrder(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       if (deleted === 0) {
         return res.status(404).json({ ok: false, message: 'Заказ не найден' });
       }
@@ -344,14 +346,14 @@ class OrdersController {
   async getDetail(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
-      const result = await ordersSyncService.getOrderDetail(marketplace, orderId);
+      const result = await ordersSyncService.getOrderDetail(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       let assembly = null;
       let localLines = [];
       let stockProblem = null;
       let stockProblemDetectedAt = null;
       let stockProblemDetails = null;
       try {
-        const local = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId);
+        const local = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
         if (local?.assembledAt || local?.assembledByEmail || local?.assembledByFullName) {
           assembly = {
             assembledAt: local.assembledAt ?? null,
@@ -369,7 +371,7 @@ class OrdersController {
         /* нет строки в локальной БД — только маркетплейс */
       }
       try {
-        localLines = await ordersService.getLocalLinesForOrderDetail(marketplace, orderId);
+        localLines = await ordersService.getLocalLinesForOrderDetail(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       } catch {
         localLines = [];
       }

@@ -35,7 +35,7 @@ class StockMovementsController {
     try {
       const { id } = req.params;
       const limit = req.query.limit ? Number(req.query.limit) : 100;
-      const history = await stockMovementsService.getHistory(id, { limit });
+      const history = await stockMovementsService.getHistory(id, { limit, profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: history });
     } catch (error) {
       next(error);

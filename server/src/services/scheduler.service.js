@@ -12,6 +12,7 @@
 
 import logger from '../utils/logger.js';
 import { readData } from '../utils/storage.js';
+import repositoryFactory from '../config/repository-factory.js';
 import wbMarketplaceService from './wbMarketplace.service.js';
 import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
@@ -288,19 +289,43 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
-      // Ежедневная проверка API всех интеграций (Ozon, WB, Yandex) — результат попадает в уведомления
+      // Ежедневная проверка API всех интеграций (Ozon, WB, Yandex) — по каждому профилю (аккаунту)
       const apiCheckJob = cron.schedule('0 6 * * *', async () => {
         logger.info('[Scheduler] Starting daily marketplace API check...');
         const marketplaces = ['ozon', 'wildberries', 'yandex'];
-        for (const code of marketplaces) {
-          try {
-            const config = await integrationsService.getMarketplaceConfig(code);
-            const hasKey = config?.api_key != null && String(config.api_key).trim() !== '';
-            if (!hasKey) continue;
-            await integrationsService.getMarketplaceTokenStatus(code);
-            logger.info(`[Scheduler] API check done: ${code}`);
-          } catch (error) {
-            logger.warn(`[Scheduler] API check failed for ${code}:`, error?.message || error);
+        let profiles = [{ id: null }];
+        try {
+          if (repositoryFactory.isUsingPostgreSQL()) {
+            const rows = await repositoryFactory.getProfilesRepository().findAll();
+            profiles = rows?.length ? rows.map((r) => ({ id: r.id })) : [{ id: null }];
+          }
+        } catch (e) {
+          logger.warn('[Scheduler] API check: could not load profiles:', e?.message || e);
+        }
+        for (const p of profiles) {
+          const profileId = p?.id ?? null;
+          for (const code of marketplaces) {
+            try {
+              const config = await integrationsService.getMarketplaceConfig(code, { profileId });
+              const ozonApiKey = config?.api_key ?? config?.apiKey;
+              const ozonClient = config?.client_id ?? config?.clientId;
+              const hasOzonKeys =
+                ozonClient &&
+                String(ozonClient).trim() !== '' &&
+                ozonApiKey != null &&
+                String(ozonApiKey).trim() !== '';
+              const simpleKey = config?.api_key ?? config?.apiKey;
+              const hasSimpleKey = simpleKey != null && String(simpleKey).trim() !== '';
+              const hasKey = code === 'ozon' ? hasOzonKeys : hasSimpleKey;
+              if (!hasKey) continue;
+              await integrationsService.getMarketplaceTokenStatus(code, { profileId });
+              logger.info(`[Scheduler] API check done: ${code} profile=${profileId ?? 'default'}`);
+            } catch (error) {
+              logger.warn(
+                `[Scheduler] API check failed for ${code} profile=${profileId ?? 'default'}:`,
+                error?.message || error
+              );
+            }
           }
         }
         logger.info('[Scheduler] Daily marketplace API check finished');
@@ -316,7 +341,7 @@ class SchedulerService {
           logger.info('[Scheduler] FBS orders sync (cron)...');
           try {
             // force: иначе при синке <1 мин назад (UI/другой поток) вернётся кэш без запросов к МП — новые заказы не подтянутся
-            const out = await ordersSyncService.syncFbs({ force: true, scheduler: true });
+            const out = await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
             if (out?.rateLimited) {
               logger.info(
                 `[Scheduler] FBS orders sync: пропуск (${out.message || `подождите ${out.retryAfterSeconds ?? '?'} с`})`
@@ -420,7 +445,7 @@ class SchedulerService {
           (async () => {
             try {
               logger.info('[Scheduler] Deferred FBS orders sync (~90s after startup)...');
-              await ordersSyncService.syncFbs({ force: true, scheduler: true });
+              await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
             } catch (e) {
               logger.warn('[Scheduler] Deferred FBS orders sync:', e?.message || e);
             }
@@ -556,7 +581,7 @@ class SchedulerService {
       const runFbs = async () => {
         try {
           logger.info('[Scheduler] FBS orders sync (fallback interval)...');
-          await ordersSyncService.syncFbs({ force: true, scheduler: true });
+          await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
         } catch (e) {
           logger.error('[Scheduler] FBS orders sync failed:', e?.message || e);
         }
@@ -585,7 +610,7 @@ class SchedulerService {
     const run = async () => {
       try {
         logger.info('[Scheduler] FBS orders sync (server background)...');
-        const out = await ordersSyncService.syncFbs({ force: true, scheduler: true });
+        const out = await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
         if (out?.rateLimited) {
           logger.info(
             `[Scheduler] FBS orders sync: пропуск (${out.message || `подождите ${out.retryAfterSeconds ?? '?'} с`})`

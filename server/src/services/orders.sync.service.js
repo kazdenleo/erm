@@ -168,6 +168,7 @@ class OrdersSyncService {
   async syncFbs(options = {}) {
     const force = options.force === true;
     const fromScheduler = options.scheduler === true;
+    const profileId = options.profileId ?? null;
     const oneMinute = 60 * 1000;
 
     if (fromScheduler && isOrdersFbsBackgroundSyncPaused()) {
@@ -252,7 +253,7 @@ class OrdersSyncService {
     const OZON_DAYS_BACK = 365;
 
     // Конфиги маркетплейсов из того же источника, что и раздел «Интеграции» (БД или файлы)
-    const { marketplaces } = await integrationsService.getAllConfigs();
+    const { marketplaces } = await integrationsService.getAllConfigs(profileId);
     const ozonConfig = marketplaces?.ozon || {};
     const wbConfig = marketplaces?.wildberries || {};
     const ymConfig = marketplaces?.yandex || {};
@@ -524,6 +525,11 @@ class OrdersSyncService {
     }
 
     const allOrders = Array.from(ordersMap.values());
+    if (profileId != null) {
+      for (const o of allOrders) {
+        if (o && (o.profileId == null && o.profile_id == null)) o.profileId = profileId;
+      }
+    }
 
     if (repositoryFactory.isUsingPostgreSQL()) {
       const ordersRepo = repositoryFactory.getOrdersRepository();
@@ -540,7 +546,7 @@ class OrdersSyncService {
         try {
           if (!o || !orderEligibleForProcurement(o)) continue;
           if (!o.marketplace || o.orderId == null) continue;
-          const row = await ordersRepo.findByMarketplaceAndOrderId(o.marketplace, String(o.orderId));
+          const row = await ordersRepo.findByMarketplaceAndOrderId(o.marketplace, String(o.orderId), profileId);
           if (!row) continue;
           await ordersService._reserveForOrderIfStockAvailable(row);
         } catch {
@@ -571,12 +577,48 @@ class OrdersSyncService {
   }
 
   /**
+   * Фоновый сценарий: синхронизация заказов для каждого профиля (аккаунта) с отдельными интеграциями.
+   * При файловом хранилище заказов — один проход как раньше.
+   */
+  async syncFbsForAllProfiles(options = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return this.syncFbs(options);
+    }
+    const profilesRepo = repositoryFactory.getProfilesRepository();
+    const rows = await profilesRepo.findAll();
+    const ids = (rows || []).map((r) => r?.id).filter((id) => id != null);
+    if (ids.length === 0) {
+      return this.syncFbs(options);
+    }
+    const combined = {
+      rateLimited: false,
+      cached: false,
+      skipped: false,
+      retryAfterSeconds: 0,
+      profiles: [],
+      result: null
+    };
+    for (const profileId of ids) {
+      const out = await this.syncFbs({ ...options, profileId });
+      combined.profiles.push({ profileId, ...out });
+      if (out.rateLimited) combined.rateLimited = true;
+      if (out.cached) combined.cached = true;
+      if (out.skipped) combined.skipped = true;
+      if ((out.retryAfterSeconds || 0) > combined.retryAfterSeconds) {
+        combined.retryAfterSeconds = out.retryAfterSeconds || 0;
+      }
+    }
+    combined.result = combined.profiles.map((p) => p.result).filter(Boolean);
+    return combined;
+  }
+
+  /**
    * Принудительное обновление конкретного заказа Ozon по posting_number.
    */
-  async refreshOzonOrder(orderIdRaw) {
+  async refreshOzonOrder(orderIdRaw, { profileId = null } = {}) {
     let orderId = decodeURIComponent(orderIdRaw || '');
 
-    const { marketplaces } = await integrationsService.getAllConfigs();
+    const { marketplaces } = await integrationsService.getAllConfigs(profileId);
     const ozonConfig = marketplaces?.ozon || {};
     if (!ozonConfig?.client_id || !ozonConfig?.api_key) {
       const error = new Error('Ozon API не настроен');
@@ -619,7 +661,7 @@ class OrdersSyncService {
 
     if (repositoryFactory.isUsingPostgreSQL()) {
       const ordersRepo = repositoryFactory.getOrdersRepository();
-      const existing = await ordersRepo.findByMarketplaceAndOrderId('ozon', orderId);
+      const existing = await ordersRepo.findByMarketplaceAndOrderId('ozon', orderId, profileId);
       if (existing) {
         oldStatus = existing.status;
         let nextStatus = order.status;
@@ -634,9 +676,12 @@ class OrdersSyncService {
         order = {
           ...order,
           status: nextStatus,
-          returnedToNewAt: existing.returnedToNewAt ?? null
+          returnedToNewAt: existing.returnedToNewAt ?? null,
+          profileId: existing.profileId ?? existing.profile_id ?? profileId
         };
         statusChanged = oldStatus !== nextStatus;
+      } else if (profileId != null) {
+        order = { ...order, profileId };
       }
       await ordersRepo.upsertFromSync(order);
     } else {
@@ -682,7 +727,7 @@ class OrdersSyncService {
    * Ozon: POST v3/posting/fbs/get с полным with.
    * WB: список заказов за период с пагинацией, поиск по id.
    */
-  async getOrderDetail(marketplace, orderIdRaw) {
+  async getOrderDetail(marketplace, orderIdRaw, { profileId = null } = {}) {
     const orderId = decodeURIComponent(String(orderIdRaw || '').trim());
     if (!orderId) {
       const err = new Error('ID заказа не указан');
@@ -690,7 +735,7 @@ class OrdersSyncService {
       throw err;
     }
 
-    const { marketplaces } = await integrationsService.getAllConfigs();
+    const { marketplaces } = await integrationsService.getAllConfigs(profileId);
     const normMarketplace = String(marketplace || '').toLowerCase();
     if (normMarketplace === 'ozon') {
       const ozonConfig = marketplaces?.ozon || {};
@@ -714,7 +759,7 @@ class OrdersSyncService {
         return { marketplace: 'wildberries', detail: result };
       } catch (e) {
         if (e.statusCode !== 404) throw e;
-        const localOrder = await getLocalOrderByMarketplaceAndOrderId('wildberries', orderId);
+        const localOrder = await getLocalOrderByMarketplaceAndOrderId('wildberries', orderId, profileId);
         if (!localOrder) throw e;
         const detail = buildWBDetailFromLocalOrder(localOrder, orderId);
         return { marketplace: 'wildberries', detail, fromLocal: true };
@@ -727,7 +772,7 @@ class OrdersSyncService {
         return { marketplace: 'yandex', detail: rawOrder };
       } catch (e) {
         if (e.statusCode !== 404) throw e;
-        const localOrder = await getLocalOrderByMarketplaceAndOrderId('yandex', orderId);
+        const localOrder = await getLocalOrderByMarketplaceAndOrderId('yandex', orderId, profileId);
         if (!localOrder) throw e;
         const detail = buildYandexDetailFromLocalOrder(localOrder);
         return { marketplace: 'yandex', detail, fromLocal: true };
@@ -1543,18 +1588,18 @@ function yandexOrderIdForApi(orderIdRaw) {
 }
 
 /** Получить заказ из локального хранилища (БД или файл) по маркетплейсу и orderId */
-async function getLocalOrderByMarketplaceAndOrderId(marketplace, orderId) {
+async function getLocalOrderByMarketplaceAndOrderId(marketplace, orderId, profileId = null) {
   const norm = String(marketplace || '').toLowerCase();
   const id = String(orderId || '').trim();
   if (!id) return null;
   if (repositoryFactory.isUsingPostgreSQL()) {
     const repo = repositoryFactory.getOrdersRepository();
     const mp = norm === 'wb' ? 'wildberries' : marketplace;
-    let row = await repo.findByMarketplaceAndOrderId(mp, id);
+    let row = await repo.findByMarketplaceAndOrderId(mp, id, profileId);
     if (!row && (norm === 'yandex' || norm === 'ym')) {
       const base = yandexOrderIdForApi(id);
       if (base && base !== id) {
-        row = await repo.findByMarketplaceAndOrderId('yandex', base);
+        row = await repo.findByMarketplaceAndOrderId('yandex', base, profileId);
       }
     }
     return row;

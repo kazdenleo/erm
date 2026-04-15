@@ -16,12 +16,13 @@ class WarehousesService {
     if (options.supplierId) queryOptions.supplierId = options.supplierId;
     if (options.mainWarehouseId) queryOptions.mainWarehouseId = options.mainWarehouseId;
     if (options.organizationId != null && options.organizationId !== '') queryOptions.organizationId = options.organizationId;
+    if (options.profileId != null && options.profileId !== '') queryOptions.profileId = options.profileId;
     
     return await this.repository.findAll(queryOptions);
   }
 
-  async getById(id) {
-    const warehouse = await this.repository.findById(id);
+  async getById(id, { profileId = null } = {}) {
+    const warehouse = await this.repository.findById(id, profileId);
     if (!warehouse) {
       const error = new Error('Склад не найден');
       error.statusCode = 404;
@@ -30,7 +31,7 @@ class WarehousesService {
     return warehouse;
   }
 
-  async create(data) {
+  async create(data, { profileId = null } = {}) {
     const type = data?.type ? String(data.type).trim() : '';
     if (!type) {
       const error = new Error('Тип склада обязателен');
@@ -74,7 +75,8 @@ class WarehousesService {
       main_warehouse_id: mainWarehouseIdValue,
       order_acceptance_time: orderAcceptanceTimeValue,
       wb_warehouse_name: wbWarehouseNameValue,
-      organization_id: orgId
+      organization_id: orgId,
+      profile_id: data.profile_id ?? data.profileId ?? profileId ?? null
     } : {
       ...data,
       type,
@@ -88,8 +90,8 @@ class WarehousesService {
     return await this.repository.create(payload);
   }
 
-  async update(id, data) {
-    const existing = await this.repository.findById(id);
+  async update(id, data, { profileId = null } = {}) {
+    const existing = await this.repository.findById(id, profileId);
     if (!existing) {
       const error = new Error('Склад не найден');
       error.statusCode = 404;
@@ -235,7 +237,7 @@ class WarehousesService {
     console.log('[WarehousesService] existing.type:', existing.type);
     console.log('[WarehousesService] existing.wb_warehouse_name:', existing.wb_warehouse_name);
 
-    const updated = await this.repository.update(id, payload);
+    const updated = await this.repository.update(id, payload, profileId);
     if (!updated) {
       const error = new Error('Склад не найден');
       error.statusCode = 404;
@@ -246,8 +248,8 @@ class WarehousesService {
     return updated;
   }
 
-  async delete(id) {
-    const deleted = await this.repository.delete(id);
+  async delete(id, { profileId = null } = {}) {
+    const deleted = await this.repository.delete(id, profileId);
     if (!deleted) {
       const error = new Error('Склад не найден');
       error.statusCode = 404;

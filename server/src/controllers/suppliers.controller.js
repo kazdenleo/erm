@@ -8,7 +8,7 @@ import suppliersService from '../services/suppliers.service.js';
 class SuppliersController {
   async getAll(req, res, next) {
     try {
-      const suppliers = await suppliersService.getAll();
+      const suppliers = await suppliersService.getAll({ profileId: req.user?.profileId ?? null });
       console.log('[SuppliersController] getAll - suppliers count:', suppliers.length);
       console.log('[SuppliersController] getAll - suppliers type:', Array.isArray(suppliers) ? 'array' : typeof suppliers);
       
@@ -53,7 +53,7 @@ class SuppliersController {
   async getById(req, res, next) {
     try {
       const { id } = req.params;
-      const supplier = await suppliersService.getById(id);
+      const supplier = await suppliersService.getById(id, { profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: supplier });
     } catch (error) {
       next(error);
@@ -62,7 +62,7 @@ class SuppliersController {
 
   async create(req, res, next) {
     try {
-      const supplier = await suppliersService.create(req.body);
+      const supplier = await suppliersService.create(req.body, { profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: supplier });
     } catch (error) {
       next(error);
@@ -72,7 +72,7 @@ class SuppliersController {
   async update(req, res, next) {
     try {
       const { id } = req.params;
-      const supplier = await suppliersService.update(id, req.body);
+      const supplier = await suppliersService.update(id, req.body, { profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: supplier });
     } catch (error) {
       next(error);
@@ -82,7 +82,7 @@ class SuppliersController {
   async delete(req, res, next) {
     try {
       const { id } = req.params;
-      const supplier = await suppliersService.delete(id);
+      const supplier = await suppliersService.delete(id, { profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: supplier });
     } catch (error) {
       next(error);

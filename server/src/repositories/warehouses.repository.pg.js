@@ -5,12 +5,19 @@
 
 import { query, transaction } from '../config/database.js';
 
+function normalizeProfileId(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 class WarehousesRepositoryPG {
   /**
    * Получить все склады
    */
   async findAll(options = {}) {
-    const { type, supplierId, mainWarehouseId, organizationId } = options;
+    const { type, supplierId, mainWarehouseId, organizationId, profileId } = options;
+    const pid = normalizeProfileId(profileId);
     
     let sql = `
       SELECT 
@@ -45,6 +52,11 @@ class WarehousesRepositoryPG {
       sql += ` AND w.organization_id = $${paramIndex++}`;
       params.push(organizationId);
     }
+
+    if (pid) {
+      sql += ` AND w.profile_id = $${paramIndex++}`;
+      params.push(pid);
+    }
     
     sql += ' ORDER BY w.type, w.address';
     
@@ -66,8 +78,21 @@ class WarehousesRepositoryPG {
   /**
    * Получить склад по ID
    */
-  async findById(id) {
-    const result = await query(`
+  async findById(id, profileId = null) {
+    const pid = normalizeProfileId(profileId);
+    const result = pid
+      ? await query(`
+      SELECT 
+        w.*,
+        s.name as supplier_name,
+        s.code as supplier_code,
+        mw.address as main_warehouse_address
+      FROM warehouses w
+      LEFT JOIN suppliers s ON w.supplier_id = s.id
+      LEFT JOIN warehouses mw ON w.main_warehouse_id = mw.id
+      WHERE w.id = $1 AND w.profile_id = $2
+    `, [id, pid])
+      : await query(`
       SELECT 
         w.*,
         s.name as supplier_name,
@@ -129,11 +154,12 @@ class WarehousesRepositoryPG {
    */
   async create(warehouseData) {
     const orgId = warehouseData.organization_id != null && warehouseData.organization_id !== '' ? warehouseData.organization_id : null;
+    const profId = normalizeProfileId(warehouseData.profile_id ?? warehouseData.profileId);
     // Пытаемся вставить с полем wb_warehouse_name и organization_id
     try {
       const result = await query(`
-        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *
       `, [
         warehouseData.type || 'warehouse',
@@ -142,7 +168,8 @@ class WarehousesRepositoryPG {
         warehouseData.main_warehouse_id || null,
         warehouseData.order_acceptance_time || null,
         warehouseData.wb_warehouse_name || null,
-        orgId
+        orgId,
+        profId
       ]);
       
       const row = result.rows[0];
@@ -158,8 +185,8 @@ class WarehousesRepositoryPG {
       if (error.message && error.message.includes('organization_id')) {
         try {
           const result = await query(`
-            INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, profile_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
           `, [
             warehouseData.type || 'warehouse',
@@ -167,22 +194,24 @@ class WarehousesRepositoryPG {
             warehouseData.supplier_id || null,
             warehouseData.main_warehouse_id || null,
             warehouseData.order_acceptance_time || null,
-            warehouseData.wb_warehouse_name || null
+            warehouseData.wb_warehouse_name || null,
+            profId
           ]);
           const row = result.rows[0];
           return { ...row, supplierId: row.supplier_id, mainWarehouseId: row.main_warehouse_id, organizationId: null, orderAcceptanceTime: row.order_acceptance_time, wbWarehouseName: row.wb_warehouse_name || null };
         } catch (e) {
           if (e.message && e.message.includes('wb_warehouse_name')) {
             const result = await query(`
-              INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time)
-              VALUES ($1, $2, $3, $4, $5)
+              INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, profile_id)
+              VALUES ($1, $2, $3, $4, $5, $6)
               RETURNING *
             `, [
               warehouseData.type || 'warehouse',
               warehouseData.address || null,
               warehouseData.supplier_id || null,
               warehouseData.main_warehouse_id || null,
-              warehouseData.order_acceptance_time || null
+              warehouseData.order_acceptance_time || null,
+              profId
             ]);
             const row = result.rows[0];
             return { ...row, supplierId: row.supplier_id, mainWarehouseId: row.main_warehouse_id, organizationId: null, orderAcceptanceTime: row.order_acceptance_time, wbWarehouseName: null };
@@ -192,8 +221,8 @@ class WarehousesRepositoryPG {
       }
       if (error.message && error.message.includes('wb_warehouse_name')) {
         const result = await query(`
-          INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, organization_id)
-          VALUES ($1, $2, $3, $4, $5, $6)
+          INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, organization_id, profile_id)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
           RETURNING *
         `, [
           warehouseData.type || 'warehouse',
@@ -201,7 +230,8 @@ class WarehousesRepositoryPG {
           warehouseData.supplier_id || null,
           warehouseData.main_warehouse_id || null,
           warehouseData.order_acceptance_time || null,
-          orgId
+          orgId,
+          profId
         ]);
         const row = result.rows[0];
         return { ...row, supplierId: row.supplier_id, mainWarehouseId: row.main_warehouse_id, organizationId: row.organization_id, orderAcceptanceTime: row.order_acceptance_time, wbWarehouseName: null };
@@ -213,7 +243,8 @@ class WarehousesRepositoryPG {
   /**
    * Обновить склад
    */
-  async update(id, updates) {
+  async update(id, updates, profileId = null) {
+    const pid = normalizeProfileId(profileId);
     const buildUpdateQuery = (includeWbWarehouseName = true) => {
       const updateFields = [];
       const params = [];
@@ -258,16 +289,17 @@ class WarehousesRepositoryPG {
     console.log('[WarehousesRepository] wb_warehouse_name type:', typeof updates.wb_warehouse_name);
     
     if (updateFields.length === 0) {
-      return await this.findById(id);
+      return await this.findById(id, profileId);
     }
     
     params.push(id);
+    if (pid) params.push(pid);
     
     try {
       const sql = `
         UPDATE warehouses 
         SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-        WHERE id = $${paramIndex}
+        WHERE id = $${paramIndex}${pid ? ` AND profile_id = $${paramIndex + 1}` : ''}
         RETURNING *
       `;
       console.log('[WarehousesRepository] SQL query:', sql);
@@ -303,14 +335,15 @@ class WarehousesRepositoryPG {
         const retry = buildUpdateQuery(false);
         
         if (retry.updateFields.length === 0) {
-          return await this.findById(id);
+          return await this.findById(id, profileId);
         }
         
         retry.params.push(id);
+        if (pid) retry.params.push(pid);
         const result = await query(`
           UPDATE warehouses 
           SET ${retry.updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-          WHERE id = $${retry.paramIndex}
+          WHERE id = $${retry.paramIndex}${pid ? ` AND profile_id = $${retry.paramIndex + 1}` : ''}
           RETURNING *
         `, retry.params);
         
@@ -335,8 +368,11 @@ class WarehousesRepositoryPG {
   /**
    * Удалить склад
    */
-  async delete(id) {
-    const result = await query('DELETE FROM warehouses WHERE id = $1 RETURNING id', [id]);
+  async delete(id, profileId = null) {
+    const pid = normalizeProfileId(profileId);
+    const result = pid
+      ? await query('DELETE FROM warehouses WHERE id = $1 AND profile_id = $2 RETURNING id', [id, pid])
+      : await query('DELETE FROM warehouses WHERE id = $1 RETURNING id', [id]);
     return result.rows.length > 0;
   }
 }

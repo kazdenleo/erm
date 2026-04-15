@@ -18,7 +18,7 @@ class IntegrationsController {
   async getMarketplace(req, res, next) {
     try {
       const { type } = req.params;
-      const config = await integrationsService.getMarketplaceConfig(type);
+      const config = await integrationsService.getMarketplaceConfig(type, { profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: config });
     } catch (error) {
       next(error);
@@ -73,7 +73,7 @@ class IntegrationsController {
    */
   async getAll(req, res, next) {
     try {
-      const configs = await integrationsService.getAllConfigs();
+      const configs = await integrationsService.getAllConfigs({ profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: configs });
     } catch (error) {
       next(error);
@@ -86,7 +86,7 @@ class IntegrationsController {
    */
   async getAllIntegrations(req, res, next) {
     try {
-      const integrations = await integrationsService.getAll();
+      const integrations = await integrationsService.getAll({ profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data: integrations });
     } catch (error) {
       next(error);
@@ -189,7 +189,7 @@ class IntegrationsController {
   async getMarketplaceTokenStatus(req, res, next) {
     try {
       const { type } = req.params;
-      const data = await integrationsService.getMarketplaceTokenStatus(type);
+      const data = await integrationsService.getMarketplaceTokenStatus(type, { profileId: req.user?.profileId ?? null });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -203,7 +203,10 @@ class IntegrationsController {
   async getNotifications(req, res, next) {
     try {
       const { warn_days } = req.query;
-      const data = await integrationsService.getTokenNotifications({ warn_days });
+      const data = await integrationsService.getTokenNotifications({
+        warn_days,
+        profileId: req.user?.profileId ?? null
+      });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);

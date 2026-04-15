@@ -6,6 +6,7 @@
 node_modules/
 client/node_modules/
 server/node_modules/
+**/node_modules/.cache/
 
 # Logs
 logs/
@@ -34,6 +35,7 @@ Thumbs.db
 data/
 server/data/
 server/uploads/
+print-helper/dist/temp/
 
 # VPS migration export artifacts (local only)
 scripts/vps-migration/out/

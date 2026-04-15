@@ -81,6 +81,7 @@ class StockMovementsService {
     const totalAfter = productAfter?.quantity != null ? Number(productAfter.quantity) : 0;
 
     const metaOut = { ...metaObj, warehouse_id: warehouseId };
+    const profId = product.profile_id ?? product.profileId ?? null;
     const movement = await this.repository.create({
       productId: idNum,
       type,
@@ -88,7 +89,8 @@ class StockMovementsService {
       balanceAfter: totalAfter,
       reason: reason || null,
       meta: metaOut,
-      warehouseId
+      warehouseId,
+      profileId: profId
     });
 
     if (type !== 'reserve' && type !== 'unreserve') {
@@ -116,8 +118,8 @@ class StockMovementsService {
   /**
    * Получить историю движений по товару
    */
-  async getHistory(productId, { limit = 100 } = {}) {
-    return await this.repository.findByProduct(productId, { limit });
+  async getHistory(productId, { limit = 100, profileId = null } = {}) {
+    return await this.repository.findByProduct(productId, { limit, profileId });
   }
 }
 

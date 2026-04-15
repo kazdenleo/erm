@@ -196,7 +196,8 @@ class ProductsController {
 
   async create(req, res, next) {
     try {
-      const product = await productsService.create(req.body);
+      const profileId = req.user?.profileId ?? null;
+      const product = await productsService.create({ ...req.body, profileId });
       return res.status(200).json({ ok: true, data: product });
     } catch (error) {
       console.error('[Products Controller] Create error:', error?.message, error?.code, error?.stack);

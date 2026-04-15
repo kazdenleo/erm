@@ -418,9 +418,9 @@ class OrdersService {
     return await this.repository.findById(id);
   }
 
-  async getByMarketplaceAndOrderId(marketplace, orderId) {
+  async getByMarketplaceAndOrderId(marketplace, orderId, { profileId = null } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      return await this.repository.findByMarketplaceAndOrderId(marketplace, orderId);
+      return await this.repository.findByMarketplaceAndOrderId(marketplace, orderId, profileId);
     } else {
       const orders = await this.getAll();
       return orders.find(o => o.marketplace === marketplace && o.orderId === orderId) || null;
@@ -705,7 +705,7 @@ class OrdersService {
    * @param {Array<{ marketplace: string, orderId: string }>} orderIds
    * @returns {{ sent: number, updated: number }}
    */
-  async sendToAssembly(orderIds) {
+  async sendToAssembly(orderIds, profileId = null) {
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
       return { sent: 0, updated: 0 };
     }
@@ -713,7 +713,12 @@ class OrdersService {
     if (repositoryFactory.isUsingPostgreSQL()) {
       for (const { marketplace, orderId } of orderIds) {
         if (!marketplace || orderId == null) continue;
-        const row = await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'in_assembly' });
+        const row = await this.repository.updateByMarketplaceAndOrderId(
+          marketplace,
+          String(orderId),
+          { status: 'in_assembly' },
+          profileId
+        );
         if (row) updated++;
       }
     } else {
@@ -743,18 +748,20 @@ class OrdersService {
    * @param {string} orderId
    * @returns {Promise<object|null>} обновлённый заказ или null
    */
-  async markOrderAsAssembled(marketplace, orderId, assembledByUserId = null) {
+  async markOrderAsAssembled(marketplace, orderId, assembledByUserId = null, profileId = null) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
+      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       if (!order) return null;
-      const rows = order.orderGroupId ? await this.repository.findByOrderGroupId(order.orderGroupId) : [order];
+      const rows = order.orderGroupId
+        ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
+        : [order];
 
       // 1) Ставим assembled (как раньше)
       if (order.orderGroupId) {
-        await this.repository.markAssembledByOrderGroupId(order.orderGroupId, assembledByUserId);
+        await this.repository.markAssembledByOrderGroupId(order.orderGroupId, assembledByUserId, profileId);
       } else {
-        await this.repository.markAssembledByMarketplaceAndOrderId(marketplace, String(orderId), assembledByUserId);
+        await this.repository.markAssembledByMarketplaceAndOrderId(marketplace, String(orderId), assembledByUserId, profileId);
       }
 
       // 2) Фиксируем списание факта по собранным заказам в движениях остатков:
@@ -790,7 +797,7 @@ class OrdersService {
         });
       }
 
-      return this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
+      return this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
     }
     const { readData, writeData } = await import('../utils/storage.js');
     const data = await readData('orders');
@@ -810,19 +817,22 @@ class OrdersService {
    * Вернуть заказ в статус «Новый» (со сборки или «Собран»).
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
    */
-  async returnOrderToNew(marketplace, orderId) {
+  async returnOrderToNew(marketplace, orderId, profileId = null) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
+      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       if (!order) return null;
       if (order.orderGroupId) {
-        const n = await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'new');
+        const n = await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'new', profileId);
         if (n === 0) {
-          await this.repository.updateByMarketplaceAndOrderId(marketplace, String(order.orderId ?? order.order_id), {
-            status: 'new'
-          });
+          await this.repository.updateByMarketplaceAndOrderId(
+            marketplace,
+            String(order.orderId ?? order.order_id),
+            { status: 'new' },
+            profileId
+          );
         }
-        const groupRows = await this.repository.findByOrderGroupId(order.orderGroupId);
+        const groupRows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
         for (const row of groupRows || []) {
           if (String(row.status || '').toLowerCase() === 'new') {
             await this._reserveForOrderIfStockAvailable(row).catch(() => {});
@@ -830,8 +840,8 @@ class OrdersService {
         }
         return order;
       }
-      await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'new' });
-      const refreshed = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
+      await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'new' }, profileId);
+      const refreshed = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       if (refreshed) await this._reserveForOrderIfStockAvailable(refreshed).catch(() => {});
       return refreshed ?? order;
     }
@@ -851,22 +861,27 @@ class OrdersService {
    * Перевести заказ в статус «В закупке» (in_procurement). Разрешено только для заказов в статусе «Новый».
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
    */
-  async setOrderToProcurement(marketplace, orderId) {
+  async setOrderToProcurement(marketplace, orderId, profileId = null) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
+      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       if (!order) return null;
       const stNorm = String(order.status ?? '').trim().toLowerCase();
       if (stNorm === 'in_procurement') return order;
       if (!orderEligibleForProcurement(order)) return null;
       let rows = [order];
       if (order.orderGroupId) {
-        rows = await this.repository.findByOrderGroupId(order.orderGroupId);
+        rows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
       }
       if (order.orderGroupId) {
-        await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'in_procurement');
+        await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'in_procurement', profileId);
       } else {
-        await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'in_procurement' });
+        await this.repository.updateByMarketplaceAndOrderId(
+          marketplace,
+          String(orderId),
+          { status: 'in_procurement' },
+          profileId
+        );
       }
       for (const row of rows) {
         const full = row?.id != null ? await this.repository.findById(row.id) : null;
@@ -892,16 +907,21 @@ class OrdersService {
    * Отметить заказ как отгруженный: статус 'shipped'.
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
    */
-  async markOrderAsShipped(marketplace, orderId) {
+  async markOrderAsShipped(marketplace, orderId, profileId = null) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
+      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       if (!order) return null;
       if (order.orderGroupId) {
-        await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'shipped');
+        await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'shipped', profileId);
         return order;
       }
-      return await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'shipped' });
+      return await this.repository.updateByMarketplaceAndOrderId(
+        marketplace,
+        String(orderId),
+        { status: 'shipped' },
+        profileId
+      );
     }
     const { readData, writeData } = await import('../utils/storage.js');
     const data = await readData('orders');
@@ -1266,30 +1286,30 @@ class OrdersService {
    * Удалить заказ. Если у заказа есть orderGroupId — удаляются все заказы группы.
    * @returns {Promise<number>} количество удалённых записей (0 если не найден)
    */
-  async deleteOrder(marketplace, orderId) {
+  async deleteOrder(marketplace, orderId, { profileId = null } = {}) {
     if (!marketplace || orderId == null) return 0;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
+      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       if (!order) return 0;
       if (order.orderGroupId) {
         // Важно: при удалении ручного заказа снимаем резерв по каждой строке группы,
         // иначе reserved_quantity и свободный остаток останутся "залипшими".
         try {
-          const rows = await this.repository.findByOrderGroupId(order.orderGroupId);
+          const rows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
           for (const r of rows || []) {
             await this.releaseReserveIfExistsForOrder(r.marketplace, r.orderId ?? r.order_id);
           }
         } catch {
           // ignore reserve rollback errors
         }
-        return await this.repository.deleteByOrderGroupId(order.orderGroupId);
+        return await this.repository.deleteByOrderGroupId(order.orderGroupId, profileId);
       }
       try {
         await this.releaseReserveIfExistsForOrder(marketplace, String(orderId));
       } catch {
         // ignore
       }
-      const deleted = await this.repository.deleteByMarketplaceAndOrderId(marketplace, String(orderId));
+      const deleted = await this.repository.deleteByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       return deleted ? 1 : 0;
     }
     const { readData, writeData } = await import('../utils/storage.js');
@@ -1305,7 +1325,7 @@ class OrdersService {
   /**
    * Строки заказа из локальной БД для карточки заказа (product_id → ссылка на каталог).
    */
-  async getLocalLinesForOrderDetail(marketplace, orderId) {
+  async getLocalLinesForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
     const oid = String(orderId ?? '').trim();
     if (!oid || !marketplace) return [];
 
@@ -1341,14 +1361,14 @@ class OrdersService {
     };
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      let row = await this.repository.findByMarketplaceAndOrderId(marketplace, oid);
+      let row = await this.repository.findByMarketplaceAndOrderId(marketplace, oid, profileId);
       if (!row) {
         const any = await this.repository.findAnyByOrderId(oid);
         if (any && sameMp(any.marketplace)) row = any;
       }
       if (!row) return [];
       const gid = row.orderGroupId ?? row.order_group_id;
-      const rows = gid ? await this.repository.findByOrderGroupId(gid) : [row];
+      const rows = gid ? await this.repository.findByOrderGroupId(gid, profileId) : [row];
       return withResolvedProductIds(rows);
     }
 

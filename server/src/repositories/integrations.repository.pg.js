@@ -10,11 +10,16 @@ class IntegrationsRepositoryPG {
    * Получить все интеграции
    */
   async findAll(options = {}) {
-    const { type, isActive } = options;
+    const { type, isActive, profileId } = options;
     
     let sql = 'SELECT * FROM integrations WHERE 1=1';
     const params = [];
     let paramIndex = 1;
+
+    if (profileId != null && profileId !== '') {
+      sql += ` AND profile_id = $${paramIndex++}`;
+      params.push(profileId);
+    }
     
     if (type) {
       sql += ` AND type = $${paramIndex++}`;
@@ -43,7 +48,11 @@ class IntegrationsRepositoryPG {
   /**
    * Получить интеграцию по коду
    */
-  async findByCode(code) {
+  async findByCode(code, profileId = null) {
+    if (profileId != null && profileId !== '') {
+      const result = await query('SELECT * FROM integrations WHERE profile_id = $1 AND code = $2', [profileId, code]);
+      return result.rows[0] || null;
+    }
     const result = await query('SELECT * FROM integrations WHERE code = $1', [code]);
     return result.rows[0] || null;
   }
@@ -66,10 +75,11 @@ class IntegrationsRepositoryPG {
    */
   async create(integrationData) {
     const result = await query(`
-      INSERT INTO integrations (type, name, code, config, is_active)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO integrations (profile_id, type, name, code, config, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
     `, [
+      integrationData.profile_id ?? integrationData.profileId ?? null,
       integrationData.type,
       integrationData.name,
       integrationData.code,

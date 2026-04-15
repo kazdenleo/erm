@@ -79,7 +79,7 @@ class IntegrationsService {
   /**
    * Получить настройки маркетплейса
    */
-  async getMarketplaceConfig(type) {
+  async getMarketplaceConfig(type, { profileId = null } = {}) {
     if (!['ozon', 'wildberries', 'yandex'].includes(type)) {
       const err = new Error('Неизвестный тип маркетплейса');
       err.statusCode = 400;
@@ -87,7 +87,7 @@ class IntegrationsService {
     }
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const integration = await this.repository.findByCode(type);
+      const integration = await this.repository.findByCode(type, profileId);
       return integration ? integration.config : {};
     } else {
       // Старое хранилище
@@ -148,12 +148,33 @@ class IntegrationsService {
     };
   }
 
+  _tokenStatusCacheKey(profileId) {
+    return String(profileId ?? 'default');
+  }
+
+  /** Последняя сохранённая проверка: byProfile[profileId][type] или legacy плоский cache[type]. */
+  _readTokenStatusFromCache(cache, profileId, type) {
+    const k = this._tokenStatusCacheKey(profileId);
+    const row = cache?.byProfile?.[k]?.[type];
+    if (row) return row;
+    if (cache?.[type] && (profileId == null || k === 'default')) return cache[type];
+    return null;
+  }
+
+  _writeTokenStatusToCache(cache, profileId, type, status) {
+    cache.byProfile = cache.byProfile || {};
+    const k = this._tokenStatusCacheKey(profileId);
+    cache.byProfile[k] = cache.byProfile[k] || {};
+    cache.byProfile[k][type] = status;
+  }
+
   /**
    * Проверка токена маркетплейса (валидность + срок, если задан в настройках).
    * Возвращает объект статуса и сохраняет его в кэш для уведомлений.
    * @param {'ozon'|'wildberries'|'yandex'} type
+   * @param {{ profileId?: number|string|null }} [opts] — аккаунт (multi-tenant)
    */
-  async getMarketplaceTokenStatus(type) {
+  async getMarketplaceTokenStatus(type, { profileId = null } = {}) {
     if (!['ozon', 'wildberries', 'yandex'].includes(type)) {
       const err = new Error('Неизвестный тип маркетплейса');
       err.statusCode = 400;
@@ -161,9 +182,7 @@ class IntegrationsService {
     }
 
     const checkedAt = new Date().toISOString();
-    const integrations = await this.getAll();
-    const integration = integrations.find((i) => i.code === type);
-    const cfg = integration?.config || {};
+    const cfg = await this.getMarketplaceConfig(type, { profileId });
     const expiresAt = cfg.token_expires_at || cfg.api_key_expires_at || cfg.expires_at || null;
     const expiry = this._computeExpiry(expiresAt);
 
@@ -173,21 +192,35 @@ class IntegrationsService {
     try {
       if (type === 'ozon') {
         // лёгкий запрос, который проверяет Client-Id/Api-Key
-        await this._ozonApiPost('/v1/description-category/tree', { language: 'DEFAULT' });
+        await this._ozonApiPost('/v1/description-category/tree', { language: 'DEFAULT' }, { profileId });
         checks.push({ scope: 'ozon_v1', valid: true, message: 'Ozon: v1 OK (categories)' });
 
         // Доп. проверка боевого эндпоинта цен (v5) — он нужен для комиссий/мин. цен.
         // Берём любой offer_id из БД (если есть), чтобы проверить именно рабочий контур.
         let probeOfferId = null;
         try {
-          const r = await query(
-            `SELECT TRIM(sku) AS offer_id
-             FROM product_skus
-             WHERE marketplace = 'ozon' AND sku IS NOT NULL AND TRIM(sku) <> ''
-             ORDER BY product_id ASC
-             LIMIT 1`
-          );
-          probeOfferId = r.rows?.[0]?.offer_id ? String(r.rows[0].offer_id).trim() : null;
+          if (repositoryFactory.isUsingPostgreSQL()) {
+            const r = await query(
+              `SELECT TRIM(ps.sku) AS offer_id
+               FROM product_skus ps
+               INNER JOIN products p ON p.id = ps.product_id
+               WHERE ps.marketplace = 'ozon' AND ps.sku IS NOT NULL AND TRIM(ps.sku) <> ''
+                 AND ($1::bigint IS NULL OR p.profile_id = $1)
+               ORDER BY ps.product_id ASC
+               LIMIT 1`,
+              [profileId]
+            );
+            probeOfferId = r.rows?.[0]?.offer_id ? String(r.rows[0].offer_id).trim() : null;
+          } else {
+            const r = await query(
+              `SELECT TRIM(sku) AS offer_id
+               FROM product_skus
+               WHERE marketplace = 'ozon' AND sku IS NOT NULL AND TRIM(sku) <> ''
+               ORDER BY product_id ASC
+               LIMIT 1`
+            );
+            probeOfferId = r.rows?.[0]?.offer_id ? String(r.rows[0].offer_id).trim() : null;
+          }
         } catch (_) {
           // таблицы может не быть — не считаем это проблемой токена
         }
@@ -198,7 +231,7 @@ class IntegrationsService {
               cursor: '',
               filter: { offer_id: [probeOfferId], visibility: 'ALL' },
               limit: 1
-            });
+            }, { profileId });
             checks.push({ scope: 'ozon_v5_prices', valid: true, message: 'Ozon: v5 OK (prices)' });
             valid = true;
             message = 'Ozon: ключ валиден';
@@ -223,7 +256,8 @@ class IntegrationsService {
                 marketplace: 'ozon',
                 title: 'Ozon: API ключ деактивирован',
                 message:
-                  'Ozon Seller API вернул "Api-key is deactivated" при проверке v5/product/info/prices. Комиссии и минимальные цены могут считаться по старым данным/кэшу.'
+                  'Ozon Seller API вернул "Api-key is deactivated" при проверке v5/product/info/prices. Комиссии и минимальные цены могут считаться по старым данным/кэшу.',
+                meta: profileId != null ? { profile_id: profileId } : undefined
               });
             }
           }
@@ -245,7 +279,7 @@ class IntegrationsService {
 
         // WB: официальная проверка токена через GET /ping для каждого сервиса
         // (проверяет доставку запроса, валидность токена и совпадение категории токена с сервисом)
-        const cfgWb = await this.getMarketplaceConfig('wildberries');
+        const cfgWb = await this.getMarketplaceConfig('wildberries', { profileId });
         const apiKey = this._normalizeWbToken(cfgWb?.api_key);
         const token_meta = this._safeTokenMeta(apiKey);
         // WB: токен добавляется в заголовок Authorization. Для /ping есть строгий лимит (3 запроса / 30 секунд на домен),
@@ -348,7 +382,7 @@ class IntegrationsService {
         }
       } else if (type === 'yandex') {
         // проверка токена через POST /v2/auth/token (только Api-Key, без доступа к категориям)
-        const yandexCheck = await this._validateYandexToken(cfg?.api_key);
+        const yandexCheck = await this._validateYandexToken(cfg?.api_key ?? cfg?.apiKey);
         valid = yandexCheck.valid;
         message = yandexCheck.message;
         if (yandexCheck.scopes?.length) {
@@ -364,6 +398,7 @@ class IntegrationsService {
 
     const status = {
       marketplace: type,
+      profile_id: profileId != null && profileId !== '' ? Number(profileId) : null,
       valid,
       checked_at: checkedAt,
       message,
@@ -373,7 +408,7 @@ class IntegrationsService {
 
     try {
       const cache = (await readData('tokenStatusCache')) || {};
-      cache[type] = status;
+      this._writeTokenStatusToCache(cache, profileId, type, status);
       await writeData('tokenStatusCache', cache);
     } catch (cacheErr) {
       logger.warn('[Integrations Service] Failed to write tokenStatusCache:', cacheErr?.message);
@@ -388,8 +423,13 @@ class IntegrationsService {
    */
   async getTokenNotifications(options = {}) {
     const warnDays = Number(options.warn_days ?? 10);
+    const profileId = options.profileId ?? null;
     const cache = (await readData('tokenStatusCache')) || {};
-    const integrations = await this.getAll();
+    const integrations = await this.getAll(
+      repositoryFactory.isUsingPostgreSQL() && profileId != null && profileId !== ''
+        ? { profileId }
+        : {}
+    );
     const byCode = new Map(integrations.map((i) => [i.code, i]));
     const marketplaces = ['ozon', 'wildberries', 'yandex'];
     const out = [];
@@ -399,11 +439,12 @@ class IntegrationsService {
       const cfg = integration?.config || {};
       const expiresAt = cfg.token_expires_at || cfg.api_key_expires_at || cfg.expires_at || null;
       const expiry = this._computeExpiry(expiresAt);
-      const last = cache[code] || null;
+      const last = this._readTokenStatusFromCache(cache, profileId, code);
 
+      const idSuffix = profileId != null && profileId !== '' ? `_${profileId}` : '';
       if (expiry.expires_at && expiry.expired) {
         out.push({
-          id: `token_expired_${code}`,
+          id: `token_expired_${code}${idSuffix}`,
           type: 'token_expired',
           marketplace: code,
           severity: 'error',
@@ -416,7 +457,7 @@ class IntegrationsService {
         });
       } else if (expiry.expires_at && expiry.days_left != null && expiry.days_left <= warnDays) {
         out.push({
-          id: `token_expires_soon_${code}`,
+          id: `token_expires_soon_${code}${idSuffix}`,
           type: 'token_expires_soon',
           marketplace: code,
           severity: 'warn',
@@ -431,7 +472,7 @@ class IntegrationsService {
 
       if (last && last.valid === false) {
         out.push({
-          id: `token_invalid_${code}`,
+          id: `token_invalid_${code}${idSuffix}`,
           type: 'token_invalid',
           marketplace: code,
           severity: 'error',
@@ -682,10 +723,13 @@ class IntegrationsService {
 
   /**
    * Получить все интеграции (полный список с метаданными)
+   * @param {{ profileId?: number|string|null }} [options] — при PostgreSQL: только интеграции аккаунта
    */
-  async getAll() {
+  async getAll({ profileId = null } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      return await this.repository.findAll();
+      const opts = {};
+      if (profileId != null && profileId !== '') opts.profileId = profileId;
+      return await this.repository.findAll(opts);
     } else {
       // Старое хранилище - возвращаем структурированные данные
       const [ozon, wb, ym, mikado, moskvorechie] = await Promise.all([
@@ -709,9 +753,9 @@ class IntegrationsService {
   /**
    * Получить все настройки интеграций (только конфигурации)
    */
-  async getAllConfigs() {
+  async getAllConfigs({ profileId = null } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const integrations = await this.repository.findAll();
+      const integrations = await this.repository.findAll({ profileId });
       const marketplaces = {};
       const suppliers = {};
       
@@ -1612,11 +1656,19 @@ class IntegrationsService {
    * @param {object} body - тело запроса
    * @returns {Promise<object>} - ответ result или весь data
    */
-  async _ozonApiPost(path, body) {
-    const integrations = await this.getAll();
-    const ozonIntegration = integrations.find(i => i.code === 'ozon');
-    const client_id = ozonIntegration?.config?.client_id || ozonIntegration?.config?.clientId;
-    const api_key = ozonIntegration?.config?.api_key || ozonIntegration?.config?.apiKey;
+  async _ozonApiPost(path, body, { profileId = null } = {}) {
+    let client_id;
+    let api_key;
+    if (this.usePostgreSQL && profileId != null && profileId !== '') {
+      const ozonCfg = await this.getMarketplaceConfig('ozon', { profileId });
+      client_id = ozonCfg?.client_id || ozonCfg?.clientId;
+      api_key = ozonCfg?.api_key || ozonCfg?.apiKey;
+    } else {
+      const integrations = await this.getAll();
+      const ozonIntegration = integrations.find(i => i.code === 'ozon');
+      client_id = ozonIntegration?.config?.client_id || ozonIntegration?.config?.clientId;
+      api_key = ozonIntegration?.config?.api_key || ozonIntegration?.config?.apiKey;
+    }
     if (!client_id || !api_key) {
       throw new Error('Необходимы Client ID и API Key для Ozon. Настройте интеграцию на странице "Интеграции".');
     }
