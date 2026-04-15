@@ -9,7 +9,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { Button } from '../../components/common/Button/Button';
 import './Login.css';
 
-export function Login() {
+export function Login({ mode = 'user' }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -17,7 +17,7 @@ export function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const from = location.state?.from?.pathname || '/';
+  const from = location.state?.from?.pathname || (mode === 'platform' ? '/platform/accounts' : '/');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -27,6 +27,19 @@ export function Login() {
       const result = await login(email.trim(), password);
       if (result?.mustChangePassword) {
         navigate('/first-login-change-password', { replace: true });
+        return;
+      }
+      // Раздельные входы: platform-login → только в админку продукта; login → только в ERP.
+      if (mode === 'platform') {
+        if (result?.user?.role && String(result.user.role) !== 'admin') {
+          setError('Этот пользователь не является администратором продукта. Используйте обычный вход.');
+          return;
+        }
+        navigate('/platform/accounts', { replace: true });
+        return;
+      }
+      if (result?.user?.role && String(result.user.role) === 'admin') {
+        setError('Для администратора продукта используйте отдельный вход: /platform-login');
         return;
       }
       navigate(from, { replace: true });
@@ -44,7 +57,7 @@ export function Login() {
   return (
     <div className="login-page">
       <div className="login-card card">
-        <h1 className="login-title">Вход в систему</h1>
+        <h1 className="login-title">{mode === 'platform' ? 'Вход администратора продукта' : 'Вход в систему'}</h1>
         <p className="login-subtitle">ERP Demo</p>
         <form onSubmit={handleSubmit} className="login-form">
           {error && <div className="login-error">{error}</div>}
@@ -73,9 +86,11 @@ export function Login() {
           <Button type="submit" disabled={submitting} className="login-submit">
             {submitting ? 'Вход...' : 'Войти'}
           </Button>
-          <p className="login-footer-text">
-            Нет аккаунта? <Link to="/register">Регистрация</Link>
-          </p>
+          {mode !== 'platform' && (
+            <p className="login-footer-text">
+              Нет аккаунта? <Link to="/register">Регистрация</Link>
+            </p>
+          )}
         </form>
       </div>
     </div>

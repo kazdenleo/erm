@@ -40,7 +40,6 @@ import { Support } from './pages/Support/Support';
 import { PlatformLayout } from './platform/PlatformLayout.jsx';
 import { PlatformRoute } from './platform/PlatformRoute.jsx';
 import { PlatformInquiries } from './platform/PlatformInquiries.jsx';
-import { RegisterAccountAdmin } from './pages/Settings/RegisterAccountAdmin/RegisterAccountAdmin.jsx';
 import './App.css';
 
 function App() {
@@ -49,6 +48,7 @@ function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/platform-login" element={<Login mode="platform" />} />
           <Route path="/register" element={<PublicRegister />} />
           <Route
             path="/first-login-change-password"
@@ -59,7 +59,7 @@ function App() {
             }
           />
           <Route path="/" element={<ProtectedRoute><Layout><Home /></Layout></ProtectedRoute>} />
-          <Route path="/admin" element={<Navigate to="/platform/accounts" replace />} />
+          <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
           <Route
             path="/platform"
             element={
@@ -99,16 +99,6 @@ function App() {
           <Route path="/settings/attributes" element={<ProtectedRoute><Layout><Attributes /></Layout></ProtectedRoute>} />
           <Route path="/settings/labels" element={<ProtectedRoute><Layout><Labels /></Layout></ProtectedRoute>} />
           <Route path="/settings/users" element={<ProtectedRoute><Layout><SettingsUsers /></Layout></ProtectedRoute>} />
-          <Route
-            path="/settings/register-account-admin"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <RegisterAccountAdmin />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
           <Route path="/organizations" element={<ProtectedRoute><Layout><Organizations /></Layout></ProtectedRoute>} />
         </Routes>
       </AuthProvider>

@@ -96,7 +96,6 @@ export function SettingsUsers() {
       };
       if (form.password) payload.password = form.password;
       if (!editing && user?.profileId != null) {
-        payload.profileId = user.profileId;
         payload.isProfileAdmin = !!form.isProfileAdmin;
       }
       if (editing && user?.profileId != null) {

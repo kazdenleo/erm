@@ -37,12 +37,6 @@ const menuItems = [
       { path: '/settings/attributes', label: 'Атрибуты', iconClass: 'pe-7s-ticket' },
       { path: '/settings/labels', label: 'Этикетки', iconClass: 'pe-7s-news-paper' },
       { path: '/settings/users', label: 'Пользователи', iconClass: 'pe-7s-users', adminOnly: true },
-      {
-        path: '/settings/register-account-admin',
-        label: 'Регистрация админов',
-        iconClass: 'pe-7s-add-user',
-        profileAdminOnly: true,
-      },
       { path: '/organizations', label: 'Организации', iconClass: 'pe-7s-culture' },
       { path: '/warehouses', label: 'Склады', iconClass: 'pe-7s-home' },
       { path: '/suppliers', label: 'Поставщики', iconClass: 'pe-7s-truck' },
