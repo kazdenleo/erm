@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420">
+  <defs>
+    <!-- Paper/grime texture -->
+    <filter id="paper" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" result="noise"/>
+      <feColorMatrix in="noise" type="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 0.15 0" result="noiseAlpha"/>
+      <feComposite in="noiseAlpha" in2="SourceGraphic" operator="over"/>
+    </filter>
+
+    <!-- Hand-painted rough edges -->
+    <filter id="paintRough" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="3" seed="11" result="turb"/>
+      <feDisplacementMap in="SourceGraphic" in2="turb" scale="2.2" xChannelSelector="R" yChannelSelector="G" result="disp"/>
+      <feGaussianBlur in="disp" stdDeviation="0.35" result="blur"/>
+      <feColorMatrix in="blur" type="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 1 0"/>
+    </filter>
+
+    <!-- Subtle paint wear on text -->
+    <mask id="wearMask">
+      <rect width="1200" height="420" fill="white"/>
+      <g opacity="0.35">
+        <filter id="wearNoise">
+          <feTurbulence type="turbulence" baseFrequency="0.7" numOctaves="2" seed="19" result="wn"/>
+          <feColorMatrix in="wn" type="matrix"
+            values="1 0 0 0 0
+                    0 1 0 0 0
+                    0 0 1 0 0
+                    0 0 0 1 0"/>
+        </filter>
+        <rect x="0" y="0" width="1200" height="420" fill="black" filter="url(#wearNoise)"/>
+      </g>
+    </mask>
+  </defs>
+
+  <!-- Base sign -->
+  <g filter="url(#paper)">
+    <rect x="0" y="0" width="1200" height="420" fill="#ffffff"/>
+    <rect x="0" y="0" width="1200" height="118" fill="#f5f5f5"/>
+    <rect x="0" y="116" width="1200" height="4" fill="#ececec"/>
+    <rect x="12" y="12" width="1176" height="396" fill="none" stroke="#efefef" stroke-width="2"/>
+    <rect x="1" y="1" width="1198" height="418" fill="none" stroke="#e9e9e9" stroke-width="1"/>
+  </g>
+
+  <!-- Text -->
+  <g mask="url(#wearMask)">
+    <text
+      x="600"
+      y="300"
+      text-anchor="middle"
+      font-size="220"
+      font-weight="700"
+      font-family="Times New Roman, Georgia, serif"
+      fill="#111111"
+      letter-spacing="6"
+      filter="url(#paintRough)"
+    >
+      ИРИНА
+    </text>
+  </g>
+</svg>
+
