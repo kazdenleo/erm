@@ -3,12 +3,20 @@
  */
 
 import { getProblemOrders, refreshProblemOrdersFlags } from '../services/stockProblems.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class StockProblemsController {
   async getProblemOrders(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
       const limit = req.query.limit ? parseInt(req.query.limit, 10) : 200;
-      const data = await getProblemOrders({ limit });
+      const data = await getProblemOrders({
+        limit,
+        ...(tid != null ? { profileId: tid } : {})
+      });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       next(e);

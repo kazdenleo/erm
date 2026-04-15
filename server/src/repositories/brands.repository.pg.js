@@ -7,9 +7,22 @@ import { query } from '../config/database.js';
 
 class BrandsRepositoryPG {
   /**
-   * Получить все бренды
+   * Получить все бренды. При заданном profileId — только бренды, у которых есть товары этого аккаунта.
    */
-  async findAll() {
+  async findAll(options = {}) {
+    const profileId = options.profileId ?? options.profile_id;
+    if (profileId != null && profileId !== '') {
+      const result = await query(
+        `SELECT b.*
+         FROM brands b
+         WHERE EXISTS (
+           SELECT 1 FROM products p WHERE p.brand_id = b.id AND p.profile_id = $1::bigint
+         )
+         ORDER BY b.name`,
+        [profileId]
+      );
+      return result.rows;
+    }
     const result = await query('SELECT * FROM brands ORDER BY name');
     return result.rows;
   }

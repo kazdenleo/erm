@@ -107,7 +107,7 @@ class WarehouseReceiptsRepositoryPG {
     return r.rows || [];
   }
 
-  async findAll({ limit = 100, offset = 0 } = {}) {
+  async findAll({ limit = 100, offset = 0, profileId = null } = {}) {
     /* Цена в документе или из карточки товара (старые строки с NULL cost всё же показывают сумму). */
     const amountRub = `(
       SELECT SUM(l.quantity::numeric * COALESCE(l.cost, p.cost)::numeric)
@@ -116,7 +116,31 @@ class WarehouseReceiptsRepositoryPG {
       WHERE l.receipt_id = r.id
         AND COALESCE(l.cost, p.cost) IS NOT NULL
     ) AS total_amount_rub`;
+    const pid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : null;
+    const useProfile = Number.isFinite(pid) && pid > 0;
+    const profileWhere = useProfile
+      ? ` AND (
+          (r.organization_id IS NOT NULL AND EXISTS (SELECT 1 FROM organizations o2 WHERE o2.id = r.organization_id AND o2.profile_id = $1::bigint))
+          OR (r.organization_id IS NULL AND EXISTS (
+            SELECT 1 FROM warehouse_receipt_lines l2
+            JOIN products p2 ON p2.id = l2.product_id
+            WHERE l2.receipt_id = r.id AND p2.profile_id = $1::bigint
+            LIMIT 1
+          ))
+        )`
+      : '';
+
     try {
+      const params = [];
+      if (useProfile) params.push(pid);
+      const limIdx = params.length + 1;
+      const offIdx = params.length + 2;
+      params.push(limit, offset);
       const r = await query(
         `SELECT r.id, r.created_at, r.receipt_number, r.supplier_id, r.organization_id, r.document_type,
                 s.name AS supplier_name, s.code AS supplier_code,
@@ -130,13 +154,26 @@ class WarehouseReceiptsRepositoryPG {
          FROM warehouse_receipts r
          LEFT JOIN suppliers s ON s.id = r.supplier_id
          LEFT JOIN organizations o ON o.id = r.organization_id
+         WHERE 1=1 ${profileWhere}
          ORDER BY r.created_at DESC, r.id DESC
-         LIMIT $1 OFFSET $2`,
-        [limit, offset]
+         LIMIT $${limIdx} OFFSET $${offIdx}`,
+        params
       );
       return r.rows || [];
     } catch (err) {
       if (err.message && /column.*does not exist|organization_id|document_type/i.test(err.message)) {
+        const params = [];
+        if (useProfile) params.push(pid);
+        const limIdx = params.length + 1;
+        const offIdx = params.length + 2;
+        params.push(limit, offset);
+        const legacyProfileWhere = useProfile
+          ? ` AND EXISTS (
+              SELECT 1 FROM warehouse_receipt_lines l2
+              JOIN products p2 ON p2.id = l2.product_id
+              WHERE l2.receipt_id = r.id AND p2.profile_id = $1::bigint
+            )`
+          : '';
         const r = await query(
           `SELECT r.id, r.created_at, r.receipt_number, r.supplier_id,
                   s.name AS supplier_name, s.code AS supplier_code,
@@ -148,9 +185,10 @@ class WarehouseReceiptsRepositoryPG {
                   ${amountRub}
            FROM warehouse_receipts r
            LEFT JOIN suppliers s ON s.id = r.supplier_id
+           WHERE 1=1 ${legacyProfileWhere}
            ORDER BY r.created_at DESC, r.id DESC
-           LIMIT $1 OFFSET $2`,
-          [limit, offset]
+           LIMIT $${limIdx} OFFSET $${offIdx}`,
+          params
         );
         return (r.rows || []).map(row => ({ ...row, organization_id: null, document_type: 'receipt', organization_name: null }));
       }
@@ -158,9 +196,44 @@ class WarehouseReceiptsRepositoryPG {
     }
   }
 
-  async count() {
-    const r = await query(`SELECT COUNT(*) AS total FROM warehouse_receipts`);
-    return parseInt(r.rows[0]?.total || '0', 10);
+  async count({ profileId = null } = {}) {
+    const pid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : null;
+    const useProfile = Number.isFinite(pid) && pid > 0;
+    const profileWhere = useProfile
+      ? ` WHERE (
+          (r.organization_id IS NOT NULL AND EXISTS (SELECT 1 FROM organizations o2 WHERE o2.id = r.organization_id AND o2.profile_id = $1::bigint))
+          OR (r.organization_id IS NULL AND EXISTS (
+            SELECT 1 FROM warehouse_receipt_lines l2
+            JOIN products p2 ON p2.id = l2.product_id
+            WHERE l2.receipt_id = r.id AND p2.profile_id = $1::bigint
+            LIMIT 1
+          ))
+        )`
+      : '';
+    try {
+      const params = useProfile ? [pid] : [];
+      const r = await query(`SELECT COUNT(*) AS total FROM warehouse_receipts r${profileWhere}`, params);
+      return parseInt(r.rows[0]?.total || '0', 10);
+    } catch (err) {
+      if (err.message && /column.*does not exist|organization_id|document_type/i.test(err.message)) {
+        const legacyWhere = useProfile
+          ? ` WHERE EXISTS (
+              SELECT 1 FROM warehouse_receipt_lines l2
+              JOIN products p2 ON p2.id = l2.product_id
+              WHERE l2.receipt_id = r.id AND p2.profile_id = $1::bigint
+            )`
+          : '';
+        const params = useProfile ? [pid] : [];
+        const r = await query(`SELECT COUNT(*) AS total FROM warehouse_receipts r${legacyWhere}`, params);
+        return parseInt(r.rows[0]?.total || '0', 10);
+      }
+      throw err;
+    }
   }
 
   async delete(id) {

@@ -7,6 +7,7 @@ import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
 import integrationsService from '../services/integrations.service.js';
 import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 /** Нормализация JSONB marketplace_mappings (иногда приходит строкой). */
 function parseMarketplaceMappings(raw) {
@@ -26,13 +27,26 @@ function parseMarketplaceMappings(raw) {
 class UserCategoriesController {
   async getAll(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      const params = [];
+      let profileFilter = '';
+      if (tid != null) {
+        profileFilter = `WHERE EXISTS (
+          SELECT 1 FROM products p WHERE p.user_category_id = uc.id AND p.profile_id = $1::bigint
+        )`;
+        params.push(tid);
+      }
       const result = await query(
         `SELECT uc.*,
          COALESCE(
            (SELECT json_agg(ca.attribute_id) FROM category_attributes ca WHERE ca.user_category_id = uc.id),
            '[]'::json
          ) AS attribute_ids
-         FROM user_categories uc ORDER BY uc.name`
+         FROM user_categories uc ${profileFilter} ORDER BY uc.name`,
+        params
       );
       const rows = (result.rows || []).map((row) => {
         let ids = row.attribute_ids;

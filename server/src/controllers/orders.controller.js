@@ -190,11 +190,14 @@ class OrdersController {
       for (const [code, list] of Object.entries(byMarketplace)) {
         if (list.length === 0) continue;
         // Идемпотентность: если заказ уже привязан к какой-то поставке — используем её и не добавляем заново.
-        const openShipment = await shipmentsService.getOrCreateOpenShipment(code);
+        const profileId = req.user?.profileId ?? null;
+        const openShipment = await shipmentsService.getOrCreateOpenShipment(code, { profileId });
         const byShipmentId = new Map(); // shipmentId -> { shipment, orderIds: [] }
 
         for (const o of list) {
-          const existingShip = await shipmentsService.findLocalShipmentContainingOrder(code, o.orderId);
+          const existingShip = await shipmentsService.findLocalShipmentContainingOrder(code, o.orderId, {
+            profileId
+          });
           const useShip = existingShip || openShipment;
           if (!byShipmentId.has(useShip.id)) {
             byShipmentId.set(useShip.id, { shipment: useShip, orderIds: [] });
@@ -204,7 +207,7 @@ class OrdersController {
 
         for (const { shipment, orderIds } of byShipmentId.values()) {
           try {
-            await shipmentsService.addOrdersToShipment(shipment.id, orderIds);
+            await shipmentsService.addOrdersToShipment(shipment.id, orderIds, { profileId });
             shipmentsUsed.push({ marketplace: code, shipmentId: shipment.id, shipmentName: shipment.name, orderIds });
           } catch (e) {
             // WB 409: часть заказов уже в другой поставке WB или статус не подходит.

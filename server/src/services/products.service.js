@@ -140,8 +140,8 @@ class ProductsService {
    * Для страницы «Категории»: id товаров по ERP-категории без загрузки полных карточек.
    * @returns {Promise<Record<string, number[]>>}
    */
-  async getProductIdsGroupedByUserCategory() {
-    return await this.repository.getProductIdsGroupedByUserCategory();
+  async getProductIdsGroupedByUserCategory(options = {}) {
+    return await this.repository.getProductIdsGroupedByUserCategory(options);
   }
 
   /**

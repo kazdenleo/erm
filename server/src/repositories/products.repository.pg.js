@@ -151,16 +151,24 @@ class ProductsRepositoryPG {
 
   /**
    * ID товаров, сгруппированные по user_category_id (без JOIN/SKU — для UI списка категорий).
+   * @param {{ profileId?: number|string|null }} [options]
    * @returns {Promise<Record<string, number[]>>}
    */
-  async getProductIdsGroupedByUserCategory() {
+  async getProductIdsGroupedByUserCategory(options = {}) {
+    const profileId = options.profileId ?? options.profile_id;
+    const params = [];
+    let where = 'WHERE user_category_id IS NOT NULL';
+    if (profileId != null && profileId !== '') {
+      where += ` AND profile_id = $${params.length + 1}`;
+      params.push(profileId);
+    }
     const result = await query(
       `SELECT user_category_id::text AS cid,
               coalesce(json_agg(id ORDER BY id), '[]'::json) AS product_ids
        FROM products
-       WHERE user_category_id IS NOT NULL
+       ${where}
        GROUP BY user_category_id`
-    );
+    , params);
     const out = {};
     for (const row of result.rows || []) {
       let ids = row.product_ids;

@@ -174,7 +174,13 @@ class ProductsController {
   /** Лёгкий ответ для UI категорий: { [user_category_id]: productId[] } без полных карточек товаров */
   async getProductIdsGroupedByUserCategory(req, res, next) {
     try {
-      const grouped = await productsService.getProductIdsGroupedByUserCategory();
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: {} });
+      }
+      const grouped = await productsService.getProductIdsGroupedByUserCategory(
+        tid != null ? { profileId: tid } : {}
+      );
       return res.status(200).json({ ok: true, data: grouped });
     } catch (error) {
       next(error);

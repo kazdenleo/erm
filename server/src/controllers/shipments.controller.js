@@ -5,11 +5,28 @@
 
 import fs from 'fs';
 import shipmentsService from '../services/shipments.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+
+function shipmentsProfileOpts(req) {
+  const tid = tenantListProfileId(req);
+  if (tid === TENANT_LIST_EMPTY) return { blocked: true };
+  return { profileId: tid != null ? tid : null };
+}
 
 class ShipmentsController {
   async getAll(req, res, next) {
     try {
-      const data = await shipmentsService.getShipments();
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(200).json({
+          ok: true,
+          data: {
+            marketplaces: shipmentsService.getMarketplaces(),
+            list: { ozon: [], wildberries: [], yandex: [] }
+          }
+        });
+      }
+      const data = await shipmentsService.getShipments({ profileId: sp.profileId });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -18,8 +35,12 @@ class ShipmentsController {
 
   async getById(req, res, next) {
     try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(404).json({ ok: false, message: 'Поставка не найдена' });
+      }
       const { id } = req.params;
-      const shipment = await shipmentsService.getShipmentById(id);
+      const shipment = await shipmentsService.getShipmentById(id, { profileId: sp.profileId });
       if (!shipment) {
         return res.status(404).json({ ok: false, message: 'Поставка не найдена' });
       }
@@ -31,8 +52,12 @@ class ShipmentsController {
 
   async create(req, res, next) {
     try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
+      }
       const { marketplace, name } = req.body || {};
-      const shipment = await shipmentsService.createShipment({ marketplace, name });
+      const shipment = await shipmentsService.createShipment({ marketplace, name, profileId: sp.profileId });
       return res.status(201).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -42,9 +67,13 @@ class ShipmentsController {
 
   async addOrders(req, res, next) {
     try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
+      }
       const { id } = req.params;
       const { orderIds } = req.body || {};
-      const shipment = await shipmentsService.addOrdersToShipment(id, orderIds);
+      const shipment = await shipmentsService.addOrdersToShipment(id, orderIds, { profileId: sp.profileId });
       return res.status(200).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -54,8 +83,12 @@ class ShipmentsController {
 
   async close(req, res, next) {
     try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
+      }
       const { id } = req.params;
-      const shipment = await shipmentsService.closeShipment(id);
+      const shipment = await shipmentsService.closeShipment(id, { profileId: sp.profileId });
       return res.status(200).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -65,9 +98,13 @@ class ShipmentsController {
 
   async removeOrders(req, res, next) {
     try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
+      }
       const { id } = req.params;
       const { orderIds } = req.body || {};
-      const shipment = await shipmentsService.removeOrdersFromShipment(id, orderIds);
+      const shipment = await shipmentsService.removeOrdersFromShipment(id, orderIds, { profileId: sp.profileId });
       return res.status(200).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -77,8 +114,12 @@ class ShipmentsController {
 
   async getQrSticker(req, res, next) {
     try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(404).json({ ok: false, message: 'QR-стикер поставки не найден' });
+      }
       const { id } = req.params;
-      const filePath = await shipmentsService.getQrStickerFilePath(id);
+      const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: sp.profileId });
       if (!filePath) {
         return res.status(404).json({ ok: false, message: 'QR-стикер поставки не найден' });
       }
@@ -96,8 +137,12 @@ class ShipmentsController {
    */
   async getQrStickerPrint(req, res, next) {
     try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
+      }
       const { id } = req.params;
-      const filePath = await shipmentsService.getQrStickerFilePath(id);
+      const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: sp.profileId });
       if (!filePath) {
         return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
       }

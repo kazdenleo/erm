@@ -4,13 +4,22 @@
  */
 
 import warehouseReceiptsService from '../services/warehouseReceipts.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class WarehouseReceiptsController {
   async list(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [], total: 0 });
+      }
       const limit = req.query.limit ? Math.min(500, parseInt(req.query.limit, 10)) : 100;
       const offset = req.query.offset ? parseInt(req.query.offset, 10) : 0;
-      const result = await warehouseReceiptsService.getList({ limit, offset });
+      const result = await warehouseReceiptsService.getList({
+        limit,
+        offset,
+        ...(tid != null ? { profileId: tid } : {})
+      });
       return res.status(200).json({ ok: true, data: result.list, total: result.total });
     } catch (error) {
       next(error);

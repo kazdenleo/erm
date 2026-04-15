@@ -4,13 +4,18 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 const brandsRepository = repositoryFactory.getBrandsRepository();
 
 export const brandsController = {
   async getAll(req, res, next) {
     try {
-      const brands = await brandsRepository.findAll();
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.json({ ok: true, data: [] });
+      }
+      const brands = await brandsRepository.findAll(tid != null ? { profileId: tid } : {});
       res.json({ ok: true, data: brands });
     } catch (error) {
       next(error);

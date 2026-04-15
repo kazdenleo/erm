@@ -16,8 +16,15 @@ const ACTIVE_ORDER_STATUSES = new Set([
   'assembled',
 ]);
 
-export async function getProblemOrders({ limit = 200 } = {}) {
+export async function getProblemOrders({ limit = 200, profileId = null } = {}) {
   const lim = Math.min(Math.max(1, parseInt(limit, 10) || 200), 500);
+  const profileParam =
+    profileId != null && profileId !== ''
+      ? typeof profileId === 'string'
+        ? parseInt(profileId, 10)
+        : Number(profileId)
+      : null;
+  const useProfile = Number.isFinite(profileParam) && profileParam > 0;
 
   // FIFO-распределение покрытия по резервам:
   // 1) берём все reserve движения, привязанные к orders.id через meta.order_id
@@ -53,6 +60,7 @@ export async function getProblemOrders({ limit = 200 } = {}) {
         o.created_at AS order_created_at
       FROM reserve_lines rl
       JOIN orders o ON o.id = rl.order_row_id
+      WHERE ($2::bigint IS NULL OR o.profile_id = $2::bigint)
     ),
     active_reserves AS (
       SELECT *
@@ -141,11 +149,11 @@ export async function getProblemOrders({ limit = 200 } = {}) {
     GROUP BY pl.order_db_id, pl.marketplace, pl.order_id, pl.order_group_id, pl.order_status
     HAVING SUM(pl.uncovered_qty)::int > 0
     ORDER BY uncovered_quantity DESC, pl.order_db_id DESC
-    LIMIT $2
+    LIMIT $3
   `;
 
   const statuses = Array.from(ACTIVE_ORDER_STATUSES.values());
-  const r = await query(sql, [statuses, lim]);
+  const r = await query(sql, [statuses, useProfile ? profileParam : null, lim]);
   return r.rows || [];
 }
 
