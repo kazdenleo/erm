@@ -74,6 +74,11 @@ const configSchema = z.object({
 
   // Auth
   DISABLE_AUTH: z.string().optional(),
+  /**
+   * role=admin без profile_id: отдавать все строки в мультитенантных списках (старое поведение).
+   * В production по умолчанию выключено (безопасно). Явно: GLOBAL_ADMIN_UNFILTERED_LISTS=1
+   */
+  GLOBAL_ADMIN_UNFILTERED_LISTS: z.string().optional(),
   
   // API Keys (marketplaces and suppliers)
   OZON_CLIENT_ID: z.string().optional(),
@@ -174,6 +179,15 @@ try {
     // Auth
     auth: {
       disabled: String(parsed.DISABLE_AUTH || '').toLowerCase() === '1' || String(parsed.DISABLE_AUTH || '').toLowerCase() === 'true',
+      /**
+       * Супер-админ без привязки к профилю видит все заказы/склады/…
+       * По умолчанию: true только в development; в production — false, пока не задано GLOBAL_ADMIN_UNFILTERED_LISTS=1
+       */
+      globalAdminUnfilteredLists:
+        String(parsed.GLOBAL_ADMIN_UNFILTERED_LISTS ?? '').trim() === ''
+          ? parsed.NODE_ENV === 'development'
+          : String(parsed.GLOBAL_ADMIN_UNFILTERED_LISTS).toLowerCase() === '1' ||
+            String(parsed.GLOBAL_ADMIN_UNFILTERED_LISTS).toLowerCase() === 'true',
     },
     
     // API Keys
