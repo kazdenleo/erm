@@ -642,12 +642,21 @@ class ProductsService {
     }
   }
 
-  async getBySku(sku) {
+  /**
+   * @param {string} sku
+   * @param {{ profileId?: number|string|null }} [options] — для PostgreSQL: ограничить поиск аккаунтом (уникальность SKU по profile_id)
+   */
+  async getBySku(sku, options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      return await this.repository.findBySku(sku);
+      return await this.repository.findBySku(sku, options);
     } else {
       const products = await this.getAll();
-      return products.find(p => p.sku === sku) || null;
+      const pid = options.profileId ?? options.profile_id;
+      const list =
+        pid != null && pid !== ''
+          ? products.filter((p) => String(p.profile_id ?? p.profileId ?? '') === String(pid))
+          : products;
+      return list.find((p) => p.sku === sku) || null;
     }
   }
 
@@ -669,8 +678,15 @@ class ProductsService {
     }
     normalizeMarketplaceCardTextFields(productData);
 
-    // Проверка на дубликаты
-    const existing = await this.getBySku(productData.sku);
+    const createProfileId = productData.profileId ?? productData.profile_id;
+    if (repositoryFactory.isUsingPostgreSQL() && (createProfileId == null || createProfileId === '')) {
+      const error = new Error('Создание товара доступно только для пользователя с привязкой к аккаунту');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Проверка на дубликаты артикула в пределах аккаунта (PostgreSQL: уникальность по profile_id + sku)
+    const existing = await this.getBySku(productData.sku, { profileId: createProfileId });
     if (existing) {
       const error = new Error('Товар с таким артикулом уже существует');
       error.statusCode = 400;

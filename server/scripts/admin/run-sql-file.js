@@ -1,6 +1,12 @@
 /**
  * Admin: run arbitrary SQL file against configured PostgreSQL.
- * Usage: node scripts/admin/run-sql-file.js scripts/admin/reset_stock_keep_purchases_4_5.sql
+ *
+ * Запуск из каталога server:
+ *   node scripts/admin/run-sql-file.js scripts/admin/foo.sql
+ *
+ * Из корня репозитория (testCursor/):
+ *   node server/scripts/admin/run-sql-file.js server/scripts/admin/foo.sql
+ *   node server/scripts/admin/run-sql-file.js scripts/admin/foo.sql
  */
 
 import fs from 'fs';
@@ -12,8 +18,30 @@ import config from '../../src/config/index.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/** Каталог server/ (родитель scripts/) — от него задаются относительные пути в документации. */
+const serverRoot = path.resolve(__dirname, '..', '..');
+
+/**
+ * @param {string} arg путь к .sql от server/ или от cwd, или с префиксом server/
+ */
+function resolveSqlFilePath(arg) {
+  if (path.isAbsolute(arg)) return arg;
+  const trimmed = arg.replace(/^[/\\]+/, '');
+  const withoutServerPrefix = trimmed.replace(/^server[/\\]/i, '');
+  const candidates = [
+    path.resolve(serverRoot, trimmed),
+    path.resolve(serverRoot, withoutServerPrefix),
+    path.resolve(process.cwd(), trimmed),
+    path.resolve(process.cwd(), withoutServerPrefix),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p));
+  return found ?? candidates[0];
+}
+
 function usage() {
   console.log('Usage: node scripts/admin/run-sql-file.js <path-to-sql-file>');
+  console.log('  Path relative to server/: scripts/admin/your.sql');
+  console.log('  Or from repo root: server/scripts/admin/your.sql');
   process.exit(1);
 }
 
@@ -21,9 +49,10 @@ async function main() {
   const arg = process.argv[2];
   if (!arg) usage();
 
-  const sqlPath = path.isAbsolute(arg) ? arg : path.resolve(__dirname, '../../', arg);
+  const sqlPath = resolveSqlFilePath(arg);
   if (!fs.existsSync(sqlPath)) {
     console.error(`[Admin] SQL file not found: ${sqlPath}`);
+    console.error(`[Admin] Tried relative to server root: ${serverRoot}`);
     process.exit(1);
   }
 

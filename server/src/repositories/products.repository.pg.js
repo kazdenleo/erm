@@ -696,9 +696,18 @@ class ProductsRepositoryPG {
   }
   
   /**
-   * Получить товар по SKU
+   * Получить товар по SKU.
+   * @param {string} sku
+   * @param {{ profileId?: number|string|null }} [options] — если задан, поиск только внутри аккаунта (мультитенант)
    */
-  async findBySku(sku) {
+  async findBySku(sku, options = {}) {
+    const profileId = options.profileId ?? options.profile_id;
+    const params = [sku];
+    let profileClause = '';
+    if (profileId != null && profileId !== '') {
+      profileClause = ' AND p.profile_id = $2';
+      params.push(profileId);
+    }
     const result = await query(`
       SELECT 
         p.*,
@@ -707,8 +716,8 @@ class ProductsRepositoryPG {
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
-      WHERE p.sku = $1
-    `, [sku]);
+      WHERE p.sku = $1${profileClause}
+    `, params);
     
     const product = result.rows[0] || null;
     if (product) {
@@ -856,6 +865,11 @@ class ProductsRepositoryPG {
         addExpRaw != null && addExpRaw !== '' && !isNaN(Number(addExpRaw)) ? Number(addExpRaw) : null;
       const mpStr = (v) => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
       const profileIdRaw = productData.profile_id ?? productData.profileId ?? null;
+      if (profileIdRaw == null || profileIdRaw === '') {
+        const err = new Error('Для товара нужен profile_id (аккаунт пользователя)');
+        err.statusCode = 400;
+        throw err;
+      }
       const productResult = await client.query(`
         INSERT INTO products (
           profile_id,
