@@ -8,6 +8,7 @@ import { normalizeProductExportOptions } from '../services/productsExport.servic
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 /** Латинский fallback для Content-Disposition filename= (кириллица в заголовке ломает Node) */
 function asciiContentDispositionFilename(name, fallback = 'file.xlsx') {
@@ -31,6 +32,10 @@ class ProductsController {
   }
   async exportExcel(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Экспорт доступен только с привязкой к аккаунту' });
+      }
       const filters = {};
       if (req.query.organizationId != null && String(req.query.organizationId).trim() !== '') {
         filters.organizationId = String(req.query.organizationId).trim();
@@ -41,8 +46,8 @@ class ProductsController {
       if (req.query.search != null && String(req.query.search).trim() !== '') {
         filters.search = String(req.query.search).trim();
       }
-      if (req.user?.profileId != null && req.user.profileId !== '') {
-        filters.profileId = req.user.profileId;
+      if (tid != null) {
+        filters.profileId = tid;
       }
       filters.exportOptions = normalizeProductExportOptions({
         includeMp: req.query.includeMp,
@@ -67,12 +72,16 @@ class ProductsController {
 
   async downloadImportTemplateExcel(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Шаблон доступен только с привязкой к аккаунту' });
+      }
       const filters = {};
       if (req.query.categoryId != null && String(req.query.categoryId).trim() !== '') {
         filters.categoryId = String(req.query.categoryId).trim();
       }
-      if (req.user?.profileId != null && req.user.profileId !== '') {
-        filters.profileId = req.user.profileId;
+      if (tid != null) {
+        filters.profileId = tid;
       }
       filters.exportOptions = normalizeProductExportOptions({
         includeMp: req.query.includeMp,
@@ -117,9 +126,13 @@ class ProductsController {
 
   async getAll(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
       const options = {};
-      if (req.user?.profileId != null && req.user.profileId !== '') {
-        options.profileId = req.user.profileId;
+      if (tid != null) {
+        options.profileId = tid;
       }
       if (req.query.organizationId != null && req.query.organizationId !== '') {
         options.organizationId = req.query.organizationId;

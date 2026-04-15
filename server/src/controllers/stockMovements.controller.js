@@ -4,6 +4,7 @@
  */
 
 import stockMovementsService from '../services/stockMovements.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class StockMovementsController {
   async applyChange(req, res, next) {
@@ -33,9 +34,13 @@ class StockMovementsController {
 
   async getHistory(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
       const { id } = req.params;
       const limit = req.query.limit ? Number(req.query.limit) : 100;
-      const history = await stockMovementsService.getHistory(id, { limit, profileId: req.user?.profileId ?? null });
+      const history = await stockMovementsService.getHistory(id, { limit, profileId: tid });
       return res.status(200).json({ ok: true, data: history });
     } catch (error) {
       next(error);

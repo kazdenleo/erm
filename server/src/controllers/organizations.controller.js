@@ -4,6 +4,7 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 const repo = repositoryFactory.getOrganizationsRepository();
 
@@ -12,7 +13,11 @@ export const organizationsController = {
     try {
       const filters = {};
       if (req.user && req.user.role !== 'admin') {
-        filters.profileId = req.user.profileId;
+        const tid = tenantListProfileId(req);
+        if (tid === TENANT_LIST_EMPTY) {
+          return res.json({ ok: true, data: [] });
+        }
+        filters.profileId = tid;
       }
       const list = await repo.findAll(filters);
       res.json({ ok: true, data: list });

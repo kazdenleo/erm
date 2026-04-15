@@ -15,9 +15,8 @@ async function assertProductAllowedInProfile(client, productId, profileId) {
   if (pid == null) return;
   const res = await client.query(
     `SELECT 1 FROM products p
-     LEFT JOIN organizations o ON o.id = p.organization_id
      WHERE p.id = $1
-       AND (o.profile_id IS NOT DISTINCT FROM $2::bigint)`,
+       AND p.profile_id = $2::bigint`,
     [productId, pid]
   );
   if (!res.rows?.length) {
@@ -206,8 +205,8 @@ class InventorySessionsService {
 
         const delta = quantityAfter - before;
         await client.query(
-          `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id)
-           VALUES ($1, 'inventory', $2, $3, $4, $5, $6)`,
+          `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
+           VALUES ($1, 'inventory', $2, $3, $4, $5::jsonb, $6, (SELECT profile_id FROM products WHERE id = $1))`,
           [
             productId,
             delta,
@@ -285,8 +284,8 @@ class InventorySessionsService {
         const reverseDelta = qb - qa;
 
         await client.query(
-          `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id)
-           VALUES ($1, 'manual', $2, $3, $4, $5, $6)`,
+          `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
+           VALUES ($1, 'manual', $2, $3, $4, $5::jsonb, $6, (SELECT profile_id FROM products WHERE id = $1))`,
           [
             productId,
             reverseDelta,

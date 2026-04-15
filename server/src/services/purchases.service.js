@@ -174,9 +174,8 @@ async function assertProductAllowedInProfile(client, productId, profileId) {
   if (pid == null) return;
   const res = await client.query(
     `SELECT 1 FROM products p
-     LEFT JOIN organizations o ON o.id = p.organization_id
      WHERE p.id = $1
-       AND (o.profile_id IS NOT DISTINCT FROM $2::bigint)`,
+       AND p.profile_id = $2::bigint`,
     [productId, pid]
   );
   if (!res.rows?.length) {
@@ -206,14 +205,15 @@ async function addIncomingDeltaForPurchaseInTx(client, purchaseId, productId, de
     [newIncoming, pid]
   );
   await client.query(
-    `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta)
-     VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb)`,
+    `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, profile_id)
+     VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6)`,
     [
       pid,
       d,
       newIncoming,
       `Закупка №${purchaseId} — ожидание`,
       JSON.stringify({ purchase_id: purchaseId }),
+      profileId,
     ]
   );
 }
@@ -224,6 +224,8 @@ async function subtractIncomingForPurchaseLineRemovalInTx(client, purchaseId, pr
   if (rem <= 0) return;
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return;
+  const purProf = await client.query('SELECT profile_id FROM purchases WHERE id = $1', [purchaseId]);
+  const profileIdForMove = purProf.rows?.[0]?.profile_id ?? null;
   await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
   const pr = await client.query('SELECT COALESCE(incoming_quantity, 0) AS inc FROM products WHERE id = $1', [pid]);
   const incoming = pr.rows?.[0]?.inc != null ? Number(pr.rows[0].inc) : 0;
@@ -233,14 +235,15 @@ async function subtractIncomingForPurchaseLineRemovalInTx(client, purchaseId, pr
     [newIncoming, pid]
   );
   await client.query(
-    `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta)
-     VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb)`,
+    `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, profile_id)
+     VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6)`,
     [
       pid,
       -rem,
       newIncoming,
       `Снятие ожидания при удалении строки закупки №${purchaseId}`,
       JSON.stringify({ purchase_id: purchaseId, line_removed: true }),
+      profileIdForMove,
     ]
   );
 }
@@ -421,6 +424,8 @@ async function maybeDeleteOrphanWarehouseReceiptInTx(client, whId) {
  */
 async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
   const touchedProducts = new Set();
+  const purProf = await client.query('SELECT profile_id FROM purchases WHERE id = $1', [purchaseId]);
+  const profileIdForMove = purProf.rows?.[0]?.profile_id ?? null;
   // Только «исходные» проводки документа; строки сторно (reversal_of) не трогаем — нельзя откатить откат.
   const movements = await client.query(
     `SELECT id, product_id, type, quantity_change, warehouse_id, meta
@@ -467,8 +472,8 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
       const balRow = await client.query('SELECT quantity FROM products WHERE id = $1', [pid]);
       const balanceAfter = balRow.rows?.[0]?.quantity != null ? Number(balRow.rows[0].quantity) : 0;
       await client.query(
-        `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id)
-         VALUES ($1, 'receipt', $2, $3, $4, $5::jsonb, $6)`,
+        `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
+         VALUES ($1, 'receipt', $2, $3, $4, $5::jsonb, $6, $7)`,
         [
           pid,
           -ch,
@@ -481,6 +486,7 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
             reversal_of: m.id,
           }),
           wh && Number.isFinite(wh) ? wh : null,
+          profileIdForMove,
         ]
       );
     } else if (m.type === 'incoming' && ch < 0) {
@@ -494,8 +500,8 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
       const incRow = await client.query('SELECT incoming_quantity FROM products WHERE id = $1', [pid]);
       const newInc = incRow.rows?.[0]?.incoming_quantity != null ? Number(incRow.rows[0].incoming_quantity) : 0;
       await client.query(
-        `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id)
-         VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6)`,
+        `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
+         VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6, $7)`,
         [
           pid,
           addBack,
@@ -508,6 +514,7 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
             reversal_of: m.id,
           }),
           wh && Number.isFinite(wh) ? wh : null,
+          profileIdForMove,
         ]
       );
     }
@@ -574,6 +581,8 @@ async function recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId) {
 
 /** Снять ожидание (incoming), которое осталось по строкам закупки (после отката приёмок). */
 async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
+  const purProf = await client.query('SELECT profile_id FROM purchases WHERE id = $1', [purchaseId]);
+  const profileIdForMove = purProf.rows?.[0]?.profile_id ?? null;
   const lines = await client.query(
     `SELECT product_id, expected_quantity, received_quantity FROM purchase_items WHERE purchase_id = $1 FOR UPDATE`,
     [purchaseId]
@@ -593,14 +602,15 @@ async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
       [newIncoming, productId]
     );
     await client.query(
-      `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta)
-       VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb)`,
+      `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, profile_id)
+       VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6)`,
       [
         productId,
         -rem,
         newIncoming,
         `Сторно: снятие ожидания при удалении закупки №${purchaseId}`,
         JSON.stringify({ storno: true, purchase_id: purchaseId, purchase_deleted: true }),
+        profileIdForMove,
       ]
     );
   }
@@ -1735,8 +1745,8 @@ class PurchasesService {
           const balanceActual =
             balRow.rows?.[0]?.quantity != null ? Number(balRow.rows[0].quantity) : newActual;
           await client.query(
-            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id)
-             VALUES ($1, 'receipt', $2, $3, $4, $5, $6)`,
+            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
+             VALUES ($1, 'receipt', $2, $3, $4, $5, $6, $7)`,
             [
               productId,
               moveQty,
@@ -1744,13 +1754,14 @@ class PurchasesService {
               `Приёмка по закупке №${purchaseId}`,
               JSON.stringify({ purchase_id: purchaseId, purchase_receipt_id: rid }),
               dwId || null,
+              pid,
             ]
           );
         }
         if (moveQty > 0) {
           await client.query(
-            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id)
-             VALUES ($1, 'incoming', $2, $3, $4, $5, $6)`,
+            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
+             VALUES ($1, 'incoming', $2, $3, $4, $5, $6, $7)`,
             [
               productId,
               -moveQty,
@@ -1758,6 +1769,7 @@ class PurchasesService {
               `Списание incoming по приёмке №${rid}`,
               JSON.stringify({ purchase_id: purchaseId, purchase_receipt_id: rid }),
               dwId || null,
+              pid,
             ]
           );
         }
@@ -2143,8 +2155,8 @@ class PurchasesService {
           const na = await client.query('SELECT quantity FROM products WHERE id = $1', [line.productId]);
           const newActual = na.rows?.[0]?.quantity != null ? Number(na.rows[0].quantity) : 0;
           await client.query(
-            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id)
-             VALUES ($1, 'receipt', $2, $3, $4, $5, $6)`,
+            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
+             VALUES ($1, 'receipt', $2, $3, $4, $5, $6, $7)`,
             [
               line.productId,
               line.quantity,
@@ -2152,6 +2164,7 @@ class PurchasesService {
               `Излишки по закупке №${purchaseId}`,
               JSON.stringify({ purchase_id: purchaseId, purchase_receipt_id: rid, extra: true }),
               receiptWarehouseId || null,
+              pid,
             ]
           );
         }

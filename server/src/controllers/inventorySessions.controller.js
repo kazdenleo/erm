@@ -3,12 +3,17 @@
  */
 
 import inventorySessionsService from '../services/inventorySessions.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class InventorySessionsController {
   async list(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
       const limit = req.query.limit ? parseInt(req.query.limit, 10) : 200;
-      const profileId = req.user?.profileId ?? null;
+      const profileId = tid;
       const list = await inventorySessionsService.list({ profileId, limit });
       return res.status(200).json({ ok: true, data: list });
     } catch (e) {

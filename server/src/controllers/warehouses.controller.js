@@ -4,15 +4,20 @@
  */
 
 import warehousesService from '../services/warehouses.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class WarehousesController {
   async getAll(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
       const options = {};
       if (req.query.organizationId != null && req.query.organizationId !== '') options.organizationId = req.query.organizationId;
       if (req.query.type != null && req.query.type !== '') options.type = req.query.type;
       if (req.query.supplierId != null && req.query.supplierId !== '') options.supplierId = req.query.supplierId;
-      if (req.user?.profileId != null && req.user.profileId !== '') options.profileId = req.user.profileId;
+      if (tid != null) options.profileId = tid;
       const warehouses = await warehousesService.getAll(options);
       console.log('[WarehousesController] getAll - warehouses count:', warehouses.length);
       if (warehouses.length > 0) {

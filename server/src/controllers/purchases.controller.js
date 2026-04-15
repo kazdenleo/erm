@@ -4,13 +4,18 @@
  */
 
 import purchasesService from '../services/purchases.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class PurchasesController {
   async list(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
       const limit = req.query.limit ? parseInt(req.query.limit, 10) : 200;
       const status = req.query.status != null && String(req.query.status).trim() !== '' ? String(req.query.status).trim() : null;
-      const profileId = req.user?.profileId ?? null;
+      const profileId = tid;
       const data = await purchasesService.list({ profileId, limit, status });
       return res.status(200).json({ ok: true, data });
     } catch (e) {

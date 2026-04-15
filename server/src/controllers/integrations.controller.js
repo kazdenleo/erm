@@ -9,6 +9,7 @@ import {
   isOzonSellerApiErrorMessage,
   parseOzonSellerApiHttpStatus
 } from '../utils/ozon-api-error.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class IntegrationsController {
   /**
@@ -17,8 +18,12 @@ class IntegrationsController {
    */
   async getMarketplace(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: null });
+      }
       const { type } = req.params;
-      const config = await integrationsService.getMarketplaceConfig(type, { profileId: req.user?.profileId ?? null });
+      const config = await integrationsService.getMarketplaceConfig(type, { profileId: tid });
       return res.status(200).json({ ok: true, data: config });
     } catch (error) {
       next(error);
@@ -73,7 +78,11 @@ class IntegrationsController {
    */
   async getAll(req, res, next) {
     try {
-      const configs = await integrationsService.getAllConfigs({ profileId: req.user?.profileId ?? null });
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: {} });
+      }
+      const configs = await integrationsService.getAllConfigs({ profileId: tid });
       return res.status(200).json({ ok: true, data: configs });
     } catch (error) {
       next(error);
@@ -86,7 +95,11 @@ class IntegrationsController {
    */
   async getAllIntegrations(req, res, next) {
     try {
-      const integrations = await integrationsService.getAll({ profileId: req.user?.profileId ?? null });
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      const integrations = await integrationsService.getAll({ profileId: tid });
       return res.status(200).json({ ok: true, data: integrations });
     } catch (error) {
       next(error);
@@ -188,8 +201,12 @@ class IntegrationsController {
    */
   async getMarketplaceTokenStatus(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: { ok: false, reason: 'no_profile' } });
+      }
       const { type } = req.params;
-      const data = await integrationsService.getMarketplaceTokenStatus(type, { profileId: req.user?.profileId ?? null });
+      const data = await integrationsService.getMarketplaceTokenStatus(type, { profileId: tid });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -202,10 +219,14 @@ class IntegrationsController {
    */
   async getNotifications(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
       const { warn_days } = req.query;
       const data = await integrationsService.getTokenNotifications({
         warn_days,
-        profileId: req.user?.profileId ?? null
+        profileId: tid
       });
       return res.status(200).json({ ok: true, data });
     } catch (error) {

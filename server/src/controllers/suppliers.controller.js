@@ -4,11 +4,16 @@
  */
 
 import suppliersService from '../services/suppliers.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class SuppliersController {
   async getAll(req, res, next) {
     try {
-      const suppliers = await suppliersService.getAll({ profileId: req.user?.profileId ?? null });
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      const suppliers = await suppliersService.getAll({ profileId: tid });
       console.log('[SuppliersController] getAll - suppliers count:', suppliers.length);
       console.log('[SuppliersController] getAll - suppliers type:', Array.isArray(suppliers) ? 'array' : typeof suppliers);
       

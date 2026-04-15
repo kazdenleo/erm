@@ -14,17 +14,23 @@ import ordersLabelsService from '../services/orders.labels.service.js';
 import shipmentsService from '../services/shipments.service.js';
 import productsService from '../services/products.service.js';
 import { readData } from '../utils/storage.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class OrdersController {
   async getAll(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json({ ok: true, data: [] });
+      }
       const stockProblemRaw = req.query?.stockProblem ?? req.query?.stock_problem;
       const stockProblem =
         stockProblemRaw === '1' || stockProblemRaw === 'true'
           ? true
           : (stockProblemRaw === '0' || stockProblemRaw === 'false' ? false : undefined);
       const orders = await ordersService.getAll({
-        ...(req.user?.profileId != null && req.user.profileId !== '' ? { profileId: req.user.profileId } : {}),
+        ...(tid != null ? { profileId: tid } : {}),
         ...(stockProblem !== undefined ? { stockProblem } : {}),
       });
       // Не кэшируем: список заказов часто меняется после синхронизации.
