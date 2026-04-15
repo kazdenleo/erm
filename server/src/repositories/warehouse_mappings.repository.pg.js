@@ -5,14 +5,36 @@
 
 import { query, transaction } from '../config/database.js';
 
+function normalizeProfileId(v) {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 class WarehouseMappingsRepositoryPG {
   /**
-   * Получить все маппинги
+   * Получить все маппинги. При profileId — только склады этого аккаунта.
    */
   async findAll(options = {}) {
-    const { warehouseId, marketplace } = options;
-    
-    let sql = `
+    const { warehouseId, marketplace, profileId } = options;
+    const pid = normalizeProfileId(profileId);
+    const params = [];
+    let paramIndex = 1;
+
+    let sql;
+    if (pid) {
+      sql = `
+      SELECT 
+        wm.*,
+        w.address as warehouse_address,
+        w.type as warehouse_type
+      FROM warehouse_mappings wm
+      INNER JOIN warehouses w ON wm.warehouse_id = w.id
+      WHERE w.profile_id = $${paramIndex++}
+    `;
+      params.push(pid);
+    } else {
+      sql = `
       SELECT 
         wm.*,
         w.address as warehouse_address,
@@ -21,8 +43,7 @@ class WarehouseMappingsRepositoryPG {
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE 1=1
     `;
-    const params = [];
-    let paramIndex = 1;
+    }
     
     if (warehouseId) {
       sql += ` AND wm.warehouse_id = $${paramIndex++}`;

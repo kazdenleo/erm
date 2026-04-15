@@ -11,14 +11,15 @@ class WarehouseMappingsService {
     this.warehousesRepo = repositoryFactory.getWarehousesRepository();
   }
 
-  async list({ warehouseId = null, marketplace = null } = {}) {
+  async list({ warehouseId = null, marketplace = null, profileId = null } = {}) {
     return await this.repo.findAll({
       ...(warehouseId != null && warehouseId !== '' ? { warehouseId } : {}),
       ...(marketplace != null && marketplace !== '' ? { marketplace } : {}),
+      ...(profileId != null && profileId !== '' ? { profileId } : {}),
     });
   }
 
-  async create({ warehouseId, marketplace, marketplaceWarehouseId } = {}) {
+  async create({ warehouseId, marketplace, marketplaceWarehouseId, profileId = null } = {}) {
     const wid = warehouseId != null ? parseInt(warehouseId, 10) : NaN;
     if (!Number.isFinite(wid) || wid < 1) {
       const err = new Error('Некорректный warehouseId');
@@ -38,8 +39,11 @@ class WarehouseMappingsService {
       throw err;
     }
 
-    // Проверяем, что склад существует и является "своим"
-    const w = await this.warehousesRepo.findById(wid);
+    // Проверяем, что склад существует в этом аккаунте и является "своим"
+    const w =
+      profileId != null && profileId !== ''
+        ? await this.warehousesRepo.findById(wid, profileId)
+        : await this.warehousesRepo.findById(wid);
     if (!w || w.type !== 'warehouse' || w.supplier_id != null) {
       const err = new Error('Склад не найден или не является вашим складом (type=warehouse без поставщика)');
       err.statusCode = 400;
@@ -53,12 +57,26 @@ class WarehouseMappingsService {
     });
   }
 
-  async update(id, { warehouseId, marketplace, marketplaceWarehouseId } = {}) {
+  async update(id, { warehouseId, marketplace, marketplaceWarehouseId, profileId = null } = {}) {
     const mid = id != null ? parseInt(id, 10) : NaN;
     if (!Number.isFinite(mid) || mid < 1) {
       const err = new Error('Некорректный ID маппинга');
       err.statusCode = 400;
       throw err;
+    }
+    const existing = await this.repo.findById(mid);
+    if (!existing) {
+      const err = new Error('Маппинг не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+    if (profileId != null && profileId !== '') {
+      const owner = await this.warehousesRepo.findById(existing.warehouse_id, profileId);
+      if (!owner) {
+        const err = new Error('Маппинг не найден');
+        err.statusCode = 404;
+        throw err;
+      }
     }
     const updates = {};
     if (warehouseId != null) {
@@ -67,6 +85,14 @@ class WarehouseMappingsService {
         const err = new Error('Некорректный warehouseId');
         err.statusCode = 400;
         throw err;
+      }
+      if (profileId != null && profileId !== '') {
+        const wnew = await this.warehousesRepo.findById(wid, profileId);
+        if (!wnew || wnew.type !== 'warehouse' || wnew.supplier_id != null) {
+          const err = new Error('Склад не найден или не является вашим складом (type=warehouse без поставщика)');
+          err.statusCode = 400;
+          throw err;
+        }
       }
       updates.warehouse_id = wid;
     }
@@ -92,12 +118,26 @@ class WarehouseMappingsService {
     return updated;
   }
 
-  async delete(id) {
+  async delete(id, { profileId = null } = {}) {
     const mid = id != null ? parseInt(id, 10) : NaN;
     if (!Number.isFinite(mid) || mid < 1) {
       const err = new Error('Некорректный ID маппинга');
       err.statusCode = 400;
       throw err;
+    }
+    if (profileId != null && profileId !== '') {
+      const existing = await this.repo.findById(mid);
+      if (!existing) {
+        const err = new Error('Маппинг не найден');
+        err.statusCode = 404;
+        throw err;
+      }
+      const owner = await this.warehousesRepo.findById(existing.warehouse_id, profileId);
+      if (!owner) {
+        const err = new Error('Маппинг не найден');
+        err.statusCode = 404;
+        throw err;
+      }
     }
     const ok = await this.repo.delete(mid);
     if (!ok) {

@@ -3,12 +3,21 @@
  */
 
 import warehouseMappingsService from '../services/warehouseMappings.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class WarehouseMappingsController {
   async list(req, res) {
     const warehouseId = req.query.warehouseId ?? null;
     const marketplace = req.query.marketplace ?? null;
-    const data = await warehouseMappingsService.list({ warehouseId, marketplace });
+    const tid = tenantListProfileId(req);
+    if (tid === TENANT_LIST_EMPTY) {
+      return res.status(200).json({ ok: true, data: [] });
+    }
+    const data = await warehouseMappingsService.list({
+      warehouseId,
+      marketplace,
+      ...(tid != null ? { profileId: tid } : {}),
+    });
     return res.status(200).json({ ok: true, data });
   }
 
@@ -17,6 +26,7 @@ class WarehouseMappingsController {
       warehouseId: req.body.warehouseId ?? req.body.warehouse_id,
       marketplace: req.body.marketplace,
       marketplaceWarehouseId: req.body.marketplaceWarehouseId ?? req.body.marketplace_warehouse_id,
+      profileId: req.user?.profileId ?? null,
     });
     return res.status(200).json({ ok: true, data });
   }
@@ -26,12 +36,15 @@ class WarehouseMappingsController {
       warehouseId: req.body.warehouseId ?? req.body.warehouse_id,
       marketplace: req.body.marketplace,
       marketplaceWarehouseId: req.body.marketplaceWarehouseId ?? req.body.marketplace_warehouse_id,
+      profileId: req.user?.profileId ?? null,
     });
     return res.status(200).json({ ok: true, data });
   }
 
   async delete(req, res) {
-    const data = await warehouseMappingsService.delete(req.params.id);
+    const data = await warehouseMappingsService.delete(req.params.id, {
+      profileId: req.user?.profileId ?? null,
+    });
     return res.status(200).json({ ok: true, data });
   }
 }
