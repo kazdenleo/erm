@@ -118,6 +118,11 @@ function preserveLocalInAssemblyAgainstMpAssembled(existing, incomingStatus) {
   return incomingStatus;
 }
 
+function isTerminalMarketplaceStatus(status) {
+  const s = String(status ?? '').toLowerCase();
+  return s === 'cancelled' || s === 'delivered';
+}
+
 /**
  * Правило по требованию: «На сборке» задаётся ТОЛЬКО вручную (кнопкой / сменой статуса в ERM).
  * Поэтому статус от маркетплейса "in_assembly" не должен автоматически переводить заказ из "new".
@@ -370,7 +375,11 @@ class OrdersSyncService {
       const isWbIncoming = incomingMp === 'wb' || incomingMp === 'wildberries';
 
       let nextStatus = order.status;
-      if (existing?.status === 'in_procurement') {
+      if (isTerminalMarketplaceStatus(order.status)) {
+        // Терминальные статусы маркетплейса всегда должны побеждать локальные якоря "в закупке".
+        // Иначе отменённый заказ может "залипнуть" в in_procurement.
+        nextStatus = String(order.status).toLowerCase();
+      } else if (existing?.status === 'in_procurement') {
         nextStatus = existing.status;
       } else if (incomingMatchesProcurementAnchors(order, procurementAnchors)) {
         nextStatus = 'in_procurement';
@@ -614,7 +623,7 @@ class OrdersSyncService {
       if (existing) {
         oldStatus = existing.status;
         let nextStatus = order.status;
-        if (existing.status === 'in_procurement') {
+        if (existing.status === 'in_procurement' && !isTerminalMarketplaceStatus(order.status)) {
           nextStatus = existing.status;
         } else {
           nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
@@ -640,7 +649,7 @@ class OrdersSyncService {
         const ex = existingOrders[idx];
         oldStatus = ex.status;
         let nextStatus = order.status;
-        if (ex.status === 'in_procurement') {
+        if (ex.status === 'in_procurement' && !isTerminalMarketplaceStatus(order.status)) {
           nextStatus = ex.status;
         } else {
           nextStatus = preserveOzonYandexLocalStatus(ex, nextStatus);
@@ -1244,6 +1253,10 @@ function wildberriesOrderGroupIdFromRaw(order) {
   if (looksLikeHashUid) {
     return null;
   }
+  // Длинные только-цифровые uid (snowflake-подобные) тоже давали ложную склейку разных заказов в интерфейсе WB.
+  if (/^\d{15,}$/.test(s)) {
+    return null;
+  }
 
   return s;
 }
@@ -1384,11 +1397,14 @@ async function fetchWildberriesFBSOrders(config) {
         sellerArticle ||
         sellerSku ||
         (nmId ? nmId : '');
-      const wbOrderGroupId = wildberriesOrderGroupIdFromRaw(order);
+      // В ERM группируем WB строго по сборочному заданию: order.id.
+      // Это гарантированно уникально для разных заданий и корректно объединяет несколько товаров в одном задании.
+      const wbOrderIdStr = (order.id?.toString && order.id?.toString()) || order.id || order.orderUid || '';
+      const wbOrderGroupId = wbOrderIdStr ? String(wbOrderIdStr).trim() : null;
 
       return {
         marketplace: 'wildberries',
-        orderId: (order.id?.toString && order.id?.toString()) || order.id || order.orderUid || '',
+        orderId: wbOrderIdStr,
         orderGroupId: wbOrderGroupId,
         // Для сопоставления с вашим каталогом используем:
         // - offerId: vendorCode/артикул продавца (order.article), т.к. обычно он заведён в product_skus
@@ -1485,11 +1501,12 @@ async function fetchWildberriesFBSOrdersByPeriod(config, daysBack = 90) {
     const nmId = order.nmId != null ? String(order.nmId) : '';
     const sellerSku = order.skus?.[0] || '';
     const sellerArticle = order.article != null ? String(order.article).trim() : '';
-    const wbOrderGroupId = wildberriesOrderGroupIdFromRaw(order);
+    const wbOrderIdStr = (order.id?.toString && order.id?.toString()) || order.id || order.orderUid || '';
+    const wbOrderGroupId = wbOrderIdStr ? String(wbOrderIdStr).trim() : null;
 
     return {
       marketplace: 'wildberries',
-      orderId: (order.id?.toString && order.id?.toString()) || order.id || order.orderUid || '',
+      orderId: wbOrderIdStr,
       orderGroupId: wbOrderGroupId,
       // сопоставление с product_skus: offer_id обычно хранит артикул продавца
       offerId: sellerArticle || sellerSku || nmId,

@@ -62,4 +62,3 @@ export function getEnv(name, defaultValue = null) {
 }
 
 export default config;
-

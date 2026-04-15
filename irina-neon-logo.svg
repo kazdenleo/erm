@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Subtle dark background gradient -->
+    <radialGradient id="bg" cx="50%" cy="42%" r="70%">
+      <stop offset="0%" stop-color="#0b0f1a"/>
+      <stop offset="55%" stop-color="#05070d"/>
+      <stop offset="100%" stop-color="#020307"/>
+    </radialGradient>
+
+    <!-- Neon gradient for strokes -->
+    <linearGradient id="neon" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2ff6ff"/>
+      <stop offset="55%" stop-color="#7a5cff"/>
+      <stop offset="100%" stop-color="#ff4fd8"/>
+    </linearGradient>
+
+    <!-- Glow filters -->
+    <filter id="glowStrong" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="6" result="blur1"/>
+      <feColorMatrix in="blur1" type="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 0.95 0" result="blurA"/>
+      <feMerge>
+        <feMergeNode in="blurA"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="glowSoft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="14" result="blur2"/>
+      <feColorMatrix in="blur2" type="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 0.55 0" result="blurB"/>
+      <feMerge>
+        <feMergeNode in="blurB"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- Typography group -->
+  <g font-family="Nunito, Rubik, Arial Rounded MT Bold, 'Segoe UI', Arial, sans-serif" text-anchor="middle">
+    <!-- Top line -->
+    <g transform="translate(512 365)">
+      <!-- Soft glow -->
+      <text x="0" y="0"
+            font-size="66" font-weight="700" letter-spacing="1.5"
+            fill="rgba(255,255,255,0.92)"
+            stroke="url(#neon)" stroke-width="6" paint-order="stroke fill"
+            filter="url(#glowSoft)">@>3@0<<0</text>
+      <!-- Crisp neon -->
+      <text x="0" y="0"
+            font-size="66" font-weight="700" letter-spacing="1.5"
+            fill="rgba(255,255,255,0.95)"
+            stroke="url(#neon)" stroke-width="6" paint-order="stroke fill"
+            filter="url(#glowStrong)">@>3@0<<0</text>
+    </g>
+
+    <!-- Main line -->
+    <g transform="translate(512 560)">
+      <!-- Soft outer aura -->
+      <text x="0" y="0"
+            font-size="190" font-weight="800" letter-spacing="1"
+            fill="rgba(255,255,255,0.88)"
+            stroke="url(#neon)" stroke-width="14" paint-order="stroke fill"
+            filter="url(#glowSoft)">@8=0</text>
+      <!-- Strong neon edge -->
+      <text x="0" y="0"
+            font-size="190" font-weight="800" letter-spacing="1"
+            fill="rgba(255,255,255,0.93)"
+            stroke="url(#neon)" stroke-width="14" paint-order="stroke fill"
+            filter="url(#glowStrong)">@8=0</text>
+    </g>
+  </g>
+</svg>

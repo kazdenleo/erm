@@ -103,7 +103,7 @@ export function Sidebar() {
   return (
     <div className="app-sidebar sidebar-shadow">
       <div className="app-header__logo">
-        <div className="logo-src" />
+        <div className="app-brand-text" aria-label="Программа Ирина">Программа Ирина</div>
       </div>
 
       <div className="scrollbar-sidebar">

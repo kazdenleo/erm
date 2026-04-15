@@ -182,7 +182,7 @@ export function AuthProvider({ children }) {
       /** Администратор продукта (системы): role === 'admin', без привязки к аккаунту клиента */
       isAdmin: user?.role === 'admin',
       /** Администратор аккаунта: is_profile_admin, обычно role === 'user' и задан profileId */
-      isProfileAdmin: !!user?.isProfileAdmin,
+      isProfileAdmin: !!(user?.isProfileAdmin ?? user?.is_profile_admin),
       profileId,
       /** То же, что profileId: аккаунт в БД — профиль (tenant) */
       accountId,

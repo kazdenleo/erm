@@ -22,7 +22,7 @@ export function Header({ isSidebarClosed, onToggleSidebar, isMobileSidebarOpen, 
   return (
     <div className="app-header header-shadow">
       <div className="app-header__logo">
-        <div className="logo-src" />
+        <div className="app-brand-text" aria-label="Программа Ирина">Программа Ирина</div>
         <div className="header__pane ms-auto">
           <div>
             <button

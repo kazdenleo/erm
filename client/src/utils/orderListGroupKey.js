@@ -25,7 +25,8 @@ export function orderGroupKey(o) {
     const unreliableWbGroupUid =
       /^[a-f0-9]{24,}$/i.test(s) ||
       /^r[a-f0-9]{24,}$/i.test(s) ||
-      /^[a-z]{3}[a-f0-9]{24,}$/i.test(s);
+      /^[a-z]{3}[a-f0-9]{24,}$/i.test(s) ||
+      /^\d{15,}$/.test(s);
     if (unreliableWbGroupUid) {
       return '';
     }

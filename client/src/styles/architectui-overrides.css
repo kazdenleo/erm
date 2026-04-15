@@ -5,6 +5,17 @@
   --erm-sidebar-width-closed: 80px;
 }
 
+/* Text brand (Header + Sidebar) */
+.app-brand-text {
+  display: inline-block;
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: 0.5px;
+  color: #d92550; /* ArchitectUI "danger" red */
+  white-space: nowrap;
+  user-select: none;
+}
+
 /* Prevent modals/backdrop from covering the fixed left sidebar */
 .fixed-sidebar .modal-backdrop-erm,
 .fixed-sidebar .modal.modal-erm {
