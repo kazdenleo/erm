@@ -4,15 +4,37 @@
  */
 
 import { query } from '../config/database.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 const VALID_TYPES = ['text', 'checkbox', 'number', 'date', 'dictionary'];
 
 class ProductAttributesController {
   async getAll(req, res, next) {
     try {
-      const result = await query(
-        'SELECT * FROM product_attributes ORDER BY name'
-      );
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      if (tid != null) {
+        const result = await query(
+          `SELECT DISTINCT pa.*
+           FROM product_attributes pa
+           WHERE EXISTS (
+             SELECT 1 FROM product_attribute_values pav
+             INNER JOIN products p ON p.id = pav.product_id
+             WHERE pav.attribute_id = pa.id AND p.profile_id = $1::bigint
+           )
+           OR EXISTS (
+             SELECT 1 FROM category_attributes ca
+             INNER JOIN products p ON p.user_category_id = ca.user_category_id AND p.profile_id = $1::bigint
+             WHERE ca.attribute_id = pa.id
+           )
+           ORDER BY pa.name`,
+          [tid]
+        );
+        return res.status(200).json({ ok: true, data: result.rows || [] });
+      }
+      const result = await query('SELECT * FROM product_attributes ORDER BY name');
       return res.status(200).json({ ok: true, data: result.rows || [] });
     } catch (error) {
       next(error);
