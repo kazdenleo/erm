@@ -36,6 +36,10 @@ app.use(express.json({
   strict: false // Разрешаем не только объекты, но и примитивы
 }));
 
+// Модульный API (PostgreSQL, авторизация, мультитенант) — ОБЯЗАТЕЛЬНО до legacy app.get('/api/...') ниже по файлу.
+// Иначе Express отдаёт старые хендлеры (например GET /api/orders из data/orders.json) и новый код в server/src/routes не вызывается.
+app.use('/api', apiRoutes);
+
 // Middleware для перехвата всех ошибок (должен быть ПОСЛЕ всех роутов)
 // Этот middleware будет добавлен в конце файла
 // Статические файлы будут обслуживаться после всех API роутов
@@ -4862,8 +4866,7 @@ function mapYMOrderStatus(status) {
   return statusMap[status] || status;
 }
 
-// Подключаем новый API роутер (должен быть перед статическими файлами)
-app.use('/api', apiRoutes);
+// Модульный API подключён в начале файла (сразу после express.json)
 
 // Serve static files (HTML, CSS, JS) - после всех API роутов
 app.use(express.static(__dirname));
