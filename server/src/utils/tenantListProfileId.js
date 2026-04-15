@@ -14,13 +14,14 @@ export const TENANT_LIST_EMPTY = Symbol('TENANT_LIST_EMPTY');
 /**
  * @param {import('express').Request} req
  * @returns {null|number|string|typeof TENANT_LIST_EMPTY}
- *   null — нет пользователя, или супер-админ с globalAdminUnfilteredLists (без фильтра по профилю);
- *   TENANT_LIST_EMPTY — нет данных для списка (пользователь без profile_id или выключенный супер-админ bypass);
+ *   null — только супер-админ (role=admin без profile_id) при globalAdminUnfilteredLists=true (без фильтра);
+ *   TENANT_LIST_EMPTY — нет пользователя, или супер-админ с выключенным bypass, или user без profile_id;
  *   иначе — profileId для фильтра.
  */
 export function tenantListProfileId(req) {
   const u = req?.user;
-  if (!u) return null;
+  // Без пользователя нельзя отдавать «все строки» (раньше null давал отсутствие WHERE profile_id).
+  if (!u) return TENANT_LIST_EMPTY;
   if (u.role === 'admin' && (u.profileId == null || u.profileId === '')) {
     return config.auth?.globalAdminUnfilteredLists === true ? null : TENANT_LIST_EMPTY;
   }

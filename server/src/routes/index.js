@@ -95,10 +95,25 @@ router.use('/warehouse-mappings', warehouseMappingsRoutes);
 router.use('/suppliers', suppliersRoutes);
 
 // Orders API (явные маршруты до use('/orders'), чтобы PUT с :marketplace/:orderId точно находились)
-router.post('/orders/manual', wrapAsync(ordersController.createManual.bind(ordersController)));
-router.put('/orders/:marketplace/:orderId/return-to-new', validateOrderDetailParams, wrapAsync(ordersController.returnToNew.bind(ordersController)));
-router.put('/orders/:marketplace/:orderId/to-procurement', validateOrderDetailParams, wrapAsync(ordersController.setToProcurement.bind(ordersController)));
-router.put('/orders/:marketplace/:orderId/mark-shipped', validateOrderDetailParams, wrapAsync(ordersController.markShipped.bind(ordersController)));
+router.post('/orders/manual', requireAuth, wrapAsync(ordersController.createManual.bind(ordersController)));
+router.put(
+  '/orders/:marketplace/:orderId/return-to-new',
+  requireAuth,
+  validateOrderDetailParams,
+  wrapAsync(ordersController.returnToNew.bind(ordersController))
+);
+router.put(
+  '/orders/:marketplace/:orderId/to-procurement',
+  requireAuth,
+  validateOrderDetailParams,
+  wrapAsync(ordersController.setToProcurement.bind(ordersController))
+);
+router.put(
+  '/orders/:marketplace/:orderId/mark-shipped',
+  requireAuth,
+  validateOrderDetailParams,
+  wrapAsync(ordersController.markShipped.bind(ordersController))
+);
 router.use('/orders', ordersRoutes);
 router.use('/supplier-stocks', supplierStocksRoutes);
 

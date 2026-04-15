@@ -185,7 +185,7 @@ try {
        */
       globalAdminUnfilteredLists:
         String(parsed.GLOBAL_ADMIN_UNFILTERED_LISTS ?? '').trim() === ''
-          ? parsed.NODE_ENV === 'development'
+          ? false
           : String(parsed.GLOBAL_ADMIN_UNFILTERED_LISTS).toLowerCase() === '1' ||
             String(parsed.GLOBAL_ADMIN_UNFILTERED_LISTS).toLowerCase() === 'true',
     },

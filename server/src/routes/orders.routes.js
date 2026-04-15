@@ -7,6 +7,7 @@ import express from 'express';
 import ordersController from '../controllers/orders.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 import { strictRateLimiter } from '../middleware/security.js';
+import { requireAuth } from '../middleware/auth.js';
 import {
   validateSyncOrders,
   validateOrderId,
@@ -14,6 +15,8 @@ import {
 } from '../validators/orderValidator.js';
 
 const router = express.Router();
+
+router.use(requireAuth);
 
 // Получить все заказы
 router.get('/', wrapAsync(ordersController.getAll.bind(ordersController)));
