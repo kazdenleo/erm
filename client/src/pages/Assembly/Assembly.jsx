@@ -241,6 +241,14 @@ export function Assembly() {
     if (!id) return;
     const labelPrintPageUrl = `${API_BASE}/orders/${encodeURIComponent(id)}/label/print`;
     const labelFileUrl = `${API_BASE}/orders/${encodeURIComponent(id)}/label`;
+    // Print Helper (127.0.0.1) должен получить абсолютный URL до этикетки на сервере.
+    const labelFileUrlAbs = (() => {
+      try {
+        return new URL(labelFileUrl, window.location.origin).toString();
+      } catch {
+        return labelFileUrl;
+      }
+    })();
 
     // Дождаться файла на сервере (ensureLabelFile), иначе Print Helper сразу после сборки часто ловит 502.
     try {
@@ -265,7 +273,7 @@ export function Assembly() {
 
     setLabelPrintError(null);
     const labelSize = getStoredLabelSize();
-    const helperUrl = `${base}/print?orderId=${encodeURIComponent(id)}&labelUrl=${encodeURIComponent(labelFileUrl)}&labelSize=${encodeURIComponent(labelSize)}`;
+    const helperUrl = `${base}/print?orderId=${encodeURIComponent(id)}&labelUrl=${encodeURIComponent(labelFileUrlAbs)}&labelSize=${encodeURIComponent(labelSize)}`;
 
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), PRINT_HELPER_FETCH_MS);
