@@ -11,6 +11,22 @@ const usersRepo = repositoryFactory.getUsersRepository();
 
 const SALT_ROUNDS = 10;
 
+const ACCOUNT_ROLES = new Set(['admin', 'picker', 'warehouse_manager', 'editor']);
+
+function normalizeAccountRole(v) {
+  const s = v == null ? '' : String(v).trim().toLowerCase();
+  if (!s) return null;
+  return ACCOUNT_ROLES.has(s) ? s : null;
+}
+
+function isAccountAdmin(user) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.isProfileAdmin) return true;
+  const ar = user.accountRole ?? user.account_role ?? null;
+  return ar === 'admin';
+}
+
 function safeUserRow(row) {
   if (!row) return null;
   const { password_hash, ...rest } = row;
@@ -66,9 +82,9 @@ export const usersController = {
 
   async getAll(req, res, next) {
     try {
-      const canManage = req.user.role === 'admin' || req.user.isProfileAdmin;
+      const canManage = isAccountAdmin(req.user);
       if (!canManage) {
-        return res.status(403).json({ ok: false, message: 'Управление пользователями доступно только администратору профиля или системе' });
+        return res.status(403).json({ ok: false, message: 'Управление пользователями доступно только администратору аккаунта или системы' });
       }
       const profileId = req.query.profile_id != null ? Number(req.query.profile_id) : undefined;
       if (req.user.role !== 'admin' && profileId != null && profileId !== req.user.profileId) {
@@ -84,7 +100,7 @@ export const usersController = {
 
   async getById(req, res, next) {
     try {
-      const canManage = req.user.role === 'admin' || req.user.isProfileAdmin;
+      const canManage = isAccountAdmin(req.user);
       if (!canManage) {
         return res.status(403).json({ ok: false, message: 'Просмотр пользователя доступен только администратору профиля или системе' });
       }
@@ -108,12 +124,13 @@ export const usersController = {
 
   async create(req, res, next) {
     try {
-      const canManage = req.user.role === 'admin' || req.user.isProfileAdmin;
+      const canManage = isAccountAdmin(req.user);
       if (!canManage) {
         return res.status(403).json({ ok: false, message: 'Добавлять пользователей может только администратор профиля или системы' });
       }
-      const { email, password, phone, role = 'user', profileId, isProfileAdmin } = req.body || {};
+      const { email, password, phone, role = 'user', profileId, isProfileAdmin, accountRole } = req.body || {};
       const names = normalizeUserNameFields(req.body || {});
+      const targetAccountRole = normalizeAccountRole(accountRole) || (isProfileAdmin ? 'admin' : 'editor');
       if (!email || !password) {
         return res.status(400).json({ ok: false, message: 'Укажите email (логин) и пароль' });
       }
@@ -132,11 +149,18 @@ export const usersController = {
           : req.user.isProfileAdmin
             ? !!isProfileAdmin
             : false;
+      let effectiveAccountRole =
+        effectiveRole === 'admin' ? null : targetAccountRole;
       if (effectiveRole === 'admin') {
         effectiveProfileId = null;
         effectiveIsProfileAdmin = false;
+        effectiveAccountRole = null;
       } else if (effectiveProfileId != null && effectiveProfileId !== '') {
         effectiveRole = 'user';
+      }
+      if (effectiveRole !== 'admin') {
+        // account_role governs tenant permissions; keep legacy flag in sync for now
+        effectiveIsProfileAdmin = effectiveAccountRole === 'admin';
       }
       if (effectiveRole === 'admin' && effectiveProfileId != null) {
         return res.status(400).json({
@@ -158,6 +182,7 @@ export const usersController = {
         role: effectiveRole,
         profileId: effectiveProfileId,
         isProfileAdmin: effectiveIsProfileAdmin,
+        accountRole: effectiveAccountRole,
       });
       res.status(201).json({ ok: true, data: item });
     } catch (error) {
@@ -167,7 +192,7 @@ export const usersController = {
 
   async update(req, res, next) {
     try {
-      const canManage = req.user.role === 'admin' || req.user.isProfileAdmin;
+      const canManage = isAccountAdmin(req.user);
       if (!canManage) {
         return res.status(403).json({ ok: false, message: 'Редактировать пользователей может только администратор профиля или системы' });
       }
@@ -205,6 +230,10 @@ export const usersController = {
         updates.is_profile_admin = updates.isProfileAdmin;
         delete updates.isProfileAdmin;
       }
+      if (updates.accountRole !== undefined && updates.account_role === undefined) {
+        updates.account_role = normalizeAccountRole(updates.accountRole);
+        delete updates.accountRole;
+      }
       if (updates.password) {
         updates.password_hash = await bcrypt.hash(updates.password, SALT_ROUNDS);
         delete updates.password;
@@ -215,6 +244,13 @@ export const usersController = {
         !req.user.isProfileAdmin
       ) {
         delete updates.is_profile_admin;
+      }
+      if (
+        updates.account_role !== undefined &&
+        req.user.role !== 'admin' &&
+        !req.user.isProfileAdmin
+      ) {
+        delete updates.account_role;
       }
       if (req.user.role !== 'admin') {
         delete updates.profile_id;
@@ -245,9 +281,13 @@ export const usersController = {
         if (mergedRole === 'admin') {
           updates.profile_id = null;
           updates.is_profile_admin = false;
+          updates.account_role = null;
         } else if (mergedProfile != null) {
           updates.role = 'user';
         }
+      }
+      if (updates.account_role !== undefined && updates.is_profile_admin === undefined) {
+        updates.is_profile_admin = updates.account_role === 'admin';
       }
 
       const item = await usersRepo.update(id, updates);

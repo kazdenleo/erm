@@ -17,7 +17,7 @@ export async function optionalAuth(req, res, next) {
   if (config.auth?.disabled) {
     try {
       const result = await query(
-        `SELECT id, email, full_name, last_name, first_name, middle_name, role, profile_id, is_profile_admin,
+        `SELECT id, email, full_name, last_name, first_name, middle_name, role, profile_id, is_profile_admin, account_role,
                 COALESCE(must_change_password, false) AS must_change_password, created_at
          FROM users ORDER BY id ASC LIMIT 1`
       );
@@ -33,6 +33,7 @@ export async function optionalAuth(req, res, next) {
           role: user.role,
           profileId: profileIdFromDb(user.profile_id),
           isProfileAdmin: !!user.is_profile_admin,
+          accountRole: user.account_role ?? null,
           mustChangePassword: !!(user.must_change_password === true || user.must_change_password === 1),
         };
         return next();
@@ -61,7 +62,7 @@ export async function optionalAuth(req, res, next) {
   try {
     const decoded = jwt.verify(token, config.jwt.secret);
     const result = await query(
-      `SELECT id, email, full_name, last_name, first_name, middle_name, role, profile_id, is_profile_admin,
+      `SELECT id, email, full_name, last_name, first_name, middle_name, role, profile_id, is_profile_admin, account_role,
               COALESCE(must_change_password, false) AS must_change_password, created_at
        FROM users WHERE id = $1`,
       [decoded.userId]
@@ -81,6 +82,7 @@ export async function optionalAuth(req, res, next) {
       role: user.role,
       profileId: profileIdFromDb(user.profile_id),
       isProfileAdmin: !!user.is_profile_admin,
+      accountRole: user.account_role ?? null,
       mustChangePassword: !!(user.must_change_password === true || user.must_change_password === 1),
     };
     next();

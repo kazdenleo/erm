@@ -9,7 +9,7 @@ class UsersRepositoryPG {
     const { profileId } = filters;
     if (profileId != null) {
       const result = await query(
-        `SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users
+        `SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at FROM users
          WHERE profile_id = $1 AND role <> 'admin'
          ORDER BY email`,
         [profileId]
@@ -17,14 +17,14 @@ class UsersRepositoryPG {
       return result.rows;
     }
     const result = await query(
-      'SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users ORDER BY email'
+      'SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at FROM users ORDER BY email'
     );
     return result.rows;
   }
 
   async findById(id) {
     const result = await query(
-      'SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users WHERE id = $1',
+      'SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at FROM users WHERE id = $1',
       [id]
     );
     return result.rows[0] || null;
@@ -50,15 +50,16 @@ class UsersRepositoryPG {
       role = 'user',
       profileId,
       isProfileAdmin = false,
+      accountRole = null,
       mustChangePassword = false,
     } = data;
     const phoneVal =
       phone != null && phone !== '' && String(phone).trim() !== '' ? String(phone).trim() : null;
     const result = await query(
-      `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at`,
-      [email, passwordHash, fullName || null, lastName || null, firstName || null, middleName || null, phoneVal, role, profileId || null, isProfileAdmin, !!mustChangePassword]
+      `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at`,
+      [email, passwordHash, fullName || null, lastName || null, firstName || null, middleName || null, phoneVal, role, profileId || null, isProfileAdmin, accountRole, !!mustChangePassword]
     );
     return result.rows[0];
   }
@@ -103,6 +104,10 @@ class UsersRepositoryPG {
       fields.push(`is_profile_admin = $${i++}`);
       params.push(!!updates.is_profile_admin);
     }
+    if (updates.account_role !== undefined) {
+      fields.push(`account_role = $${i++}`);
+      params.push(updates.account_role === '' ? null : updates.account_role);
+    }
     if (updates.password_hash !== undefined) {
       fields.push(`password_hash = $${i++}`);
       params.push(updates.password_hash);
@@ -118,7 +123,7 @@ class UsersRepositoryPG {
     fields.push('updated_at = CURRENT_TIMESTAMP');
     params.push(id);
     const result = await query(
-      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i} RETURNING id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at`,
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i} RETURNING id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at`,
       params
     );
     return result.rows[0] || null;

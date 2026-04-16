@@ -156,6 +156,7 @@ export const authController = {
             role: user.role,
             profileId: profileIdFromDb(user.profile_id),
             isProfileAdmin: !!user.is_profile_admin,
+            accountRole: user.account_role ?? null,
             mustChangePassword: userMustChangePassword(user),
           },
         },
@@ -225,6 +226,7 @@ export const authController = {
           role: user.role,
           profileId,
           isProfileAdmin: !!user.is_profile_admin,
+          accountRole: user.account_role ?? null,
           mustChangePassword: userMustChangePassword(user),
           profile: profile
             ? {

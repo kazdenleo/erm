@@ -14,8 +14,12 @@ import './Users.css';
 /** Подпись роли в списке: админ аккаунта — по флагу is_profile_admin, не по role */
 function accountRoleLabel(u) {
   if (u.role === 'admin') return 'Администратор системы';
-  if (u.is_profile_admin) return 'Администратор';
-  return 'Пользователь';
+  const r = String(u.account_role ?? '').trim().toLowerCase();
+  if (r === 'admin' || u.is_profile_admin) return 'Администратор';
+  if (r === 'picker') return 'Сборщик';
+  if (r === 'warehouse_manager') return 'Руководитель склада';
+  if (r === 'editor') return 'Редактор';
+  return 'Редактор';
 }
 
 export function SettingsUsers() {
@@ -33,6 +37,7 @@ export function SettingsUsers() {
     middleName: '',
     role: 'user',
     isProfileAdmin: false,
+    accountRole: 'editor',
   });
 
   const canManage = isAdmin || isProfileAdmin;
@@ -65,7 +70,7 @@ export function SettingsUsers() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ email: '', password: '', lastName: '', firstName: '', middleName: '', role: 'user', isProfileAdmin: false });
+    setForm({ email: '', password: '', lastName: '', firstName: '', middleName: '', role: 'user', isProfileAdmin: false, accountRole: 'editor' });
     setModalOpen(true);
   };
 
@@ -79,6 +84,7 @@ export function SettingsUsers() {
       middleName: u.middle_name ?? '',
       role: u.role ?? 'user',
       isProfileAdmin: !!u.is_profile_admin,
+      accountRole: String(u.account_role ?? (u.is_profile_admin ? 'admin' : 'editor')).trim().toLowerCase() || 'editor',
     });
     setModalOpen(true);
   };
@@ -101,15 +107,16 @@ export function SettingsUsers() {
         middleName: form.middleName.trim(),
         role,
       };
-      if (user?.profileId != null) {
-        payload.profileId = user.profileId;
-      }
+      // profileId для создания задаёт сервер из req.user.profileId; передавать его может только админ системы
       if (form.password) payload.password = form.password;
       if (!editing && user?.profileId != null) {
         payload.isProfileAdmin = !!form.isProfileAdmin;
       }
       if (editing && user?.profileId != null) {
         payload.isProfileAdmin = !!form.isProfileAdmin;
+      }
+      if (canSeeRoles) {
+        payload.accountRole = form.isProfileAdmin ? 'admin' : form.accountRole;
       }
       if (editing) {
         await usersApi.update(editing.id, payload);
@@ -155,7 +162,9 @@ export function SettingsUsers() {
   return (
     <div className="card settings-users-page">
       <h1 className="title">Пользователи</h1>
-      <p className="subtitle">Добавление пользователей профиля: логин (email), пароль и роль для входа. Роли видны только администратору профиля.</p>
+      <p className="subtitle">
+        Добавление пользователей аккаунта: логин (email), пароль и роль. Роли видны только администратору аккаунта.
+      </p>
 
       <div className="settings-users-list">
         {list.length === 0 ? (
@@ -251,16 +260,61 @@ export function SettingsUsers() {
             <label>
               Роль
               <select
-                value={form.isProfileAdmin ? 'admin' : 'user'}
+                value={form.isProfileAdmin ? 'admin' : form.accountRole}
                 onChange={(e) =>
-                  setForm((f) => ({ ...f, isProfileAdmin: e.target.value === 'admin' }))
+                  setForm((f) => ({
+                    ...f,
+                    isProfileAdmin: e.target.value === 'admin',
+                    accountRole: e.target.value === 'admin' ? 'admin' : e.target.value,
+                  }))
                 }
                 className="login-input"
                 style={{ width: '100%', marginTop: '4px' }}
               >
-                <option value="user">Пользователь</option>
                 <option value="admin">Администратор</option>
+                <option value="picker">Сборщик</option>
+                <option value="warehouse_manager">Руководитель склада</option>
+                <option value="editor">Редактор</option>
               </select>
+              <div className="text-muted small" style={{ marginTop: 8, lineHeight: 1.35 }}>
+                {form.isProfileAdmin ? (
+                  <div>
+                    <div>Администратор:</div>
+                    <ul style={{ margin: '6px 0 0 18px' }}>
+                      <li>может добавлять и удалять пользователей</li>
+                      <li>может выдавать роли пользователям</li>
+                      <li>имеет доступ ко всем разделам аккаунта</li>
+                    </ul>
+                  </div>
+                ) : form.accountRole === 'picker' ? (
+                  <div>
+                    <div>Сборщик:</div>
+                    <ul style={{ margin: '6px 0 0 18px' }}>
+                      <li>сборка заказов</li>
+                      <li>печать этикеток</li>
+                      <li>без доступа к управлению пользователями</li>
+                    </ul>
+                  </div>
+                ) : form.accountRole === 'warehouse_manager' ? (
+                  <div>
+                    <div>Руководитель склада:</div>
+                    <ul style={{ margin: '6px 0 0 18px' }}>
+                      <li>остатки и складские операции</li>
+                      <li>контроль поставок/перемещений</li>
+                      <li>без доступа к управлению пользователями</li>
+                    </ul>
+                  </div>
+                ) : (
+                  <div>
+                    <div>Редактор:</div>
+                    <ul style={{ margin: '6px 0 0 18px' }}>
+                      <li>редактирование товаров и настроек (кроме пользователей)</li>
+                      <li>работа с заказами по доступным разделам</li>
+                      <li>без доступа к управлению пользователями</li>
+                    </ul>
+                  </div>
+                )}
+              </div>
             </label>
           )}
           {canSeeRoles && user?.profileId == null && (
