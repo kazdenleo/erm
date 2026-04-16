@@ -5,6 +5,82 @@
 
 import { query, transaction } from '../config/database.js';
 
+function buildFindAllFilters(options = {}) {
+  const { brandId, categoryId, organizationId, search, profileId, productType } = options;
+  let whereSql = ' WHERE 1=1';
+  const params = [];
+  let paramIndex = 1;
+
+  if (profileId != null && profileId !== '') {
+    whereSql += ` AND p.profile_id = $${paramIndex++}`;
+    params.push(profileId);
+  }
+
+  if (brandId) {
+    whereSql += ` AND p.brand_id = $${paramIndex++}`;
+    params.push(brandId);
+  }
+
+  if (categoryId) {
+    whereSql += ` AND p.user_category_id = $${paramIndex++}`;
+    params.push(categoryId);
+  }
+
+  if (organizationId != null && organizationId !== '') {
+    const orgNum = typeof organizationId === 'string' ? parseInt(organizationId, 10) : Number(organizationId);
+    const orgVal = Number.isFinite(orgNum) ? orgNum : organizationId;
+    const profNum =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : NaN;
+    const useProfileScope = Number.isFinite(profNum);
+    if (useProfileScope) {
+      whereSql += ` AND (
+        p.organization_id = $${paramIndex}
+        OR (
+          p.organization_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM organizations o_filt
+            WHERE o_filt.id = $${paramIndex + 1}
+              AND o_filt.profile_id IS NOT NULL
+              AND o_filt.profile_id = $${paramIndex + 2}
+          )
+        )
+      )`;
+      params.push(orgVal, orgVal, profNum);
+      paramIndex += 3;
+    } else {
+      whereSql += ` AND p.organization_id = $${paramIndex++}`;
+      params.push(orgVal);
+    }
+  }
+
+  if (search) {
+    const searchParam = `%${search}%`;
+    whereSql += ` AND (
+      p.name ILIKE $${paramIndex}
+      OR p.sku ILIKE $${paramIndex}
+      OR EXISTS (
+        SELECT 1 FROM barcodes bc
+        WHERE bc.product_id = p.id AND bc.barcode ILIKE $${paramIndex}
+      )
+    )`;
+    params.push(searchParam);
+    paramIndex++;
+  }
+
+  const pt = productType != null && String(productType).trim() !== '' ? String(productType).trim().toLowerCase() : '';
+  if (pt === 'kit') {
+    whereSql += ` AND LOWER(TRIM(COALESCE(p.product_type::text, ''))) = 'kit'`;
+  } else if (pt === 'product') {
+    whereSql += ` AND (p.product_type IS NULL OR LOWER(TRIM(COALESCE(p.product_type::text, ''))) <> 'kit')`;
+  }
+
+  return { whereSql, params, paramIndex };
+}
+
 class ProductsRepositoryPG {
   /**
    * Рассчитать себестоимость комплекта как сумму (себестоимость комплектующего × количество).
@@ -193,7 +269,16 @@ class ProductsRepositoryPG {
    */
   async findAll(options = {}) {
     const { limit, offset, brandId, categoryId, organizationId, search, forExport, profileId, productType, warehouseId } = options;
-    
+
+    const { whereSql, params, paramIndex: startParamIndex } = buildFindAllFilters({
+      brandId,
+      categoryId,
+      organizationId,
+      search,
+      profileId,
+      productType,
+    });
+
     let sql = `
       SELECT 
         p.*,
@@ -205,79 +290,9 @@ class ProductsRepositoryPG {
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
       LEFT JOIN organizations o ON p.organization_id = o.id
-      WHERE 1=1
+      ${whereSql}
     `;
-    const params = [];
-    let paramIndex = 1;
-
-    if (profileId != null && profileId !== '') {
-      sql += ` AND p.profile_id = $${paramIndex++}`;
-      params.push(profileId);
-    }
-    
-    if (brandId) {
-      sql += ` AND p.brand_id = $${paramIndex++}`;
-      params.push(brandId);
-    }
-    
-    if (categoryId) {
-      sql += ` AND p.user_category_id = $${paramIndex++}`;
-      params.push(categoryId);
-    }
-    
-    if (organizationId != null && organizationId !== '') {
-      const orgNum = typeof organizationId === 'string' ? parseInt(organizationId, 10) : Number(organizationId);
-      const orgVal = Number.isFinite(orgNum) ? orgNum : organizationId;
-      const profNum =
-        profileId != null && profileId !== ''
-          ? typeof profileId === 'string'
-            ? parseInt(profileId, 10)
-            : Number(profileId)
-          : NaN;
-      const useProfileScope = Number.isFinite(profNum);
-      if (useProfileScope) {
-        // Товары с выбранной организацией ИЛИ «без организации» (legacy), если org принадлежит тому же профилю
-        sql += ` AND (
-          p.organization_id = $${paramIndex}
-          OR (
-            p.organization_id IS NULL
-            AND EXISTS (
-              SELECT 1 FROM organizations o_filt
-              WHERE o_filt.id = $${paramIndex + 1}
-                AND o_filt.profile_id IS NOT NULL
-                AND o_filt.profile_id = $${paramIndex + 2}
-            )
-          )
-        )`;
-        params.push(orgVal, orgVal, profNum);
-        paramIndex += 3;
-      } else {
-        sql += ` AND p.organization_id = $${paramIndex++}`;
-        params.push(orgVal);
-      }
-    }
-    
-    if (search) {
-      const searchParam = `%${search}%`;
-      sql += ` AND (
-        p.name ILIKE $${paramIndex}
-        OR p.sku ILIKE $${paramIndex}
-        OR EXISTS (
-          SELECT 1 FROM barcodes bc
-          WHERE bc.product_id = p.id AND bc.barcode ILIKE $${paramIndex}
-        )
-      )`;
-      params.push(searchParam);
-      paramIndex++;
-    }
-
-    const pt = productType != null && String(productType).trim() !== '' ? String(productType).trim().toLowerCase() : '';
-    if (pt === 'kit') {
-      sql += ` AND LOWER(TRIM(COALESCE(p.product_type::text, ''))) = 'kit'`;
-    } else if (pt === 'product') {
-      sql += ` AND (p.product_type IS NULL OR LOWER(TRIM(COALESCE(p.product_type::text, ''))) <> 'kit')`;
-    }
-    
+    let paramIndex = startParamIndex;
     sql += ` ORDER BY p.created_at DESC`;
     
     if (limit) {
@@ -573,6 +588,17 @@ class ProductsRepositoryPG {
 
     await this._reconcileReservedQuantityFromMovements(products);
     return products;
+  }
+
+  async countAll(options = {}) {
+    const { whereSql, params } = buildFindAllFilters(options);
+    const result = await query(
+      `SELECT COUNT(*)::int AS total
+       FROM products p
+       ${whereSql}`,
+      params
+    );
+    return Number(result.rows?.[0]?.total || 0);
   }
   
   /**

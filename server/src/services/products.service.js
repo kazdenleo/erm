@@ -136,6 +136,12 @@ class ProductsService {
     return await this.repository.findAll(options);
   }
 
+  async getPage(options = {}) {
+    const items = await this.repository.findAll(options);
+    const total = await this.repository.countAll(options);
+    return { items, total };
+  }
+
   /**
    * Для страницы «Категории»: id товаров по ERP-категории без загрузки полных карточек.
    * @returns {Promise<Record<string, number[]>>}

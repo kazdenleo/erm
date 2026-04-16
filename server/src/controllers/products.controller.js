@@ -146,9 +146,13 @@ class ProductsController {
       if (req.query.warehouseId != null && String(req.query.warehouseId).trim() !== '') {
         options.warehouseId = String(req.query.warehouseId).trim();
       }
+      const hasPaging = req.query.limit != null || req.query.offset != null;
       if (req.query.limit != null) options.limit = parseInt(req.query.limit, 10);
       if (req.query.offset != null) options.offset = parseInt(req.query.offset, 10);
-      const products = await productsService.getAll(options);
+      const result = hasPaging
+        ? await productsService.getPage(options)
+        : { items: await productsService.getAll(options), total: null };
+      const products = result.items;
       // Явно копируем в обычные объекты и гарантированно передаём сохранённые цены (на случай нестандартной сериализации row из pg)
       const data = products.map(p => {
         const row = { ...p };
@@ -165,7 +169,19 @@ class ProductsController {
       if (data.length > 0 && (withPrices > 0 || data.length <= 10)) {
         console.log(`[Products Controller] GET /products: ${data.length} products, ${withPrices} with stored min prices`);
       }
-      return res.status(200).json({ ok: true, data });
+      return res.status(200).json({
+        ok: true,
+        data,
+        ...(hasPaging
+          ? {
+              meta: {
+                total: result.total,
+                limit: options.limit ?? null,
+                offset: options.offset ?? 0,
+              },
+            }
+          : {}),
+      });
     } catch (error) {
       next(error);
     }

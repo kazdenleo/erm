@@ -19,8 +19,9 @@ import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
 import './Products.css';
 
 export function Products() {
+  const PAGE_SIZE = 50;
   const [searchParams, setSearchParams] = useSearchParams();
-  const { products, loading, listRefreshing, error, createProduct, updateProduct, deleteProduct, loadProducts } = useProducts();
+  const { products, meta, loading, listRefreshing, error, createProduct, updateProduct, deleteProduct, loadProducts } = useProducts();
   const { categories, loadCategories } = useCategories();
   const { brands } = useBrands();
   const { organizations } = useOrganizations();
@@ -58,6 +59,7 @@ export function Products() {
   const [importTemplateCatId, setImportTemplateCatId] = useState('');
   const [importTemplateExcludeMpAttributes, setImportTemplateExcludeMpAttributes] = useState(false);
   const [importTemplateLoading, setImportTemplateLoading] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
   /** id выбранных строк в текущем отфильтрованном списке */
   const [selectedProductIds, setSelectedProductIds] = useState(() => new Set());
   const selectAllCheckboxRef = useRef(null);
@@ -120,6 +122,7 @@ export function Products() {
     const pt = partial.productType !== undefined ? partial.productType : filterProductType;
     const wh = partial.warehouseId !== undefined ? partial.warehouseId : filterWarehouseId;
     const searchRaw = partial.search !== undefined ? partial.search : listSearch;
+    const page = partial.page !== undefined ? partial.page : currentPage;
     const search = typeof searchRaw === 'string' ? searchRaw.trim() : '';
     const ptTrim = typeof pt === 'string' ? pt.trim() : '';
     loadProducts({
@@ -128,6 +131,8 @@ export function Products() {
       productType: ptTrim || undefined,
       search: search || undefined,
       warehouseId: wh || undefined,
+      limit: PAGE_SIZE,
+      offset: Math.max(0, (page - 1) * PAGE_SIZE),
       silent: true
     });
   };
@@ -139,8 +144,11 @@ export function Products() {
     (filterCategoryId ? 1 : 0) +
     (filterProductType ? 1 : 0) +
     (filterWarehouseId ? 1 : 0);
+  const totalProducts = Number.isFinite(Number(meta?.total)) ? Number(meta.total) : visibleProducts.length;
+  const totalPages = Math.max(1, Math.ceil(totalProducts / PAGE_SIZE));
 
   const clearListFilters = () => {
+    setCurrentPage(1);
     setFilterOrganizationId('');
     setFilterCategoryId('');
     setFilterProductType('');
@@ -150,7 +158,7 @@ export function Products() {
     } catch {
       /* ignore */
     }
-    loadList({ organizationId: '', categoryId: '', productType: '', warehouseId: '' });
+    loadList({ organizationId: '', categoryId: '', productType: '', warehouseId: '', page: 1 });
   };
 
   const ownWarehouses = useMemo(
@@ -163,6 +171,7 @@ export function Products() {
 
   const handleFilterWarehouseChange = (e) => {
     const v = e.target.value;
+    setCurrentPage(1);
     setFilterWarehouseId(v);
     try {
       if (v) localStorage.setItem('productsListWarehouseId', v);
@@ -170,7 +179,7 @@ export function Products() {
     } catch {
       /* ignore */
     }
-    loadList({ warehouseId: v });
+    loadList({ warehouseId: v, page: 1 });
   };
 
   const handleListSearchChange = (e) => {
@@ -178,7 +187,8 @@ export function Products() {
     setListSearch(v);
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
     listSearchDebounceRef.current = setTimeout(() => {
-      loadListRef.current({ search: v });
+      setCurrentPage(1);
+      loadListRef.current({ search: v, page: 1 });
     }, 400);
   };
 
@@ -189,7 +199,19 @@ export function Products() {
   }, []);
 
   useEffect(() => {
-    loadListRef.current({ warehouseId: filterWarehouseId });
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const goToPage = (page) => {
+    const next = Math.min(Math.max(1, page), totalPages);
+    setCurrentPage(next);
+    loadListRef.current({ page: next });
+  };
+
+  useEffect(() => {
+    loadListRef.current({ warehouseId: filterWarehouseId, page: currentPage });
   }, []);
 
   const openProductIdParam = searchParams.get('open');
@@ -562,7 +584,7 @@ export function Products() {
           <div className="d-flex flex-column flex-sm-row flex-wrap align-items-sm-center gap-1 gap-sm-3">
             <span>Список товаров</span>
             <span className="text-muted small" aria-live="polite">
-              В списке: <strong>{visibleProducts.length}</strong>
+              Показано: <strong>{visibleProducts.length}</strong> из <strong>{totalProducts}</strong>
               {selectedProductIds.size > 0 ? (
                 <>
                   {' · '}
@@ -713,6 +735,29 @@ export function Products() {
               </div>
             ) : (
               <div className="products-table-container">
+                <div className="d-flex justify-content-between align-items-center px-3 py-2 border-bottom flex-wrap gap-2">
+                  <span className="text-muted small">
+                    Страница <strong>{currentPage}</strong> из <strong>{totalPages}</strong>
+                  </span>
+                  <div className="d-flex gap-2">
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      onClick={() => goToPage(currentPage - 1)}
+                      disabled={currentPage <= 1 || listRefreshing}
+                    >
+                      Назад
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      onClick={() => goToPage(currentPage + 1)}
+                      disabled={currentPage >= totalPages || listRefreshing}
+                    >
+                      Вперёд
+                    </Button>
+                  </div>
+                </div>
                 <div className="table-responsive">
                   <table className="products-table align-middle mb-0 table table-borderless table-striped table-hover">
                     <thead>

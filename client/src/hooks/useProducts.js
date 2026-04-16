@@ -8,6 +8,7 @@ import { productsApi } from '../services/products.api';
 
 export function useProducts() {
   const [products, setProducts] = useState([]);
+  const [meta, setMeta] = useState({ total: null, limit: null, offset: 0 });
   const [loading, setLoading] = useState(true);
   /** Фоновое обновление списка (поиск, фильтры) — без полноэкранной «Загрузка…» */
   const [listRefreshing, setListRefreshing] = useState(false);
@@ -41,6 +42,12 @@ export function useProducts() {
       if (opts.warehouseId != null && opts.warehouseId !== '') {
         params.warehouseId = String(opts.warehouseId);
       }
+      if (opts.limit != null && opts.limit !== '') {
+        params.limit = Number(opts.limit);
+      }
+      if (opts.offset != null && opts.offset !== '') {
+        params.offset = Number(opts.offset);
+      }
       const response = await productsApi.getAll(params);
       const list = Array.isArray(response?.data) ? response.data : (response?.data?.data ?? response ?? []);
       const productsList = Array.isArray(list) ? list.filter(Boolean) : [];
@@ -55,6 +62,11 @@ export function useProducts() {
         });
       }
       setProducts(productsList);
+      setMeta({
+        total: response?.meta?.total ?? null,
+        limit: response?.meta?.limit ?? params.limit ?? null,
+        offset: response?.meta?.offset ?? params.offset ?? 0,
+      });
     } catch (err) {
       console.error('Error loading products:', err);
       if (!silent) {
@@ -107,6 +119,7 @@ export function useProducts() {
 
   return {
     products,
+    meta,
     loading,
     listRefreshing,
     error,

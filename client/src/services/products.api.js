@@ -21,6 +21,12 @@ export const productsApi = {
     if (options.warehouseId != null && options.warehouseId !== '') {
       params.warehouseId = String(options.warehouseId);
     }
+    if (options.limit != null && options.limit !== '') {
+      params.limit = String(options.limit);
+    }
+    if (options.offset != null && options.offset !== '') {
+      params.offset = String(options.offset);
+    }
     const response = await api.get('/products', { params: Object.keys(params).length ? params : undefined });
     return response.data;
   },
