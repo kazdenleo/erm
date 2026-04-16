@@ -6,7 +6,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { productsApi } from '../services/products.api';
 
-export function useProducts() {
+export function useProducts(options = {}) {
+  const autoLoad = options.autoLoad !== false;
   const [products, setProducts] = useState([]);
   const [meta, setMeta] = useState({ total: null, limit: null, offset: 0 });
   const [loading, setLoading] = useState(true);
@@ -16,8 +17,12 @@ export function useProducts() {
   const loadGenerationRef = useRef(0);
 
   useEffect(() => {
-    loadProducts();
-  }, []);
+    if (autoLoad) {
+      loadProducts();
+    } else {
+      setLoading(false);
+    }
+  }, [autoLoad]);
 
   const loadProducts = async (options = {}) => {
     const opts = typeof options === 'object' && options !== null ? options : { organizationId: options };

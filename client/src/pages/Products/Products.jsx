@@ -21,7 +21,7 @@ import './Products.css';
 export function Products() {
   const PAGE_SIZE = 50;
   const [searchParams, setSearchParams] = useSearchParams();
-  const { products, meta, loading, listRefreshing, error, createProduct, updateProduct, deleteProduct, loadProducts } = useProducts();
+  const { products, meta, loading, listRefreshing, error, createProduct, updateProduct, deleteProduct, loadProducts } = useProducts({ autoLoad: false });
   const { categories, loadCategories } = useCategories();
   const { brands } = useBrands();
   const { organizations } = useOrganizations();
