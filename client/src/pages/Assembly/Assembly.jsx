@@ -13,7 +13,7 @@ import { ordersApi, assemblyApi } from '../../services/orders.api';
 import { getStoredLabelSize } from '../Settings/Labels';
 import './Assembly.css';
 
-const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+const API_BASE = process.env.REACT_APP_API_URL || '/api';
 /** По умолчанию пробуем локальный Print Helper — без настройки сервера достаточно запустить exe */
 const PRINT_HELPER_URL_DEFAULT = process.env.REACT_APP_PRINT_HELPER_URL || 'http://127.0.0.1:9100';
 /** Ожидание печати после сборки; иначе зависший fetch к Print Helper блокирует сканер (printingFlowRef). */
