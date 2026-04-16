@@ -108,8 +108,8 @@ export function Header({ isSidebarClosed, onToggleSidebar, isMobileSidebarOpen, 
                 aria-haspopup="true"
                 aria-expanded="false"
               >
-                <i className="pe-7s-user" aria-hidden />
                 <span className="header-profile__name">{userBadge}</span>
+                <i className="pe-7s-user" aria-hidden />
                 {isAdmin ? <span className="header-profile__admin-dot" title="Администратор" aria-hidden /> : null}
               </button>
               <div className="header-profile__menu" role="menu">

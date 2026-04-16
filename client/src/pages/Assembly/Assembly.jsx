@@ -6,7 +6,6 @@
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { useOrders } from '../../hooks/useOrders';
 import { Button } from '../../components/common/Button/Button';
 import { OrderLabelIcon } from '../../components/common/OrderLabelIcon/OrderLabelIcon';
 import { ordersApi, assemblyApi } from '../../services/orders.api';
@@ -124,7 +123,10 @@ function orderItemMatchesScannedProduct(item, product, itemsLength = 1) {
 }
 
 export function Assembly() {
-  const { orders, loading, error, loadOrders } = useOrders();
+  const [assemblyOrders, setAssemblyOrders] = useState([]);
+  const [collectedOrders, setCollectedOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [sortByName, setSortByName] = useState('asc'); // 'asc' | 'desc'
   const [barcodeInput, setBarcodeInput] = useState('');
@@ -153,6 +155,28 @@ export function Assembly() {
   const scanLoadingRef = useRef(false);
   orderKeyRef.current = currentOrderKey;
   scanLoadingRef.current = scanLoading;
+
+  const loadOrders = useCallback(async ({ silent = false } = {}) => {
+    try {
+      if (!silent) setLoading(true);
+      setError(null);
+      const [assemblyResponse, collectedResponse] = await Promise.all([
+        ordersApi.getAll({ status: 'in_assembly', limit: 500 }),
+        ordersApi.getAll({ status: 'assembled', limit: 200 }),
+      ]);
+      setAssemblyOrders(Array.isArray(assemblyResponse?.data) ? assemblyResponse.data : []);
+      setCollectedOrders(Array.isArray(collectedResponse?.data) ? collectedResponse.data : []);
+    } catch (err) {
+      console.error('Error loading assembly orders:', err);
+      setError(err.message || 'Ошибка загрузки заказов');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOrders();
+  }, [loadOrders]);
 
   useEffect(() => {
     if (!scanLoading && barcodeInputRef.current) {
@@ -669,13 +693,12 @@ export function Assembly() {
   };
 
   const assembledOrders = useMemo(() => {
-    const list = (orders || []).filter(o => o.status === 'in_assembly');
-    return list;
-  }, [orders]);
+    return assemblyOrders;
+  }, [assemblyOrders]);
 
   /** Недавно собранные (ещё можно повторно напечатать стикер) — сверху свежие по времени сборки */
-  const collectedOrders = useMemo(() => {
-    const list = (orders || []).filter(o => o.status === 'assembled');
+  const collectedOrdersSorted = useMemo(() => {
+    const list = collectedOrders;
     const byAssembledThenName = (a, b) => {
       const ta = a.assembledAt ? new Date(a.assembledAt).getTime() : 0;
       const tb = b.assembledAt ? new Date(b.assembledAt).getTime() : 0;
@@ -685,7 +708,7 @@ export function Assembly() {
       return na.localeCompare(nb);
     };
     return [...list].sort(byAssembledThenName);
-  }, [orders]);
+  }, [collectedOrders]);
 
   const mpDisplay = (code) => marketplaceLabels.find((m) => m.code === normMarketplace({ marketplace: code })) || null;
 
@@ -722,12 +745,12 @@ export function Assembly() {
   }, [filtered]);
 
   const collectedFiltered = useMemo(() => {
-    let list = collectedOrders;
+    let list = collectedOrdersSorted;
     if (marketplaceFilter !== 'all') {
       list = list.filter(o => normMarketplace(o) === marketplaceFilter);
     }
     return list;
-  }, [collectedOrders, marketplaceFilter]);
+  }, [collectedOrdersSorted, marketplaceFilter]);
 
   if (loading) {
     return (
@@ -1023,7 +1046,7 @@ export function Assembly() {
       {collectedFiltered.length === 0 ? (
         <div className="assembly-empty assembly-empty-muted">
           <p>
-            {collectedOrders.length === 0
+            {collectedOrdersSorted.length === 0
               ? 'Пока нет заказов в статусе «Собран».'
               : 'Нет собранных заказов по выбранному маркетплейсу.'}
           </p>

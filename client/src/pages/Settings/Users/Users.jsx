@@ -101,6 +101,9 @@ export function SettingsUsers() {
         middleName: form.middleName.trim(),
         role,
       };
+      if (user?.profileId != null) {
+        payload.profileId = user.profileId;
+      }
       if (form.password) payload.password = form.password;
       if (!editing && user?.profileId != null) {
         payload.isProfileAdmin = !!form.isProfileAdmin;
