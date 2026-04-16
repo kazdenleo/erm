@@ -54,6 +54,7 @@ router.get('/config', (req, res) => {
 
 // Публичные маршруты этикеток — без авторизации, чтобы Print Helper (exe) мог скачать файл по URL
 router.get('/orders/:orderId/label', validateOrderId, wrapAsync(ordersController.getLabel.bind(ordersController)));
+router.get('/orders/:orderId/label/print', validateOrderId, wrapAsync(ordersController.getLabelPrint.bind(ordersController)));
 router.get('/orders/:orderId/label/status', validateOrderId, wrapAsync(ordersController.getLabelStatus.bind(ordersController)));
 
 // Опциональная авторизация для всех /api (устанавливает req.user при наличии токена)

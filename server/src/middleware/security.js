@@ -30,21 +30,25 @@ export const helmetMiddleware = helmet({
  */
 export const corsMiddleware = cors({
   origin: (origin, callback) => {
-    // В development разрешаем все (для удобства разработки)
-    if (config.isDevelopment && !origin) {
+    // Запросы без Origin (curl, server-to-server, same-origin) пропускаем.
+    if (!origin) {
       return callback(null, true);
     }
-    
-    // В production проверяем origin
+
+    const normalizedOrigin = String(origin).trim().replace(/\/+$/, '');
+
     const allowedOrigins = [
       config.clientUrl,
-      ...(process.env.ALLOWED_ORIGINS?.split(',') || [])
-    ];
-    
-    if (!origin || allowedOrigins.includes(origin)) {
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      ...(process.env.ALLOWED_ORIGINS?.split(',').map((v) => v.trim().replace(/\/+$/, '')).filter(Boolean) || []),
+    ].map((v) => String(v).trim().replace(/\/+$/, ''));
+    const isLocalDevOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalizedOrigin);
+
+    if (isLocalDevOrigin || allowedOrigins.includes(normalizedOrigin)) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new Error(`Not allowed by CORS: ${origin}`));
     }
   },
   credentials: true,
