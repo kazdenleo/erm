@@ -288,7 +288,8 @@ async function resolvePurchaseLinesByCatalogSku(lines) {
 
 export function Orders() {
   const navigate = useNavigate();
-  const { orders, loading, error, loadOrders } = useOrders();
+  const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
+  const ORDERS_PAGE_SIZE = 50;
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncKind, setSyncKind] = useState(null);
@@ -305,6 +306,7 @@ export function Orders() {
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
   const [stockProblemFilter, setStockProblemFilter] = useState('all'); // all | only | no
+  const [currentPage, setCurrentPage] = useState(1);
   const [markShippedLoadingKey, setMarkShippedLoadingKey] = useState(null);
   const [deleteLoadingKey, setDeleteLoadingKey] = useState(null);
   const [returnToNewLoadingKey, setReturnToNewLoadingKey] = useState(null);
@@ -378,16 +380,46 @@ export function Orders() {
     }
   }, [addOrderOpen, productsList.length]);
 
-  useEffect(() => {
-    if (stockProblemFilter === 'all') {
-      loadOrders({ silent: true });
-      return;
-    }
-    loadOrders({
-      silent: true,
-      params: { stockProblem: stockProblemFilter === 'only' },
+  const buildOrdersListParams = useCallback((page = currentPage) => {
+    const params = {
+      limit: ORDERS_PAGE_SIZE,
+      offset: Math.max(0, page - 1) * ORDERS_PAGE_SIZE,
+    };
+    if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
+    if (statusFilter !== 'all') params.status = statusFilter;
+    const query = String(orderSearchQuery || '').trim();
+    if (query) params.search = query;
+    if (stockProblemFilter === 'only') params.stockProblem = true;
+    if (stockProblemFilter === 'no') params.stockProblem = false;
+    return params;
+  }, [currentPage, marketplaceFilter, statusFilter, orderSearchQuery, stockProblemFilter]);
+
+  const reloadOrders = useCallback(async (options = {}) => {
+    const page = options.page ?? currentPage;
+    const params = {
+      ...buildOrdersListParams(page),
+      ...(options.params || {}),
+    };
+    return await loadOrders({
+      ...options,
+      params,
     });
-  }, [stockProblemFilter, loadOrders]);
+  }, [buildOrdersListParams, currentPage, loadOrders]);
+
+  useEffect(() => {
+    reloadOrders();
+  }, [reloadOrders]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [marketplaceFilter, statusFilter, stockProblemFilter]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setCurrentPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [orderSearchQuery]);
 
   useEffect(() => {
     let cancelled = false;
@@ -471,14 +503,14 @@ export function Orders() {
         }
         const result = await ordersApi.syncFbs({ force: forceImport });
         if (!silent) setSyncInfo(result);
-        await loadOrders({ silent: true });
+        await reloadOrders({ silent: true });
       } catch (e) {
         const status = e.response?.status;
         const data = e.response?.data;
         const msg = data?.message || data?.error || (typeof data?.message === 'string' ? data.message : null) || e.message;
         console.error('Ошибка синхронизации заказов:', e.message, status ? `[${status}]` : '', data || '');
         try {
-          await loadOrders({ silent: true });
+          await reloadOrders({ silent: true });
         } catch (_) {
           /* ignore */
         }
@@ -500,7 +532,7 @@ export function Orders() {
         }
       }
     },
-    [loadOrders]
+    [reloadOrders]
   );
 
   const handleSync = () => runSync(false, { force: false });
@@ -549,7 +581,7 @@ export function Orders() {
 
     const poll = setInterval(() => {
       if (!mounted) return;
-      loadOrders({ silent: true });
+      reloadOrders({ silent: true });
     }, POLL_MS);
 
     return () => {
@@ -557,14 +589,14 @@ export function Orders() {
       clearTimeout(t0);
       clearInterval(poll);
     };
-  }, [loadOrders, runSync, ordersAutoSyncPauseLoaded, ordersAutoSyncPaused]);
+  }, [reloadOrders, runSync, ordersAutoSyncPauseLoaded, ordersAutoSyncPaused]);
 
   const handleMarkShipped = async (marketplace, orderId, rowKey) => {
     try {
       setMarkShippedLoadingKey(rowKey);
       setRefreshError(null);
       await ordersApi.markShipped(marketplace, orderId);
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
     } catch (e) {
       console.error('Ошибка смены статуса на «Отгружен»:', e);
       setRefreshError(e.response?.data?.message || e.message || 'Не удалось изменить статус');
@@ -579,7 +611,7 @@ export function Orders() {
       setDeleteLoadingKey(rowKey);
       setRefreshError(null);
       await ordersApi.deleteOrder(marketplace, orderId);
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
     } catch (e) {
       console.error('Ошибка удаления заказа:', e);
       setRefreshError(e.response?.data?.message || e.message || 'Не удалось удалить заказ');
@@ -593,7 +625,7 @@ export function Orders() {
       setReturnToNewLoadingKey(rowKey);
       setRefreshError(null);
       await ordersApi.returnToNew(marketplace, orderId);
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
     } catch (e) {
       console.error('Ошибка возврата в «Новый»:', e);
       setRefreshError(e.response?.data?.message || e.message || 'Не удалось вернуть заказ в статус «Новый»');
@@ -614,7 +646,7 @@ export function Orders() {
       setCancelOrderLoadingKey(rowKey);
       setRefreshError(null);
       await ordersApi.cancelOrder(marketplace, orderId);
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
     } catch (e) {
       console.error('Ошибка отмены заказа:', e);
       setRefreshError(e.response?.data?.message || e.message || 'Не удалось отменить заказ');
@@ -737,7 +769,7 @@ export function Orders() {
         return next;
       });
       closeProcurementModal();
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
     } catch (e) {
       console.error('Ошибка «В закупку»:', e);
       const msg = e.response?.data?.message || e.message || 'Не удалось оформить закупку и обновить заказ';
@@ -763,7 +795,7 @@ export function Orders() {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
       setAssemblyMessage(msg);
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
     } catch (e) {
       setAssemblyMessage(e.response?.data?.message || e.message || 'Ошибка отправки на сборку');
     } finally {
@@ -818,7 +850,7 @@ export function Orders() {
     setAddOrderError(null);
     try {
       await ordersApi.createManual({ items });
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
       setAddOrderOpen(false);
     } catch (err) {
       setAddOrderError(err.response?.data?.message || err.message || 'Не удалось добавить заказ');
@@ -920,6 +952,14 @@ export function Orders() {
     });
   }, [groupedDisplayRows, sortByArticle]);
 
+  const totalOrders = meta?.total ?? orders.length;
+  const totalPages = meta?.total != null ? Math.max(1, Math.ceil(meta.total / ORDERS_PAGE_SIZE)) : 1;
+  const pageOffset = (meta?.offset ?? Math.max(0, currentPage - 1) * ORDERS_PAGE_SIZE);
+  const goToPage = (page) => {
+    const next = Math.min(Math.max(1, page), totalPages);
+    if (next !== currentPage) setCurrentPage(next);
+  };
+
   /** Кнопка «В закупку»: та же модалка, сигнатура как у прочих действий строки */
   const handleSetToProcurement = (marketplace, orderId, rowKey) => {
     const row =
@@ -1010,7 +1050,7 @@ export function Orders() {
         toSend.forEach(o => next.delete(orderKey(o)));
         return next;
       });
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
     } catch (e) {
       setAssemblyMessage(e.response?.data?.message || e.message || 'Ошибка отправки на сборку');
     } finally {
@@ -1083,7 +1123,7 @@ export function Orders() {
         toSend.forEach((o) => next.delete(orderKey(o)));
         return next;
       });
-      await loadOrders({ silent: true });
+      await reloadOrders({ silent: true });
     } catch (e) {
       const msg = e.response?.data?.message || e.message || 'Не удалось изменить статус';
       setAssemblyMessage(msg);
@@ -1704,8 +1744,37 @@ export function Orders() {
           </Button>
         </div>
 
+        <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+          <span className="text-muted small">
+            Показано: {sortedGroupedDisplayRows.length} из {totalOrders}
+          </span>
+          {totalPages > 1 ? (
+            <div className="d-flex align-items-center gap-2">
+              <Button
+                variant="secondary"
+                size="small"
+                onClick={() => goToPage(currentPage - 1)}
+                disabled={currentPage <= 1 || loading}
+              >
+                Назад
+              </Button>
+              <span className="text-muted small">
+                Страница {currentPage} из {totalPages}
+              </span>
+              <Button
+                variant="secondary"
+                size="small"
+                onClick={() => goToPage(currentPage + 1)}
+                disabled={currentPage >= totalPages || loading}
+              >
+                Вперёд
+              </Button>
+            </div>
+          ) : null}
+        </div>
+
         <div className="orders-list" style={{marginTop: '16px'}}>
-        {sortedGroupedDisplayRows.length === 0 ? (
+        {!loading && sortedGroupedDisplayRows.length === 0 ? (
           <div className="empty-state">
             <p>Заказы не найдены</p>
           </div>
@@ -1854,7 +1923,7 @@ export function Orders() {
                       />
                     </label>
                   </td>
-                  <td className="orders-col-num">{idx + 1}</td>
+                  <td className="orders-col-num">{pageOffset + idx + 1}</td>
                   <td>{allMarketplaces.find(m => m.code === first.marketplace)?.name ?? first.marketplace}</td>
                   <td>{orderIdDisplay}</td>
                   <td className="orders-col-date" title={first.createdAt ? new Date(first.createdAt).toLocaleString() : ''}>

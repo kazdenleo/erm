@@ -12,6 +12,7 @@ import { profileIdFromDb } from '../utils/profileId.js';
 import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
 import { transaction } from '../config/database.js';
 import { sendNewAccountPassword } from '../services/mail.service.js';
+import { buildFullName, splitFullName } from '../utils/userName.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 const profilesRepo = repositoryFactory.getProfilesRepository();
@@ -39,6 +40,7 @@ export const authController = {
       const em = String(email || '').trim().toLowerCase();
       const ph = phone != null ? String(phone).trim() : '';
       const fn = String(fullName || '').trim();
+      const names = splitFullName(fn);
 
       if (name.length < 2) {
         return res.status(400).json({ ok: false, message: 'Укажите название аккаунта' });
@@ -69,10 +71,10 @@ export const authController = {
           );
           const pid = pr.rows[0].id;
           const ur = await client.query(
-            `INSERT INTO users (email, password_hash, full_name, phone, role, profile_id, is_profile_admin, must_change_password)
-             VALUES ($1, $2, $3, $4, 'user', $5, true, true)
+            `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'user', $8, true, true)
              RETURNING id`,
-            [em, passwordHash, fn, ph || null, pid]
+            [em, passwordHash, buildFullName(names), names.lastName, names.firstName, names.middleName, ph || null, pid]
           );
           return { profileId: pid, userId: ur.rows[0].id };
         });
@@ -148,6 +150,9 @@ export const authController = {
             id: user.id,
             email: user.email,
             fullName: user.full_name,
+            lastName: user.last_name ?? null,
+            firstName: user.first_name ?? null,
+            middleName: user.middle_name ?? null,
             role: user.role,
             profileId: profileIdFromDb(user.profile_id),
             isProfileAdmin: !!user.is_profile_admin,
@@ -213,6 +218,9 @@ export const authController = {
           id: user.id,
           email: user.email,
           fullName: user.full_name,
+          lastName: user.last_name ?? null,
+          firstName: user.first_name ?? null,
+          middleName: user.middle_name ?? null,
           phone: user.phone ?? null,
           role: user.role,
           profileId,

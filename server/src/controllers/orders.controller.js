@@ -24,18 +24,38 @@ class OrdersController {
         res.setHeader('Cache-Control', 'no-store');
         return res.status(200).json({ ok: true, data: [] });
       }
+      const marketplace = req.query?.marketplace ? String(req.query.marketplace).trim() : null;
+      const status = req.query?.status ? String(req.query.status).trim() : null;
+      const search = req.query?.search ? String(req.query.search).trim() : null;
+      const limitRaw = req.query?.limit;
+      const offsetRaw = req.query?.offset;
+      const limit = limitRaw != null ? Number(limitRaw) : null;
+      const offset = offsetRaw != null ? Number(offsetRaw) : 0;
       const stockProblemRaw = req.query?.stockProblem ?? req.query?.stock_problem;
       const stockProblem =
         stockProblemRaw === '1' || stockProblemRaw === 'true'
           ? true
           : (stockProblemRaw === '0' || stockProblemRaw === 'false' ? false : undefined);
-      const orders = await ordersService.getAll({
+      const options = {
         ...(tid != null ? { profileId: tid } : {}),
+        ...(marketplace ? { marketplace } : {}),
+        ...(status ? { status } : {}),
+        ...(search ? { search } : {}),
         ...(stockProblem !== undefined ? { stockProblem } : {}),
-      });
+        ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+        ...(Number.isFinite(offset) && offset > 0 ? { offset } : {}),
+      };
+      const hasPaging = Number.isFinite(limit) && limit > 0;
+      const result = hasPaging
+        ? await ordersService.getPage(options)
+        : { items: await ordersService.getAll(options), total: null };
       // Не кэшируем: список заказов часто меняется после синхронизации.
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ ok: true, data: orders });
+      return res.status(200).json({
+        ok: true,
+        data: result.items,
+        ...(hasPaging ? { meta: { total: result.total, limit, offset: Number.isFinite(offset) && offset > 0 ? offset : 0 } } : {}),
+      });
     } catch (error) {
       next(error);
     }

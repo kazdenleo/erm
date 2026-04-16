@@ -410,6 +410,19 @@ class OrdersService {
     }
   }
 
+  async getPage(options = {}) {
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      const items = await this.repository.findAll(options);
+      const total =
+        typeof this.repository.countAll === 'function'
+          ? await this.repository.countAll(options)
+          : items.length;
+      return { items, total };
+    }
+    const items = await this.repository.findAll();
+    return { items, total: items.length };
+  }
+
   async getById(id) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       const orders = await this.getAll();

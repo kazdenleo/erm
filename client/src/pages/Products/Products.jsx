@@ -728,7 +728,7 @@ export function Products() {
             ) : null}
           </div>
           <div className={`products-list ${listRefreshing ? 'products-list--refreshing' : ''}`}>
-            {visibleProducts.length === 0 ? (
+            {!loading && visibleProducts.length === 0 ? (
               <div className="empty-state">
                 <p>Товары не найдены</p>
                 <Button onClick={handleCreate}>Добавить первый товар</Button>

@@ -78,6 +78,17 @@
 
 .header-profile__trigger {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+}
+
+.header-profile__name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-profile__admin-dot {

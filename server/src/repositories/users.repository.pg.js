@@ -9,7 +9,7 @@ class UsersRepositoryPG {
     const { profileId } = filters;
     if (profileId != null) {
       const result = await query(
-        `SELECT id, email, full_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users
+        `SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users
          WHERE profile_id = $1 AND role <> 'admin'
          ORDER BY email`,
         [profileId]
@@ -17,14 +17,14 @@ class UsersRepositoryPG {
       return result.rows;
     }
     const result = await query(
-      'SELECT id, email, full_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users ORDER BY email'
+      'SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users ORDER BY email'
     );
     return result.rows;
   }
 
   async findById(id) {
     const result = await query(
-      'SELECT id, email, full_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users WHERE id = $1',
+      'SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at FROM users WHERE id = $1',
       [id]
     );
     return result.rows[0] || null;
@@ -43,6 +43,9 @@ class UsersRepositoryPG {
       email,
       passwordHash,
       fullName,
+      lastName,
+      firstName,
+      middleName,
       phone,
       role = 'user',
       profileId,
@@ -52,10 +55,10 @@ class UsersRepositoryPG {
     const phoneVal =
       phone != null && phone !== '' && String(phone).trim() !== '' ? String(phone).trim() : null;
     const result = await query(
-      `INSERT INTO users (email, password_hash, full_name, phone, role, profile_id, is_profile_admin, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id, email, full_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at`,
-      [email, passwordHash, fullName || null, phoneVal, role, profileId || null, isProfileAdmin, !!mustChangePassword]
+      `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at`,
+      [email, passwordHash, fullName || null, lastName || null, firstName || null, middleName || null, phoneVal, role, profileId || null, isProfileAdmin, !!mustChangePassword]
     );
     return result.rows[0];
   }
@@ -71,6 +74,18 @@ class UsersRepositoryPG {
     if (updates.full_name !== undefined) {
       fields.push(`full_name = $${i++}`);
       params.push(updates.full_name === '' ? null : updates.full_name);
+    }
+    if (updates.last_name !== undefined) {
+      fields.push(`last_name = $${i++}`);
+      params.push(updates.last_name === '' ? null : updates.last_name);
+    }
+    if (updates.first_name !== undefined) {
+      fields.push(`first_name = $${i++}`);
+      params.push(updates.first_name === '' ? null : updates.first_name);
+    }
+    if (updates.middle_name !== undefined) {
+      fields.push(`middle_name = $${i++}`);
+      params.push(updates.middle_name === '' ? null : updates.middle_name);
     }
     if (updates.phone !== undefined) {
       fields.push(`phone = $${i++}`);
@@ -103,7 +118,7 @@ class UsersRepositoryPG {
     fields.push('updated_at = CURRENT_TIMESTAMP');
     params.push(id);
     const result = await query(
-      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i} RETURNING id, email, full_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at`,
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i} RETURNING id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, must_change_password, created_at, updated_at`,
       params
     );
     return result.rows[0] || null;

@@ -5,6 +5,7 @@
 
 import bcrypt from 'bcrypt';
 import repositoryFactory from '../config/repository-factory.js';
+import { buildFullName, normalizeUserNameFields } from '../utils/userName.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 
@@ -33,9 +34,21 @@ export const usersController = {
   async updateMe(req, res, next) {
     try {
       const { fullName, phone } = req.body || {};
+      const names = normalizeUserNameFields(req.body || {});
       const updates = {};
-      if (fullName !== undefined) {
-        updates.full_name = String(fullName).trim() || null;
+      if (
+        fullName !== undefined ||
+        names.lastName !== null ||
+        names.firstName !== null ||
+        names.middleName !== null ||
+        req.body?.lastName !== undefined ||
+        req.body?.firstName !== undefined ||
+        req.body?.middleName !== undefined
+      ) {
+        updates.last_name = names.lastName;
+        updates.first_name = names.firstName;
+        updates.middle_name = names.middleName;
+        updates.full_name = buildFullName(names);
       }
       if (phone !== undefined) {
         updates.phone = String(phone).trim() === '' ? null : String(phone).trim();
@@ -99,7 +112,8 @@ export const usersController = {
       if (!canManage) {
         return res.status(403).json({ ok: false, message: 'Добавлять пользователей может только администратор профиля или системы' });
       }
-      const { email, password, fullName, phone, role = 'user', profileId, isProfileAdmin } = req.body || {};
+      const { email, password, phone, role = 'user', profileId, isProfileAdmin } = req.body || {};
+      const names = normalizeUserNameFields(req.body || {});
       if (!email || !password) {
         return res.status(400).json({ ok: false, message: 'Укажите email (логин) и пароль' });
       }
@@ -136,7 +150,10 @@ export const usersController = {
       const item = await usersRepo.create({
         email,
         passwordHash,
-        fullName: fullName || null,
+        fullName: buildFullName(names),
+        lastName: names.lastName,
+        firstName: names.firstName,
+        middleName: names.middleName,
         phone: phoneTrim,
         role: effectiveRole,
         profileId: effectiveProfileId,
@@ -168,10 +185,22 @@ export const usersController = {
       const updates = { ...req.body };
       delete updates.email;
       delete updates.id;
-      if (updates.fullName !== undefined) {
-        updates.full_name = String(updates.fullName).trim() || null;
+      if (
+        updates.fullName !== undefined ||
+        updates.lastName !== undefined ||
+        updates.firstName !== undefined ||
+        updates.middleName !== undefined
+      ) {
+        const names = normalizeUserNameFields(updates);
+        updates.last_name = names.lastName;
+        updates.first_name = names.firstName;
+        updates.middle_name = names.middleName;
+        updates.full_name = buildFullName(names);
         delete updates.fullName;
       }
+      delete updates.lastName;
+      delete updates.firstName;
+      delete updates.middleName;
       if (updates.isProfileAdmin !== undefined) {
         updates.is_profile_admin = updates.isProfileAdmin;
         delete updates.isProfileAdmin;

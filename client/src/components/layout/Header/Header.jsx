@@ -2,6 +2,7 @@ import React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { useNotificationsCount } from '../../../hooks/useNotificationsCount';
+import { buildFullName, shortUserName } from '../../../utils/userName.js';
 import './Header.css';
 
 export function Header({ isSidebarClosed, onToggleSidebar, isMobileSidebarOpen, onToggleMobileSidebar }) {
@@ -13,6 +14,13 @@ export function Header({ isSidebarClosed, onToggleSidebar, isMobileSidebarOpen, 
   const onSupport = location.pathname.startsWith('/support');
   const onCabinet = location.pathname.startsWith('/cabinet');
   const onPlatform = location.pathname.startsWith('/platform');
+  const fullUserName =
+    buildFullName({
+      lastName: user?.lastName ?? user?.last_name ?? '',
+      firstName: user?.firstName ?? user?.first_name ?? '',
+      middleName: user?.middleName ?? user?.middle_name ?? '',
+    }) || user?.fullName || user?.email || 'Профиль';
+  const userBadge = shortUserName(user) || user?.email || 'Профиль';
 
   const handleLogout = () => {
     logout();
@@ -91,7 +99,7 @@ export function Header({ isSidebarClosed, onToggleSidebar, isMobileSidebarOpen, 
           {user ? (
             <div
               className="header-profile"
-              title={user.fullName || user.email || 'Профиль'}
+              title={fullUserName}
             >
               <button
                 type="button"
@@ -101,6 +109,7 @@ export function Header({ isSidebarClosed, onToggleSidebar, isMobileSidebarOpen, 
                 aria-expanded="false"
               >
                 <i className="pe-7s-user" aria-hidden />
+                <span className="header-profile__name">{userBadge}</span>
                 {isAdmin ? <span className="header-profile__admin-dot" title="Администратор" aria-hidden /> : null}
               </button>
               <div className="header-profile__menu" role="menu">

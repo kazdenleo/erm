@@ -14,25 +14,26 @@ export const ordersApi = {
   getAll: async (params = {}) => {
     const response = await api.get('/orders', { params });
     const payload = response.data;
+    const meta = payload?.meta ?? payload?.data?.meta ?? null;
 
     if (Array.isArray(payload)) {
-      return payload;
+      return { data: payload, meta };
     }
 
     if (payload?.data) {
       if (Array.isArray(payload.data)) {
-        return payload.data;
+        return { data: payload.data, meta };
       }
       if (Array.isArray(payload.data.orders)) {
-        return payload.data.orders;
+        return { data: payload.data.orders, meta };
       }
     }
 
     if (Array.isArray(payload?.orders)) {
-      return payload.orders;
+      return { data: payload.orders, meta };
     }
 
-    return [];
+    return { data: [], meta };
   },
 
   /**

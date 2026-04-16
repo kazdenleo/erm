@@ -5,6 +5,7 @@
 import React from 'react';
 import { NavLink, Outlet, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import { shortUserName } from '../utils/userName.js';
 import './platform.css';
 
 const nav = [
@@ -47,7 +48,7 @@ export function PlatformLayout() {
             В приложение ERP
           </Link>
           <span className="platform-user-email" title={user?.email}>
-            {user?.fullName || user?.email}
+            {shortUserName(user) || user?.email}
           </span>
           <button type="button" className="btn btn-sm btn-outline-danger" onClick={handleLogout}>
             Выход

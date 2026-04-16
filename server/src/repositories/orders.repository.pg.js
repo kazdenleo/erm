@@ -149,12 +149,8 @@ class OrdersRepositoryPG {
     });
   }
 
-  /**
-   * Получить все заказы (возвращает camelCase для API).
-   * Сопоставление с каталогом по product_skus (название товара); при ошибке или отсутствии таблицы — без него.
-   */
-  async findAll(options = {}) {
-    const { limit, offset, marketplace, status, productId, search, stockProblem, profileId } = options;
+  buildFindAllFilters(options = {}) {
+    const { marketplace, status, productId, search, stockProblem, profileId } = options;
     const params = [];
     let paramIndex = 1;
     let whereSql = ' WHERE 1=1';
@@ -185,6 +181,19 @@ class OrdersRepositoryPG {
     } else if (stockProblem === false) {
       whereSql += ` AND o.stock_problem = false`;
     }
+    return { whereSql, params, paramIndex };
+  }
+
+  /**
+   * Получить все заказы (возвращает camelCase для API).
+   * Сопоставление с каталогом по product_skus (название товара); при ошибке или отсутствии таблицы — без него.
+   */
+  async findAll(options = {}) {
+    const { limit, offset, marketplace, status, productId, search, stockProblem, profileId } = options;
+    const { whereSql, params, paramIndex: startParamIndex } = this.buildFindAllFilters({
+      marketplace, status, productId, search, stockProblem, profileId
+    });
+    let paramIndex = startParamIndex;
     let limitOffsetSql = ' ORDER BY o.created_at DESC, o.in_process_at DESC';
     if (limit) {
       limitOffsetSql += ` LIMIT $${paramIndex++}`;
@@ -325,6 +334,17 @@ class OrdersRepositoryPG {
       }
       throw err;
     }
+  }
+
+  async countAll(options = {}) {
+    const { whereSql, params } = this.buildFindAllFilters(options);
+    const result = await query(
+      `SELECT COUNT(*)::int AS total
+       FROM orders o
+       ${whereSql}`,
+      params
+    );
+    return Number(result.rows?.[0]?.total || 0);
   }
 
   /**

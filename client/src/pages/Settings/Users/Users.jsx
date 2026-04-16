@@ -8,6 +8,7 @@ import { useAuth } from '../../../context/AuthContext.jsx';
 import { usersApi } from '../../../services/users.api.js';
 import { Button } from '../../../components/common/Button/Button';
 import { Modal } from '../../../components/common/Modal/Modal';
+import { buildFullName } from '../../../utils/userName.js';
 import './Users.css';
 
 /** Подпись роли в списке: админ аккаунта — по флагу is_profile_admin, не по role */
@@ -27,7 +28,9 @@ export function SettingsUsers() {
   const [form, setForm] = useState({
     email: '',
     password: '',
-    fullName: '',
+    lastName: '',
+    firstName: '',
+    middleName: '',
     role: 'user',
     isProfileAdmin: false,
   });
@@ -62,7 +65,7 @@ export function SettingsUsers() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ email: '', password: '', fullName: '', role: 'user', isProfileAdmin: false });
+    setForm({ email: '', password: '', lastName: '', firstName: '', middleName: '', role: 'user', isProfileAdmin: false });
     setModalOpen(true);
   };
 
@@ -71,7 +74,9 @@ export function SettingsUsers() {
     setForm({
       email: u.email,
       password: '',
-      fullName: u.full_name ?? '',
+      lastName: u.last_name ?? '',
+      firstName: u.first_name ?? '',
+      middleName: u.middle_name ?? '',
       role: u.role ?? 'user',
       isProfileAdmin: !!u.is_profile_admin,
     });
@@ -91,7 +96,9 @@ export function SettingsUsers() {
       const role = user?.profileId != null ? 'user' : form.role;
       const payload = {
         email: form.email.trim(),
-        fullName: (form.fullName && form.fullName.trim()) || '',
+        lastName: form.lastName.trim(),
+        firstName: form.firstName.trim(),
+        middleName: form.middleName.trim(),
         role,
       };
       if (form.password) payload.password = form.password;
@@ -135,6 +142,13 @@ export function SettingsUsers() {
   if (loading) return <div className="settings-users-loading">Загрузка...</div>;
   if (error) return <div className="settings-users-error">Ошибка: {error}</div>;
 
+  const userDisplayName = (u) =>
+    buildFullName({
+      lastName: u.last_name ?? '',
+      firstName: u.first_name ?? '',
+      middleName: u.middle_name ?? '',
+    }) || u.full_name || '';
+
   return (
     <div className="card settings-users-page">
       <h1 className="title">Пользователи</h1>
@@ -151,7 +165,7 @@ export function SettingsUsers() {
             <div key={u.id} className="settings-users-item">
               <div>
                 <span className="settings-users-email">{u.email}</span>
-                {u.full_name && <span className="settings-users-name"> — {u.full_name}</span>}
+                {userDisplayName(u) && <span className="settings-users-name"> — {userDisplayName(u)}</span>}
                 {canSeeRoles && (
                   <span className="settings-users-role">{accountRoleLabel(u)}</span>
                 )}
@@ -198,13 +212,36 @@ export function SettingsUsers() {
             />
           </label>
           <label>
-            ФИО
+            Фамилия
             <input
               type="text"
-              value={form.fullName}
-              onChange={(e) => setForm((f) => ({ ...f, fullName: e.target.value }))}
+              value={form.lastName}
+              onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))}
               className="login-input"
               style={{ width: '100%', marginTop: '4px' }}
+              autoComplete="family-name"
+            />
+          </label>
+          <label>
+            Имя
+            <input
+              type="text"
+              value={form.firstName}
+              onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))}
+              className="login-input"
+              style={{ width: '100%', marginTop: '4px' }}
+              autoComplete="given-name"
+            />
+          </label>
+          <label>
+            Отчество
+            <input
+              type="text"
+              value={form.middleName}
+              onChange={(e) => setForm((f) => ({ ...f, middleName: e.target.value }))}
+              className="login-input"
+              style={{ width: '100%', marginTop: '4px' }}
+              autoComplete="additional-name"
             />
           </label>
           {canSeeRoles && user?.profileId != null && (

@@ -9,6 +9,7 @@ import { usersApi } from '../../services/users.api.js';
 import { profilesApi } from '../../services/profiles.api.js';
 import { authApi } from '../../services/auth.api.js';
 import { Button } from '../../components/common/Button/Button';
+import { buildFullName } from '../../utils/userName.js';
 import './Cabinet.css';
 
 export function Cabinet() {
@@ -22,7 +23,9 @@ export function Cabinet() {
   });
   const [savingAccount, setSavingAccount] = useState(false);
   const [personal, setPersonal] = useState({
-    fullName: '',
+    lastName: '',
+    firstName: '',
+    middleName: '',
     phone: '',
     email: '',
   });
@@ -44,7 +47,9 @@ export function Cabinet() {
       const row = uRes?.data;
       if (row) {
         setPersonal({
-          fullName: row.full_name ?? '',
+          lastName: row.last_name ?? '',
+          firstName: row.first_name ?? '',
+          middleName: row.middle_name ?? '',
           phone: row.phone ?? '',
           email: row.email ?? '',
         });
@@ -80,7 +85,9 @@ export function Cabinet() {
     setError('');
     try {
       await usersApi.updateMe({
-        fullName: personal.fullName.trim() || null,
+        lastName: personal.lastName.trim() || null,
+        firstName: personal.firstName.trim() || null,
+        middleName: personal.middleName.trim() || null,
         phone: personal.phone.trim() || null,
       });
       await refreshUser();
@@ -253,16 +260,38 @@ export function Cabinet() {
 
       <section className="cabinet-section">
         <h2 className="cabinet-section-title">Ваш профиль</h2>
-        <p className="cabinet-hint">ФИО, телефон и почта входа в систему.</p>
+        <p className="cabinet-hint">
+          {buildFullName(personal) ? `Текущее отображение: ${buildFullName(personal)}.` : 'Заполните ФИО, телефон и почту входа в систему.'}
+        </p>
         <div className="cabinet-form-grid">
           <label className="cabinet-input-label">
-            ФИО
+            Фамилия
             <input
               type="text"
               className="login-input"
-              value={personal.fullName}
-              onChange={(e) => setPersonal((p) => ({ ...p, fullName: e.target.value }))}
-              autoComplete="name"
+              value={personal.lastName}
+              onChange={(e) => setPersonal((p) => ({ ...p, lastName: e.target.value }))}
+              autoComplete="family-name"
+            />
+          </label>
+          <label className="cabinet-input-label">
+            Имя
+            <input
+              type="text"
+              className="login-input"
+              value={personal.firstName}
+              onChange={(e) => setPersonal((p) => ({ ...p, firstName: e.target.value }))}
+              autoComplete="given-name"
+            />
+          </label>
+          <label className="cabinet-input-label">
+            Отчество
+            <input
+              type="text"
+              className="login-input"
+              value={personal.middleName}
+              onChange={(e) => setPersonal((p) => ({ ...p, middleName: e.target.value }))}
+              autoComplete="additional-name"
             />
           </label>
           <label className="cabinet-input-label">
