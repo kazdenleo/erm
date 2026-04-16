@@ -3,7 +3,7 @@
  */
 
 import express from 'express';
-import { optionalAuth, requireAuth, requireAdmin, requireProfile } from '../middleware/auth.js';
+import { requireAuth, requireAdmin, requireProfile } from '../middleware/auth.js';
 import { createInquiryFilesUpload } from '../middleware/uploads.js';
 import { inquiriesController } from '../controllers/inquiries.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
@@ -11,7 +11,7 @@ import { wrapAsync } from '../middleware/errorHandler.js';
 const router = express.Router();
 const upload = createInquiryFilesUpload();
 
-router.use(optionalAuth);
+// optionalAuth уже в главном router/index.js для всех /api/*
 router.use(requireAuth);
 
 router.get('/', wrapAsync(inquiriesController.list));

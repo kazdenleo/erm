@@ -50,9 +50,13 @@ export function AuthProvider({ children }) {
         setUser(null);
         localStorage.removeItem('token');
       }
-    } catch {
-      setUser(null);
-      localStorage.removeItem('token');
+    } catch (err) {
+      // Сбрасываем сессию только при явном «не авторизован»; сетевые сбои и 5xx не должны выкидывать на логин.
+      const status = err?.response?.status;
+      if (status === 401) {
+        setUser(null);
+        localStorage.removeItem('token');
+      }
     } finally {
       setLoading(false);
     }

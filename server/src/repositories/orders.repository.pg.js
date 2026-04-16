@@ -469,6 +469,22 @@ class OrdersRepositoryPG {
       if (rLike.rows[0]?.id) return await this.findById(rLike.rows[0].id);
     }
 
+    if (dbMarketplace === 'ozon') {
+      const tilde = oid.indexOf('~');
+      if (tilde > 0) {
+        const base = oid.slice(0, tilde);
+        row = await byExact('ozon', base);
+        if (row) return row;
+      }
+      const rOzon = await query(
+        pid
+          ? `SELECT id FROM orders WHERE marketplace = 'ozon' AND profile_id = $1 AND (order_group_id = $2 OR order_id LIKE $3) ORDER BY id ASC LIMIT 1`
+          : `SELECT id FROM orders WHERE marketplace = 'ozon' AND (order_group_id = $1 OR order_id LIKE $2) ORDER BY id ASC LIMIT 1`,
+        pid ? [pid, oid, `${oid}~%`] : [oid, `${oid}~%`]
+      );
+      if (rOzon.rows[0]?.id) return await this.findById(rOzon.rows[0].id);
+    }
+
     return null;
   }
 

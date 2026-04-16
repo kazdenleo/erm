@@ -60,13 +60,14 @@ router.get('/orders/:orderId/label/status', validateOrderId, wrapAsync(ordersCon
 // Опциональная авторизация для всех /api (устанавливает req.user при наличии токена)
 router.use(optionalAuth);
 
-// Пока действует временный пароль — доступ только к смене пароля и /auth/me
+// Пока действует временный пароль — доступ только к смене пароля, /auth/me и чтение своего пользователя (кабинет)
 router.use((req, res, next) => {
   if (config.auth?.disabled) return next();
   if (!req.user?.mustChangePassword) return next();
   const url = (req.originalUrl || '').split('?')[0];
   if (req.method === 'POST' && url.startsWith('/api/auth/change-password')) return next();
   if (req.method === 'GET' && url.startsWith('/api/auth/me')) return next();
+  if (req.method === 'GET' && url === '/api/users/me') return next();
   return res.status(403).json({
     ok: false,
     code: 'MUST_CHANGE_PASSWORD',

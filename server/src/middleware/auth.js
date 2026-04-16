@@ -59,8 +59,14 @@ export async function optionalAuth(req, res, next) {
     return next();
   }
   const token = authHeader.slice(7);
+  let decoded;
   try {
-    const decoded = jwt.verify(token, config.jwt.secret);
+    decoded = jwt.verify(token, config.jwt.secret);
+  } catch {
+    req.user = null;
+    return next();
+  }
+  try {
     const result = await query(
       `SELECT id, email, full_name, last_name, first_name, middle_name, role, profile_id, is_profile_admin, account_role,
               COALESCE(must_change_password, false) AS must_change_password, created_at
@@ -86,9 +92,9 @@ export async function optionalAuth(req, res, next) {
       mustChangePassword: !!(user.must_change_password === true || user.must_change_password === 1),
     };
     next();
-  } catch {
-    req.user = null;
-    next();
+  } catch (err) {
+    // Сбой БД не должен маскироваться под «нет сессии» (401) и выкидывать пользователя из приложения.
+    next(err);
   }
 }
 

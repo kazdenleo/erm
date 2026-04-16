@@ -11,6 +11,7 @@ import { readData, writeData, DATA_DIR } from '../utils/storage.js';
 import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import { getFetchProxyAgent } from '../utils/fetchAgent.js';
+import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 
 const SHIPMENT_STICKERS_DIR = join(DATA_DIR, 'shipment-stickers');
 
@@ -327,13 +328,14 @@ function ozonIsAlreadyShippedErrorText(text) {
  * Нужно для заказов в статусе «Ожидает сборки» (awaiting_packaging).
  */
 async function ozonShipWithPackages(config, postingNumber) {
+  const pn = ozonPostingNumberFromOrderId(postingNumber) || String(postingNumber).trim();
   const { client_id, api_key } = config;
   const headers = OZON_HEADERS(client_id, api_key);
   const getResp = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/get', {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      posting_number: String(postingNumber),
+      posting_number: String(pn),
       with: { analytics_data: false, financial_data: false }
     })
   });
@@ -344,7 +346,7 @@ async function ozonShipWithPackages(config, postingNumber) {
   const getData = await getResp.json();
   const posting = getData?.result;
   if (!posting || !Array.isArray(posting.products) || posting.products.length === 0) {
-    throw new Error(`Ozon: постинг ${postingNumber} без товаров`);
+    throw new Error(`Ozon: постинг ${pn} без товаров`);
   }
   const products = posting.products.map((p) => {
     const id = Number(p.product_id) || Number(p.sku) || 0;
@@ -352,13 +354,13 @@ async function ozonShipWithPackages(config, postingNumber) {
     return { product_id: id, quantity: qty };
   }).filter((p) => p.product_id > 0);
   if (products.length === 0) {
-    throw new Error(`Ozon: не удалось получить product_id для постинга ${postingNumber}`);
+    throw new Error(`Ozon: не удалось получить product_id для постинга ${pn}`);
   }
   const shipResp = await fetch('https://api-seller.ozon.ru/v4/posting/fbs/ship', {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      posting_number: String(postingNumber),
+      posting_number: String(pn),
       packages: [{ products }]
     })
   });
@@ -377,12 +379,13 @@ async function ozonShipWithPackages(config, postingNumber) {
  * Если Ozon вернул result: false (заказ в «Ожидает сборки»), вызываем ship (v4) с packages.
  */
 async function ozonPassToAwaitingDeliver(config, postingNumber) {
+  const pn = ozonPostingNumberFromOrderId(postingNumber) || String(postingNumber).trim();
   const { client_id, api_key } = config;
   const headers = OZON_HEADERS(client_id, api_key);
   const resp = await fetch('https://api-seller.ozon.ru/v2/posting/fbs/awaiting-delivery', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ posting_number: [String(postingNumber)] })
+    body: JSON.stringify({ posting_number: [String(pn)] })
   });
   const text = await resp.text();
   if (!resp.ok) {
@@ -400,8 +403,8 @@ async function ozonPassToAwaitingDeliver(config, postingNumber) {
     return true;
   }
   // result: false — заказ, скорее всего, в «Ожидает сборки»; переводим через ship с packages
-  logger.info(`[Ozon] awaiting-delivery result: false для ${postingNumber}, пробуем ship с packages`);
-  return ozonShipWithPackages(config, postingNumber);
+  logger.info(`[Ozon] awaiting-delivery result: false для ${pn}, пробуем ship с packages`);
+  return ozonShipWithPackages(config, pn);
 }
 
 /**

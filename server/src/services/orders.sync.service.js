@@ -15,6 +15,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import integrationsService from './integrations.service.js';
 import ordersService, { orderEligibleForProcurement } from './orders.service.js';
 import logger from '../utils/logger.js';
+import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 
 // Небольшой in‑memory кэш для rate‑limit'а и отдачи последнего результата
@@ -352,11 +353,25 @@ class OrdersSyncService {
       console.warn('[Orders Sync] Failed to load existing orders:', e.message);
     }
 
-    const newOrders = [
+    let newOrders = [
       ...results.ozon.orders,
       ...results.wildberries.orders,
       ...results.yandex.orders
     ];
+    if (ozonConfig?.client_id && ozonConfig?.api_key && existingOrders.length) {
+      try {
+        const extraOzon = await fetchOzonExtraPostingsFromExisting(
+          existingOrders,
+          results.ozon.orders,
+          ozonConfig
+        );
+        if (extraOzon.length) {
+          newOrders = [...newOrders, ...extraOzon];
+        }
+      } catch (e) {
+        logger.warn('[Orders Sync] Ozon catch-up:', e.message);
+      }
+    }
 
     // объединяем по ключу marketplace:orderId
     const ordersMap = new Map();
@@ -624,7 +639,8 @@ class OrdersSyncService {
    * Принудительное обновление конкретного заказа Ozon по posting_number.
    */
   async refreshOzonOrder(orderIdRaw, { profileId = null } = {}) {
-    let orderId = decodeURIComponent(orderIdRaw || '');
+    const storageOrderId = decodeURIComponent(String(orderIdRaw || '').trim());
+    const postingNum = ozonPostingNumberFromOrderId(storageOrderId);
 
     const { marketplaces } = await integrationsService.getAllConfigs(profileId);
     const ozonConfig = marketplaces?.ozon || {};
@@ -634,17 +650,22 @@ class OrdersSyncService {
       throw error;
     }
 
-    let order = null;
+    let syncRows = [];
     let errorMessage = null;
 
     try {
-      order = await fetchOzonOrderByPostingNumber(ozonConfig, orderId);
+      const raw = await fetchOzonOrderDetailRaw(ozonConfig, postingNum);
+      syncRows = mapOzonPostingToSyncRows(raw);
     } catch (error) {
       console.error('[Order Refresh] Direct fetch failed:', error.message);
       errorMessage = error.message;
       try {
         const ozonOrders = await fetchOzonFBSOrders(ozonConfig);
-        order = ozonOrders.find(o => o.orderId === orderId);
+        syncRows = ozonOrders.filter(
+          (o) =>
+            ozonPostingNumberFromOrderId(o.orderId) === postingNum ||
+            o.orderId === storageOrderId
+        );
       } catch (listError) {
         const err = new Error(
           `Ошибка получения заказа: ${errorMessage}. Дополнительная ошибка при попытке получить из списка: ${listError.message}`
@@ -654,11 +675,11 @@ class OrdersSyncService {
       }
     }
 
-    if (!order) {
+    if (!syncRows.length) {
       const err = new Error(
         errorMessage
-          ? `Заказ ${orderId} не найден в Ozon API. Ошибка при прямом запросе: ${errorMessage}`
-          : `Заказ ${orderId} не найден в Ozon API. Возможно, он не существует или недоступен через текущий API метод.`
+          ? `Заказ ${storageOrderId} не найден в Ozon API. Ошибка при прямом запросе: ${errorMessage}`
+          : `Заказ ${storageOrderId} не найден в Ozon API. Возможно, он не существует или недоступен через текущий API метод.`
       );
       err.statusCode = 404;
       throw err;
@@ -666,55 +687,62 @@ class OrdersSyncService {
 
     let oldStatus = null;
     let statusChanged = false;
+    let lastMerged = null;
+
+    const mergeOzonRow = (existing, incoming) => {
+      let nextStatus = incoming.status;
+      if (existing?.status === 'in_procurement' && !isTerminalMarketplaceStatus(incoming.status)) {
+        nextStatus = existing.status;
+      } else if (existing) {
+        nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
+        if (existing.returnedToNewAt) {
+          nextStatus = applyReturnedToNewStatusGuard(nextStatus);
+        }
+      }
+      const rowStatusChanged = existing ? existing.status !== nextStatus : false;
+      return {
+        merged: {
+          ...incoming,
+          status: nextStatus,
+          returnedToNewAt: existing?.returnedToNewAt ?? incoming.returnedToNewAt ?? null,
+          profileId: existing?.profileId ?? existing?.profile_id ?? profileId ?? incoming.profileId
+        },
+        rowStatusChanged
+      };
+    };
 
     if (repositoryFactory.isUsingPostgreSQL()) {
       const ordersRepo = repositoryFactory.getOrdersRepository();
-      const existing = await ordersRepo.findByMarketplaceAndOrderId('ozon', orderId, profileId);
-      if (existing) {
-        oldStatus = existing.status;
-        let nextStatus = order.status;
-        if (existing.status === 'in_procurement' && !isTerminalMarketplaceStatus(order.status)) {
-          nextStatus = existing.status;
-        } else {
-          nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
-          if (existing.returnedToNewAt) {
-            nextStatus = applyReturnedToNewStatusGuard(nextStatus);
-          }
+      const existingFirst = await ordersRepo.findByMarketplaceAndOrderId('ozon', storageOrderId, profileId);
+      if (existingFirst) oldStatus = existingFirst.status;
+
+      for (const row of syncRows) {
+        const existing = await ordersRepo.findByMarketplaceAndOrderId('ozon', String(row.orderId), profileId);
+        const { merged, rowStatusChanged } = mergeOzonRow(existing, row);
+        if (rowStatusChanged) statusChanged = true;
+        if (!existing && profileId != null && merged.profileId == null) {
+          merged.profileId = profileId;
         }
-        order = {
-          ...order,
-          status: nextStatus,
-          returnedToNewAt: existing.returnedToNewAt ?? null,
-          profileId: existing.profileId ?? existing.profile_id ?? profileId
-        };
-        statusChanged = oldStatus !== nextStatus;
-      } else if (profileId != null) {
-        order = { ...order, profileId };
+        await ordersRepo.upsertFromSync(merged);
+        lastMerged = merged;
       }
-      await ordersRepo.upsertFromSync(order);
     } else {
       const existingData = await readData('orders');
       const existingOrders = (existingData && existingData.orders) || [];
-      const idx = existingOrders.findIndex(
-        o => o.marketplace === 'ozon' && (o.orderId || o.order_id) === orderId
+      const idxFirst = existingOrders.findIndex(
+        (o) => o.marketplace === 'ozon' && (o.orderId || o.order_id) === storageOrderId
       );
-      if (idx >= 0) {
-        const ex = existingOrders[idx];
-        oldStatus = ex.status;
-        let nextStatus = order.status;
-        if (ex.status === 'in_procurement' && !isTerminalMarketplaceStatus(order.status)) {
-          nextStatus = ex.status;
-        } else {
-          nextStatus = preserveOzonYandexLocalStatus(ex, nextStatus);
-          if (ex.returnedToNewAt) {
-            nextStatus = applyReturnedToNewStatusGuard(nextStatus);
-          }
-        }
-        order = { ...order, status: nextStatus, returnedToNewAt: ex.returnedToNewAt ?? null };
-        statusChanged = oldStatus !== nextStatus;
-        existingOrders[idx] = order;
-      } else {
-        existingOrders.push(order);
+      if (idxFirst >= 0) oldStatus = existingOrders[idxFirst].status;
+
+      for (const row of syncRows) {
+        const rid = String(row.orderId);
+        const idx = existingOrders.findIndex((o) => o.marketplace === 'ozon' && (o.orderId || o.order_id) === rid);
+        const existing = idx >= 0 ? existingOrders[idx] : null;
+        const { merged, rowStatusChanged } = mergeOzonRow(existing, row);
+        if (rowStatusChanged) statusChanged = true;
+        if (idx >= 0) existingOrders[idx] = merged;
+        else existingOrders.push(merged);
+        lastMerged = merged;
       }
       await writeData('orders', {
         orders: existingOrders,
@@ -723,8 +751,8 @@ class OrdersSyncService {
     }
 
     return {
-      message: `Заказ ${orderId} обновлен`,
-      order,
+      message: `Заказ ${storageOrderId} обновлен`,
+      order: lastMerged,
       oldStatus,
       statusChanged
     };
@@ -752,8 +780,22 @@ class OrdersSyncService {
         err.statusCode = 400;
         throw err;
       }
-      const result = await fetchOzonOrderDetailRaw(ozonConfig, orderId);
-      return { marketplace: 'ozon', detail: result };
+      try {
+        const result = await fetchOzonOrderDetailRaw(ozonConfig, orderId);
+        return { marketplace: 'ozon', detail: result };
+      } catch (e) {
+        if (e.statusCode === 404) {
+          const local = await getLocalOrderByMarketplaceAndOrderId('ozon', orderId, profileId);
+          if (local) {
+            return {
+              marketplace: 'ozon',
+              detail: buildOzonDetailFromLocalOrder(local, ozonPostingNumberFromOrderId(orderId)),
+              fromLocal: true
+            };
+          }
+        }
+        throw e;
+      }
     }
     if (normMarketplace === 'wildberries' || normMarketplace === 'wb') {
       const wbConfig = marketplaces?.wildberries || {};
@@ -795,7 +837,13 @@ class OrdersSyncService {
 // ===== Helpers, перенесённые из старого server.js =====
 
 /** Детальная информация по отправлению Ozon (сырой result для карточки заказа) */
-async function fetchOzonOrderDetailRaw(config, postingNumber) {
+async function fetchOzonOrderDetailRaw(config, postingNumberRaw) {
+  const posting_number = ozonPostingNumberFromOrderId(postingNumberRaw);
+  if (!posting_number) {
+    const err = new Error('Не указан posting_number Ozon');
+    err.statusCode = 400;
+    throw err;
+  }
   const { client_id, api_key } = config;
   const response = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/get', {
     method: 'POST',
@@ -805,7 +853,7 @@ async function fetchOzonOrderDetailRaw(config, postingNumber) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      posting_number: String(postingNumber),
+      posting_number: String(posting_number),
       with: {
         analytics_data: false,
         barcodes: false,
@@ -825,14 +873,18 @@ async function fetchOzonOrderDetailRaw(config, postingNumber) {
   }
   const data = await response.json();
   if (!data.result) {
-    const err = new Error(`Заказ ${postingNumber} не найден в Ozon`);
+    const err = new Error(`Заказ ${posting_number} не найден в Ozon`);
     err.statusCode = 404;
     throw err;
   }
   return data.result;
 }
 
-async function fetchOzonOrderByPostingNumber(config, postingNumber) {
+async function fetchOzonOrderByPostingNumber(config, postingNumberRaw) {
+  const postingNumber = ozonPostingNumberFromOrderId(postingNumberRaw);
+  if (!postingNumber) {
+    throw new Error('Не указан posting_number Ozon');
+  }
   const { client_id, api_key } = config;
 
   const response = await fetch('https://api-seller.ozon.ru/v3/posting/fbs/get', {
@@ -1075,6 +1127,48 @@ async function fetchOzonFBSOrders(config, daysBack = 90) {
     logger.error('[Ozon Orders] Fetch error:', error.message);
     return [];
   }
+}
+
+/**
+ * Догоняющий опрос posting/fbs/get для постингов, которые уже есть в БД с нефинальным статусом,
+ * но не попали в ответ list за период (часто из‑за фильтра дат/лага списка).
+ */
+async function fetchOzonExtraPostingsFromExisting(existingOrders, alreadySyncedOzonRows, ozonConfig) {
+  const seenBases = new Set();
+  for (const o of alreadySyncedOzonRows || []) {
+    if (String(o.marketplace || '').toLowerCase() !== 'ozon') continue;
+    seenBases.add(ozonPostingNumberFromOrderId(o.orderId));
+  }
+  const terminal = new Set(['delivered', 'cancelled']);
+  const bases = [];
+  const queued = new Set();
+  for (const o of existingOrders || []) {
+    if (String(o.marketplace || '').toLowerCase() !== 'ozon') continue;
+    const st = o.status;
+    if (!st || terminal.has(st)) continue;
+    const base = ozonPostingNumberFromOrderId(o.orderId ?? o.order_id);
+    if (!base || seenBases.has(base) || queued.has(base)) continue;
+    queued.add(base);
+    bases.push(base);
+    if (bases.length >= 40) break;
+  }
+  if (!bases.length) return [];
+  const extra = [];
+  for (const base of bases) {
+    try {
+      const raw = await fetchOzonOrderDetailRaw(ozonConfig, base);
+      extra.push(...mapOzonPostingToSyncRows(raw));
+    } catch (e) {
+      logger.debug(`[Ozon catch-up] posting ${base}: ${e.message}`);
+    }
+    /* eslint-disable no-await-in-loop */
+    await new Promise((r) => setTimeout(r, 40));
+    /* eslint-enable no-await-in-loop */
+  }
+  if (extra.length) {
+    logger.info(`[Ozon catch-up] догружено строк из get: ${extra.length} (уникальных постингов: ${bases.length})`);
+  }
+  return extra;
 }
 
 function normalizeWbStatusCode(c) {
@@ -1626,7 +1720,45 @@ async function getLocalOrderByMarketplaceAndOrderId(marketplace, orderId, profil
   if (norm === 'yandex' || norm === 'ym') {
     return byId(id) || byId(yandexOrderIdForApi(id));
   }
+  if (norm === 'ozon') {
+    const tilde = id.indexOf('~');
+    if (tilde > 0) {
+      const base = id.slice(0, tilde);
+      const byBase = byId(base);
+      if (byBase) return byBase;
+    }
+    return (
+      orders.find(
+        (o) =>
+          matchMp(o) &&
+          (String(o.orderGroupId ?? o.order_group_id ?? '') === id ||
+            String(o.orderId ?? o.order_id ?? '').startsWith(`${id}~`))
+      ) || byId(id)
+    );
+  }
   return byId(id);
+}
+
+/** Карточка заказа Ozon из локальной строки (если posting/fbs/get вернул 404) */
+function buildOzonDetailFromLocalOrder(order, postingNumberHint) {
+  const pn =
+    postingNumberHint ||
+    ozonPostingNumberFromOrderId(order.orderId ?? order.order_id ?? '') ||
+    String(order.orderId ?? order.order_id ?? '');
+  return {
+    posting_number: pn,
+    status: order.status,
+    substatus: null,
+    products: [],
+    in_process_at: order.inProcessAt ?? order.in_process_at ?? null,
+    shipment_date: order.shipmentDate ?? order.shipment_date ?? null,
+    customer_name: order.customerName ?? order.customer_name ?? null,
+    customer_phone: order.customerPhone ?? order.customer_phone ?? null,
+    delivery_method: (order.deliveryAddress || order.delivery_address)
+      ? { warehouse_name: order.deliveryAddress ?? order.delivery_address }
+      : null,
+    _fromLocal: true
+  };
 }
 
 /** Собрать объект в формате WB detail из локального заказа (для карточки при 404 от API) */

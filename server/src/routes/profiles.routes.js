@@ -5,12 +5,12 @@
 
 import express from 'express';
 import { profilesController } from '../controllers/profiles.controller.js';
-import { optionalAuth, requireAuth, requireAdmin, requireProfile, requireProfileAdmin } from '../middleware/auth.js';
+import { requireAuth, requireAdmin, requireProfile, requireProfileAdmin } from '../middleware/auth.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 
 const router = express.Router();
 
-router.use(optionalAuth);
+// optionalAuth уже выполнен в главном router/index.js для всех /api/*
 router.use(requireAuth);
 
 router.get('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.getMyProfile));

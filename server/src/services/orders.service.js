@@ -10,6 +10,7 @@ import stockMovementsService from './stockMovements.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
+import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 
 /** marketplace как в product_skus: ozon | wb | ym */
 function marketplaceForProductSkus(marketplace) {
@@ -1075,6 +1076,7 @@ class OrdersService {
 
   async _cancelOzonOrder(orderId) {
     const oid = String(orderId).trim();
+    const postingApi = ozonPostingNumberFromOrderId(oid) || oid;
     const order = await this.getByMarketplaceAndOrderId('ozon', oid);
     if (!order) {
       const err = new Error('Заказ не найден');
@@ -1103,8 +1105,8 @@ class OrdersService {
     };
     let reasonId = null;
     const reasonBodies = [
-      { related_posting_numbers: [oid] },
-      { posting_number: oid }
+      { related_posting_numbers: [postingApi] },
+      { posting_number: postingApi }
     ];
     for (const rb of reasonBodies) {
       const reasonRes = await fetch('https://api-seller.ozon.ru/v2/posting/fbs/cancel-reason/list', {
@@ -1119,7 +1121,7 @@ class OrdersService {
       let list = [];
       if (Array.isArray(postings) && postings.length > 0 && postings[0]?.reasons) {
         const hit =
-          postings.find(p => String(p.posting_number ?? p.postingNumber) === oid) || postings[0];
+          postings.find(p => String(p.posting_number ?? p.postingNumber) === postingApi) || postings[0];
         list = hit?.reasons ?? [];
       } else {
         list = result?.cancel_reasons ?? result?.reasons ?? [];
@@ -1140,7 +1142,7 @@ class OrdersService {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        posting_number: oid,
+        posting_number: postingApi,
         cancel_reason_id: reasonId,
         cancel_reason_message: 'Отмена из ERM'
       })

@@ -5,12 +5,12 @@
 
 import express from 'express';
 import { usersController } from '../controllers/users.controller.js';
-import { optionalAuth, requireAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 
 const router = express.Router();
 
-router.use(optionalAuth);
+// optionalAuth уже выполнен в главном router/index.js для всех /api/*
 router.use(requireAuth);
 
 router.get('/me', wrapAsync(usersController.getMe));
