@@ -753,9 +753,12 @@ class IntegrationsService {
   /**
    * Получить все настройки интеграций (только конфигурации)
    */
-  async getAllConfigs({ profileId = null } = {}) {
+  async getAllConfigs({ profileId = null, onlyActive = false } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const integrations = await this.repository.findAll({ profileId });
+      const integrations = await this.repository.findAll({
+        profileId,
+        ...(onlyActive ? { isActive: true } : {}),
+      });
       const marketplaces = {};
       const suppliers = {};
       
@@ -782,6 +785,27 @@ class IntegrationsService {
         suppliers: { mikado: mikado || {}, moskvorechie: moskvorechie || {} }
       };
     }
+  }
+
+  /**
+   * Профили, у которых есть активные интеграции маркетплейсов.
+   * Нужны для фоновой синхронизации, чтобы не импортировать заказы в пустые аккаунты.
+   */
+  async getProfileIdsWithActiveMarketplaceIntegrations() {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return [];
+    }
+    const result = await query(
+      `SELECT DISTINCT profile_id
+       FROM integrations
+       WHERE profile_id IS NOT NULL
+         AND type = 'marketplace'
+         AND is_active = true
+       ORDER BY profile_id ASC`
+    );
+    return (result.rows || [])
+      .map((row) => (row?.profile_id != null ? Number(row.profile_id) : null))
+      .filter((id) => Number.isFinite(id) && id > 0);
   }
 
   /**

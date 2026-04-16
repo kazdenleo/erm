@@ -253,7 +253,7 @@ class OrdersSyncService {
     const OZON_DAYS_BACK = 365;
 
     // Конфиги маркетплейсов из того же источника, что и раздел «Интеграции» (БД или файлы)
-    const { marketplaces } = await integrationsService.getAllConfigs(profileId);
+    const { marketplaces } = await integrationsService.getAllConfigs({ profileId, onlyActive: true });
     const ozonConfig = marketplaces?.ozon || {};
     const wbConfig = marketplaces?.wildberries || {};
     const ymConfig = marketplaces?.yandex || {};
@@ -340,7 +340,9 @@ class OrdersSyncService {
     let existingOrders = [];
     try {
       if (repositoryFactory.isUsingPostgreSQL()) {
-        existingOrders = await repositoryFactory.getOrdersRepository().findAll();
+        existingOrders = await repositoryFactory.getOrdersRepository().findAll(
+          profileId != null ? { profileId } : {}
+        );
         if (!Array.isArray(existingOrders)) existingOrders = [];
       } else {
         const existingData = await readData('orders');
@@ -584,11 +586,17 @@ class OrdersSyncService {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       return this.syncFbs(options);
     }
-    const profilesRepo = repositoryFactory.getProfilesRepository();
-    const rows = await profilesRepo.findAll();
-    const ids = (rows || []).map((r) => r?.id).filter((id) => id != null);
+    const ids = await integrationsService.getProfileIdsWithActiveMarketplaceIntegrations();
     if (ids.length === 0) {
-      return this.syncFbs(options);
+      return {
+        rateLimited: false,
+        cached: false,
+        skipped: true,
+        retryAfterSeconds: 0,
+        profiles: [],
+        result: [],
+        message: 'Нет профилей с активными интеграциями маркетплейсов',
+      };
     }
     const combined = {
       rateLimited: false,
