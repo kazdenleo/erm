@@ -36,8 +36,12 @@ class IntegrationsController {
    */
   async saveMarketplace(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       const { type } = req.params;
-      const result = await integrationsService.saveMarketplaceConfig(type, req.body);
+      const result = await integrationsService.saveMarketplaceConfig(type, req.body, { profileId: tid });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);

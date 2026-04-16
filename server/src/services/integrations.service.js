@@ -596,7 +596,7 @@ class IntegrationsService {
    * Сохранить настройки маркетплейса.
    * При добавлении API-ключа без даты окончания автоматически ставится срок 180 дней.
    */
-  async saveMarketplaceConfig(type, config) {
+  async saveMarketplaceConfig(type, config, { profileId = null } = {}) {
     if (!['ozon', 'wildberries', 'yandex'].includes(type)) {
       const err = new Error('Неизвестный тип маркетплейса');
       err.statusCode = 400;
@@ -637,11 +637,12 @@ class IntegrationsService {
     }
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      let integration = await this.repository.findByCode(type);
+      let integration = await this.repository.findByCode(type, profileId);
       if (integration) {
         await this.repository.updateConfig(integration.id, config);
       } else {
         await this.repository.create({
+          profile_id: profileId,
           type: 'marketplace',
           name: type === 'ozon' ? 'Ozon' : type === 'wildberries' ? 'Wildberries' : 'Yandex Market',
           code: type,

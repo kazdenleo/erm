@@ -37,8 +37,12 @@ export const brandsController = {
 
   async create(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       const brandData = req.body;
-      const brand = await brandsRepository.create(brandData);
+      const brand = await brandsRepository.create(brandData, { profileId: tid });
       res.status(201).json({ ok: true, data: brand });
     } catch (error) {
       next(error);
@@ -47,7 +51,18 @@ export const brandsController = {
 
   async update(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       const { id } = req.params;
+      const cur = await brandsRepository.findById(id);
+      if (!cur) {
+        return res.status(404).json({ ok: false, message: 'Бренд не найден' });
+      }
+      if (Number(cur.profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
       const updates = req.body;
       const brand = await brandsRepository.update(id, updates);
       if (!brand) {
@@ -61,7 +76,18 @@ export const brandsController = {
 
   async delete(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       const { id } = req.params;
+      const cur = await brandsRepository.findById(id);
+      if (!cur) {
+        return res.status(404).json({ ok: false, message: 'Бренд не найден' });
+      }
+      if (Number(cur.profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
       const deleted = await brandsRepository.delete(id);
       if (!deleted) {
         return res.status(404).json({ ok: false, message: 'Бренд не найден' });

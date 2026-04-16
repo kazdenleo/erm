@@ -34,9 +34,7 @@ class UserCategoriesController {
       const params = [];
       let profileFilter = '';
       if (tid != null) {
-        profileFilter = `WHERE EXISTS (
-          SELECT 1 FROM products p WHERE p.user_category_id = uc.id AND p.profile_id = $1::bigint
-        )`;
+        profileFilter = `WHERE uc.profile_id = $1::bigint`;
         params.push(tid);
       }
       const result = await query(
@@ -251,16 +249,21 @@ class UserCategoriesController {
   async create(req, res, next) {
     try {
       const { name, description, parent_id, attribute_ids, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       
       if (!name) {
         return res.status(400).json({ ok: false, message: 'Название категории обязательно' });
       }
       
       const result = await query(
-        `INSERT INTO user_categories (name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
         [
+          tid,
           name,
           description || null,
           parent_id || null,
@@ -293,6 +296,17 @@ class UserCategoriesController {
     try {
       const { id } = req.params;
       const { name, description, parent_id, marketplace_mappings, attribute_ids, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const owner = await query('SELECT profile_id FROM user_categories WHERE id = $1', [id]);
+      if (owner.rows.length === 0) {
+        return res.status(404).json({ ok: false, message: 'Категория не найдена' });
+      }
+      if (Number(owner.rows[0].profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
       
       const updateFields = [];
       const params = [];
@@ -393,6 +407,17 @@ class UserCategoriesController {
   async delete(req, res, next) {
     try {
       const { id } = req.params;
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const owner = await query('SELECT profile_id FROM user_categories WHERE id = $1', [id]);
+      if (owner.rows.length === 0) {
+        return res.status(404).json({ ok: false, message: 'Категория не найдена' });
+      }
+      if (Number(owner.rows[0].profile_id) !== Number(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
       const result = await query(
         'DELETE FROM user_categories WHERE id = $1 RETURNING id',
         [id]

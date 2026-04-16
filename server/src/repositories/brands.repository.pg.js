@@ -7,7 +7,7 @@ import { query } from '../config/database.js';
 
 class BrandsRepositoryPG {
   /**
-   * Получить все бренды. При заданном profileId — только бренды, у которых есть товары этого аккаунта.
+   * Получить все бренды. При заданном profileId — только бренды этого аккаунта.
    */
   async findAll(options = {}) {
     const profileId = options.profileId ?? options.profile_id;
@@ -15,9 +15,7 @@ class BrandsRepositoryPG {
       const result = await query(
         `SELECT b.*
          FROM brands b
-         WHERE EXISTS (
-           SELECT 1 FROM products p WHERE p.brand_id = b.id AND p.profile_id = $1::bigint
-         )
+         WHERE b.profile_id = $1::bigint
          ORDER BY b.name`,
         [profileId]
       );
@@ -38,15 +36,20 @@ class BrandsRepositoryPG {
   /**
    * Получить бренд по имени
    */
-  async findByName(name) {
-    const result = await query('SELECT * FROM brands WHERE name = $1', [name]);
+  async findByName(name, profileId = null) {
+    const n = String(name || '').trim();
+    if (profileId != null && profileId !== '') {
+      const result = await query('SELECT * FROM brands WHERE profile_id = $1::bigint AND LOWER(TRIM(name)) = LOWER(TRIM($2))', [profileId, n]);
+      return result.rows[0] || null;
+    }
+    const result = await query('SELECT * FROM brands WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))', [n]);
     return result.rows[0] || null;
   }
   
   /**
    * Создать бренд
    */
-  async create(data) {
+  async create(data, options = {}) {
     // backward compatible: allow create('Brand name')
     const payload = (data != null && typeof data === 'object')
       ? data
@@ -54,6 +57,7 @@ class BrandsRepositoryPG {
 
     const name = String(payload.name || '').trim();
     if (!name) return null;
+    const profileId = options.profileId ?? options.profile_id ?? payload.profileId ?? payload.profile_id ?? null;
 
     const description = payload.description != null && String(payload.description).trim() !== '' ? String(payload.description).trim() : null;
     const website = payload.website != null && String(payload.website).trim() !== '' ? String(payload.website).trim() : null;
@@ -62,9 +66,9 @@ class BrandsRepositoryPG {
     const certificateValidTo = payload.certificate_valid_to ?? payload.certificateValidTo ?? null;
 
     const result = await query(
-      `INSERT INTO brands (name, description, website, certificate_number, certificate_valid_from, certificate_valid_to)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (name) DO UPDATE SET
+      `INSERT INTO brands (profile_id, name, description, website, certificate_number, certificate_valid_from, certificate_valid_to)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (profile_id, LOWER(TRIM(name))) DO UPDATE SET
          description = COALESCE(EXCLUDED.description, brands.description),
          website = COALESCE(EXCLUDED.website, brands.website),
          certificate_number = COALESCE(EXCLUDED.certificate_number, brands.certificate_number),
@@ -72,10 +76,10 @@ class BrandsRepositoryPG {
          certificate_valid_to = COALESCE(EXCLUDED.certificate_valid_to, brands.certificate_valid_to),
          updated_at = CURRENT_TIMESTAMP
        RETURNING *`,
-      [name, description, website, certificateNumber, certificateValidFrom, certificateValidTo]
+      [profileId, name, description, website, certificateNumber, certificateValidFrom, certificateValidTo]
     );
 
-    return result.rows[0] || await this.findByName(name);
+    return result.rows[0] || await this.findByName(name, profileId);
   }
   
   /**
