@@ -3,13 +3,15 @@
  * Главная страница приложения
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useProducts } from '../../hooks/useProducts';
 import { useOrders } from '../../hooks/useOrders';
+import { questionsApi } from '../../services/questions.api';
 import { countOrderGroupsWithStatuses } from '../../utils/orderListGroupKey';
 import './Home.css';
 
@@ -88,10 +90,40 @@ function countSkusWithStock(products) {
 }
 
 export function Home() {
-  const { isAccountAdmin } = useAuth();
+  const { isAccountAdmin, user } = useAuth();
   const { products, loading, error, loadProducts } = useProducts();
   const { orders, loading: ordersLoading, error: ordersError } = useOrders();
   const [stockDetailOpen, setStockDetailOpen] = useState(false);
+  const [questionsNewCount, setQuestionsNewCount] = useState(0);
+
+  const loadQuestionsStats = useCallback(async () => {
+    if (user?.profileId == null || user?.profileId === '') {
+      setQuestionsNewCount(0);
+      return;
+    }
+    try {
+      const { newCount } = await questionsApi.getStats();
+      setQuestionsNewCount(
+        typeof newCount === 'number' && Number.isFinite(newCount) ? newCount : 0
+      );
+    } catch {
+      setQuestionsNewCount(0);
+    }
+  }, [user?.profileId]);
+
+  useEffect(() => {
+    loadQuestionsStats();
+    const t = setInterval(loadQuestionsStats, 60000);
+    return () => clearInterval(t);
+  }, [loadQuestionsStats]);
+
+  useEffect(() => {
+    const onRefresh = () => loadQuestionsStats();
+    window.addEventListener('questions-stats-refresh', onRefresh);
+    return () => window.removeEventListener('questions-stats-refresh', onRefresh);
+  }, [loadQuestionsStats]);
+
+  const widgetColClass = isAccountAdmin ? 'col-md-6 col-xl-3' : 'col-md-6 col-xl-4';
 
   const needProcessOrderCount = useMemo(
     () => countOrderGroupsWithStatuses(orders, ORDER_NEED_PROCESS_STATUSES),
@@ -125,7 +157,7 @@ export function Home() {
       />
 
       <div className="row">
-        <div className="col-md-6 col-xl-4">
+        <div className={widgetColClass}>
           <div className="card mb-3 widget-content bg-midnight-bloom">
             <div className="widget-content-wrapper text-white">
               <div className="widget-content-left">
@@ -140,7 +172,7 @@ export function Home() {
             </div>
           </div>
         </div>
-        <div className="col-md-6 col-xl-4">
+        <div className={widgetColClass}>
           <div className="card mb-3 widget-content bg-arielle-smile">
             <div className="widget-content-wrapper text-white">
               <div className="widget-content-left">
@@ -157,8 +189,29 @@ export function Home() {
             </div>
           </div>
         </div>
-        <div className="col-md-6 col-xl-4">
-          {isAccountAdmin && (
+        <div className={widgetColClass}>
+          <Link
+            to="/questions"
+            className="text-decoration-none d-block home-questions-plate-link"
+            title="Открыть вопросы покупателей"
+          >
+            <div className="card mb-3 widget-content bg-malibu-beach home-questions-plate-block">
+              <div className="widget-content-wrapper text-white">
+                <div className="widget-content-left">
+                  <div className="widget-heading">Обработать вопросов</div>
+                  <div className="widget-subheading">Без ответа продавца</div>
+                </div>
+                <div className="widget-content-right">
+                  <div className="widget-numbers text-white">
+                    <span>{formatQty(questionsNewCount)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Link>
+        </div>
+        {isAccountAdmin && (
+          <div className={widgetColClass}>
             <div
               role="button"
               tabIndex={0}
@@ -177,7 +230,6 @@ export function Home() {
               <div className="widget-content-wrapper text-white home-stock-plate-row">
                 <div className="widget-content-left">
                   <div className="widget-heading">Остатки</div>
-                  <div className="widget-subheading">Все склады · нажмите для деталей</div>
                 </div>
                 <div className="widget-numbers text-white home-stock-plate-col-center">
                   {loading ? '…' : error ? '—' : (
@@ -200,8 +252,8 @@ export function Home() {
                 </div>
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {isAccountAdmin && (

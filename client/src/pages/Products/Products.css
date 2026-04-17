@@ -126,29 +126,10 @@
 }
 
 .products-table .mp-badge {
-  display: inline-block;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-size: 9px;
-  font-weight: 600;
   margin-right: 4px;
-  white-space: nowrap;
 }
 
-.products-table .mp-badge.ozon {
-  background: #005bff;
-  color: white;
-}
-
-.products-table .mp-badge.wb {
-  background: #cb11ab;
-  color: white;
-}
-
-.products-table .mp-badge.ym {
-  background: #fc0;
-  color: #000;
-}
+/* Цвета бейджей — src/styles/mp-badges.css */
 
 /* Остальное теперь стилизует ArchitectUI/Bootstrap */
 

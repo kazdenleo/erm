@@ -18,6 +18,7 @@ export function Settings() {
     name: '',
     contact_email: '',
     contact_phone: '',
+    allow_private_orders: false,
   });
 
   const loadAccount = useCallback(async () => {
@@ -32,6 +33,7 @@ export function Settings() {
           name: p.name ?? '',
           contact_email: p.contact_email ?? '',
           contact_phone: p.contact_phone ?? '',
+          allow_private_orders: p.allow_private_orders === true,
         });
       }
     } catch (err) {
@@ -58,6 +60,7 @@ export function Settings() {
         name,
         contact_email: form.contact_email.trim() || null,
         contact_phone: form.contact_phone.trim() || null,
+        allow_private_orders: form.allow_private_orders,
       });
       await refreshUser();
       alert('Сохранено');
@@ -112,6 +115,22 @@ export function Settings() {
                   onChange={(e) => setForm((f) => ({ ...f, contact_phone: e.target.value }))}
                   autoComplete="tel"
                 />
+              </label>
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.allow_private_orders}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, allow_private_orders: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Выполнять частные заказы</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Разрешить создание заказов вручную и фильтр «Ручной» в списке заказов. При выключении частные заказы
+                    не отображаются в списке.
+                  </span>
+                </span>
               </label>
               <div className="settings-account-actions">
                 <Button type="button" variant="primary" onClick={saveAccount} disabled={saving}>

@@ -36,8 +36,8 @@ import organizationsRoutes from './organizations.routes.js';
 import marketplaceCabinetsRoutes from './marketplace_cabinets.routes.js';
 import certificatesRoutes from './certificates.routes.js';
 import inquiriesRoutes from './inquiries.routes.js';
+import questionsRoutes from './questions.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
-import stockProblemsController from '../controllers/stockProblems.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
 import { requireAuth } from '../middleware/auth.js';
 
@@ -128,6 +128,7 @@ router.put(
   wrapAsync(ordersController.markShipped.bind(ordersController))
 );
 router.use('/orders', ordersRoutes);
+router.use('/questions', questionsRoutes);
 router.use('/supplier-stocks', supplierStocksRoutes);
 
 // Integrations API (настройки маркетплейсов и поставщиков)
@@ -182,18 +183,6 @@ router.delete(
 );
 // Закупки (ожидание) и приёмки по закупкам — остальные методы
 router.use('/purchases', purchasesRoutes);
-
-// Проблемы остатков: какие заказы без покрытия (FIFO по резервам)
-router.get(
-  '/stock-problems/orders',
-  requireAuth,
-  wrapAsync(stockProblemsController.getProblemOrders.bind(stockProblemsController))
-);
-router.post(
-  '/stock-problems/orders/refresh-flags',
-  requireAuth,
-  wrapAsync(stockProblemsController.refreshFlags.bind(stockProblemsController))
-);
 
 // Инвентаризация — явные маршруты (вложенный Router у части окружений не матчил POST /apply)
 router.get(

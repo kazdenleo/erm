@@ -3,29 +3,7 @@
   -webkit-overflow-scrolling: touch;
 }
 
-.prices-table .mp-badge {
-  display: inline-block;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-size: 9px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.prices-table .mp-badge.ozon {
-  background: #005bff;
-  color: white;
-}
-
-.prices-table .mp-badge.wb {
-  background: #cb11ab;
-  color: white;
-}
-
-.prices-table .mp-badge.ym {
-  background: #fc0;
-  color: #000;
-}
+/* Бейджи МП — src/styles/mp-badges.css */
 
 /* Общие стили наследуются из tables.css и pages.css */
 

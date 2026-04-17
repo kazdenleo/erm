@@ -1,0 +1,82 @@
+/**
+ * Единый вид кнопок фильтров (списки заказов, вопросы и т.д.).
+ * Бейджи МП: src/styles/mp-badges.css
+ */
+
+.erp-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.erp-filter-row--search {
+  margin-bottom: 12px;
+}
+
+.erp-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--card, #fff);
+  color: var(--text, #334155);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.erp-filter-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.erp-filter-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.erp-filter-btn--active {
+  background: var(--primary-600, #2563eb);
+  border-color: var(--primary-600, #2563eb);
+  color: #fff;
+}
+
+.erp-filter-btn--active:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.erp-filter-btn--active .mp-badge {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.erp-filter-btn__label {
+  font-weight: 500;
+}
+
+.erp-filter-btn__count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  opacity: 0.92;
+}
+
+.erp-filter-btn--active .erp-filter-btn__count {
+  opacity: 1;
+}
+
+.erp-filter-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: 1 1 260px;
+  min-width: 0;
+  justify-content: flex-end;
+}

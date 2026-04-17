@@ -1406,7 +1406,7 @@ export function Prices() {
                             </div>
                           </div>
                         ) : skuOzon ? (
-                          <span className="mp-badge ozon" style={{opacity: 0.5}}>OZON</span>
+                          <span className="mp-badge ozon" style={{opacity: 0.5}}>OZ</span>
                         ) : (
                           <span style={{color: 'var(--muted)', fontSize: '12px'}}>—</span>
                         )}

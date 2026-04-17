@@ -1,0 +1,44 @@
+/**
+ * Бейджи маркетплейсов (OZ, WB, YM, …) — одна ширина,
+ * по компактности как раньше у «WB» (padding 2px 6px, без лишней полосы).
+ */
+.mp-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  min-width: 1.75rem;
+  box-sizing: border-box;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.mp-badge.ozon {
+  background: #005bff;
+  color: #fff;
+}
+
+.mp-badge.wb {
+  background: #cb11ab;
+  color: #fff;
+}
+
+.mp-badge.ym {
+  background: #fc0;
+  color: #000;
+}
+
+.mp-badge.manual {
+  background: #6c757d;
+  color: #fff;
+}
+
+.mp-badge.mp-unknown {
+  background: #dee2e6;
+  color: #495057;
+}

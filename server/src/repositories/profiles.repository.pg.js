@@ -89,6 +89,10 @@ class ProfilesRepositoryPG {
     if (updates.tariff !== undefined) {
       set('tariff', updates.tariff === '' ? null : updates.tariff);
     }
+    if (updates.allow_private_orders !== undefined || updates.allowPrivateOrders !== undefined) {
+      const v = updates.allow_private_orders ?? updates.allowPrivateOrders;
+      set('allow_private_orders', v === true || v === '1' || v === 'true');
+    }
 
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

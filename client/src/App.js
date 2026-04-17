@@ -16,6 +16,7 @@ import { Products } from './pages/Products/Products';
 import { Warehouses } from './pages/Warehouses/Warehouses';
 import { Suppliers } from './pages/Suppliers/Suppliers';
 import { Orders } from './pages/Orders/Orders';
+import { Questions } from './pages/Questions/Questions';
 import { OrderDetail } from './pages/Orders/OrderDetail';
 import { Shipments } from './pages/Shipments/Shipments';
 import { Assembly } from './pages/Assembly/Assembly';
@@ -23,7 +24,6 @@ import { StockLevelsLayout } from './pages/StockLevels/StockLevelsLayout';
 import { SupplierStocks } from './pages/StockLevels/SupplierStocks';
 import { WarehouseStocks } from './pages/StockLevels/WarehouseStocks';
 import { Purchases } from './pages/StockLevels/Purchases';
-import { StockProblems } from './pages/StockLevels/StockProblems';
 import { Integrations } from './pages/Integrations/Integrations';
 import { Notifications } from './pages/Notifications/Notifications';
 import { Categories } from './pages/Categories/Categories';
@@ -41,6 +41,8 @@ import { PlatformLayout } from './platform/PlatformLayout.jsx';
 import { PlatformRoute } from './platform/PlatformRoute.jsx';
 import { PlatformInquiries } from './platform/PlatformInquiries.jsx';
 import './App.css';
+import './styles/mp-badges.css';
+import './styles/erp-filter-bar.css';
 
 function App() {
   return (
@@ -82,11 +84,12 @@ function App() {
             <Route path="suppliers" element={<SupplierStocks />} />
             <Route path="warehouse" element={<WarehouseStocks />} />
             <Route path="purchases" element={<Purchases />} />
-            <Route path="problems" element={<StockProblems />} />
+            <Route path="problems" element={<Navigate to="/stock-levels/warehouse" replace />} />
           </Route>
           <Route path="/warehouses" element={<ProtectedRoute><Layout><Warehouses /></Layout></ProtectedRoute>} />
           <Route path="/suppliers" element={<ProtectedRoute><Layout><Suppliers /></Layout></ProtectedRoute>} />
           <Route path="/orders" element={<ProtectedRoute><Layout><Orders /></Layout></ProtectedRoute>} />
+          <Route path="/questions" element={<ProtectedRoute><Layout><Questions /></Layout></ProtectedRoute>} />
           <Route path="/orders/:marketplace/:orderId" element={<ProtectedRoute><Layout><OrderDetail /></Layout></ProtectedRoute>} />
           <Route path="/shipments" element={<ProtectedRoute><Layout><Shipments /></Layout></ProtectedRoute>} />
           <Route path="/assembly" element={<ProtectedRoute><Layout><Assembly /></Layout></ProtectedRoute>} />

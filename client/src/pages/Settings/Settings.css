@@ -34,3 +34,16 @@
 .settings-account-actions {
   margin-top: 0.25rem;
 }
+
+.settings-account-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.settings-account-toggle input {
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+}

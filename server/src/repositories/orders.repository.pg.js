@@ -3,7 +3,7 @@
  * Репозиторий для работы с заказами в PostgreSQL
  */
 
-import { query, transaction } from '../config/database.js';
+import { query } from '../config/database.js';
 
 /** Преобразование строки БД (snake_case) в формат API (camelCase) для совместимости с фронтом и файловым хранилищем */
 function rowToCamel(row) {
@@ -31,9 +31,6 @@ function rowToCamel(row) {
     quantity: row.quantity,
     price: parseFloat(row.price),
     status: row.status,
-    stockProblem: row.stock_problem ?? false,
-    stockProblemDetectedAt: row.stock_problem_detected_at ?? null,
-    stockProblemDetails: row.stock_problem_details ?? null,
     customerName: row.customer_name,
     customerPhone: row.customer_phone,
     deliveryAddress: row.delivery_address,
@@ -80,77 +77,8 @@ function normalizeProfileId(profileId) {
 }
 
 class OrdersRepositoryPG {
-  /**
-   * Массово выставить/снять флаг stock_problem для активных заказов.
-   * @param {object} params
-   * @param {number[]} params.problemOrderIds - orders.id, которые должны иметь stock_problem=true
-   * @param {object} params.detailsByOrderId - { [orderId]: any } диагностика (JSON)
-   * @param {string[]} params.activeStatuses - статусы заказов, которые считаются "активными" для флага
-   */
-  async setStockProblemFlags({ problemOrderIds = [], detailsByOrderId = {}, activeStatuses = [] } = {}) {
-    const ids = (Array.isArray(problemOrderIds) ? problemOrderIds : [])
-      .map((x) => (typeof x === 'string' ? parseInt(x, 10) : Number(x)))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    const statuses = Array.isArray(activeStatuses) ? activeStatuses.map(String) : [];
-
-    return await transaction(async (client) => {
-      // 1) Снять флаг со всех активных заказов, которые сейчас НЕ в проблемном списке
-      if (statuses.length > 0) {
-        if (ids.length > 0) {
-          await client.query(
-            `UPDATE orders
-             SET stock_problem = false,
-                 stock_problem_detected_at = NULL,
-                 stock_problem_details = NULL,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE status = ANY($1::text[])
-               AND stock_problem = true
-               AND id <> ALL($2::bigint[])`,
-            [statuses, ids]
-          );
-        } else {
-          await client.query(
-            `UPDATE orders
-             SET stock_problem = false,
-                 stock_problem_detected_at = NULL,
-                 stock_problem_details = NULL,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE status = ANY($1::text[])
-               AND stock_problem = true`,
-            [statuses]
-          );
-        }
-      }
-
-      // 2) Выставить флаг на проблемные
-      let updated = 0;
-      for (const id of ids) {
-        const details = Object.prototype.hasOwnProperty.call(detailsByOrderId, String(id))
-          ? detailsByOrderId[String(id)]
-          : (Object.prototype.hasOwnProperty.call(detailsByOrderId, id) ? detailsByOrderId[id] : null);
-        const params = [id];
-        let sql = `
-          UPDATE orders
-          SET stock_problem = true,
-              stock_problem_detected_at = CURRENT_TIMESTAMP,
-              stock_problem_details = $2::jsonb,
-              updated_at = CURRENT_TIMESTAMP
-          WHERE id = $1
-        `;
-        params.push(details != null ? JSON.stringify(details) : JSON.stringify(null));
-        if (statuses.length > 0) {
-          sql += ` AND status = ANY($3::text[])`;
-          params.push(statuses);
-        }
-        const r = await client.query(sql, params);
-        updated += r.rowCount || 0;
-      }
-      return { updated, totalProblemOrders: ids.length };
-    });
-  }
-
   buildFindAllFilters(options = {}) {
-    const { marketplace, status, productId, search, stockProblem, profileId } = options;
+    const { marketplace, status, productId, search, profileId, excludeManual } = options;
     const params = [];
     let paramIndex = 1;
     let whereSql = ' WHERE 1=1';
@@ -158,6 +86,9 @@ class OrdersRepositoryPG {
     if (pid) {
       whereSql += ` AND o.profile_id = $${paramIndex++}`;
       params.push(pid);
+    }
+    if (excludeManual === true) {
+      whereSql += ` AND o.marketplace <> 'manual'`;
     }
     if (marketplace) {
       whereSql += ` AND o.marketplace = $${paramIndex++}`;
@@ -176,11 +107,6 @@ class OrdersRepositoryPG {
       params.push(`%${search}%`);
       paramIndex++;
     }
-    if (stockProblem === true) {
-      whereSql += ` AND o.stock_problem = true`;
-    } else if (stockProblem === false) {
-      whereSql += ` AND o.stock_problem = false`;
-    }
     return { whereSql, params, paramIndex };
   }
 
@@ -189,9 +115,9 @@ class OrdersRepositoryPG {
    * Сопоставление с каталогом по product_skus (название товара); при ошибке или отсутствии таблицы — без него.
    */
   async findAll(options = {}) {
-    const { limit, offset, marketplace, status, productId, search, stockProblem, profileId } = options;
+    const { limit, offset, marketplace, status, productId, search, profileId, excludeManual } = options;
     const { whereSql, params, paramIndex: startParamIndex } = this.buildFindAllFilters({
-      marketplace, status, productId, search, stockProblem, profileId
+      marketplace, status, productId, search, profileId, excludeManual
     });
     let paramIndex = startParamIndex;
     let limitOffsetSql = ' ORDER BY o.created_at DESC, o.in_process_at DESC';
@@ -209,7 +135,6 @@ class OrdersRepositoryPG {
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
-        o.stock_problem, o.stock_problem_detected_at, o.stock_problem_details,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id,
         assembler.email AS assembled_by_email,
@@ -267,7 +192,6 @@ class OrdersRepositoryPG {
             COALESCE(p.name, o.product_name) AS product_name,
             o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
             o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
-            o.stock_problem, o.stock_problem_detected_at, o.stock_problem_details,
             o.returned_to_new_at,
             o.assembled_at, o.assembled_by_user_id,
             assembler.email AS assembled_by_email,
@@ -298,6 +222,14 @@ class OrdersRepositoryPG {
           LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
           WHERE 1=1
         `;
+        const pidSimple = normalizeProfileId(profileId);
+        if (pidSimple) {
+          sqlSimple += ` AND o.profile_id = $${pi++}`;
+          paramsSimple.push(pidSimple);
+        }
+        if (excludeManual === true) {
+          sqlSimple += ` AND o.marketplace <> 'manual'`;
+        }
         if (marketplace) {
           sqlSimple += ` AND o.marketplace = $${pi++}`;
           paramsSimple.push(marketplace);
@@ -314,11 +246,6 @@ class OrdersRepositoryPG {
           sqlSimple += ` AND ( o.order_id ILIKE $${pi} OR o.product_name ILIKE $${pi} OR o.customer_name ILIKE $${pi} )`;
           paramsSimple.push(`%${search}%`);
           pi++;
-        }
-        if (stockProblem === true) {
-          sqlSimple += ` AND o.stock_problem = true`;
-        } else if (stockProblem === false) {
-          sqlSimple += ` AND o.stock_problem = false`;
         }
         sqlSimple += ' ORDER BY o.created_at DESC, o.in_process_at DESC';
         if (limit) {
@@ -357,7 +284,6 @@ class OrdersRepositoryPG {
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
-        o.stock_problem, o.stock_problem_detected_at, o.stock_problem_details,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id,
         assembler.email AS assembled_by_email,
@@ -407,7 +333,6 @@ class OrdersRepositoryPG {
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
-        o.stock_problem, o.stock_problem_detected_at, o.stock_problem_details,
         o.returned_to_new_at,
         o.assembled_at, o.assembled_by_user_id,
         assembler.email AS assembled_by_email,
@@ -985,8 +910,7 @@ class OrdersRepositoryPG {
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
-        o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id,
-        o.stock_problem, o.stock_problem_detected_at, o.stock_problem_details
+        o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id
        FROM orders o
        WHERE o.status IN ('new', 'in_procurement')
          AND ${byProductMatch}

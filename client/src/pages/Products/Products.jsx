@@ -938,7 +938,7 @@ export function Products() {
                         <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
                           {product.sku_ozon && (
                             <div style={{display: 'flex', alignItems: 'center', gap: '6px'}}>
-                              <span className="mp-badge ozon">OZON</span>
+                              <span className="mp-badge ozon">OZ</span>
                               <span style={{fontSize: '11px'}}>{product.sku_ozon}</span>
                               {product.buyout_rate_ozon !== null && product.buyout_rate_ozon !== undefined && (
                                 <span style={{

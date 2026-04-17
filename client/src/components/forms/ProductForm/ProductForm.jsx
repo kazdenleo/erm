@@ -2493,7 +2493,7 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
       {activeTab === 'ozon' && (
         <div className="product-form-marketplace-panel">
           <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ background: '#005bff', color: 'white', borderRadius: '4px', padding: '4px 8px', fontSize: '12px', fontWeight: 600 }}>OZON</span>
+            <span className="mp-badge ozon">OZ</span>
             Данные для Ozon
           </h4>
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
@@ -2843,7 +2843,7 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
       {activeTab === 'wb' && (
         <div className="product-form-marketplace-panel">
           <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ background: '#cb11ab', color: 'white', borderRadius: '4px', padding: '4px 8px', fontSize: '12px', fontWeight: 600 }}>WB</span>
+            <span className="mp-badge wb">WB</span>
             Данные для Wildberries
           </h4>
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
@@ -3285,7 +3285,7 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
       {activeTab === 'ym' && (
         <div className="product-form-marketplace-panel">
           <h4 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ background: '#fc0', color: '#000', borderRadius: '4px', padding: '4px 8px', fontSize: '12px', fontWeight: 600 }}>YM</span>
+            <span className="mp-badge ym">YM</span>
             Данные для Яндекс.Маркет
           </h4>
           <div className="mt-2">

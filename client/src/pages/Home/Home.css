@@ -1,3 +1,24 @@
+/* Плашка «Вопросы» — клик ведёт на /questions */
+.home-questions-plate-link {
+  color: inherit;
+}
+
+.home-questions-plate-block {
+  cursor: pointer;
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
+}
+
+.home-questions-plate-link:hover .home-questions-plate-block {
+  filter: brightness(1.06);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
+.home-questions-plate-link:focus-visible {
+  outline: 2px solid rgba(79, 172, 254, 0.9);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
 /* Плашка «Остатки»: те же отступы/высота, что у соседних .card.widget-content */
 .home-stock-plate-block {
   cursor: pointer;

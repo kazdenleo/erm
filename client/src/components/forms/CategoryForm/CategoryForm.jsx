@@ -625,7 +625,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         <div className="field" style={{marginBottom: '12px', position: 'relative'}}>
           <label className="label" htmlFor="wbCategory" style={{fontSize: '12px'}}>
             <span style={{display: 'inline-flex', alignItems: 'center', gap: '4px'}}>
-              <span style={{background: '#cb11ab', color: 'white', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', fontWeight: 600}}>WB</span>
+              <span className="mp-badge wb">WB</span>
               Wildberries
             </span>
           </label>
@@ -712,7 +712,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         <div className="field" style={{marginBottom: '12px', position: 'relative'}}>
           <label className="label" htmlFor="ozonCategory" style={{fontSize: '12px'}}>
             <span style={{display: 'inline-flex', alignItems: 'center', gap: '4px'}}>
-              <span style={{background: '#005bff', color: 'white', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', fontWeight: 600}}>OZON</span>
+              <span className="mp-badge ozon">OZ</span>
               Ozon
             </span>
             {(
@@ -864,7 +864,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         <div className="field" style={{marginBottom: '12px', position: 'relative'}}>
           <label className="label" htmlFor="ymCategory" style={{fontSize: '12px'}}>
             <span style={{display: 'inline-flex', alignItems: 'center', gap: '4px'}}>
-              <span style={{background: '#fc0', color: '#000', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', fontWeight: 600}}>YM</span>
+              <span className="mp-badge ym">YM</span>
               Yandex Market
             </span>
           </label>

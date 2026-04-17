@@ -524,20 +524,28 @@ class OrdersService {
 
   /**
    * Создать ручной заказ с несколькими товарами (одна группа).
-   * @param {Array<{ productId: number, quantity: number }>} items
+   * @param {Array<{ productId: number, quantity: number, price?: number }>} items — price за единицу (если не передана, берётся из карточки товара)
+   * @param {{ profileId?: number|null, customerName?: string|null, customerPhone?: string|null }} [meta]
    * @returns {Promise<object>} { orderGroupId, orders: [...] }
    */
-  async createManualWithItems(items) {
+  async createManualWithItems(items, meta = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       const error = new Error('Ручное добавление заказов поддерживается только при использовании PostgreSQL');
       error.statusCode = 501;
       throw error;
     }
     if (!Array.isArray(items) || items.length === 0) {
-      const error = new Error('Укажите хотя бы одну позицию (items: [{ productId, quantity }, ...])');
+      const error = new Error('Укажите хотя бы одну позицию (items: [{ productId, quantity, price }, ...])');
       error.statusCode = 400;
       throw error;
     }
+    const profileId = meta.profileId != null ? Number(meta.profileId) : null;
+    const customerName =
+      meta.customerName != null && String(meta.customerName).trim() !== '' ? String(meta.customerName).trim() : null;
+    const customerPhone =
+      meta.customerPhone != null && String(meta.customerPhone).trim() !== ''
+        ? String(meta.customerPhone).trim()
+        : null;
     const productsService = (await import('./products.service.js')).default;
     const orderGroupId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const created = [];
@@ -548,9 +556,14 @@ class OrdersService {
       if (!productId || !Number.isInteger(productId) || productId < 1) continue;
       const productObj = await productsService.getById(productId);
       if (!productObj) continue;
-      const price = productObj.cost != null ? Number(productObj.cost) : (productObj.price != null ? Number(productObj.price) : 0);
+      let price =
+        item.price != null && item.price !== '' ? Number(item.price) : NaN;
+      if (!Number.isFinite(price) || price < 0) {
+        price = productObj.cost != null ? Number(productObj.cost) : (productObj.price != null ? Number(productObj.price) : 0);
+      }
       const orderId = i === 0 ? orderGroupId : `${orderGroupId}-${i + 1}`;
       const orderData = {
+        profile_id: Number.isFinite(profileId) && profileId > 0 ? profileId : null,
         marketplace: 'manual',
         order_id: orderId,
         order_group_id: orderGroupId,
@@ -560,7 +573,9 @@ class OrdersService {
         marketplace_sku: null,
         quantity,
         price,
-        status: 'new'
+        status: 'new',
+        customer_name: customerName,
+        customer_phone: customerPhone,
       };
       const row = await this.repository.create(orderData);
       const oid = orderRowDbId(row);
@@ -579,6 +594,11 @@ class OrdersService {
         });
       }
       created.push(row);
+    }
+    if (created.length === 0) {
+      const error = new Error('Не удалось создать заказ: проверьте товары и цены.');
+      error.statusCode = 400;
+      throw error;
     }
     return { orderGroupId, orders: created };
   }

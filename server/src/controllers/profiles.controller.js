@@ -24,6 +24,10 @@ function pickAccountOwnerProfilePayload(body) {
   if (b.contact_phone !== undefined || b.contactPhone !== undefined) {
     out.contact_phone = b.contact_phone ?? b.contactPhone;
   }
+  if (b.allow_private_orders !== undefined || b.allowPrivateOrders !== undefined) {
+    const v = b.allow_private_orders ?? b.allowPrivateOrders;
+    out.allow_private_orders = v === true || v === '1' || v === 'true';
+  }
   return out;
 }
 

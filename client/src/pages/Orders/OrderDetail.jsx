@@ -156,9 +156,6 @@ export function OrderDetail() {
   const mpName = marketplaceNames[mpKey] || marketplaceNames[marketplace] || marketplace;
   const detail = data?.detail;
   const localLines = data?.localLines;
-  const stockProblem = Boolean(data?.stockProblem);
-  const stockProblemDetectedAt = data?.stockProblemDetectedAt;
-  const stockProblemDetails = data?.stockProblemDetails;
 
   return (
     <div className="card order-detail">
@@ -171,53 +168,6 @@ export function OrderDetail() {
           <span className="order-detail-marketplace"> ({mpName})</span>
         </h1>
       </div>
-
-      {stockProblem && (
-        <section className="order-detail-section" style={{ marginTop: 16, borderColor: 'rgba(255,0,0,0.25)' }}>
-          <h3 style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span>⚠️ Проблема с остатком</span>
-            {stockProblemDetectedAt && (
-              <span className="text-muted" style={{ fontSize: 13 }}>
-                обнаружено: {new Date(stockProblemDetectedAt).toLocaleString('ru-RU')}
-              </span>
-            )}
-          </h3>
-          {stockProblemDetails?.uncovered_quantity != null && (
-            <p style={{ marginTop: 8 }}>
-              Непокрыто единиц: <strong>{stockProblemDetails.uncovered_quantity}</strong>
-            </p>
-          )}
-          {Array.isArray(stockProblemDetails?.lines) && stockProblemDetails.lines.length > 0 && (
-            <div style={{ marginTop: 10 }}>
-              <table className="warehouse-ops-receipt-list-table table">
-                <thead>
-                  <tr>
-                    <th>Товар (productId)</th>
-                    <th>Непокрыто</th>
-                    <th>Резерв</th>
-                    <th>Время резерва</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stockProblemDetails.lines.map((l, idx) => (
-                    <tr key={idx}>
-                      <td>{l.productId}</td>
-                      <td className="stock-change-minus">-{l.uncovered}</td>
-                      <td>{l.reserved}</td>
-                      <td>{l.reservedAt ? new Date(l.reservedAt).toLocaleString('ru-RU') : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {!stockProblemDetails && (
-            <p className="text-muted" style={{ marginTop: 8 }}>
-              Деталей нет (запусти пересчёт флагов в «Остатки → Проблемы»).
-            </p>
-          )}
-        </section>
-      )}
 
       {(data?.assembly?.assembledAt || data?.assembly?.assembledByEmail || data?.assembly?.assembledByFullName) && (
         <section className="order-detail-section" style={{ marginTop: 16 }}>

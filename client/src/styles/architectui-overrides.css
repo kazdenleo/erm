@@ -52,12 +52,26 @@
   display: block;
 }
 
-/* Кнопка сворачивания подменю — как пункт меню */
-.app-sidebar .vertical-nav-menu button.metismenu-link {
-  display: flex;
+/*
+ * Верхний уровень меню: в main.css иконки с position:absolute + top:50% относительно `a`.
+ * У пунктов с `<button>` контекст ломается — иконки «плывут» между строками.
+ * Единый flex-ряд для прямых `li > a` и `li > button`: иконки в потоке, без absolute.
+ */
+.app-sidebar .vertical-nav-menu > li > a,
+.app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle {
+  display: flex !important;
   align-items: center;
+  box-sizing: border-box;
+  position: relative;
   width: 100%;
-  padding: 0.5rem 1.25rem;
+  min-height: 2.4rem;
+  padding: 0.35rem 1rem 0.35rem 0.75rem !important;
+  gap: 0.5rem;
+  line-height: 1.25;
+  margin: 0.1rem 0;
+  white-space: nowrap;
+}
+.app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle {
   text-align: left;
   border: none;
   background: transparent;
@@ -65,12 +79,72 @@
   color: inherit;
   cursor: pointer;
 }
-.app-sidebar .vertical-nav-menu button.metismenu-link:hover {
+.app-sidebar .vertical-nav-menu > li > a:hover,
+.app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle:hover {
   background: rgba(0, 0, 0, 0.04);
 }
-.app-sidebar .vertical-nav-menu button.metismenu-link .metismenu-icon {
-  margin-right: 0.5rem;
+
+/* Сброс absolute из темы — только прямые пункты корневого ul */
+.app-sidebar .vertical-nav-menu > li > a > i.metismenu-icon,
+.app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle > i.metismenu-icon {
+  position: static !important;
+  left: auto !important;
+  top: auto !important;
+  right: auto !important;
+  transform: none;
+  margin: 0 !important;
+  width: 2.125rem;
+  min-width: 2.125rem;
+  height: 2.125rem;
+  line-height: 2.125rem !important;
+  flex-shrink: 0;
+  text-align: center;
+  opacity: 0.35;
 }
-.app-sidebar .vertical-nav-menu button.metismenu-link .metismenu-state-icon {
-  margin-left: auto;
+.app-sidebar .vertical-nav-menu > li > a:hover > i.metismenu-icon,
+.app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle:hover > i.metismenu-icon {
+  opacity: 0.55;
+}
+
+.app-sidebar .vertical-nav-menu > li > button.metismenu-link--toggle > i.metismenu-state-icon {
+  position: static !important;
+  left: auto !important;
+  top: auto !important;
+  margin: 0 0 0 auto !important;
+  width: 1.75rem;
+  min-width: 1.75rem;
+  height: 2.125rem;
+  line-height: 2.125rem !important;
+  flex-shrink: 0;
+  opacity: 0.45;
+  align-self: center;
+}
+
+/* Раскрытое подменю — стрелка вверх (без конфликта с flex) */
+.app-sidebar .vertical-nav-menu > li.mm-active > button.metismenu-link--toggle > i.metismenu-state-icon {
+  transform: rotate(-180deg);
+}
+
+/* Бейдж счётчика (напр. новые вопросы) */
+.app-sidebar .vertical-nav-menu > li > a .sidebar-nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-sidebar .vertical-nav-menu > li > a .sidebar-menu-badge {
+  flex-shrink: 0;
+  margin-left: 0.35rem;
+  min-width: 1.25rem;
+  padding: 0 6px;
+  height: 1.35rem;
+  line-height: 1.35rem;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  border-radius: 999px;
+  background: #d92550;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(217, 37, 80, 0.25);
 }

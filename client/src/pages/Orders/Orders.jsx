@@ -5,12 +5,12 @@
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { useOrders } from '../../hooks/useOrders';
 import { ordersApi } from '../../services/orders.api';
 import { productsApi } from '../../services/products.api';
 import { purchasesApi } from '../../services/purchases.api';
 import { suppliersApi } from '../../services/suppliers.api';
-import { stockProblemsApi } from '../../services/stockProblems.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import {
@@ -288,6 +288,8 @@ async function resolvePurchaseLinesByCatalogSku(lines) {
 
 export function Orders() {
   const navigate = useNavigate();
+  const { profile } = useAuth();
+  const allowPrivateOrders = profile?.allow_private_orders === true;
   const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
   const ORDERS_PAGE_SIZE = 50;
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
@@ -305,7 +307,6 @@ export function Orders() {
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
-  const [stockProblemFilter, setStockProblemFilter] = useState('all'); // all | only | no
   const [currentPage, setCurrentPage] = useState(1);
   const [markShippedLoadingKey, setMarkShippedLoadingKey] = useState(null);
   const [deleteLoadingKey, setDeleteLoadingKey] = useState(null);
@@ -321,7 +322,9 @@ export function Orders() {
   const [assemblyLoading, setAssemblyLoading] = useState(false);
   const [assemblyMessage, setAssemblyMessage] = useState(null);
   const [addOrderOpen, setAddOrderOpen] = useState(false);
-  const [addOrderItems, setAddOrderItems] = useState([{ productId: '', quantity: 1 }]);
+  const [addOrderCustomerName, setAddOrderCustomerName] = useState('');
+  const [addOrderCustomerPhone, setAddOrderCustomerPhone] = useState('');
+  const [addOrderItems, setAddOrderItems] = useState([{ productId: '', quantity: 1, price: '' }]);
   const [addOrderLoading, setAddOrderLoading] = useState(false);
   const [addOrderError, setAddOrderError] = useState(null);
   const [productsList, setProductsList] = useState([]);
@@ -329,13 +332,6 @@ export function Orders() {
   const [detailModalData, setDetailModalData] = useState(null);
   const [detailModalLoading, setDetailModalLoading] = useState(false);
   const [detailModalError, setDetailModalError] = useState(null);
-
-  /** id заказа (orders.id в БД) -> непокрытое количество (FIFO: actual+incoming < reserved) */
-  const [uncoveredByOrderId, setUncoveredByOrderId] = useState({});
-  /** id заказа -> покрыто actual (в наличии) */
-  const [coveredActualByOrderId, setCoveredActualByOrderId] = useState({});
-  /** id заказа -> покрыто incoming (в пути) */
-  const [coveredIncomingByOrderId, setCoveredIncomingByOrderId] = useState({});
 
   /** Модалка «В закупку»: создать закупку или добавить в черновик */
   const [procurementModalRow, setProcurementModalRow] = useState(null);
@@ -372,6 +368,13 @@ export function Orders() {
   }, [procurementModalRow?.key]);
 
   useEffect(() => {
+    if (!allowPrivateOrders) {
+      setMarketplaceFilter((f) => (f === 'manual' ? 'all' : f));
+      setAddOrderOpen(false);
+    }
+  }, [allowPrivateOrders]);
+
+  useEffect(() => {
     if (addOrderOpen && productsList.length === 0) {
       productsApi.getAll().then((data) => {
         const list = Array.isArray(data) ? data : data?.data ?? data?.products ?? [];
@@ -389,10 +392,8 @@ export function Orders() {
     if (statusFilter !== 'all') params.status = statusFilter;
     const query = String(orderSearchQuery || '').trim();
     if (query) params.search = query;
-    if (stockProblemFilter === 'only') params.stockProblem = true;
-    if (stockProblemFilter === 'no') params.stockProblem = false;
     return params;
-  }, [currentPage, marketplaceFilter, statusFilter, orderSearchQuery, stockProblemFilter]);
+  }, [currentPage, marketplaceFilter, statusFilter, orderSearchQuery]);
 
   const reloadOrders = useCallback(async (options = {}) => {
     const page = options.page ?? currentPage;
@@ -412,7 +413,7 @@ export function Orders() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [marketplaceFilter, statusFilter, stockProblemFilter]);
+  }, [marketplaceFilter, statusFilter]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -420,41 +421,6 @@ export function Orders() {
     }, 300);
     return () => clearTimeout(t);
   }, [orderSearchQuery]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadUncovered = async () => {
-      try {
-        const list = await stockProblemsApi.getProblemOrders({ limit: 500 });
-        const map = {};
-        const mapA = {};
-        const mapI = {};
-        for (const r of Array.isArray(list) ? list : []) {
-          const id = r?.id;
-          if (id == null) continue;
-          const n = Number(r.uncovered_quantity ?? r.uncoveredQuantity ?? 0);
-          map[String(id)] = Number.isFinite(n) ? n : 0;
-          const a = Number(r.covered_by_actual_quantity ?? r.coveredByActualQuantity ?? 0);
-          mapA[String(id)] = Number.isFinite(a) ? a : 0;
-          const i = Number(r.covered_by_incoming_quantity ?? r.coveredByIncomingQuantity ?? 0);
-          mapI[String(id)] = Number.isFinite(i) ? i : 0;
-        }
-        if (!cancelled) {
-          setUncoveredByOrderId(map);
-          setCoveredActualByOrderId(mapA);
-          setCoveredIncomingByOrderId(mapI);
-        }
-      } catch {
-        if (!cancelled) {
-          setUncoveredByOrderId({});
-          setCoveredActualByOrderId({});
-          setCoveredIncomingByOrderId({});
-        }
-      }
-    };
-    loadUncovered();
-    return () => { cancelled = true; };
-  }, [orders]);
 
   useEffect(() => {
     if (!detailModalRow) {
@@ -803,22 +769,38 @@ export function Orders() {
     }
   };
 
-  // Все возможные маркетплейсы (как в старом приложении) + ручные заказы
-  const allMarketplaces = [
-    { name: 'Ozon', code: 'ozon', icon: '🟠' },
-    { name: 'Wildberries', code: 'wildberries', icon: '🟣' },
-    { name: 'Яндекс Маркет', code: 'yandex', icon: '🔴' },
-    { name: 'Ручной', code: 'manual', icon: '✏️' }
-  ];
+  // Маркетплейсы для фильтра; «Ручной» — только если включены частные заказы в настройках аккаунта
+  const allMarketplaces = useMemo(
+    () => {
+      const base = [
+        { name: 'Ozon', code: 'ozon', icon: '🟠', badgeClass: 'ozon', shortLabel: 'OZ' },
+        { name: 'Wildberries', code: 'wildberries', icon: '🟣', badgeClass: 'wb', shortLabel: 'WB' },
+        { name: 'Яндекс Маркет', code: 'yandex', icon: '🔴', badgeClass: 'ym', shortLabel: 'YM' },
+        { name: 'Ручной', code: 'manual', icon: '✏️', badgeClass: 'manual', shortLabel: 'РУЧ' },
+      ];
+      return allowPrivateOrders ? base : base.filter((mp) => mp.code !== 'manual');
+    },
+    [allowPrivateOrders]
+  );
+
+  const defaultPriceFromProduct = (p) => {
+    if (!p || typeof p !== 'object') return '';
+    const c = p.cost != null ? Number(p.cost) : NaN;
+    if (Number.isFinite(c) && c >= 0) return c;
+    const pr = p.price != null ? Number(p.price) : NaN;
+    return Number.isFinite(pr) && pr >= 0 ? pr : '';
+  };
 
   const handleAddOrderOpen = () => {
     setAddOrderError(null);
-    setAddOrderItems([{ productId: '', quantity: 1 }]);
+    setAddOrderCustomerName('');
+    setAddOrderCustomerPhone('');
+    setAddOrderItems([{ productId: '', quantity: 1, price: '' }]);
     setAddOrderOpen(true);
   };
 
   const addOrderAddRow = () => {
-    setAddOrderItems((prev) => [...prev, { productId: '', quantity: 1 }]);
+    setAddOrderItems((prev) => [...prev, { productId: '', quantity: 1, price: '' }]);
   };
 
   const addOrderRemoveRow = (index) => {
@@ -834,22 +816,57 @@ export function Orders() {
     );
   };
 
+  const addOrderProductChange = (index, rawProductId) => {
+    const productId = rawProductId === '' || rawProductId == null ? '' : Number(rawProductId);
+    setAddOrderItems((prev) =>
+      prev.map((row, i) => {
+        if (i !== index) return row;
+        const next = { ...row, productId: productId === '' ? '' : productId };
+        if (productId !== '' && Number.isFinite(productId)) {
+          const p = productsList.find((x) => Number(x.id) === Number(productId));
+          if (p) {
+            const def = defaultPriceFromProduct(p);
+            if (def !== '') next.price = def;
+          }
+        }
+        return next;
+      })
+    );
+  };
+
   const handleAddOrderSubmit = async (e) => {
     e.preventDefault();
-    const items = addOrderItems
-      .filter((row) => row.productId !== '' && row.productId != null)
-      .map((row) => ({
-        productId: Number(row.productId),
-        quantity: Math.max(1, parseInt(row.quantity, 10) || 1)
-      }));
+    const customerName = String(addOrderCustomerName || '').trim();
+    const customerPhone = String(addOrderCustomerPhone || '').trim();
+    if (!customerName) {
+      setAddOrderError('Укажите ФИО покупателя');
+      return;
+    }
+    if (!customerPhone) {
+      setAddOrderError('Укажите телефон покупателя');
+      return;
+    }
+    const items = [];
+    for (const row of addOrderItems) {
+      if (row.productId === '' || row.productId == null) continue;
+      const productId = Number(row.productId);
+      if (!Number.isFinite(productId) || productId < 1) continue;
+      const quantity = Math.max(1, parseInt(row.quantity, 10) || 1);
+      const unitPrice = row.price === '' || row.price == null ? NaN : Number(row.price);
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        setAddOrderError('Укажите цену за единицу для каждой выбранной позиции (неотрицательное число)');
+        return;
+      }
+      items.push({ productId, quantity, price: unitPrice });
+    }
     if (items.length === 0) {
-      setAddOrderError('Добавьте хотя бы один товар');
+      setAddOrderError('Добавьте хотя бы один товар с количеством и ценой');
       return;
     }
     setAddOrderLoading(true);
     setAddOrderError(null);
     try {
-      await ordersApi.createManual({ items });
+      await ordersApi.createManual({ items, customerName, customerPhone });
       await reloadOrders({ silent: true });
       setAddOrderOpen(false);
     } catch (err) {
@@ -882,11 +899,8 @@ export function Orders() {
     const groupIdStr = String(o.orderGroupId || o.order_group_id || '');
     const bySearch = !q || orderIdStr.includes(q) || groupIdStr.includes(q);
     const byStatus = statusFilter === 'all' || o.status === statusFilter;
-    const sp = Boolean(o.stockProblem ?? o.stock_problem);
-    const byStockProblem =
-      stockProblemFilter === 'all' ? true : (stockProblemFilter === 'only' ? sp : !sp);
-    return byMarketplace && byStatus && bySearch && byStockProblem;
-  }), [orders, marketplaceFilter, statusFilter, stockProblemFilter, orderSearchQuery]);
+    return byMarketplace && byStatus && bySearch;
+  }), [orders, marketplaceFilter, statusFilter, orderSearchQuery]);
 
   // Подсчёт количества строк (групп заказов) для кнопок фильтра маркетплейсов.
   // Важно: считаем группы по `orderGroupId`, т.к. один заказ может быть из нескольких товаров.
@@ -905,6 +919,31 @@ export function Orders() {
     }
     return out;
   }, [orders, statusFilter]);
+
+  const mpFilterRowTotal = useMemo(
+    () => Object.values(countsByMarketplace).reduce((a, b) => a + (Number(b) || 0), 0),
+    [countsByMarketplace]
+  );
+
+  // Группы по статусу для кнопок статусов — с учётом выбранного маркетплейса (без фильтра по статусу).
+  const countsByStatus = useMemo(() => {
+    const base = orders.filter((o) => {
+      const mp = normalizeMarketplaceForUI(o.marketplace);
+      return marketplaceFilter === 'all' || mp === marketplaceFilter;
+    });
+    const groupToStatus = new Map();
+    for (const o of base) {
+      const ogk = orderGroupKey(o);
+      const gid = ogk || singleOrderListGroupKey(o);
+      const st = o.status || 'unknown';
+      if (!groupToStatus.has(gid)) groupToStatus.set(gid, st);
+    }
+    const out = { all: groupToStatus.size };
+    for (const st of groupToStatus.values()) {
+      out[st] = (out[st] || 0) + 1;
+    }
+    return out;
+  }, [orders, marketplaceFilter]);
 
   // Группируем заказы с одним order_group_id в одну строку (один заказ — несколько товаров).
   // Маркетплейс нормализуем — иначе две строки одного заказа (wb vs wildberries) не слипаются.
@@ -1262,15 +1301,14 @@ export function Orders() {
           >
             {syncLoading && syncKind === 'import' ? 'Импорт...' : '📥 Импортировать заказы'}
           </Button>
-          {assembledCount > 0 && (
-            <Button
-              variant="secondary"
-              size="small"
-              onClick={() => navigate('/assembly')}
-            >
-              📦 Сборка ({assembledCount})
-            </Button>
-          )}
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => navigate('/assembly')}
+            title="Перейти к экрану сборки заказов"
+          >
+            {assembledCount > 0 ? `📦 Сборка (${assembledCount})` : '📦 Сборка'}
+          </Button>
           {selectedCount > 0 && (
             <Button
               variant="secondary"
@@ -1337,31 +1375,67 @@ export function Orders() {
               {assemblyLoading ? 'Отправка...' : `➡️ Отправить на сборку (${selectedCount})`}
             </Button>
           )}
-          <Button variant="secondary" size="small" onClick={handleAddOrderOpen}>
-            ✏️ Добавить заказ
-          </Button>
+          {allowPrivateOrders && (
+            <Button variant="secondary" size="small" onClick={handleAddOrderOpen}>
+              ✏️ Добавить заказ
+            </Button>
+          )}
         </div>
       </div>
       <p className="subtitle">Управление заказами с маркетплейсов</p>
 
       <Modal
-        isOpen={addOrderOpen}
+        isOpen={addOrderOpen && allowPrivateOrders}
         onClose={() => setAddOrderOpen(false)}
         title="Добавить заказ"
-        size="medium"
+        size="large"
       >
         <form onSubmit={handleAddOrderSubmit} className="orders-add-form">
           {addOrderError && (
             <div className="error" style={{ marginBottom: '12px' }}>{addOrderError}</div>
           )}
-          <p className="form-hint" style={{ marginBottom: '12px' }}>Добавьте один или несколько товаров в заказ.</p>
+          <p className="form-hint" style={{ marginBottom: '12px' }}>
+            Укажите покупателя и позиции: для каждой — товар, количество и цену за единицу.
+          </p>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '12px',
+              marginBottom: '16px',
+            }}
+            className="orders-add-customer-grid"
+          >
+            <div className="form-group">
+              <label className="label">ФИО покупателя</label>
+              <input
+                type="text"
+                className="form-control"
+                value={addOrderCustomerName}
+                onChange={(e) => setAddOrderCustomerName(e.target.value)}
+                autoComplete="name"
+                placeholder="Иванов Иван Иванович"
+              />
+            </div>
+            <div className="form-group">
+              <label className="label">Телефон</label>
+              <input
+                type="tel"
+                className="form-control"
+                value={addOrderCustomerPhone}
+                onChange={(e) => setAddOrderCustomerPhone(e.target.value)}
+                autoComplete="tel"
+                placeholder="+7 …"
+              />
+            </div>
+          </div>
           {addOrderItems.map((row, index) => (
             <div key={index} className="orders-add-row" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', marginBottom: '12px', flexWrap: 'wrap' }}>
-              <div className="form-group" style={{ flex: '1 1 200px' }}>
+              <div className="form-group" style={{ flex: '1 1 180px' }}>
                 <label className="label">Товар</label>
                 <select
-                  value={row.productId}
-                  onChange={(e) => addOrderUpdateRow(index, 'productId', e.target.value ? Number(e.target.value) : '')}
+                  value={row.productId === '' ? '' : row.productId}
+                  onChange={(e) => addOrderProductChange(index, e.target.value)}
                   className="form-control"
                 >
                   <option value="">— Выберите товар —</option>
@@ -1377,7 +1451,7 @@ export function Orders() {
                     ))}
                 </select>
               </div>
-              <div className="form-group" style={{ width: '100px' }}>
+              <div className="form-group" style={{ width: '88px' }}>
                 <label className="label">Кол-во</label>
                 <input
                   type="number"
@@ -1385,6 +1459,18 @@ export function Orders() {
                   value={row.quantity}
                   onChange={(e) => addOrderUpdateRow(index, 'quantity', e.target.value)}
                   className="form-control"
+                />
+              </div>
+              <div className="form-group" style={{ width: '120px' }}>
+                <label className="label">Цена за ед., ₽</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={row.price}
+                  onChange={(e) => addOrderUpdateRow(index, 'price', e.target.value)}
+                  className="form-control"
+                  placeholder="0"
                 />
               </div>
               <div className="form-group" style={{ flexShrink: 0 }}>
@@ -1654,34 +1740,42 @@ export function Orders() {
       )}
 
       <div style={{marginTop: '20px'}}>
-        {/* Фильтры по маркетплейсам */}
-        <div style={{display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap'}}>
-          <Button
-            variant={marketplaceFilter === 'all' ? 'primary' : 'secondary'}
-            size="small"
+        <div className="erp-filter-row erp-filter-row--search" role="group" aria-label="Фильтр по маркетплейсу">
+          <button
+            type="button"
+            className={`erp-filter-btn${marketplaceFilter === 'all' ? ' erp-filter-btn--active' : ''}`}
             onClick={() => setMarketplaceFilter('all')}
           >
             Все
-          </Button>
-          {allMarketplaces.map(mp => (
-            <Button
+            <span className="erp-filter-btn__count">{mpFilterRowTotal}</span>
+          </button>
+          {allMarketplaces.map((mp) => (
+            <button
               key={mp.code}
-              variant={marketplaceFilter === mp.code ? 'primary' : 'secondary'}
-              size="small"
+              type="button"
+              className={`erp-filter-btn${marketplaceFilter === mp.code ? ' erp-filter-btn--active' : ''}`}
               onClick={() => setMarketplaceFilter(mp.code)}
+              title={mp.name}
+              aria-label={`${mp.name}, ${countsByMarketplace[mp.code] ?? 0} заказов`}
             >
-              {mp.icon} {mp.name} ({countsByMarketplace[mp.code] ?? 0})
-            </Button>
+              {mp.badgeClass && mp.shortLabel ? (
+                <span className={`mp-badge ${mp.badgeClass}`}>{mp.shortLabel}</span>
+              ) : (
+                <span aria-hidden>{mp.icon}</span>
+              )}
+              <span className="erp-filter-btn__label">{mp.name}</span>
+              <span className="erp-filter-btn__count">{countsByMarketplace[mp.code] ?? 0}</span>
+            </button>
           ))}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flex: '1 1 260px' }}>
+          <div className="erp-filter-search-wrap">
             <input
               type="text"
               value={orderSearchQuery}
               onChange={(e) => setOrderSearchQuery(e.target.value)}
               placeholder="Поиск по номеру заказа..."
               className="form-control"
-              style={{ maxWidth: 420 }}
+              style={{ maxWidth: 420, width: '100%' }}
             />
             {orderSearchQuery.trim() && (
               <Button
@@ -1695,53 +1789,27 @@ export function Orders() {
             )}
           </div>
         </div>
-        
-        {/* Фильтры по статусам: «Все заказы» — последняя кнопка в ряду */}
-        <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+
+        <div className="erp-filter-row" role="group" aria-label="Фильтр по статусу заказа">
           {uniqueStatuses.map((st) => (
-            <Button
+            <button
               key={st}
-              variant={statusFilter === st ? 'primary' : 'secondary'}
-              size="small"
+              type="button"
+              className={`erp-filter-btn${statusFilter === st ? ' erp-filter-btn--active' : ''}`}
               onClick={() => setStatusFilter(st)}
             >
-              {getOrderStatusLabel(st)}
-            </Button>
+              <span className="erp-filter-btn__label">{getOrderStatusLabel(st)}</span>
+              <span className="erp-filter-btn__count">{countsByStatus[st] ?? 0}</span>
+            </button>
           ))}
-          <Button
-            variant={statusFilter === 'all' ? 'primary' : 'secondary'}
-            size="small"
+          <button
+            type="button"
+            className={`erp-filter-btn${statusFilter === 'all' ? ' erp-filter-btn--active' : ''}`}
             onClick={() => setStatusFilter('all')}
           >
-            Все заказы
-          </Button>
-        </div>
-
-        {/* Проблемы остатков */}
-        <div style={{display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap'}}>
-          <Button
-            variant={stockProblemFilter === 'all' ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => setStockProblemFilter('all')}
-          >
-            Все
-          </Button>
-          <Button
-            variant={stockProblemFilter === 'only' ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => setStockProblemFilter('only')}
-            title="Показывать только заказы с проблемой остатка"
-          >
-            ⚠️ Проблема с остатком
-          </Button>
-          <Button
-            variant={stockProblemFilter === 'no' ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => setStockProblemFilter('no')}
-            title="Показывать только заказы без проблемы остатка"
-          >
-            Без проблемы
-          </Button>
+            <span className="erp-filter-btn__label">Все заказы</span>
+            <span className="erp-filter-btn__count">{countsByStatus.all ?? 0}</span>
+          </button>
         </div>
 
         <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
@@ -1794,7 +1862,9 @@ export function Orders() {
                   </label>
                 </th>
                 <th className="orders-col-num">№</th>
-                <th>Маркетплейс</th>
+                <th className="orders-col-mp" title="Маркетплейс">
+                  МП
+                </th>
                 <th>ID заказа</th>
                 <th>Появился</th>
                 <th>Товары</th>
@@ -1822,7 +1892,7 @@ export function Orders() {
                           : 'Сейчас Я→А. Нажмите — порядок как с сервера'
                     }
                   >
-                    Артикул (сорт.)
+                    Артикул
                     {sortByArticle === 'asc' ? ' ↑' : ''}
                     {sortByArticle === 'desc' ? ' ↓' : ''}
                   </button>
@@ -1886,16 +1956,6 @@ export function Orders() {
                       .join('\n')
                   : undefined;
                 const priceDisplay = isGroup ? '—' : first.price;
-                const uncovered = uncoveredByOrderId[String(first.id)] ?? 0;
-                const coveredA = coveredActualByOrderId[String(first.id)] ?? 0;
-                const coveredI = coveredIncomingByOrderId[String(first.id)] ?? 0;
-                const inProc = first.status === 'in_procurement';
-                // "Покрыт" делим на «в наличии» vs «в пути».
-                // Примечание: эти значения считаются только для ПРОБЛЕМНЫХ заказов (у которых uncovered>0).
-                // Для непроблемных (uncovered==0) используем старый флаг stockProblem=false и наличие резерва.
-                const uncoveredBadge = inProc && uncovered > 0;
-                const coveredActualBadge = inProc && uncovered > 0 && coveredA > 0;
-                const coveredIncomingBadge = inProc && uncovered > 0 && coveredI > 0;
                 // Раньше показывали "✓ Есть на складе" по hasReserve, но это вводило в заблуждение:
                 // резерв может быть за счёт incoming (в пути) или быть частичным.
                 // Для "Новый" показываем только прогресс резерва X/Y.
@@ -1924,22 +1984,50 @@ export function Orders() {
                     </label>
                   </td>
                   <td className="orders-col-num">{pageOffset + idx + 1}</td>
-                  <td>{allMarketplaces.find(m => m.code === first.marketplace)?.name ?? first.marketplace}</td>
+                  <td className="orders-col-mp">
+                    {(() => {
+                      const mpNorm = normalizeMarketplaceForUI(first.marketplace);
+                      const meta = allMarketplaces.find((m) => m.code === mpNorm);
+                      const label = meta?.name ?? String(first.marketplace ?? '—');
+                      if (meta?.badgeClass && meta.shortLabel) {
+                        return (
+                          <span className={`mp-badge ${meta.badgeClass}`} title={label} aria-label={label}>
+                            {meta.shortLabel}
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className="mp-badge mp-unknown" title={label} aria-label={label}>
+                          ?
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td>{orderIdDisplay}</td>
-                  <td className="orders-col-date" title={first.createdAt ? new Date(first.createdAt).toLocaleString() : ''}>
+                  <td
+                    className="orders-col-date"
+                    title={first.createdAt ? new Date(first.createdAt).toLocaleString() : ''}
+                  >
                     {formatMarketplaceDate(first.createdAt)}
                   </td>
-                  <td title={isGroup ? productsDisplay : undefined}>
+                  <td
+                    className="orders-col-products"
+                    title={isGroup ? productsDisplay : String(productsDisplay || '')}
+                  >
                     {isGroup ? (
                       <div className="orders-stacked-lines">
                         {mergedGroupLines.map((o, i) => (
                           <div key={i} className="orders-stacked-line orders-stacked-line--product">
-                            <span className="orders-stacked-line-text">{o.name || '—'}</span>
+                            <span className="orders-product-cell-text" title={o.name || '—'}>
+                              {o.name || '—'}
+                            </span>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      productsDisplay
+                      <span className="orders-product-cell-text" title={String(productsDisplay || '')}>
+                        {productsDisplay}
+                      </span>
                     )}
                   </td>
                   <td className="orders-col-article">
@@ -1997,84 +2085,17 @@ export function Orders() {
                           Резерв: {reservedQty}/{needQty}
                         </span>
                       )}
-                      {coveredActualBadge && (
-                        <span
-                          className="badge"
-                          style={{
-                            border: '1px solid rgba(0,128,0,0.35)',
-                            background: 'rgba(0,128,0,0.08)',
-                            color: 'var(--text)',
-                            padding: '2px 8px',
-                            borderRadius: 999,
-                            fontSize: 12,
-                            fontWeight: 600,
-                          }}
-                          title={`В наличии (actual): покрыто ${coveredA} шт. по FIFO`}
-                        >
-                          ✓ В наличии: {coveredA}
-                        </span>
-                      )}
-                      {coveredIncomingBadge && (
-                        <span
-                          className="badge"
-                          style={{
-                            border: '1px solid rgba(30,144,255,0.45)',
-                            background: 'rgba(30,144,255,0.10)',
-                            color: 'var(--text)',
-                            padding: '2px 8px',
-                            borderRadius: 999,
-                            fontSize: 12,
-                            fontWeight: 600,
-                          }}
-                          title={`В пути (incoming): покрыто ${coveredI} шт. по FIFO`}
-                        >
-                          🚚 В пути: {coveredI}
-                        </span>
-                      )}
-                      {uncoveredBadge && (
-                        <span
-                          className="badge"
-                          style={{
-                            border: '1px solid rgba(255,140,0,0.45)',
-                            background: 'rgba(255,140,0,0.10)',
-                            color: 'var(--text)',
-                            padding: '2px 8px',
-                            borderRadius: 999,
-                            fontSize: 12,
-                            fontWeight: 600,
-                          }}
-                          title={`Резерв не покрыт: не хватает ${uncovered} шт. (FIFO)`}
-                        >
-                          ⏳ Нет товара: {uncovered}
-                        </span>
-                      )}
-                      {Boolean(first.stockProblem ?? first.stock_problem) && (
-                        <span
-                          className="badge"
-                          style={{
-                            border: '1px solid rgba(255,0,0,0.35)',
-                            background: 'rgba(255,0,0,0.08)',
-                            color: 'var(--text)',
-                            padding: '2px 8px',
-                            borderRadius: 999,
-                            fontSize: 12,
-                            fontWeight: 600,
-                          }}
-                          title="Проблема с покрытием резерва (actual + incoming < reserved)"
-                        >
-                          ⚠️ Остаток
-                        </span>
-                      )}
                     </div>
                   </td>
-                  <td onClick={e => e.stopPropagation()}>
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <td className="orders-col-actions" onClick={e => e.stopPropagation()}>
+                    <div className="orders-actions">
                       {groupOrders.some((o) =>
                         isOrderStatusEligibleForProcurement(o.marketplace, o.status)
                       ) && (
                         <Button
                           variant="secondary"
                           size="small"
+                          className="orders-action-icon"
                           onClick={() => handleSetToProcurement(first.marketplace, first.orderId, row.key)}
                           disabled={
                             procurementLoadingKey === row.key ||
@@ -2082,14 +2103,20 @@ export function Orders() {
                             cancelOrderLoadingKey === row.key
                           }
                           title="Перевести заказ в статус «В закупке»"
+                          aria-label="В закупке"
                         >
-                          {procurementLoadingKey === row.key ? '...' : '🛒 В закупке'}
+                          {procurementLoadingKey === row.key ? (
+                            <span className="orders-action-icon__busy" aria-hidden>…</span>
+                          ) : (
+                            <i className="pe-7s-cart" aria-hidden />
+                          )}
                         </Button>
                       )}
                       {orderCanShowCancel(first.marketplace, first.status) && (
                         <Button
-                          variant="secondary"
+                          variant="danger"
                           size="small"
+                          className="orders-action-icon"
                           onClick={() => handleCancelOrder(first.marketplace, first.orderId, row.key)}
                           disabled={
                             cancelOrderLoadingKey === row.key ||
@@ -2098,8 +2125,13 @@ export function Orders() {
                             sendToAssemblyRowKey === row.key
                           }
                           title="Отменить заказ на маркетплейсе (если доступно по API) и в системе"
+                          aria-label="Отменить заказ"
                         >
-                          {cancelOrderLoadingKey === row.key ? '...' : 'Отменить заказ'}
+                          {cancelOrderLoadingKey === row.key ? (
+                            <span className="orders-action-icon__busy" aria-hidden>…</span>
+                          ) : (
+                            <i className="pe-7s-close" aria-hidden />
+                          )}
                         </Button>
                       )}
                       {first.status === 'in_procurement' && (
@@ -2107,20 +2139,32 @@ export function Orders() {
                           <Button
                             variant="secondary"
                             size="small"
+                            className="orders-action-icon"
                             onClick={() => handleReturnToNew(first.marketplace, first.orderId, row.key)}
                             disabled={returnToNewLoadingKey === row.key}
                             title="Вернуть заказ в статус «Новый»"
+                            aria-label="Вернуть в «Новый»"
                           >
-                            {returnToNewLoadingKey === row.key ? '...' : '↩️ В Новый'}
+                            {returnToNewLoadingKey === row.key ? (
+                              <span className="orders-action-icon__busy" aria-hidden>…</span>
+                            ) : (
+                              <i className="pe-7s-back" aria-hidden />
+                            )}
                           </Button>
                           <Button
                             variant="primary"
                             size="small"
+                            className="orders-action-icon"
                             onClick={() => handleSendOneToAssembly(row)}
                             disabled={sendToAssemblyRowKey === row.key}
                             title="Отправить заказ на сборку"
+                            aria-label="На сборку"
                           >
-                            {sendToAssemblyRowKey === row.key ? '...' : '📦 На сборку'}
+                            {sendToAssemblyRowKey === row.key ? (
+                              <span className="orders-action-icon__busy" aria-hidden>…</span>
+                            ) : (
+                              <i className="pe-7s-box2" aria-hidden />
+                            )}
                           </Button>
                         </>
                       )}
@@ -2128,11 +2172,17 @@ export function Orders() {
                         <Button
                           variant="secondary"
                           size="small"
+                          className="orders-action-icon"
                           onClick={() => handleReturnToNew(first.marketplace, first.orderId, row.key)}
                           disabled={returnToNewLoadingKey === row.key}
                           title="Вернуть заказ в статус «Новый»"
+                          aria-label="Вернуть в новые"
                         >
-                          {returnToNewLoadingKey === row.key ? '...' : '↩️ Вернуть в новые'}
+                          {returnToNewLoadingKey === row.key ? (
+                            <span className="orders-action-icon__busy" aria-hidden>…</span>
+                          ) : (
+                            <i className="pe-7s-back" aria-hidden />
+                          )}
                         </Button>
                       )}
                       {first.marketplace === 'manual' && (
@@ -2140,20 +2190,32 @@ export function Orders() {
                           <Button
                             variant="secondary"
                             size="small"
+                            className="orders-action-icon"
                             onClick={() => handleMarkShipped(first.marketplace, first.orderId, row.key)}
                             disabled={markShippedLoadingKey === row.key || deleteLoadingKey === row.key || returnToNewLoadingKey === row.key}
                             title="Поставить статус «Отгружен» (для тестирования)"
+                            aria-label="Отгружен"
                           >
-                            {markShippedLoadingKey === row.key ? '...' : 'Отгружен'}
+                            {markShippedLoadingKey === row.key ? (
+                              <span className="orders-action-icon__busy" aria-hidden>…</span>
+                            ) : (
+                              <i className="pe-7s-plane" aria-hidden />
+                            )}
                           </Button>
                           <Button
                             variant="secondary"
                             size="small"
+                            className="orders-action-icon"
                             onClick={() => handleDeleteOrder(first.marketplace, first.orderId, row.key)}
                             disabled={markShippedLoadingKey === row.key || deleteLoadingKey === row.key || returnToNewLoadingKey === row.key}
                             title="Удалить заказ"
+                            aria-label="Удалить заказ"
                           >
-                            {deleteLoadingKey === row.key ? '...' : 'Удалить заказ'}
+                            {deleteLoadingKey === row.key ? (
+                              <span className="orders-action-icon__busy" aria-hidden>…</span>
+                            ) : (
+                              <i className="pe-7s-trash" aria-hidden />
+                            )}
                           </Button>
                         </>
                       )}

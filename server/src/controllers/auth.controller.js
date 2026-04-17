@@ -236,6 +236,7 @@ export const authController = {
                 contact_email: profile.contact_email ?? null,
                 contact_phone: profile.contact_phone ?? null,
                 tariff: profile.tariff ?? null,
+                allow_private_orders: profile.allow_private_orders === true,
               }
             : null,
           features: {},

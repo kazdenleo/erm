@@ -13,8 +13,11 @@ import {
 import ordersLabelsService from '../services/orders.labels.service.js';
 import shipmentsService from '../services/shipments.service.js';
 import productsService from '../services/products.service.js';
+import repositoryFactory from '../config/repository-factory.js';
 import { readData } from '../utils/storage.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+
+const profilesRepo = repositoryFactory.getProfilesRepository();
 
 class OrdersController {
   async getAll(req, res, next) {
@@ -31,17 +34,17 @@ class OrdersController {
       const offsetRaw = req.query?.offset;
       const limit = limitRaw != null ? Number(limitRaw) : null;
       const offset = offsetRaw != null ? Number(offsetRaw) : 0;
-      const stockProblemRaw = req.query?.stockProblem ?? req.query?.stock_problem;
-      const stockProblem =
-        stockProblemRaw === '1' || stockProblemRaw === 'true'
-          ? true
-          : (stockProblemRaw === '0' || stockProblemRaw === 'false' ? false : undefined);
+      let excludeManual = false;
+      if (tid != null) {
+        const prof = await profilesRepo.findById(tid);
+        excludeManual = !prof || prof.allow_private_orders !== true;
+      }
       const options = {
         ...(tid != null ? { profileId: tid } : {}),
+        ...(excludeManual ? { excludeManual: true } : {}),
         ...(marketplace ? { marketplace } : {}),
         ...(status ? { status } : {}),
         ...(search ? { search } : {}),
-        ...(stockProblem !== undefined ? { stockProblem } : {}),
         ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
         ...(Number.isFinite(offset) && offset > 0 ? { offset } : {}),
       };
@@ -63,18 +66,59 @@ class OrdersController {
 
   /**
    * Ручное добавление заказа: один товар или несколько.
-   * Body: { productId, quantity } — одна позиция;
-   *   или { items: [{ productId, quantity }, ...] } — несколько товаров в одном заказе.
+   * Body: { customerName, customerPhone, productId, quantity, price } — одна позиция;
+   *   или { customerName, customerPhone, items: [{ productId, quantity, price }, ...] } — несколько позиций.
+   * price — за единицу товара (неотрицательное число). ФИО и телефон обязательны.
    */
   async createManual(req, res, next) {
     try {
+      const pid = req.user?.profileId;
+      if (pid == null || pid === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту.' });
+      }
+      const prof = await profilesRepo.findById(pid);
+      if (!prof || prof.allow_private_orders !== true) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Частные заказы отключены в общих настройках аккаунта.',
+        });
+      }
+      const customerName = String(req.body?.customerName ?? req.body?.customer_name ?? '').trim();
+      const customerPhone = String(req.body?.customerPhone ?? req.body?.customer_phone ?? '').trim();
+      if (!customerName) {
+        return res.status(400).json({ ok: false, message: 'Укажите ФИО покупателя.' });
+      }
+      if (!customerPhone) {
+        return res.status(400).json({ ok: false, message: 'Укажите телефон покупателя.' });
+      }
       const items = req.body?.items;
       if (Array.isArray(items) && items.length > 0) {
-        const valid = items.filter(it => it?.productId != null && Number(it.productId) >= 1);
-        if (valid.length === 0) {
-          return res.status(400).json({ ok: false, message: 'Укажите хотя бы один товар с количеством (items: [{ productId, quantity }, ...]).' });
+        const parsedItems = [];
+        for (const it of items) {
+          const productId = it?.productId != null ? Number(it.productId) : null;
+          if (!productId || !Number.isInteger(productId) || productId < 1) continue;
+          const quantity = Math.max(1, parseInt(it?.quantity, 10) || 1);
+          const rawPrice = it?.price;
+          const unitPrice = rawPrice != null && rawPrice !== '' ? Number(rawPrice) : NaN;
+          if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+            return res.status(400).json({
+              ok: false,
+              message: 'Укажите цену за единицу для каждой позиции (неотрицательное число).',
+            });
+          }
+          parsedItems.push({ productId, quantity, price: unitPrice });
         }
-        const { orderGroupId, orders } = await ordersService.createManualWithItems(valid);
+        if (parsedItems.length === 0) {
+          return res.status(400).json({
+            ok: false,
+            message: 'Укажите хотя бы одну позицию: товар, количество и цену за единицу.',
+          });
+        }
+        const { orderGroupId, orders } = await ordersService.createManualWithItems(parsedItems, {
+          profileId: pid,
+          customerName,
+          customerPhone,
+        });
         return res.status(201).json({ ok: true, data: { orderGroupId, orders } });
       }
       const productId = req.body?.productId != null ? Number(req.body.productId) : null;
@@ -84,6 +128,11 @@ class OrdersController {
       }
       if (!Number.isInteger(quantity) || quantity < 1) {
         return res.status(400).json({ ok: false, message: 'Количество должно быть не менее 1.' });
+      }
+      const rawUnitPrice = req.body?.price;
+      const unitPrice = rawUnitPrice != null && rawUnitPrice !== '' ? Number(rawUnitPrice) : NaN;
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        return res.status(400).json({ ok: false, message: 'Укажите цену за единицу товара (неотрицательное число).' });
       }
       const product = await productsService.getById(productId);
       if (!product) {
@@ -103,8 +152,10 @@ class OrdersController {
         offer_id: null,
         marketplace_sku: null,
         quantity,
-        price: product.cost != null ? Number(product.cost) : (product.price != null ? Number(product.price) : 0),
-        status: 'new'
+        price: unitPrice,
+        status: 'new',
+        customer_name: customerName,
+        customer_phone: customerPhone,
       };
       const created = await ordersService.create(orderData);
       return res.status(201).json({ ok: true, data: created });
@@ -398,9 +449,6 @@ class OrdersController {
       const result = await ordersSyncService.getOrderDetail(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       let assembly = null;
       let localLines = [];
-      let stockProblem = null;
-      let stockProblemDetectedAt = null;
-      let stockProblemDetails = null;
       try {
         const local = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
         if (local?.assembledAt || local?.assembledByEmail || local?.assembledByFullName) {
@@ -410,11 +458,6 @@ class OrdersController {
             assembledByEmail: local.assembledByEmail ?? null,
             assembledByFullName: local.assembledByFullName ?? null,
           };
-        }
-        if (local) {
-          stockProblem = Boolean(local.stockProblem ?? local.stock_problem);
-          stockProblemDetectedAt = local.stockProblemDetectedAt ?? local.stock_problem_detected_at ?? null;
-          stockProblemDetails = local.stockProblemDetails ?? local.stock_problem_details ?? null;
         }
       } catch {
         /* нет строки в локальной БД — только маркетплейс */
@@ -430,9 +473,6 @@ class OrdersController {
           ...result,
           assembly,
           localLines,
-          stockProblem,
-          stockProblemDetectedAt,
-          stockProblemDetails,
         }
       });
     } catch (error) {

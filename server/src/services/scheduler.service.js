@@ -119,8 +119,8 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
-      // Обновление тарифов WB каждый день в 1:00 ночи
-      const wbTariffsJob = cron.schedule('0 1 * * *', async () => {
+      // Тарифы WB — в 1:10 (не в 1:00 вместе с категориями/комиссиями, чтобы не ловить 429 от лимитов API)
+      const wbTariffsJob = cron.schedule('10 1 * * *', async () => {
         logger.info('[Scheduler] Starting scheduled WB tariffs update...');
         try {
           await integrationsService.updateWildberriesTariffs();
@@ -141,27 +141,8 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
-      // Обновление комиссий WB каждый день в 1:00 ночи
-      const wbCommissionsJob = cron.schedule('0 1 * * *', async () => {
-        logger.info('[Scheduler] Starting scheduled WB commissions update...');
-        try {
-          await integrationsService.updateWildberriesCommissions();
-          logger.info('[Scheduler] WB commissions update completed successfully');
-        } catch (error) {
-          logger.error('[Scheduler] WB commissions update failed:', error);
-          await addRuntimeNotification({
-            type: 'job_failed',
-            severity: 'error',
-            source: 'scheduler',
-            title: 'Сбой ночного обновления комиссий WB',
-            message: `WB commissions update failed: ${error?.message || String(error)}`,
-            marketplace: 'wildberries'
-          });
-        }
-      }, {
-        scheduled: false, // Не запускаем автоматически, запустим вручную
-        timezone: 'Europe/Moscow'
-      });
+      // Комиссии WB обновляются в wbUpdateJob (wbMarketplaceService.updateCategoriesAndCommissions → loadCommissionsFromAPI).
+      // Отдельная ночная задача integrationsService.updateWildberriesCommissions убрана: тот же endpoint в 1:00 давал дубль и 429.
 
       // Обновление списка акций Ozon каждый день в 1:00 ночи
       const ozonActionsJob = cron.schedule('0 1 * * *', async () => {
@@ -368,15 +349,8 @@ class SchedulerService {
       this.jobs.push({
         name: 'wb-tariffs-update',
         job: wbTariffsJob,
-        schedule: '0 1 * * *',
-        description: 'Обновление тарифов WB каждый день в 1:00'
-      });
-
-      this.jobs.push({
-        name: 'wb-commissions-update',
-        job: wbCommissionsJob,
-        schedule: '0 1 * * *',
-        description: 'Обновление комиссий WB каждый день в 1:00'
+        schedule: '10 1 * * *',
+        description: 'Обновление тарифов WB каждый день в 1:10 (после категорий/комиссий)'
       });
 
       this.jobs.push({
@@ -429,7 +403,6 @@ class SchedulerService {
       // Запускаем задачи
       wbUpdateJob.start();
       wbTariffsJob.start();
-      wbCommissionsJob.start();
       ozonActionsJob.start();
       ozonCategoriesJob.start();
       ymCategoriesJob.start();

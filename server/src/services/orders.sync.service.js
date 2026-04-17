@@ -2300,6 +2300,59 @@ function yandexBusinessOrderRawId(o) {
   return String(v);
 }
 
+/**
+ * Цена строки заказа YM (руб.). У позиции часто пустой `item.prices.payment`;
+ * тогда смотрим buyerPrice, price, массив prices[] (BUYER/costPerItem), иначе долю от `order.prices.payment`.
+ */
+function yandexExtractLinePriceRub(item, order, rawItemsList) {
+  const qty = item != null && item.count != null ? Number(item.count) : 1;
+  const qtySafe = Number.isFinite(qty) && qty > 0 ? qty : 1;
+
+  const pos = (x) => {
+    const v = Number(x);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+
+  let p = pos(item?.prices?.payment?.value);
+  if (p != null) return p;
+
+  p = pos(item?.buyerPrice);
+  if (p != null) return p;
+
+  p = pos(item?.price);
+  if (p != null) return p;
+
+  const ip = item?.prices;
+  if (ip && typeof ip === 'object' && !Array.isArray(ip)) {
+    p = pos(ip.subsidy?.value) || pos(ip.cashback?.value);
+    if (p != null) return p;
+  }
+
+  if (Array.isArray(ip)) {
+    for (const block of ip) {
+      if (!block || typeof block !== 'object') continue;
+      const t = pos(block.total);
+      if (t != null) return t;
+      const cpi = pos(block.costPerItem);
+      if (cpi != null) return cpi * qtySafe;
+    }
+  }
+
+  const orderPay = pos(order?.prices?.payment?.value);
+  if (orderPay != null) {
+    const list = Array.isArray(rawItemsList) && rawItemsList.length ? rawItemsList : [item];
+    let sumQty = 0;
+    for (const it of list) {
+      const c = it != null && it.count != null ? Number(it.count) : 1;
+      sumQty += Number.isFinite(c) && c > 0 ? c : 1;
+    }
+    if (sumQty <= 0) sumQty = 1;
+    return (orderPay * qtySafe) / sumQty;
+  }
+
+  return 0;
+}
+
 /** Маппинг заказа из формата BusinessOrderDTO (v1) в внутренний формат.
  * YM может возвращать несколько items в одном заказе — разворачиваем в несколько строк
  * с одинаковым orderGroupId (order.orderId), чтобы UI показывал все товары.
@@ -2326,7 +2379,7 @@ function mapYandexBusinessOrderToInternal(order) {
     const itemIdPart = offerId ? String(offerId) : String(idx + 1);
     // Важно: для UI/карточки используем "чистый" orderId у первой позиции, даже если items пустой.
     const internalOrderId = idx === 0 ? rawOrderId : `${rawOrderId}:${itemIdPart}`;
-    const priceValue = item?.prices?.payment?.value ?? order.prices?.payment?.value ?? 0;
+    const priceValue = yandexExtractLinePriceRub(item, order, items.length ? items : [item]);
     const count = item?.count ?? null;
     const quantity = count != null ? count : 1;
 
