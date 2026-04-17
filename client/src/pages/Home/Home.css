@@ -1,3 +1,8 @@
+/* Верхний ряд виджетов: не обрезать третью плашку (вопросы) на узкой ширине */
+.home-dashboard-top-widgets {
+  overflow-x: visible;
+}
+
 /* Плашка «Вопросы» — клик ведёт на /questions */
 .home-questions-plate-link {
   color: inherit;

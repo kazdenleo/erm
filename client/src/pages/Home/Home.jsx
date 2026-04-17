@@ -123,7 +123,10 @@ export function Home() {
     return () => window.removeEventListener('questions-stats-refresh', onRefresh);
   }, [loadQuestionsStats]);
 
-  const widgetColClass = isAccountAdmin ? 'col-md-6 col-xl-3' : 'col-md-6 col-xl-4';
+  /** col-12 — ниже md плашки в столбик; иначе без xs-класса третья колонка могла обрезаться/уезжать за край */
+  const widgetColClass = isAccountAdmin
+    ? 'col-12 col-md-6 col-xl-3'
+    : 'col-12 col-md-6 col-xl-4';
 
   const needProcessOrderCount = useMemo(
     () => countOrderGroupsWithStatuses(orders, ORDER_NEED_PROCESS_STATUSES),
@@ -156,7 +159,7 @@ export function Home() {
         )}
       />
 
-      <div className="row">
+      <div className="row g-3 home-dashboard-top-widgets">
         <div className={widgetColClass}>
           <div className="card mb-3 widget-content bg-midnight-bloom">
             <div className="widget-content-wrapper text-white">
