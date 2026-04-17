@@ -134,15 +134,19 @@ export const usersController = {
       if (!email || !password) {
         return res.status(400).json({ ok: false, message: 'Укажите email (логин) и пароль' });
       }
-      if (req.user.role !== 'admin' && (role === 'admin' || profileId != null)) {
-        return res.status(403).json({ ok: false, message: 'Недостаточно прав' });
-      }
+      // Для администратора аккаунта (не system admin) запрещаем создавать system admin и выбирать profileId,
+      // но безопасно игнорируем входящие поля (фронт/кэш мог присылать profileId по старой логике).
+      const requestedRole = req.user.role === 'admin' ? role : 'user';
+      const requestedProfileId = req.user.role === 'admin' ? profileId : undefined;
       const existing = await usersRepo.findByEmail(email);
       if (existing) {
         return res.status(400).json({ ok: false, message: 'Пользователь с таким email уже существует' });
       }
-      let effectiveRole = req.user.role === 'admin' ? (role || 'user') : 'user';
-      let effectiveProfileId = req.user.role === 'admin' ? (profileId != null && profileId !== '' ? Number(profileId) : null) : req.user.profileId;
+      let effectiveRole = req.user.role === 'admin' ? (requestedRole || 'user') : 'user';
+      let effectiveProfileId =
+        req.user.role === 'admin'
+          ? (requestedProfileId != null && requestedProfileId !== '' ? Number(requestedProfileId) : null)
+          : req.user.profileId;
       let effectiveIsProfileAdmin =
         req.user.role === 'admin'
           ? !!isProfileAdmin
