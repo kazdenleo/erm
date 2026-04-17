@@ -746,9 +746,6 @@ export function Prices() {
           // Расчет цены для Ozon
           if (skuOzon) {
             try {
-              const mapping = categoryMappings.find(m => m.marketplace === 'ozon');
-              const categoryId = mapping?.category_id || null;
-              
               const rawOzon = await pricesApi.getOzonPrice(skuOzon);
               const ozonResult = getPriceResult(rawOzon);
               
@@ -936,7 +933,7 @@ export function Prices() {
   /** Пересчитать минимальные цены только для одного товара — тот же поток, что и «Пересчитать и сохранить все»: расчёт по API и saveBulk. */
   const handleRecalcOne = async (productId) => {
     if (!productId) return;
-    const product = products.find((p) => p.id == productId || String(p?.id) === String(productId));
+    const product = products.find((p) => String(p?.id) === String(productId));
     if (!product) {
       setRecalcAllMessage('Товар не найден в списке. Обновите страницу.');
       setTimeout(() => setRecalcAllMessage(null), 3000);
@@ -1325,7 +1322,6 @@ export function Prices() {
                   // Берем себестоимость из product.cost (или price/base_price), и добавляем доп.расходы (additionalExpenses)
                   const costBaseNum = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
                   const additionalExpensesNum = Number(product.additionalExpenses ?? product.additional_expenses ?? 0) || 0;
-                  const basePrice = costBaseNum + additionalExpensesNum;
                   const productCost = costBaseNum > 0 ? costBaseNum : null; // Отображаем отдельно, без суммы
                   const productKey = String(product.id ?? product.sku ?? '');
                   const raw = calculatedPrices[productKey] || {};
@@ -1337,7 +1333,6 @@ export function Prices() {
                     wb: raw.wb ?? storedWb ?? null,
                     ym: raw.ym ?? storedYm ?? null
                   };
-                  const estimated = raw._estimated || {};
                   const isLoading = loadingPrices[productKey];
                   
                   const skuOzon = product.sku_ozon || product.ozon_sku || (product.product_skus && product.product_skus.ozon);

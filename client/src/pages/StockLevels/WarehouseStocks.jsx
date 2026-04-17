@@ -209,6 +209,7 @@ export function WarehouseStocks() {
       ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
       silent: true
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная подгрузка; смена фильтров вызывает loadProducts из обработчиков
   }, []);
 
   useEffect(() => {

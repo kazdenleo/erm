@@ -143,9 +143,6 @@ export function Categories() {
               }
             });
             
-            // Если маппингов нет (ни у товаров, ни в категории), но в категории сохранены сопоставления — показываем их
-            const hasMappingsFromProducts = Object.keys(mappingsByMarketplace).length > 0;
-            
             // Также проверяем marketplace_mappings категории, даже если есть маппинги из товаров
             // Это нужно для случаев, когда у товаров нет маппингов, но они есть в категории
             if (category.marketplace_mappings) {

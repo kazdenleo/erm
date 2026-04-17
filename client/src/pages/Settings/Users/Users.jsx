@@ -3,7 +3,7 @@
  * Управление пользователями профиля (логин, пароль, роль). Видно только администратору профиля и системе.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { usersApi } from '../../../services/users.api.js';
 import { Button } from '../../../components/common/Button/Button';
@@ -23,7 +23,7 @@ function accountRoleLabel(u) {
 }
 
 export function SettingsUsers() {
-  const { user, isAdmin, isProfileAdmin, isAccountAdmin } = useAuth();
+  const { user, isAdmin, isAccountAdmin } = useAuth();
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -46,7 +46,7 @@ export function SettingsUsers() {
   /** Администраторов системы создают вне привязки к аккаунту; в списке «пользователей профиля» эту роль не задаём */
   const showSystemAdminRoleOption = false;
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!canManage) return;
     setLoading(true);
     setError('');
@@ -62,11 +62,11 @@ export function SettingsUsers() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [canManage, isAdmin, user?.profileId]);
 
   useEffect(() => {
     load();
-  }, [canManage, isAdmin, user?.profileId]);
+  }, [load]);
 
   const openCreate = () => {
     setEditing(null);

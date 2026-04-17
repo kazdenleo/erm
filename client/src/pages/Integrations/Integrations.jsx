@@ -3,7 +3,7 @@
  * Страница настроек интеграций (маркетплейсы по организациям + поставщики)
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { integrationsApi } from '../../services/integrations.api';
 import { organizationsApi } from '../../services/organizations.api';
 import { marketplaceCabinetsApi } from '../../services/marketplaceCabinets.api';
@@ -24,10 +24,24 @@ export function Integrations() {
   const [cabinets, setCabinets] = useState([]);
   const [cabinetsLoading, setCabinetsLoading] = useState(false);
 
+  const loadConfigs = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await integrationsApi.getAll();
+      setConfigs((prev) => response.data || prev);
+    } catch (err) {
+      console.error('Ошибка загрузки настроек интеграций:', err);
+      setError(err.message || 'Ошибка загрузки настроек');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadConfigs();
     organizationsApi.getAll().then((r) => setOrganizations(r?.data || [])).catch(() => setOrganizations([]));
-  }, []);
+  }, [loadConfigs]);
 
   useEffect(() => {
     if (!selectedOrgId) {
@@ -40,20 +54,6 @@ export function Integrations() {
       .catch(() => setCabinets([]))
       .finally(() => setCabinetsLoading(false));
   }, [selectedOrgId]);
-
-  const loadConfigs = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const response = await integrationsApi.getAll();
-      setConfigs(response.data || configs);
-    } catch (err) {
-      console.error('Ошибка загрузки настроек интеграций:', err);
-      setError(err.message || 'Ошибка загрузки настроек');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const loadCabinets = () => {
     if (!selectedOrgId) return;
@@ -149,7 +149,6 @@ export function Integrations() {
             loadCabinets();
           }}
           onTest={handleTest}
-          legacyConfigs={configs.marketplaces}
           onSaveLegacy={handleSaveMarketplace}
         />
       )}
@@ -175,12 +174,10 @@ function MarketplacesTab({
   onSaveCabinet,
   onDeleteCabinet,
   onTest,
-  legacyConfigs,
   onSaveLegacy
 }) {
   const [activeMarketplace, setActiveMarketplace] = useState('ozon');
   const [addingCabinetType, setAddingCabinetType] = useState(null);
-  const configs = legacyConfigs || { ozon: {}, wildberries: {}, yandex: {} };
   const onSave = onSaveLegacy || (() => {});
 
   const MarketplaceForm = ({ type, config, onSave: onSaveForm, onTest: onTestForm, cabinetId, onDelete }) => {

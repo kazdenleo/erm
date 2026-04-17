@@ -76,7 +76,7 @@ export function WarehouseOperations({
   const [selectedProductId, setSelectedProductId] = useState('');
   const [listQty, setListQty] = useState(1);
   const [receiptSupplierId, setReceiptSupplierId] = useState('');
-  const [receiptOrganizationId, setReceiptOrganizationId] = useState('');
+  const [receiptOrganizationId] = useState('');
   /** Обязательный склад приёмки (поступление / возвраты) */
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
   const [returnWarehouseId, setReturnWarehouseId] = useState('');
@@ -87,7 +87,6 @@ export function WarehouseOperations({
   const scanValueRef = useRef('');
   const manualSearchDebounceRef = useRef(null);
   const [receiptsList, setReceiptsList] = useState([]);
-  const [receiptsTotal, setReceiptsTotal] = useState(0);
   const [receiptsLoading, setReceiptsLoading] = useState(false);
   const [receiptDetail, setReceiptDetail] = useState(null);
   const [addReceiptModalOpen, setAddReceiptModalOpen] = useState(false);
@@ -269,9 +268,8 @@ export function WarehouseOperations({
   const loadReceiptsList = useCallback(() => {
     setReceiptsLoading(true);
     receiptsApi.getList({ limit: 200 })
-      .then(({ list, total }) => {
+      .then(({ list }) => {
         setReceiptsList(Array.isArray(list) ? list : []);
-        setReceiptsTotal(typeof total === 'number' ? total : (Array.isArray(list) ? list.length : 0));
       })
       .catch(err => {
         console.warn('[WarehouseOperations] loadReceiptsList failed:', err?.message || err);
@@ -583,7 +581,6 @@ export function WarehouseOperations({
   const handleWriteOff = async () => {
     if (!foundProduct) return;
     const sub = Math.max(1, parseInt(qtyInput, 10) || 1);
-    const current = foundProduct.quantity ?? 0;
     setOpLoading(true);
     setOpMessage(null);
     try {

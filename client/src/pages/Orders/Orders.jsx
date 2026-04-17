@@ -14,7 +14,6 @@ import { suppliersApi } from '../../services/suppliers.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import {
-  orderStatusLabels,
   getOrderStatusLabel,
   isOrderStatusEligibleForProcurement,
 } from '../../constants/orderStatuses';
@@ -428,7 +427,7 @@ export function Orders() {
       setDetailModalError(null);
       return;
     }
-    const { first, orders: groupOrders } = detailModalRow;
+    const { first } = detailModalRow;
     const marketplace = first.marketplace;
     const orderId = first.orderId;
     const supportsDetailApi =
@@ -950,7 +949,6 @@ export function Orders() {
   const groupedDisplayRows = useMemo(() => {
     const byGroup = new Map();
     for (const o of filteredOrders) {
-      const mp = normalizeMarketplaceForUI(o.marketplace);
       const ogk = orderGroupKey(o);
       const gid = ogk || singleOrderListGroupKey(o);
       if (!byGroup.has(gid)) byGroup.set(gid, []);
@@ -1015,15 +1013,6 @@ export function Orders() {
   const filteredKeys = useMemo(() => new Set(filteredOrders.map(orderKey)), [filteredOrders]);
   const allFilteredSelected = filteredOrders.length > 0 && filteredOrders.every(o => selectedKeys.has(orderKey(o)));
   const selectedCount = filteredOrders.filter(o => selectedKeys.has(orderKey(o))).length;
-
-  const toggleSelect = (key) => {
-    setSelectedKeys(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
 
   const toggleSelectGroup = (row) => {
     const keys = row.orders.map(orderKey);
@@ -1908,7 +1897,6 @@ export function Orders() {
                 const { first, orders: groupOrders, isGroup } = row;
                 const keys = groupOrders.map(orderKey);
                 const checked = keys.every(k => selectedKeys.has(k));
-                const mpRow = normalizeMarketplaceForUI(first.marketplace);
                 const orderIdDisplay = !isGroup ? first.orderId : (first.orderGroupId || first.orderId);
                 const productsDisplay = isGroup
                   ? groupOrders.map(o => o.productName || o.product_name || '—').join('; ')

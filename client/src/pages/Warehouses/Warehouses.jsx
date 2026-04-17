@@ -15,7 +15,7 @@ import './Warehouses.css';
 
 export function Warehouses() {
   const { warehouses, loading, error, createWarehouse, updateWarehouse, deleteWarehouse, loadWarehouses } = useWarehouses();
-  const { suppliers, loading: suppliersLoading } = useSuppliers();
+  const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingWarehouse, setEditingWarehouse] = useState(null);

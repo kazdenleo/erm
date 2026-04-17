@@ -90,7 +90,7 @@ export function Sidebar() {
   }, [location.pathname, loadQuestionsStats]);
 
   /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse) */
-  const childMatchesLocation = (sub, loc) => {
+  const childMatchesLocation = useCallback((sub, loc) => {
     const pathname = loc.pathname;
     const sp = new URLSearchParams(loc.search || '');
     if (sub.warehouseOp != null) {
@@ -99,9 +99,9 @@ export function Sidebar() {
     }
     const base = String(sub.path || '').split('?')[0];
     return pathname === base;
-  };
+  }, []);
 
-  const findActiveGroup = (loc) => {
+  const findActiveGroup = useCallback((loc) => {
     const path = loc.pathname || '';
     const group = menuItems.find((it) => {
       if (!Array.isArray(it.children) || it.children.length === 0) return false;
@@ -109,7 +109,7 @@ export function Sidebar() {
       return it.children.some((sub) => childMatchesLocation(sub, loc));
     });
     return group?.path ?? null;
-  };
+  }, [childMatchesLocation]);
 
   const [openGroup, setOpenGroup] = useState(() => findActiveGroup(location) ?? NONE);
 
@@ -121,7 +121,7 @@ export function Sidebar() {
       if (prev === NONE) return activeGroup;
       return activeGroup;
     });
-  }, [location.pathname, location.search]);
+  }, [location.pathname, location.search, findActiveGroup, location]);
 
   const visibleMenu = useMemo(() => {
     const filterChildren = (item) => {

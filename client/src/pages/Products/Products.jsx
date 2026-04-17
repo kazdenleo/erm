@@ -212,6 +212,7 @@ export function Products() {
 
   useEffect(() => {
     loadListRef.current({ warehouseId: filterWarehouseId, page: currentPage });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная загрузка списка; смена страницы/фильтров вызывает loadList из обработчиков
   }, []);
 
   const openProductIdParam = searchParams.get('open');
@@ -257,6 +258,7 @@ export function Products() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadCategories из useCategories не стабилен по ссылке
   }, [openProductIdParam, categories.length, setSearchParams]);
 
   const handleCreate = () => {

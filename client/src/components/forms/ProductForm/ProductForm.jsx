@@ -453,6 +453,7 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
     }
     // Только смена товара по id: иначе при новом объекте product с тем же id форма перезаписывается
     // и быстрый ввод со сканера в поле баркода сбрасывается.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- намеренно только id, не весь объект currentProduct
   }, [currentProduct?.id]);
 
   // Загрузка списка атрибутов для выбора по категории
@@ -548,41 +549,6 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
   // Подгружаем выбранную категорию по ID для актуальных marketplace_mappings
   const [categoryDetails, setCategoryDetails] = useState(null);
   const [categoryDetailsLoading, setCategoryDetailsLoading] = useState(false);
-  const [categoryRefreshMsg, setCategoryRefreshMsg] = useState('');
-  const fetchCategoryDetails = useCallback((cid) => {
-    const id = cid ? String(cid).trim() : '';
-    if (!id) return Promise.resolve(null);
-    setCategoryRefreshMsg('');
-    setCategoryDetailsLoading(true);
-    return userCategoriesApi.getById(id)
-      .then((res) => {
-        const raw = res?.data ?? res;
-        const cat = (raw && (raw.id != null || raw.name)) ? raw : (raw?.data && (raw.data.id != null || raw.data.name)) ? raw.data : null;
-        let mm = cat?.marketplace_mappings ?? cat?.marketplaceMappings;
-        if (typeof mm === 'string') {
-          try { mm = JSON.parse(mm || '{}'); } catch (_) { mm = {}; }
-        }
-        const ozonVal = mm && typeof mm === 'object' ? (mm.ozon != null ? String(mm.ozon).trim() : '') : '';
-        const ozonDisplay = mm?.ozon_display ?? mm?.ozonDisplay ?? '';
-        const hasPathDisplay = typeof ozonDisplay === 'string' && (ozonDisplay.includes('>') || ozonDisplay.includes('›'));
-        const hasType = ozonVal.includes('_') || (Number(mm?.ozon_type_id ?? mm?.ozonTypeId) > 0);
-        setCategoryDetails(cat ? { ...cat } : null);
-        let msg = 'Данные обновлены.';
-        if (!hasType) {
-          msg = hasPathDisplay
-            ? 'Путь в категории есть, но id без типа. Категории → редактировать эту категорию → нажмите «Сохранить» (форма подставит тип по пути). Затем снова нажмите здесь «Обновить данные категории».'
-            : 'В категории сохранён только уровень категории. Категории → редактировать → Ozon: «Обновить список» → выбрать пункт с подписью «Тип товара» → Сохранить.';
-        }
-        setCategoryRefreshMsg(msg);
-        return cat;
-      })
-      .catch(() => {
-        setCategoryDetails(null);
-        setCategoryRefreshMsg('Ошибка загрузки категории.');
-        return null;
-      })
-      .finally(() => setCategoryDetailsLoading(false));
-  }, []);
   useEffect(() => {
     const cid = formData.categoryId ? String(formData.categoryId).trim() : '';
     if (!cid) {
@@ -713,10 +679,6 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
     return /^\d+$/.test(s) ? s : '';
   }, [categoryResolvedForMappings]);
 
-  useEffect(() => {
-    if (ozonTypeIdForApi > 0) setCategoryRefreshMsg('');
-  }, [ozonTypeIdForApi]);
-
   // Загрузка схемы атрибутов Ozon по сопоставлению категории (сервер дополняет пару desc/type по дереву Ozon)
   useEffect(() => {
     const userCategoryId = formData.categoryId ? String(formData.categoryId).trim() : '';
@@ -798,7 +760,7 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
         const key = String(attr.id);
         if (!isEmptyMarketplaceValue(next[key])) continue;
         const n = normalizeAttrName(attr?.name);
-        const isVatField = /\bндс\b/.test(n) || /ставк/.test(n) && /\bндс\b/.test(n) || /\bvat\b/.test(n);
+        const isVatField = /\bндс\b/.test(n) || (/ставк/.test(n) && /\bндс\b/.test(n)) || /\bvat\b/.test(n);
         if (!isVatField) continue;
         next[key] = orgVatText;
         changed = true;
