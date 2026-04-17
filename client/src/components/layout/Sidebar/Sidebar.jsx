@@ -49,8 +49,8 @@ const menuItems = [
 
 export function Sidebar() {
   const location = useLocation();
-  const { user, isAdmin, isProfileAdmin } = useAuth();
-  const canManageUsers = isAdmin || isProfileAdmin;
+  const { user, isAdmin, isProfileAdmin, isAccountAdmin } = useAuth();
+  const canManageUsers = isAccountAdmin;
   const NONE = '__none__';
   const findActiveGroup = (pathname) => {
     const path = pathname || '';

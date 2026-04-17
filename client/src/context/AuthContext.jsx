@@ -163,6 +163,12 @@ export function AuthProvider({ children }) {
 
   const accountId = profileId;
 
+  const accountRole = useMemo(() => {
+    const raw = user?.accountRole ?? user?.account_role ?? null;
+    const s = raw == null ? '' : String(raw).trim().toLowerCase();
+    return s || null;
+  }, [user]);
+
   const features = user?.features;
   const limits = user?.limits;
 
@@ -187,6 +193,13 @@ export function AuthProvider({ children }) {
       isAdmin: user?.role === 'admin',
       /** Администратор аккаунта: is_profile_admin, обычно role === 'user' и задан profileId */
       isProfileAdmin: !!(user?.isProfileAdmin ?? user?.is_profile_admin),
+      /** Роль внутри аккаунта (account_role): admin | picker | warehouse_manager | editor */
+      accountRole,
+      /** Администратор аккаунта/системы: может управлять пользователями и ролями */
+      isAccountAdmin:
+        (user?.role === 'admin') ||
+        !!(user?.isProfileAdmin ?? user?.is_profile_admin) ||
+        accountRole === 'admin',
       profileId,
       /** То же, что profileId: аккаунт в БД — профиль (tenant) */
       accountId,
@@ -207,6 +220,7 @@ export function AuthProvider({ children }) {
       loading,
       login,
       logout,
+      accountRole,
       profileId,
       accountId,
       features,

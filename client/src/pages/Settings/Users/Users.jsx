@@ -23,7 +23,7 @@ function accountRoleLabel(u) {
 }
 
 export function SettingsUsers() {
-  const { user, isAdmin, isProfileAdmin } = useAuth();
+  const { user, isAdmin, isProfileAdmin, isAccountAdmin } = useAuth();
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -40,9 +40,9 @@ export function SettingsUsers() {
     accountRole: 'editor',
   });
 
-  const canManage = isAdmin || isProfileAdmin;
+  const canManage = isAccountAdmin;
   /** Роли в этом разделе — только у администратора аккаунта (не у админа продукта) */
-  const canSeeRoles = isProfileAdmin;
+  const canSeeRoles = isAccountAdmin && !isAdmin;
   /** Администраторов системы создают вне привязки к аккаунту; в списке «пользователей профиля» эту роль не задаём */
   const showSystemAdminRoleOption = false;
 
