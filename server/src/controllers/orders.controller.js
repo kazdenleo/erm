@@ -248,6 +248,26 @@ class OrdersController {
         }
       }
       const result = await ordersService.sendToAssembly(orderIds, req.user?.profileId ?? null);
+
+      // Автопредзагрузка этикеток после перевода «На сборке».
+      // Делается в фоне: чтобы UI не ждал WB/Ozon/YM и не ловил 504/таймауты.
+      try {
+        const uniq = Array.isArray(orderIds)
+          ? [...new Set(orderIds.map((o) => (o?.orderId != null ? String(o.orderId) : '')).filter(Boolean))]
+          : [];
+        setTimeout(() => {
+          for (const oid of uniq) {
+            // getLabelStatus сам поставит скачивание в фон, если файла ещё нет
+            ordersLabelsService
+              .findOrderById(oid)
+              .then((order) => ordersLabelsService.getLabelStatus(order))
+              .catch(() => {});
+          }
+        }, 0);
+      } catch {
+        /* best effort */
+      }
+
       return res.status(200).json({
         ok: true,
         data: { ...result, shipments: shipmentsUsed, warnings }

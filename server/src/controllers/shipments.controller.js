@@ -13,6 +13,15 @@ function shipmentsProfileOpts(req) {
   return { profileId: tid != null ? tid : null };
 }
 
+/** Абсолютный URL PNG стикера поставки для <img> (учитывает req.baseUrl `/api` vs `/api/shipments`). */
+function wbSupplyQrStickerImageUrl(req, shipmentId) {
+  const bu = req.baseUrl || '/api';
+  const basePath = bu.endsWith('/shipments') ? bu : `${bu.replace(/\/$/, '')}/shipments`;
+  const proto = req.protocol || 'http';
+  const host = req.get('host') || '';
+  return `${proto}://${host}${basePath}/${encodeURIComponent(shipmentId)}/qr-sticker`;
+}
+
 class ShipmentsController {
   async getAll(req, res, next) {
     try {
@@ -146,9 +155,71 @@ class ShipmentsController {
       if (!filePath) {
         return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
       }
-      const baseUrl = `${req.protocol}://${req.get('host') || ''}`.replace(/\/$/, '');
-      const apiBase = req.baseUrl || '/api/shipments';
-      const stickerUrl = `${baseUrl}${apiBase}/${encodeURIComponent(id)}/qr-sticker`;
+      const stickerUrl = wbSupplyQrStickerImageUrl(req, id);
+      const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Этикетка поставки ${id}</title>
+  <style>
+    body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    img { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  <img id="stickerImg" src="${stickerUrl.replace(/"/g, '&quot;')}" alt="Этикетка поставки" />
+  <script>
+    (function(){
+      var done = false;
+      function doPrint() {
+        if (done) return;
+        done = true;
+        window.print();
+      }
+      document.getElementById('stickerImg').onload = doPrint;
+      window.setTimeout(doPrint, 1500);
+    })();
+  </script>
+</body>
+</html>`;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(html);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Публичная отдача PNG — без Authorization (window.open / <img> не отправляют Bearer).
+   * GET /shipments/:id/qr-sticker
+   */
+  async getQrStickerPublic(req, res, next) {
+    try {
+      const { id } = req.params;
+      const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: null });
+      if (!filePath) {
+        return res.status(404).json({ ok: false, message: 'QR-стикер поставки не найден' });
+      }
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Content-Disposition', `inline; filename="supply-qr-${id}.png"`);
+      return fs.createReadStream(filePath).pipe(res);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Публичная страница печати — без Authorization.
+   * GET /shipments/:id/qr-sticker/print
+   */
+  async getQrStickerPrintPublic(req, res, next) {
+    try {
+      const { id } = req.params;
+      const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: null });
+      if (!filePath) {
+        return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
+      }
+      const stickerUrl = wbSupplyQrStickerImageUrl(req, id);
       const html = `<!DOCTYPE html>
 <html>
 <head>

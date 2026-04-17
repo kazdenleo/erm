@@ -22,8 +22,9 @@ function normalizeAccountRole(v) {
 function isAccountAdmin(user) {
   if (!user) return false;
   if (user.role === 'admin') return true;
-  if (user.isProfileAdmin) return true;
-  const ar = user.accountRole ?? user.account_role ?? null;
+  if (user.isProfileAdmin === true || user.is_profile_admin === true) return true;
+  // Как в AuthContext: account_role сравниваем после trim+lower — в БД могли попасть пробелы/регистр
+  const ar = normalizeAccountRole(user.accountRole ?? user.account_role ?? null);
   return ar === 'admin';
 }
 

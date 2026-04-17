@@ -275,18 +275,49 @@ export function Assembly() {
     })();
 
     // Дождаться файла на сервере (ensureLabelFile), иначе Print Helper сразу после сборки часто ловит 502.
+    // Если этикетка недоступна (409/429/5xx) — покажем понятную ошибку и не будем дергать Print Helper.
     try {
       const warmAc = new AbortController();
       const warmT = setTimeout(() => warmAc.abort(), PRINT_HELPER_FETCH_MS);
       try {
         const warmR = await fetch(labelFileUrl, { method: 'GET', cache: 'no-store', signal: warmAc.signal });
-        if (!warmR.ok) throw new Error(`label ${warmR.status}`);
+        if (!warmR.ok) {
+          const status = warmR.status;
+          let msg = '';
+          try {
+            const j = await warmR.json();
+            msg = j?.message || j?.error || '';
+          } catch {
+            try {
+              msg = (await warmR.text()) || '';
+            } catch {
+              /* ignore */
+            }
+          }
+          const base =
+            status === 409
+              ? 'Этикетка ещё не готова или недоступна в Wildberries для этого заказа.'
+              : status === 429
+                ? 'Слишком много запросов к этикеткам/синхронизации. Подождите и повторите.'
+                : status === 404
+                  ? 'Этикетка для заказа не найдена.'
+                  : `Не удалось получить этикетку (HTTP ${status}).`;
+          const detail = msg ? ` ${String(msg).trim()}` : '';
+          setLabelPrintError(`${base}${detail}`);
+          setTimeout(() => setLabelPrintError(null), 12000);
+          return;
+        }
         await warmR.blob();
       } finally {
         clearTimeout(warmT);
       }
     } catch {
-      /* helper всё равно дернёт /label */
+      // При сетевом сбое/таймауте не запускаем Print Helper, иначе он покажет 502.
+      setLabelPrintError(
+        'Таймаут/сбой сети при загрузке этикетки. Подождите и попробуйте ещё раз.'
+      );
+      setTimeout(() => setLabelPrintError(null), 12000);
+      return;
     }
 
     const base = (printHelperUrl || '').trim().replace(/\/$/, '');

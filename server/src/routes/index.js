@@ -27,6 +27,7 @@ import categoryMappingsRoutes from './category_mappings.routes.js';
 import buyoutRateRoutes from './buyout-rate.routes.js';
 import wbMarketplaceRoutes from './wbMarketplace.routes.js';
 import shipmentsRoutes from './shipments.routes.js';
+import shipmentsController from '../controllers/shipments.controller.js';
 import assemblyRoutes from './assembly.routes.js';
 import productAttributesRoutes from './product_attributes.routes.js';
 import warehouseReceiptsRoutes from './warehouseReceipts.routes.js';
@@ -56,6 +57,16 @@ router.get('/config', (req, res) => {
 router.get('/orders/:orderId/label', validateOrderId, wrapAsync(ordersController.getLabel.bind(ordersController)));
 router.get('/orders/:orderId/label/print', validateOrderId, wrapAsync(ordersController.getLabelPrint.bind(ordersController)));
 router.get('/orders/:orderId/label/status', validateOrderId, wrapAsync(ordersController.getLabelStatus.bind(ordersController)));
+
+// Публичные: QR поставки WB — window.open и <img> не передают Bearer (как этикетки заказов).
+router.get(
+  '/shipments/:id/qr-sticker/print',
+  wrapAsync(shipmentsController.getQrStickerPrintPublic.bind(shipmentsController))
+);
+router.get(
+  '/shipments/:id/qr-sticker',
+  wrapAsync(shipmentsController.getQrStickerPublic.bind(shipmentsController))
+);
 
 // Опциональная авторизация для всех /api (устанавливает req.user при наличии токена)
 router.use(optionalAuth);

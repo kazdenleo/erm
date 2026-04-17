@@ -127,16 +127,31 @@ class OrdersLabelsService {
     const exists = fs.existsSync(filePath);
 
     if (!exists) {
-      // качаем в фоне, ответ не ждёт
+      // Качаем в фоне, ответ не ждёт. Для WB возможны 409 (этикетка ещё не готова) и 429 (rate limit).
+      // Делаем несколько попыток с бэкоффом, чтобы «На сборке» почти всегда прогревало этикетку.
       setTimeout(async () => {
-        try {
-          const buf = await fetchMarketplaceLabel(order);
-          if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
-            fs.writeFileSync(filePath, buf);
-            logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId}`);
+        const mp = normalizeMarketplaceForLabel(order?.marketplace);
+        const isWB = mp === 'wildberries';
+        const maxAttempts = isWB ? 4 : 1;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            const buf = await fetchMarketplaceLabel(order);
+            if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
+              fs.writeFileSync(filePath, buf);
+              logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId} attempt=${attempt}`);
+            }
+            return;
+          } catch (e) {
+            const status = e?.statusCode;
+            logLabelEvent(
+              `Error(status) ${order.marketplace}:${order.orderId} attempt=${attempt}/${maxAttempts} status=${status || ''} -> ${e?.message || String(e)}`
+            );
+            if (!isWB || attempt >= maxAttempts) return;
+            // backoff: 5s, 15s, 30s (для 409/429), иначе не ретраим
+            if (status !== 409 && status !== 429) return;
+            const delayMs = attempt === 1 ? 5000 : attempt === 2 ? 15000 : 30000;
+            await new Promise((r) => setTimeout(r, delayMs));
           }
-        } catch (e) {
-          logLabelEvent(`Error(status) ${order.marketplace}:${order.orderId} -> ${e.message}`);
         }
       }, 0);
     }
@@ -318,31 +333,66 @@ async function fetchOzonLabel(order) {
 async function fetchWBLabel(order) {
   try {
     let wb = null;
+    const profileIdRaw = order?.profileId ?? order?.profile_id ?? null;
+    const profileId =
+      profileIdRaw == null || profileIdRaw === ''
+        ? null
+        : (Number.isFinite(Number(profileIdRaw)) ? Number(profileIdRaw) : String(profileIdRaw));
     try {
-      wb = await integrationsService.getMarketplaceConfig('wildberries');
+      wb = await integrationsService.getMarketplaceConfig('wildberries', { profileId });
     } catch (_) {}
     if (!wb?.api_key) wb = await readData('wildberries');
     if (!wb || !wb.api_key) return null;
+    // WB: для большинства v3 методов корректный формат — Authorization: Bearer <token>
+    // (в т.ч. /ping и часть marketplace-api). Оставляем совместимость: если уже передан Bearer — не дублируем.
+    const rawToken = String(wb.api_key || '').trim();
+    const tokenClean =
+      typeof integrationsService?._normalizeWbToken === 'function'
+        ? integrationsService._normalizeWbToken(rawToken)
+        : rawToken.replace(/\s+/g, '').replace(/\uFEFF/g, '').trim();
+    const authHeader = tokenClean.toLowerCase().startsWith('bearer ')
+      ? tokenClean
+      : `Bearer ${tokenClean}`;
     // Не фильтруем по статусу — пробуем запросить этикетку; при недоступности WB API вернёт ошибку.
 
-    const url =
-      'https://marketplace-api.wildberries.ru/api/v3/orders/stickers?type=png&width=58&height=40';
+    async function fetchStickersJson(url) {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: JSON.stringify({ orders: [orderIdNum] })
+      });
+      const text = await resp.text();
+      return { resp, text };
+    }
+
+    // WB: по документации есть несколько контуров/моделей заказов.
+    // "Классический" FBS: /api/v3/orders/stickers
+    // DBW (Delivery by Wildberries courier): /api/v3/dbw/orders/stickers
+    const urlFbs = 'https://marketplace-api.wildberries.ru/api/v3/orders/stickers?type=png&width=58&height=40';
+    const urlDbw = 'https://marketplace-api.wildberries.ru/api/v3/dbw/orders/stickers?type=png&width=58&height=40';
     const orderIdNum = Number(order.orderId);
     if (Number.isNaN(orderIdNum)) {
       logLabelEvent(`[WB] Invalid orderId for sticker: ${order.orderId}`);
       throw new Error('Некорректный номер заказа');
     }
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: String(wb.api_key),
-        'Content-Type': 'application/json',
-        Accept: 'application/json'
-      },
-      body: JSON.stringify({ orders: [orderIdNum] })
-    });
+    let resp;
+    let text;
+    ({ resp, text } = await fetchStickersJson(urlFbs));
 
-    const text = await resp.text();
+    // WB может отвечать 429 при массовых синхронизациях/ночных задачах.
+    // В этом случае важно прокинуть статус, чтобы клиент не видел "502 Bad Gateway".
+    if (resp.status === 429) {
+      const retryAfter = resp.headers?.get?.('retry-after') || resp.headers?.get?.('Retry-After') || null;
+      const hint = retryAfter ? ` Попробуйте через ${retryAfter} сек.` : ' Подождите и повторите попытку.';
+      logLabelEvent(`[WB] rate limited 429${retryAfter ? ` retry-after=${retryAfter}` : ''}: ${text.substring(0, 300)}`);
+      const err = new Error(`WB: слишком много запросов (429).${hint}`);
+      err.statusCode = 429;
+      throw err;
+    }
 
     if (!resp.ok) {
       logLabelEvent(`[WB] label error ${resp.status}: ${text.substring(0, 300)}`);
@@ -359,9 +409,80 @@ async function fetchWBLabel(order) {
 
     const stickers = json?.stickers;
     if (!Array.isArray(stickers) || stickers.length === 0) {
+      // fallback: DBW stickers endpoint
+      try {
+        const r2 = await fetchStickersJson(urlDbw);
+        if (r2.resp.status === 429) {
+          const retryAfter = r2.resp.headers?.get?.('retry-after') || r2.resp.headers?.get?.('Retry-After') || null;
+          const hint = retryAfter ? ` Попробуйте через ${retryAfter} сек.` : ' Подождите и повторите попытку.';
+          logLabelEvent(`[WB][DBW] rate limited 429${retryAfter ? ` retry-after=${retryAfter}` : ''}: ${r2.text.substring(0, 300)}`);
+          const err = new Error(`WB: слишком много запросов (429).${hint}`);
+          err.statusCode = 429;
+          throw err;
+        }
+        if (r2.resp.ok) {
+          let j2 = {};
+          try { j2 = r2.text ? JSON.parse(r2.text) : {}; } catch { j2 = {}; }
+          const st2 = j2?.stickers;
+          if (Array.isArray(st2) && st2.length > 0) {
+            const first2 = st2[0];
+            const base64_2 = first2?.file;
+            if (base64_2 && typeof base64_2 === 'string') {
+              return Buffer.from(base64_2, 'base64');
+            }
+            logLabelEvent('[WB][DBW] sticker has no file field');
+          } else {
+            logLabelEvent(`[WB][DBW] no stickers: ${(j2?.message || j2?.error || '').toString().substring(0, 150)}`);
+          }
+        }
+      } catch (e2) {
+        if (e2?.statusCode === 429) throw e2;
+        // ignore — ниже вернём общую 409
+      }
+
       const msg = json?.message || json?.error || 'Нет этикеток в ответе';
-      logLabelEvent(`[WB] no stickers: ${msg}`);
-      throw new Error(`WB: ${msg}`);
+      // Диагностика: часто WB возвращает пустой список, если заказ не в confirm/complete (по документации).
+      // Попробуем один раз запросить статус заказа, чтобы понять supplierStatus/wbStatus.
+      let statusDiag = '';
+      try {
+        const stResp = await fetch('https://marketplace-api.wildberries.ru/api/v3/orders/status', {
+          method: 'POST',
+          headers: {
+            Authorization: authHeader,
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
+          },
+          body: JSON.stringify({ orders: [orderIdNum] })
+        });
+        const stText = await stResp.text();
+        if (stResp.ok) {
+          let stJson = {};
+          try { stJson = stText ? JSON.parse(stText) : {}; } catch { stJson = {}; }
+          const list = Array.isArray(stJson?.orders) ? stJson.orders : (Array.isArray(stJson?.data) ? stJson.data : []);
+          const item = Array.isArray(list) ? list.find((x) => Number(x?.id ?? x?.orderId ?? x?.order_id) === orderIdNum) : null;
+          const supplierStatus = item?.supplierStatus ?? item?.supplier_status ?? item?.supplier_status_name ?? null;
+          const wbStatus = item?.wbStatus ?? item?.wb_status ?? null;
+          const codes = Array.isArray(item?.statuses) ? item.statuses.map((s) => s?.code).filter(Boolean) : [];
+          statusDiag = ` status: supplierStatus=${supplierStatus ?? ''} wbStatus=${wbStatus ?? ''} codes=${codes.join(',')}`;
+        } else {
+          statusDiag = ` statusApi=${stResp.status}`;
+        }
+      } catch {
+        /* ignore */
+      }
+      const diag = (() => {
+        try {
+          const snippet = JSON.stringify(json).substring(0, 500);
+          return snippet ? ` response=${snippet}` : '';
+        } catch {
+          return text ? ` responseText=${String(text).substring(0, 300)}` : '';
+        }
+      })();
+      logLabelEvent(`[WB] no stickers for order=${orderIdNum}: ${msg}${statusDiag}${diag}`);
+      const err = new Error(`WB: ${msg}`);
+      // 200 OK, но без stickers — это обычно "этикетка недоступна" (не 502 от нашего API).
+      err.statusCode = 409;
+      throw err;
     }
 
     const first = stickers[0];

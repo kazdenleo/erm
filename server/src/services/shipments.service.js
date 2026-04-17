@@ -41,6 +41,24 @@ async function getWildberriesConfigForScope(profileId) {
   return marketplaces?.wildberries?.api_key ? marketplaces.wildberries : null;
 }
 
+function wbAuthHeaderFromConfig(cfg) {
+  const raw = String(cfg?.api_key || '').trim();
+  if (!raw) return '';
+  const tokenClean =
+    typeof integrationsService?._normalizeWbToken === 'function'
+      ? integrationsService._normalizeWbToken(raw)
+      : raw.replace(/\s+/g, '').replace(/\uFEFF/g, '').trim();
+  return tokenClean.toLowerCase().startsWith('bearer ')
+    ? tokenClean
+    : `Bearer ${tokenClean}`;
+}
+
+async function confirmWBOrdersForAssembly(config, orderIds) {
+  // FBS: прямого "confirm" эндпоинта нет. Статус supplierStatus=confirm выставляется при добавлении заказа в поставку.
+  // Оставляем функцию как no-op для совместимости вызовов.
+  return;
+}
+
 function generateId() {
   return `ship-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -108,7 +126,7 @@ async function fetchWBSupplies(config) {
   const agent = getFetchProxyAgent();
   const response = await fetch('https://marketplace-api.wildberries.ru/api/v3/supplies?next=0', {
     method: 'GET',
-    headers: { Authorization: String(api_key), Accept: 'application/json' },
+    headers: { Authorization: wbAuthHeaderFromConfig({ api_key }), Accept: 'application/json' },
     ...(agent && { agent })
   });
   if (!response.ok) return [];
@@ -261,7 +279,7 @@ async function wbDeliverSupply(config, supplyId) {
   const url = `https://marketplace-api.wildberries.ru/api/v3/supplies/${encodeURIComponent(supplyId)}/deliver`;
   const response = await fetch(url, {
     method: 'PATCH',
-    headers: { Authorization: String(api_key), 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { Authorization: wbAuthHeaderFromConfig({ api_key }), 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({}),
     ...(agent && { agent })
   });
@@ -278,7 +296,7 @@ async function wbGetSupplyBarcode(config, supplyId, type = 'png') {
   const url = `https://marketplace-api.wildberries.ru/api/v3/supplies/${encodeURIComponent(supplyId)}/barcode?type=${encodeURIComponent(type)}`;
   const response = await fetch(url, {
     method: 'GET',
-    headers: { Authorization: String(api_key), Accept: 'application/json' },
+    headers: { Authorization: wbAuthHeaderFromConfig({ api_key }), Accept: 'application/json' },
     ...(agent && { agent })
   });
   if (!response.ok) return null;
@@ -292,7 +310,7 @@ async function createWBSupply(config) {
   const response = await fetch('https://marketplace-api.wildberries.ru/api/v3/supplies', {
     method: 'POST',
     headers: {
-      Authorization: String(api_key),
+      Authorization: wbAuthHeaderFromConfig({ api_key }),
       'Content-Type': 'application/json',
       Accept: 'application/json'
     },
@@ -474,6 +492,17 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null } = 
       err.statusCode = 400;
       throw err;
     }
+    // Для WB этикетки появляются через stickers API только когда сборочное задание в статусе confirm/complete.
+    // Поэтому перед добавлением в поставку переводим заказы в confirm на стороне WB.
+    if (toAdd.length > 0) {
+      try {
+        await confirmWBOrdersForAssembly(wbConfig, toAdd);
+      } catch (e) {
+        // Новые методы WB могут быть недоступны для части заказов (404) — не блокируем перевод в "На сборке" в ERM.
+        // Дальше всё равно попробуем добавить в поставку: это зачастую и переводит заказы в нужный статус на WB.
+        logger.warn(`[Shipments WB] confirm skipped: ${e?.message || String(e)}`);
+      }
+    }
     let supplyId = ship.externalId;
     if (!supplyId) {
       supplyId = await createWBSupply(wbConfig);
@@ -535,6 +564,7 @@ async function findLocalShipmentContainingOrder(marketplace, orderId, { profileI
 async function addOrdersToWBSupplyBatch(config, supplyId, orderIds) {
   const { api_key } = config;
   const agent = getFetchProxyAgent();
+  const auth = wbAuthHeaderFromConfig({ api_key });
   const ids = orderIds
     .map((id) => {
       if (typeof id === 'number' && Number.isInteger(id)) return id;
@@ -552,8 +582,10 @@ async function addOrdersToWBSupplyBatch(config, supplyId, orderIds) {
   }
   const pathSuffix = `/${encodeURIComponent(supplyId)}/orders`;
   const urlsToTry = [
-    'https://marketplace-api.wildberries.ru/api/v3/supplies' + pathSuffix,
-    'https://marketplace-api.wildberries.ru/api/marketplace/v3/supplies' + pathSuffix
+    // По документации FBS: добавление заказов в поставку делается через /api/marketplace/v3/supplies/{supplyId}/orders
+    'https://marketplace-api.wildberries.ru/api/marketplace/v3/supplies' + pathSuffix,
+    // fallback на старый путь (в некоторых окружениях встречался)
+    'https://marketplace-api.wildberries.ru/api/v3/supplies' + pathSuffix
   ];
   logger.info(`[Shipments WB] Adding ${ids.length} orders to supply ${supplyId}: ${ids.slice(0, 5).join(', ')}${ids.length > 5 ? '...' : ''}`);
   for (let i = 0; i < ids.length; i += 100) {
@@ -565,7 +597,7 @@ async function addOrdersToWBSupplyBatch(config, supplyId, orderIds) {
         const response = await fetch(url, {
           method: 'PATCH',
           headers: {
-            Authorization: String(api_key),
+            Authorization: auth,
             'Content-Type': 'application/json',
             Accept: 'application/json'
           },
@@ -636,6 +668,7 @@ async function addOrdersToWBSupplyBatch(config, supplyId, orderIds) {
 async function removeOrdersFromWBSupply(config, supplyId, orderIds) {
   const { api_key } = config;
   const agent = getFetchProxyAgent();
+  const auth = wbAuthHeaderFromConfig({ api_key });
   const ids = (Array.isArray(orderIds) ? orderIds : [])
     .map((id) => {
       if (typeof id === 'number' && Number.isInteger(id)) return id;
@@ -651,7 +684,7 @@ async function removeOrdersFromWBSupply(config, supplyId, orderIds) {
     const response = await fetch(url, {
       method: 'DELETE',
       headers: {
-        Authorization: String(api_key),
+        Authorization: auth,
         Accept: 'application/json'
       },
       ...(agent && { agent })
