@@ -263,6 +263,7 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
   const [ozonResolvedPair, setOzonResolvedPair] = useState({ descId: null, typeId: 0 });
   const [activeTab, setActiveTab] = useState('main');
   const [kitModalOpen, setKitModalOpen] = useState(false);
+  const [kitComponentSearch, setKitComponentSearch] = useState('');
   const [ozonSyncLoading, setOzonSyncLoading] = useState(false);
   const [ozonSyncError, setOzonSyncError] = useState('');
   const [ozonSyncSuccess, setOzonSyncSuccess] = useState('');
@@ -1493,6 +1494,23 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
   };
 
   const availableComponents = (products || []).filter(p => p && String(p.id) !== String(currentProduct?.id));
+  const filteredAvailableComponents = useMemo(() => {
+    const q = String(kitComponentSearch || '').trim().toLowerCase();
+    const list = Array.isArray(availableComponents) ? availableComponents : [];
+    if (!q) return list.slice(0, 200);
+    return list
+      .filter((p) => {
+        const sku = String(p?.sku || '').toLowerCase();
+        const name = String(p?.name || '').toLowerCase();
+        return sku.includes(q) || name.includes(q);
+      })
+      .slice(0, 200);
+  }, [availableComponents, kitComponentSearch]);
+
+  useEffect(() => {
+    if (kitModalOpen) return;
+    setKitComponentSearch('');
+  }, [kitModalOpen]);
 
   const validate = () => {
     const newErrors = {};
@@ -2083,6 +2101,21 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
           <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '10px' }}>
             Выберите товары, входящие в комплект, и их количество.
           </p>
+          <div style={{ marginBottom: 10 }}>
+            <input
+              type="text"
+              className="form-control form-control-sm"
+              placeholder="Поиск по артикулу или названию…"
+              value={kitComponentSearch}
+              onChange={(e) => setKitComponentSearch(e.target.value)}
+              autoComplete="off"
+              autoFocus
+            />
+            <div className="text-muted" style={{ fontSize: 12, marginTop: 6 }}>
+              Показано вариантов: {filteredAvailableComponents.length}{' '}
+              {kitComponentSearch.trim() ? '(поиск)' : '(первые 200)'}
+            </div>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {formData.kit_components.map((row, index) => (
               <div key={index} style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2093,8 +2126,8 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
                   style={{ flex: '1 1 200px', minWidth: '140px' }}
                 >
                   <option value="">— Выберите товар —</option>
-                  {availableComponents.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} {p.sku ? `(${p.sku})` : ''}</option>
+                  {filteredAvailableComponents.map(p => (
+                    <option key={p.id} value={p.id}>{p.sku ? `${p.sku} — ` : ''}{p.name}</option>
                   ))}
                 </select>
                 <input
