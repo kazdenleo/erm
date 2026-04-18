@@ -17,6 +17,8 @@ function wbSupplierArticleFromRaw(raw) {
     pd.vendorCode,
     pd.vendor_code,
     pd.article,
+    raw.vendorCode,
+    raw.vendor_code,
   ];
   for (const v of candidates) {
     if (v != null && String(v).trim() !== '') return String(v).trim();

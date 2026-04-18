@@ -192,7 +192,10 @@ class IntegrationsController {
   async getWildberriesProductInfo(req, res, next) {
     try {
       const { nm_id } = req.query;
-      const data = await integrationsService.getWildberriesProductInfo({ nm_id });
+      const tid = tenantListProfileId(req);
+      const profileId =
+        tid === TENANT_LIST_EMPTY || tid == null ? null : tid;
+      const data = await integrationsService.getWildberriesProductInfo({ nm_id, profileId });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);

@@ -1019,9 +1019,14 @@ class IntegrationsService {
    * @private
    * @param {string} path
    * @param {object} body
+   * @param {{ profileId?: number|string|null }} [opts] — интеграция WB по аккаунту (multi-tenant)
    */
-  async _wbContentApiPost(path, body) {
-    const config = await this.getMarketplaceConfig('wildberries');
+  async _wbContentApiPost(path, body, opts = {}) {
+    const profileId = opts.profileId ?? opts.profile_id ?? null;
+    const config = await this.getMarketplaceConfig(
+      'wildberries',
+      profileId != null && profileId !== '' ? { profileId } : {}
+    );
     if (!config || !config.api_key) {
       const err = new Error('API ключ Wildberries не настроен');
       err.statusCode = 400;
@@ -1230,11 +1235,12 @@ class IntegrationsService {
   /**
    * Получить карточку товара Wildberries по nmId (номенклатура).
    * WB Content API: POST /content/v2/get/cards/list
-   * @param {{ nm_id: number|string }} params
+   * @param {{ nm_id: number|string, profileId?: number|string|null }} params
    * @returns {Promise<object|null>}
    */
   async getWildberriesProductInfo(params = {}) {
     const nmId = params.nm_id != null ? Number(params.nm_id) : null;
+    const profileId = params.profileId ?? params.profile_id ?? null;
     if (!nmId || nmId <= 0) {
       const err = new Error('Укажите nm_id (ID номенклатуры Wildberries).');
       err.statusCode = 400;
@@ -1246,7 +1252,7 @@ class IntegrationsService {
         filter: { withPhoto: -1, nmID: [nmId] }
       }
     };
-    const data = await this._wbContentApiPost('/content/v2/get/cards/list', body);
+    const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, { profileId });
     const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
     const first = Array.isArray(cards) && cards.length > 0 ? cards[0] : null;
     if (!first) return null;
@@ -1260,6 +1266,50 @@ class IntegrationsService {
       description: first.description ?? first.descriptionRu ?? null,
       raw: first
     };
+  }
+
+  /**
+   * Артикулы продавца (vendorCode) по списку nmId — Content API, один запрос до 100 номенклатур.
+   * Нужен для вопросов WB: в ответе «Вопросов» иногда нет supplierArticle, только nmId.
+   * @param {(number|string)[]} nmIds
+   * @param {number|string|null} profileId
+   * @returns {Promise<Map<string, string>>} ключ — nmId строкой, значение — vendorCode
+   */
+  async getWildberriesVendorCodeMapByNmIds(nmIds, profileId) {
+    const map = new Map();
+    const unique = [
+      ...new Set(
+        (nmIds || [])
+          .map((x) => (x != null ? String(x).trim() : ''))
+          .filter((s) => s !== '' && /^\d+$/.test(s))
+      )
+    ];
+    const nums = unique.map((s) => Number(s)).filter((n) => Number.isFinite(n) && n > 0);
+    const CHUNK = 100;
+    for (let i = 0; i < nums.length; i += CHUNK) {
+      const chunk = nums.slice(i, i + CHUNK);
+      if (chunk.length === 0) continue;
+      const body = {
+        settings: {
+          cursor: { limit: 100 },
+          filter: { withPhoto: -1, nmID: chunk }
+        }
+      };
+      try {
+        const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, { profileId });
+        const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
+        for (const c of cards || []) {
+          const nm = c?.nmID ?? c?.nmId;
+          const vc = c?.vendorCode ?? c?.vendor_code ?? null;
+          if (nm != null && vc != null && String(vc).trim() !== '') {
+            map.set(String(nm), String(vc).trim());
+          }
+        }
+      } catch (e) {
+        logger.warn('[Integrations Service] WB vendorCode batch by nmId failed:', e?.message || e);
+      }
+    }
+    return map;
   }
 
   /**

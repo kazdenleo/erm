@@ -75,26 +75,77 @@ function mapOzonQuestion(q, profileId) {
   };
 }
 
+function wbProductDetails(q) {
+  return q.productDetails ?? q.product_details ?? {};
+}
+
+function wbSupplierArticleFromPd(pd, q) {
+  const candidates = [
+    pd.supplierArticle,
+    pd.supplier_article,
+    pd.vendorCode,
+    pd.vendor_code,
+    pd.article,
+    q.vendorCode,
+    q.vendor_code,
+  ];
+  for (const v of candidates) {
+    if (v != null && String(v).trim() !== '') return String(v).trim();
+  }
+  return null;
+}
+
+/**
+ * Если в ответе «Вопросов» нет supplierArticle, подставляем vendorCode из Content API (см. syncWildberries).
+ */
+function applyWbVendorCodeToRow(row, vendorByNm) {
+  if (!vendorByNm?.size) return;
+  const q = row.raw_payload;
+  const pd = wbProductDetails(q);
+  const nmRaw = pd.nmId ?? pd.nmID ?? null;
+  if (nmRaw == null) return;
+  const nmStr = String(nmRaw).trim();
+  const vc = vendorByNm.get(nmStr);
+  if (!vc) return;
+  const sku = row.sku_or_offer != null ? String(row.sku_or_offer).trim() : '';
+  if (sku !== '' && sku !== nmStr) return;
+  row.sku_or_offer = vc;
+  const baseName = pd.productName ?? pd.product_name ?? null;
+  let subject = baseName != null && String(baseName).trim() !== '' ? String(baseName).trim() : null;
+  if (subject && vc) {
+    row.subject = `${subject} · ${vc}`;
+  } else if (!subject && vc) {
+    row.subject = vc;
+  }
+}
+
+async function wbFetchVendorCodesForQuestions(questions, profileId) {
+  const needNm = [];
+  for (const q of questions) {
+    const pd = wbProductDetails(q);
+    if (wbSupplierArticleFromPd(pd, q)) continue;
+    const nm = pd.nmId ?? pd.nmID;
+    if (nm == null) continue;
+    needNm.push(nm);
+  }
+  if (needNm.length === 0) return new Map();
+  try {
+    return await integrationsService.getWildberriesVendorCodeMapByNmIds(needNm, profileId);
+  } catch (e) {
+    logger.warn('[MarketplaceQuestions] WB vendorCode lookup failed:', e?.message || e);
+    return new Map();
+  }
+}
+
 function mapWbQuestion(q, profileId) {
   const ext = String(q.id ?? '').trim();
   if (!ext) return null;
   const body = String(q.text ?? '').trim() || '—';
   const answerText = q.answer?.text ?? q.answer?.message ?? null;
-  const pd = q.productDetails ?? {};
-  const nm = pd.nmId != null ? String(pd.nmId) : null;
-  const supplierArt = (() => {
-    const candidates = [
-      pd.supplierArticle,
-      pd.supplier_article,
-      pd.vendorCode,
-      pd.vendor_code,
-      pd.article,
-    ];
-    for (const v of candidates) {
-      if (v != null && String(v).trim() !== '') return String(v).trim();
-    }
-    return null;
-  })();
+  const pd = wbProductDetails(q);
+  const nmRaw = pd.nmId ?? pd.nmID ?? null;
+  const nm = nmRaw != null ? String(nmRaw).trim() : null;
+  const supplierArt = wbSupplierArticleFromPd(pd, q);
   const articleForLabel = supplierArt || nm;
   const baseName = pd.productName ?? pd.product_name ?? null;
   let subject =
@@ -106,8 +157,8 @@ function mapWbQuestion(q, profileId) {
   } else if (!subject && nm) {
     subject = `nmId ${nm}`;
   }
-  /** В списке показываем артикул продавца; nmId — только запасной вариант. */
-  const sku = supplierArt ?? (pd.nmId != null ? String(pd.nmId) : null);
+  /** До артикула из Content API может быть только nmId — колонку потом поправит applyWbVendorCodeToRow */
+  const sku = supplierArt ?? (nmRaw != null ? String(nmRaw).trim() : null);
   const status = q.state ?? q.status ?? null;
   const sourceCreatedAt = parseIsoDate(q.createdDate ?? q.created_at);
   return {
@@ -259,9 +310,11 @@ async function syncWildberries(profileId) {
       const dataRoot = json.data ?? json;
       const questions = dataRoot.questions ?? dataRoot.data?.questions ?? [];
       if (!Array.isArray(questions) || questions.length === 0) break;
+      const vendorByNm = await wbFetchVendorCodesForQuestions(questions, profileId);
       for (const q of questions) {
         const row = mapWbQuestion(q, profileId);
         if (row) {
+          applyWbVendorCodeToRow(row, vendorByNm);
           await marketplaceQuestionsRepo.upsertRow(row);
           imported += 1;
         }
