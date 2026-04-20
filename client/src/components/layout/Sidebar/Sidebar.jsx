@@ -25,6 +25,7 @@ const menuItems = [
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2' },
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2' },
   { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment' },
+  { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2' },
   { path: '/shipments', label: 'Поставки FBS', iconClass: 'pe-7s-upload' },
   { path: '/stock-levels/suppliers', label: 'Остатки поставщиков', iconClass: 'pe-7s-truck' },
   {

@@ -37,6 +37,7 @@ import marketplaceCabinetsRoutes from './marketplace_cabinets.routes.js';
 import certificatesRoutes from './certificates.routes.js';
 import inquiriesRoutes from './inquiries.routes.js';
 import questionsRoutes from './questions.routes.js';
+import reviewsRoutes from './reviews.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -92,6 +93,7 @@ router.use('/auth', authRoutes);
 router.use('/profiles', profilesRoutes);
 router.use('/users', usersRoutes);
 router.use('/inquiries', inquiriesRoutes);
+router.use('/reviews', reviewsRoutes);
 
 // Products API
 router.use('/products', (req, res, next) => {

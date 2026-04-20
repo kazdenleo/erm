@@ -17,6 +17,7 @@ import { Warehouses } from './pages/Warehouses/Warehouses';
 import { Suppliers } from './pages/Suppliers/Suppliers';
 import { Orders } from './pages/Orders/Orders';
 import { Questions } from './pages/Questions/Questions';
+import { Reviews } from './pages/Reviews/Reviews';
 import { OrderDetail } from './pages/Orders/OrderDetail';
 import { Shipments } from './pages/Shipments/Shipments';
 import { Assembly } from './pages/Assembly/Assembly';
@@ -90,6 +91,7 @@ function App() {
           <Route path="/suppliers" element={<ProtectedRoute><Layout><Suppliers /></Layout></ProtectedRoute>} />
           <Route path="/orders" element={<ProtectedRoute><Layout><Orders /></Layout></ProtectedRoute>} />
           <Route path="/questions" element={<ProtectedRoute><Layout><Questions /></Layout></ProtectedRoute>} />
+          <Route path="/reviews" element={<ProtectedRoute><Layout><Reviews /></Layout></ProtectedRoute>} />
           <Route path="/orders/:marketplace/:orderId" element={<ProtectedRoute><Layout><OrderDetail /></Layout></ProtectedRoute>} />
           <Route path="/shipments" element={<ProtectedRoute><Layout><Shipments /></Layout></ProtectedRoute>} />
           <Route path="/assembly" element={<ProtectedRoute><Layout><Assembly /></Layout></ProtectedRoute>} />
