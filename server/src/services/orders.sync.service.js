@@ -1263,12 +1263,13 @@ function resolveWildberriesOrderStatus(supplierStatus, wbStatus, statusCodes) {
   }
 
   if (stage >= 4) return 'in_transit';
-  // supplier confirm и единый статус «На сборке» в ERM (как в ЛК WB при добавлении в поставку)
-  if (stage === 2) return 'in_assembly';
+  // По правилу: WB «На сборке» появляется только после действий в ERM (создали поставку/добавили заказ),
+  // поэтому статус из API (confirm/waiting) не переводит заказ в in_assembly.
+  if (stage === 2) return 'new';
   if (stage === 1) return 'new';
   // Нет ни new/confirm в ответе — не считаем заказ «на сборке» (иначе раздувается счётчик).
   if (!sup && wb === 'waiting') {
-    return 'in_assembly';
+    return 'new';
   }
   return WB_STATUS_UNKNOWN;
 }

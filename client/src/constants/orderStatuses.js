@@ -3,7 +3,8 @@
  */
 export const orderStatusLabels = {
   new: 'Новый',
-  wb_status_unknown: 'WB: статус не получен',
+  // Технический статус WB до резолва supplierStatus/statuses[] — показываем как «Новый».
+  wb_status_unknown: 'Новый',
   /** Очередь сборки / этап WB «На сборке» (supplier confirm) */
   in_assembly: 'На сборке',
   in_procurement: 'В закупке',
@@ -25,7 +26,7 @@ export function getOrderStatusLabel(status) {
     return orderStatusLabels.in_assembly;
   }
   if (status === '__wb_status_pending__') {
-    return orderStatusLabels.wb_status_unknown;
+    return orderStatusLabels.new;
   }
   return orderStatusLabels[status] || status || '—';
 }
