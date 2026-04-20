@@ -589,7 +589,8 @@ class ProductsService {
               continue;
             }
           }
-          const created = await this.create(payload);
+          // При импорте создание должно происходить в рамках профиля (аккаунта).
+          const created = await this.create({ ...payload, profileId });
           savedProductId = created?.id != null ? String(created.id) : null;
           summary.created++;
         }
