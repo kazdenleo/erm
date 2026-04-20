@@ -32,6 +32,24 @@ function wbSupplierArticleFromRawPayload(raw) {
   return null;
 }
 
+function pendingAnswerTextFromRawPayload(raw) {
+  if (raw == null) return null;
+  const o =
+    typeof raw === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        })()
+      : raw;
+  if (!o || typeof o !== 'object') return null;
+  const t = o.pendingAnswerText ?? o.pending_answer_text ?? null;
+  const s = t != null ? String(t).trim() : '';
+  return s ? s : null;
+}
+
 function rowToApi(row) {
   if (!row) return row;
   let subject = row.subject;
@@ -57,6 +75,7 @@ function rowToApi(row) {
     marketplace: row.marketplace,
     externalId: row.external_id,
     subject,
+    pendingAnswerText: pendingAnswerTextFromRawPayload(row.raw_payload),
     body: row.body,
     answerText: row.answer_text,
     status: row.status,
@@ -121,6 +140,32 @@ class MarketplaceQuestionsRepositoryPG {
     return rowToApi(result.rows[0]);
   }
 
+  /**
+   * Для WB: ответ может появляться в API с задержкой или не подтверждаться.
+   * Сохраняем текст как pending в raw_payload и ставим status=pending_wb_confirm, не заполняя answer_text.
+   */
+  async setPendingAnswer(id, profileId, pendingText) {
+    const nid = Number(id);
+    if (!Number.isFinite(nid) || nid < 1) return null;
+    const txt = pendingText != null ? String(pendingText).trim() : '';
+    if (!txt) return null;
+    const patch = {
+      pendingAnswerText: txt,
+      pendingAnswerAt: new Date().toISOString(),
+    };
+    const result = await query(
+      `UPDATE marketplace_questions
+       SET status = 'pending_wb_confirm',
+           raw_payload = COALESCE(raw_payload, '{}'::jsonb) || $3::jsonb,
+           synced_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND profile_id = $2
+       RETURNING *`,
+      [nid, profileId, JSON.stringify(patch)]
+    );
+    return rowToApi(result.rows[0]);
+  }
+
   async upsertRow(row) {
     const {
       profile_id,
@@ -142,11 +187,25 @@ class MarketplaceQuestionsRepositoryPG {
       ON CONFLICT (profile_id, marketplace, external_id) DO UPDATE SET
         subject = EXCLUDED.subject,
         body = EXCLUDED.body,
-        answer_text = EXCLUDED.answer_text,
-        status = EXCLUDED.status,
+        -- не затираем локально сохранённый ответ пустым значением от маркетплейса (у WB ответ может появляться с задержкой)
+        answer_text = CASE
+          WHEN EXCLUDED.answer_text IS NULL OR TRIM(COALESCE(EXCLUDED.answer_text, '')) = ''
+            THEN marketplace_questions.answer_text
+          ELSE EXCLUDED.answer_text
+        END,
+        -- если answer_text пустой, не сбрасываем локальный статус (например pending_wb_confirm)
+        status = CASE
+          WHEN EXCLUDED.answer_text IS NOT NULL AND TRIM(COALESCE(EXCLUDED.answer_text, '')) <> '' THEN EXCLUDED.status
+          ELSE marketplace_questions.status
+        END,
         sku_or_offer = EXCLUDED.sku_or_offer,
         source_created_at = EXCLUDED.source_created_at,
-        raw_payload = EXCLUDED.raw_payload,
+        -- при pending_wb_confirm не теряем pendingAnswerText/At при синхронизации
+        raw_payload = CASE
+          WHEN marketplace_questions.status = 'pending_wb_confirm'
+            THEN COALESCE(EXCLUDED.raw_payload, '{}'::jsonb) || COALESCE(marketplace_questions.raw_payload, '{}'::jsonb)
+          ELSE EXCLUDED.raw_payload
+        END,
         synced_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
       RETURNING *`,

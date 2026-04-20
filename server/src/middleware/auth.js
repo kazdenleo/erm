@@ -8,6 +8,18 @@ import config from '../config/index.js';
 import { query } from '../config/database.js';
 import { profileIdFromDb } from '../utils/profileId.js';
 
+function normalizeAccountRole(v) {
+  const s = v == null ? '' : String(v).trim().toLowerCase();
+  return s || null;
+}
+
+function isAccountAdminUser(user) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.is_profile_admin === true || user.isProfileAdmin === true) return true;
+  return normalizeAccountRole(user.account_role ?? user.accountRole ?? null) === 'admin';
+}
+
 /**
  * Опциональная авторизация: если передан валидный Bearer token — заполняет req.user
  */
@@ -32,7 +44,7 @@ export async function optionalAuth(req, res, next) {
           middleName: user.middle_name ?? null,
           role: user.role,
           profileId: profileIdFromDb(user.profile_id),
-          isProfileAdmin: !!user.is_profile_admin,
+          isProfileAdmin: isAccountAdminUser(user),
           accountRole: user.account_role ?? null,
           mustChangePassword: !!(user.must_change_password === true || user.must_change_password === 1),
         };
@@ -87,7 +99,7 @@ export async function optionalAuth(req, res, next) {
       middleName: user.middle_name ?? null,
       role: user.role,
       profileId: profileIdFromDb(user.profile_id),
-      isProfileAdmin: !!user.is_profile_admin,
+      isProfileAdmin: isAccountAdminUser(user),
       accountRole: user.account_role ?? null,
       mustChangePassword: !!(user.must_change_password === true || user.must_change_password === 1),
     };
@@ -141,7 +153,9 @@ export function requireProfileAdmin(req, res, next) {
   if (!req.user) {
     return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
   }
-  if (!req.user.isProfileAdmin) {
+  const accountRole = normalizeAccountRole(req.user.accountRole ?? req.user.account_role ?? null);
+  const isAccountAdmin = req.user.role === 'admin' || !!req.user.isProfileAdmin || accountRole === 'admin';
+  if (!isAccountAdmin) {
     return res.status(403).json({ ok: false, message: 'Доступ только для администратора аккаунта' });
   }
   next();

@@ -17,6 +17,7 @@ import wbMarketplaceService from './wbMarketplace.service.js';
 import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
 import ordersSyncService from './orders.sync.service.js';
+import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 
 /** Фоновая синхронизация FBS-заказов (Ozon/WB/Яндекс). Выкл: ORDERS_FBS_SYNC_ENABLED=0 */
@@ -30,6 +31,19 @@ function isOrdersFbsSyncEnabled() {
 function getOrdersFbsSyncCronExpression() {
   const c = process.env.ORDERS_FBS_SYNC_CRON;
   return c && String(c).trim() ? String(c).trim() : '*/2 * * * *';
+}
+
+/** Фоновая синхронизация отзывов (Ozon/WB/Яндекс). Выкл: REVIEWS_SYNC_ENABLED=0 */
+function isReviewsSyncEnabled() {
+  const v = process.env.REVIEWS_SYNC_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (node-cron, Europe/Moscow). По умолчанию каждые 10 минут; переопределение: REVIEWS_SYNC_CRON */
+function getReviewsSyncCronExpression() {
+  const c = process.env.REVIEWS_SYNC_CRON;
+  return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
 }
 
 /**
@@ -315,6 +329,46 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
+      // Периодическая синхронизация отзывов — по каждому профилю (аккаунту)
+      let reviewsSyncJob = null;
+      const reviewsCron = getReviewsSyncCronExpression();
+      if (isReviewsSyncEnabled()) {
+        reviewsSyncJob = cron.schedule(reviewsCron, async () => {
+          logger.info('[Scheduler] Reviews sync (cron)...');
+          let profiles = [{ id: null }];
+          try {
+            if (repositoryFactory.isUsingPostgreSQL()) {
+              const rows = await repositoryFactory.getProfilesRepository().findAll();
+              profiles = rows?.length ? rows.map((r) => ({ id: r.id })) : [{ id: null }];
+            }
+          } catch (e) {
+            logger.warn('[Scheduler] Reviews sync: could not load profiles:', e?.message || e);
+          }
+          for (const p of profiles) {
+            const profileId = p?.id ?? null;
+            if (!profileId) continue;
+            try {
+              const out = await syncMarketplaceReviews(profileId, { scheduler: true });
+              logger.info('[Scheduler] Reviews sync done', { profileId, ...out });
+            } catch (error) {
+              logger.warn('[Scheduler] Reviews sync failed', { profileId, message: error?.message || String(error) });
+              await addRuntimeNotification({
+                type: 'job_failed',
+                severity: 'warn',
+                source: 'scheduler',
+                title: 'Сбой синхронизации отзывов',
+                message: `Reviews sync failed (profile=${profileId}): ${error?.message || String(error)}`,
+              });
+            }
+          }
+        }, {
+          scheduled: false,
+          timezone: 'Europe/Moscow'
+        });
+      } else {
+        logger.info('[Scheduler] Reviews background sync disabled (REVIEWS_SYNC_ENABLED)');
+      }
+
       let ordersFbsSyncJob = null;
       const ordersFbsCron = getOrdersFbsSyncCronExpression();
       if (isOrdersFbsSyncEnabled()) {
@@ -390,6 +444,15 @@ class SchedulerService {
         description: 'Ежедневная проверка API интеграций (Ozon, WB, Yandex) для уведомлений'
       });
 
+      if (reviewsSyncJob) {
+        this.jobs.push({
+          name: 'reviews-sync',
+          job: reviewsSyncJob,
+          schedule: reviewsCron,
+          description: 'Синхронизация отзывов (Ozon, WB, Яндекс). Интервал: REVIEWS_SYNC_CRON, по умолчанию */10 * * * *'
+        });
+      }
+
       if (ordersFbsSyncJob) {
         this.jobs.push({
           name: 'orders-fbs-sync',
@@ -408,6 +471,9 @@ class SchedulerService {
       ymCategoriesJob.start();
       minPricesRecalcJob.start();
       apiCheckJob.start();
+      if (reviewsSyncJob) {
+        reviewsSyncJob.start();
+      }
       if (ordersFbsSyncJob) {
         ordersFbsSyncJob.start();
       }
@@ -421,6 +487,37 @@ class SchedulerService {
               await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
             } catch (e) {
               logger.warn('[Scheduler] Deferred FBS orders sync:', e?.message || e);
+            }
+          })();
+        }, 90 * 1000);
+      }
+
+      if (reviewsSyncJob && isReviewsSyncEnabled()) {
+        setTimeout(() => {
+          (async () => {
+            try {
+              logger.info('[Scheduler] Deferred reviews sync (~90s after startup)...');
+              let profiles = [{ id: null }];
+              try {
+                if (repositoryFactory.isUsingPostgreSQL()) {
+                  const rows = await repositoryFactory.getProfilesRepository().findAll();
+                  profiles = rows?.length ? rows.map((r) => ({ id: r.id })) : [{ id: null }];
+                }
+              } catch (e) {
+                logger.warn('[Scheduler] Deferred reviews sync: could not load profiles:', e?.message || e);
+              }
+              for (const p of profiles) {
+                const profileId = p?.id ?? null;
+                if (!profileId) continue;
+                try {
+                  const out = await syncMarketplaceReviews(profileId, { scheduler: true, force: true });
+                  logger.info('[Scheduler] Deferred reviews sync done', { profileId, ...out });
+                } catch (e) {
+                  logger.warn('[Scheduler] Deferred reviews sync failed', { profileId, message: e?.message || String(e) });
+                }
+              }
+            } catch (e) {
+              logger.warn('[Scheduler] Deferred reviews sync:', e?.message || e);
             }
           })();
         }, 90 * 1000);

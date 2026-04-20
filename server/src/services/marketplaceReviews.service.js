@@ -135,34 +135,38 @@ async function syncWildberries(profileId) {
     throw new Error('Wildberries: не настроен API-ключ (нужна категория «Вопросы и отзывы» в токене).');
   }
   let imported = 0;
-  // Берём последние отзывы (фильтрация/архив можно добавлять позже)
-  const qs = new URLSearchParams();
-  qs.set('take', '500');
-  qs.set('skip', '0');
-  const url = `https://feedbacks-api.wildberries.ru/api/v1/feedbacks?${qs.toString()}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Wildberries API ${response.status}: ${text.substring(0, 400)}`);
-  }
-  let json;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
-  }
-  const root = json?.data ?? json;
-  const list = Array.isArray(root?.feedbacks) ? root.feedbacks : (Array.isArray(root) ? root : []);
-  for (const fb of list) {
-    const row = mapWbFeedback(fb, profileId);
-    if (!row) continue;
+  // WB API требует isAnswered=true|false (в некоторых версиях без параметра отдаёт 400)
+  const answerFlags = ['false', 'true'];
+  for (const isAnswered of answerFlags) {
+    const qs = new URLSearchParams();
+    qs.set('take', '500');
+    qs.set('skip', '0');
+    qs.set('isAnswered', isAnswered);
+    const url = `https://feedbacks-api.wildberries.ru/api/v1/feedbacks?${qs.toString()}`;
     /* eslint-disable no-await-in-loop */
-    await marketplaceReviewsRepo.upsertRow(row);
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Wildberries API ${response.status}: ${text.substring(0, 400)}`);
+    }
+    let json;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    const root = json?.data ?? json;
+    const list = Array.isArray(root?.feedbacks) ? root.feedbacks : (Array.isArray(root) ? root : []);
+    for (const fb of list) {
+      const row = mapWbFeedback(fb, profileId);
+      if (!row) continue;
+      await marketplaceReviewsRepo.upsertRow(row);
+      imported += 1;
+    }
     /* eslint-enable no-await-in-loop */
-    imported += 1;
   }
   return imported;
 }

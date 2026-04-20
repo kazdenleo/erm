@@ -3,10 +3,10 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '../../components/common/Button/Button';
 import { MARKETPLACE_TABLE_BADGES } from '../../constants/marketplaceUi';
 import { normalizeMarketplaceForUI } from '../../utils/orderListGroupKey';
 import { reviewsApi } from '../../services/reviews.api';
+import { Button } from '../../components/common/Button/Button';
 import './Reviews.css';
 
 const ANSWERED_OPTIONS = [
@@ -61,11 +61,10 @@ function hasSellerAnswer(r) {
   return t != null && String(t).trim() !== '';
 }
 
-const AUTO_SYNC_MS = 10 * 60 * 1000;
+const AUTO_REFRESH_MS = 10 * 60 * 1000;
 
 export function Reviews() {
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
 
@@ -121,24 +120,10 @@ export function Reviews() {
     load();
   }, [load]);
 
-  const syncFromMarketplaces = useCallback(async () => {
-    try {
-      setSyncing(true);
-      setError('');
-      await reviewsApi.sync({});
-      await loadRef.current();
-    } catch (e) {
-      setError(e?.response?.data?.message || e?.message || 'Ошибка синхронизации с маркетплейсами');
-    } finally {
-      setSyncing(false);
-    }
-  }, []);
-
   useEffect(() => {
-    syncFromMarketplaces();
-    const id = setInterval(syncFromMarketplaces, AUTO_SYNC_MS);
+    const id = setInterval(() => loadRef.current(), AUTO_REFRESH_MS);
     return () => clearInterval(id);
-  }, [syncFromMarketplaces]);
+  }, []);
 
   const getDraft = (r) =>
     Object.prototype.hasOwnProperty.call(drafts, r.id) ? drafts[r.id] : (r.answerText || '');
@@ -176,21 +161,12 @@ export function Reviews() {
     <div className="card reviews-page">
       <h1 className="title">Отзывы</h1>
       <p className="subtitle">
-        Отзывы о товарах из кабинетов маркетплейсов. Синхронизация выполняется автоматически при открытии страницы и каждые 10 минут. Ответ можно отправить из таблицы — он уйдёт в API соответствующего маркетплейса.
+        Отзывы о товарах из кабинетов маркетплейсов. Данные обновляются автоматически на сервере. Страница обновляет список
+        и счётчики каждые 10 минут. Ответ можно отправить из таблицы — он уйдёт в API соответствующего маркетплейса.
       </p>
 
       <div className="reviews-toolbar">
-        <div className="reviews-toolbar-left">
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={syncFromMarketplaces}
-            disabled={syncing}
-            title="Обновить отзывы с маркетплейсов"
-          >
-            {syncing ? '⏳ Синхронизация…' : '🔄 Синхронизировать'}
-          </Button>
-        </div>
+        <div className="reviews-toolbar-left" />
         <div className="reviews-toolbar-right">
           <div className="reviews-filter">
             <span className="reviews-filter-label">Маркетплейс</span>

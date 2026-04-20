@@ -561,24 +561,280 @@ async function submitAnswerWildberries(profileId, row, text) {
   if (!ext) {
     throw new Error('Wildberries: нет external_id вопроса.');
   }
-  const url = 'https://feedbacks-api.wildberries.ru/api/v1/questions';
-  const response = await fetch(url, {
-    method: 'PATCH',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      id: ext,
-      text,
-      state: 'wbRu',
-    }),
-  });
-  const respText = await response.text();
-  if (!response.ok) {
-    throw new Error(`Wildberries API ${response.status}: ${respText.substring(0, 400)}`);
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) {
+    throw new Error('Wildberries: пустой текст ответа.');
   }
+
+  const url = 'https://feedbacks-api.wildberries.ru/api/v1/questions';
+  // Для feedbacks-api WB ожидает API key в заголовке Authorization (HeaderApiKey), без "Bearer".
+  const wbAuthHeaderValue = apiKey;
+  // На практике разные WB-инструменты используют разные названия заголовка; дублируем для совместимости.
+  const wbAuthHeaders = {
+    Authorization: wbAuthHeaderValue,
+    'x-api-key': wbAuthHeaderValue,
+    'X-Api-Key': wbAuthHeaderValue,
+  };
+  // В документации WB id — string. Число иногда приводит к “тихому успеху” без применения.
+  const idToSend = ext;
+  // Вопросы в WB приходят с разными state (например suppliersPortalSynch / wbRu).
+  // Для PATCH часто требуется передавать тот же state, что и у вопроса, иначе возможен “тихий успех” без применения.
+  const stateFromRow =
+    row?.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload.state ?? row.raw_payload.status : null;
+  const stateToSend =
+    stateFromRow != null && String(stateFromRow).trim() !== '' ? String(stateFromRow).trim() : 'wbRu';
+
+  const parseWbBodyOrNull = (t) => {
+    if (!t) return null;
+    try {
+      return JSON.parse(t);
+    } catch {
+      return null;
+    }
+  };
+
+  const assertWbOkBody = (body, prefix) => {
+    if (!body || typeof body !== 'object') return;
+    if (body.error === true) {
+      throw new Error(`Wildberries: ${prefix}: ${String(body.errorText || body.message || 'ошибка').trim()}`);
+    }
+    const add = body.additionalErrors;
+    if (Array.isArray(add) && add.length > 0) {
+      const msg = add
+        .map((x) => {
+          if (x == null) return null;
+          if (typeof x === 'string') return x;
+          const m = x.message ?? x.msg ?? x.errorText ?? x.text ?? null;
+          return m != null ? String(m) : null;
+        })
+        .filter(Boolean)
+        .join('; ');
+      if (msg) throw new Error(`Wildberries: ${prefix}: ${msg}`);
+    }
+  };
+
+  const doPatch = async (payload, label) => {
+    const resp = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        ...wbAuthHeaders,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const t = await resp.text();
+    const b = parseWbBodyOrNull(t);
+    logger.info(`[WB Questions] PATCH ${label}`, {
+      profileId,
+      id: ext,
+      status: resp.status,
+      state: payload?.state ?? stateToSend,
+      bodyPreview: t ? String(t).slice(0, 300) : '',
+    });
+    if (!resp.ok) {
+      const err = new Error(`Wildberries API ${resp.status} (${label}): ${t.substring(0, 400)}`);
+      err.statusCode = resp.status;
+      err.wbLabel = label;
+      err.wbState = payload?.state ?? null;
+      err.wbBody = b;
+      throw err;
+    }
+    assertWbOkBody(b, label);
+    return { ok: true };
+  };
+
+  const verifyOnce = async () => {
+    const verifyUrl = `https://feedbacks-api.wildberries.ru/api/v1/question?id=${encodeURIComponent(ext)}`;
+    const vr = await fetch(verifyUrl, {
+      method: 'GET',
+      headers: { ...wbAuthHeaders, Accept: 'application/json' },
+    });
+    const vt = await vr.text();
+    const vj = parseWbBodyOrNull(vt);
+    logger.info('[WB Questions] GET verify (single)', {
+      profileId,
+      id: ext,
+      status: vr.status,
+      bodyPreview: vt ? String(vt).slice(0, 300) : '',
+    });
+    if (!vr.ok) return false;
+    try {
+      assertWbOkBody(vj, 'verify');
+    } catch {
+      return false;
+    }
+    const ans = vj?.data?.answer?.text ?? vj?.answer?.text ?? vj?.answerText ?? null;
+    const ansStr = ans != null ? String(ans).trim() : '';
+    return !!ansStr && ansStr === trimmed;
+  };
+
+  // WB schema помечен как oneOf; на практике разные аккаунты “принимают” разные формы.
+  // Пробуем несколько корректных вариантов, прежде чем идти в verify/pending.
+  const statesToTry = Array.from(
+    new Set(
+      [stateToSend, 'wbRu']
+        .map((s) => (s != null ? String(s).trim() : ''))
+        .filter((s) => s !== '')
+    )
+  );
+
+  const patchAttempts = [];
+  for (const st of statesToTry) {
+    patchAttempts.push({
+      label: `answer+viewed (flat) state=${st}`,
+      payload: { id: idToSend, text: trimmed, state: st, wasViewed: true },
+    });
+    patchAttempts.push({
+      label: `answer (flat) state=${st}`,
+      payload: { id: idToSend, text: trimmed, state: st },
+    });
+    patchAttempts.push({
+      label: `answer+viewed (nested) state=${st}`,
+      payload: { id: idToSend, state: st, answer: { text: trimmed }, wasViewed: true },
+    });
+    patchAttempts.push({
+      label: `answer (nested) state=${st}`,
+      payload: { id: idToSend, state: st, answer: { text: trimmed } },
+    });
+  }
+
+  // Важно: WB может вернуть 200, но реально не применить. Поэтому после каждого 200 делаем быстрый verify.
+  for (const a of patchAttempts) {
+    try {
+      await doPatch(a.payload, a.label);
+      // Небольшая пауза — WB иногда применяет не мгновенно.
+      await new Promise((r) => setTimeout(r, 400));
+      if (await verifyOnce()) {
+        return { verified: true };
+      }
+    } catch (e) {
+      // Если WB вернул внятную ошибку 4xx, нет смысла продолжать.
+      const sc = Number(e?.statusCode);
+      const msg = String(e?.message || '');
+      const wbErrText =
+        (e?.wbBody && typeof e.wbBody === 'object' ? (e.wbBody.errorText ?? e.wbBody.message) : null) ?? '';
+      const errText = String(wbErrText || msg);
+
+      // Частая ситуация: на одной из попыток WB отвечает 400 “Empty/Unknown state”.
+      // Это не “фатальная” ошибка — просто этот вариант payload/state не принят, пробуем следующий.
+      const isStateMismatch =
+        errText.includes('Empty state') ||
+        errText.includes('Empty state in request') ||
+        errText.includes('Неизвестный state') ||
+        errText.toLowerCase().includes('unknown state');
+      if (Number.isFinite(sc) && sc === 400 && isStateMismatch) {
+        logger.warn('[WB Questions] PATCH rejected by WB (state mismatch), continue', {
+          profileId,
+          id: ext,
+          attempt: a.label,
+          state: e?.wbState ?? a?.payload?.state ?? null,
+          error: errText,
+        });
+        continue;
+      }
+
+      if ((Number.isFinite(sc) && sc >= 400 && sc < 500 && sc !== 429) || msg.includes('422')) {
+        throw e;
+      }
+      logger.warn('[WB Questions] PATCH attempt failed', {
+        profileId,
+        id: ext,
+        attempt: a.label,
+        error: e?.message || String(e),
+      });
+    }
+  }
+
+  // Отдельно проставляем wasViewed — даже если ответ применится позже, вопрос не должен возвращаться “новым”.
+  try {
+    await doPatch({ id: idToSend, state: stateToSend, wasViewed: true }, 'wasViewed');
+  } catch (e) {
+    logger.warn('[WB Questions] PATCH wasViewed failed (non-fatal)', {
+      profileId,
+      id: ext,
+      error: e?.message || String(e),
+    });
+  }
+
+  // Верификация: WB может применить ответ асинхронно.
+  const verifyUrl = `https://feedbacks-api.wildberries.ru/api/v1/question?id=${encodeURIComponent(ext)}`;
+  const verifyListBaseUrl = 'https://feedbacks-api.wildberries.ru/api/v1/questions';
+  const createdIso =
+    (row?.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload.createdDate : null) ||
+    row?.source_created_at ||
+    null;
+  const createdAtMs = createdIso ? new Date(createdIso).getTime() : NaN;
+  const nowMs = Date.now();
+  const listFromMs = Number.isFinite(createdAtMs) ? createdAtMs - 7 * 86400_000 : nowMs - 30 * 86400_000;
+  const listToMs = Number.isFinite(createdAtMs) ? createdAtMs + 7 * 86400_000 : nowMs;
+  const listDateFrom = Math.floor(listFromMs / 1000);
+  const listDateTo = Math.floor(listToMs / 1000);
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    const vr = await fetch(verifyUrl, {
+      method: 'GET',
+      headers: { ...wbAuthHeaders, Accept: 'application/json' },
+    });
+    const vt = await vr.text();
+    const vj = parseWbBodyOrNull(vt);
+    logger.info('[WB Questions] GET verify', {
+      profileId,
+      id: ext,
+      attempt: attempt + 1,
+      status: vr.status,
+      bodyPreview: vt ? String(vt).slice(0, 300) : '',
+    });
+    if (vr.ok) {
+      assertWbOkBody(vj, 'verify');
+      const ans = vj?.data?.answer?.text ?? vj?.answer?.text ?? vj?.answerText ?? null;
+      const ansStr = ans != null ? String(ans).trim() : '';
+      if (ansStr && ansStr === trimmed) {
+        return { verified: true };
+      }
+    }
+
+    // Проверка через список отвеченных.
+    try {
+      const listUrl =
+        `${verifyListBaseUrl}?isAnswered=true&take=200&skip=0&order=dateDesc` +
+        `&dateFrom=${encodeURIComponent(String(listDateFrom))}&dateTo=${encodeURIComponent(String(listDateTo))}`;
+      const lr = await fetch(listUrl, {
+        method: 'GET',
+        headers: { ...wbAuthHeaders, Accept: 'application/json' },
+      });
+      const lt = await lr.text();
+      const lj = parseWbBodyOrNull(lt);
+      logger.info('[WB Questions] GET verify list', {
+        profileId,
+        id: ext,
+        attempt: attempt + 1,
+        status: lr.status,
+        bodyPreview: lt ? String(lt).slice(0, 300) : '',
+      });
+      if (lr.ok) {
+        assertWbOkBody(lj, 'verify list');
+        const arr = lj?.data?.questions;
+        if (Array.isArray(arr)) {
+          const found = arr.find((q) => String(q?.id ?? '').trim() === ext);
+          const listAns =
+            found?.answer?.text ?? found?.answerText ?? found?.answer_text ?? found?.answer ?? null;
+          const listAnsStr = listAns != null ? String(listAns).trim() : '';
+          if (listAnsStr && listAnsStr === trimmed) {
+            return { verified: true };
+          }
+        }
+      }
+    } catch (_) {
+      // ignore list verification errors
+    }
+  }
+
+  return { verified: false };
 }
 
 function parseYandexQuestionId(row) {
@@ -676,11 +932,20 @@ export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, 
     err.statusCode = 404;
     throw err;
   }
+  logger.info('[Questions Answer] dispatch', {
+    profileId,
+    questionRowId: String(questionRowId),
+    marketplace: row.marketplace,
+    externalId: row.external_id,
+  });
   const mp = row.marketplace;
   if (mp === 'ozon') {
     await submitAnswerOzon(profileId, row, trimmed);
   } else if (mp === 'wildberries') {
-    await submitAnswerWildberries(profileId, row, trimmed);
+    const out = await submitAnswerWildberries(profileId, row, trimmed);
+    if (!out?.verified) {
+      return await marketplaceQuestionsRepo.setPendingAnswer(questionRowId, profileId, trimmed);
+    }
   } else if (mp === 'yandex') {
     const json = await submitAnswerYandex(profileId, row, trimmed);
     const apiResult = json?.result;
