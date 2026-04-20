@@ -41,6 +41,7 @@ import reviewsRoutes from './reviews.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
 import { requireAuth } from '../middleware/auth.js';
+import repositoryFactory from '../config/repository-factory.js';
 
 const router = express.Router();
 
@@ -85,6 +86,55 @@ router.use((req, res, next) => {
     code: 'MUST_CHANGE_PASSWORD',
     message: 'Сначала смените временный пароль в личном кабинете.',
   });
+});
+
+// Железобетонная защита от "перепутанных" аккаунтов:
+// - Пользователь, привязанный к profileId, не может выбрать X-Organization-Id другого профиля.
+// - Если клиент прислал X-Account-Id, он должен совпадать с profileId (иначе 403).
+router.use(async (req, res, next) => {
+  try {
+    if (config.auth?.disabled) return next();
+    const u = req.user;
+    if (!u) return next();
+    // Супер-админ без привязки к профилю может работать с любым контекстом.
+    if (u.role === 'admin' && (u.profileId == null || u.profileId === '')) return next();
+    const pid = u.profileId;
+    if (pid == null || pid === '') return next();
+
+    const accountHeader = req.get('x-account-id') || req.get('X-Account-Id');
+    if (accountHeader != null && String(accountHeader).trim() !== '') {
+      const ah = String(accountHeader).trim();
+      if (ah !== String(pid)) {
+        return res.status(403).json({
+          ok: false,
+          code: 'ACCOUNT_CONTEXT_MISMATCH',
+          message: 'Неверный контекст аккаунта (X-Account-Id). Перезайдите в систему.',
+        });
+      }
+    }
+
+    const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+    if (orgHeader != null && String(orgHeader).trim() !== '') {
+      const orgId = String(orgHeader).trim();
+      const orgRepo = repositoryFactory.getOrganizationsRepository();
+      const org = await orgRepo.findById(orgId);
+      if (!org) {
+        return res.status(400).json({ ok: false, message: 'Организация не найдена' });
+      }
+      const orgPid = org.profile_id ?? org.profileId ?? null;
+      if (orgPid != null && String(orgPid) !== String(pid)) {
+        return res.status(403).json({
+          ok: false,
+          code: 'ORGANIZATION_CONTEXT_MISMATCH',
+          message: 'Неверный контекст организации (X-Organization-Id). Перезайдите в систему.',
+        });
+      }
+    }
+
+    return next();
+  } catch (e) {
+    return next(e);
+  }
 });
 
 // Auth (логин публичный, /me — с авторизацией внутри роута)

@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import config from '../config/index.js';
 import { query } from '../config/database.js';
 import { profileIdFromDb } from '../utils/profileId.js';
+import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
 
 function normalizeAccountRole(v) {
   const s = v == null ? '' : String(v).trim().toLowerCase();
@@ -90,6 +91,16 @@ export async function optionalAuth(req, res, next) {
       req.user = null;
       return next();
     }
+    let effectiveProfileId = profileIdFromDb(user.profile_id);
+    // Важно: /api/auth/me уже умеет вычислять профиль через X-Organization-Id или "последний профиль".
+    // Делаем то же самое в optionalAuth, чтобы права/действия (создание товаров и т.п.) не ломались при profile_id=NULL.
+    if (effectiveProfileId == null) {
+      try {
+        effectiveProfileId = await resolveEffectiveProfileId(req, user);
+      } catch (_) {
+        // ignore
+      }
+    }
     req.user = {
       id: user.id,
       email: user.email,
@@ -98,7 +109,7 @@ export async function optionalAuth(req, res, next) {
       firstName: user.first_name ?? null,
       middleName: user.middle_name ?? null,
       role: user.role,
-      profileId: profileIdFromDb(user.profile_id),
+      profileId: effectiveProfileId,
       isProfileAdmin: isAccountAdminUser(user),
       accountRole: user.account_role ?? null,
       mustChangePassword: !!(user.must_change_password === true || user.must_change_password === 1),
