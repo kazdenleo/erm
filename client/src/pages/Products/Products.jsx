@@ -67,25 +67,14 @@ export function Products() {
   const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
 
   useEffect(() => {
-    const visibleIds = new Set(visibleProducts.map((p) => String(p.id)));
-    setSelectedProductIds((prev) => {
-      const next = new Set();
-      for (const id of prev) {
-        if (visibleIds.has(String(id))) next.add(String(id));
-      }
-      if (next.size === prev.size) {
-        let same = true;
-        for (const id of prev) {
-          if (!next.has(String(id))) {
-            same = false;
-            break;
-          }
-        }
-        if (same) return prev;
-      }
-      return next;
-    });
-  }, [visibleProducts]);
+    const onNav = () => {
+      // Повторный клик по меню «Товары» должен закрывать карточку, даже если мы уже на /products.
+      setIsModalOpen(false);
+      setEditingProduct(null);
+    };
+    window.addEventListener('products-nav-click', onNav);
+    return () => window.removeEventListener('products-nav-click', onNav);
+  }, []);
 
   const allVisibleSelected =
     visibleProducts.length > 0 && visibleProducts.every((p) => selectedProductIds.has(String(p.id)));
@@ -110,9 +99,20 @@ export function Products() {
   const toggleSelectAllVisible = (e) => {
     e?.stopPropagation?.();
     if (allVisibleSelected) {
-      setSelectedProductIds(new Set());
+      // Снимаем выделение только с текущей страницы, не трогаем выбранное на других страницах.
+      const visibleIds = new Set(visibleProducts.map((p) => String(p.id)));
+      setSelectedProductIds((prev) => {
+        const next = new Set(prev);
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      });
     } else {
-      setSelectedProductIds(new Set(visibleProducts.map((p) => String(p.id))));
+      // Добавляем выделение текущей страницы, не трогаем выбранное на других страницах.
+      setSelectedProductIds((prev) => {
+        const next = new Set(prev);
+        for (const p of visibleProducts) next.add(String(p.id));
+        return next;
+      });
     }
   };
 

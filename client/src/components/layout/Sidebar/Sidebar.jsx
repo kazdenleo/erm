@@ -61,6 +61,15 @@ export function Sidebar() {
   const NONE = '__none__';
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
 
+  const onLeafClick = useCallback((item) => {
+    if (!item?.path) return;
+    // Если мы уже на /products и открыта карточка (модалка), переход по тому же route не сработает.
+    // Поэтому отправляем событие, чтобы страница могла закрыть карточку и обновить состояние.
+    if (item.path === '/products') {
+      window.dispatchEvent(new Event('products-nav-click'));
+    }
+  }, []);
+
   const loadQuestionsStats = useCallback(async () => {
     if (user?.profileId == null || user?.profileId === '') {
       setQuestionsNewCount(0);
@@ -165,7 +174,7 @@ export function Sidebar() {
                 const badgeText = questionsNewCount > 99 ? '99+' : String(questionsNewCount);
                 return (
                   <li key={item.path}>
-                    <Link to={item.path} className={active ? 'mm-active' : ''}>
+                    <Link to={item.path} className={active ? 'mm-active' : ''} onClick={() => onLeafClick(item)}>
                       <i className={`metismenu-icon ${item.iconClass}`} />
                       <span className="sidebar-nav-label">{item.label}</span>
                       {showQBadge ? (

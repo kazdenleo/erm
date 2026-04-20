@@ -1012,7 +1012,8 @@ export function Orders() {
 
   const filteredKeys = useMemo(() => new Set(filteredOrders.map(orderKey)), [filteredOrders]);
   const allFilteredSelected = filteredOrders.length > 0 && filteredOrders.every(o => selectedKeys.has(orderKey(o)));
-  const selectedCount = filteredOrders.filter(o => selectedKeys.has(orderKey(o))).length;
+  // Выделение должно сохраняться между страницами, поэтому считаем все выбранные ключи, а не только текущую страницу.
+  const selectedCount = selectedKeys.size;
 
   const toggleSelectGroup = (row) => {
     const keys = row.orders.map(orderKey);
