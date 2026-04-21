@@ -78,6 +78,8 @@ cd testCursor/print-helper
 
 `data/downloads/erm-print-helper-setup.exe`
 
+Примечание: установщик собирается как **per-user** (без прав администратора) и ставит программу в `%LocalAppData%`.
+
 ---
 
 ## API

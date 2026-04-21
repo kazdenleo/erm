@@ -15,13 +15,15 @@ AppId={{8B5B7F35-8A66-4A4E-A8C3-0D5C2B9F1E4A}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\{#MyAppName}
+; Per-user установка (без админ-прав)
+DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 Compression=lzma
 SolidCompression=yes
 OutputBaseFilename=erm-print-helper-setup
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64
 WizardStyle=modern
 
