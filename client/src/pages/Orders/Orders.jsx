@@ -875,19 +875,44 @@ export function Orders() {
     }
   };
   
-  const uniqueStatuses = Array.from(
-    new Set([
-      'new',
-      'in_procurement',
-      'in_assembly',
-      'assembled',
-      'in_transit',
-      'shipped',
-      'delivered',
-      'cancelled',
-      ...orders.map(o => o.status).filter(s => s && s !== 'processing')
-    ])
+  const uniqueStatuses = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          'new',
+          'in_procurement',
+          'in_assembly',
+          'assembled',
+          'in_transit',
+          'shipped',
+          'delivered',
+          'cancelled',
+          ...orders.map((o) => o.status).filter((s) => s && s !== 'processing'),
+        ])
+      ),
+    [orders]
   );
+
+  /** Для WB техстатусы до резолва API — в UI считаем тем же «Новый», что и `new` (без дублей в фильтре). */
+  const normalizeWbNewLikeStatus = (status) => {
+    const s = String(status ?? '').trim();
+    const sNorm = s.toLowerCase();
+    if (sNorm === 'wb_status_unknown' || s === '__wb_status_pending__') return 'new';
+    return s;
+  };
+
+  const statusFilterOptions = useMemo(() => {
+    const raw = uniqueStatuses;
+    const out = [];
+    const seenUi = new Set();
+    for (const st of raw) {
+      const uiKey = getOrderStatusLabel(st);
+      if (seenUi.has(uiKey)) continue;
+      seenUi.add(uiKey);
+      out.push(st);
+    }
+    return out;
+  }, [uniqueStatuses]);
 
   const filteredOrders = useMemo(() => orders.filter(o => {
     const orderMarketplace = normalizeMarketplaceForUI(o.marketplace);
@@ -897,14 +922,26 @@ export function Orders() {
     const orderIdStr = String(o.orderId || '');
     const groupIdStr = String(o.orderGroupId || o.order_group_id || '');
     const bySearch = !q || orderIdStr.includes(q) || groupIdStr.includes(q);
-    const byStatus = statusFilter === 'all' || o.status === statusFilter;
+    const mpLower = String(o.marketplace || '').toLowerCase();
+    const isWb = mpLower === 'wb' || mpLower === 'wildberries';
+    const stNorm = isWb ? normalizeWbNewLikeStatus(o.status) : String(o.status ?? '');
+    const byStatus =
+      statusFilter === 'all' ||
+      stNorm === statusFilter ||
+      (!isWb && o.status === statusFilter);
     return byMarketplace && byStatus && bySearch;
   }), [orders, marketplaceFilter, statusFilter, orderSearchQuery]);
 
   // Подсчёт количества строк (групп заказов) для кнопок фильтра маркетплейсов.
   // Важно: считаем группы по `orderGroupId`, т.к. один заказ может быть из нескольких товаров.
   const countsByMarketplace = useMemo(() => {
-    const ordersByStatus = orders.filter(o => statusFilter === 'all' || o.status === statusFilter);
+    const ordersByStatus = orders.filter((o) => {
+      if (statusFilter === 'all') return true;
+      const mpLower = String(o.marketplace || '').toLowerCase();
+      const isWb = mpLower === 'wb' || mpLower === 'wildberries';
+      const stNorm = isWb ? normalizeWbNewLikeStatus(o.status) : String(o.status ?? '');
+      return stNorm === statusFilter || (!isWb && o.status === statusFilter);
+    });
     const byGroup = new Map(); // gid -> normalizedMarketplace
     for (const o of ordersByStatus) {
       const mp = normalizeMarketplaceForUI(o.marketplace);
@@ -934,7 +971,10 @@ export function Orders() {
     for (const o of base) {
       const ogk = orderGroupKey(o);
       const gid = ogk || singleOrderListGroupKey(o);
-      const st = o.status || 'unknown';
+      const mpLower = String(o.marketplace || '').toLowerCase();
+      const isWb = mpLower === 'wb' || mpLower === 'wildberries';
+      const stRaw = o.status || 'unknown';
+      const st = isWb ? normalizeWbNewLikeStatus(stRaw) : stRaw;
       if (!groupToStatus.has(gid)) groupToStatus.set(gid, st);
     }
     const out = { all: groupToStatus.size };
@@ -1781,7 +1821,7 @@ export function Orders() {
         </div>
 
         <div className="erp-filter-row" role="group" aria-label="Фильтр по статусу заказа">
-          {uniqueStatuses.map((st) => (
+          {statusFilterOptions.map((st) => (
             <button
               key={st}
               type="button"
