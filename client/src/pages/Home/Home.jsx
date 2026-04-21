@@ -34,6 +34,20 @@ function formatQty(n) {
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Math.round(n));
 }
 
+/** К какой организации относится строка баланса (ответ getMarketplaceAccountBalances). */
+function marketplaceBalanceOrganizationLine(mp, balanceLoading) {
+  if (balanceLoading) return '…';
+  if (!mp?.configured) return '—';
+  const org = mp.organizationName != null ? String(mp.organizationName).trim() : '';
+  if (org && org !== '—') return `Организация: «${org}»`;
+  if (mp.keysSource === 'integrations') return 'Общие интеграции профиля (без привязки к организации)';
+  if (mp.keysSource === 'marketplace_cabinet') {
+    const cab = mp.cabinetName != null ? String(mp.cabinetName).trim() : '';
+    if (cab) return `Кабинет: «${cab}»`;
+  }
+  return '—';
+}
+
 /** Сумма в рублях для плашки (целое число; суффикс «руб.» выводим отдельно мелким шрифтом) */
 function formatRubAmountInt(n) {
   if (!Number.isFinite(n)) return null;
@@ -315,9 +329,10 @@ export function Home() {
                 <p className="text-muted small mb-3">
                   Ключи API — из общих интеграций профиля или из кабинета организации («Интеграции»). Если кабинетов
                   несколько, для цифр берётся один кабинет на маркетплейс (первый по названию организации и порядку
-                  кабинета) — см. колонку «Источник». Ozon — отчёт «Движение средств» за текущий месяц; Wildberries —
-                  баланс из Finance API (категория «Финансы»), дополнительные суммы из ответа API при наличии; Яндекс
-                  Маркет — рублёвого баланса в API нет, показываются данные магазина по campaign_id.
+                  кабинета). Под названием маркетплейса указано, к какой организации относятся данные. Ozon — отчёт
+                  «Движение средств» за текущий месяц; Wildberries — баланс из Finance API (категория «Финансы»),
+                  дополнительные суммы из ответа API при наличии; Яндекс Маркет — рублёвого баланса в API нет,
+                  показываются данные магазина по campaign_id.
                 </p>
                 {profileId == null && (
                   <div className="text-muted mb-0" role="status">
@@ -338,18 +353,17 @@ export function Home() {
                     <table className="align-middle mb-0 table table-striped table-hover">
                       <thead>
                         <tr>
-                          <th>Маркетплейс</th>
-                          <th className="home-balance-source-col">Источник данных</th>
+                          <th className="home-balance-mp-col">Маркетплейс</th>
                           <th className="text-end">Баланс</th>
                         </tr>
                       </thead>
                       <tbody>
                         <tr>
-                          <td>Ozon</td>
-                          <td className="text-muted small home-balance-source-col">
-                            {balanceLoading
-                              ? '…'
-                              : balanceData?.ozon?.contextDescription || '—'}
+                          <td className="home-balance-mp-col">
+                            <div>Ozon</div>
+                            <div className="text-muted small mt-1">
+                              {marketplaceBalanceOrganizationLine(balanceData?.ozon, balanceLoading)}
+                            </div>
                           </td>
                           <td className="text-end">
                             {balanceLoading ? (
@@ -372,11 +386,11 @@ export function Home() {
                           </td>
                         </tr>
                         <tr>
-                          <td>Wildberries</td>
-                          <td className="text-muted small home-balance-source-col">
-                            {balanceLoading
-                              ? '…'
-                              : balanceData?.wildberries?.contextDescription || '—'}
+                          <td className="home-balance-mp-col">
+                            <div>Wildberries</div>
+                            <div className="text-muted small mt-1">
+                              {marketplaceBalanceOrganizationLine(balanceData?.wildberries, balanceLoading)}
+                            </div>
                           </td>
                           <td className="text-end">
                             {balanceLoading ? (
@@ -415,11 +429,11 @@ export function Home() {
                           </td>
                         </tr>
                         <tr>
-                          <td>Яндекс Маркет</td>
-                          <td className="text-muted small home-balance-source-col">
-                            {balanceLoading
-                              ? '…'
-                              : balanceData?.yandex?.contextDescription || '—'}
+                          <td className="home-balance-mp-col">
+                            <div>Яндекс Маркет</div>
+                            <div className="text-muted small mt-1">
+                              {marketplaceBalanceOrganizationLine(balanceData?.yandex, balanceLoading)}
+                            </div>
                           </td>
                           <td className="text-end">
                             {balanceLoading ? (

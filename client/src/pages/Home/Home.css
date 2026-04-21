@@ -77,10 +77,10 @@
   font-size: 0.95rem;
 }
 
-/* Балансы МП: колонка «Источник» — длинные названия организаций */
-.home-balance-source-col {
-  min-width: 11rem;
-  max-width: 22rem;
+/* Балансы МП: колонка с названием и организацией */
+.home-balance-mp-col {
+  min-width: 12rem;
+  max-width: 28rem;
   vertical-align: middle;
   word-break: break-word;
 }
