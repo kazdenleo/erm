@@ -71,25 +71,32 @@ if (!fs.existsSync(trayExe)) {
 // Сборка через pkg; node16 чаще есть в кэше (при ошибке попробуйте: npx pkg index.cjs -t node18-win-x64 -o dist/erm-print-helper.exe)
 const outExeRel = 'dist/erm-print-helper.exe';
 const outExeAbs = path.join(root, outExeRel);
-// На Windows pkg пытается удалить старый output (unlink). Если exe запущен/антивирус держит файл —
-// получаем EPERM. Делаем безопасный pre-clean и фолбек на новый файл.
+// pkg сам делает unlink целевого файла. Если старый erm-print-helper.exe занят (процесс/антивирус) —
+// EPERM. Собираем всегда во временный уникальный файл, затем подменяем финальное имя.
+const tempOutRel = `dist/erm-print-helper.build.${Date.now()}.exe`;
+const tempOutAbs = path.join(root, tempOutRel);
+run(`npx pkg index.cjs --targets node16-win-x64 --output ${tempOutRel}`);
 try {
-  if (fs.existsSync(outExeAbs)) fs.unlinkSync(outExeAbs);
-} catch (e) {
-  console.warn('Не удалось удалить старый dist/erm-print-helper.exe (возможно, файл занят). Собираю в новый файл.');
-}
-const outArg = fs.existsSync(outExeAbs)
-  ? `dist/erm-print-helper.${Date.now()}.exe`
-  : outExeRel;
-run(`npx pkg index.cjs --targets node16-win-x64 --output ${outArg}`);
-// Если собрали в timestamp — переименуем, если возможно
-try {
-  const builtAbs = path.join(root, outArg);
-  if (builtAbs !== outExeAbs && fs.existsSync(builtAbs) && !fs.existsSync(outExeAbs)) {
-    fs.renameSync(builtAbs, outExeAbs);
+  if (!fs.existsSync(tempOutAbs)) {
+    throw new Error(`pkg did not produce ${tempOutRel}`);
   }
-} catch {
-  // ignore
+  try {
+    if (fs.existsSync(outExeAbs)) fs.unlinkSync(outExeAbs);
+  } catch (e) {
+    console.warn(
+      'Could not replace dist/erm-print-helper.exe (file may be in use). Leaving build as:',
+      path.basename(tempOutRel)
+    );
+    console.warn('Stop erm-print-helper (tray) or close apps locking the exe, then run npm run build:exe again.');
+  }
+  if (fs.existsSync(tempOutAbs)) {
+    if (!fs.existsSync(outExeAbs)) {
+      fs.renameSync(tempOutAbs, outExeAbs);
+    }
+  }
+} catch (e) {
+  console.error(e.message || e);
+  process.exit(1);
 }
 
 const mainExe = path.join(distDir, 'erm-print-helper.exe');
