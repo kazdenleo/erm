@@ -60,6 +60,26 @@ npm run build:exe
 
 ---
 
+## Сборка установщика (Setup.exe)
+
+Если нужен **один установочный файл**, используйте Inno Setup:
+
+1) Установите **Inno Setup 6** на Windows-машине сборки (IT/разработчик).
+2) Соберите exe и установщик:
+
+```powershell
+cd testCursor/print-helper
+.\build-installer.ps1
+```
+
+Результат: `print-helper/installer/Output/erm-print-helper-setup.exe`
+
+Чтобы раздать установщик через ERM, скопируйте его на сервер в:
+
+`data/downloads/erm-print-helper-setup.exe`
+
+---
+
 ## API
 
 - **GET /print?orderId=...&labelUrl=...** — скачать этикетку по `labelUrl` и отправить на принтер по умолчанию.

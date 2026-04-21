@@ -6,6 +6,7 @@ import React, { useState, useEffect } from 'react';
 import './Labels.css';
 
 const STORAGE_KEY = 'erm_label_size';
+const API_BASE = process.env.REACT_APP_API_URL || '/api';
 
 export const LABEL_SIZES = [
   { value: '58x40', label: '58 × 40 мм' },
@@ -48,6 +49,18 @@ export function Labels() {
             </option>
           ))}
         </select>
+      </div>
+
+      <hr style={{ margin: '18px 0' }} />
+
+      <h2 className="subtitle" style={{ marginTop: 0 }}>Print Helper (тихая печать)</h2>
+      <p className="subtitle" style={{ marginTop: 0 }}>
+        Установите локальную программу на ПК сборки, чтобы печать шла без диалога браузера.
+      </p>
+      <div className="form-group">
+        <a className="btn btn-primary" href={`${API_BASE.replace(/\/$/, '')}/downloads/print-helper`}>
+          Скачать установщик Print Helper (Windows)
+        </a>
       </div>
     </div>
   );

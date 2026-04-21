@@ -38,6 +38,7 @@ import certificatesRoutes from './certificates.routes.js';
 import inquiriesRoutes from './inquiries.routes.js';
 import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
+import downloadsRoutes from './downloads.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -144,6 +145,7 @@ router.use('/profiles', profilesRoutes);
 router.use('/users', usersRoutes);
 router.use('/inquiries', inquiriesRoutes);
 router.use('/reviews', reviewsRoutes);
+router.use('/downloads', downloadsRoutes);
 
 // Products API
 router.use('/products', (req, res, next) => {
