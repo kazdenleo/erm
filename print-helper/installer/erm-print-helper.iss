@@ -24,7 +24,7 @@ SolidCompression=yes
 OutputBaseFilename=erm-print-helper-setup
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 
 [Languages]

@@ -99,6 +99,20 @@ try {
   process.exit(1);
 }
 
+// Если финальный exe занят, остаётся только temp — установщик/Inno упаковал бы СТАРЫй erm-print-helper.exe
+if (fs.existsSync(tempOutAbs)) {
+  console.error('');
+  console.error(
+    'ОШИБКА: не удалось подменить dist/erm-print-helper.exe (файл занят процессом). Новая сборка:',
+    path.basename(tempOutRel)
+  );
+  console.error(
+    'Остановите Print Helper (трей) или закройте программы, держащие exe, затем снова: npm run build:exe'
+  );
+  console.error('');
+  process.exit(1);
+}
+
 const mainExe = path.join(distDir, 'erm-print-helper.exe');
 if (fs.existsSync(trayExe)) {
   const distTrayBin = path.join(distDir, 'traybin');
