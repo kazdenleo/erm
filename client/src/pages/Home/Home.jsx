@@ -316,8 +316,8 @@ export function Home() {
                   Ключи API — из общих интеграций профиля или из кабинета организации («Интеграции»). Если кабинетов
                   несколько, для цифр берётся один кабинет на маркетплейс (первый по названию организации и порядку
                   кабинета) — см. колонку «Источник». Ozon — отчёт «Движение средств» за текущий месяц; Wildberries —
-                  баланс из Finance API (категория «Финансы»); Яндекс Маркет — в Partner API нет суммы баланса, только
-                  справка.
+                  баланс из Finance API (категория «Финансы»), дополнительные суммы из ответа API при наличии; Яндекс
+                  Маркет — рублёвого баланса в API нет, показываются данные магазина по campaign_id.
                 </p>
                 {profileId == null && (
                   <div className="text-muted mb-0" role="status">
@@ -404,6 +404,12 @@ export function Home() {
                                       {formatRub(Number(balanceData.wildberries.forWithdrawRub))}
                                     </div>
                                   )}
+                                {(balanceData.wildberries.extraAmounts ?? []).map((row) => (
+                                  <div key={row.key} className="text-nowrap small" title={row.key}>
+                                    <span className="text-muted me-1">{row.label}:</span>
+                                    {formatRub(Number(row.amountRub))}
+                                  </div>
+                                ))}
                               </div>
                             )}
                           </td>
@@ -427,7 +433,36 @@ export function Home() {
                                 <Link to="/integrations">Открыть интеграции</Link>
                               </div>
                             ) : (
-                              <span className="text-muted small">{balanceData.yandex.message}</span>
+                              <div className="d-inline-block text-end">
+                                {balanceData.yandex.snapshotError && (
+                                  <div className="text-warning small mb-1">{balanceData.yandex.snapshotError}</div>
+                                )}
+                                {balanceData.yandex.campaignSnapshot && (
+                                  <div className="small text-end">
+                                    {balanceData.yandex.campaignSnapshot.businessName && (
+                                      <div className="fw-semibold">{balanceData.yandex.campaignSnapshot.businessName}</div>
+                                    )}
+                                    {balanceData.yandex.campaignSnapshot.domain && (
+                                      <div className="text-muted">{balanceData.yandex.campaignSnapshot.domain}</div>
+                                    )}
+                                    {(balanceData.yandex.campaignSnapshot.placementType ||
+                                      balanceData.yandex.campaignSnapshot.campaignId != null) && (
+                                      <div className="text-muted">
+                                        {balanceData.yandex.campaignSnapshot.placementType && (
+                                          <span>{balanceData.yandex.campaignSnapshot.placementType}</span>
+                                        )}
+                                        {balanceData.yandex.campaignSnapshot.placementType &&
+                                          balanceData.yandex.campaignSnapshot.campaignId != null &&
+                                          ' · '}
+                                        {balanceData.yandex.campaignSnapshot.campaignId != null && (
+                                          <span>ID {balanceData.yandex.campaignSnapshot.campaignId}</span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                <div className="text-muted small mt-1">{balanceData.yandex.message}</div>
+                              </div>
                             )}
                           </td>
                         </tr>

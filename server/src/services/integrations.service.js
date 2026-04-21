@@ -2221,6 +2221,110 @@ class IntegrationsService {
   }
 
   /**
+   * Дополнительные числовые поля из ответа GET /api/v1/account/balance (WB может отдавать «в обработке» и др.).
+   * @private
+   */
+  _wbParseExtraBalanceAmounts(body) {
+    if (!body || typeof body !== 'object') return [];
+    const skip = new Set(['currency', 'current', 'for_withdraw']);
+    const out = [];
+    for (const [k, v] of Object.entries(body)) {
+      if (skip.has(k)) continue;
+      let n;
+      if (typeof v === 'number' && Number.isFinite(v)) n = v;
+      else if (typeof v === 'string' && String(v).trim() !== '') {
+        n = Number(String(v).replace(',', '.').trim());
+      } else continue;
+      if (!Number.isFinite(n)) continue;
+      const kl = String(k).toLowerCase().replace(/-/g, '_');
+      let label;
+      if (kl.includes('process') || kl.includes('pending') || kl.includes('queue')) {
+        label = 'Платежи в обработке / ожидание';
+      } else if (kl.includes('frozen') || kl.includes('block') || kl.includes('hold')) {
+        label = 'Зарезервировано / заморозка';
+      } else if (kl.includes('mutual') || kl.includes('settlement') || kl.includes('accrual')) {
+        label = 'Взаиморасчёты / начисления';
+      } else if (kl.includes('pay') || kl.includes('withdraw') || kl.includes('payout')) {
+        label = 'Выплаты';
+      } else {
+        label = `Поле «${k}»`;
+      }
+      out.push({ key: k, label, amountRub: n });
+    }
+    out.sort((a, b) => String(a.key).localeCompare(String(b.key), 'en'));
+    return out;
+  }
+
+  /**
+   * Справка по магазину Яндекс.Маркета (GET /v2/campaigns/{id}) — суммы «кошелька» API не отдаёт.
+   * @private
+   */
+  async _fetchYandexCampaignSnapshot(campaignId, apiKey) {
+    const cid = Number(campaignId);
+    if (!Number.isFinite(cid) || cid <= 0) {
+      const err = new Error('Укажите campaign_id (магазин) в интеграции Яндекс.Маркета');
+      err.statusCode = 400;
+      throw err;
+    }
+    const key = this._normalizeYandexApiKey(apiKey);
+    if (!key) {
+      const err = new Error('Api-Key Яндекс.Маркета не настроен');
+      err.statusCode = 400;
+      throw err;
+    }
+    const fetch = (await import('node-fetch')).default;
+    const agent = getYandexHttpsAgent();
+    const url = `https://api.partner.market.yandex.ru/v2/campaigns/${encodeURIComponent(String(cid))}`;
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Api-Key': key },
+        ...(agent ? { agent } : {})
+      });
+    } catch (e) {
+      throw new Error(`Яндекс.Маркет: не удалось запросить магазин. ${formatYandexNetworkError(e)}`);
+    }
+    const text = await response.text().catch(() => '');
+    if (!response.ok) {
+      let msg = `Яндекс.Маркет API ${response.status}`;
+      try {
+        const j = JSON.parse(text);
+        const errs = j?.errors || j?.error?.errors;
+        if (Array.isArray(errs) && errs[0]?.message) msg += `: ${errs[0].message}`;
+        else if (j?.message) msg += `: ${j.message}`;
+      } catch (_) {
+        if (text) msg += `: ${text.substring(0, 200)}`;
+      }
+      if (response.status === 403) {
+        msg +=
+          ' Возможно, у токена нет доступа к магазину или нужен доступ «Просмотр финансовой информации» для отчётов в ЛК.';
+      }
+      const err = new Error(msg);
+      err.statusCode = response.status;
+      throw err;
+    }
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_) {
+      data = {};
+    }
+    const camp = data?.result?.campaign ?? data?.campaign ?? null;
+    if (!camp || typeof camp !== 'object') {
+      return { campaignId: cid, domain: null, placementType: null, businessId: null, businessName: null, clientId: null };
+    }
+    return {
+      campaignId: cid,
+      domain: camp.domain != null ? String(camp.domain) : null,
+      placementType: camp.placementType != null ? String(camp.placementType) : null,
+      businessId: camp.business?.id != null ? Number(camp.business.id) : null,
+      businessName: camp.business?.name != null ? String(camp.business.name) : null,
+      clientId: camp.clientId != null ? Number(camp.clientId) : null
+    };
+  }
+
+  /**
    * Проверка токена Яндекс.Маркета через POST /v2/auth/token.
    * Возвращает { valid, message, scopes? }. Метод доступен только для Api-Key (не OAuth).
    */
@@ -3058,7 +3162,8 @@ class IntegrationsService {
     const out = {
       currency: body.currency != null ? String(body.currency) : 'RUB',
       currentRub: Number(body.current),
-      forWithdrawRub: Number(body.for_withdraw)
+      forWithdrawRub: Number(body.for_withdraw),
+      extraAmounts: this._wbParseExtraBalanceAmounts(body)
     };
     if (!Number.isFinite(out.currentRub)) out.currentRub = null;
     if (!Number.isFinite(out.forWithdrawRub)) out.forWithdrawRub = null;
@@ -3104,6 +3209,7 @@ class IntegrationsService {
         : 'profile';
 
     const {
+      config: yandexCfg,
       source: yandexKeysSource,
       cabinetMeta: yandexCabinetMeta
     } = await this._resolveMarketplaceConfigForBalance('yandex', profileId);
@@ -3123,6 +3229,7 @@ class IntegrationsService {
       currentRub: null,
       forWithdrawRub: null,
       currency: null,
+      extraAmounts: [],
       error: null,
       source: 'wb_finance_api_v1_account_balance',
       keysSource: wbKeysSource,
@@ -3133,8 +3240,10 @@ class IntegrationsService {
       available: false,
       keysSource: yandexKeysSource,
       ...yandexCtx,
+      campaignSnapshot: null,
+      snapshotError: null,
       message:
-        'В Partner API Яндекс.Маркета нет метода «баланс счёта» как у Ozon/WB. Суммы выплат смотрите в кабинете Маркета.'
+        'В Partner API нет одной суммы «баланс» в рублях (как у Ozon/WB). Ниже — данные магазина по campaign_id; деньги — в личном кабинете Маркета.'
     };
 
     const tasks = [];
@@ -3161,8 +3270,32 @@ class IntegrationsService {
             wildberries.currentRub = b.currentRub;
             wildberries.forWithdrawRub = b.forWithdrawRub;
             wildberries.currency = b.currency;
+            wildberries.extraAmounts = Array.isArray(b.extraAmounts) ? b.extraAmounts : [];
           } catch (e) {
             wildberries.error = e?.message || String(e);
+          }
+        })()
+      );
+    }
+    if (yandexConfigured) {
+      tasks.push(
+        (async () => {
+          try {
+            const override =
+              yandexKeysSource === 'marketplace_cabinet' && yandexCfg && typeof yandexCfg === 'object'
+                ? yandexCfg
+                : null;
+            const cfg = override || yandexCfg || {};
+            const cid = cfg.campaign_id ?? cfg.campaignId ?? null;
+            const apiKey = cfg.api_key ?? cfg.apiKey;
+            if (cid == null || String(cid).trim() === '') {
+              yandex.snapshotError =
+                'Укажите campaign_id (ID магазина) в интеграции — тогда здесь отобразится название и домен магазина.';
+              return;
+            }
+            yandex.campaignSnapshot = await this._fetchYandexCampaignSnapshot(cid, apiKey);
+          } catch (e) {
+            yandex.snapshotError = e?.message || String(e);
           }
         })()
       );
