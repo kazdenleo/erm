@@ -64,10 +64,14 @@ function withResumedAudioContext(run) {
   // В некоторых браузерах AudioContext остаётся suspended даже после user gesture.
   // Для надёжности явно резюмируем перед проигрыванием.
   if (ctx.state === 'suspended') {
-    ctx
-      .resume()
-      .then(() => run(ctx))
-      .catch(() => {});
+    // Важно: запуск звука должен оставаться в текущем callstack user-gesture (onClick),
+    // иначе Chrome может заблокировать воспроизведение. Поэтому:
+    // - вызываем resume()
+    // - и сразу же создаём ноды/стартуем осциллятор (он начнёт звучать после resume).
+    try {
+      void ctx.resume();
+    } catch {}
+    run(ctx);
     return;
   }
   run(ctx);
