@@ -2770,6 +2770,237 @@ class IntegrationsService {
       throw error;
     }
   }
+
+  /**
+   * Ozon: «конец периода» из отчёта движения средств (ближе всего к балансу в ЛК; не кошелёк рекламы).
+   * @private
+   */
+  _ozonExtractEndBalanceFromCashFlowPayload(data) {
+    const result = data?.result ?? data;
+    if (!result || typeof result !== 'object') return { value: null, periodEndMs: 0 };
+
+    const candidates = [];
+    const pushDetail = (det) => {
+      if (!det || typeof det !== 'object') return;
+      const end = Number(det.end_balance_amount);
+      if (!Number.isFinite(end)) return;
+      const pend = det.period?.end ?? det.period_end;
+      const ts = pend ? new Date(pend).getTime() : 0;
+      candidates.push({ end, ts: Number.isFinite(ts) ? ts : 0 });
+    };
+
+    const rootDetails = result.details;
+    if (Array.isArray(rootDetails)) rootDetails.forEach(pushDetail);
+    else pushDetail(rootDetails);
+
+    const flows = result.cash_flows;
+    if (Array.isArray(flows)) {
+      for (const row of flows) {
+        if (row?.details) {
+          if (Array.isArray(row.details)) row.details.forEach(pushDetail);
+          else pushDetail(row.details);
+        }
+      }
+    }
+
+    if (candidates.length === 0) return { value: null, periodEndMs: 0 };
+    candidates.sort((a, b) => a.ts - b.ts);
+    const best = candidates[candidates.length - 1];
+    return { value: best.end, periodEndMs: best.ts };
+  }
+
+  /**
+   * Ozon: баланс по отчёту cash-flow-statement за текущий календарный месяц (агрегат по страницам).
+   * @param {number|string|null} profileId
+   */
+  async _fetchOzonCashFlowEndBalance(profileId) {
+    const now = new Date();
+    const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+    const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+    const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    const cacheKey = `ozon_cash_flow_end:${profileId ?? 'default'}:${monthKey}`;
+    const cached = await this._cacheGet({ cache_type: 'marketplace_balance', cache_key: cacheKey });
+    if (cached && typeof cached === 'object' && Number.isFinite(Number(cached.amountRub))) {
+      return Number(cached.amountRub);
+    }
+
+    let bestEnd = null;
+    let bestTs = 0;
+    const pageCountMax = 25;
+    for (let page = 1; page <= pageCountMax; page++) {
+      const data = await this._ozonApiPost(
+        '/v1/finance/cash-flow-statement/list',
+        {
+          date: { from: from.toISOString(), to: to.toISOString() },
+          with_details: true,
+          page,
+          page_size: 50
+        },
+        { profileId }
+      );
+      const { value, periodEndMs } = this._ozonExtractEndBalanceFromCashFlowPayload(data);
+      if (value != null && periodEndMs >= bestTs) {
+        bestTs = periodEndMs;
+        bestEnd = value;
+      }
+      const result = data?.result ?? data;
+      const pc = Number(result?.page_count);
+      if (Number.isFinite(pc) && pc > 0 && page >= pc) break;
+    }
+
+    if (bestEnd == null || !Number.isFinite(bestEnd)) return null;
+    await this._cacheSet({
+      cache_type: 'marketplace_balance',
+      cache_key: cacheKey,
+      cache_value: { amountRub: bestEnd, at: new Date().toISOString() },
+      ttl_ms: 5 * 60 * 1000
+    });
+    return bestEnd;
+  }
+
+  /**
+   * Wildberries Finance API: баланс продавца (нужна категория «Финансы» у токена). Лимит ~1 запрос / мин.
+   * @param {number|string|null} profileId
+   */
+  async _fetchWildberriesFinanceBalance(profileId) {
+    const cacheKey = `wb_finance_balance:${profileId ?? 'default'}`;
+    const cached = await this._cacheGet({ cache_type: 'marketplace_balance', cache_key: cacheKey });
+    if (cached && typeof cached === 'object') return cached;
+
+    const config = await this.getMarketplaceConfig('wildberries', { profileId });
+    const apiKey = this._normalizeWbToken(config?.api_key);
+    if (!apiKey) {
+      const err = new Error('API ключ Wildberries не настроен');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const fetch = (await import('node-fetch')).default;
+    const url = 'https://finance-api.wildberries.ru/api/v1/account/balance';
+    const authHeader = `Bearer ${apiKey}`;
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json', Authorization: authHeader }
+      });
+    } catch (e) {
+      throw new Error('Не удалось связаться с Finance API Wildberries. Проверьте сеть.');
+    }
+
+    const text = await response.text().catch(() => '');
+    if (response.status === 429) {
+      throw new Error('Wildberries: лимит запросов баланса (не чаще 1 раза в минуту). Подождите и обновите.');
+    }
+    if (!response.ok) {
+      let detail = text?.substring(0, 400) || '';
+      try {
+        const j = JSON.parse(text);
+        detail = String(j?.detail || j?.message || detail);
+      } catch (_) {}
+      const low = detail.toLowerCase();
+      if (response.status === 401 || response.status === 403) {
+        if (low.includes('scope') || low.includes('not allowed')) {
+          throw new Error('Wildberries: для баланса нужен токен с категорией «Финансы» (Finance) в ЛК WB → Доступ к API.');
+        }
+        throw new Error('Wildberries: Finance API не авторизовал запрос. Проверьте токен.');
+      }
+      throw new Error(`Wildberries Finance API: ${response.status}${detail ? ` — ${detail}` : ''}`);
+    }
+
+    let body = {};
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch (_) {
+      body = {};
+    }
+    const out = {
+      currency: body.currency != null ? String(body.currency) : 'RUB',
+      currentRub: Number(body.current),
+      forWithdrawRub: Number(body.for_withdraw)
+    };
+    if (!Number.isFinite(out.currentRub)) out.currentRub = null;
+    if (!Number.isFinite(out.forWithdrawRub)) out.forWithdrawRub = null;
+
+    await this._cacheSet({
+      cache_type: 'marketplace_balance',
+      cache_key: cacheKey,
+      cache_value: out,
+      ttl_ms: 55 * 1000
+    });
+    return out;
+  }
+
+  /**
+   * Балансы по маркетплейсам для дашборда (Ozon — отчёт о движении средств; WB — Finance API; Я.Маркет — нет аналога в Partner API).
+   * @param {{ profileId?: number|string|null }} opts
+   */
+  async getMarketplaceAccountBalances(opts = {}) {
+    const profileId = opts.profileId ?? opts.profile_id ?? null;
+
+    const ozonCfg = await this.getMarketplaceConfig('ozon', { profileId });
+    const ozonClient = ozonCfg?.client_id || ozonCfg?.clientId;
+    const ozonKey = ozonCfg?.api_key || ozonCfg?.apiKey;
+    const ozonConfigured = !!(ozonClient && ozonKey);
+
+    const wbCfg = await this.getMarketplaceConfig('wildberries', { profileId });
+    const wbConfigured = !!(wbCfg?.api_key && this._normalizeWbToken(wbCfg.api_key));
+
+    const yandexCfg = await this.getMarketplaceConfig('yandex', { profileId });
+    const yandexKey = this._normalizeYandexApiKey(yandexCfg?.api_key);
+    const yandexConfigured = !!yandexKey;
+
+    const ozon = { configured: ozonConfigured, amountRub: null, error: null, source: 'ozon_finance_cash_flow' };
+    const wildberries = {
+      configured: wbConfigured,
+      currentRub: null,
+      forWithdrawRub: null,
+      currency: null,
+      error: null,
+      source: 'wb_finance_api_v1_account_balance'
+    };
+    const yandex = {
+      configured: yandexConfigured,
+      available: false,
+      message:
+        'В Partner API Яндекс.Маркета нет метода «баланс счёта» как у Ozon/WB. Суммы выплат смотрите в кабинете Маркета.'
+    };
+
+    const tasks = [];
+    if (ozonConfigured) {
+      tasks.push(
+        (async () => {
+          try {
+            ozon.amountRub = await this._fetchOzonCashFlowEndBalance(profileId);
+          } catch (e) {
+            ozon.error = e?.message || String(e);
+          }
+        })()
+      );
+    }
+    if (wbConfigured) {
+      tasks.push(
+        (async () => {
+          try {
+            const b = await this._fetchWildberriesFinanceBalance(profileId);
+            wildberries.currentRub = b.currentRub;
+            wildberries.forWithdrawRub = b.forWithdrawRub;
+            wildberries.currency = b.currency;
+          } catch (e) {
+            wildberries.error = e?.message || String(e);
+          }
+        })()
+      );
+    }
+
+    await Promise.all(tasks);
+
+    return {
+      ozon,
+      wildberries,
+      yandex
+    };
+  }
 }
 
 export default new IntegrationsService();

@@ -584,6 +584,26 @@ class IntegrationsController {
       return res.status(400).json({ ok: false, error: errorMessage || 'Ошибка при обновлении категорий Яндекс.Маркета' });
     }
   }
+
+  /**
+   * GET /api/integrations/marketplaces/account-balances
+   * Балансы Ozon (отчёт о движении средств), WB (Finance API), примечание по Я.Маркету.
+   */
+  async getMarketplaceAccountBalances(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({
+          ok: true,
+          data: { no_profile: true, ozon: null, wildberries: null, yandex: null }
+        });
+      }
+      const data = await integrationsService.getMarketplaceAccountBalances({ profileId: tid });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new IntegrationsController();

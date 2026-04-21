@@ -12,6 +12,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useProducts } from '../../hooks/useProducts';
 import { useOrders } from '../../hooks/useOrders';
 import { questionsApi } from '../../services/questions.api';
+import { integrationsApi } from '../../services/integrations.api';
 import { countOrderGroupsWithStatuses } from '../../utils/orderListGroupKey';
 import './Home.css';
 
@@ -95,6 +96,9 @@ export function Home() {
   const { orders, loading: ordersLoading, error: ordersError } = useOrders();
   const [stockDetailOpen, setStockDetailOpen] = useState(false);
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
+  const [balanceData, setBalanceData] = useState(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const [balanceError, setBalanceError] = useState(null);
 
   const loadQuestionsStats = useCallback(async () => {
     if (user?.profileId == null || user?.profileId === '') {
@@ -122,6 +126,34 @@ export function Home() {
     window.addEventListener('questions-stats-refresh', onRefresh);
     return () => window.removeEventListener('questions-stats-refresh', onRefresh);
   }, [loadQuestionsStats]);
+
+  const loadMarketplaceBalances = useCallback(async () => {
+    if (user?.profileId == null || user?.profileId === '') {
+      setBalanceData(null);
+      setBalanceError(null);
+      return;
+    }
+    setBalanceLoading(true);
+    setBalanceError(null);
+    try {
+      const d = await integrationsApi.getMarketplaceAccountBalances();
+      setBalanceData(d);
+    } catch (e) {
+      const msg =
+        e?.response?.data?.message ||
+        e?.response?.data?.error ||
+        e?.message ||
+        'Не удалось загрузить балансы';
+      setBalanceError(msg);
+      setBalanceData(null);
+    } finally {
+      setBalanceLoading(false);
+    }
+  }, [user?.profileId]);
+
+  useEffect(() => {
+    loadMarketplaceBalances();
+  }, [loadMarketplaceBalances]);
 
   /** col-12 — ниже md плашки в столбик; иначе без xs-класса третья колонка могла обрезаться/уезжать за край */
   const widgetColClass = isAccountAdmin
@@ -258,6 +290,114 @@ export function Home() {
           </div>
         )}
       </div>
+
+      {user?.profileId != null && user?.profileId !== '' && (
+        <div className="row mb-3">
+          <div className="col-12">
+            <div className="card home-marketplace-balances-card">
+              <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <div className="card-header-title mb-0">
+                  <i className="header-icon pe-7s-wallet icon-gradient bg-mean-fruit me-2" />
+                  Баланс на маркетплейсах
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="small"
+                  className="btn-wide"
+                  disabled={balanceLoading}
+                  onClick={() => loadMarketplaceBalances()}
+                >
+                  {balanceLoading ? 'Загрузка…' : 'Обновить'}
+                </Button>
+              </div>
+              <div className="card-body">
+                <p className="text-muted small mb-3">
+                  Ozon — остаток на конец периода из отчёта «Движение средств» за текущий месяц. Wildberries — данные
+                  виджета баланса (нужен токен с категорией «Финансы»). Яндекс Маркет — в Partner API нет прямого
+                  аналога; суммы выплат смотрите в личном кабинете.
+                </p>
+                {balanceError && (
+                  <div className="alert alert-warning py-2 mb-3" role="alert">
+                    {balanceError}
+                  </div>
+                )}
+                {balanceData?.no_profile && (
+                  <div className="text-muted">Нет привязки к аккаунту — балансы недоступны.</div>
+                )}
+                {!balanceData?.no_profile && (
+                  <div className="table-responsive">
+                    <table className="align-middle mb-0 table table-striped table-hover">
+                      <thead>
+                        <tr>
+                          <th>Маркетплейс</th>
+                          <th className="text-end">Баланс</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td>Ozon</td>
+                          <td className="text-end text-nowrap">
+                            {balanceLoading ? (
+                              '…'
+                            ) : !balanceData?.ozon?.configured ? (
+                              <span className="text-muted">Не настроено</span>
+                            ) : balanceData.ozon.error ? (
+                              <span className="text-danger small">{balanceData.ozon.error}</span>
+                            ) : balanceData.ozon.amountRub != null && Number.isFinite(Number(balanceData.ozon.amountRub)) ? (
+                              formatRub(Number(balanceData.ozon.amountRub))
+                            ) : (
+                              <span className="text-muted">Нет данных в отчёте</span>
+                            )}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td>Wildberries</td>
+                          <td className="text-end">
+                            {balanceLoading ? (
+                              '…'
+                            ) : !balanceData?.wildberries?.configured ? (
+                              <span className="text-muted">Не настроено</span>
+                            ) : balanceData.wildberries.error ? (
+                              <span className="text-danger small">{balanceData.wildberries.error}</span>
+                            ) : (
+                              <div className="d-inline-block text-end">
+                                <div className="text-nowrap">
+                                  <span className="text-muted small me-1">На счёте:</span>
+                                  {formatRub(Number(balanceData.wildberries.currentRub))}
+                                </div>
+                                {balanceData.wildberries.forWithdrawRub != null &&
+                                  Number.isFinite(Number(balanceData.wildberries.forWithdrawRub)) && (
+                                    <div className="text-nowrap">
+                                      <span className="text-muted small me-1">К выводу:</span>
+                                      {formatRub(Number(balanceData.wildberries.forWithdrawRub))}
+                                    </div>
+                                  )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td>Яндекс Маркет</td>
+                          <td className="text-end">
+                            {balanceLoading ? (
+                              '…'
+                            ) : !balanceData?.yandex?.configured ? (
+                              <span className="text-muted">Не настроено</span>
+                            ) : (
+                              <span className="text-muted small">{balanceData.yandex.message}</span>
+                            )}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isAccountAdmin && (
         <Modal

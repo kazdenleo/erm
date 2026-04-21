@@ -65,6 +65,15 @@ export const integrationsApi = {
   },
 
   /**
+   * Балансы на маркетплейсах (дашборд).
+   * @returns {Promise<{ no_profile?: boolean, ozon?: object, wildberries?: object, yandex?: object }>}
+   */
+  getMarketplaceAccountBalances: async () => {
+    const response = await api.get('/integrations/marketplaces/account-balances');
+    return response.data?.data ?? response.data;
+  },
+
+  /**
    * Получить тарифы Wildberries
    */
   getWildberriesTariffs: async (date = null) => {

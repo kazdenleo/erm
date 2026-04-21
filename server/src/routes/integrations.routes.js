@@ -27,6 +27,9 @@ router.get('/marketplaces/ozon/attribute-values/search', wrapAsync(integrationsC
 router.get('/marketplaces/yandex/categories', wrapAsync(integrationsController.getYandexCategories));
 router.post('/marketplaces/yandex/categories/update', wrapAsync(integrationsController.updateYandexCategories));
 
+// Балансы на счетах МП (дашборд)
+router.get('/marketplaces/account-balances', wrapAsync(integrationsController.getMarketplaceAccountBalances));
+
 // Проверка токенов маркетплейсов + уведомления
 router.get('/marketplaces/:type/token-status', wrapAsync(integrationsController.getMarketplaceTokenStatus));
 router.get('/notifications', wrapAsync(integrationsController.getNotifications));
