@@ -308,6 +308,7 @@ export function Orders() {
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [statusCounts, setStatusCounts] = useState({ all: 0 });
   const prevNewCountRef = useRef(null);
+  const newOrderSoundArmedRef = useRef(false);
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -460,6 +461,11 @@ export function Orders() {
     const cur = Number(statusCounts?.new ?? 0);
     const prev = prevNewCountRef.current;
     prevNewCountRef.current = cur;
+    // Не пищим при первом заходе на страницу: сначала "вооружаемся" после первой загрузки счётчика.
+    if (!newOrderSoundArmedRef.current) {
+      newOrderSoundArmedRef.current = true;
+      return;
+    }
     if (prev == null) return;
     if (cur > prev) {
       playEventSound(SOUND_EVENTS.new_order);

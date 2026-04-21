@@ -93,6 +93,28 @@ export function Settings() {
         </p>
         {soundError && <p className="text-danger">{soundError}</p>}
 
+        <label className="settings-account-toggle" style={{ marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            checked={soundForm?.enabled !== false}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setSoundForm((prev) => {
+                const next = { ...(prev || {}) };
+                next.enabled = on;
+                saveSoundSettings(next);
+                return next;
+              });
+            }}
+          />
+          <span>
+            <strong>Включить звуковые уведомления</strong>
+            <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+              Можно отключить звуки полностью для этого пользователя/ПК.
+            </span>
+          </span>
+        </label>
+
         {[
           { key: SOUND_EVENTS.scan_ok, title: 'Правильное сканирование', hint: 'Когда скан прошёл и товар/заказ найден.' },
           { key: SOUND_EVENTS.scan_error, title: 'Ошибка сканирования', hint: 'Когда скан прошёл, но ничего не найдено.' },
@@ -115,6 +137,7 @@ export function Settings() {
                     className="login-input"
                     style={{ maxWidth: 360 }}
                     value={v}
+                    disabled={soundForm?.enabled === false}
                     onChange={(e) => {
                       const nextVal = e.target.value;
                       setSoundError('');
@@ -136,7 +159,7 @@ export function Settings() {
                     ))}
                     <option value="custom">Свой файл…</option>
                   </select>
-                  <Button type="button" variant="outline-secondary" onClick={() => playEventSound(key)}>
+                  <Button type="button" variant="outline-secondary" onClick={() => playEventSound(key)} disabled={soundForm?.enabled === false}>
                     Прослушать
                   </Button>
                 </div>

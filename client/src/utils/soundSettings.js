@@ -14,6 +14,7 @@ export const BUILTIN_SOUNDS = [
 
 export function getDefaultSoundSettings() {
   return {
+    enabled: true,
     [SOUND_EVENTS.scan_ok]: { kind: 'builtin', id: 'beep_1' },
     [SOUND_EVENTS.scan_error]: { kind: 'builtin', id: 'beep_2' },
     [SOUND_EVENTS.new_order]: { kind: 'builtin', id: 'beep_3' },
@@ -159,6 +160,7 @@ export function playBuiltinSound(id) {
 
 export function playEventSound(eventKey) {
   const cfg = loadSoundSettings();
+  if (cfg?.enabled === false) return;
   const sel = cfg?.[eventKey];
   if (!sel || sel.kind === 'none') return;
 

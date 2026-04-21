@@ -13,6 +13,7 @@ import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -164,6 +165,7 @@ export function Purchases() {
   const scanInFlightRef = useRef(false);
   const lastScanRef = useRef({ value: '', at: 0 });
   const [scanMsg, setScanMsg] = useState(null);
+  const [lastScanLine, setLastScanLine] = useState(null);
   const [extrasToResolve, setExtrasToResolve] = useState(null);
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
   const [receiptSupplierId, setReceiptSupplierId] = useState('');
@@ -262,6 +264,7 @@ export function Purchases() {
       const data = await purchasesApi.getReceipt(receiptId);
       setReceipt(data);
       setScanMsg(null);
+      setLastScanLine(null);
       setReceiptWarehouseId('');
       setReceiptSupplierId(data?.purchase?.supplierId != null ? String(data.purchase.supplierId) : '');
       setTimeout(() => scanRef.current?.focus(), 80);
@@ -313,11 +316,47 @@ export function Purchases() {
     lastScanRef.current = { value: v, at: now };
     try {
       setScanMsg('Сканирую…');
+      setLastScanLine(null);
+      const before = new Map();
+      for (const it of (receipt?.items || [])) {
+        if (!it || it.id == null) continue;
+        before.set(String(it.id), Number(it.scanned_quantity) || 0);
+      }
       await purchasesApi.scanReceipt(rid, { barcode: v });
       const data = await purchasesApi.getReceipt(rid);
       setReceipt(data);
       setScanValue('');
       setScanMsg('Ок');
+      playEventSound(SOUND_EVENTS.scan_ok);
+
+      const afterItems = Array.isArray(data?.items) ? data.items : [];
+      let changed = null;
+      for (const it of afterItems) {
+        if (!it || it.id == null) continue;
+        const id = String(it.id);
+        const prevQty = before.get(id) ?? 0;
+        const nextQty = Number(it.scanned_quantity) || 0;
+        if (nextQty > prevQty) {
+          changed = it;
+          break;
+        }
+      }
+      if (changed) {
+        const exp = Number(changed.expected_quantity);
+        const expected = Number.isFinite(exp) ? exp : null;
+        const scanned = Number(changed.scanned_quantity) || 0;
+        const rec = Number(changed.received_quantity);
+        const received = Number.isFinite(rec) ? rec : null;
+        const over = expected != null && scanned > expected;
+        setLastScanLine({
+          sku: changed.product_sku || '—',
+          name: changed.product_name || '—',
+          expected,
+          received,
+          scanned,
+          over,
+        });
+      }
       scanRef.current?.focus();
     } catch (e) {
       const msg = e.response?.data?.message || e.message || 'Ошибка сканирования';
@@ -330,6 +369,7 @@ export function Purchases() {
       } else {
         setScanMsg(msg);
       }
+      playEventSound(SOUND_EVENTS.scan_error);
       setScanValue('');
       scanRef.current?.focus();
     } finally {
@@ -355,8 +395,10 @@ export function Purchases() {
           const data = await purchasesApi.getReceipt(pending.rid);
           setReceipt(data);
           setScanMsg('Ок');
+          playEventSound(SOUND_EVENTS.scan_ok);
         } catch (e2) {
           setScanMsg(e2.response?.data?.message || e2.message || 'Ошибка сканирования');
+          playEventSound(SOUND_EVENTS.scan_error);
         }
       }
       setTimeout(() => scanRef.current?.focus(), 50);
@@ -925,6 +967,27 @@ export function Purchases() {
               />
             </form>
             {scanMsg && <p className="muted" style={{ marginTop: 8 }}>{scanMsg}</p>}
+            {lastScanLine && (
+              <div
+                role="status"
+                style={{
+                  marginTop: 10,
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${lastScanLine.over ? '#d33' : 'rgba(0,0,0,0.12)'}`,
+                  background: lastScanLine.over ? 'rgba(211,51,51,0.08)' : 'rgba(0,0,0,0.03)',
+                }}
+              >
+                <div style={{ fontWeight: 600 }}>
+                  {lastScanLine.sku} — {lastScanLine.name}
+                </div>
+                <div className="muted" style={{ marginTop: 4 }}>
+                  Ожидалось: {lastScanLine.expected ?? '—'} · Отсканировано сейчас: {lastScanLine.scanned}
+                  {lastScanLine.received != null ? ` · Принято (итого): ${lastScanLine.received}` : ''}
+                  {lastScanLine.over ? ' · Перескан!' : ''}
+                </div>
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
               <Button
