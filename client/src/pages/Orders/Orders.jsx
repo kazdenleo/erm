@@ -17,6 +17,7 @@ import {
   getOrderStatusLabel,
   isOrderStatusEligibleForProcurement,
 } from '../../constants/orderStatuses';
+import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
 import {
   normalizeMarketplaceForUI,
@@ -306,6 +307,7 @@ export function Orders() {
   const [statusFilter, setStatusFilter] = useState('new');
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [statusCounts, setStatusCounts] = useState({ all: 0 });
+  const prevNewCountRef = useRef(null);
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -450,6 +452,19 @@ export function Orders() {
     if (!initialOrdersLoadedRef.current) return;
     void loadStatusCounts({ silent: true });
   }, [orders, loadStatusCounts]);
+
+  useEffect(() => {
+    // Звук "Новый заказ": когда автообновление подтянуло новые заказы (рост количества new).
+    if (!initialOrdersLoadedRef.current) return;
+    if (ordersAutoSyncPaused) return;
+    const cur = Number(statusCounts?.new ?? 0);
+    const prev = prevNewCountRef.current;
+    prevNewCountRef.current = cur;
+    if (prev == null) return;
+    if (cur > prev) {
+      playEventSound(SOUND_EVENTS.new_order);
+    }
+  }, [statusCounts?.new, ordersAutoSyncPaused]);
 
   useEffect(() => {
     setCurrentPage(1);

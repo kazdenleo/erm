@@ -9,6 +9,7 @@ import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { OrderLabelIcon } from '../../components/common/OrderLabelIcon/OrderLabelIcon';
 import { ordersApi, assemblyApi } from '../../services/orders.api';
+import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getStoredLabelSize } from '../Settings/Labels';
 import './Assembly.css';
 
@@ -376,6 +377,7 @@ export function Assembly() {
     try {
       const data = await assemblyApi.findOrderByBarcode(trimmed);
       if (data?.order && data?.product) {
+        playEventSound(SOUND_EVENTS.scan_ok);
         const newKey = assemblyOrderSessionKey(data.order);
         const prevKey = orderKeyRef.current;
         if (newKey !== prevKey) {
@@ -438,11 +440,13 @@ export function Assembly() {
       } else {
         setBarcodeInput('');
         setScanError('Заказ с таким штрихкодом не найден на сборке');
+        playEventSound(SOUND_EVENTS.scan_error);
       }
     } catch (err) {
       const msg = err.response?.data?.message || err.message || 'Ошибка поиска заказа';
       setScanError(msg);
       setBarcodeInput('');
+      playEventSound(SOUND_EVENTS.scan_error);
     } finally {
       setScanLoading(false);
     }
