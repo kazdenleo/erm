@@ -3,7 +3,7 @@
  * Страница управления заказами: выбор заказов и отправка на сборку
  */
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useOrders } from '../../hooks/useOrders';
@@ -289,7 +289,8 @@ export function Orders() {
   const navigate = useNavigate();
   const { profile } = useAuth();
   const allowPrivateOrders = profile?.allow_private_orders === true;
-  const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
+  const { orders, loading, error, loadOrders } = useOrders({ autoLoad: false });
+  const initialOrdersLoadedRef = useRef(false);
   const ORDERS_PAGE_SIZE = 50;
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
   const [syncLoading, setSyncLoading] = useState(false);
@@ -382,32 +383,37 @@ export function Orders() {
     }
   }, [addOrderOpen, productsList.length]);
 
-  const buildOrdersListParams = useCallback((page = currentPage) => {
-    const params = {
-      limit: ORDERS_PAGE_SIZE,
-      offset: Math.max(0, page - 1) * ORDERS_PAGE_SIZE,
-    };
+  /**
+   * Важно: статусы и пагинацию считаем на клиенте.
+   * Иначе при фильтре по статусу сервер отдаёт только один статус, и счётчики по другим статусам становятся 0.
+   */
+  const buildOrdersListParams = useCallback(() => {
+    const params = {};
     if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
-    if (statusFilter !== 'all') params.status = statusFilter;
     const query = String(orderSearchQuery || '').trim();
     if (query) params.search = query;
     return params;
-  }, [currentPage, marketplaceFilter, statusFilter, orderSearchQuery]);
+  }, [marketplaceFilter, orderSearchQuery]);
 
-  const reloadOrders = useCallback(async (options = {}) => {
-    const page = options.page ?? currentPage;
-    const params = {
-      ...buildOrdersListParams(page),
-      ...(options.params || {}),
-    };
-    return await loadOrders({
-      ...options,
-      params,
-    });
-  }, [buildOrdersListParams, currentPage, loadOrders]);
+  const reloadOrders = useCallback(
+    async (options = {}) => {
+      const params = {
+        ...buildOrdersListParams(),
+        ...(options.params || {}),
+      };
+      return await loadOrders({
+        ...options,
+        params,
+      });
+    },
+    [buildOrdersListParams, loadOrders]
+  );
 
   useEffect(() => {
-    reloadOrders();
+    // После первой загрузки не “роняем” страницу в общий loader — обновляем список тихо.
+    const silent = initialOrdersLoadedRef.current;
+    void reloadOrders({ silent });
+    initialOrdersLoadedRef.current = true;
   }, [reloadOrders]);
 
   useEffect(() => {
@@ -1029,9 +1035,17 @@ export function Orders() {
     });
   }, [groupedDisplayRows, sortByArticle]);
 
-  const totalOrders = meta?.total ?? orders.length;
-  const totalPages = meta?.total != null ? Math.max(1, Math.ceil(meta.total / ORDERS_PAGE_SIZE)) : 1;
-  const pageOffset = (meta?.offset ?? Math.max(0, currentPage - 1) * ORDERS_PAGE_SIZE);
+  const totalOrders = sortedGroupedDisplayRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalOrders / ORDERS_PAGE_SIZE));
+  const pageOffset = Math.max(0, currentPage - 1) * ORDERS_PAGE_SIZE;
+  const pagedGroupedDisplayRows = useMemo(
+    () => sortedGroupedDisplayRows.slice(pageOffset, pageOffset + ORDERS_PAGE_SIZE),
+    [sortedGroupedDisplayRows, pageOffset]
+  );
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
   const goToPage = (page) => {
     const next = Math.min(Math.max(1, page), totalPages);
     if (next !== currentPage) setCurrentPage(next);
@@ -1258,7 +1272,8 @@ export function Orders() {
     }
   };
 
-  if (loading) {
+  const isInitialLoading = loading && orders.length === 0;
+  if (isInitialLoading) {
     return <div className="loading">Загрузка заказов...</div>;
   }
 
@@ -1934,7 +1949,7 @@ export function Orders() {
               </tr>
             </thead>
             <tbody>
-              {sortedGroupedDisplayRows.map((row, idx) => {
+              {pagedGroupedDisplayRows.map((row, idx) => {
                 const { first, orders: groupOrders, isGroup } = row;
                 const keys = groupOrders.map(orderKey);
                 const checked = keys.every(k => selectedKeys.has(k));
