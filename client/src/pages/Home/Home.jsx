@@ -343,15 +343,21 @@ export function Home() {
                       <tbody>
                         <tr>
                           <td>Ozon</td>
-                          <td className="text-end text-nowrap">
+                          <td className="text-end">
                             {balanceLoading ? (
                               '…'
                             ) : !balanceData?.ozon?.configured ? (
-                              <span className="text-muted">Не настроено</span>
+                              <div className="text-muted small text-end">
+                                <div className="mb-1">
+                                  Не заданы <strong>Client ID</strong> и <strong>API Key</strong> продавца Ozon для
+                                  этого аккаунта.
+                                </div>
+                                <Link to="/integrations">Интеграции → Ozon</Link>
+                              </div>
                             ) : balanceData.ozon.error ? (
                               <span className="text-danger small">{balanceData.ozon.error}</span>
                             ) : balanceData.ozon.amountRub != null && Number.isFinite(Number(balanceData.ozon.amountRub)) ? (
-                              formatRub(Number(balanceData.ozon.amountRub))
+                              <span className="text-nowrap">{formatRub(Number(balanceData.ozon.amountRub))}</span>
                             ) : (
                               <span className="text-muted">Нет данных в отчёте</span>
                             )}
@@ -363,7 +369,13 @@ export function Home() {
                             {balanceLoading ? (
                               '…'
                             ) : !balanceData?.wildberries?.configured ? (
-                              <span className="text-muted">Не настроено</span>
+                              <div className="text-muted small text-end">
+                                <div className="mb-1">
+                                  Не задан <strong>API-токен</strong> Wildberries для этого аккаунта. Для строки
+                                  баланса в ЛК нужен токен с категорией <strong>«Финансы»</strong>.
+                                </div>
+                                <Link to="/integrations">Интеграции → Wildberries</Link>
+                              </div>
                             ) : balanceData.wildberries.error ? (
                               <span className="text-danger small">{balanceData.wildberries.error}</span>
                             ) : (
@@ -389,7 +401,13 @@ export function Home() {
                             {balanceLoading ? (
                               '…'
                             ) : !balanceData?.yandex?.configured ? (
-                              <span className="text-muted">Не настроено</span>
+                              <div className="text-muted small text-end">
+                                <div className="mb-1">
+                                  Не задан <strong>Api-Key</strong> Partner API Яндекс.Маркета для этого аккаунта
+                                  (ключ из кабинета: Настройки → API).
+                                </div>
+                                <Link to="/integrations">Интеграции → Яндекс Маркет</Link>
+                              </div>
                             ) : (
                               <span className="text-muted small">{balanceData.yandex.message}</span>
                             )}
