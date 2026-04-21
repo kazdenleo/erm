@@ -424,6 +424,49 @@ class OrdersService {
     return { items, total: items.length };
   }
 
+  /**
+   * Счётчики по статусам для кнопок фильтра.
+   * Возвращает количества по "строкам списка" (группам заказов), а не по каждой позиции товара.
+   */
+  async getStatusCounts(options = {}) {
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      if (typeof this.repository.countGroupsByStatus === 'function') {
+        const rows = await this.repository.countGroupsByStatus(options);
+        const out = {};
+        for (const r of rows || []) {
+          if (!r || !r.status) continue;
+          out[String(r.status)] = Number(r.count) || 0;
+        }
+        out.all = Object.values(out).reduce((a, b) => a + (Number(b) || 0), 0);
+        return out;
+      }
+    }
+
+    // Fallback для старого хранилища (без SQL агрегации)
+    const items = await this.getAll(options);
+    const groupToStatus = new Map();
+    for (const o of items || []) {
+      const mp = String(o.marketplace || 'unknown');
+      const gid = String(o.orderGroupId ?? o.order_group_id ?? '').trim();
+      const ok = gid ? `${mp}|g|${gid}` : `${mp}|o|${String(o.orderId ?? o.order_id ?? '').trim()}`;
+      if (groupToStatus.has(ok)) continue;
+      const mpLower = mp.toLowerCase();
+      const raw = o.status ?? 'unknown';
+      const sNorm = String(raw ?? '').trim().toLowerCase();
+      const status =
+        (mpLower === 'wildberries' || mpLower === 'wb') &&
+        (sNorm === 'wb_status_unknown' || String(raw) === '__wb_status_pending__')
+          ? 'new'
+          : String(raw || 'unknown');
+      groupToStatus.set(ok, status);
+    }
+    const out = { all: groupToStatus.size };
+    for (const st of groupToStatus.values()) {
+      out[st] = (out[st] || 0) + 1;
+    }
+    return out;
+  }
+
   async getById(id) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       const orders = await this.getAll();

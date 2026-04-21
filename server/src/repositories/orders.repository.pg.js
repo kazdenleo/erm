@@ -92,11 +92,21 @@ class OrdersRepositoryPG {
     }
     if (marketplace) {
       whereSql += ` AND o.marketplace = $${paramIndex++}`;
-      params.push(marketplace);
+      params.push(normalizeMarketplaceForDb(marketplace));
     }
     if (status) {
-      whereSql += ` AND o.status = $${paramIndex++}`;
-      params.push(status);
+      const st = String(status ?? '').trim();
+      const stNorm = st.toLowerCase();
+      if (stNorm === 'new') {
+        // Для WB техстатусы до резолва считаем «Новый»
+        whereSql += ` AND ( o.status = $${paramIndex++}
+          OR ( o.marketplace = 'wb' AND (LOWER(COALESCE(o.status, '')) = 'wb_status_unknown' OR o.status = '__wb_status_pending__') )
+        )`;
+        params.push(st);
+      } else {
+        whereSql += ` AND o.status = $${paramIndex++}`;
+        params.push(st);
+      }
     }
     if (productId) {
       whereSql += ` AND o.product_id = $${paramIndex++}`;
@@ -272,6 +282,54 @@ class OrdersRepositoryPG {
       params
     );
     return Number(result.rows?.[0]?.total || 0);
+  }
+
+  /**
+   * Счётчики по статусам для UI (по "строкам списка", т.е. группам заказов).
+   * Группируем по (marketplace, order_group_id) если он есть, иначе по (marketplace, order_id).
+   * Для WB техстатусы до резолва считаем как `new`, чтобы соответствовать UI-логике.
+   */
+  async countGroupsByStatus(options = {}) {
+    const { marketplace, search, profileId, excludeManual } = options;
+    const { whereSql, params } = this.buildFindAllFilters({
+      marketplace,
+      status: null,
+      productId: null,
+      search,
+      profileId,
+      excludeManual,
+    });
+
+    const sql = `
+      WITH base AS (
+        SELECT
+          CASE
+            WHEN o.marketplace = 'wb'
+              AND (LOWER(COALESCE(o.status, '')) = 'wb_status_unknown' OR o.status = '__wb_status_pending__')
+              THEN 'new'
+            WHEN o.status IS NULL OR TRIM(COALESCE(o.status, '')) = '' THEN 'unknown'
+            ELSE o.status
+          END AS st,
+          CASE
+            WHEN o.order_group_id IS NOT NULL AND TRIM(COALESCE(o.order_group_id, '')) <> ''
+              THEN (o.marketplace || '|g|' || o.order_group_id)
+            ELSE (o.marketplace || '|o|' || o.order_id)
+          END AS gk
+        FROM orders o
+        ${whereSql}
+      ),
+      uniq AS (
+        SELECT DISTINCT ON (gk) gk, st
+        FROM base
+        ORDER BY gk, st
+      )
+      SELECT st AS status, COUNT(*)::int AS count
+      FROM uniq
+      GROUP BY st
+    `;
+
+    const result = await query(sql, params);
+    return result.rows?.map((r) => ({ status: r.status, count: Number(r.count) || 0 })) ?? [];
   }
 
   /**

@@ -289,7 +289,7 @@ export function Orders() {
   const navigate = useNavigate();
   const { profile } = useAuth();
   const allowPrivateOrders = profile?.allow_private_orders === true;
-  const { orders, loading, error, loadOrders } = useOrders({ autoLoad: false });
+  const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
   const initialOrdersLoadedRef = useRef(false);
   const ORDERS_PAGE_SIZE = 50;
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
@@ -305,6 +305,7 @@ export function Orders() {
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('new');
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
+  const [statusCounts, setStatusCounts] = useState({ all: 0 });
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -383,22 +384,26 @@ export function Orders() {
     }
   }, [addOrderOpen, productsList.length]);
 
-  /**
-   * Важно: статусы и пагинацию считаем на клиенте.
-   * Иначе при фильтре по статусу сервер отдаёт только один статус, и счётчики по другим статусам становятся 0.
-   */
-  const buildOrdersListParams = useCallback(() => {
-    const params = {};
-    if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
-    const query = String(orderSearchQuery || '').trim();
-    if (query) params.search = query;
-    return params;
-  }, [marketplaceFilter, orderSearchQuery]);
+  const buildOrdersListParams = useCallback(
+    (page = currentPage) => {
+      const params = {
+        limit: ORDERS_PAGE_SIZE,
+        offset: Math.max(0, page - 1) * ORDERS_PAGE_SIZE,
+      };
+      if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
+      if (statusFilter !== 'all') params.status = statusFilter;
+      const query = String(orderSearchQuery || '').trim();
+      if (query) params.search = query;
+      return params;
+    },
+    [currentPage, marketplaceFilter, statusFilter, orderSearchQuery]
+  );
 
   const reloadOrders = useCallback(
     async (options = {}) => {
+      const page = options.page ?? currentPage;
       const params = {
-        ...buildOrdersListParams(),
+        ...buildOrdersListParams(page),
         ...(options.params || {}),
       };
       return await loadOrders({
@@ -406,7 +411,7 @@ export function Orders() {
         params,
       });
     },
-    [buildOrdersListParams, loadOrders]
+    [buildOrdersListParams, currentPage, loadOrders]
   );
 
   useEffect(() => {
@@ -415,6 +420,36 @@ export function Orders() {
     void reloadOrders({ silent });
     initialOrdersLoadedRef.current = true;
   }, [reloadOrders]);
+
+  const loadStatusCounts = useCallback(
+    async ({ silent = false } = {}) => {
+      try {
+        const params = {};
+        if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
+        const q = String(orderSearchQuery || '').trim();
+        if (q) params.search = q;
+        const data = await ordersApi.getStatusCounts(params);
+        setStatusCounts(data && typeof data === 'object' ? data : { all: 0 });
+      } catch (e) {
+        // Не блокируем UI счётчиков на ошибке — просто оставляем прошлые значения.
+      }
+    },
+    [marketplaceFilter, orderSearchQuery]
+  );
+
+  useEffect(() => {
+    // Обновляем счётчики при смене marketplace и (с debounce) поиска.
+    const t = setTimeout(() => {
+      void loadStatusCounts({ silent: false });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [marketplaceFilter, orderSearchQuery, loadStatusCounts]);
+
+  useEffect(() => {
+    // После любых обновлений списка (смена статуса, действия по заказу, синк) — тихо обновляем счётчики.
+    if (!initialOrdersLoadedRef.current) return;
+    void loadStatusCounts({ silent: true });
+  }, [orders, loadStatusCounts]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -967,28 +1002,7 @@ export function Orders() {
     [countsByMarketplace]
   );
 
-  // Группы по статусу для кнопок статусов — с учётом выбранного маркетплейса (без фильтра по статусу).
-  const countsByStatus = useMemo(() => {
-    const base = orders.filter((o) => {
-      const mp = normalizeMarketplaceForUI(o.marketplace);
-      return marketplaceFilter === 'all' || mp === marketplaceFilter;
-    });
-    const groupToStatus = new Map();
-    for (const o of base) {
-      const ogk = orderGroupKey(o);
-      const gid = ogk || singleOrderListGroupKey(o);
-      const mpLower = String(o.marketplace || '').toLowerCase();
-      const isWb = mpLower === 'wb' || mpLower === 'wildberries';
-      const stRaw = o.status || 'unknown';
-      const st = isWb ? normalizeWbNewLikeStatus(stRaw) : stRaw;
-      if (!groupToStatus.has(gid)) groupToStatus.set(gid, st);
-    }
-    const out = { all: groupToStatus.size };
-    for (const st of groupToStatus.values()) {
-      out[st] = (out[st] || 0) + 1;
-    }
-    return out;
-  }, [orders, marketplaceFilter]);
+  const countsByStatus = statusCounts;
 
   // Группируем заказы с одним order_group_id в одну строку (один заказ — несколько товаров).
   // Маркетплейс нормализуем — иначе две строки одного заказа (wb vs wildberries) не слипаются.
@@ -1035,17 +1049,9 @@ export function Orders() {
     });
   }, [groupedDisplayRows, sortByArticle]);
 
-  const totalOrders = sortedGroupedDisplayRows.length;
-  const totalPages = Math.max(1, Math.ceil(totalOrders / ORDERS_PAGE_SIZE));
-  const pageOffset = Math.max(0, currentPage - 1) * ORDERS_PAGE_SIZE;
-  const pagedGroupedDisplayRows = useMemo(
-    () => sortedGroupedDisplayRows.slice(pageOffset, pageOffset + ORDERS_PAGE_SIZE),
-    [sortedGroupedDisplayRows, pageOffset]
-  );
-
-  useEffect(() => {
-    if (currentPage > totalPages) setCurrentPage(totalPages);
-  }, [currentPage, totalPages]);
+  const totalOrders = meta?.total ?? orders.length;
+  const totalPages = meta?.total != null ? Math.max(1, Math.ceil(meta.total / ORDERS_PAGE_SIZE)) : 1;
+  const pageOffset = (meta?.offset ?? Math.max(0, currentPage - 1) * ORDERS_PAGE_SIZE);
   const goToPage = (page) => {
     const next = Math.min(Math.max(1, page), totalPages);
     if (next !== currentPage) setCurrentPage(next);
@@ -1949,7 +1955,7 @@ export function Orders() {
               </tr>
             </thead>
             <tbody>
-              {pagedGroupedDisplayRows.map((row, idx) => {
+              {sortedGroupedDisplayRows.map((row, idx) => {
                 const { first, orders: groupOrders, isGroup } = row;
                 const keys = groupOrders.map(orderKey);
                 const checked = keys.every(k => selectedKeys.has(k));

@@ -65,6 +65,42 @@ class OrdersController {
   }
 
   /**
+   * Счётчики по статусам (для кнопок фильтра) без пагинации.
+   * GET /orders/status-counts?marketplace=...&search=...
+   */
+  async getStatusCounts(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json({ ok: true, data: { all: 0 } });
+      }
+
+      const marketplace = req.query?.marketplace ? String(req.query.marketplace).trim() : null;
+      const search = req.query?.search ? String(req.query.search).trim() : null;
+
+      let excludeManual = false;
+      if (tid != null) {
+        const prof = await profilesRepo.findById(tid);
+        excludeManual = !prof || prof.allow_private_orders !== true;
+      }
+
+      const options = {
+        ...(tid != null ? { profileId: tid } : {}),
+        ...(excludeManual ? { excludeManual: true } : {}),
+        ...(marketplace ? { marketplace } : {}),
+        ...(search ? { search } : {}),
+      };
+
+      const data = await ordersService.getStatusCounts(options);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Ручное добавление заказа: один товар или несколько.
    * Body: { customerName, customerPhone, productId, quantity, price } — одна позиция;
    *   или { customerName, customerPhone, items: [{ productId, quantity, price }, ...] } — несколько позиций.

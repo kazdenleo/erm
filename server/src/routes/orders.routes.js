@@ -21,6 +21,12 @@ router.use(requireAuth);
 // Получить все заказы
 router.get('/', wrapAsync(ordersController.getAll.bind(ordersController)));
 
+// Счётчики по статусам для фильтра (по группам)
+router.get(
+  '/status-counts',
+  wrapAsync(ordersController.getStatusCounts.bind(ordersController))
+);
+
 // Ручное добавление заказа (товар + количество)
 router.post(
   '/manual',
