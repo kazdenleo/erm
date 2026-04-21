@@ -101,6 +101,8 @@ export function Settings() {
           const sel = soundForm?.[key] || { kind: 'builtin', id: 'beep_1' };
           const v =
             sel.kind === 'none' ? 'none' : sel.kind === 'custom' ? 'custom' : `builtin:${sel.id || 'beep_1'}`;
+          const customRec = soundForm?.custom?.[key];
+          const customName = typeof customRec === 'string' ? '' : (customRec?.name || '');
           return (
             <div key={key} className="settings-account-form" style={{ marginBottom: 12 }}>
               <label className="settings-account-label" style={{ marginBottom: 8 }}>
@@ -143,6 +145,11 @@ export function Settings() {
               {((soundForm?.[key] || {}).kind === 'custom') && (
                 <label className="settings-account-label" style={{ marginTop: 6 }}>
                   Файл (mp3/wav/ogg)
+                  {customName && (
+                    <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                      Загружено: <strong>{customName}</strong>
+                    </span>
+                  )}
                   <input
                     type="file"
                     accept="audio/*"
@@ -156,7 +163,7 @@ export function Settings() {
                         setSoundForm((prev) => {
                           const next = { ...(prev || {}) };
                           next.custom = { ...(next.custom || {}) };
-                          next.custom[key] = dataUrl;
+                          next.custom[key] = { dataUrl, name: file.name || 'загруженный файл' };
                           next[key] = { kind: 'custom' };
                           saveSoundSettings(next);
                           return next;
@@ -169,6 +176,23 @@ export function Settings() {
                       }
                     }}
                   />
+                  <div style={{ marginTop: 8 }}>
+                    <Button
+                      type="button"
+                      variant="outline-secondary"
+                      onClick={() => {
+                        setSoundForm((prev) => {
+                          const next = { ...(prev || {}) };
+                          next.custom = { ...(next.custom || {}) };
+                          next.custom[key] = null;
+                          saveSoundSettings(next);
+                          return next;
+                        });
+                      }}
+                    >
+                      Удалить загруженный звук
+                    </Button>
+                  </div>
                 </label>
               )}
             </div>

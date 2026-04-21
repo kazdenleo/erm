@@ -31,11 +31,19 @@ export function loadSoundSettings() {
     if (!raw) return getDefaultSoundSettings();
     const parsed = JSON.parse(raw);
     const def = getDefaultSoundSettings();
-    return {
+    const merged = {
       ...def,
       ...parsed,
       custom: { ...def.custom, ...(parsed.custom || {}) },
     };
+    // миграция: раньше custom[event] был строкой dataUrl
+    for (const k of Object.values(SOUND_EVENTS)) {
+      const v = merged.custom?.[k];
+      if (typeof v === 'string' && v.trim()) {
+        merged.custom[k] = { dataUrl: v, name: 'загруженный файл' };
+      }
+    }
+    return merged;
   } catch {
     return getDefaultSoundSettings();
   }
@@ -49,89 +57,104 @@ export function saveSoundSettings(next) {
   }
 }
 
-function ensureAudioContext() {
-  const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx) return null;
-  // singleton per tab
-  if (!window.__ermAudioCtx) window.__ermAudioCtx = new Ctx();
-  return window.__ermAudioCtx;
-}
-
-function withResumedAudioContext(run) {
-  const ctx = ensureAudioContext();
-  if (!ctx) return;
-
-  // В некоторых браузерах AudioContext остаётся suspended даже после user gesture.
-  // Для надёжности явно резюмируем перед проигрыванием.
-  if (ctx.state === 'suspended') {
-    // Важно: запуск звука должен оставаться в текущем callstack user-gesture (onClick),
-    // иначе Chrome может заблокировать воспроизведение. Поэтому:
-    // - вызываем resume()
-    // - и сразу же создаём ноды/стартуем осциллятор (он начнёт звучать после resume).
-    try {
-      void ctx.resume();
-    } catch {}
-    run(ctx);
-    return;
+function playAudioDataUrl(dataUrl) {
+  try {
+    const a = new Audio(String(dataUrl || ''));
+    a.volume = 1.0;
+    void a.play().catch(() => {});
+  } catch {
+    // ignore
   }
-  run(ctx);
 }
 
-function playBeepPattern(pattern) {
-  withResumedAudioContext((ctx) => {
-    const now = ctx.currentTime;
-    const master = ctx.createGain();
-    master.gain.setValueAtTime(0.0001, now);
-    master.connect(ctx.destination);
+function wavDataUrlFromPattern(pattern, { sampleRate = 44100 } = {}) {
+  // pattern: [{ at: seconds, dur: seconds, freq: Hz }]
+  const totalSec = Math.max(...pattern.map((p) => p.at + p.dur)) + 0.12;
+  const totalSamples = Math.max(1, Math.ceil(totalSec * sampleRate));
+  const pcm = new Int16Array(totalSamples);
 
-    // быстрый "пик" без клика
-    const beep = (t, dur, freq) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(freq, t);
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      o.connect(g);
-      g.connect(master);
-      o.start(t);
-      o.stop(t + dur + 0.02);
-    };
-
-    for (const p of pattern) {
-      beep(now + p.at, p.dur, p.freq);
+  const writeTone = (startS, durS, freq) => {
+    const start = Math.max(0, Math.floor(startS * sampleRate));
+    const end = Math.min(totalSamples, Math.ceil((startS + durS) * sampleRate));
+    const fade = Math.max(1, Math.floor(sampleRate * 0.006));
+    for (let i = start; i < end; i++) {
+      const t = (i - start) / sampleRate;
+      const s = Math.sin(2 * Math.PI * freq * t);
+      // simple fade in/out to avoid click
+      const rel = i - start;
+      const relEnd = end - i;
+      const f = Math.min(1, rel / fade, relEnd / fade);
+      const amp = 0.35 * f;
+      const v = Math.max(-1, Math.min(1, s * amp));
+      const x = (v * 32767) | 0;
+      // mix (clamp)
+      const mixed = pcm[i] + x;
+      pcm[i] = mixed > 32767 ? 32767 : mixed < -32768 ? -32768 : mixed;
     }
+  };
 
-    // авто-стоп мастера
-    const end = Math.max(...pattern.map((p) => p.at + p.dur)) + 0.1;
-    master.gain.exponentialRampToValueAtTime(0.0001, now + end);
-    setTimeout(() => {
-      try {
-        master.disconnect();
-      } catch {}
-    }, Math.ceil((end + 0.2) * 1000));
-  });
+  for (const p of pattern) writeTone(p.at, p.dur, p.freq);
+
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+  const dataSize = pcm.length * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  let off = 0;
+
+  const w4 = (s) => {
+    for (let i = 0; i < 4; i++) view.setUint8(off + i, s.charCodeAt(i));
+    off += 4;
+  };
+  const w2 = (v) => { view.setUint16(off, v, true); off += 2; };
+  const w4u = (v) => { view.setUint32(off, v, true); off += 4; };
+
+  w4('RIFF');
+  w4u(36 + dataSize);
+  w4('WAVE');
+  w4('fmt ');
+  w4u(16); // PCM
+  w2(1); // PCM
+  w2(numChannels);
+  w4u(sampleRate);
+  w4u(byteRate);
+  w2(blockAlign);
+  w2(bitsPerSample);
+  w4('data');
+  w4u(dataSize);
+
+  for (let i = 0; i < pcm.length; i++, off += 2) {
+    view.setInt16(off, pcm[i], true);
+  }
+
+  // base64
+  const bytes = new Uint8Array(buffer);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  const b64 = btoa(bin);
+  return `data:audio/wav;base64,${b64}`;
 }
+
+function builtinWav(id) {
+  if (!window.__ermBuiltinWav) window.__ermBuiltinWav = {};
+  const cache = window.__ermBuiltinWav;
+  if (cache[id]) return cache[id];
+  const mk = (pattern) => wavDataUrlFromPattern(pattern);
+  if (id === 'beep_1') cache[id] = mk([{ at: 0.0, dur: 0.09, freq: 880 }]);
+  else if (id === 'beep_2') cache[id] = mk([{ at: 0.0, dur: 0.08, freq: 660 }, { at: 0.12, dur: 0.08, freq: 880 }]);
+  else cache[id] = mk([{ at: 0.0, dur: 0.07, freq: 660 }, { at: 0.10, dur: 0.07, freq: 740 }, { at: 0.20, dur: 0.08, freq: 880 }]);
+  return cache[id];
+}
+
+// Встроенные звуки проигрываются как WAV через Audio().
+
+// playBeepPattern оставляли как fallback для отладки, но в проде используем Audio(dataUrl).
 
 export function playBuiltinSound(id) {
-  if (id === 'beep_1') {
-    playBeepPattern([{ at: 0.0, dur: 0.08, freq: 880 }]);
-    return;
-  }
-  if (id === 'beep_2') {
-    playBeepPattern([
-      { at: 0.0, dur: 0.07, freq: 660 },
-      { at: 0.11, dur: 0.07, freq: 880 },
-    ]);
-    return;
-  }
-  // beep_3
-  playBeepPattern([
-    { at: 0.0, dur: 0.06, freq: 660 },
-    { at: 0.09, dur: 0.06, freq: 740 },
-    { at: 0.18, dur: 0.06, freq: 880 },
-  ]);
+  // Надёжнее через Audio(dataUrl), чем Oscillator (в Chrome бывают "тихие" случаи).
+  playAudioDataUrl(builtinWav(id || 'beep_1'));
 }
 
 export function playEventSound(eventKey) {
@@ -140,19 +163,10 @@ export function playEventSound(eventKey) {
   if (!sel || sel.kind === 'none') return;
 
   if (sel.kind === 'custom') {
-    const dataUrl = cfg?.custom?.[eventKey];
+    const rec = cfg?.custom?.[eventKey];
+    const dataUrl = typeof rec === 'string' ? rec : rec?.dataUrl;
     if (!dataUrl) return;
-    // Audio element тоже может быть заблокирован до user gesture.
-    // Если вызов из onClick — обычно ок; если из таймера — может не сыграть.
-    withResumedAudioContext(() => {
-      try {
-        const a = new Audio(dataUrl);
-        a.volume = 1.0;
-        void a.play().catch(() => {});
-      } catch {
-        // ignore
-      }
-    });
+    playAudioDataUrl(dataUrl);
     return;
   }
 
