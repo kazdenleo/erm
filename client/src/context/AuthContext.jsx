@@ -90,14 +90,6 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  useEffect(() => {
-    const pid = user?.profileId ?? null;
-    setApiSessionContext({
-      accountId: pid != null ? String(pid) : null,
-      organizationId: selectedOrganizationId,
-    });
-  }, [user, selectedOrganizationId]);
-
   const login = useCallback(async (email, password) => {
     let res;
     try {
@@ -162,6 +154,13 @@ export function AuthProvider({ children }) {
   }, [user]);
 
   const accountId = profileId;
+
+  useEffect(() => {
+    setApiSessionContext({
+      accountId: profileId != null ? String(profileId) : null,
+      organizationId: selectedOrganizationId,
+    });
+  }, [profileId, selectedOrganizationId]);
 
   const accountRole = useMemo(() => {
     const raw = user?.accountRole ?? user?.account_role ?? null;

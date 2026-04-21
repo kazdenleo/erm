@@ -91,7 +91,7 @@ function countSkusWithStock(products) {
 }
 
 export function Home() {
-  const { isAccountAdmin, user } = useAuth();
+  const { isAccountAdmin, user, profileId } = useAuth();
   const { products, loading, error, loadProducts } = useProducts();
   const { orders, loading: ordersLoading, error: ordersError } = useOrders();
   const [stockDetailOpen, setStockDetailOpen] = useState(false);
@@ -128,7 +128,7 @@ export function Home() {
   }, [loadQuestionsStats]);
 
   const loadMarketplaceBalances = useCallback(async () => {
-    if (user?.profileId == null || user?.profileId === '') {
+    if (profileId == null) {
       setBalanceData(null);
       setBalanceError(null);
       return;
@@ -149,7 +149,7 @@ export function Home() {
     } finally {
       setBalanceLoading(false);
     }
-  }, [user?.profileId]);
+  }, [profileId]);
 
   useEffect(() => {
     loadMarketplaceBalances();
@@ -291,7 +291,7 @@ export function Home() {
         )}
       </div>
 
-      {user?.profileId != null && user?.profileId !== '' && (
+      {user && (
         <div className="row mb-3">
           <div className="col-12">
             <div className="card home-marketplace-balances-card">
@@ -305,7 +305,7 @@ export function Home() {
                   variant="secondary"
                   size="small"
                   className="btn-wide"
-                  disabled={balanceLoading}
+                  disabled={balanceLoading || profileId == null}
                   onClick={() => loadMarketplaceBalances()}
                 >
                   {balanceLoading ? 'Загрузка…' : 'Обновить'}
@@ -317,15 +317,21 @@ export function Home() {
                   виджета баланса (нужен токен с категорией «Финансы»). Яндекс Маркет — в Partner API нет прямого
                   аналога; суммы выплат смотрите в личном кабинете.
                 </p>
-                {balanceError && (
+                {profileId == null && (
+                  <div className="text-muted mb-0" role="status">
+                    Балансы запрашиваются в контексте аккаунта (профиля). У текущего пользователя нет привязки к
+                    профилю — укажите её в настройках или зайдите под пользователем аккаунта.
+                  </div>
+                )}
+                {profileId != null && balanceError && (
                   <div className="alert alert-warning py-2 mb-3" role="alert">
                     {balanceError}
                   </div>
                 )}
-                {balanceData?.no_profile && (
+                {profileId != null && balanceData?.no_profile && (
                   <div className="text-muted">Нет привязки к аккаунту — балансы недоступны.</div>
                 )}
-                {!balanceData?.no_profile && (
+                {profileId != null && !balanceData?.no_profile && (
                   <div className="table-responsive">
                     <table className="align-middle mb-0 table table-striped table-hover">
                       <thead>
