@@ -22,12 +22,12 @@ if (-not $iscc) {
 }
 
 if (-not $iscc -or -not (Test-Path $iscc)) {
-  throw "ISCC.exe не найден. Установите Inno Setup 6 и/или передайте параметр -InnoSetupCompiler."
+  throw "ISCC.exe not found. Install Inno Setup 6 or pass -InnoSetupCompiler."
 }
 
 Write-Host "== Build installer (.exe) ==" -ForegroundColor Cyan
 & $iscc ".\installer\erm-print-helper.iss"
 
 Write-Host ""
-Write-Host "Готово. Файл установщика ищите в папке print-helper\\installer\\Output\\" -ForegroundColor Green
+Write-Host "Done. Installer is in print-helper\\installer\\Output\\" -ForegroundColor Green
 
