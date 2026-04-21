@@ -57,42 +57,57 @@ function ensureAudioContext() {
   return window.__ermAudioCtx;
 }
 
-function playBeepPattern(pattern) {
+function withResumedAudioContext(run) {
   const ctx = ensureAudioContext();
   if (!ctx) return;
 
-  const now = ctx.currentTime;
-  const master = ctx.createGain();
-  master.gain.setValueAtTime(0.0001, now);
-  master.connect(ctx.destination);
-
-  // быстрый "пик" без клика
-  const beep = (t, dur, freq) => {
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(freq, t);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g);
-    g.connect(master);
-    o.start(t);
-    o.stop(t + dur + 0.02);
-  };
-
-  for (const p of pattern) {
-    beep(now + p.at, p.dur, p.freq);
+  // В некоторых браузерах AudioContext остаётся suspended даже после user gesture.
+  // Для надёжности явно резюмируем перед проигрыванием.
+  if (ctx.state === 'suspended') {
+    ctx
+      .resume()
+      .then(() => run(ctx))
+      .catch(() => {});
+    return;
   }
+  run(ctx);
+}
 
-  // авто-стоп мастера
-  const end = Math.max(...pattern.map((p) => p.at + p.dur)) + 0.1;
-  master.gain.exponentialRampToValueAtTime(0.0001, now + end);
-  setTimeout(() => {
-    try {
-      master.disconnect();
-    } catch {}
-  }, Math.ceil((end + 0.2) * 1000));
+function playBeepPattern(pattern) {
+  withResumedAudioContext((ctx) => {
+    const now = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, now);
+    master.connect(ctx.destination);
+
+    // быстрый "пик" без клика
+    const beep = (t, dur, freq) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g);
+      g.connect(master);
+      o.start(t);
+      o.stop(t + dur + 0.02);
+    };
+
+    for (const p of pattern) {
+      beep(now + p.at, p.dur, p.freq);
+    }
+
+    // авто-стоп мастера
+    const end = Math.max(...pattern.map((p) => p.at + p.dur)) + 0.1;
+    master.gain.exponentialRampToValueAtTime(0.0001, now + end);
+    setTimeout(() => {
+      try {
+        master.disconnect();
+      } catch {}
+    }, Math.ceil((end + 0.2) * 1000));
+  });
 }
 
 export function playBuiltinSound(id) {
@@ -123,13 +138,17 @@ export function playEventSound(eventKey) {
   if (sel.kind === 'custom') {
     const dataUrl = cfg?.custom?.[eventKey];
     if (!dataUrl) return;
-    try {
-      const a = new Audio(dataUrl);
-      a.volume = 1.0;
-      void a.play();
-    } catch {
-      // ignore
-    }
+    // Audio element тоже может быть заблокирован до user gesture.
+    // Если вызов из onClick — обычно ок; если из таймера — может не сыграть.
+    withResumedAudioContext(() => {
+      try {
+        const a = new Audio(dataUrl);
+        a.volume = 1.0;
+        void a.play().catch(() => {});
+      } catch {
+        // ignore
+      }
+    });
     return;
   }
 
