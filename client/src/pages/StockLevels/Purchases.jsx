@@ -1098,9 +1098,54 @@ export function Purchases() {
                             }}
                           />
                         </td>
-                        <td>{it.expected_quantity ?? '—'}</td>
-                        <td>{it.received_quantity ?? '—'}</td>
-                        <td>{it.scanned_quantity}</td>
+                        {(() => {
+                          const exp = Number(it.expected_quantity);
+                          const expected = Number.isFinite(exp) ? exp : null;
+                          const scanned = Number(it.scanned_quantity) || 0;
+                          const rec = Number(it.received_quantity);
+                          const received = Number.isFinite(rec) ? rec : null;
+                          const diff = expected != null ? scanned - expected : null;
+                          const remain = expected != null ? Math.max(0, expected - scanned) : null;
+                          const isOver = diff != null && diff > 0;
+                          const isExact = diff != null && diff === 0 && expected !== 0;
+                          const isUnder = diff != null && diff < 0;
+                          const cellStyle = isOver
+                            ? { color: '#b00020', fontWeight: 700 }
+                            : isExact
+                              ? { color: '#1b5e20', fontWeight: 700 }
+                              : isUnder
+                                ? { color: '#8a6d00', fontWeight: 700 }
+                                : {};
+                          return (
+                            <>
+                              <td>{it.expected_quantity ?? '—'}</td>
+                              <td>{it.received_quantity ?? '—'}</td>
+                              <td style={cellStyle}>
+                                {scanned}
+                                {diff != null && diff !== 0 && (
+                                  <span className="muted" style={{ marginLeft: 6, fontWeight: 600 }}>
+                                    ({diff > 0 ? `+${diff}` : diff})
+                                  </span>
+                                )}
+                                {remain != null && remain > 0 && (
+                                  <span className="muted" style={{ marginLeft: 8, fontWeight: 500 }}>
+                                    ещё {remain}
+                                  </span>
+                                )}
+                                {expected != null && expected === 0 && scanned > 0 && (
+                                  <span className="muted" style={{ marginLeft: 8, fontWeight: 500 }}>
+                                    (не ожидалось)
+                                  </span>
+                                )}
+                                {received != null && expected != null && received >= expected && scanned > expected && (
+                                  <span className="muted" style={{ marginLeft: 8, fontWeight: 600 }}>
+                                    перескан
+                                  </span>
+                                )}
+                              </td>
+                            </>
+                          );
+                        })()}
                       </tr>
                     ))}
                   </tbody>
