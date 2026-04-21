@@ -313,9 +313,10 @@ export function Home() {
               </div>
               <div className="card-body">
                 <p className="text-muted small mb-3">
-                  Ozon — остаток на конец периода из отчёта «Движение средств» за текущий месяц. Wildberries — данные
-                  виджета баланса (нужен токен с категорией «Финансы»). Яндекс Маркет — в Partner API нет прямого
-                  аналога; суммы выплат смотрите в личном кабинете.
+                  Ключи API берутся из настроек профиля или из кабинетов маркетплейсов по организации (страница
+                  «Интеграции», выбор организации). Ozon — остаток на конец периода из отчёта «Движение средств» за
+                  текущий месяц. Wildberries — виджет баланса (нужен токен с категорией «Финансы»). Яндекс Маркет — в
+                  Partner API нет прямого аналога; суммы выплат смотрите в личном кабинете.
                 </p>
                 {profileId == null && (
                   <div className="text-muted mb-0" role="status">
@@ -349,10 +350,10 @@ export function Home() {
                             ) : !balanceData?.ozon?.configured ? (
                               <div className="text-muted small text-end">
                                 <div className="mb-1">
-                                  Не заданы <strong>Client ID</strong> и <strong>API Key</strong> продавца Ozon для
-                                  этого аккаунта.
+                                  Не найдены <strong>Client ID</strong> и <strong>API Key</strong> Ozon ни в общих
+                                  настройках профиля, ни в кабинете организации на странице «Интеграции».
                                 </div>
-                                <Link to="/integrations">Интеграции → Ozon</Link>
+                                <Link to="/integrations">Открыть интеграции</Link>
                               </div>
                             ) : balanceData.ozon.error ? (
                               <span className="text-danger small">{balanceData.ozon.error}</span>
@@ -371,10 +372,10 @@ export function Home() {
                             ) : !balanceData?.wildberries?.configured ? (
                               <div className="text-muted small text-end">
                                 <div className="mb-1">
-                                  Не задан <strong>API-токен</strong> Wildberries для этого аккаунта. Для строки
-                                  баланса в ЛК нужен токен с категорией <strong>«Финансы»</strong>.
+                                  Не найден <strong>API-токен</strong> Wildberries в настройках профиля или в кабинете
+                                  организации. Для баланса нужен токен с категорией <strong>«Финансы»</strong>.
                                 </div>
-                                <Link to="/integrations">Интеграции → Wildberries</Link>
+                                <Link to="/integrations">Открыть интеграции</Link>
                               </div>
                             ) : balanceData.wildberries.error ? (
                               <span className="text-danger small">{balanceData.wildberries.error}</span>
@@ -403,10 +404,10 @@ export function Home() {
                             ) : !balanceData?.yandex?.configured ? (
                               <div className="text-muted small text-end">
                                 <div className="mb-1">
-                                  Не задан <strong>Api-Key</strong> Partner API Яндекс.Маркета для этого аккаунта
-                                  (ключ из кабинета: Настройки → API).
+                                  Не найден <strong>Api-Key</strong> Partner API Яндекс.Маркета в настройках профиля
+                                  или в кабинете организации.
                                 </div>
-                                <Link to="/integrations">Интеграции → Яндекс Маркет</Link>
+                                <Link to="/integrations">Открыть интеграции</Link>
                               </div>
                             ) : (
                               <span className="text-muted small">{balanceData.yandex.message}</span>
