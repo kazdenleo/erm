@@ -69,7 +69,28 @@ if (!fs.existsSync(trayExe)) {
 }
 
 // Сборка через pkg; node16 чаще есть в кэше (при ошибке попробуйте: npx pkg index.cjs -t node18-win-x64 -o dist/erm-print-helper.exe)
-run('npx pkg index.cjs --targets node16-win-x64 --output dist/erm-print-helper.exe');
+const outExeRel = 'dist/erm-print-helper.exe';
+const outExeAbs = path.join(root, outExeRel);
+// На Windows pkg пытается удалить старый output (unlink). Если exe запущен/антивирус держит файл —
+// получаем EPERM. Делаем безопасный pre-clean и фолбек на новый файл.
+try {
+  if (fs.existsSync(outExeAbs)) fs.unlinkSync(outExeAbs);
+} catch (e) {
+  console.warn('Не удалось удалить старый dist/erm-print-helper.exe (возможно, файл занят). Собираю в новый файл.');
+}
+const outArg = fs.existsSync(outExeAbs)
+  ? `dist/erm-print-helper.${Date.now()}.exe`
+  : outExeRel;
+run(`npx pkg index.cjs --targets node16-win-x64 --output ${outArg}`);
+// Если собрали в timestamp — переименуем, если возможно
+try {
+  const builtAbs = path.join(root, outArg);
+  if (builtAbs !== outExeAbs && fs.existsSync(builtAbs) && !fs.existsSync(outExeAbs)) {
+    fs.renameSync(builtAbs, outExeAbs);
+  }
+} catch {
+  // ignore
+}
 
 const mainExe = path.join(distDir, 'erm-print-helper.exe');
 if (fs.existsSync(trayExe)) {
