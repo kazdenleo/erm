@@ -29,5 +29,5 @@ Write-Host "== Build installer (.exe) ==" -ForegroundColor Cyan
 & $iscc ".\installer\erm-print-helper.iss"
 
 Write-Host ""
-Write-Host "Готово. Файл установщика ищите в папке print-helper\installer\Output\" -ForegroundColor Green
+Write-Host "Готово. Файл установщика ищите в папке print-helper\\installer\\Output\\" -ForegroundColor Green
 
