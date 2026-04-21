@@ -2793,14 +2793,19 @@ class IntegrationsService {
   }
 
   /**
-   * Первый активный кабинет маркетплейса по организациям профиля (настройки на странице «Интеграции»).
+   * Первый активный кабинет маркетплейса по организациям профиля (для подписи источника и конфига).
+   * @returns {Promise<null|{ config: object, cabinetId: number, cabinetName: string|null, organizationId: number, organizationName: string|null }>}
    * @private
    */
-  async _getFirstCabinetMarketplaceConfig(marketplaceType, profileId) {
+  async _getFirstCabinetBalanceRow(marketplaceType, profileId) {
     if (!this.usePostgreSQL || profileId == null || profileId === '') return null;
     try {
       const result = await query(
-        `SELECT mc.config AS config
+        `SELECT mc.id AS cabinet_id,
+                mc.name AS cabinet_name,
+                mc.config AS config,
+                o.id AS organization_id,
+                o.name AS organization_name
          FROM marketplace_cabinets mc
          INNER JOIN organizations o ON o.id = mc.organization_id
          WHERE o.profile_id = $1
@@ -2810,8 +2815,19 @@ class IntegrationsService {
          LIMIT 1`,
         [profileId, marketplaceType]
       );
-      const raw = result.rows[0]?.config;
-      return this._safeParseJsonMaybe(raw) ?? (raw && typeof raw === 'object' ? raw : null);
+      const row = result.rows[0];
+      if (!row) return null;
+      const raw = row.config;
+      const parsed =
+        this._safeParseJsonMaybe(raw) ?? (raw && typeof raw === 'object' ? raw : null);
+      if (!parsed || typeof parsed !== 'object') return null;
+      return {
+        config: parsed,
+        cabinetId: row.cabinet_id,
+        cabinetName: row.cabinet_name != null ? String(row.cabinet_name) : null,
+        organizationId: row.organization_id,
+        organizationName: row.organization_name != null ? String(row.organization_name) : null
+      };
     } catch (e) {
       logger.warn('[Integrations Service] marketplace_cabinets config lookup:', e?.message || e);
       return null;
@@ -2819,19 +2835,70 @@ class IntegrationsService {
   }
 
   /**
+   * Подпись источника данных для баланса (профиль или организация + кабинет).
+   * @private
+   */
+  _balanceContextPayload(keysSource, cabinetMeta) {
+    if (keysSource === 'integrations') {
+      return {
+        contextDescription: 'Профиль: общие интеграции (без привязки к организации)',
+        organizationId: null,
+        organizationName: null,
+        cabinetId: null,
+        cabinetName: null
+      };
+    }
+    if (keysSource === 'marketplace_cabinet' && cabinetMeta && typeof cabinetMeta === 'object') {
+      const org = String(cabinetMeta.organizationName || '').trim() || '—';
+      const cab = String(cabinetMeta.cabinetName || '').trim() || 'Кабинет';
+      return {
+        contextDescription: `Организация «${org}», кабинет «${cab}»`,
+        organizationId: cabinetMeta.organizationId ?? null,
+        organizationName: org,
+        cabinetId: cabinetMeta.cabinetId ?? null,
+        cabinetName: cab
+      };
+    }
+    return {
+      contextDescription: null,
+      organizationId: null,
+      organizationName: null,
+      cabinetId: null,
+      cabinetName: null
+    };
+  }
+
+  /**
    * Конфиг для баланса: сначала integrations по profile_id, иначе кабинет организации этого профиля.
-   * @returns {Promise<{ config: object, source: 'integrations'|'marketplace_cabinet'|'none' }>}
+   * @returns {Promise<{ config: object, source: 'integrations'|'marketplace_cabinet'|'none', cabinetMeta: object|null }>}
    */
   async _resolveMarketplaceConfigForBalance(type, profileId) {
     const fromInt = await this.getMarketplaceConfig(type, { profileId });
     if (this._hasCredentialsForBalance(type, fromInt)) {
-      return { config: fromInt && typeof fromInt === 'object' ? fromInt : {}, source: 'integrations' };
+      return {
+        config: fromInt && typeof fromInt === 'object' ? fromInt : {},
+        source: 'integrations',
+        cabinetMeta: null
+      };
     }
-    const fromCab = await this._getFirstCabinetMarketplaceConfig(type, profileId);
-    if (this._hasCredentialsForBalance(type, fromCab)) {
-      return { config: fromCab && typeof fromCab === 'object' ? fromCab : {}, source: 'marketplace_cabinet' };
+    const cabRow = await this._getFirstCabinetBalanceRow(type, profileId);
+    if (cabRow && this._hasCredentialsForBalance(type, cabRow.config)) {
+      return {
+        config: cabRow.config,
+        source: 'marketplace_cabinet',
+        cabinetMeta: {
+          organizationId: cabRow.organizationId,
+          organizationName: cabRow.organizationName,
+          cabinetId: cabRow.cabinetId,
+          cabinetName: cabRow.cabinetName
+        }
+      };
     }
-    return { config: fromInt && typeof fromInt === 'object' ? fromInt : {}, source: 'none' };
+    return {
+      config: fromInt && typeof fromInt === 'object' ? fromInt : {},
+      source: 'none',
+      cabinetMeta: null
+    };
   }
 
   /**
@@ -2876,13 +2943,15 @@ class IntegrationsService {
    * Ozon: баланс по отчёту cash-flow-statement за текущий календарный месяц (агрегат по страницам).
    * @param {number|string|null} profileId
    * @param {object|null} [ozonOverride] — явный конфиг (например из marketplace_cabinets)
+   * @param {string} [cacheContextId='profile'] — суффикс кэша (разные кабинеты / профиль)
    */
-  async _fetchOzonCashFlowEndBalance(profileId, ozonOverride = null) {
+  async _fetchOzonCashFlowEndBalance(profileId, ozonOverride = null, cacheContextId = 'profile') {
     const now = new Date();
     const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
     const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
     const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-    const cacheKey = `ozon_cash_flow_end:${profileId ?? 'default'}:${monthKey}`;
+    const ctx = String(cacheContextId || 'profile').replace(/[^\w:.-]/g, '_').slice(0, 80);
+    const cacheKey = `ozon_cash_flow_end:${profileId ?? 'default'}:${monthKey}:${ctx}`;
     const cached = await this._cacheGet({ cache_type: 'marketplace_balance', cache_key: cacheKey });
     if (cached && typeof cached === 'object' && Number.isFinite(Number(cached.amountRub))) {
       return Number(cached.amountRub);
@@ -2928,9 +2997,11 @@ class IntegrationsService {
    * Wildberries Finance API: баланс продавца (нужна категория «Финансы» у токена). Лимит ~1 запрос / мин.
    * @param {number|string|null} profileId
    * @param {object|null} [wbOverride] — явный конфиг (например из marketplace_cabinets)
+   * @param {string} [cacheContextId='profile'] — суффикс кэша (разные кабинеты / профиль)
    */
-  async _fetchWildberriesFinanceBalance(profileId, wbOverride = null) {
-    const cacheKey = `wb_finance_balance:${profileId ?? 'default'}`;
+  async _fetchWildberriesFinanceBalance(profileId, wbOverride = null, cacheContextId = 'profile') {
+    const ctx = String(cacheContextId || 'profile').replace(/[^\w:.-]/g, '_').slice(0, 80);
+    const cacheKey = `wb_finance_balance:${profileId ?? 'default'}:${ctx}`;
     const cached = await this._cacheGet({ cache_type: 'marketplace_balance', cache_key: cacheKey });
     if (cached && typeof cached === 'object') return cached;
 
@@ -3008,27 +3079,44 @@ class IntegrationsService {
   async getMarketplaceAccountBalances(opts = {}) {
     const profileId = opts.profileId ?? opts.profile_id ?? null;
 
-    const { config: ozonCfg, source: ozonKeysSource } = await this._resolveMarketplaceConfigForBalance(
-      'ozon',
-      profileId
-    );
+    const {
+      config: ozonCfg,
+      source: ozonKeysSource,
+      cabinetMeta: ozonCabinetMeta
+    } = await this._resolveMarketplaceConfigForBalance('ozon', profileId);
     const ozonConfigured = ozonKeysSource !== 'none';
+    const ozonCtx = this._balanceContextPayload(ozonKeysSource, ozonCabinetMeta);
+    const ozonCacheId =
+      ozonKeysSource === 'marketplace_cabinet' && ozonCabinetMeta?.cabinetId != null
+        ? `cabinet:${ozonCabinetMeta.cabinetId}`
+        : 'profile';
 
-    const { config: wbCfg, source: wbKeysSource } = await this._resolveMarketplaceConfigForBalance(
-      'wildberries',
-      profileId
-    );
+    const {
+      config: wbCfg,
+      source: wbKeysSource,
+      cabinetMeta: wbCabinetMeta
+    } = await this._resolveMarketplaceConfigForBalance('wildberries', profileId);
     const wbConfigured = wbKeysSource !== 'none';
+    const wbCtx = this._balanceContextPayload(wbKeysSource, wbCabinetMeta);
+    const wbCacheId =
+      wbKeysSource === 'marketplace_cabinet' && wbCabinetMeta?.cabinetId != null
+        ? `cabinet:${wbCabinetMeta.cabinetId}`
+        : 'profile';
 
-    const { source: yandexKeysSource } = await this._resolveMarketplaceConfigForBalance('yandex', profileId);
+    const {
+      source: yandexKeysSource,
+      cabinetMeta: yandexCabinetMeta
+    } = await this._resolveMarketplaceConfigForBalance('yandex', profileId);
     const yandexConfigured = yandexKeysSource !== 'none';
+    const yandexCtx = this._balanceContextPayload(yandexKeysSource, yandexCabinetMeta);
 
     const ozon = {
       configured: ozonConfigured,
       amountRub: null,
       error: null,
       source: 'ozon_finance_cash_flow',
-      keysSource: ozonKeysSource
+      keysSource: ozonKeysSource,
+      ...ozonCtx
     };
     const wildberries = {
       configured: wbConfigured,
@@ -3037,12 +3125,14 @@ class IntegrationsService {
       currency: null,
       error: null,
       source: 'wb_finance_api_v1_account_balance',
-      keysSource: wbKeysSource
+      keysSource: wbKeysSource,
+      ...wbCtx
     };
     const yandex = {
       configured: yandexConfigured,
       available: false,
       keysSource: yandexKeysSource,
+      ...yandexCtx,
       message:
         'В Partner API Яндекс.Маркета нет метода «баланс счёта» как у Ozon/WB. Суммы выплат смотрите в кабинете Маркета.'
     };
@@ -3054,7 +3144,7 @@ class IntegrationsService {
           try {
             const override =
               ozonKeysSource === 'marketplace_cabinet' && ozonCfg && typeof ozonCfg === 'object' ? ozonCfg : null;
-            ozon.amountRub = await this._fetchOzonCashFlowEndBalance(profileId, override);
+            ozon.amountRub = await this._fetchOzonCashFlowEndBalance(profileId, override, ozonCacheId);
           } catch (e) {
             ozon.error = e?.message || String(e);
           }
@@ -3067,7 +3157,7 @@ class IntegrationsService {
           try {
             const override =
               wbKeysSource === 'marketplace_cabinet' && wbCfg && typeof wbCfg === 'object' ? wbCfg : null;
-            const b = await this._fetchWildberriesFinanceBalance(profileId, override);
+            const b = await this._fetchWildberriesFinanceBalance(profileId, override, wbCacheId);
             wildberries.currentRub = b.currentRub;
             wildberries.forWithdrawRub = b.forWithdrawRub;
             wildberries.currency = b.currency;

@@ -313,10 +313,11 @@ export function Home() {
               </div>
               <div className="card-body">
                 <p className="text-muted small mb-3">
-                  Ключи API берутся из настроек профиля или из кабинетов маркетплейсов по организации (страница
-                  «Интеграции», выбор организации). Ozon — остаток на конец периода из отчёта «Движение средств» за
-                  текущий месяц. Wildberries — виджет баланса (нужен токен с категорией «Финансы»). Яндекс Маркет — в
-                  Partner API нет прямого аналога; суммы выплат смотрите в личном кабинете.
+                  Ключи API — из общих интеграций профиля или из кабинета организации («Интеграции»). Если кабинетов
+                  несколько, для цифр берётся один кабинет на маркетплейс (первый по названию организации и порядку
+                  кабинета) — см. колонку «Источник». Ozon — отчёт «Движение средств» за текущий месяц; Wildberries —
+                  баланс из Finance API (категория «Финансы»); Яндекс Маркет — в Partner API нет суммы баланса, только
+                  справка.
                 </p>
                 {profileId == null && (
                   <div className="text-muted mb-0" role="status">
@@ -338,12 +339,18 @@ export function Home() {
                       <thead>
                         <tr>
                           <th>Маркетплейс</th>
+                          <th className="home-balance-source-col">Источник данных</th>
                           <th className="text-end">Баланс</th>
                         </tr>
                       </thead>
                       <tbody>
                         <tr>
                           <td>Ozon</td>
+                          <td className="text-muted small home-balance-source-col">
+                            {balanceLoading
+                              ? '…'
+                              : balanceData?.ozon?.contextDescription || '—'}
+                          </td>
                           <td className="text-end">
                             {balanceLoading ? (
                               '…'
@@ -351,7 +358,7 @@ export function Home() {
                               <div className="text-muted small text-end">
                                 <div className="mb-1">
                                   Не найдены <strong>Client ID</strong> и <strong>API Key</strong> Ozon ни в общих
-                                  настройках профиля, ни в кабинете организации на странице «Интеграции».
+                                  настройках профиля, ни в кабинетах организаций.
                                 </div>
                                 <Link to="/integrations">Открыть интеграции</Link>
                               </div>
@@ -366,14 +373,19 @@ export function Home() {
                         </tr>
                         <tr>
                           <td>Wildberries</td>
+                          <td className="text-muted small home-balance-source-col">
+                            {balanceLoading
+                              ? '…'
+                              : balanceData?.wildberries?.contextDescription || '—'}
+                          </td>
                           <td className="text-end">
                             {balanceLoading ? (
                               '…'
                             ) : !balanceData?.wildberries?.configured ? (
                               <div className="text-muted small text-end">
                                 <div className="mb-1">
-                                  Не найден <strong>API-токен</strong> Wildberries в настройках профиля или в кабинете
-                                  организации. Для баланса нужен токен с категорией <strong>«Финансы»</strong>.
+                                  Не найден <strong>API-токен</strong> Wildberries в настройках профиля или в кабинетах
+                                  организаций. Для баланса нужен токен с категорией <strong>«Финансы»</strong>.
                                 </div>
                                 <Link to="/integrations">Открыть интеграции</Link>
                               </div>
@@ -398,6 +410,11 @@ export function Home() {
                         </tr>
                         <tr>
                           <td>Яндекс Маркет</td>
+                          <td className="text-muted small home-balance-source-col">
+                            {balanceLoading
+                              ? '…'
+                              : balanceData?.yandex?.contextDescription || '—'}
+                          </td>
                           <td className="text-end">
                             {balanceLoading ? (
                               '…'
@@ -405,7 +422,7 @@ export function Home() {
                               <div className="text-muted small text-end">
                                 <div className="mb-1">
                                   Не найден <strong>Api-Key</strong> Partner API Яндекс.Маркета в настройках профиля
-                                  или в кабинете организации.
+                                  или в кабинетах организаций.
                                 </div>
                                 <Link to="/integrations">Открыть интеграции</Link>
                               </div>
