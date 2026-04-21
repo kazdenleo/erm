@@ -3,10 +3,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import api from '../../services/api';
 import './Labels.css';
 
 const STORAGE_KEY = 'erm_label_size';
-const API_BASE = process.env.REACT_APP_API_URL || '/api';
 
 export const LABEL_SIZES = [
   { value: '58x40', label: '58 × 40 мм' },
@@ -24,12 +24,46 @@ export function getStoredLabelSize() {
 
 export function Labels() {
   const [size, setSize] = useState(getStoredLabelSize);
+  const [downloadLoading, setDownloadLoading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
 
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, size);
     } catch (_) {}
   }, [size]);
+
+  const downloadPrintHelper = async () => {
+    if (downloadLoading) return;
+    setDownloadLoading(true);
+    setDownloadError('');
+    try {
+      const resp = await api.get('/downloads/print-helper', {
+        responseType: 'blob',
+        timeout: 120000,
+      });
+
+      const blob = resp?.data instanceof Blob ? resp.data : new Blob([resp?.data]);
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'erm-print-helper-setup.exe';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {
+      const msg =
+        e?.response?.data?.message ||
+        e?.message ||
+        'Не удалось скачать установщик. Проверьте, что файл загружен на сервер.';
+      setDownloadError(String(msg));
+    } finally {
+      setDownloadLoading(false);
+    }
+  };
 
   return (
     <div className="settings-page card settings-labels">
@@ -58,9 +92,14 @@ export function Labels() {
         Установите локальную программу на ПК сборки, чтобы печать шла без диалога браузера.
       </p>
       <div className="form-group">
-        <a className="btn btn-primary" href={`${API_BASE.replace(/\/$/, '')}/downloads/print-helper`}>
-          Скачать установщик Print Helper (Windows)
-        </a>
+        <button className="btn btn-primary" type="button" onClick={downloadPrintHelper} disabled={downloadLoading}>
+          {downloadLoading ? 'Скачивание…' : 'Скачать установщик Print Helper (Windows)'}
+        </button>
+        {downloadError && (
+          <p className="error" style={{ marginTop: 10 }}>
+            {downloadError}
+          </p>
+        )}
       </div>
     </div>
   );
