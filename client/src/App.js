@@ -21,6 +21,7 @@ import { Reviews } from './pages/Reviews/Reviews';
 import { OrderDetail } from './pages/Orders/OrderDetail';
 import { Shipments } from './pages/Shipments/Shipments';
 import { Assembly } from './pages/Assembly/Assembly';
+import { PrintLabel } from './pages/PrintLabel/PrintLabel.jsx';
 import { StockLevelsLayout } from './pages/StockLevels/StockLevelsLayout';
 import { SupplierStocks } from './pages/StockLevels/SupplierStocks';
 import { WarehouseStocks } from './pages/StockLevels/WarehouseStocks';
@@ -97,6 +98,7 @@ function App() {
           <Route path="/orders/:marketplace/:orderId" element={<ProtectedRoute><Layout><OrderDetail /></Layout></ProtectedRoute>} />
           <Route path="/shipments" element={<ProtectedRoute><Layout><Shipments /></Layout></ProtectedRoute>} />
           <Route path="/assembly" element={<ProtectedRoute><Layout><Assembly /></Layout></ProtectedRoute>} />
+          <Route path="/print/label/:orderId" element={<ProtectedRoute><PrintLabel /></ProtectedRoute>} />
           <Route path="/categories" element={<ProtectedRoute><Layout><Categories /></Layout></ProtectedRoute>} />
           <Route path="/brands" element={<ProtectedRoute><Layout><Brands /></Layout></ProtectedRoute>} />
           <Route path="/prices" element={<ProtectedRoute><Layout><Prices /></Layout></ProtectedRoute>} />

@@ -270,7 +270,8 @@ export function Assembly() {
   const requestLabelPrint = useCallback(async (orderId) => {
     const id = orderId != null ? String(orderId) : '';
     if (!id) return;
-    const labelPrintPageUrl = `${API_BASE}/orders/${encodeURIComponent(id)}/label/print`;
+    // Печать через фронтовую страницу: она умеет скачивать этикетку с Authorization: Bearer из localStorage.
+    const labelPrintPageUrl = `/print/label/${encodeURIComponent(id)}`;
     const labelFileUrl = `${API_BASE}/orders/${encodeURIComponent(id)}/label`;
 
     // Если печатаем через страницу /label/print (без локального helper),
