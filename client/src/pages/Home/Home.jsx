@@ -305,7 +305,7 @@ export function Home() {
         )}
       </div>
 
-      {user && (
+      {isAccountAdmin && user && (
         <div className="row mb-3">
           <div className="col-12">
             <div className="card home-marketplace-balances-card">
