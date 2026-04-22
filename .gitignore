@@ -36,6 +36,7 @@ data/
 server/data/
 server/uploads/
 print-helper/dist/temp/
+print-helper/installer/Output/
 
 # VPS migration export artifacts (local only)
 scripts/vps-migration/out/
