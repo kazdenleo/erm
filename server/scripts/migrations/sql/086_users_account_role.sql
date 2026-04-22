@@ -17,8 +17,19 @@ WHERE account_role IS NULL
 ALTER TABLE users
   ALTER COLUMN account_role SET DEFAULT 'editor';
 
-ALTER TABLE users
-  ADD CONSTRAINT users_account_role_check
-  CHECK (account_role IS NULL OR account_role IN ('admin', 'picker', 'warehouse_manager', 'editor'));
+-- ADD CONSTRAINT не поддерживает IF NOT EXISTS — проверяем вручную.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'users_account_role_check'
+  ) THEN
+    ALTER TABLE users
+      ADD CONSTRAINT users_account_role_check
+      CHECK (account_role IS NULL OR account_role IN ('admin', 'picker', 'warehouse_manager', 'editor'));
+  END IF;
+END
+$$;
 
 COMMIT;
