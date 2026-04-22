@@ -272,6 +272,11 @@ export function Assembly() {
     if (!id) return;
     const labelPrintPageUrl = `${API_BASE}/orders/${encodeURIComponent(id)}/label/print`;
     const labelFileUrl = `${API_BASE}/orders/${encodeURIComponent(id)}/label`;
+
+    // Если печатаем через страницу /label/print (без локального helper),
+    // лучше открыть вкладку синхронно по клику — иначе браузер может заблокировать window.print().
+    let printWindow = null;
+
     // Print Helper (127.0.0.1) должен получить абсолютный URL до этикетки на сервере.
     const labelFileUrlAbs = (() => {
       try {
@@ -280,6 +285,19 @@ export function Assembly() {
         return labelFileUrl;
       }
     })();
+
+    // В HTTP-контексте браузер запрещает запросы к loopback (127.0.0.1) из-за Private Network Access.
+    // Тогда не пытаемся дергать Print Helper — используем страницу /label/print.
+    const canUseLocalHelper = typeof window !== 'undefined' ? Boolean(window.isSecureContext) : false;
+    const base = canUseLocalHelper ? (printHelperUrl || '').trim().replace(/\/$/, '') : '';
+    const willUseHelper = Boolean(base);
+    if (!willUseHelper) {
+      try {
+        printWindow = window.open('about:blank', '_blank', 'noopener,noreferrer');
+      } catch {
+        printWindow = null;
+      }
+    }
 
     // Дождаться файла на сервере (ensureLabelFile), иначе Print Helper сразу после сборки часто ловит 502.
     // Если этикетка недоступна (409/429/5xx) — покажем понятную ошибку и не будем дергать Print Helper.
@@ -312,6 +330,11 @@ export function Assembly() {
           const detail = msg ? ` ${String(msg).trim()}` : '';
           setLabelPrintError(`${base}${detail}`);
           setTimeout(() => setLabelPrintError(null), 12000);
+          try {
+            if (printWindow && !printWindow.closed) printWindow.close();
+          } catch {
+            /* ignore */
+          }
           return;
         }
         await warmR.blob();
@@ -324,14 +347,25 @@ export function Assembly() {
         'Таймаут/сбой сети при загрузке этикетки. Подождите и попробуйте ещё раз.'
       );
       setTimeout(() => setLabelPrintError(null), 12000);
+      try {
+        if (printWindow && !printWindow.closed) printWindow.close();
+      } catch {
+        /* ignore */
+      }
       return;
     }
 
-    // В HTTP-контексте браузер запрещает запросы к loopback (127.0.0.1) из-за Private Network Access.
-    // Тогда не пытаемся дергать Print Helper — сразу используем страницу /label/print.
-    const canUseLocalHelper = typeof window !== 'undefined' ? Boolean(window.isSecureContext) : false;
-    const base = canUseLocalHelper ? (printHelperUrl || '').trim().replace(/\/$/, '') : '';
-    if (!base) {
+    if (!willUseHelper) {
+      // Если вкладка открылась — навигируем её на страницу печати.
+      // Иначе используем скрытый iframe fallback.
+      try {
+        if (printWindow && !printWindow.closed) {
+          printWindow.location.href = labelPrintPageUrl;
+          return;
+        }
+      } catch {
+        /* ignore */
+      }
       openLabelPrintFallbackPage(labelPrintPageUrl);
       return;
     }
