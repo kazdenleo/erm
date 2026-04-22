@@ -327,7 +327,10 @@ export function Assembly() {
       return;
     }
 
-    const base = (printHelperUrl || '').trim().replace(/\/$/, '');
+    // В HTTP-контексте браузер запрещает запросы к loopback (127.0.0.1) из-за Private Network Access.
+    // Тогда не пытаемся дергать Print Helper — сразу используем страницу /label/print.
+    const canUseLocalHelper = typeof window !== 'undefined' ? Boolean(window.isSecureContext) : false;
+    const base = canUseLocalHelper ? (printHelperUrl || '').trim().replace(/\/$/, '') : '';
     if (!base) {
       openLabelPrintFallbackPage(labelPrintPageUrl);
       return;
