@@ -41,6 +41,7 @@ import { Support } from './pages/Support/Support';
 import { PlatformLayout } from './platform/PlatformLayout.jsx';
 import { PlatformRoute } from './platform/PlatformRoute.jsx';
 import { PlatformInquiries } from './platform/PlatformInquiries.jsx';
+import { PlatformMarketplaceNotifications } from './platform/PlatformMarketplaceNotifications.jsx';
 import './App.css';
 import './styles/mp-badges.css';
 import './styles/erp-filter-bar.css';
@@ -76,6 +77,7 @@ function App() {
             <Route index element={<Navigate to="/platform/accounts" replace />} />
             <Route path="accounts" element={<Admin />} />
             <Route path="inquiries" element={<PlatformInquiries />} />
+            <Route path="notifications" element={<PlatformMarketplaceNotifications />} />
           </Route>
           <Route path="/cabinet" element={<ProtectedRoute><Layout><Cabinet /></Layout></ProtectedRoute>} />
           <Route path="/support" element={<ProtectedRoute><Layout><Support /></Layout></ProtectedRoute>} />
