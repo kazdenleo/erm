@@ -145,11 +145,18 @@ class AssemblyController {
   /**
    * POST /api/assembly/mark-collected
    * Отметить заказ как собранный: статус → 'assembled', заказ убирается из списка сборки.
-   * Body: { marketplace, orderId }
+   * Body: { marketplace, orderId, stickerNumber }
    */
   async markCollected(req, res, next) {
     try {
       const { marketplace, orderId } = req.body || {};
+      const stickerNumber = String(req.body?.stickerNumber ?? req.body?.sticker_number ?? '').trim();
+      if (!stickerNumber) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Укажите номер стикера (stickerNumber)'
+        });
+      }
       if (!marketplace || orderId == null) {
         return res.status(400).json({
           ok: false,
@@ -180,7 +187,8 @@ class AssemblyController {
         marketplace,
         String(orderId),
         assembledByUserId,
-        req.user?.profileId ?? null
+        req.user?.profileId ?? null,
+        stickerNumber
       );
       return res.status(200).json({
         ok: true,

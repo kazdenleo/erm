@@ -3,6 +3,7 @@
  */
 
 import {
+  getMarketplaceQuestionById,
   getMarketplaceQuestionsStats,
   listMarketplaceQuestions,
   submitMarketplaceQuestionAnswer,
@@ -11,6 +12,24 @@ import {
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class QuestionsController {
+  async getOne(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json({ ok: true, data: null });
+      }
+      const item = await getMarketplaceQuestionById(tid, req.params.id);
+      if (!item) {
+        return res.status(404).json({ ok: false, message: 'Вопрос не найден' });
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ ok: true, data: item });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getList(req, res, next) {
     try {
       const tid = tenantListProfileId(req);

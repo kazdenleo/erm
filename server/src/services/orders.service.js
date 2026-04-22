@@ -825,7 +825,7 @@ class OrdersService {
    * @param {string} orderId
    * @returns {Promise<object|null>} обновлённый заказ или null
    */
-  async markOrderAsAssembled(marketplace, orderId, assembledByUserId = null, profileId = null) {
+  async markOrderAsAssembled(marketplace, orderId, assembledByUserId = null, profileId = null, stickerNumber = null) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
       const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
@@ -836,9 +836,20 @@ class OrdersService {
 
       // 1) Ставим assembled (как раньше)
       if (order.orderGroupId) {
-        await this.repository.markAssembledByOrderGroupId(order.orderGroupId, assembledByUserId, profileId);
+        await this.repository.markAssembledByOrderGroupId(
+          order.orderGroupId,
+          assembledByUserId,
+          profileId,
+          stickerNumber
+        );
       } else {
-        await this.repository.markAssembledByMarketplaceAndOrderId(marketplace, String(orderId), assembledByUserId, profileId);
+        await this.repository.markAssembledByMarketplaceAndOrderId(
+          marketplace,
+          String(orderId),
+          assembledByUserId,
+          profileId,
+          stickerNumber
+        );
       }
 
       // 2) Фиксируем списание факта по собранным заказам в движениях остатков:
@@ -886,6 +897,8 @@ class OrdersService {
     order.returnedToNewAt = null;
     order.assembledAt = new Date().toISOString();
     order.assembledByUserId = assembledByUserId ?? null;
+    order.assemblyStickerNumber =
+      stickerNumber != null && String(stickerNumber).trim() !== '' ? String(stickerNumber).trim() : null;
     await writeData('orders', { ...data, orders, lastSync: new Date().toISOString() });
     return order;
   }

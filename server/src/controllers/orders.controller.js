@@ -487,12 +487,18 @@ class OrdersController {
       let localLines = [];
       try {
         const local = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
-        if (local?.assembledAt || local?.assembledByEmail || local?.assembledByFullName) {
+        if (
+          local?.assembledAt ||
+          local?.assembledByEmail ||
+          local?.assembledByFullName ||
+          (local?.assemblyStickerNumber ?? local?.assembly_sticker_number)
+        ) {
           assembly = {
             assembledAt: local.assembledAt ?? null,
             assembledByUserId: local.assembledByUserId ?? null,
             assembledByEmail: local.assembledByEmail ?? null,
             assembledByFullName: local.assembledByFullName ?? null,
+            assemblyStickerNumber: local.assemblyStickerNumber ?? local.assembly_sticker_number ?? null,
           };
         }
       } catch {

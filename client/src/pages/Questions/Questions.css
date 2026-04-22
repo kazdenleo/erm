@@ -113,38 +113,98 @@
   line-height: 1.35;
 }
 
-.questions-col-answer {
-  width: 52%;
-  min-width: 220px;
-}
-
-.questions-answer-existing {
-  font-size: 12px;
-  margin-bottom: 8px;
-  line-height: 1.35;
-}
-
-.questions-answer-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-}
-
-.questions-answer-input {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  margin-bottom: 0;
-  resize: vertical;
-  min-height: 7.5rem;
-}
-
-.questions-answer-send {
-  flex-shrink: 0;
-  align-self: flex-start;
-  margin-top: 0;
+.questions-col-status {
+  width: 6.5rem;
+  max-width: 7rem;
+  font-size: 11px;
   white-space: nowrap;
+}
+
+.questions-status-pending {
+  color: var(--warning-text, #92400e);
+  font-weight: 600;
+}
+
+.questions-col-thread {
+  width: auto;
+  min-width: 8.5rem;
+}
+
+.questions-thread-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.questions-thread-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(70vh, 560px);
+}
+
+.questions-thread-meta {
+  margin: 0;
+}
+
+.questions-thread-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+}
+
+.questions-thread-msg {
+  border-radius: 10px;
+  padding: 10px 12px;
+  max-width: 95%;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.questions-thread-msg--buyer {
+  align-self: flex-start;
+  background: var(--muted-bg, rgba(0, 0, 0, 0.05));
+}
+
+.questions-thread-msg--seller {
+  align-self: flex-end;
+  background: var(--primary-soft, rgba(59, 130, 246, 0.12));
+}
+
+.questions-thread-msg__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.questions-thread-msg__body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.questions-thread-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.questions-thread-reply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.questions-thread-done {
+  margin: 0;
 }
 
 @media (max-width: 900px) {

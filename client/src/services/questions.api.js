@@ -17,6 +17,13 @@ export const questionsApi = {
     return [];
   },
 
+  /** Одна карточка с веткой threadMessages */
+  getOne: async (id) => {
+    const response = await api.get(`/questions/${encodeURIComponent(id)}`);
+    const payload = response.data;
+    return payload?.data ?? payload ?? null;
+  },
+
   /**
    * Счётчики: newCount — новые вопросы по всем МП (бейдж); counts — всего/новые/отвеченные с учётом marketplace.
    * @param {object} [params] marketplace — при «всех МП» не передавать или all

@@ -36,6 +36,8 @@ import organizationsRoutes from './organizations.routes.js';
 import marketplaceCabinetsRoutes from './marketplace_cabinets.routes.js';
 import certificatesRoutes from './certificates.routes.js';
 import inquiriesRoutes from './inquiries.routes.js';
+import platformMarketplaceNotificationsRoutes from './platformMarketplaceNotifications.routes.js';
+import * as platformMarketplaceNotificationsController from '../controllers/platformMarketplaceNotifications.controller.js';
 import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
 import downloadsRoutes from './downloads.routes.js';
@@ -144,6 +146,12 @@ router.use('/auth', authRoutes);
 router.use('/profiles', profilesRoutes);
 router.use('/users', usersRoutes);
 router.use('/inquiries', inquiriesRoutes);
+// Вебхуки маркетплейсов (без сессии; ключ X-Platform-Ingest-Key) — до защищённых префиксов не обязателен порядок
+router.post(
+  '/hooks/marketplaces',
+  wrapAsync(platformMarketplaceNotificationsController.ingestMarketplaceHook)
+);
+router.use('/platform/marketplace-notifications', platformMarketplaceNotificationsRoutes);
 router.use('/reviews', reviewsRoutes);
 router.use('/downloads', downloadsRoutes);
 

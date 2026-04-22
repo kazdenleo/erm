@@ -4,6 +4,16 @@
 
 import { query } from '../config/database.js';
 import { extractYandexGoodsQuestionOfferId } from '../utils/yandex-goods-question-offer.js';
+import { buildThreadMessagesFromRow } from '../utils/marketplaceQuestionThread.js';
+
+/** «Новый» = ждёт ответа продавца: последнее в thread_messages — buyer или ветка ещё не собрана и нет answer_text */
+const SQL_NEEDS_REPLY = `(
+  (jsonb_array_length(COALESCE(thread_messages, '[]'::jsonb)) > 0 AND (thread_messages->-1->>'role') = 'buyer')
+  OR (
+    jsonb_array_length(COALESCE(thread_messages, '[]'::jsonb)) = 0
+    AND (answer_text IS NULL OR TRIM(COALESCE(answer_text, '')) = '')
+  )
+)`;
 
 function wbSupplierArticleFromRawPayload(raw) {
   if (raw == null) return null;
@@ -92,6 +102,23 @@ function rowToApi(row) {
   ) {
     out.rawPayload = row.raw_payload;
   }
+  let threadMessages = [];
+  if (Array.isArray(row.thread_messages) && row.thread_messages.length > 0) {
+    threadMessages = row.thread_messages;
+  } else {
+    try {
+      threadMessages = buildThreadMessagesFromRow({
+        marketplace: row.marketplace,
+        rawPayload: row.raw_payload,
+        body: row.body,
+        answerText: row.answer_text,
+        sourceCreatedAt: row.source_created_at,
+      });
+    } catch {
+      threadMessages = [];
+    }
+  }
+  out.threadMessages = threadMessages;
   return out;
 }
 
@@ -111,31 +138,37 @@ class MarketplaceQuestionsRepositoryPG {
     return result.rows[0] || null;
   }
 
+  /** Одна строка в формате API (с threadMessages). */
+  async findOneApiByIdAndProfile(id, profileId) {
+    const row = await this.findRowByIdAndProfile(id, profileId);
+    return row ? rowToApi(row) : null;
+  }
+
   /**
    * @param {string|number} id
    * @param {number} profileId
    * @param {string} answerText
    * @param {object|null} [rawPayload]
    */
-  async updateAnswerFields(id, profileId, answerText, rawPayload = undefined) {
+  async updateAnswerFields(id, profileId, answerText, rawPayload = undefined, threadMessages = undefined) {
     const nid = Number(id);
     if (!Number.isFinite(nid) || nid < 1) return null;
+    const sets = ['answer_text = $3', 'synced_at = CURRENT_TIMESTAMP', 'updated_at = CURRENT_TIMESTAMP'];
+    const params = [nid, profileId, answerText];
+    let p = 4;
     if (rawPayload !== undefined) {
-      const result = await query(
-        `UPDATE marketplace_questions
-         SET answer_text = $3, raw_payload = $4::jsonb, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND profile_id = $2
-         RETURNING *`,
-        [nid, profileId, answerText, JSON.stringify(rawPayload)]
-      );
-      return rowToApi(result.rows[0]);
+      sets.push(`raw_payload = $${p}::jsonb`);
+      params.push(JSON.stringify(rawPayload));
+      p += 1;
+    }
+    if (threadMessages !== undefined) {
+      sets.push(`thread_messages = $${p}::jsonb`);
+      params.push(JSON.stringify(threadMessages));
+      p += 1;
     }
     const result = await query(
-      `UPDATE marketplace_questions
-       SET answer_text = $3, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND profile_id = $2
-       RETURNING *`,
-      [nid, profileId, answerText]
+      `UPDATE marketplace_questions SET ${sets.join(', ')} WHERE id = $1 AND profile_id = $2 RETURNING *`,
+      params
     );
     return rowToApi(result.rows[0]);
   }
@@ -178,12 +211,15 @@ class MarketplaceQuestionsRepositoryPG {
       sku_or_offer,
       source_created_at,
       raw_payload,
+      thread_messages,
     } = row;
+    const threadJson =
+      thread_messages != null ? JSON.stringify(thread_messages) : JSON.stringify([]);
     const result = await query(
       `INSERT INTO marketplace_questions (
         profile_id, marketplace, external_id, subject, body, answer_text, status,
-        sku_or_offer, source_created_at, raw_payload, synced_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        sku_or_offer, source_created_at, raw_payload, thread_messages, synced_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT (profile_id, marketplace, external_id) DO UPDATE SET
         subject = EXCLUDED.subject,
         body = EXCLUDED.body,
@@ -206,6 +242,7 @@ class MarketplaceQuestionsRepositoryPG {
             THEN COALESCE(EXCLUDED.raw_payload, '{}'::jsonb) || COALESCE(marketplace_questions.raw_payload, '{}'::jsonb)
           ELSE EXCLUDED.raw_payload
         END,
+        thread_messages = EXCLUDED.thread_messages,
         synced_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
       RETURNING *`,
@@ -220,6 +257,7 @@ class MarketplaceQuestionsRepositoryPG {
         sku_or_offer ?? null,
         source_created_at ?? null,
         raw_payload != null ? JSON.stringify(raw_payload) : null,
+        threadJson,
       ]
     );
     return rowToApi(result.rows[0]);
@@ -243,9 +281,9 @@ class MarketplaceQuestionsRepositoryPG {
       n += 1;
     }
     if (answered === 'new') {
-      sql += ` AND (answer_text IS NULL OR TRIM(COALESCE(answer_text, '')) = '')`;
+      sql += ` AND ${SQL_NEEDS_REPLY}`;
     } else if (answered === 'answered') {
-      sql += ` AND answer_text IS NOT NULL AND TRIM(COALESCE(answer_text, '')) <> ''`;
+      sql += ` AND NOT (${SQL_NEEDS_REPLY})`;
     }
     params.push(limit, offset);
     sql += ` ORDER BY source_created_at DESC NULLS LAST, id DESC LIMIT $${n} OFFSET $${n + 1}`;
@@ -261,8 +299,7 @@ class MarketplaceQuestionsRepositoryPG {
   async countUnansweredByProfile(profileId, opts = {}) {
     const marketplace = opts.marketplace != null ? String(opts.marketplace).trim() : null;
     const params = [profileId];
-    let sql =
-      'SELECT COUNT(*)::int AS c FROM marketplace_questions WHERE profile_id = $1 AND (answer_text IS NULL OR TRIM(COALESCE(answer_text, \'\')) = \'\')';
+    let sql = `SELECT COUNT(*)::int AS c FROM marketplace_questions WHERE profile_id = $1 AND ${SQL_NEEDS_REPLY}`;
     let n = 2;
     if (marketplace && ['ozon', 'wildberries', 'yandex'].includes(marketplace)) {
       sql += ` AND marketplace = $${n}`;
@@ -285,8 +322,8 @@ class MarketplaceQuestionsRepositoryPG {
     const params = [profileId];
     let sql = `SELECT
       COUNT(*)::int AS all_count,
-      COUNT(*) FILTER (WHERE answer_text IS NULL OR TRIM(COALESCE(answer_text, '')) = '')::int AS new_count,
-      COUNT(*) FILTER (WHERE answer_text IS NOT NULL AND TRIM(COALESCE(answer_text, '')) <> '')::int AS answered_count
+      COUNT(*) FILTER (WHERE ${SQL_NEEDS_REPLY})::int AS new_count,
+      COUNT(*) FILTER (WHERE NOT (${SQL_NEEDS_REPLY}))::int AS answered_count
       FROM marketplace_questions WHERE profile_id = $1`;
     let n = 2;
     if (marketplace && ['ozon', 'wildberries', 'yandex'].includes(marketplace)) {

@@ -169,7 +169,10 @@ export function OrderDetail() {
         </h1>
       </div>
 
-      {(data?.assembly?.assembledAt || data?.assembly?.assembledByEmail || data?.assembly?.assembledByFullName) && (
+      {(data?.assembly?.assembledAt ||
+        data?.assembly?.assembledByEmail ||
+        data?.assembly?.assembledByFullName ||
+        data?.assembly?.assemblyStickerNumber) && (
         <section className="order-detail-section" style={{ marginTop: 16 }}>
           <h3>Сборка в системе</h3>
           <dl className="detail-dl">
@@ -181,6 +184,8 @@ export function OrderDetail() {
             </dd>
             <dt>Собрал</dt>
             <dd>{formatAssemblyWho(data.assembly)}</dd>
+            <dt>Номер стикера</dt>
+            <dd>{data.assembly.assemblyStickerNumber || '—'}</dd>
           </dl>
         </section>
       )}
@@ -210,6 +215,7 @@ export function OrderDetailContent({ data }) {
   if (!data) return null;
   const detail = data.detail;
   const localLines = data.localLines;
+  const assembly = data.assembly;
   const mp = String(data.marketplace || '').toLowerCase();
   const mpNorm =
     mp === 'wb'
@@ -217,10 +223,37 @@ export function OrderDetailContent({ data }) {
       : mp === 'ym' || mp === 'yandexmarket'
         ? 'yandex'
         : mp;
-  if (mpNorm === 'ozon' && detail) return <OzonDetail detail={detail} localLines={localLines} />;
+  const assemblyBlock =
+    assembly &&
+    (assembly.assembledAt ||
+      assembly.assembledByEmail ||
+      assembly.assembledByFullName ||
+      assembly.assemblyStickerNumber) ? (
+      <section className="order-detail-section" style={{ marginBottom: 16 }}>
+        <h3>Сборка в системе</h3>
+        <dl className="detail-dl">
+          <dt>Собран</dt>
+          <dd>
+            {assembly.assembledAt ? new Date(assembly.assembledAt).toLocaleString('ru-RU') : '—'}
+          </dd>
+          <dt>Собрал</dt>
+          <dd>{formatAssemblyWho(assembly)}</dd>
+          <dt>Номер стикера</dt>
+          <dd>{assembly.assemblyStickerNumber || '—'}</dd>
+        </dl>
+      </section>
+    ) : null;
+  if (mpNorm === 'ozon' && detail)
+    return (
+      <>
+        {assemblyBlock}
+        <OzonDetail detail={detail} localLines={localLines} />
+      </>
+    );
   if ((mpNorm === 'wildberries' || mpNorm === 'wb') && detail) {
     return (
       <>
+        {assemblyBlock}
         {data.fromLocal && (
           <p className="order-detail-local-hint" style={{ marginBottom: 12, fontSize: 13, color: 'var(--muted)' }}>
             Детали с маркетплейса доступны только для заказов в статусе «Новый». Показаны сохранённые данные.
@@ -233,6 +266,7 @@ export function OrderDetailContent({ data }) {
   if ((mpNorm === 'yandex' || mpNorm === 'ym' || mpNorm === 'yandexmarket') && detail) {
     return (
       <>
+        {assemblyBlock}
         {data.fromLocal && (
           <p className="order-detail-local-hint" style={{ marginBottom: 12, fontSize: 13, color: 'var(--muted)' }}>
             Заказ не найден в API маркетплейса. Показаны сохранённые в системе данные.

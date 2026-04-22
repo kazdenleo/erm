@@ -524,7 +524,21 @@ export function Products() {
         iconClass="pe-7s-box2"
         iconBgClass="bg-mean-fruit"
         title="Товары"
-        subtitle="Просмотр, добавление и редактирование товаров в системе."
+        subtitle={(
+          <>
+            Просмотр, добавление и редактирование товаров в системе.
+            {' '}
+            <span className="text-muted" aria-live="polite">
+              Показано: <strong>{visibleProducts.length}</strong> из <strong>{totalProducts}</strong>
+              {selectedProductIds.size > 0 ? (
+                <>
+                  {' · '}
+                  Выбрано: <strong>{selectedProductIds.size}</strong>
+                </>
+              ) : null}
+            </span>
+          </>
+        )}
         actions={(
           <>
             <Button className="btn-shadow me-2" variant="primary" size="small" onClick={handleCreate}>
@@ -582,24 +596,6 @@ export function Products() {
       />
 
       <div className="main-card mb-3 card">
-        <div className="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
-          <div className="d-flex flex-column flex-sm-row flex-wrap align-items-sm-center gap-1 gap-sm-3">
-            <span>Список товаров</span>
-            <span className="text-muted small" aria-live="polite">
-              Показано: <strong>{visibleProducts.length}</strong> из <strong>{totalProducts}</strong>
-              {selectedProductIds.size > 0 ? (
-                <>
-                  {' · '}
-                  Выбрано: <strong>{selectedProductIds.size}</strong>
-                </>
-              ) : null}
-            </span>
-          </div>
-          <span className="text-muted small d-none d-md-inline">
-            Экспорт в Excel — кнопка «📥 Excel» в шапке страницы
-          </span>
-        </div>
-
         <div className="card-body p-0">
           <div className="products-list-toolbar">
             <div className="d-flex flex-wrap align-items-end gap-2 gap-md-3">

@@ -8,6 +8,13 @@ import marketplaceQuestionsRepo from '../repositories/marketplace_questions.repo
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { extractYandexGoodsQuestionOfferId } from '../utils/yandex-goods-question-offer.js';
+import {
+  buildThreadMessagesFromRow,
+  getYandexLastSellerAnswerId,
+  inferYandexAnswerAuthor,
+  sortYandexAnswers,
+  threadLastMessageIsBuyer,
+} from '../utils/marketplaceQuestionThread.js';
 import logger from '../utils/logger.js';
 
 const OZON_QUESTION_BODY = {
@@ -36,8 +43,26 @@ function mapOzonQuestion(q, profileId) {
   if (!ext) return null;
   let answerText = null;
   if (Array.isArray(q.answers) && q.answers.length > 0) {
-    const a = q.answers[0];
-    answerText = a.text ?? a.message ?? a.answer_text ?? null;
+    for (let i = q.answers.length - 1; i >= 0; i--) {
+      const a = q.answers[i];
+      const authorType = String(a?.author?.type ?? a?.author_type ?? '').toUpperCase();
+      const sellerish =
+        !authorType ||
+        authorType.includes('SELLER') ||
+        authorType.includes('SHOP') ||
+        authorType.includes('PARTNER') ||
+        authorType.includes('BUSINESS');
+      if (!sellerish) continue;
+      const t = a.text ?? a.message ?? a.answer_text ?? null;
+      if (t != null && String(t).trim() !== '') {
+        answerText = String(t).trim();
+        break;
+      }
+    }
+    if (answerText == null) {
+      const a = q.answers[q.answers.length - 1];
+      answerText = a.text ?? a.message ?? a.answer_text ?? null;
+    }
   }
   if (answerText == null && q.answer) {
     answerText = q.answer.text ?? q.answer.message ?? null;
@@ -61,7 +86,7 @@ function mapOzonQuestion(q, profileId) {
     parseIsoDate(q.createdAt) ??
     parseIsoDate(q.date) ??
     null;
-  return {
+  const row = {
     profile_id: profileId,
     marketplace: 'ozon',
     external_id: ext,
@@ -73,6 +98,14 @@ function mapOzonQuestion(q, profileId) {
     source_created_at: sourceCreatedAt,
     raw_payload: q,
   };
+  row.thread_messages = buildThreadMessagesFromRow({
+    marketplace: 'ozon',
+    rawPayload: q,
+    body: row.body,
+    answerText: row.answer_text,
+    sourceCreatedAt: row.source_created_at,
+  });
+  return row;
 }
 
 function wbProductDetails(q) {
@@ -161,7 +194,7 @@ function mapWbQuestion(q, profileId) {
   const sku = supplierArt ?? (nmRaw != null ? String(nmRaw).trim() : null);
   const status = q.state ?? q.status ?? null;
   const sourceCreatedAt = parseIsoDate(q.createdDate ?? q.created_at);
-  return {
+  const row = {
     profile_id: profileId,
     marketplace: 'wildberries',
     external_id: ext,
@@ -173,6 +206,14 @@ function mapWbQuestion(q, profileId) {
     source_created_at: sourceCreatedAt,
     raw_payload: q,
   };
+  row.thread_messages = buildThreadMessagesFromRow({
+    marketplace: 'wildberries',
+    rawPayload: q,
+    body: row.body,
+    answerText: row.answer_text,
+    sourceCreatedAt: row.source_created_at,
+  });
+  return row;
 }
 
 function getYandexQuestionExternalId(q) {
@@ -188,8 +229,13 @@ function mapYandexQuestion(q, profileId) {
   if (!ext) return null;
   const body = String(q.text ?? '').trim() || '—';
   let answerText = null;
-  if (Array.isArray(q.answers) && q.answers.length > 0) {
-    answerText = q.answers[0].text ?? q.answers[0].body ?? null;
+  const sortedAns = sortYandexAnswers(q.answers);
+  for (let i = sortedAns.length - 1; i >= 0; i--) {
+    if (inferYandexAnswerAuthor(sortedAns[i]) === 'seller') {
+      answerText = sortedAns[i].text ?? sortedAns[i].body ?? null;
+      if (answerText != null) answerText = String(answerText).trim() || null;
+      break;
+    }
   }
   const offerIdStr = extractYandexGoodsQuestionOfferId(q);
   const baseName =
@@ -210,7 +256,7 @@ function mapYandexQuestion(q, profileId) {
   }
   const sourceCreatedAt = parseIsoDate(q.createdAt ?? q.created_at);
   const status = q.status ?? (answerText ? 'ANSWERED' : 'UNANSWERED');
-  return {
+  const row = {
     profile_id: profileId,
     marketplace: 'yandex',
     external_id: ext,
@@ -222,6 +268,14 @@ function mapYandexQuestion(q, profileId) {
     source_created_at: sourceCreatedAt,
     raw_payload: q,
   };
+  row.thread_messages = buildThreadMessagesFromRow({
+    marketplace: 'yandex',
+    rawPayload: q,
+    body: row.body,
+    answerText: row.answer_text,
+    sourceCreatedAt: row.source_created_at,
+  });
+  return row;
 }
 
 const OZON_PREMIUM_PLUS_HINT =
@@ -459,6 +513,14 @@ export async function listMarketplaceQuestions(profileId, query = {}) {
   });
 }
 
+/** Одна карточка вопроса с веткой сообщений (для экрана «внутри вопроса»). */
+export async function getMarketplaceQuestionById(profileId, questionRowId) {
+  if (!repositoryFactory.isUsingPostgreSQL()) {
+    return null;
+  }
+  return await marketplaceQuestionsRepo.findOneApiByIdAndProfile(questionRowId, profileId);
+}
+
 /**
  * Количество вопросов без ответа продавца (для бейджа в меню).
  * @param {number} profileId
@@ -505,16 +567,43 @@ function parseOzonQuestionId(row) {
   return s;
 }
 
+function mergeOzonRawAfterAnswer(row, trimmed) {
+  const mergedRaw = { ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}) };
+  const answers = Array.isArray(mergedRaw.answers) ? [...mergedRaw.answers] : [];
+  answers.push({
+    text: trimmed,
+    author: { type: 'SELLER' },
+    created_at: new Date().toISOString(),
+  });
+  mergedRaw.answers = answers;
+  return mergedRaw;
+}
+
+function mergeWbRawAfterAnswer(row, trimmed) {
+  const mergedRaw = { ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}) };
+  mergedRaw.answer = {
+    ...(typeof mergedRaw.answer === 'object' && mergedRaw.answer != null ? mergedRaw.answer : {}),
+    text: trimmed,
+    createdDate: new Date().toISOString(),
+  };
+  return mergedRaw;
+}
+
 async function submitAnswerOzon(profileId, row, text) {
   const questionId = parseOzonQuestionId(row);
   if (questionId == null) {
     throw new Error('Ozon: не удалось определить ID вопроса (question_id).');
   }
   const raw = row.raw_payload || {};
-  const existingAnswerId =
-    (Array.isArray(raw.answers) && raw.answers[0]?.id != null ? raw.answers[0].id : null) ??
-    raw.answer?.id ??
-    null;
+  const answersArr = Array.isArray(raw.answers) ? raw.answers : [];
+  let existingAnswerId = null;
+  for (let i = answersArr.length - 1; i >= 0; i--) {
+    if (answersArr[i]?.id != null) {
+      existingAnswerId = answersArr[i].id;
+      break;
+    }
+  }
+  if (existingAnswerId == null) existingAnswerId = raw.answer?.id ?? null;
   if (row.answer_text && existingAnswerId != null) {
     try {
       await integrationsService._ozonApiPost(
@@ -846,12 +935,6 @@ function parseYandexQuestionId(row) {
   return Number.isFinite(n) && n >= 1 ? n : null;
 }
 
-function getYandexAnswerIdFromRow(row) {
-  const raw = row.raw_payload || {};
-  if (Array.isArray(raw.answers) && raw.answers[0]?.id != null) return Number(raw.answers[0].id);
-  return null;
-}
-
 async function submitAnswerYandex(profileId, row, text) {
   const config = await integrationsService.getMarketplaceConfig('yandex', { profileId });
   const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
@@ -869,14 +952,30 @@ async function submitAnswerYandex(profileId, row, text) {
     throw new Error('Яндекс.Маркет: не удалось определить числовой ID вопроса. Выполните синхронизацию заново.');
   }
   const agent = getYandexHttpsAgent();
-  const answerId = getYandexAnswerIdFromRow(row);
+  const thread = buildThreadMessagesFromRow({
+    marketplace: 'yandex',
+    rawPayload: row.raw_payload,
+    body: row.body,
+    answerText: row.answer_text,
+    sourceCreatedAt: row.source_created_at,
+  });
+  const lastIsBuyer = threadLastMessageIsBuyer(thread);
   let body;
-  if (row.answer_text && answerId != null && Number.isFinite(answerId) && answerId >= 1) {
-    body = {
-      operationType: 'UPDATE',
-      entityId: { id: answerId, type: 'ANSWER' },
-      text,
-    };
+  if (!lastIsBuyer) {
+    const answerId = getYandexLastSellerAnswerId(row.raw_payload);
+    if (answerId != null && Number.isFinite(answerId) && answerId >= 1) {
+      body = {
+        operationType: 'UPDATE',
+        entityId: { id: answerId, type: 'ANSWER' },
+        text,
+      };
+    } else {
+      body = {
+        operationType: 'CREATE',
+        parentEntityId: { id: questionId, type: 'QUESTION' },
+        text,
+      };
+    }
   } else {
     body = {
       operationType: 'CREATE',
@@ -941,40 +1040,80 @@ export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, 
   const mp = row.marketplace;
   if (mp === 'ozon') {
     await submitAnswerOzon(profileId, row, trimmed);
-  } else if (mp === 'wildberries') {
-    const out = await submitAnswerWildberries(profileId, row, trimmed);
-    if (!out?.verified) {
-      return await marketplaceQuestionsRepo.setPendingAnswer(questionRowId, profileId, trimmed);
-    }
-  } else if (mp === 'yandex') {
-    const json = await submitAnswerYandex(profileId, row, trimmed);
-    const apiResult = json?.result;
-    let newRawPayload;
-    if (row.raw_payload && apiResult && typeof apiResult === 'object') {
-      const prev = Array.isArray(row.raw_payload.answers) ? row.raw_payload.answers[0] : {};
-      newRawPayload = {
-        ...row.raw_payload,
-        answers: [
-          {
-            ...prev,
-            id: apiResult.id ?? getYandexAnswerIdFromRow(row),
-            text: trimmed,
-            questionId: parseYandexQuestionId(row),
-          },
-        ],
-      };
-    }
+    const mergedRaw = mergeOzonRawAfterAnswer(row, trimmed);
+    const thr = buildThreadMessagesFromRow({
+      marketplace: 'ozon',
+      rawPayload: mergedRaw,
+      body: row.body,
+      answerText: trimmed,
+      sourceCreatedAt: row.source_created_at,
+    });
     return await marketplaceQuestionsRepo.updateAnswerFields(
       questionRowId,
       profileId,
       trimmed,
-      newRawPayload
+      mergedRaw,
+      thr
     );
-  } else {
-    const err = new Error('Неизвестный маркетплейс');
-    err.statusCode = 400;
-    throw err;
   }
-
-  return await marketplaceQuestionsRepo.updateAnswerFields(questionRowId, profileId, trimmed);
+  if (mp === 'wildberries') {
+    const out = await submitAnswerWildberries(profileId, row, trimmed);
+    if (!out?.verified) {
+      return await marketplaceQuestionsRepo.setPendingAnswer(questionRowId, profileId, trimmed);
+    }
+    const mergedRaw = mergeWbRawAfterAnswer(row, trimmed);
+    const thr = buildThreadMessagesFromRow({
+      marketplace: 'wildberries',
+      rawPayload: mergedRaw,
+      body: row.body,
+      answerText: trimmed,
+      sourceCreatedAt: row.source_created_at,
+    });
+    return await marketplaceQuestionsRepo.updateAnswerFields(
+      questionRowId,
+      profileId,
+      trimmed,
+      mergedRaw,
+      thr
+    );
+  }
+  if (mp === 'yandex') {
+    const json = await submitAnswerYandex(profileId, row, trimmed);
+    const apiResult = json?.result;
+    const mergedRaw = {
+      ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}),
+    };
+    const newAnsId =
+      apiResult?.id != null
+        ? Number(apiResult.id)
+        : apiResult?.entityId?.id != null
+          ? Number(apiResult.entityId.id)
+          : null;
+    const prevAnswers = Array.isArray(mergedRaw.answers) ? [...mergedRaw.answers] : [];
+    const sellerEntry = {
+      ...(newAnsId != null && Number.isFinite(newAnsId) && newAnsId >= 1 ? { id: newAnsId } : {}),
+      text: trimmed,
+      createdAt: new Date().toISOString(),
+      author: { type: 'BUSINESS' },
+    };
+    const filtered = prevAnswers.filter((a) => a && newAnsId != null && String(a?.id) !== String(newAnsId));
+    mergedRaw.answers = [...filtered, sellerEntry];
+    const newThread = buildThreadMessagesFromRow({
+      marketplace: 'yandex',
+      rawPayload: mergedRaw,
+      body: row.body,
+      answerText: trimmed,
+      sourceCreatedAt: row.source_created_at,
+    });
+    return await marketplaceQuestionsRepo.updateAnswerFields(
+      questionRowId,
+      profileId,
+      trimmed,
+      mergedRaw,
+      newThread
+    );
+  }
+  const err = new Error('Неизвестный маркетплейс');
+  err.statusCode = 400;
+  throw err;
 }

@@ -42,6 +42,7 @@ function rowToCamel(row) {
     assembledByUserId: row.assembled_by_user_id ?? null,
     assembledByEmail: row.assembled_by_email ?? null,
     assembledByFullName: row.assembled_by_full_name ?? null,
+    assemblyStickerNumber: row.assembly_sticker_number ?? null,
     returnedToNewAt: row.returned_to_new_at ?? null,
     hasReserve: row.has_reserve ?? row.hasReserve ?? false,
     reservedQty: row.reserved_qty != null ? Number(row.reserved_qty) : (row.reservedQty != null ? Number(row.reservedQty) : 0)
@@ -146,7 +147,7 @@ class OrdersRepositoryPG {
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
-        o.assembled_at, o.assembled_by_user_id,
+        o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
@@ -203,7 +204,7 @@ class OrdersRepositoryPG {
             o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
             o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
             o.returned_to_new_at,
-            o.assembled_at, o.assembled_by_user_id,
+            o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
             assembler.email AS assembled_by_email,
             assembler.full_name AS assembled_by_full_name,
             p.sku AS product_sku,
@@ -343,7 +344,7 @@ class OrdersRepositoryPG {
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
-        o.assembled_at, o.assembled_by_user_id,
+        o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
@@ -392,7 +393,7 @@ class OrdersRepositoryPG {
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
-        o.assembled_at, o.assembled_by_user_id,
+        o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
@@ -560,6 +561,7 @@ class OrdersRepositoryPG {
         returned_to_new_at = COALESCE(EXCLUDED.returned_to_new_at, orders.returned_to_new_at),
         assembled_at = orders.assembled_at,
         assembled_by_user_id = orders.assembled_by_user_id,
+        assembly_sticker_number = orders.assembly_sticker_number,
         updated_at = CURRENT_TIMESTAMP
       RETURNING *
     `, params);
@@ -607,6 +609,7 @@ class OrdersRepositoryPG {
         returned_to_new_at = COALESCE(EXCLUDED.returned_to_new_at, orders.returned_to_new_at),
         assembled_at = orders.assembled_at,
         assembled_by_user_id = orders.assembled_by_user_id,
+        assembly_sticker_number = orders.assembly_sticker_number,
         updated_at = CURRENT_TIMESTAMP`;
     for (let i = 0; i < orders.length; i += BATCH) {
       const chunk = orders.slice(i, i + BATCH);
@@ -698,7 +701,7 @@ class OrdersRepositoryPG {
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at,
-        o.assembled_at, o.assembled_by_user_id,
+        o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name
       FROM orders o
@@ -724,6 +727,7 @@ class OrdersRepositoryPG {
         returned_to_new_at = CASE WHEN $1::text = 'new' THEN CURRENT_TIMESTAMP ELSE NULL END,
         assembled_at = CASE WHEN $3 THEN NULL ELSE assembled_at END,
         assembled_by_user_id = CASE WHEN $3 THEN NULL ELSE assembled_by_user_id END,
+        assembly_sticker_number = CASE WHEN $3 THEN NULL ELSE assembly_sticker_number END,
         updated_at = CURRENT_TIMESTAMP
       WHERE order_group_id = $2::text${pid ? ' AND profile_id = $4::bigint' : ''}
       RETURNING id
@@ -736,43 +740,79 @@ class OrdersRepositoryPG {
   /**
    * Отметить все строки группы как собранные (дата/время и пользователь сборки).
    */
-  async markAssembledByOrderGroupId(orderGroupId, assembledByUserId, profileId = null) {
+  async markAssembledByOrderGroupId(orderGroupId, assembledByUserId, profileId = null, stickerNumber = null) {
     if (!orderGroupId) return;
     const pid = normalizeProfileId(profileId);
     const uid = assembledByUserId != null && Number(assembledByUserId) > 0 ? Number(assembledByUserId) : null;
-    await query(
-      `
-      UPDATE orders SET
-        status = 'assembled',
-        returned_to_new_at = NULL,
-        assembled_at = CURRENT_TIMESTAMP,
-        assembled_by_user_id = $2,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE order_group_id = $1${pid ? ' AND profile_id = $3::bigint' : ''}
-    `,
-      pid ? [String(orderGroupId), uid, pid] : [String(orderGroupId), uid]
-    );
+    const sticker = stickerNumber != null && String(stickerNumber).trim() !== '' ? String(stickerNumber).trim() : null;
+    if (pid) {
+      await query(
+        `
+        UPDATE orders SET
+          status = 'assembled',
+          returned_to_new_at = NULL,
+          assembled_at = CURRENT_TIMESTAMP,
+          assembled_by_user_id = $2,
+          assembly_sticker_number = $4,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE order_group_id = $1 AND profile_id = $3::bigint
+      `,
+        [String(orderGroupId), uid, pid, sticker]
+      );
+    } else {
+      await query(
+        `
+        UPDATE orders SET
+          status = 'assembled',
+          returned_to_new_at = NULL,
+          assembled_at = CURRENT_TIMESTAMP,
+          assembled_by_user_id = $2,
+          assembly_sticker_number = $3,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE order_group_id = $1
+      `,
+        [String(orderGroupId), uid, sticker]
+      );
+    }
   }
 
   /**
    * Одна строка заказа — собрана.
    */
-  async markAssembledByMarketplaceAndOrderId(marketplace, orderId, assembledByUserId, profileId = null) {
+  async markAssembledByMarketplaceAndOrderId(marketplace, orderId, assembledByUserId, profileId = null, stickerNumber = null) {
     const dbM = normalizeMarketplaceForDb(marketplace);
     const pid = normalizeProfileId(profileId);
     const uid = assembledByUserId != null && Number(assembledByUserId) > 0 ? Number(assembledByUserId) : null;
-    await query(
-      `
-      UPDATE orders SET
-        status = 'assembled',
-        returned_to_new_at = NULL,
-        assembled_at = CURRENT_TIMESTAMP,
-        assembled_by_user_id = $3,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE marketplace = $1 AND order_id = $2${pid ? ' AND profile_id = $4::bigint' : ''}
-    `,
-      pid ? [dbM, String(orderId), uid, pid] : [dbM, String(orderId), uid]
-    );
+    const sticker = stickerNumber != null && String(stickerNumber).trim() !== '' ? String(stickerNumber).trim() : null;
+    if (pid) {
+      await query(
+        `
+        UPDATE orders SET
+          status = 'assembled',
+          returned_to_new_at = NULL,
+          assembled_at = CURRENT_TIMESTAMP,
+          assembled_by_user_id = $3,
+          assembly_sticker_number = $5,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE marketplace = $1 AND order_id = $2 AND profile_id = $4::bigint
+      `,
+        [dbM, String(orderId), uid, pid, sticker]
+      );
+    } else {
+      await query(
+        `
+        UPDATE orders SET
+          status = 'assembled',
+          returned_to_new_at = NULL,
+          assembled_at = CURRENT_TIMESTAMP,
+          assembled_by_user_id = $3,
+          assembly_sticker_number = $4,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE marketplace = $1 AND order_id = $2
+      `,
+        [dbM, String(orderId), uid, sticker]
+      );
+    }
   }
   
   /**
@@ -847,6 +887,8 @@ class OrdersRepositoryPG {
       updateFields.push(`assembled_at = $${paramIndex++}`);
       params.push(null);
       updateFields.push(`assembled_by_user_id = $${paramIndex++}`);
+      params.push(null);
+      updateFields.push(`assembly_sticker_number = $${paramIndex++}`);
       params.push(null);
     }
     
@@ -968,7 +1010,7 @@ class OrdersRepositoryPG {
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
-        o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id
+        o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number
        FROM orders o
        WHERE o.status IN ('new', 'in_procurement')
          AND ${byProductMatch}
@@ -994,7 +1036,7 @@ class OrdersRepositoryPG {
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
-        o.assembled_at, o.assembled_by_user_id,
+        o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku
