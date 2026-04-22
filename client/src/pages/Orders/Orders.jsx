@@ -530,6 +530,20 @@ export function Orders() {
         }
         const result = await ordersApi.syncFbs({ force: forceImport });
         if (!silent) setSyncInfo(result);
+
+        // Сервер может ответить 202 и запустить синк в фоне — дождёмся завершения через status endpoint.
+        if (result?.started || result?.inProgress) {
+          const startedAt = Date.now();
+          const MAX_WAIT_MS = 180000; // 3 мин на полный импорт
+          while (Date.now() - startedAt < MAX_WAIT_MS) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((r) => setTimeout(r, 1500));
+            // eslint-disable-next-line no-await-in-loop
+            const st = await ordersApi.getSyncFbsStatus().catch(() => null);
+            if (!st?.inProgress) break;
+          }
+        }
+
         await reloadOrders({ silent: true });
       } catch (e) {
         const status = e.response?.status;

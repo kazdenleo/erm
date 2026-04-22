@@ -41,6 +41,12 @@ router.post(
   wrapAsync(ordersController.syncFbs.bind(ordersController))
 );
 
+// Статус текущей синхронизации (для UI: опрос после 202 Accepted)
+router.get(
+  '/sync-fbs/status',
+  wrapAsync(ordersController.getSyncFbsStatus.bind(ordersController))
+);
+
 // Пауза фоновой синхронизации заказов с МП (cron); ручной sync-fbs всё ещё работает
 router.get(
   '/sync-auto-pause',
@@ -104,6 +110,12 @@ router.get(
   '/:marketplace/:orderId/detail',
   validateOrderDetailParams,
   wrapAsync(ordersController.getDetail.bind(ordersController))
+);
+
+// Страница с этикеткой и автопечатью (для сборки — сразу печатать)
+router.get(
+  '/label/print.js',
+  wrapAsync(ordersController.getLabelPrintScript.bind(ordersController))
 );
 
 // Страница с этикеткой и автопечатью (для сборки — сразу печатать)

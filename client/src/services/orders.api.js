@@ -52,6 +52,12 @@ export const ordersApi = {
     return response.data;
   },
 
+  /** Статус ручной/фоновой синхронизации FBS (inProgress, lastSyncTime, lastSyncResult). */
+  getSyncFbsStatus: async () => {
+    const response = await api.get('/orders/sync-fbs/status');
+    return response.data?.data ?? response.data;
+  },
+
   /** Статус паузы фоновой синхронизации (сервер + не опрашивать список по таймеру на клиенте). */
   getOrdersFbsSyncPause: async () => {
     const response = await api.get('/orders/sync-auto-pause');

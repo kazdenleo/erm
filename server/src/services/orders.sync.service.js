@@ -159,6 +159,38 @@ function applyReturnedToNewStatusGuard(status) {
 }
 
 class OrdersSyncService {
+  getSyncFbsStatus() {
+    return {
+      inProgress: Boolean(ordersSyncCache.syncInProgress),
+      lastSyncTime: ordersSyncCache.lastSyncTime ?? null,
+      lastSyncResult: ordersSyncCache.lastSyncResult ?? null,
+    };
+  }
+
+  /**
+   * Запустить синхронизацию "в фоне", не удерживая HTTP-запрос.
+   * Возвращает started=false, если синк уже выполняется.
+   */
+  startSyncFbsInBackground(options = {}) {
+    const force = options.force === true;
+    const profileId = options.profileId ?? null;
+    const scheduler = options.scheduler === true;
+
+    if (ordersSyncCache.syncInProgress) {
+      return { started: false, inProgress: true };
+    }
+
+    // Важно: запуск в следующем тике, чтобы контроллер успел ответить.
+    setTimeout(() => {
+      this.syncFbs({ force, profileId, scheduler })
+        .catch((e) => {
+          logger.error(`[Orders Sync] background sync failed: ${e?.message || String(e)}`);
+        });
+    }, 0);
+
+    return { started: true, inProgress: true };
+  }
+
   /**
    * Синхронизация FBS заказов со всех маркетплейсов.
    * Реализует:
@@ -239,11 +271,12 @@ class OrdersSyncService {
       logger.info('[Orders Sync] принудительный импорт заказов (полный опрос маркетплейсов, минутный лимит снят)');
     }
 
-    const results = {
-      ozon: { success: 0, failed: 0, orders: [] },
-      wildberries: { success: 0, failed: 0, orders: [] },
-      yandex: { success: 0, failed: 0, orders: [] }
-    };
+    try {
+      const results = {
+        ozon: { success: 0, failed: 0, orders: [] },
+        wildberries: { success: 0, failed: 0, orders: [] },
+        yandex: { success: 0, failed: 0, orders: [] }
+      };
 
     /** Если синк WB прошёл — множество id из /api/v3/orders/new (иначе null, правило не трогаем). */
     let wbNewIdsThisSync = null;
@@ -577,20 +610,22 @@ class OrdersSyncService {
       });
     }
 
-    ordersSyncCache.lastSyncResult = results;
-    ordersSyncCache.syncInProgress = false;
+      ordersSyncCache.lastSyncResult = results;
 
-    logger.info(`[Orders Sync] done: ozon=${results.ozon.success} wb=${results.wildberries.success} yandex=${results.yandex.success} (yandex api_key was ${ymApiKey ? 'set' : 'missing'})`);
-    if (ymApiKey && results.yandex.success === 0) {
-      logger.info(ymReason ? `[YM Orders] 0 orders: ${ymReason}` : '[YM Orders] 0 orders. Search log for "[YM Orders]" above for details.');
+      logger.info(`[Orders Sync] done: ozon=${results.ozon.success} wb=${results.wildberries.success} yandex=${results.yandex.success} (yandex api_key was ${ymApiKey ? 'set' : 'missing'})`);
+      if (ymApiKey && results.yandex.success === 0) {
+        logger.info(ymReason ? `[YM Orders] 0 orders: ${ymReason}` : '[YM Orders] 0 orders. Search log for "[YM Orders]" above for details.');
+      }
+
+      return {
+        rateLimited: false,
+        retryAfterSeconds: 0,
+        cached: false,
+        result: results
+      };
+    } finally {
+      ordersSyncCache.syncInProgress = false;
     }
-
-    return {
-      rateLimited: false,
-      retryAfterSeconds: 0,
-      cached: false,
-      result: results
-    };
   }
 
   /**

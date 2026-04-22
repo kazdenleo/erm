@@ -240,26 +240,53 @@ class OrdersController {
         req.query?.force === 'true' ||
         req.body?.force === true ||
         req.body?.force === 'true';
-      const syncResult = await ordersSyncService.syncFbs({ force, profileId: req.user?.profileId ?? null });
+      const profileId = req.user?.profileId ?? null;
 
-      if (syncResult.rateLimited && !syncResult.result) {
-        return res.status(429).json({
-          ok: false,
-          message:
-            syncResult.message ||
-            `Слишком частые запросы. Подождите ${syncResult.retryAfterSeconds} секунд перед следующим запросом.`,
-          retryAfterSeconds: syncResult.retryAfterSeconds
+      // 1) Быстрый ответ из кэша (минутный лимит) — чтобы UI не зависал.
+      const status = ordersSyncService.getSyncFbsStatus();
+      const oneMinute = 60 * 1000;
+      if (!force && status.lastSyncTime && Date.now() - status.lastSyncTime < oneMinute && status.lastSyncResult) {
+        const timeLeft = Math.ceil((oneMinute - (Date.now() - status.lastSyncTime)) / 1000);
+        return res.status(200).json({
+          ok: true,
+          force: force || undefined,
+          cached: true,
+          rateLimited: true,
+          retryAfterSeconds: timeLeft,
+          data: status.lastSyncResult
         });
       }
 
-      return res.status(200).json({
+      // 2) Если синк уже идёт — сообщаем (клиент подождёт и обновит список).
+      if (status.inProgress) {
+        return res.status(202).json({
+          ok: true,
+          started: false,
+          inProgress: true,
+          force: force || undefined,
+          message: 'Синхронизация заказов уже выполняется',
+          status
+        });
+      }
+
+      // 3) Запускаем синк в фоне (без удержания HTTP‑запроса → нет 504 от nginx).
+      const start = ordersSyncService.startSyncFbsInBackground({ force, profileId });
+      return res.status(202).json({
         ok: true,
+        started: start.started,
+        inProgress: true,
         force: force || undefined,
-        cached: syncResult.cached,
-        rateLimited: syncResult.rateLimited,
-        retryAfterSeconds: syncResult.retryAfterSeconds,
-        data: syncResult.result
+        message: start.started ? 'Синхронизация запущена' : 'Синхронизация уже выполняется',
+        status: ordersSyncService.getSyncFbsStatus()
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getSyncFbsStatus(req, res, next) {
+    try {
+      return res.status(200).json({ ok: true, data: ordersSyncService.getSyncFbsStatus() });
     } catch (error) {
       next(error);
     }
@@ -563,6 +590,7 @@ class OrdersController {
       await ordersLabelsService.ensureLabelFile(order);
       const baseUrl = `${req.protocol}://${req.get('host') || ''}${req.baseUrl || ''}`.replace(/\/$/, '');
       const labelUrl = `${baseUrl}/${encodeURIComponent(orderId)}/label`;
+      const jsUrl = `${baseUrl}/label/print.js`;
       const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -575,23 +603,30 @@ class OrdersController {
 </head>
 <body>
   <iframe id="labelFrame" src="${labelUrl.replace(/"/g, '&quot;')}" style="width: 100%; height: 100vh; border: none;"></iframe>
-  <script>
-    (function(){
-      var done = false;
-      function doPrint() {
-        if (done) return;
-        done = true;
-        window.print();
-      }
-      var frame = document.getElementById('labelFrame');
-      frame.onload = doPrint;
-      window.setTimeout(doPrint, 800);
-    })();
-  </script>
+  <script src="${jsUrl.replace(/"/g, '&quot;')}" defer></script>
 </body>
 </html>`;
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.send(html);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getLabelPrintScript(req, res, next) {
+    try {
+      // CSP: script-src 'self' — ок, т.к. это отдельный файл, не inline.
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(`(function(){'use strict';
+var done=false;
+function doPrint(){if(done)return;done=true;try{window.focus();}catch(e){}try{window.print();}catch(e){}}
+function bind(){var frame=document.getElementById('labelFrame');if(!frame){setTimeout(bind,50);return;}
+frame.addEventListener('load',function(){setTimeout(doPrint,50);});
+setTimeout(doPrint,800);
+}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',bind);}else{bind();}
+})();`);
     } catch (error) {
       next(error);
     }
