@@ -151,6 +151,7 @@ export function Assembly() {
   const doSearchRef = useRef(async () => {});
   const orderKeyRef = useRef('');
   const markedCollectedKeyRef = useRef('');
+  const autoFinishKeyRef = useRef('');
   /** Пока идёт markCollected + печать — игнорируем сканы (иначе сканер шлёт второй ввод и открывается чужой заказ с тем же товаром → вторая этикетка). */
   const printingFlowRef = useRef(false);
   const scanLoadingRef = useRef(false);
@@ -704,6 +705,22 @@ export function Assembly() {
     isOrderFullyCollected &&
     String(currentOrderData?.order?.status ?? '').toLowerCase() !== 'assembled';
 
+  // Автозавершение скан-сборки: как только все позиции отсканированы — сразу отмечаем «Собран» и печатаем.
+  useEffect(() => {
+    if (!showScanStickerFinish) return;
+    if (!currentOrderData?.order || !currentOrderKey) return;
+    if (finishScanSubmitting || printingFlowRef.current) return;
+    if (markedCollectedKeyRef.current === currentOrderKey) return;
+    if (autoFinishKeyRef.current === currentOrderKey) return;
+    autoFinishKeyRef.current = currentOrderKey;
+    setTimeout(() => {
+      // best effort: если пользователь успел сменить заказ — не запускаем
+      if (autoFinishKeyRef.current !== currentOrderKey) return;
+      void handleFinishScanAssembly();
+    }, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- намеренно не добавляем handleFinishScanAssembly (не stable)
+  }, [showScanStickerFinish, currentOrderKey, currentOrderData?.order, finishScanSubmitting]);
+
   const handleFinishScanAssembly = async () => {
     if (!currentOrderData?.order || !currentOrderKey || finishScanSubmitting) return;
     const { marketplace, orderId } = currentOrderData.order;
@@ -736,6 +753,7 @@ export function Assembly() {
     setCurrentOrderKey('');
     setScannedQuantities({});
     markedCollectedKeyRef.current = '';
+    autoFinishKeyRef.current = '';
     setScanError(null);
     setBarcodeInput('');
     if (barcodeInputRef.current) barcodeInputRef.current.focus();
