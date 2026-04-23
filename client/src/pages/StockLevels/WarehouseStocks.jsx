@@ -400,6 +400,10 @@ export function WarehouseStocks() {
                 {historyList.map(m => {
                   const link = getMovementLink(m);
                   const reasonText = link ? link.label : formatMovementReason(m);
+                  const balanceKind =
+                    m.type === 'incoming'
+                      ? 'в пути (incoming)'
+                      : 'в наличии';
                   return (
                     <tr key={m.id}>
                       <td>{formatDateTime(m.created_at)}</td>
@@ -420,7 +424,10 @@ export function WarehouseStocks() {
                       <td className={m.quantity_change > 0 ? 'stock-change-plus' : 'stock-change-minus'}>
                         {m.quantity_change > 0 ? '+' : ''}{m.quantity_change}
                       </td>
-                      <td>{m.balance_after != null ? m.balance_after : '—'}</td>
+                      <td>
+                        {m.balance_after != null ? m.balance_after : '—'}
+                        <div className="text-muted small">{balanceKind}</div>
+                      </td>
                     </tr>
                   );
                 })}

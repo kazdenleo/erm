@@ -46,6 +46,36 @@ class StockMovementsController {
       next(error);
     }
   }
+
+  async transfer(req, res, next) {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
+      }
+      const { id } = req.params;
+      const { fromWarehouseId, toWarehouseId, quantity, reason, meta } = req.body || {};
+      if (fromWarehouseId == null || String(fromWarehouseId).trim() === '') {
+        return res.status(400).json({ ok: false, message: 'fromWarehouseId обязателен' });
+      }
+      if (toWarehouseId == null || String(toWarehouseId).trim() === '') {
+        return res.status(400).json({ ok: false, message: 'toWarehouseId обязателен' });
+      }
+      if (quantity == null || Number.isNaN(Number(quantity))) {
+        return res.status(400).json({ ok: false, message: 'quantity обязателен' });
+      }
+      const result = await stockMovementsService.transfer(id, {
+        fromWarehouseId,
+        toWarehouseId,
+        quantity: Number(quantity),
+        reason: reason || null,
+        meta: meta || null,
+        profileId: req.user?.profileId ?? null,
+      });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new StockMovementsController();

@@ -24,6 +24,16 @@ export const stockMovementsApi = {
   applyChange: async (productId, payload) => {
     const response = await api.post(`/products/${productId}/stock-movements`, payload);
     return response.data;
+  },
+
+  /**
+   * Перемещение товара между складами
+   * @param {number|string} productId
+   * @param {{ fromWarehouseId: number|string, toWarehouseId: number|string, quantity: number, reason?: string, meta?: object }} payload
+   */
+  transfer: async (productId, payload) => {
+    const response = await api.post(`/products/${productId}/stock-transfer`, payload);
+    return response.data;
   }
 };
 

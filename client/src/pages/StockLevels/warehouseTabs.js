@@ -2,6 +2,7 @@
 export const WAREHOUSE_OPERATION_OPS = [
   { op: 'table', label: '📊 Таблица остатков', to: '/stock-levels/warehouse' },
   { op: 'receipts_list', label: '📑 Приёмки', to: '/stock-levels/warehouse?op=receipts_list' },
+  { op: 'transfer', label: '↔️ Перемещение', to: '/stock-levels/warehouse?op=transfer' },
   { op: 'writeoff', label: '📤 Списание', to: '/stock-levels/warehouse?op=writeoff' },
   { op: 'return_supplier', label: '↩️ Возврат поставщику', to: '/stock-levels/warehouse?op=return_supplier' },
   { op: 'return_customer', label: '📥 Возврат от клиентов', to: '/stock-levels/warehouse?op=return_customer' },

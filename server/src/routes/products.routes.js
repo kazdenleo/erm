@@ -7,6 +7,7 @@ import express from 'express';
 import productsController from '../controllers/products.controller.js';
 import stockMovementsController from '../controllers/stockMovements.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
+import { requireAuth } from '../middleware/auth.js';
 import { createProductImageUpload, createProductExcelImportUpload } from '../middleware/uploads.js';
 import {
   validateCreateProduct,
@@ -121,6 +122,14 @@ router.post(
   '/:id/stock-movements',
   validateProductId,
   wrapAsync(stockMovementsController.applyChange.bind(stockMovementsController))
+);
+
+// Перемещение товара между складами
+router.post(
+  '/:id/stock-transfer',
+  requireAuth,
+  validateProductId,
+  wrapAsync(stockMovementsController.transfer.bind(stockMovementsController))
 );
 
 // Удалить товар (с валидацией ID) - должен быть ПОСЛЕ всех специфических маршрутов

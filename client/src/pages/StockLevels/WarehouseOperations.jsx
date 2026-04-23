@@ -13,6 +13,7 @@ import { useOrganizations } from '../../hooks/useOrganizations';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import './WarehouseOperations.css';
 
 const MODE_TABLE = 'table';
@@ -22,10 +23,12 @@ const MODE_INVENTORY = 'inventory';
 const MODE_RECEIPTS_LIST = 'receipts_list';
 const MODE_RETURN_SUPPLIER = 'return_supplier';
 const MODE_RETURN_CUSTOMER = 'return_customer';
+const MODE_TRANSFER = 'transfer';
 
 const KNOWN_MODES = new Set([
   MODE_TABLE,
   MODE_RECEIPTS_LIST,
+  MODE_TRANSFER,
   MODE_WRITEOFF,
   MODE_RETURN_SUPPLIER,
   MODE_RETURN_CUSTOMER,
@@ -68,6 +71,16 @@ export function WarehouseOperations({
   const [qtyInput, setQtyInput] = useState(1);
   const [opLoading, setOpLoading] = useState(false);
   const [opMessage, setOpMessage] = useState(null);
+  // Перемещение между складами: список строк { productId, sku, name, quantity }
+  const [transferFromWarehouseId, setTransferFromWarehouseId] = useState('');
+  const [transferToWarehouseId, setTransferToWarehouseId] = useState('');
+  const [transferScanValue, setTransferScanValue] = useState('');
+  const transferScanInputRef = useRef(null);
+  const transferScanDebounceRef = useRef(null);
+  const [transferSelectedProductId, setTransferSelectedProductId] = useState('');
+  const [transferQty, setTransferQty] = useState(1);
+  const [transferQuickMode, setTransferQuickMode] = useState(true);
+  const [transferList, setTransferList] = useState([]);
   const [inventorySessionsList, setInventorySessionsList] = useState([]);
   const [inventorySessionsLoading, setInventorySessionsLoading] = useState(false);
   const [inventoryDetailView, setInventoryDetailView] = useState(null);
@@ -298,12 +311,143 @@ export function WarehouseOperations({
   }, [mode]);
 
   useEffect(() => {
+    if (mode !== MODE_TRANSFER) return;
+    // Подсказка: если пользователь пришёл из таблицы остатков с выбранным складом — используем как склад-источник.
+    if (!transferFromWarehouseId && inventoryWarehouseId) {
+      setTransferFromWarehouseId(String(inventoryWarehouseId));
+    }
+  }, [mode, transferFromWarehouseId, inventoryWarehouseId]);
+
+  const transferCandidates = useMemo(() => {
+    const list = Array.isArray(products) ? products : [];
+    return list
+      .filter((p) => p && p.id != null)
+      .map((p) => ({
+        id: String(p.id),
+        sku: (p.sku || p.article || p.vendorCode || '').toString(),
+        name: (p.name || p.title || '—').toString(),
+      }));
+  }, [products]);
+
+  const addTransferItem = () => {
+    const pid = String(transferSelectedProductId || '').trim();
+    const qty = Number(transferQty);
+    if (!pid) return;
+    if (!Number.isFinite(qty) || qty <= 0) return;
+    const p = transferCandidates.find((x) => x.id === pid);
+    const sku = p?.sku || '';
+    const name = p?.name || '—';
+    setTransferList((prev) => {
+      const out = Array.isArray(prev) ? [...prev] : [];
+      const idx = out.findIndex((x) => String(x.productId) === pid);
+      if (idx >= 0) out[idx] = { ...out[idx], quantity: Number(out[idx].quantity || 0) + qty };
+      else out.push({ productId: pid, sku, name, quantity: qty });
+      return out;
+    });
+    setTransferSelectedProductId('');
+    setTransferQty(1);
+  };
+
+  const addTransferItemFromProduct = useCallback((product, qtyRaw) => {
+    if (!product?.id) return;
+    const pid = String(product.id);
+    const qty = Number(qtyRaw);
+    if (!Number.isFinite(qty) || qty <= 0) return;
+    const sku = String(product.sku || product.article || product.vendorCode || '').trim();
+    const name = String(product.name || product.title || '—').trim();
+    setTransferList((prev) => {
+      const out = Array.isArray(prev) ? [...prev] : [];
+      const idx = out.findIndex((x) => String(x.productId) === pid);
+      if (idx >= 0) out[idx] = { ...out[idx], quantity: Number(out[idx].quantity || 0) + qty };
+      else out.push({ productId: pid, sku, name, quantity: qty });
+      return out;
+    });
+    if (transferQuickMode) {
+      setTransferQty(1);
+    }
+  }, [transferQuickMode]);
+
+  const removeTransferItem = (pid) => {
+    const id = String(pid);
+    setTransferList((prev) => (Array.isArray(prev) ? prev.filter((x) => String(x.productId) !== id) : []));
+  };
+
+  const submitTransfer = async () => {
+    if (opLoading) return;
+    const fromId = String(transferFromWarehouseId || '').trim();
+    const toId = String(transferToWarehouseId || '').trim();
+    if (!fromId || !toId) {
+      setOpMessage('Выберите склад-источник и склад-получатель');
+      return;
+    }
+    if (fromId === toId) {
+      setOpMessage('Склады должны отличаться');
+      return;
+    }
+    const items = Array.isArray(transferList)
+      ? transferList.filter((x) => x && x.productId && Number(x.quantity) > 0)
+      : [];
+    if (items.length === 0) {
+      setOpMessage('Добавьте хотя бы один товар');
+      return;
+    }
+    setOpLoading(true);
+    setOpMessage(null);
+    try {
+      for (const it of items) {
+        // eslint-disable-next-line no-await-in-loop
+        await stockMovementsApi.transfer(it.productId, {
+          fromWarehouseId: fromId,
+          toWarehouseId: toId,
+          quantity: Number(it.quantity),
+          reason: 'Перемещение между складами',
+          meta: { ui: 'warehouse_transfer' }
+        });
+      }
+      setTransferList([]);
+      setOpMessage('Перемещение выполнено');
+      onRefresh?.();
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.message || 'Не удалось выполнить перемещение';
+      setOpMessage(String(msg));
+    } finally {
+      setOpLoading(false);
+    }
+  };
+
+  const submitTransferScan = useCallback(
+    async (e) => {
+      e?.preventDefault?.();
+      if (opLoading) return;
+      const raw = String(transferScanValue || '').trim();
+      if (!raw) return;
+      try {
+        const p = await lookupProductByAny(raw, {
+          title: 'Выберите товар для перемещения',
+          allowLinkBarcode: true
+        });
+        addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
+        setTransferScanValue('');
+        setOpMessage(null);
+        if (transferQuickMode) setTransferQty(1);
+        window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+      } catch (err) {
+        const msg = err?.message || 'Товар не найден';
+        setOpMessage(String(msg));
+        window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+      }
+    },
+    [opLoading, transferScanValue, lookupProductByAny, addTransferItemFromProduct, transferQty, transferQuickMode]
+  );
+
+  useEffect(() => {
     return () => {
       if (returnScanDebounceRef.current) clearTimeout(returnScanDebounceRef.current);
       if (customerReturnScanDebounceRef.current) clearTimeout(customerReturnScanDebounceRef.current);
       if (inventoryNewScanDebounceRef.current) clearTimeout(inventoryNewScanDebounceRef.current);
       if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
       if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
+      if (transferScanDebounceRef.current) clearTimeout(transferScanDebounceRef.current);
     };
   }, []);
 
@@ -434,10 +578,12 @@ export function WarehouseOperations({
     const v = String(value || '').trim();
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
+      playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     if (!receiptWarehouseId) {
       setLookupError('Сначала выберите склад приёмки');
+      playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     setLookupError(null);
@@ -445,10 +591,12 @@ export function WarehouseOperations({
       const product = await lookupProductByAny(v, { title: 'Выберите товар для поступления', allowLinkBarcode: true });
       addToReceiptList(product, 1);
       setOpMessage(`В список: +1 шт — ${product.name || product.sku}`);
+      playEventSound(SOUND_EVENTS.scan_ok);
       setScanValue('');
       scanInputRef.current?.focus();
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
+      playEventSound(SOUND_EVENTS.scan_error);
     }
   };
 
@@ -622,10 +770,12 @@ export function WarehouseOperations({
     const v = String(value || '').trim();
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
+      playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     if (!returnWarehouseId) {
       setLookupError('Сначала выберите склад списания');
+      playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     setLookupError(null);
@@ -634,14 +784,17 @@ export function WarehouseOperations({
       const available = product.quantity ?? 0;
       if (available < 1) {
         setLookupError('Нет остатка на складе');
+        playEventSound(SOUND_EVENTS.scan_error);
         return;
       }
       addToReturnList(product, 1);
       setOpMessage(`В список возврата: +1 шт — ${product.name || product.sku}`);
+      playEventSound(SOUND_EVENTS.scan_ok);
       setReturnScanValue('');
       returnScanInputRef.current?.focus();
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
+      playEventSound(SOUND_EVENTS.scan_error);
     }
   };
 
@@ -775,10 +928,12 @@ export function WarehouseOperations({
     const v = String(value || '').trim();
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
+      playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     if (!customerReturnWarehouseId) {
       setLookupError('Сначала выберите склад приёмки возврата');
+      playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     setLookupError(null);
@@ -786,10 +941,12 @@ export function WarehouseOperations({
       const product = await lookupProductByAny(v, { title: 'Выберите товар для возврата от клиента' });
       addToCustomerReturnList(product, 1);
       setOpMessage(`В список возврата от клиента: +1 шт — ${product.name || product.sku}`);
+      playEventSound(SOUND_EVENTS.scan_ok);
       setCustomerReturnScanValue('');
       customerReturnScanInputRef.current?.focus();
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
+      playEventSound(SOUND_EVENTS.scan_error);
     }
   };
 
@@ -992,10 +1149,12 @@ export function WarehouseOperations({
     const v = String(value || '').trim();
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
+      playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     if (!inventorySessionWarehouseId) {
       setLookupError('Сначала выберите склад инвентаризации');
+      playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     setLookupError(null);
@@ -1003,11 +1162,13 @@ export function WarehouseOperations({
       const product = await lookupProductByAny(v, { title: 'Выберите товар для инвентаризации' });
       addOneToInventoryNewRow(product);
       setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+      playEventSound(SOUND_EVENTS.scan_ok);
       setInventoryNewScanValue('');
       inventoryNewScanValueRef.current = '';
       inventoryNewScanInputRef.current?.focus();
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
+      playEventSound(SOUND_EVENTS.scan_error);
     }
   };
 
@@ -1143,6 +1304,13 @@ export function WarehouseOperations({
             onClick={() => setMode(MODE_RECEIPTS_LIST)}
           >
             📑 Приёмки
+          </button>
+          <button
+            type="button"
+            className={`warehouse-ops-tab ${mode === MODE_TRANSFER ? 'active' : ''}`}
+            onClick={() => setMode(MODE_TRANSFER)}
+          >
+            ↔️ Перемещение
           </button>
           <button
             type="button"
@@ -1984,6 +2152,231 @@ export function WarehouseOperations({
               )}
             </>
           )}
+        </div>
+      )}
+
+      {mode === MODE_TRANSFER && (
+        <div className="warehouse-ops-panel transfer-panel">
+          <h3 className="warehouse-ops-panel-title">Перемещение между складами</h3>
+          <p className="warehouse-ops-hint">
+            Операция перемещает свободный остаток товара: со склада-источника списывается количество, на складе-получателе
+            прибавляется. В журнале движений сохраняются две записи (out/in).
+          </p>
+
+          <form onSubmit={submitTransferScan} className="warehouse-ops-scan-form" style={{ marginTop: 10 }}>
+            <div style={{ position: 'relative', flex: 1 }}>
+              <input
+                ref={transferScanInputRef}
+                type="text"
+                className="warehouse-ops-scan-input"
+                placeholder="Скан: штрихкод / артикул / название"
+                value={transferScanValue}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setTransferScanValue(v);
+                  if (transferScanDebounceRef.current) clearTimeout(transferScanDebounceRef.current);
+                  if (!v.trim() || isLikelyBarcodeScan(v)) {
+                    if (suggestContext === 'transfer_scan') closeSuggest();
+                    return;
+                  }
+                  transferScanDebounceRef.current = setTimeout(() => {
+                    transferScanDebounceRef.current = null;
+                    const qq = String(v || '').trim();
+                    if (qq.length < 2) return;
+                    const matches = findLocalMatches(qq);
+                    if (matches.length === 0) {
+                      if (suggestContext === 'transfer_scan') closeSuggest();
+                      return;
+                    }
+                    openSuggest('transfer_scan', 'Выберите товар', matches, (p) => {
+                      if (!p) return;
+                      addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
+                      setTransferScanValue('');
+                      window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+                    });
+                  }, 250);
+                }}
+                onBlur={() => {
+                  setTimeout(() => {
+                    if (suggestContext === 'transfer_scan') closeSuggest();
+                  }, 120);
+                }}
+                onFocus={() => {
+                  if (!transferScanValue.trim() || isLikelyBarcodeScan(transferScanValue)) return;
+                  const matches = findLocalMatches(transferScanValue);
+                  if (matches.length > 0) {
+                    openSuggest('transfer_scan', 'Выберите товар', matches, (p) => {
+                      if (!p) return;
+                      addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
+                      setTransferScanValue('');
+                      window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+                    });
+                  }
+                }}
+              />
+              {suggestOpen && suggestContext === 'transfer_scan' && (
+                <div className="warehouse-ops-suggest">
+                  <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
+                  <div className="warehouse-ops-suggest-list">
+                    {suggestList.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="warehouse-ops-suggest-item"
+                        onMouseDown={(ev) => {
+                          // onMouseDown чтобы input не потерял фокус до выбора
+                          ev.preventDefault();
+                          const fn = suggestOnPickRef.current;
+                          if (fn) fn(p);
+                          closeSuggest();
+                        }}
+                      >
+                        <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
+                        <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ width: 140 }}>
+              <label>Кол-во:</label>
+              <input
+                type="number"
+                className="form-control"
+                min={1}
+                value={transferQty}
+                onChange={(e) => setTransferQty(e.target.value)}
+              />
+              <label style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#667085' }}>
+                <input
+                  type="checkbox"
+                  checked={transferQuickMode}
+                  onChange={(e) => setTransferQuickMode(Boolean(e.target.checked))}
+                />
+                Быстрый режим (по скану всегда 1 шт)
+              </label>
+            </div>
+            <Button type="submit" disabled={opLoading || !transferScanValue.trim()}>
+              Добавить по скану
+            </Button>
+          </form>
+
+          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
+            <div className="warehouse-ops-receipt-supplier-col">
+              <label>Со склада:</label>
+              <select
+                className="form-select"
+                value={transferFromWarehouseId}
+                onChange={(e) => setTransferFromWarehouseId(e.target.value)}
+              >
+                <option value="">— выберите —</option>
+                {ownWarehouses.map((w) => (
+                  <option key={w.id} value={String(w.id)}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-col">
+              <label>На склад:</label>
+              <select
+                className="form-select"
+                value={transferToWarehouseId}
+                onChange={(e) => setTransferToWarehouseId(e.target.value)}
+              >
+                <option value="">— выберите —</option>
+                {ownWarehouses.map((w) => (
+                  <option key={w.id} value={String(w.id)}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14, alignItems: 'flex-end' }}>
+            <div style={{ minWidth: 280, flex: 1 }}>
+              <label>Товар:</label>
+              <select
+                className="form-select"
+                value={transferSelectedProductId}
+                onChange={(e) => setTransferSelectedProductId(e.target.value)}
+              >
+                <option value="">— выберите товар —</option>
+                {transferCandidates.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {(p.sku ? `${p.sku} — ` : '') + p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ width: 140 }}>
+              <label>Кол-во:</label>
+              <input
+                type="number"
+                className="form-control"
+                min={1}
+                value={transferQty}
+                onChange={(e) => setTransferQty(e.target.value)}
+              />
+            </div>
+            <Button type="button" onClick={addTransferItem} disabled={opLoading || !transferSelectedProductId}>
+              Добавить
+            </Button>
+          </div>
+
+          {transferList.length > 0 ? (
+            <div className="warehouse-ops-receipts-list-wrap" style={{ marginTop: 12 }}>
+              <table className="warehouse-ops-receipt-list-table table">
+                <thead>
+                  <tr>
+                    <th>Артикул</th>
+                    <th>Название</th>
+                    <th className="text-end">Кол-во</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {transferList.map((row) => (
+                    <tr key={row.productId}>
+                      <td>{row.sku || '—'}</td>
+                      <td>{row.name || '—'}</td>
+                      <td className="text-end">{row.quantity}</td>
+                      <td className="text-end">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => removeTransferItem(row.productId)}
+                          disabled={opLoading}
+                        >
+                          Удалить
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="warehouse-ops-receipt-list-empty" style={{ marginTop: 12 }}>
+              Добавьте товары в список перемещения.
+            </p>
+          )}
+
+          <div className="warehouse-ops-receipt-list-actions" style={{ marginTop: 12 }}>
+            <Button onClick={submitTransfer} disabled={opLoading}>
+              {opLoading ? 'Перемещение…' : 'Выполнить перемещение'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setTransferList([])}
+              disabled={opLoading}
+            >
+              Очистить список
+            </Button>
+          </div>
         </div>
       )}
 

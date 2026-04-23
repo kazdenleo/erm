@@ -325,6 +325,32 @@ export function Purchases() {
       await purchasesApi.scanReceipt(rid, { barcode: v });
       const data = await purchasesApi.getReceipt(rid);
       setReceipt(data);
+      // Обновить строку в списке закупок сразу (колонка «Принято») без ручного refresh:
+      // берём сумму received_quantity (если бэкенд обновляет её на скане), иначе fallback на scanned_quantity.
+      try {
+        const pid = data?.purchase?.id != null ? String(data.purchase.id) : null;
+        const items = Array.isArray(data?.items) ? data.items : [];
+        if (pid && items.length > 0) {
+          const expectedSum = items.reduce((s, it) => s + (Number(it.expected_quantity) || 0), 0);
+          const receivedSum = items.reduce((s, it) => s + (Number(it.received_quantity) || 0), 0);
+          const scannedSum = items.reduce((s, it) => s + (Number(it.scanned_quantity) || 0), 0);
+          const nextReceived = receivedSum > 0 ? receivedSum : scannedSum;
+          setList((prev) =>
+            (prev || []).map((p) => {
+              if (!p || String(p.id) !== pid) return p;
+              return {
+                ...p,
+                expected_total: p.expected_total ?? expectedSum,
+                expectedTotal: p.expectedTotal ?? expectedSum,
+                received_total: nextReceived,
+                receivedTotal: nextReceived,
+              };
+            })
+          );
+        }
+      } catch {
+        // ignore
+      }
       setScanValue('');
       setScanMsg('Ок');
       playEventSound(SOUND_EVENTS.scan_ok);

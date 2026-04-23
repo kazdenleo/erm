@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Modal } from '../Modal/Modal';
 import { Button } from '../Button/Button';
 import { productsApi } from '../../../services/products.api';
+import { playEventSound, SOUND_EVENTS } from '../../../utils/soundSettings';
 import './LinkBarcodeToProductModal.css';
 
 const OPTION_CAP = 400;
@@ -82,6 +83,7 @@ export function LinkBarcodeToProductModal({
     setError(null);
     try {
       const updated = await productsApi.appendBarcode(productId, trimmedBarcode);
+      playEventSound(SOUND_EVENTS.scan_ok);
       onLinked?.(updated);
     } catch (e) {
       setError(
@@ -89,6 +91,7 @@ export function LinkBarcodeToProductModal({
           e.message ||
           'Не удалось сохранить (возможно, штрихкод уже у другого товара)'
       );
+      playEventSound(SOUND_EVENTS.scan_error);
     } finally {
       setSaving(false);
     }
