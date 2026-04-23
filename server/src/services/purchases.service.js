@@ -1204,6 +1204,7 @@ class PurchasesService {
     let mode = 'deleted';
     let reduceByFinal = 0;
     let newExpectedOut = 0;
+    let productIdToTrim = null;
 
     await transaction(async (client) => {
       await assertPurchaseInProfile(client, purId, pid);
@@ -1275,6 +1276,7 @@ class PurchasesService {
       newExpectedOut = newExpected;
 
       const productId = Number(row.product_id);
+      if (Number.isFinite(productId) && productId > 0) productIdToTrim = productId;
       const fullSource = parseSourceOrdersJson(row.source_orders);
 
       let keptSource = fullSource;
@@ -1319,6 +1321,17 @@ class PurchasesService {
     }
     for (const o of uniqRel.values()) {
       await releaseReservesAfterRevertForSourceOrder(o.marketplace, o.orderId);
+    }
+
+    // Если ожидание (incoming) уменьшили, мог образоваться "избыточный резерв"
+    // (reserved > actual + incoming). Доснимем лишнее, чтобы резерв не появлялся без покрытия.
+    if (productIdToTrim) {
+      await ordersService
+        .trimExcessReservesForProduct(productIdToTrim, {
+          reason: 'Уменьшение ожидания по строке закупки',
+          meta: { purchase_id: purId, purchase_item_id: lineId }
+        })
+        .catch(() => {});
     }
 
     return {
