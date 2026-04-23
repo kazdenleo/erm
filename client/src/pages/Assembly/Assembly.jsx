@@ -139,13 +139,7 @@ export function Assembly() {
   // Счётчики сканов по строкам состава (assemblyLineScanKey) или по productId, если состав пуст
   const [scannedQuantities, setScannedQuantities] = useState(() => ({}));
   const [returnToNewLoadingKey, setReturnToNewLoadingKey] = useState('');
-  /** Номер стикера при завершении скан-сборки */
-  const [scanStickerNumber, setScanStickerNumber] = useState('');
   const [finishScanSubmitting, setFinishScanSubmitting] = useState(false);
-  /** Модалка: ручная «Собрать» из таблицы — ввод номера стикера */
-  const [stickerModal, setStickerModal] = useState(null);
-  const [stickerModalInput, setStickerModalInput] = useState('');
-  const [stickerModalBusy, setStickerModalBusy] = useState(false);
   /** URL локального Print Helper для тихой печати (с сервера или из env) — один билд для всех ПК */
   const [printHelperUrl, setPrintHelperUrl] = useState(PRINT_HELPER_URL_DEFAULT);
   const [labelPrintError, setLabelPrintError] = useState(null);
@@ -414,18 +408,14 @@ export function Assembly() {
 
   /** Отметка «Собран» + фоновая печать этикетки (общая для скана и таблицы). */
   const runMarkCollectedFlow = useCallback(
-    async (marketplace, orderId, stickerRaw, { afterSuccess } = {}) => {
-      const trimmed = String(stickerRaw ?? '').trim();
-      if (!trimmed) {
-        alert('Укажите номер стикера.');
-        return false;
-      }
+    async (marketplace, orderId, stickerRaw = null, { afterSuccess } = {}) => {
+      const trimmed = stickerRaw != null ? String(stickerRaw).trim() : '';
       printingFlowRef.current = true;
       const afterPrintDelayMs = 400;
       try {
-        await assemblyApi.markCollected(marketplace, orderId, trimmed);
+        await assemblyApi.markCollected(marketplace, orderId, trimmed || null);
         await loadOrders({ silent: true });
-        afterSuccess?.(trimmed);
+        afterSuccess?.(trimmed || null);
         try {
           await withPrintWait(orderId);
         } finally {
@@ -450,7 +440,6 @@ export function Assembly() {
   );
 
   useEffect(() => {
-    setScanStickerNumber('');
     setFinishScanSubmitting(false);
   }, [currentOrderKey]);
 
@@ -720,8 +709,8 @@ export function Assembly() {
     const { marketplace, orderId } = currentOrderData.order;
     setFinishScanSubmitting(true);
     try {
-      const ok = await runMarkCollectedFlow(marketplace, orderId, scanStickerNumber, {
-        afterSuccess: (trimmedSticker) => {
+      await runMarkCollectedFlow(marketplace, orderId, currentOrderData?.order?.assemblyStickerNumber ?? null, {
+        afterSuccess: () => {
           markedCollectedKeyRef.current = currentOrderKey;
           setCurrentOrderData((prev) =>
             prev
@@ -730,14 +719,12 @@ export function Assembly() {
                   order: {
                     ...prev.order,
                     status: 'assembled',
-                    assemblyStickerNumber: trimmedSticker
                   }
                 }
               : null
           );
         }
       });
-      if (ok) setScanStickerNumber('');
     } finally {
       setFinishScanSubmitting(false);
     }
@@ -768,33 +755,17 @@ export function Assembly() {
     }
   };
 
-  /** Из таблицы: «Собран» + печать — после ввода номера стикера в модалке */
   const handleManualAssembleFromTable = (o) => {
     const rowKey = assemblyOrderSessionKey(o);
     const marketplace = o.marketplace;
     const orderId = String(o.orderId ?? o.order_id ?? '').trim();
     if (!marketplace || !orderId) return;
     if (printingFlowRef.current) return;
-    setStickerModal({ marketplace, orderId, rowKey });
-    setStickerModalInput('');
-  };
-
-  const handleStickerModalConfirm = async () => {
-    if (!stickerModal || stickerModalBusy) return;
-    const modalSnap = stickerModal;
-    setStickerModalBusy(true);
-    setLabelPrintError(null);
-    try {
-      await runMarkCollectedFlow(modalSnap.marketplace, modalSnap.orderId, stickerModalInput, {
-        afterSuccess: () => {
-          if (currentOrderKey === modalSnap.rowKey) handleClearCurrentOrder();
-          setStickerModal(null);
-          setStickerModalInput('');
-        }
-      });
-    } finally {
-      setStickerModalBusy(false);
-    }
+    void runMarkCollectedFlow(marketplace, orderId, o.assemblyStickerNumber ?? o.assembly_sticker_number ?? null, {
+      afterSuccess: () => {
+        if (currentOrderKey === rowKey) handleClearCurrentOrder();
+      },
+    });
   };
 
   const assembledOrders = useMemo(() => {
@@ -895,8 +866,8 @@ export function Assembly() {
       <h1 className="title">🔧 Сборка заказов</h1>
       <p className="subtitle">
         Заказы, отправленные на сборку ({assemblyTableGroups.length}). У каждого заказа в таблице — кнопка «Собрать»
-        без сканера: укажите номер стикера, статус «Собран» и печать этикетки. При скан-сборке номер стикера вводится
-        после того, как все позиции отсканированы.
+        без сканера: статус «Собран» и печать этикетки. При скан‑сборке после того, как все позиции отсканированы,
+        нажмите «Завершить сборку и напечатать».
       </p>
 
       <div className="assembly-scan-block">
@@ -964,21 +935,9 @@ export function Assembly() {
             )}
             {showScanStickerFinish && (
               <div className="assembly-sticker-finish">
-                <p className="assembly-ready-text">Все позиции отсканированы. Укажите номер стикера и завершите сборку.</p>
-                <label htmlFor="assembly-sticker-scan" className="assembly-scan-label" style={{ marginTop: 10 }}>
-                  Номер стикера <span style={{ color: 'var(--error)' }}>*</span>
-                </label>
-                <input
-                  id="assembly-sticker-scan"
-                  type="text"
-                  className="assembly-scan-input"
-                  style={{ maxWidth: 360 }}
-                  value={scanStickerNumber}
-                  onChange={(e) => setScanStickerNumber(e.target.value)}
-                  disabled={finishScanSubmitting}
-                  autoComplete="off"
-                  placeholder="Например, с наклейки / этикетки"
-                />
+                <p className="assembly-ready-text">
+                  Все позиции отсканированы. Завершите сборку — этикетка уйдёт в печать автоматически.
+                </p>
                 <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button
                     variant="primary"
@@ -1076,6 +1035,7 @@ export function Assembly() {
                 <th>ID заказа</th>
                 <th>Товар</th>
                 <th>Кол-во</th>
+                <th>Стикер</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -1083,14 +1043,14 @@ export function Assembly() {
               {assemblyTableGroups.map(({ key: groupKey, rows, primary }) => {
                 const rowKey = groupKey;
                 const isReturnLoading = returnToNewLoadingKey === rowKey;
-                const isStickerModalThisRow = stickerModal?.rowKey === rowKey;
-                const isManualAssembleLoading = isStickerModalThisRow && stickerModalBusy;
                 const orderIds = [...new Set(rows.map((r) => String(r.orderId ?? r.order_id ?? '').trim()).filter(Boolean))];
                 const mp = primary.marketplace;
                 const qtyCell =
                   rows.length === 1
                     ? primary.quantity ?? '—'
                     : rows.map((r) => r.quantity ?? 1).join(' + ');
+                const sticker =
+                  primary.assemblyStickerNumber ?? primary.assembly_sticker_number ?? '—';
                 return (
                   <tr key={groupKey}>
                     <td>{mp}</td>
@@ -1143,6 +1103,7 @@ export function Assembly() {
                       </div>
                     </td>
                     <td>{qtyCell}</td>
+                    <td>{sticker}</td>
                     <td>
                       <div className="assembly-row-actions">
                         <button
@@ -1158,10 +1119,10 @@ export function Assembly() {
                           variant="primary"
                           size="small"
                           onClick={() => handleManualAssembleFromTable(primary)}
-                          disabled={isReturnLoading || stickerModalBusy || finishScanSubmitting}
+                          disabled={isReturnLoading || finishScanSubmitting}
                           title="Отметить заказ собранным без сканирования и напечатать этикетку"
                         >
-                          {isManualAssembleLoading ? '...' : '✓ Собрать'}
+                          ✓ Собрать
                         </Button>
                         <Button
                           variant="secondary"
@@ -1173,7 +1134,7 @@ export function Assembly() {
                               primary.orderGroupId ?? primary.order_group_id
                             )
                           }
-                          disabled={isReturnLoading || stickerModalBusy || finishScanSubmitting}
+                          disabled={isReturnLoading || finishScanSubmitting}
                           title="Вернуть заказ в статус «Новый»"
                         >
                           {isReturnLoading ? '...' : '↩️ Вернуть в новые'}
@@ -1278,50 +1239,6 @@ export function Assembly() {
         </div>
       )}
 
-      <Modal
-        isOpen={Boolean(stickerModal)}
-        onClose={() => {
-          if (stickerModalBusy) return;
-          setStickerModal(null);
-          setStickerModalInput('');
-        }}
-        title="Номер стикера"
-        size="small"
-      >
-        <div className="settings-users-form">
-          <p style={{ marginBottom: 12 }}>
-            Заказ <strong>{stickerModal?.orderId ?? ''}</strong> — введите номер стикера с упаковки / этикетки.
-          </p>
-          <label>
-            Номер стикера <span style={{ color: 'var(--error)' }}>*</span>
-            <input
-              type="text"
-              className="login-input"
-              style={{ width: '100%', marginTop: 6 }}
-              value={stickerModalInput}
-              onChange={(e) => setStickerModalInput(e.target.value)}
-              disabled={stickerModalBusy}
-              autoComplete="off"
-            />
-          </label>
-          <div className="admin-form-actions" style={{ marginTop: 16 }}>
-            <Button
-              variant="secondary"
-              disabled={stickerModalBusy}
-              onClick={() => {
-                if (stickerModalBusy) return;
-                setStickerModal(null);
-                setStickerModalInput('');
-              }}
-            >
-              Отмена
-            </Button>
-            <Button variant="primary" disabled={stickerModalBusy} onClick={() => void handleStickerModalConfirm()}>
-              {stickerModalBusy ? '…' : 'Собрать и напечатать'}
-            </Button>
-          </div>
-        </div>
-      </Modal>
     </div>
   );
 }

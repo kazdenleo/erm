@@ -179,14 +179,16 @@ export const assemblyApi = {
 
   /**
    * Отметить заказ как собранный (статус «Собран», убрать из списка сборки)
-   * @param {string} stickerNumber — номер стикера (обязателен)
+   * stickerNumber больше не обязателен: этикетка печатается по orderId.
    */
-  markCollected: async (marketplace, orderId, stickerNumber) => {
-    const response = await api.post('/assembly/mark-collected', {
+  markCollected: async (marketplace, orderId, stickerNumber = null) => {
+    const body = {
       marketplace: String(marketplace),
       orderId: String(orderId),
-      stickerNumber: String(stickerNumber ?? '').trim()
-    });
+    };
+    const sn = stickerNumber != null ? String(stickerNumber).trim() : '';
+    if (sn) body.stickerNumber = sn;
+    const response = await api.post('/assembly/mark-collected', body);
     return response.data?.data ?? response.data;
   }
 };

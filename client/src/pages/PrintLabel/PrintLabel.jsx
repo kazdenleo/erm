@@ -8,6 +8,17 @@ export function PrintLabel() {
   const [blobUrl, setBlobUrl] = useState('');
   const [contentType, setContentType] = useState('');
   const [error, setError] = useState('');
+  const [printTipDismissed, setPrintTipDismissed] = useState(false);
+
+  useEffect(() => {
+    // Минимизируем "заголовок" в дефолтных колонтитулах (если пользователь оставит их включёнными).
+    // Само содержимое стикера от этого не меняется; URL/дата в колонтитулах — настройка браузера.
+    try {
+      document.title = ' ';
+    } catch {
+      /* ignore */
+    }
+  }, [id]);
 
   useEffect(() => {
     if (!id) return;
@@ -71,6 +82,74 @@ export function PrintLabel() {
 
   return (
     <div style={{ margin: 0, padding: 0, width: '100vw', height: '100vh', background: '#fff' }}>
+      <style>{`
+        @page { margin: 0; }
+        @media print {
+          html, body { margin: 0 !important; padding: 0 !important; }
+          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        }
+      `}</style>
+      {blobUrl && !error && !printTipDismissed && (
+        <div
+          style={{
+            position: 'fixed',
+            left: 12,
+            right: 12,
+            top: 12,
+            zIndex: 9999,
+            padding: '10px 12px',
+            borderRadius: 8,
+            background: 'rgba(15, 23, 42, 0.92)',
+            color: '#fff',
+            fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+            fontSize: 13,
+            lineHeight: 1.35
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Печать без даты/URL (колонтитулы браузера)</div>
+          <div>
+            В Chrome/Edge в диалоге печати откройте <strong>«Дополнительные настройки»</strong> и отключите{' '}
+            <strong>«Колонтитулы» / «Headers and footers»</strong>. Иначе браузер сам добавит дату, заголовок и адрес
+            страницы — это <strong>не часть</strong> файла стикера.
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => setPrintTipDismissed(true)}
+              style={{
+                border: 0,
+                borderRadius: 6,
+                padding: '6px 10px',
+                background: '#2563eb',
+                color: '#fff',
+                cursor: 'pointer'
+              }}
+            >
+              Понятно, скрыть
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  window.print();
+                } catch {
+                  /* ignore */
+                }
+              }}
+              style={{
+                border: '1px solid rgba(255,255,255,0.35)',
+                borderRadius: 6,
+                padding: '6px 10px',
+                background: 'transparent',
+                color: '#fff',
+                cursor: 'pointer'
+              }}
+            >
+              Печать ещё раз
+            </button>
+          </div>
+        </div>
+      )}
       {error ? (
         <div style={{ padding: 16, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>Не удалось открыть этикетку для печати</div>
