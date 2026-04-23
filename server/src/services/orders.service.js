@@ -59,6 +59,18 @@ class OrdersService {
     this.repository = repositoryFactory.getOrdersRepository();
   }
 
+  async setAssemblyStickerNumber(marketplace, orderId, stickerNumber, profileId = null) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return null;
+    if (!marketplace || orderId == null) return null;
+    if (typeof this.repository.setAssemblyStickerNumberByMarketplaceAndOrderId !== 'function') return null;
+    return await this.repository.setAssemblyStickerNumberByMarketplaceAndOrderId(
+      marketplace,
+      String(orderId),
+      stickerNumber,
+      profileId
+    );
+  }
+
   /**
    * Если зарезервировано больше, чем покрывает остаток + «в пути», снимаем лишнее с заказов
    * (сначала с самых новых по created_at).

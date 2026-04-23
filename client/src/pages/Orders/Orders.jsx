@@ -454,23 +454,8 @@ export function Orders() {
     void loadStatusCounts({ silent: true });
   }, [orders, loadStatusCounts]);
 
-  useEffect(() => {
-    // Звук "Новый заказ": когда автообновление подтянуло новые заказы (рост количества new).
-    if (!initialOrdersLoadedRef.current) return;
-    if (ordersAutoSyncPaused) return;
-    const cur = Number(statusCounts?.new ?? 0);
-    const prev = prevNewCountRef.current;
-    prevNewCountRef.current = cur;
-    // Не пищим при первом заходе на страницу: сначала "вооружаемся" после первой загрузки счётчика.
-    if (!newOrderSoundArmedRef.current) {
-      newOrderSoundArmedRef.current = true;
-      return;
-    }
-    if (prev == null) return;
-    if (cur > prev) {
-      playEventSound(SOUND_EVENTS.new_order);
-    }
-  }, [statusCounts?.new, ordersAutoSyncPaused]);
+  // Звук "Новый заказ" перенесён в глобальный опрос (Layout) — чтобы работать на любой странице
+  // и не срабатывать при открытии страницы «Заказы».
 
   useEffect(() => {
     setCurrentPage(1);

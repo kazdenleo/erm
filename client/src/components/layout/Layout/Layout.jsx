@@ -6,10 +6,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Header } from '../Header/Header';
 import { Sidebar } from '../Sidebar/Sidebar';
+import { useAuth } from '../../../context/AuthContext.jsx';
+import { useNewOrdersSound } from '../../../hooks/useNewOrdersSound';
 
 export function Layout({ children }) {
   const [isSidebarClosed, setIsSidebarClosed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const { user } = useAuth();
+
+  // Глобальный звук "Новый заказ": работает на любой странице, пока пользователь авторизован.
+  useNewOrdersSound({ enabled: Boolean(user?.id) });
 
   const toggleSidebar = useCallback(() => {
     setIsSidebarClosed((v) => !v);

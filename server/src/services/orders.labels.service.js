@@ -92,7 +92,9 @@ class OrdersLabelsService {
 
     if (!fs.existsSync(filePath)) {
       try {
-        const buf = await fetchMarketplaceLabel(order);
+        const out = await fetchMarketplaceLabel(order);
+        const buf = out && Buffer.isBuffer(out.buffer) ? out.buffer : (Buffer.isBuffer(out) ? out : null);
+        const stickerNumber = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
         if (!buf || !Buffer.isBuffer(buf) || buf.length === 0) {
           const error = new Error('Label not found');
           error.statusCode = 404;
@@ -105,6 +107,15 @@ class OrdersLabelsService {
           throw new Error('Этикетка от маркетплейса пуста');
         }
         logLabelEvent(`Cached(on-demand) ${order.marketplace}:${order.orderId}`);
+        // Сохраняем номер стикера (если маркетплейс его возвращает вместе с этикеткой)
+        try {
+          if (stickerNumber != null && String(stickerNumber).trim() !== '') {
+            const profileId = order?.profileId ?? order?.profile_id ?? null;
+            await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, stickerNumber, profileId);
+          }
+        } catch {
+          /* ignore */
+        }
       } catch (e) {
         const err = new Error(e.statusCode ? e.message : `Label fetch failed: ${e.message}`);
         err.statusCode = e.statusCode || 502;
@@ -135,10 +146,20 @@ class OrdersLabelsService {
         const maxAttempts = isWB ? 4 : 1;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
-            const buf = await fetchMarketplaceLabel(order);
+            const out = await fetchMarketplaceLabel(order);
+            const buf = out && Buffer.isBuffer(out.buffer) ? out.buffer : (Buffer.isBuffer(out) ? out : null);
+            const stickerNumber = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
             if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
               fs.writeFileSync(filePath, buf);
               logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId} attempt=${attempt}`);
+            }
+            try {
+              if (stickerNumber != null && String(stickerNumber).trim() !== '') {
+                const profileId = order?.profileId ?? order?.profile_id ?? null;
+                await ordersService.setAssemblyStickerNumber(order.marketplace, order.orderId, stickerNumber, profileId);
+              }
+            } catch {
+              /* ignore */
             }
             return;
           } catch (e) {
@@ -210,9 +231,9 @@ class OrdersLabelsService {
 
 async function fetchMarketplaceLabel(order) {
   const mp = normalizeMarketplaceForLabel(order.marketplace);
-  if (mp === 'ozon') return fetchOzonLabel(order);
+  if (mp === 'ozon') return { buffer: await fetchOzonLabel(order), stickerNumber: null };
   if (mp === 'wildberries') return fetchWBLabel(order);
-  if (mp === 'yandex') return fetchYMLabel(order);
+  if (mp === 'yandex') return { buffer: await fetchYMLabel(order), stickerNumber: null };
   return null;
 }
 
@@ -369,6 +390,21 @@ async function fetchWBLabel(order) {
       return { resp, text };
     }
 
+    function extractStickerNumber(sticker) {
+      if (!sticker || typeof sticker !== 'object') return null;
+      const cand =
+        sticker.stickerId ??
+        sticker.sticker_id ??
+        sticker.stickerNumber ??
+        sticker.sticker_number ??
+        sticker.sticker ??
+        sticker.id ??
+        null;
+      if (cand == null) return null;
+      const s = String(cand).trim();
+      return s ? s : null;
+    }
+
     // WB: по документации есть несколько контуров/моделей заказов.
     // "Классический" FBS: /api/v3/orders/stickers
     // DBW (Delivery by Wildberries courier): /api/v3/dbw/orders/stickers
@@ -428,7 +464,7 @@ async function fetchWBLabel(order) {
             const first2 = st2[0];
             const base64_2 = first2?.file;
             if (base64_2 && typeof base64_2 === 'string') {
-              return Buffer.from(base64_2, 'base64');
+              return { buffer: Buffer.from(base64_2, 'base64'), stickerNumber: extractStickerNumber(first2) };
             }
             logLabelEvent('[WB][DBW] sticker has no file field');
           } else {
@@ -492,7 +528,7 @@ async function fetchWBLabel(order) {
       throw new Error('WB: в ответе нет поля file');
     }
 
-    return Buffer.from(base64, 'base64');
+    return { buffer: Buffer.from(base64, 'base64'), stickerNumber: extractStickerNumber(first) };
   } catch (e) {
     throw e;
   }

@@ -814,6 +814,35 @@ class OrdersRepositoryPG {
       );
     }
   }
+
+  /**
+   * Обновить номер стикера (без изменения статуса).
+   * Используется при загрузке этикетки с маркетплейса: номер нужен для отображения в таблицах.
+   */
+  async setAssemblyStickerNumberByMarketplaceAndOrderId(marketplace, orderId, stickerNumber, profileId = null) {
+    const dbM = normalizeMarketplaceForDb(marketplace);
+    const pid = normalizeProfileId(profileId);
+    const sticker =
+      stickerNumber != null && String(stickerNumber).trim() !== '' ? String(stickerNumber).trim() : null;
+    if (!sticker) return null;
+    const result = await query(
+      pid
+        ? `
+          UPDATE orders
+          SET assembly_sticker_number = $4, updated_at = CURRENT_TIMESTAMP
+          WHERE marketplace = $1 AND order_id = $2 AND profile_id = $3::bigint
+          RETURNING *
+        `
+        : `
+          UPDATE orders
+          SET assembly_sticker_number = $3, updated_at = CURRENT_TIMESTAMP
+          WHERE marketplace = $1 AND order_id = $2
+          RETURNING *
+        `,
+      pid ? [dbM, String(orderId), pid, sticker] : [dbM, String(orderId), sticker]
+    );
+    return result.rows?.[0] ?? null;
+  }
   
   /**
    * Обновить заказ
