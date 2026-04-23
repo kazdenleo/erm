@@ -773,9 +773,22 @@ class ProductsRepositoryPG {
   async findByBarcode(barcode) {
     const trimmed = typeof barcode === 'string' ? barcode.trim() : String(barcode || '');
     if (!trimmed) return null;
+    const digits = trimmed.replace(/\D/g, '');
+    const hasDigits = digits.length > 0;
+    // В БД штрихкоды могут храниться с пробелами/разделителями или с префиксами.
+    // Для сканера важно найти по "чистым" цифрам.
     const result = await query(
-      'SELECT product_id FROM barcodes WHERE barcode = $1 LIMIT 1',
-      [trimmed]
+      hasDigits
+        ? `SELECT product_id
+           FROM barcodes
+           WHERE TRIM(barcode) = TRIM($1)
+              OR REGEXP_REPLACE(barcode, '\\D', '', 'g') = $2
+           LIMIT 1`
+        : `SELECT product_id
+           FROM barcodes
+           WHERE TRIM(barcode) = TRIM($1)
+           LIMIT 1`,
+      hasDigits ? [trimmed, digits] : [trimmed]
     );
     const row = result.rows[0];
     if (!row) return null;

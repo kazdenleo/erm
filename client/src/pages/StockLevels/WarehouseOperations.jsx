@@ -1159,7 +1159,12 @@ export function WarehouseOperations({
     }
     setLookupError(null);
     try {
-      const product = await lookupProductByAny(v, { title: 'Выберите товар для инвентаризации' });
+      const product = await lookupProductByAny(v, {
+        title: 'Выберите товар для инвентаризации',
+        // В инвентаризации скан часто первым делом — новый штрихкод.
+        // Если товара нет, предложим сразу привязать штрихкод к товару.
+        allowLinkBarcode: isLikelyBarcodeScan(v)
+      });
       addOneToInventoryNewRow(product);
       setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
@@ -1167,7 +1172,9 @@ export function WarehouseOperations({
       inventoryNewScanValueRef.current = '';
       inventoryNewScanInputRef.current?.focus();
     } catch (e) {
-      setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
+      const msg = String(e?.message || 'поиск не удался');
+      setOpMessage('Ошибка: ' + msg);
+      setLookupError(msg);
       playEventSound(SOUND_EVENTS.scan_error);
     }
   };
