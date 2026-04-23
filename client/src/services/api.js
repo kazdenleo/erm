@@ -6,7 +6,21 @@
 import axios from 'axios';
 import { getApiSessionContext } from './apiSession.js';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || '/api';
+function resolveApiBaseUrl() {
+  const env = process.env.REACT_APP_API_URL;
+  // На HTTPS-странице браузер блокирует любые XHR на http:// (Mixed Content).
+  // Поэтому для прод-HTTPS всегда используем относительный '/api' (через тот же origin).
+  try {
+    if (typeof window !== 'undefined' && window.location?.protocol === 'https:') {
+      if (env && /^http:\/\//i.test(String(env))) return '/api';
+    }
+  } catch {
+    // ignore
+  }
+  return env || '/api';
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 const api = axios.create({
   baseURL: API_BASE_URL,
