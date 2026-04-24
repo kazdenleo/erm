@@ -10,17 +10,19 @@ ALTER TABLE integrations
 -- Если организаций нет — оставим NULL, пользователь заполнит через UI.
 DO $$
 BEGIN
+  -- В UPDATE нельзя безопасно ссылаться на алиас target-таблицы из LATERAL в некоторых версиях PG.
+  -- Используем коррелированный подзапрос: "первая организация" для profile_id интеграции.
   UPDATE integrations i
-  SET organization_id = o.id
-  FROM LATERAL (
-    SELECT id
-    FROM organizations
-    WHERE profile_id = i.profile_id
-    ORDER BY id ASC
+  SET organization_id = (
+    SELECT o.id
+    FROM organizations o
+    WHERE o.profile_id = i.profile_id
+    ORDER BY o.id ASC
     LIMIT 1
-  ) o
+  )
   WHERE i.organization_id IS NULL
-    AND i.profile_id IS NOT NULL;
+    AND i.profile_id IS NOT NULL
+    AND EXISTS (SELECT 1 FROM organizations o2 WHERE o2.profile_id = i.profile_id);
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_integrations_organization_id ON integrations(organization_id);
