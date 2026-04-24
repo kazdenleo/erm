@@ -9,6 +9,7 @@ import logger from '../utils/logger.js';
 import { query, transaction } from '../config/database.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
+import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
 
 class IntegrationsService {
   constructor() {
@@ -88,7 +89,20 @@ class IntegrationsService {
 
     if (repositoryFactory.isUsingPostgreSQL()) {
       const integration = await this.repository.findByCode(type, profileId, organizationId);
-      return integration ? integration.config : {};
+      if (integration) return integration.config || {};
+      // Если интеграция не задана в integrations, попробуем взять ключи из marketplace_cabinets выбранной организации.
+      // Это основной UI для Ozon/Яндекс (и WB тоже хранится там как "кабинет" организации).
+      if (organizationId != null && organizationId !== '') {
+        try {
+          const list = await findAllMarketplaceCabinets(String(organizationId), { marketplaceType: type });
+          const active = (list || []).filter((r) => r && (r.is_active ?? r.isActive) !== false);
+          const first = active[0] || list?.[0] || null;
+          if (first?.config && typeof first.config === 'object') return first.config;
+        } catch (e) {
+          logger.warn('[Integrations Service] marketplace_cabinets config lookup:', e?.message || e);
+        }
+      }
+      return {};
     } else {
       // Старое хранилище
       return await readData(type) || {};
@@ -192,7 +206,7 @@ class IntegrationsService {
     try {
       if (type === 'ozon') {
         // лёгкий запрос, который проверяет Client-Id/Api-Key
-        await this._ozonApiPost('/v1/description-category/tree', { language: 'DEFAULT' }, { profileId });
+        await this._ozonApiPost('/v1/description-category/tree', { language: 'DEFAULT' }, { profileId, ozonOverride: cfg });
         checks.push({ scope: 'ozon_v1', valid: true, message: 'Ozon: v1 OK (categories)' });
 
         // Доп. проверка боевого эндпоинта цен (v5) — он нужен для комиссий/мин. цен.
@@ -231,7 +245,7 @@ class IntegrationsService {
               cursor: '',
               filter: { offer_id: [probeOfferId], visibility: 'ALL' },
               limit: 1
-            }, { profileId });
+            }, { profileId, ozonOverride: cfg });
             checks.push({ scope: 'ozon_v5_prices', valid: true, message: 'Ozon: v5 OK (prices)' });
             valid = true;
             message = 'Ozon: ключ валиден';
@@ -279,7 +293,7 @@ class IntegrationsService {
 
         // WB: официальная проверка токена через GET /ping для каждого сервиса
         // (проверяет доставку запроса, валидность токена и совпадение категории токена с сервисом)
-        const cfgWb = await this.getMarketplaceConfig('wildberries', { profileId });
+        const cfgWb = await this.getMarketplaceConfig('wildberries', { profileId, organizationId });
         // UI/legacy могли сохранить токен как apiKey (camelCase)
         const apiKey = this._normalizeWbToken(cfgWb?.api_key ?? cfgWb?.apiKey);
         const token_meta = this._safeTokenMeta(apiKey);
