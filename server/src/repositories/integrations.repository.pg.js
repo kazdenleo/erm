@@ -49,11 +49,13 @@ class IntegrationsRepositoryPG {
    * Получить интеграцию по коду
    */
   async findByCode(code, profileId = null) {
-    if (profileId != null && profileId !== '') {
-      const result = await query('SELECT * FROM integrations WHERE profile_id = $1 AND code = $2', [profileId, code]);
-      return result.rows[0] || null;
-    }
-    const result = await query('SELECT * FROM integrations WHERE code = $1', [code]);
+    // В multi-tenant режиме нельзя читать "глобальную" интеграцию без profile_id:
+    // это приводит к смешиванию ключей между аккаунтами.
+    if (profileId == null || profileId === '') return null;
+    const result = await query('SELECT * FROM integrations WHERE profile_id = $1 AND code = $2', [
+      profileId,
+      code
+    ]);
     return result.rows[0] || null;
   }
   
