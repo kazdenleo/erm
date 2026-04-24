@@ -269,14 +269,18 @@ async function fetchOzonLabel(order) {
     if (!check.ok) {
       const text = await check.text();
       logLabelEvent(`[Ozon] get posting failed ${check.status}: ${text.substring(0, 300)}`);
-      throw new Error(`Ozon get failed ${check.status}`);
+      const err = new Error(`Ozon get failed ${check.status}`);
+      err.statusCode = check.status;
+      throw err;
     }
     const checkData = await check.json();
     const postingResult = checkData?.result;
     const found = postingResult && (Array.isArray(postingResult) ? postingResult.length > 0 : typeof postingResult === 'object');
     if (!found) {
       logLabelEvent(`[Ozon] posting not found: ${order.orderId}`);
-      throw new Error('Ozon posting not found');
+      const err = new Error('Ozon posting not found');
+      err.statusCode = 404;
+      throw err;
     }
 
     const ozonHeaders = {
@@ -338,14 +342,19 @@ async function fetchOzonLabel(order) {
     } else {
       logLabelEvent(`[Ozon] package-label/create ${createResp.status}: ${createBody.substring(0, 300)}`);
       const detail = createBody.replace(/\s+/g, ' ').trim().substring(0, 300);
-      throw new Error(
+      const err = new Error(
         `Ozon: не удалось создать задание на этикетку (${createResp.status}). ${detail || 'Заказ должен быть в статусе «Ожидает отгрузки».'}`
       );
+      err.statusCode = createResp.status;
+      throw err;
     }
 
-    throw new Error(
+    const err = new Error(
       'Ozon: этикетка недоступна. Задание создано, но файл не получен в течение 30 сек. Попробуйте запросить этикетку через минуту или создайте в ЛК Ozon.'
     );
+    // Это не "Bad Gateway": Ozon ещё не отдал файл, чаще всего это временно.
+    err.statusCode = 409;
+    throw err;
   } catch (e) {
     throw e;
   }
