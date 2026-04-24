@@ -32,6 +32,7 @@ import organizationsRepositoryPG from '../repositories/organizations.repository.
 import profilesRepositoryPG from '../repositories/profiles.repository.pg.js';
 import usersRepositoryPG from '../repositories/users.repository.pg.js';
 import inquiriesRepositoryPG from '../repositories/inquiries.repository.pg.js';
+import marketplaceInventorySnapshotsRepositoryPG from '../repositories/marketplaceInventorySnapshots.repository.pg.js';
 
 // Определяем, использовать ли PostgreSQL
 const USE_POSTGRESQL = getEnv('USE_POSTGRESQL', 'true').toLowerCase() === 'true';
@@ -94,6 +95,16 @@ class RepositoryFactory {
       throw new Error('Supplier stocks repository is only available with PostgreSQL');
     }
     return supplierStocksRepositoryPG;
+  }
+
+  /**
+   * Снапшоты остатков на складах маркетплейсов / в пути (только PostgreSQL)
+   */
+  getMarketplaceInventorySnapshotsRepository() {
+    if (!this.usePostgreSQL) {
+      throw new Error('Marketplace inventory snapshots repository is only available with PostgreSQL');
+    }
+    return marketplaceInventorySnapshotsRepositoryPG;
   }
   
   /**

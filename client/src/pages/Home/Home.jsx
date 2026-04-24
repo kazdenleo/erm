@@ -13,6 +13,7 @@ import { useProducts } from '../../hooks/useProducts';
 import { useOrders } from '../../hooks/useOrders';
 import { questionsApi } from '../../services/questions.api';
 import { integrationsApi } from '../../services/integrations.api';
+import { MarketplaceInventorySummary } from '../../components/MarketplaceInventorySummary/MarketplaceInventorySummary.jsx';
 import { countOrderGroupsWithStatuses } from '../../utils/orderListGroupKey';
 import './Home.css';
 
@@ -300,6 +301,13 @@ export function Home() {
                   })()}
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+        {isAccountAdmin && (
+          <div className="col-12">
+            <div className="mb-3">
+              <MarketplaceInventorySummary visible />
             </div>
           </div>
         )}

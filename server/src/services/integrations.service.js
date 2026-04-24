@@ -603,7 +603,40 @@ class IntegrationsService {
       throw err;
     }
 
+    // Нормализуем схему: UI исторически мог присылать camelCase.
+    // В БД и внутренних сервисах ожидаем snake_case.
     config = { ...config };
+    if (type === 'ozon') {
+      if (config.client_id == null || String(config.client_id).trim() === '') {
+        if (config.clientId != null && String(config.clientId).trim() !== '') {
+          config.client_id = config.clientId;
+        }
+      }
+      if (config.api_key == null || String(config.api_key).trim() === '') {
+        if (config.apiKey != null && String(config.apiKey).trim() !== '') {
+          config.api_key = config.apiKey;
+        }
+      }
+    }
+    if (type === 'wildberries') {
+      if (config.api_key == null || String(config.api_key).trim() === '') {
+        if (config.apiKey != null && String(config.apiKey).trim() !== '') {
+          config.api_key = config.apiKey;
+        }
+      }
+    }
+    if (type === 'yandex') {
+      if (config.api_key == null || String(config.api_key).trim() === '') {
+        if (config.apiKey != null && String(config.apiKey).trim() !== '') {
+          config.api_key = config.apiKey;
+        }
+      }
+      if (config.campaign_id == null || String(config.campaign_id).trim() === '') {
+        if (config.campaignId != null && String(config.campaignId).trim() !== '') {
+          config.campaign_id = config.campaignId;
+        }
+      }
+    }
     if (type === 'wildberries' && config.api_key != null) {
       config.api_key = this._normalizeWbToken(config.api_key) || config.api_key;
     }

@@ -41,10 +41,12 @@ import * as platformMarketplaceNotificationsController from '../controllers/plat
 import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
 import downloadsRoutes from './downloads.routes.js';
+import marketplaceInventoryRoutes from './marketplaceInventory.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
 import { requireAuth } from '../middleware/auth.js';
 import repositoryFactory from '../config/repository-factory.js';
+import { marketplaceProductIdentifiersHelp } from '../controllers/helpDocs.controller.js';
 
 const router = express.Router();
 
@@ -57,6 +59,9 @@ router.get('/config', (req, res) => {
     },
   });
 });
+
+// Справочник идентификаторов товара на МП (без JSON — обычная HTML-страница для браузера)
+router.get('/help/marketplace-product-identifiers', marketplaceProductIdentifiersHelp);
 
 // Публичные маршруты этикеток — без авторизации, чтобы Print Helper (exe) мог скачать файл по URL
 router.get('/orders/:orderId/label', validateOrderId, wrapAsync(ordersController.getLabel.bind(ordersController)));
@@ -154,6 +159,7 @@ router.post(
 router.use('/platform/marketplace-notifications', platformMarketplaceNotificationsRoutes);
 router.use('/reviews', reviewsRoutes);
 router.use('/downloads', downloadsRoutes);
+router.use('/marketplace-inventory', marketplaceInventoryRoutes);
 
 // Products API
 router.use('/products', (req, res, next) => {

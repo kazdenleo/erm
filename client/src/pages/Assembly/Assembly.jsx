@@ -7,7 +7,6 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
-import { Modal } from '../../components/common/Modal/Modal';
 import { OrderLabelIcon } from '../../components/common/OrderLabelIcon/OrderLabelIcon';
 import { ordersApi, assemblyApi } from '../../services/orders.api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';

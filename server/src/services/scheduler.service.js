@@ -19,6 +19,7 @@ import pricesService from './prices.service.js';
 import ordersSyncService from './orders.sync.service.js';
 import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
+import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
 
 /** Фоновая синхронизация FBS-заказов (Ozon/WB/Яндекс). Выкл: ORDERS_FBS_SYNC_ENABLED=0 */
 function isOrdersFbsSyncEnabled() {
@@ -53,6 +54,18 @@ function getReviewsSyncCronExpression() {
 function getMinPricesNightlyCron() {
   const c = process.env.MIN_PRICES_NIGHTLY_CRON;
   return c && String(c).trim() ? String(c).trim() : '15 3 * * *';
+}
+
+/** Ежедневный импорт остатков МП + "в пути"/возвраты. По умолчанию 04:30 МСК; переопределение: MP_INVENTORY_DAILY_CRON */
+function getMarketplaceInventoryDailyCron() {
+  const c = process.env.MP_INVENTORY_DAILY_CRON;
+  return c && String(c).trim() ? String(c).trim() : '30 4 * * *';
+}
+
+function isMarketplaceInventoryDailyEnabled() {
+  const v = process.env.MP_INVENTORY_DAILY_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
 /** Для fallback-планировщика: минут от 01:00 МСК до запуска полного пересчёта (должно совпадать с дефолтным cron). */
@@ -443,6 +456,28 @@ class SchedulerService {
         schedule: '0 6 * * *',
         description: 'Ежедневная проверка API интеграций (Ozon, WB, Yandex) для уведомлений'
       });
+
+      if (isMarketplaceInventoryDailyEnabled()) {
+        const mpInvCron = getMarketplaceInventoryDailyCron();
+        this.jobs.push({
+          name: 'marketplace-inventory-daily',
+          job: async () => {
+            try {
+              await runMarketplaceInventoryDailySnapshot();
+            } catch (e) {
+              logger.error('[Scheduler] Marketplace inventory daily snapshot failed:', e?.message || e);
+              addRuntimeNotification({
+                type: 'error',
+                message: `Ошибка ежедневного импорта остатков маркетплейсов: ${e?.message || e}`
+              });
+            }
+          },
+          schedule: mpInvCron,
+          description: 'Ежедневный импорт остатков МП + товары в пути/возвраты (MP_INVENTORY_DAILY_CRON)'
+        });
+      } else {
+        logger.info('[Scheduler] Marketplace inventory daily snapshot disabled (MP_INVENTORY_DAILY_ENABLED)');
+      }
 
       if (reviewsSyncJob) {
         this.jobs.push({

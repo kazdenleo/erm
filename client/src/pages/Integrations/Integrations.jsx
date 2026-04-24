@@ -101,6 +101,16 @@ export function Integrations() {
     <div className="card">
       <h1 className="title">Интеграции</h1>
       <p className="subtitle">Настройка подключений к маркетплейсам и поставщикам</p>
+      <p className="subtitle small text-muted mb-3" style={{ marginTop: '-0.25rem' }}>
+        <a
+          href="/api/help/marketplace-product-identifiers"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Справочник: идентификаторы товара на маркетплейсах
+        </a>
+        {' — открывается в браузере (новая вкладка).'}
+      </p>
 
       {error && (
         <div className="error" style={{ marginBottom: '16px' }}>
