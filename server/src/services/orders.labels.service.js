@@ -602,7 +602,18 @@ async function fetchYMLabel(order) {
   } else if (Array.isArray(campaignIds)) {
     for (const c of campaignIds) campaignsFlat.push(Number(c));
   }
-  const unique = [...new Set(campaignsFlat.filter(n => !Number.isNaN(n) && n > 0))];
+  // Если в интеграции указан campaign_id — используем его приоритетно, чтобы не попадать в "чужую" кампанию.
+  const configuredCampaignIdRaw = ym?.campaign_id ?? ym?.campaignId ?? null;
+  const configuredCampaignId = configuredCampaignIdRaw != null && String(configuredCampaignIdRaw).trim() !== ''
+    ? Number(configuredCampaignIdRaw)
+    : null;
+  const uniqSet = new Set(campaignsFlat.filter(n => !Number.isNaN(n) && n > 0));
+  const unique = [];
+  if (configuredCampaignId && Number.isFinite(configuredCampaignId) && configuredCampaignId > 0) {
+    unique.push(configuredCampaignId);
+    uniqSet.delete(configuredCampaignId);
+  }
+  for (const cid of uniqSet) unique.push(cid);
   if (unique.length === 0) {
     logLabelEvent('[YM] нет campaign_id (настройте интеграцию / GET v2/campaigns)');
     throw new Error('Яндекс.Маркет: не удалось определить кампанию (campaign_id)');
