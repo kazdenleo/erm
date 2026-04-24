@@ -280,7 +280,8 @@ class IntegrationsService {
         // WB: официальная проверка токена через GET /ping для каждого сервиса
         // (проверяет доставку запроса, валидность токена и совпадение категории токена с сервисом)
         const cfgWb = await this.getMarketplaceConfig('wildberries', { profileId });
-        const apiKey = this._normalizeWbToken(cfgWb?.api_key);
+        // UI/legacy могли сохранить токен как apiKey (camelCase)
+        const apiKey = this._normalizeWbToken(cfgWb?.api_key ?? cfgWb?.apiKey);
         const token_meta = this._safeTokenMeta(apiKey);
         // WB: токен добавляется в заголовок Authorization. Для /ping есть строгий лимит (3 запроса / 30 секунд на домен),
         // поэтому не делаем ретраи с разными форматами заголовка — отправляем один запрос с Bearer.
