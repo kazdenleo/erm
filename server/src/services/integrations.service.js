@@ -174,7 +174,7 @@ class IntegrationsService {
    * @param {'ozon'|'wildberries'|'yandex'} type
    * @param {{ profileId?: number|string|null }} [opts] — аккаунт (multi-tenant)
    */
-  async getMarketplaceTokenStatus(type, { profileId = null } = {}) {
+  async getMarketplaceTokenStatus(type, { profileId = null, organizationId = null } = {}) {
     if (!['ozon', 'wildberries', 'yandex'].includes(type)) {
       const err = new Error('Неизвестный тип маркетплейса');
       err.statusCode = 400;
@@ -182,7 +182,7 @@ class IntegrationsService {
     }
 
     const checkedAt = new Date().toISOString();
-    const cfg = await this.getMarketplaceConfig(type, { profileId });
+    const cfg = await this.getMarketplaceConfig(type, { profileId, organizationId });
     const expiresAt = cfg.token_expires_at || cfg.api_key_expires_at || cfg.expires_at || null;
     const expiry = this._computeExpiry(expiresAt);
 

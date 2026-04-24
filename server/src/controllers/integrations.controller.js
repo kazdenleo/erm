@@ -221,7 +221,9 @@ class IntegrationsController {
         return res.status(200).json({ ok: true, data: { ok: false, reason: 'no_profile' } });
       }
       const { type } = req.params;
-      const data = await integrationsService.getMarketplaceTokenStatus(type, { profileId: tid });
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const data = await integrationsService.getMarketplaceTokenStatus(type, { profileId: tid, organizationId });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
