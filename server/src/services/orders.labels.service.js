@@ -82,6 +82,13 @@ function logLabelEvent(message) {
   }
 }
 
+function orderProfileId(order) {
+  const raw = order?.profileId ?? order?.profile_id ?? null;
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : String(raw);
+}
+
 class OrdersLabelsService {
   /**
    * Получить путь к этикетке заказа, при необходимости скачав её.
@@ -239,9 +246,10 @@ async function fetchMarketplaceLabel(order) {
 
 async function fetchOzonLabel(order) {
   try {
+    const profileId = orderProfileId(order);
     let ozon = null;
     try {
-      ozon = await integrationsService.getMarketplaceConfig('ozon');
+      ozon = await integrationsService.getMarketplaceConfig('ozon', { profileId });
     } catch (_) {}
     if (!ozon?.client_id || !ozon?.api_key) ozon = await readData('ozon');
     if (!ozon || !ozon.client_id || !ozon.api_key) return null;
@@ -550,7 +558,8 @@ async function fetchWBLabel(order) {
 async function fetchYMLabel(order) {
   let ym = null;
   try {
-    ym = await integrationsService.getMarketplaceConfig('yandex');
+    const profileId = orderProfileId(order);
+    ym = await integrationsService.getMarketplaceConfig('yandex', { profileId });
   } catch (_) {
     /* use file fallback */
   }
