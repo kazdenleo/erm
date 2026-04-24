@@ -13,7 +13,21 @@ import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getStoredLabelSize } from '../Settings/Labels';
 import './Assembly.css';
 
-const API_BASE = process.env.REACT_APP_API_URL || '/api';
+function resolveApiBaseUrl() {
+  const env = process.env.REACT_APP_API_URL;
+  // На HTTPS-странице браузер блокирует любые запросы к http:// (Mixed Content).
+  // Поэтому при HTTPS всегда используем относительный '/api' (тот же origin).
+  try {
+    if (typeof window !== 'undefined' && window.location?.protocol === 'https:') {
+      if (env && /^http:\/\//i.test(String(env))) return '/api';
+    }
+  } catch {
+    // ignore
+  }
+  return env || '/api';
+}
+
+const API_BASE = resolveApiBaseUrl();
 /** По умолчанию пробуем локальный Print Helper — без настройки сервера достаточно запустить exe */
 const PRINT_HELPER_URL_DEFAULT = process.env.REACT_APP_PRINT_HELPER_URL || 'http://127.0.0.1:9100';
 /** Ожидание печати после сборки; иначе зависший fetch к Print Helper блокирует сканер (printingFlowRef). */
