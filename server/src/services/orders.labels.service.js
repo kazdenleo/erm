@@ -251,8 +251,16 @@ async function fetchOzonLabel(order) {
     try {
       ozon = await integrationsService.getMarketplaceConfig('ozon', { profileId });
     } catch (_) {}
-    if (!ozon?.client_id || !ozon?.api_key) ozon = await readData('ozon');
-    if (!ozon || !ozon.client_id || !ozon.api_key) return null;
+    // В мульти-кабинетах нельзя падать обратно на глобальный readData('ozon'):
+    // это приводит к "чужому кабинету" и 404 по стикерам.
+    if ((!ozon?.client_id || !ozon?.api_key) && profileId == null) ozon = await readData('ozon');
+    if (!ozon || !ozon.client_id || !ozon.api_key) {
+      const err = new Error(
+        'Ozon: не настроены ключи кабинета для запроса этикетки (Client-Id / Api-Key). Проверьте интеграцию Ozon для этого аккаунта.'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
 
     const postingNumber = labelCacheFileId(order);
     if (!postingNumber) {
@@ -564,12 +572,16 @@ async function fetchYMLabel(order) {
     /* use file fallback */
   }
   if (!ym?.api_key && !ym?.apiKey) {
-    ym = await readData('yandex');
+    // В мульти-кабинетах не используем глобальный fallback, чтобы не брать ключи "чужой" кампании.
+    const profileId = orderProfileId(order);
+    if (profileId == null) ym = await readData('yandex');
   }
   const api_key = normalizeYandexApiKey(ym?.api_key ?? ym?.apiKey);
   if (!api_key) {
     logLabelEvent('[YM] нет Api-Key в интеграции');
-    throw new Error('Яндекс.Маркет: не настроен API-ключ');
+    const err = new Error('Яндекс.Маркет: не настроен API-ключ для этого аккаунта');
+    err.statusCode = 400;
+    throw err;
   }
 
   const rawOid =
