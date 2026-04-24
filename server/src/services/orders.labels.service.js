@@ -630,6 +630,21 @@ async function fetchYMLabel(order) {
         break;
       }
       if (response.status === 400) {
+        // Чаще всего это "кампания не поддерживает генерацию этикеток" (FBY и пр.).
+        // Важно прокинуть 501/понятное сообщение вместо 502.
+        try {
+          const parsed = JSON.parse(text);
+          const code = parsed?.errors?.[0]?.code || parsed?.code || '';
+          if (String(code).toUpperCase() === 'CAMPAIGN_TYPE_NOT_SUPPORTED') {
+            const err = new Error(
+              'Яндекс.Маркет: тип кампании не поддерживает генерацию этикеток. Разрешены только FBS/DBS/EXPRESS.'
+            );
+            err.statusCode = 501;
+            throw err;
+          }
+        } catch (e) {
+          if (e?.statusCode) throw e;
+        }
         continue;
       }
       throw new Error(`Яндекс.Маркет: этикетка (${response.status})`);
@@ -637,9 +652,12 @@ async function fetchYMLabel(order) {
     if (campaignFailed404) continue;
   }
 
-  throw new Error(
+  const err = new Error(
     `Яндекс.Маркет: этикетка не получена (заказ ${orderIdNum}). ${lastErr || 'Проверьте статус заказа и привязку кампании.'}`
   );
+  // 404 → этикетки нет; иначе считаем временной недоступностью/условиями Маркета.
+  err.statusCode = String(lastErr || '').trim().startsWith('404:') ? 404 : 409;
+  throw err;
 }
 
 const ordersLabelsService = new OrdersLabelsService();
