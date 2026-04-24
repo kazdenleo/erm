@@ -8,7 +8,7 @@ import './Header.css';
 export function Header({ isSidebarClosed, onToggleSidebar, isMobileSidebarOpen, onToggleMobileSidebar }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, isAdmin, isAccountAdmin, profileId, logout } = useAuth();
+  const { user, isAdmin, profileId, logout } = useAuth();
   const notificationsCount = useNotificationsCount();
   const onNotifications = location.pathname.startsWith('/notifications');
   const onSupport = location.pathname.startsWith('/support');

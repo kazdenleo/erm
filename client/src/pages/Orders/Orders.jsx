@@ -17,7 +17,6 @@ import {
   getOrderStatusLabel,
   isOrderStatusEligibleForProcurement,
 } from '../../constants/orderStatuses';
-import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
 import {
   normalizeMarketplaceForUI,
@@ -307,8 +306,6 @@ export function Orders() {
   const [statusFilter, setStatusFilter] = useState('new');
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [statusCounts, setStatusCounts] = useState({ all: 0 });
-  const prevNewCountRef = useRef(null);
-  const newOrderSoundArmedRef = useRef(false);
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
