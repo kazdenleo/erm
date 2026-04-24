@@ -265,7 +265,8 @@ export function Purchases() {
       setReceipt(data);
       setScanMsg(null);
       setLastScanLine(null);
-      setReceiptWarehouseId('');
+      // Приёмка ведётся по реквизитам закупки (поставщик/организация/склад назначения).
+      setReceiptWarehouseId(data?.purchase?.warehouseId != null ? String(data.purchase.warehouseId) : '');
       setReceiptSupplierId(data?.purchase?.supplierId != null ? String(data.purchase.supplierId) : '');
       setTimeout(() => scanRef.current?.focus(), 80);
     } catch (e) {
@@ -284,11 +285,23 @@ export function Purchases() {
       setErr('Добавьте хотя бы одну позицию');
       return;
     }
+    if (!String(createSupplierId || '').trim()) {
+      setErr('Выберите поставщика');
+      return;
+    }
+    if (!String(createOrganizationId || '').trim()) {
+      setErr('Выберите организацию');
+      return;
+    }
+    if (!String(createWarehouseId || '').trim()) {
+      setErr('Выберите склад назначения');
+      return;
+    }
     try {
       const res = await purchasesApi.create({
-        supplierId: createSupplierId === '' ? null : Number(createSupplierId),
-        organizationId: createOrganizationId === '' ? null : Number(createOrganizationId),
-        warehouseId: createWarehouseId === '' ? null : Number(createWarehouseId),
+        supplierId: Number(createSupplierId),
+        organizationId: Number(createOrganizationId),
+        warehouseId: Number(createWarehouseId),
         items,
       });
       setCreateOpen(false);
@@ -489,11 +502,11 @@ export function Purchases() {
       )}
 
       <Modal isOpen={createOpen} onClose={() => setCreateOpen(false)} title="Новая закупка" size="large">
-        <p className="muted">Выберите поставщика/получателя/склад (опционально), затем добавьте позиции.</p>
+        <p className="muted">Выберите поставщика, организацию и склад назначения, затем добавьте позиции.</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
           <span className="muted" style={{ fontSize: 13 }}>Поставщик</span>
           <select className="warehouse-ops-select" value={createSupplierId} onChange={(e) => setCreateSupplierId(e.target.value)}>
-            <option value="">— Не указан —</option>
+            <option value="">— Выберите поставщика —</option>
             {(suppliers || []).map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name || `Поставщик #${s.id}`}
@@ -507,7 +520,7 @@ export function Purchases() {
             value={createOrganizationId}
             onChange={(e) => setCreateOrganizationId(e.target.value)}
           >
-            <option value="">— Не указан —</option>
+            <option value="">— Выберите организацию —</option>
             {(organizations || []).map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name || `Организация #${o.id}`}
@@ -517,7 +530,7 @@ export function Purchases() {
 
           <span className="muted" style={{ fontSize: 13 }}>Склад</span>
           <select className="warehouse-ops-select" value={createWarehouseId} onChange={(e) => setCreateWarehouseId(e.target.value)}>
-            <option value="">— Не указан —</option>
+            <option value="">— Выберите склад —</option>
             {(warehouses || [])
               .filter((w) => w?.type === 'warehouse' && !w?.supplier_id)
               .map((w) => (
@@ -1008,8 +1021,8 @@ export function Purchases() {
                   {lastScanLine.sku} — {lastScanLine.name}
                 </div>
                 <div className="muted" style={{ marginTop: 4 }}>
-                  Ожидалось: {lastScanLine.expected ?? '—'} · Отсканировано сейчас: {lastScanLine.scanned}
-                  {lastScanLine.received != null ? ` · Принято (итого): ${lastScanLine.received}` : ''}
+                  Ожидалось: {lastScanLine.expected ?? '—'} · Принято: {lastScanLine.scanned}
+                  {lastScanLine.received != null ? `/${lastScanLine.received}` : ''}
                   {lastScanLine.over ? ' · Перескан!' : ''}
                 </div>
               </div>
@@ -1060,39 +1073,7 @@ export function Purchases() {
                       <th>Товар</th>
                       <th>Закуп. цена</th>
                       <th>Заказано</th>
-                      <th>Принято (итого)</th>
-                      <th>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setReceiptScannedQtySort((prev) =>
-                              prev == null ? 'asc' : prev === 'asc' ? 'desc' : null
-                            )
-                          }
-                          title={
-                            receiptScannedQtySort == null
-                              ? 'Сортировать по количеству'
-                              : receiptScannedQtySort === 'asc'
-                                ? 'Сейчас по возрастанию — по убыванию'
-                                : 'Сбросить сортировку'
-                          }
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            cursor: 'pointer',
-                            font: 'inherit',
-                            padding: 0,
-                            textAlign: 'left',
-                            textDecoration: receiptScannedQtySort ? 'underline' : 'underline dotted',
-                            fontWeight: receiptScannedQtySort ? 600 : 400,
-                            color: 'inherit',
-                          }}
-                        >
-                          Кол-во
-                          {receiptScannedQtySort === 'asc' ? ' ↑' : ''}
-                          {receiptScannedQtySort === 'desc' ? ' ↓' : ''}
-                        </button>
-                      </th>
+                      <th>Принято</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1145,9 +1126,9 @@ export function Purchases() {
                           return (
                             <>
                               <td>{it.expected_quantity ?? '—'}</td>
-                              <td>{it.received_quantity ?? '—'}</td>
                               <td style={cellStyle}>
                                 {scanned}
+                                {received != null ? `/${received}` : ''}
                                 {diff != null && diff !== 0 && (
                                   <span className="muted" style={{ marginLeft: 6, fontWeight: 600 }}>
                                     ({diff > 0 ? `+${diff}` : diff})

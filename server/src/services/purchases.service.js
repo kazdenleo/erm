@@ -774,14 +774,29 @@ class PurchasesService {
           : Number(organizationId);
     const wid =
       warehouseId === '' || warehouseId == null ? null : Number.isNaN(Number(warehouseId)) ? null : Number(warehouseId);
+    if (supplierId !== undefined && (!Number.isFinite(supplier) || supplier < 1)) {
+      const err = new Error('Выберите поставщика');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (organizationId !== undefined && (!Number.isFinite(org) || org < 1)) {
+      const err = new Error('Выберите организацию');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (warehouseId !== undefined && (!Number.isFinite(wid) || wid < 1)) {
+      const err = new Error('Выберите склад назначения');
+      err.statusCode = 400;
+      throw err;
+    }
 
     return transaction(async (client) => {
       await assertPurchaseInProfile(client, id, pid);
       await client.query(
         `UPDATE purchases
          SET supplier_id = $2,
-             organization_id = COALESCE($3, organization_id),
-             warehouse_id = COALESCE($4, warehouse_id),
+             organization_id = $3,
+             warehouse_id = $4,
              note = COALESCE($5, note),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $1`,
@@ -1045,6 +1060,21 @@ class PurchasesService {
     const supplier = supplierId != null && supplierId !== '' ? Number(supplierId) : null;
     const org = organizationId != null && organizationId !== '' ? Number(organizationId) : null;
     const wid = warehouseId != null && warehouseId !== '' ? Number(warehouseId) : null;
+    if (!Number.isFinite(supplier) || supplier < 1) {
+      const err = new Error('Выберите поставщика');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!Number.isFinite(org) || org < 1) {
+      const err = new Error('Выберите организацию');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!Number.isFinite(wid) || wid < 1) {
+      const err = new Error('Выберите склад назначения');
+      err.statusCode = 400;
+      throw err;
+    }
     const list = Array.isArray(items) ? items : [];
     const normalized = list
       .map((it) => ({
