@@ -9,9 +9,11 @@ import { organizationsApi } from '../../services/organizations.api';
 import { marketplaceCabinetsApi } from '../../services/marketplaceCabinets.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { useAuth } from '../../context/AuthContext';
 import './Integrations.css';
 
 export function Integrations() {
+  const { selectedOrganizationId, setSelectedOrganizationId } = useAuth();
   const [activeTab, setActiveTab] = useState('marketplaces');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -20,7 +22,7 @@ export function Integrations() {
     suppliers: { mikado: {}, moskvorechie: {} }
   });
   const [organizations, setOrganizations] = useState([]);
-  const [selectedOrgId, setSelectedOrgId] = useState(null);
+  const selectedOrgId = selectedOrganizationId ? Number(selectedOrganizationId) : null;
   const [cabinets, setCabinets] = useState([]);
   const [cabinetsLoading, setCabinetsLoading] = useState(false);
 
@@ -39,9 +41,26 @@ export function Integrations() {
   }, []);
 
   useEffect(() => {
+    organizationsApi
+      .getAll()
+      .then((r) => setOrganizations(r?.data || []))
+      .catch(() => setOrganizations([]));
+  }, []);
+
+  // Интеграции теперь привязаны к организации — грузим/обновляем при смене организации.
+  useEffect(() => {
+    if (!selectedOrgId) return;
     loadConfigs();
-    organizationsApi.getAll().then((r) => setOrganizations(r?.data || [])).catch(() => setOrganizations([]));
-  }, [loadConfigs]);
+  }, [selectedOrgId, loadConfigs]);
+
+  // Если организация ещё не выбрана — выберем первую доступную (иначе заголовок X-Organization-Id не уйдёт).
+  useEffect(() => {
+    if (selectedOrgId) return;
+    const first = (organizations || [])[0];
+    if (first?.id != null) {
+      setSelectedOrganizationId(String(first.id));
+    }
+  }, [organizations, selectedOrgId, setSelectedOrganizationId]);
 
   useEffect(() => {
     if (!selectedOrgId) {
@@ -137,7 +156,7 @@ export function Integrations() {
         <MarketplacesTab
           organizations={organizations}
           selectedOrgId={selectedOrgId}
-          onSelectOrg={setSelectedOrgId}
+          onSelectOrg={(id) => setSelectedOrganizationId(id != null && id !== '' ? String(id) : null)}
           cabinets={cabinets}
           cabinetsLoading={cabinetsLoading}
           onSaveCabinet={async (cabinetId, type, formData) => {
@@ -1184,7 +1203,7 @@ function MarketplacesTab({
         <select
           className="input"
           value={selectedOrgId || ''}
-          onChange={(e) => onSelectOrg(e.target.value ? Number(e.target.value) : null)}
+          onChange={(e) => onSelectOrg(e.target.value ? String(e.target.value) : null)}
         >
           <option value="">— Выберите организацию —</option>
           {(organizations || []).map((org) => (
