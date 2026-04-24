@@ -10,7 +10,7 @@ class IntegrationsRepositoryPG {
    * Получить все интеграции
    */
   async findAll(options = {}) {
-    const { type, isActive, profileId } = options;
+    const { type, isActive, profileId, organizationId } = options;
     
     let sql = 'SELECT * FROM integrations WHERE 1=1';
     const params = [];
@@ -19,6 +19,11 @@ class IntegrationsRepositoryPG {
     if (profileId != null && profileId !== '') {
       sql += ` AND profile_id = $${paramIndex++}`;
       params.push(profileId);
+    }
+
+    if (organizationId != null && organizationId !== '') {
+      sql += ` AND organization_id = $${paramIndex++}`;
+      params.push(organizationId);
     }
     
     if (type) {
@@ -48,15 +53,19 @@ class IntegrationsRepositoryPG {
   /**
    * Получить интеграцию по коду
    */
-  async findByCode(code, profileId = null) {
+  async findByCode(code, profileId = null, organizationId = null) {
     // В multi-tenant режиме нельзя читать "глобальную" интеграцию без profile_id:
     // это приводит к смешиванию ключей между аккаунтами.
     if (profileId == null || profileId === '') return null;
-    const result = await query('SELECT * FROM integrations WHERE profile_id = $1 AND code = $2', [
-      profileId,
-      code
-    ]);
-    return result.rows[0] || null;
+    if (organizationId != null && organizationId !== '') {
+      const result = await query(
+        'SELECT * FROM integrations WHERE profile_id = $1 AND organization_id = $2 AND code = $3',
+        [profileId, organizationId, code]
+      );
+      return result.rows[0] || null;
+    }
+    // Legacy: если organizationId не передали — не возвращаем интеграции, чтобы не смешивать организации.
+    return null;
   }
   
   /**
@@ -77,11 +86,12 @@ class IntegrationsRepositoryPG {
    */
   async create(integrationData) {
     const result = await query(`
-      INSERT INTO integrations (profile_id, type, name, code, config, is_active)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO integrations (profile_id, organization_id, type, name, code, config, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `, [
       integrationData.profile_id ?? integrationData.profileId ?? null,
+      integrationData.organization_id ?? integrationData.organizationId ?? null,
       integrationData.type,
       integrationData.name,
       integrationData.code,
@@ -100,7 +110,7 @@ class IntegrationsRepositoryPG {
     const params = [];
     let paramIndex = 1;
     
-    const allowedFields = ['type', 'name', 'code', 'config', 'is_active'];
+    const allowedFields = ['type', 'name', 'code', 'config', 'is_active', 'organization_id'];
     
     for (const field of allowedFields) {
       if (updates.hasOwnProperty(field)) {

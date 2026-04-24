@@ -79,7 +79,7 @@ class IntegrationsService {
   /**
    * Получить настройки маркетплейса
    */
-  async getMarketplaceConfig(type, { profileId = null } = {}) {
+  async getMarketplaceConfig(type, { profileId = null, organizationId = null } = {}) {
     if (!['ozon', 'wildberries', 'yandex'].includes(type)) {
       const err = new Error('Неизвестный тип маркетплейса');
       err.statusCode = 400;
@@ -87,7 +87,7 @@ class IntegrationsService {
     }
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const integration = await this.repository.findByCode(type, profileId);
+      const integration = await this.repository.findByCode(type, profileId, organizationId);
       return integration ? integration.config : {};
     } else {
       // Старое хранилище
@@ -597,7 +597,7 @@ class IntegrationsService {
    * Сохранить настройки маркетплейса.
    * При добавлении API-ключа без даты окончания автоматически ставится срок 180 дней.
    */
-  async saveMarketplaceConfig(type, config, { profileId = null } = {}) {
+  async saveMarketplaceConfig(type, config, { profileId = null, organizationId = null } = {}) {
     if (!['ozon', 'wildberries', 'yandex'].includes(type)) {
       const err = new Error('Неизвестный тип маркетплейса');
       err.statusCode = 400;
@@ -671,12 +671,13 @@ class IntegrationsService {
     }
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      let integration = await this.repository.findByCode(type, profileId);
+      let integration = await this.repository.findByCode(type, profileId, organizationId);
       if (integration) {
         await this.repository.updateConfig(integration.id, config);
       } else {
         await this.repository.create({
           profile_id: profileId,
+          organization_id: organizationId,
           type: 'marketplace',
           name: type === 'ozon' ? 'Ozon' : type === 'wildberries' ? 'Wildberries' : 'Yandex Market',
           code: type,
@@ -760,10 +761,11 @@ class IntegrationsService {
    * Получить все интеграции (полный список с метаданными)
    * @param {{ profileId?: number|string|null }} [options] — при PostgreSQL: только интеграции аккаунта
    */
-  async getAll({ profileId = null } = {}) {
+  async getAll({ profileId = null, organizationId = null } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       const opts = {};
       if (profileId != null && profileId !== '') opts.profileId = profileId;
+      if (organizationId != null && organizationId !== '') opts.organizationId = organizationId;
       return await this.repository.findAll(opts);
     } else {
       // Старое хранилище - возвращаем структурированные данные
@@ -788,10 +790,11 @@ class IntegrationsService {
   /**
    * Получить все настройки интеграций (только конфигурации)
    */
-  async getAllConfigs({ profileId = null, onlyActive = false } = {}) {
+  async getAllConfigs({ profileId = null, organizationId = null, onlyActive = false } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       const integrations = await this.repository.findAll({
         profileId,
+        organizationId,
         ...(onlyActive ? { isActive: true } : {}),
       });
       const marketplaces = {};

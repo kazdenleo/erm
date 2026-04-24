@@ -23,7 +23,9 @@ class IntegrationsController {
         return res.status(200).json({ ok: true, data: null });
       }
       const { type } = req.params;
-      const config = await integrationsService.getMarketplaceConfig(type, { profileId: tid });
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const config = await integrationsService.getMarketplaceConfig(type, { profileId: tid, organizationId });
       return res.status(200).json({ ok: true, data: config });
     } catch (error) {
       next(error);
@@ -41,7 +43,9 @@ class IntegrationsController {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
       const { type } = req.params;
-      const result = await integrationsService.saveMarketplaceConfig(type, req.body, { profileId: tid });
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const result = await integrationsService.saveMarketplaceConfig(type, req.body, { profileId: tid, organizationId });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);
@@ -86,7 +90,9 @@ class IntegrationsController {
       if (tid === TENANT_LIST_EMPTY) {
         return res.status(200).json({ ok: true, data: {} });
       }
-      const configs = await integrationsService.getAllConfigs({ profileId: tid });
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const configs = await integrationsService.getAllConfigs({ profileId: tid, organizationId });
       return res.status(200).json({ ok: true, data: configs });
     } catch (error) {
       next(error);
@@ -103,7 +109,9 @@ class IntegrationsController {
       if (tid === TENANT_LIST_EMPTY) {
         return res.status(200).json({ ok: true, data: [] });
       }
-      const integrations = await integrationsService.getAll({ profileId: tid });
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const integrations = await integrationsService.getAll({ profileId: tid, organizationId });
       return res.status(200).json({ ok: true, data: integrations });
     } catch (error) {
       next(error);
