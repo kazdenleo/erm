@@ -117,7 +117,9 @@ function normalizeShipment(s) {
     productsCount: (s.orderIds || []).length,
     createdAt: s.createdAt,
     shipmentDate: s.shipmentDate,
-    qrStickerPath: s.qrStickerPath || null
+    qrStickerPath: s.qrStickerPath || null,
+    /** true, если поставка WB заведена только в ERM без API-ключа (без поставки в ЛК) */
+    localWbOnly: s.localWbOnly === true,
   };
 }
 
@@ -162,22 +164,37 @@ async function createShipment({ marketplace, name, profileId = null }) {
 
   if (code === 'wildberries') {
     const wbConfig = await getWildberriesConfigForScope(profileId);
-    if (!wbConfig?.api_key) {
-      const err = new Error('Wildberries API не настроен');
-      err.statusCode = 400;
-      throw err;
+    if (wbConfig?.api_key) {
+      const supplyId = await createWBSupply(wbConfig);
+      const local = {
+        id,
+        marketplace: code,
+        name: name || supplyId,
+        status: 'active',
+        closed: false,
+        externalId: supplyId,
+        orderIds: [],
+        createdAt: now,
+        ...(profileId != null && profileId !== '' ? { profileId } : {}),
+      };
+      shipments.push(local);
+      await saveLocalShipments(shipments);
+      return normalizeShipment(local);
     }
-    const supplyId = await createWBSupply(wbConfig);
+    logger.warn(
+      '[Shipments] Wildberries: нет API-ключа для этого аккаунта — поставка только в ERM, без ЛК WB. ' +
+        'Добавьте ключ в «Интеграции» и повторно отправьте на сборку или оформите поставки в кабинете WB.'
+    );
     const local = {
       id,
       marketplace: code,
-      name: name || supplyId,
+      name: name || `Сборка ${new Date().toLocaleDateString('ru-RU')}`,
       status: 'active',
       closed: false,
-      externalId: supplyId,
       orderIds: [],
       createdAt: now,
-      ...(profileId != null && profileId !== '' ? { profileId } : {})
+      localWbOnly: true,
+      ...(profileId != null && profileId !== '' ? { profileId } : {}),
     };
     shipments.push(local);
     await saveLocalShipments(shipments);
@@ -487,47 +504,48 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null } = 
 
   if (code === 'wildberries') {
     const wbConfig = await getWildberriesConfigForScope(ship.profileId);
-    if (!wbConfig?.api_key) {
-      const err = new Error('Wildberries API не настроен');
-      err.statusCode = 400;
-      throw err;
-    }
-    // Для WB этикетки появляются через stickers API только когда сборочное задание в статусе confirm/complete.
-    // Поэтому перед добавлением в поставку переводим заказы в confirm на стороне WB.
-    if (toAdd.length > 0) {
-      try {
-        await confirmWBOrdersForAssembly(wbConfig, toAdd);
-      } catch (e) {
-        // Новые методы WB могут быть недоступны для части заказов (404) — не блокируем перевод в "На сборке" в ERM.
-        // Дальше всё равно попробуем добавить в поставку: это зачастую и переводит заказы в нужный статус на WB.
-        logger.warn(`[Shipments WB] confirm skipped: ${e?.message || String(e)}`);
-      }
-    }
-    let supplyId = ship.externalId;
-    if (!supplyId) {
-      supplyId = await createWBSupply(wbConfig);
-      ship.externalId = supplyId;
-      ship.name = ship.name || supplyId;
-      await saveLocalShipments(shipments);
-      logger.info(`[Shipments WB] Created new supply ${supplyId} for shipment ${ship.id}`);
-    }
-    try {
+    if (wbConfig?.api_key) {
+      // Для WB этикетки появляются через stickers API только когда сборочное задание в статусе confirm/complete.
+      // Поэтому перед добавлением в поставку переводим заказы в confirm на стороне WB.
       if (toAdd.length > 0) {
-        await addOrdersToWBSupplyBatch(wbConfig, supplyId, toAdd);
-      }
-    } catch (e) {
-      if (e.message && e.message.includes('404') && supplyId) {
-        logger.warn(`[Shipments WB] Supply ${supplyId} not found (404), creating new supply and retrying`);
-        const newSupplyId = await createWBSupply(wbConfig);
-        ship.externalId = newSupplyId;
-        ship.name = ship.name || newSupplyId;
-        await saveLocalShipments(shipments);
-        if (toAdd.length > 0) {
-          await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, toAdd);
+        try {
+          await confirmWBOrdersForAssembly(wbConfig, toAdd);
+        } catch (e) {
+          // Новые методы WB могут быть недоступны для части заказов (404) — не блокируем перевод в "На сборке" в ERM.
+          // Дальше всё равно попробуем добавить в поставку: это зачастую и переводит заказы в нужный статус на WB.
+          logger.warn(`[Shipments WB] confirm skipped: ${e?.message || String(e)}`);
         }
-      } else {
-        throw e;
       }
+      let supplyId = ship.externalId;
+      if (!supplyId) {
+        supplyId = await createWBSupply(wbConfig);
+        ship.externalId = supplyId;
+        ship.name = ship.name || supplyId;
+        await saveLocalShipments(shipments);
+        logger.info(`[Shipments WB] Created new supply ${supplyId} for shipment ${ship.id}`);
+      }
+      try {
+        if (toAdd.length > 0) {
+          await addOrdersToWBSupplyBatch(wbConfig, supplyId, toAdd);
+        }
+      } catch (e) {
+        if (e.message && e.message.includes('404') && supplyId) {
+          logger.warn(`[Shipments WB] Supply ${supplyId} not found (404), creating new supply and retrying`);
+          const newSupplyId = await createWBSupply(wbConfig);
+          ship.externalId = newSupplyId;
+          ship.name = ship.name || newSupplyId;
+          await saveLocalShipments(shipments);
+          if (toAdd.length > 0) {
+            await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, toAdd);
+          }
+        } else {
+          throw e;
+        }
+      }
+    } else {
+      logger.warn(
+        '[Shipments] Wildberries: API не настроен — заказы только в локальной поставке, статус в ERM «на сборке»; ЛК WB не обновлён.'
+      );
     }
   }
 

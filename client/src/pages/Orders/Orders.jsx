@@ -33,6 +33,12 @@ function orderKey(o) {
   return `${mp}|${o.orderId ?? ''}`;
 }
 
+/** Сообщение «на сборку», если поставка WB заведена только в ERM без ключа API */
+function appendLocalWbOnlyAssemblyHint(msg, shipments) {
+  if (!Array.isArray(shipments) || !shipments.some((s) => s.localWbOnly)) return msg;
+  return `${msg} Wildberries: без ключа API поставка только в ERM; в личном кабинете WB не создаётся. Добавьте токен WB в «Интеграции» для привязки к МП.`.trim();
+}
+
 /**
  * Один запрос to-procurement на группу в БД: по сырому order_group_id, даже если UI не склеивает строки
  * (например, ненадёжный WB uid в orderGroupKey возвращает пустую строку).
@@ -905,7 +911,7 @@ export function Orders() {
       if (result?.shipments?.length) {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
-      setAssemblyMessage(msg);
+      setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       await reloadOrders({ silent: true });
     } catch (e) {
       setAssemblyMessage(e.response?.data?.message || e.message || 'Ошибка отправки на сборку');
@@ -1283,7 +1289,7 @@ export function Orders() {
       if (result?.shipments?.length) {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
-      setAssemblyMessage(msg);
+      setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       setSelectedKeys((prev) => {
         const next = new Set(prev);
         toSend.forEach((o) => next.delete(orderKey(o)));
@@ -1362,7 +1368,7 @@ export function Orders() {
         if (result?.warnings?.length) {
           msg += ` Предупреждения по поставкам МП: ${result.warnings.length}.`;
         }
-        setAssemblyMessage(msg);
+        setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       }
       setSelectedKeys((prev) => {
         const next = new Set(prev);

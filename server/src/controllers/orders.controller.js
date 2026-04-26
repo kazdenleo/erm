@@ -341,8 +341,14 @@ class OrdersController {
 
         for (const { shipment, orderIds } of byShipmentId.values()) {
           try {
-            await shipmentsService.addOrdersToShipment(shipment.id, orderIds, { profileId });
-            shipmentsUsed.push({ marketplace: code, shipmentId: shipment.id, shipmentName: shipment.name, orderIds });
+            const s = await shipmentsService.addOrdersToShipment(shipment.id, orderIds, { profileId });
+            shipmentsUsed.push({
+              marketplace: code,
+              shipmentId: s.id,
+              shipmentName: s.name,
+              orderIds,
+              localWbOnly: s.localWbOnly === true,
+            });
           } catch (e) {
             // WB 409: часть заказов уже в другой поставке WB или статус не подходит.
             // По требованию: такие заказы всё равно отправляем "На сборку" в ERM (физически они у нас),
