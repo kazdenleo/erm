@@ -7,6 +7,8 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useOrders } from '../../hooks/useOrders';
+import { useWarehouses } from '../../hooks/useWarehouses';
+import { useOrganizations } from '../../hooks/useOrganizations';
 import { ordersApi } from '../../services/orders.api';
 import { productsApi } from '../../services/products.api';
 import { purchasesApi } from '../../services/purchases.api';
@@ -292,6 +294,8 @@ export function Orders() {
   const navigate = useNavigate();
   const { profile } = useAuth();
   const allowPrivateOrders = profile?.allow_private_orders === true;
+  const { warehouses, loadWarehouses } = useWarehouses();
+  const { organizations } = useOrganizations();
   const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
   const initialOrdersLoadedRef = useRef(false);
   const ORDERS_PAGE_SIZE = 50;
@@ -350,8 +354,15 @@ export function Orders() {
   const [procurementChoice, setProcurementChoice] = useState('existing');
   const [procurementExistingId, setProcurementExistingId] = useState('');
   const [procurementSupplierId, setProcurementSupplierId] = useState('');
+  const [procurementOrganizationId, setProcurementOrganizationId] = useState('');
+  const [procurementWarehouseId, setProcurementWarehouseId] = useState('');
   /** Сортировка таблицы позиций в модалке закупки по количеству */
   const [procurementPreviewQtySort, setProcurementPreviewQtySort] = useState(null);
+
+  const procurementWarehouseOptions = useMemo(
+    () => (warehouses || []).filter((w) => w?.type === 'warehouse' && !w?.supplier_id),
+    [warehouses]
+  );
 
   const procurementMergedPreviewLines = useMemo(() => {
     if (!procurementModalRow) return [];
@@ -689,6 +700,8 @@ export function Orders() {
     setProcurementModalRow(row);
     setProcurementExistingId('');
     setProcurementSupplierId('');
+    setProcurementOrganizationId('');
+    setProcurementWarehouseId('');
     setProcurementModalLoading(true);
     try {
       const [drafts, supRes] = await Promise.all([
@@ -721,6 +734,8 @@ export function Orders() {
     setProcurementModalBulkSourceRows(null);
     setProcurementModalErr(null);
     setProcurementPreviewQtySort(null);
+    setProcurementOrganizationId('');
+    setProcurementWarehouseId('');
   };
 
   const submitProcurementFromOrder = async () => {
@@ -751,6 +766,19 @@ export function Orders() {
         setProcurementModalErr('Выберите существующую закупку');
         return;
       }
+    } else {
+      if (!String(procurementSupplierId || '').trim()) {
+        setProcurementModalErr('Выберите поставщика');
+        return;
+      }
+      if (!String(procurementOrganizationId || '').trim()) {
+        setProcurementModalErr('Выберите организацию');
+        return;
+      }
+      if (!String(procurementWarehouseId || '').trim()) {
+        setProcurementModalErr('Выберите склад назначения');
+        return;
+      }
     }
     const sourceRows =
       procurementModalBulkSourceRows && procurementModalBulkSourceRows.length > 0
@@ -765,14 +793,17 @@ export function Orders() {
         const pid = parseInt(procurementExistingId, 10);
         await purchasesApi.appendDraftItems(pid, { items });
       } else {
-        const sidRaw = procurementSupplierId === '' ? null : parseInt(procurementSupplierId, 10);
-        const supplierId = sidRaw != null && !Number.isNaN(sidRaw) && sidRaw > 0 ? sidRaw : null;
+        const supplierId = parseInt(String(procurementSupplierId).trim(), 10);
+        const organizationId = parseInt(String(procurementOrganizationId).trim(), 10);
+        const warehouseId = parseInt(String(procurementWarehouseId).trim(), 10);
         const note =
           sourceRows.length > 1
             ? `Из заказов (${sourceRows.length}): ${sourceRows.map((r) => r.first.orderId).join(', ')}`
             : `Из заказа ${first.orderId} (${first.marketplace})`;
         await purchasesApi.create({
           supplierId,
+          organizationId,
+          warehouseId,
           items,
           note,
         });
@@ -1790,22 +1821,73 @@ export function Orders() {
                 )}
 
                 {procurementChoice === 'new' && (
-                  <div className="form-group" style={{ marginBottom: 16 }}>
-                    <label className="label">Поставщик</label>
-                    <select
-                      className="form-control"
-                      style={{ maxWidth: 420 }}
-                      value={procurementSupplierId}
-                      onChange={(e) => setProcurementSupplierId(e.target.value)}
-                    >
-                      <option value="">— Не выбран —</option>
-                      {procurementSuppliers.map((s) => (
-                        <option key={s.id} value={String(s.id)}>
-                          {s.name || `Поставщик №${s.id}`}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  <>
+                    <p className="muted" style={{ marginBottom: 10, fontSize: 14 }}>
+                      Для новой закупки укажите поставщика, организацию (получателя) и склад назначения — так же, как в разделе «Закупки».
+                    </p>
+                    <div className="form-group" style={{ marginBottom: 12 }}>
+                      <label className="label">Поставщик *</label>
+                      <select
+                        className="form-control"
+                        style={{ maxWidth: 420 }}
+                        value={procurementSupplierId}
+                        onChange={(e) => setProcurementSupplierId(e.target.value)}
+                      >
+                        <option value="">— Выберите поставщика —</option>
+                        {procurementSuppliers.map((s) => (
+                          <option key={s.id} value={String(s.id)}>
+                            {s.name || `Поставщик №${s.id}`}
+                          </option>
+                        ))}
+                      </select>
+                      {procurementSuppliers.length === 0 && (
+                        <p className="muted" style={{ fontSize: 13, marginTop: 6 }}>
+                          Поставщиков нет. Создайте карточку в разделе «Поставщики».
+                        </p>
+                      )}
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 12 }}>
+                      <label className="label">Получатель (организация) *</label>
+                      <select
+                        className="form-control"
+                        style={{ maxWidth: 420 }}
+                        value={procurementOrganizationId}
+                        onChange={async (e) => {
+                          const v = e.target.value;
+                          setProcurementOrganizationId(v);
+                          setProcurementWarehouseId('');
+                          try {
+                            await loadWarehouses(v);
+                          } catch {
+                            // ошибка в хуке
+                          }
+                        }}
+                      >
+                        <option value="">— Выберите организацию —</option>
+                        {(organizations || []).map((o) => (
+                          <option key={o.id} value={String(o.id)}>
+                            {o.name || `Организация №${o.id}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 16 }}>
+                      <label className="label">Склад назначения *</label>
+                      <select
+                        className="form-control"
+                        style={{ maxWidth: 420 }}
+                        value={procurementWarehouseId}
+                        onChange={(e) => setProcurementWarehouseId(e.target.value)}
+                      >
+                        <option value="">— Выберите склад —</option>
+                        {procurementWarehouseOptions.map((w) => (
+                          <option key={w.id} value={String(w.id)}>
+                            {w.name || w.address || w.city || `Склад №${w.id}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
                 )}
 
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
