@@ -292,7 +292,7 @@ async function resolvePurchaseLinesByCatalogSku(lines) {
 
 export function Orders() {
   const navigate = useNavigate();
-  const { profile } = useAuth();
+  const { profile, selectedOrganizationId: contextOrganizationId } = useAuth();
   const allowPrivateOrders = profile?.allow_private_orders === true;
   const { warehouses, loadWarehouses } = useWarehouses();
   const { organizations } = useOrganizations();
@@ -363,6 +363,49 @@ export function Orders() {
     () => (warehouses || []).filter((w) => w?.type === 'warehouse' && !w?.supplier_id),
     [warehouses]
   );
+
+  /** Подставить организацию из глобального переключателя (Auth), если в модалке «Новая закупка» и поле пустое */
+  useEffect(() => {
+    if (!procurementModalRow || procurementModalLoading) return;
+    if (procurementChoice !== 'new') return;
+    if (procurementOrganizationId) return;
+    const so = contextOrganizationId;
+    if (!so) return;
+    if (!(organizations || []).some((o) => String(o.id) === String(so))) return;
+    setProcurementOrganizationId(String(so));
+    (async () => {
+      try {
+        await loadWarehouses(String(so));
+      } catch {
+        // ошибка в хуке
+      }
+    })();
+  }, [
+    procurementModalRow,
+    procurementModalLoading,
+    procurementChoice,
+    procurementOrganizationId,
+    contextOrganizationId,
+    organizations,
+    loadWarehouses,
+  ]);
+
+  /** Если у выбранной организации ровно один подходящий склад — выбрать его */
+  useEffect(() => {
+    if (!procurementModalRow || procurementModalLoading) return;
+    if (procurementChoice !== 'new') return;
+    if (procurementWarehouseId) return;
+    if (!procurementOrganizationId) return;
+    if (procurementWarehouseOptions.length !== 1) return;
+    setProcurementWarehouseId(String(procurementWarehouseOptions[0].id));
+  }, [
+    procurementModalRow,
+    procurementModalLoading,
+    procurementChoice,
+    procurementOrganizationId,
+    procurementWarehouseId,
+    procurementWarehouseOptions,
+  ]);
 
   const procurementMergedPreviewLines = useMemo(() => {
     if (!procurementModalRow) return [];
