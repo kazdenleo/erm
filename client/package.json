@@ -13,6 +13,12 @@
     "react-scripts": "5.0.1",
     "axios": "^1.6.2"
   },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "25.6.0",
+    "@types/serve-static": "2.2.0",
+    "undici-types": "7.19.2"
+  },
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
