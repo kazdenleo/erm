@@ -46,15 +46,18 @@ function procurementStatusUpdateDedupeKey(o) {
   return orderKey(o);
 }
 
-/** Выделенные заказы с полным разворотом групп (все строки БД), как для «Отправить на сборку» */
-function expandSelectedOrdersForBulkActions(filteredOrders, selectedKeys) {
+/**
+ * @param {Array<*>} orderPool — полный пул заказов для выбранных позиций (все страницы).
+ * @param {Set<string>} selectedKeys
+ */
+function expandSelectedOrdersForBulkActions(orderPool, selectedKeys) {
   const toSend = [];
   const added = new Set();
-  for (const o of filteredOrders) {
+  for (const o of orderPool) {
     if (!selectedKeys.has(orderKey(o))) continue;
     const gid = orderGroupKey(o);
     if (gid) {
-      for (const g of filteredOrders) {
+      for (const g of orderPool) {
         if (orderGroupKey(g) !== gid) continue;
         const k = orderKey(g);
         if (!added.has(k)) {
@@ -320,6 +323,8 @@ export function Orders() {
   const [sendToAssemblyRowKey, setSendToAssemblyRowKey] = useState(null);
   const [refreshError, setRefreshError] = useState(null);
   const [selectedKeys, setSelectedKeys] = useState(new Set());
+  /** Снапшот заказа по `orderKey` — чтобы «В закупку»/сборка/ERM по всем страницам, а не только по текущей. */
+  const [selectedOrderByKey, setSelectedOrderByKey] = useState({});
   const [assemblyLoading, setAssemblyLoading] = useState(false);
   const [assemblyMessage, setAssemblyMessage] = useState(null);
   const [addOrderOpen, setAddOrderOpen] = useState(false);
@@ -791,6 +796,15 @@ export function Orders() {
         }
         return next;
       });
+      setSelectedOrderByKey((prev) => {
+        const n = { ...prev };
+        for (const r of sourceRows) {
+          for (const o of ordersArrayForPurchaseRow(r)) {
+            delete n[orderKey(o)];
+          }
+        }
+        return n;
+      });
       closeProcurementModal();
       await reloadOrders({ silent: true });
     } catch (e) {
@@ -990,6 +1004,27 @@ export function Orders() {
     return byMarketplace && byStatus && bySearch;
   }), [orders, marketplaceFilter, statusFilter, orderSearchQuery]);
 
+  const filteredKeys = useMemo(() => new Set(filteredOrders.map(orderKey)), [filteredOrders]);
+
+  /** Пул заказов для выбранных чекбоксов: сначала свежие объекты с текущей страницы, иначе снапшот с другой страницы. */
+  const orderPoolForSelection = useMemo(() => {
+    const fromPage = new Map();
+    for (const o of filteredOrders) {
+      const k = orderKey(o);
+      if (selectedKeys.has(k)) fromPage.set(k, o);
+    }
+    const out = [];
+    const seen = new Set();
+    for (const k of selectedKeys) {
+      const o = fromPage.get(k) ?? selectedOrderByKey[k];
+      if (o && !seen.has(k)) {
+        seen.add(k);
+        out.push(o);
+      }
+    }
+    return out;
+  }, [selectedKeys, selectedOrderByKey, filteredOrders]);
+
   // Подсчёт количества строк (групп заказов) для кнопок фильтра маркетплейсов.
   // Важно: считаем группы по `orderGroupId`, т.к. один заказ может быть из нескольких товаров.
   const countsByMarketplace = useMemo(() => {
@@ -1021,11 +1056,10 @@ export function Orders() {
 
   const countsByStatus = statusCounts;
 
-  // Группируем заказы с одним order_group_id в одну строку (один заказ — несколько товаров).
-  // Маркетплейс нормализуем — иначе две строки одного заказа (wb vs wildberries) не слипаются.
-  const groupedDisplayRows = useMemo(() => {
+  /** Склейка строк списка по group_id; общая логика для текущей страницы и для пула «все выделенные». */
+  const buildGroupedDisplayRowsFromOrderList = useCallback((list) => {
     const byGroup = new Map();
-    for (const o of filteredOrders) {
+    for (const o of list) {
       const ogk = orderGroupKey(o);
       const gid = ogk || singleOrderListGroupKey(o);
       if (!byGroup.has(gid)) byGroup.set(gid, []);
@@ -1042,29 +1076,50 @@ export function Orders() {
         isGroup
       };
     });
-  }, [filteredOrders]);
+  }, []);
 
-  const sortedGroupedDisplayRows = useMemo(() => {
-    if (sortByArticle == null) return groupedDisplayRows;
-    const dir = sortByArticle === 'asc' ? 1 : -1;
-    const tieBreak = (a, b) => {
-      const ta = new Date(a.first.createdAt || 0).getTime();
-      const tb = new Date(b.first.createdAt || 0).getTime();
-      return tb - ta;
-    };
-    return [...groupedDisplayRows].sort((a, b) => {
-      const ka = displayRowPrimaryArticleKey(a);
-      const kb = displayRowPrimaryArticleKey(b);
-      const aMiss = ka == null;
-      const bMiss = kb == null;
-      if (aMiss && bMiss) return tieBreak(a, b);
-      if (aMiss) return 1;
-      if (bMiss) return -1;
-      const c = ka.localeCompare(kb, 'ru', ARTICLE_SORT_LOCALE_OPTS);
-      if (c !== 0) return c * dir;
-      return tieBreak(a, b);
-    });
-  }, [groupedDisplayRows, sortByArticle]);
+  // Группируем заказы с одним order_group_id в одну строку (один заказ — несколько товаров).
+  // Маркетплейс нормализуем — иначе две строки одного заказа (wb vs wildberries) не слипаются.
+  const groupedDisplayRows = useMemo(
+    () => buildGroupedDisplayRowsFromOrderList(filteredOrders),
+    [buildGroupedDisplayRowsFromOrderList, filteredOrders]
+  );
+
+  const applyArticleSortToGroupedRows = useCallback(
+    (rows) => {
+      if (sortByArticle == null) return rows;
+      const dir = sortByArticle === 'asc' ? 1 : -1;
+      const tieBreak = (a, b) => {
+        const ta = new Date(a.first.createdAt || 0).getTime();
+        const tb = new Date(b.first.createdAt || 0).getTime();
+        return tb - ta;
+      };
+      return [...rows].sort((a, b) => {
+        const ka = displayRowPrimaryArticleKey(a);
+        const kb = displayRowPrimaryArticleKey(b);
+        const aMiss = ka == null;
+        const bMiss = kb == null;
+        if (aMiss && bMiss) return tieBreak(a, b);
+        if (aMiss) return 1;
+        if (bMiss) return -1;
+        const c = ka.localeCompare(kb, 'ru', ARTICLE_SORT_LOCALE_OPTS);
+        if (c !== 0) return c * dir;
+        return tieBreak(a, b);
+      });
+    },
+    [sortByArticle]
+  );
+
+  const sortedGroupedDisplayRows = useMemo(
+    () => applyArticleSortToGroupedRows(groupedDisplayRows),
+    [groupedDisplayRows, applyArticleSortToGroupedRows]
+  );
+
+  /** Те же группы строк, что в таблице, но по всем выбранным заказам (все страницы) — для «В закупку». */
+  const groupedSelectedRowsForBulk = useMemo(
+    () => applyArticleSortToGroupedRows(buildGroupedDisplayRowsFromOrderList(orderPoolForSelection)),
+    [buildGroupedDisplayRowsFromOrderList, orderPoolForSelection, applyArticleSortToGroupedRows]
+  );
 
   const totalOrders = meta?.total ?? orders.length;
   const totalPages = meta?.total != null ? Math.max(1, Math.ceil(meta.total / ORDERS_PAGE_SIZE)) : 1;
@@ -1087,59 +1142,63 @@ export function Orders() {
     if (row) void openProcurementModal(row);
   };
 
-  const filteredKeys = useMemo(() => new Set(filteredOrders.map(orderKey)), [filteredOrders]);
   const allFilteredSelected = filteredOrders.length > 0 && filteredOrders.every(o => selectedKeys.has(orderKey(o)));
   // Выделение должно сохраняться между страницами, поэтому считаем все выбранные ключи, а не только текущую страницу.
   const selectedCount = selectedKeys.size;
 
   const toggleSelectGroup = (row) => {
     const keys = row.orders.map(orderKey);
-    const allSelected = keys.every(k => selectedKeys.has(k));
-    setSelectedKeys(prev => {
+    const allSelected = keys.every((k) => selectedKeys.has(k));
+    setSelectedKeys((prev) => {
       const next = new Set(prev);
-      if (allSelected) keys.forEach(k => next.delete(k));
-      else keys.forEach(k => next.add(k));
+      if (allSelected) keys.forEach((k) => next.delete(k));
+      else keys.forEach((k) => next.add(k));
       return next;
+    });
+    setSelectedOrderByKey((prev) => {
+      const n = { ...prev };
+      if (allSelected) {
+        keys.forEach((k) => {
+          delete n[k];
+        });
+      } else {
+        for (const o of row.orders) {
+          n[orderKey(o)] = o;
+        }
+      }
+      return n;
     });
   };
 
   const toggleSelectAll = () => {
     if (allFilteredSelected) {
-      setSelectedKeys(prev => {
+      setSelectedKeys((prev) => {
         const next = new Set(prev);
-        filteredKeys.forEach(k => next.delete(k));
+        filteredKeys.forEach((k) => next.delete(k));
         return next;
       });
+      setSelectedOrderByKey((prev) => {
+        const n = { ...prev };
+        filteredKeys.forEach((k) => {
+          delete n[k];
+        });
+        return n;
+      });
     } else {
-      setSelectedKeys(prev => new Set([...prev, ...filteredKeys]));
+      setSelectedKeys((prev) => new Set([...prev, ...filteredKeys]));
+      setSelectedOrderByKey((prev) => {
+        const n = { ...prev };
+        for (const o of filteredOrders) {
+          n[orderKey(o)] = o;
+        }
+        return n;
+      });
     }
   };
 
   const handleSendToAssembly = async () => {
-    // При выборе одного заказа из группы (orderGroupId) отправляем на сборку всю группу
-    const toSend = [];
-    const added = new Set();
-    for (const o of filteredOrders) {
-      if (!selectedKeys.has(orderKey(o))) continue;
-      const rowGid = orderGroupKey(o);
-      if (rowGid) {
-        filteredOrders
-          .filter((x) => orderGroupKey(x) === rowGid)
-          .forEach((g) => {
-          const k = orderKey(g);
-          if (!added.has(k)) {
-            added.add(k);
-            toSend.push(g);
-          }
-        });
-      } else {
-        const k = orderKey(o);
-        if (!added.has(k)) {
-          added.add(k);
-          toSend.push(o);
-        }
-      }
-    }
+    // При выборе одного заказа из группы (orderGroupId) отправляем на сборку всю группу (все выделенные страницы)
+    const toSend = expandSelectedOrdersForBulkActions(orderPoolForSelection, selectedKeys);
     if (toSend.length === 0) return;
     setAssemblyLoading(true);
     setAssemblyMessage(null);
@@ -1151,10 +1210,17 @@ export function Orders() {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
       setAssemblyMessage(msg);
-      setSelectedKeys(prev => {
+      setSelectedKeys((prev) => {
         const next = new Set(prev);
-        toSend.forEach(o => next.delete(orderKey(o)));
+        toSend.forEach((o) => next.delete(orderKey(o)));
         return next;
+      });
+      setSelectedOrderByKey((prev) => {
+        const n = { ...prev };
+        toSend.forEach((o) => {
+          delete n[orderKey(o)];
+        });
+        return n;
       });
       await reloadOrders({ silent: true });
     } catch (e) {
@@ -1166,7 +1232,7 @@ export function Orders() {
 
   /** Массовая смена статуса только в нашей БД (ERM), не запросы к маркетплейсам */
   const handleBulkLocalErmStatus = async (targetStatus) => {
-    const toSend = expandSelectedOrdersForBulkActions(filteredOrders, selectedKeys);
+    const toSend = expandSelectedOrdersForBulkActions(orderPoolForSelection, selectedKeys);
     if (toSend.length === 0 || !targetStatus) return;
     setBulkLocalErmStatusLoading(true);
     setAssemblyMessage(null);
@@ -1229,6 +1295,13 @@ export function Orders() {
         toSend.forEach((o) => next.delete(orderKey(o)));
         return next;
       });
+      setSelectedOrderByKey((prev) => {
+        const n = { ...prev };
+        toSend.forEach((o) => {
+          delete n[orderKey(o)];
+        });
+        return n;
+      });
       await reloadOrders({ silent: true });
     } catch (e) {
       const msg = e.response?.data?.message || e.message || 'Не удалось изменить статус';
@@ -1240,14 +1313,14 @@ export function Orders() {
     }
   };
 
-  /** Выбранные целиком строки, готовые к закупке (новый / у WB — pending до резолва статуса). */
+  /** Выбранные целиком строки, готовые к закупке (новый / у WB — pending до резолва статуса). По всем страницам. */
   const bulkProcurementSelectedRows = useMemo(() => {
-    return sortedGroupedDisplayRows.filter((row) => {
+    return groupedSelectedRowsForBulk.filter((row) => {
       const keys = row.orders.map(orderKey);
       if (!keys.every((k) => selectedKeys.has(k))) return false;
       return row.orders.every((o) => isOrderStatusEligibleForProcurement(o.marketplace, o.status));
     });
-  }, [sortedGroupedDisplayRows, selectedKeys]);
+  }, [groupedSelectedRowsForBulk, selectedKeys]);
 
   const openBulkProcurementModal = async () => {
     const rows = bulkProcurementSelectedRows;
