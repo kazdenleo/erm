@@ -677,7 +677,7 @@ class OrdersSyncService {
     const storageOrderId = decodeURIComponent(String(orderIdRaw || '').trim());
     const postingNum = ozonPostingNumberFromOrderId(storageOrderId);
 
-    const { marketplaces } = await integrationsService.getAllConfigs(profileId);
+    const { marketplaces } = await integrationsService.getAllConfigs({ profileId });
     const ozonConfig = marketplaces?.ozon || {};
     if (!ozonConfig?.client_id || !ozonConfig?.api_key) {
       const error = new Error('Ozon API не настроен');
@@ -806,7 +806,7 @@ class OrdersSyncService {
       throw err;
     }
 
-    const { marketplaces } = await integrationsService.getAllConfigs(profileId);
+    const { marketplaces } = await integrationsService.getAllConfigs({ profileId });
     const normMarketplace = String(marketplace || '').toLowerCase();
     if (normMarketplace === 'ozon') {
       const ozonConfig = marketplaces?.ozon || {};
@@ -2125,6 +2125,40 @@ async function getYandexBusinessAndCampaigns(config) {
   const flat = new Set();
   for (const g of out.orderGroups) for (const id of g.campaignIds) flat.add(id);
   out.campaignIds = [...flat];
+
+  // В интеграции задана конкретная кампания — не тянем заказы с остальных кампаний,
+  // которые Яндекс отдаёт по тому же Api-Key (часто у одного ключа видны несколько магазинов).
+  const wantCid = campaign_id != null && String(campaign_id).trim() !== '' ? Number(campaign_id) : null;
+  if (wantCid != null && !Number.isNaN(wantCid) && wantCid >= 1) {
+    const narrowed = [];
+    for (const g of out.orderGroups) {
+      if (g.campaignIds.some((c) => Number(c) === wantCid)) {
+        narrowed.push({ businessId: g.businessId, campaignIds: [wantCid] });
+        break;
+      }
+    }
+    if (narrowed.length > 0) {
+      out.orderGroups = narrowed;
+    } else {
+      const bid =
+        configBusinessId != null && String(configBusinessId).trim() !== ''
+          ? Number(configBusinessId)
+          : out.businessId;
+      if (bid != null && !Number.isNaN(bid) && bid >= 1) {
+        out.orderGroups = [{ businessId: bid, campaignIds: [wantCid] }];
+        logger.info(
+          `[YM Orders] Кампания ${wantCid} не найдена в ответе v2/campaigns; берём business_id из настроек: ${bid}`
+        );
+      }
+    }
+    const flat2 = new Set();
+    for (const g of out.orderGroups) for (const id of g.campaignIds) flat2.add(id);
+    out.campaignIds = [...flat2];
+    if (out.orderGroups[0]) out.businessId = out.orderGroups[0].businessId;
+    logger.info(
+      `[YM Orders] Ограничение по интеграции: только campaign_id=${wantCid} (остальные кампании с этим ключом не импортируются).`
+    );
+  }
 
   logger.info(
     `[YM Orders] Групп заказов YM: ${out.orderGroups.length} — ${out.orderGroups.map(g => `business ${g.businessId}: ${g.campaignIds.length} камп.`).join('; ')}`
