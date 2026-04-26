@@ -34,7 +34,13 @@ function extractOzonQuestions(data) {
 
 function parseIsoDate(v) {
   if (v == null || v === '') return null;
-  const d = new Date(v);
+  // Ozon/YM/WB могут отдавать дату как ISO или как unix timestamp (секунды/миллисекунды)
+  const n = typeof v === 'number' ? v : (typeof v === 'string' && /^\d+$/.test(v.trim()) ? Number(v.trim()) : NaN);
+  const asDate =
+    Number.isFinite(n) && n > 0
+      ? new Date(n < 1_000_000_000_000 ? n * 1000 : n) // seconds -> ms
+      : new Date(v);
+  const d = asDate;
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
@@ -68,8 +74,13 @@ function mapOzonQuestion(q, profileId) {
     answerText = q.answer.text ?? q.answer.message ?? null;
   }
   const body = String(q.text ?? q.question_text ?? '').trim() || '—';
+  // Для отображения «артикул» у Ozon нужен offer_id (артикул продавца). sku может быть числовым product_id.
   const offerOrSku =
-    q.offer_id != null ? String(q.offer_id).trim() : q.sku != null ? String(q.sku).trim() : null;
+    q.offer_id != null && String(q.offer_id).trim() !== ''
+      ? String(q.offer_id).trim()
+      : q.sku != null && String(q.sku).trim() !== ''
+        ? String(q.sku).trim()
+        : null;
   const baseName = q.product_name ?? q.product_title ?? q.name ?? null;
   let subject = baseName != null && String(baseName).trim() !== '' ? String(baseName).trim() : null;
   if (subject && offerOrSku) {
@@ -79,7 +90,12 @@ function mapOzonQuestion(q, profileId) {
   } else if (!subject && q.sku != null) {
     subject = String(q.sku).trim();
   }
-  const sku = q.sku != null ? String(q.sku) : q.offer_id != null ? String(q.offer_id) : null;
+  const sku =
+    q.offer_id != null && String(q.offer_id).trim() !== ''
+      ? String(q.offer_id).trim()
+      : q.sku != null && String(q.sku).trim() !== ''
+        ? String(q.sku).trim()
+        : null;
   const status = q.status ?? q.question_status ?? null;
   const sourceCreatedAt =
     parseIsoDate(q.created_at) ??

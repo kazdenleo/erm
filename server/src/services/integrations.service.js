@@ -813,15 +813,35 @@ class IntegrationsService {
       });
       const marketplaces = {};
       const suppliers = {};
-      
-      integrations.forEach(integration => {
-        if (integration.type === 'marketplace') {
-          marketplaces[integration.code] = integration.config || {};
-        } else if (integration.type === 'supplier') {
-          suppliers[integration.code] = integration.config || {};
+
+      /** При нескольких строках с одним code (разные organization_id) импорт заказов брал «последнюю» в произвольном порядке — ловили чужой кабинет. Берём запись с большим updated_at, иначе с большим id. */
+      const pickNewerIntegration = (a, b) => {
+        if (!a) return b;
+        if (!b) return a;
+        const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        if (tb !== ta) return tb > ta ? b : a;
+        const ida = a.id != null ? Number(a.id) : 0;
+        const idb = b.id != null ? Number(b.id) : 0;
+        return idb >= ida ? b : a;
+      };
+
+      const mpByCode = new Map();
+      const supByCode = new Map();
+      for (const integration of integrations) {
+        if (integration.type === 'marketplace' && integration.code) {
+          mpByCode.set(integration.code, pickNewerIntegration(mpByCode.get(integration.code), integration));
+        } else if (integration.type === 'supplier' && integration.code) {
+          supByCode.set(integration.code, pickNewerIntegration(supByCode.get(integration.code), integration));
         }
+      }
+      mpByCode.forEach((row, code) => {
+        marketplaces[code] = row.config || {};
       });
-      
+      supByCode.forEach((row, code) => {
+        suppliers[code] = row.config || {};
+      });
+
       return { marketplaces, suppliers };
     } else {
       // Старое хранилище

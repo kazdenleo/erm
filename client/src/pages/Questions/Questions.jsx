@@ -281,6 +281,7 @@ export function Questions() {
               <tr>
                 <th className="questions-col-date">Дата</th>
                 <th className="questions-col-mp">МП</th>
+                <th className="questions-col-name">Имя</th>
                 <th className="questions-col-theme">Артикул</th>
                 <th className="questions-col-question">Вопрос</th>
                 <th className="questions-col-status">Статус</th>
@@ -293,7 +294,6 @@ export function Questions() {
                 const mpMeta = MARKETPLACE_TABLE_BADGES.find((m) => m.code === mpNorm);
                 const mpLabel = mpMeta?.name ?? String(q.marketplace ?? '—');
                 const needs = threadNeedsSellerReply(q);
-                const nMsg = Array.isArray(q.threadMessages) ? q.threadMessages.length : 0;
                 return (
                   <tr key={q.id}>
                     <td className="questions-col-date">{formatDt(q.sourceCreatedAt)}</td>
@@ -312,8 +312,9 @@ export function Questions() {
                         </span>
                       )}
                     </td>
+                    <td className="questions-col-name">{truncate(q.buyerName || '—', 28)}</td>
                     <td className="questions-col-theme">{formatProductTheme(q, 40)}</td>
-                    <td className="questions-col-question">{truncate(q.body, 160)}</td>
+                    <td className="questions-col-question">{q.body}</td>
                     <td className="questions-col-status">
                       {needs ? (
                         <span className="questions-status-pending">Ждёт ответа</span>
@@ -323,7 +324,6 @@ export function Questions() {
                     </td>
                     <td className="questions-col-thread">
                       <div className="questions-thread-cell">
-                        <span className="text-muted small">{nMsg > 0 ? `${nMsg} сообщ.` : '—'}</span>
                         <Button
                           type="button"
                           variant={needs ? 'primary' : 'secondary'}
@@ -331,7 +331,7 @@ export function Questions() {
                           onClick={() => openThread(q.id)}
                           disabled={loading || syncing}
                         >
-                          Открыть ветку
+                          Ответить
                         </Button>
                       </div>
                     </td>

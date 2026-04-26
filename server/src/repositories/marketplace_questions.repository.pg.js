@@ -60,6 +60,69 @@ function pendingAnswerTextFromRawPayload(raw) {
   return s ? s : null;
 }
 
+function buyerNameFromRawPayload(marketplace, raw) {
+  if (raw == null) return null;
+  const o =
+    typeof raw === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        })()
+      : raw;
+  if (!o || typeof o !== 'object') return null;
+
+  const mp = String(marketplace || '').toLowerCase();
+  const candidates = [];
+
+  // Ozon: варианты названий зависят от версии API/обвязки
+  if (mp === 'ozon') {
+    candidates.push(
+      o.user_name,
+      o.userName,
+      o.customer_name,
+      o.customerName,
+      o.author?.name,
+      o.author?.full_name,
+      o.author?.fullName,
+      o.buyer?.name,
+      o.buyer?.fullName,
+      o.client?.name
+    );
+  }
+
+  // WB: часто имя не приходит, но иногда есть
+  if (mp === 'wildberries' || mp === 'wb') {
+    candidates.push(
+      o.userName,
+      o.user_name,
+      o.customerName,
+      o.customer_name,
+      o.buyerName,
+      o.buyer_name
+    );
+  }
+
+  // YM: иногда есть user в ответе
+  if (mp === 'yandex' || mp === 'ym') {
+    candidates.push(
+      o.user?.name,
+      o.user?.nickname,
+      o.buyer?.name,
+      o.buyerName,
+      o.buyer_name
+    );
+  }
+
+  for (const v of candidates) {
+    const s = v != null ? String(v).trim() : '';
+    if (s) return s;
+  }
+  return null;
+}
+
 function rowToApi(row) {
   if (!row) return row;
   let subject = row.subject;
@@ -85,6 +148,7 @@ function rowToApi(row) {
     marketplace: row.marketplace,
     externalId: row.external_id,
     subject,
+    buyerName: buyerNameFromRawPayload(row.marketplace, row.raw_payload),
     pendingAnswerText: pendingAnswerTextFromRawPayload(row.raw_payload),
     body: row.body,
     answerText: row.answer_text,

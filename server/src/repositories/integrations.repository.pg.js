@@ -36,7 +36,8 @@ class IntegrationsRepositoryPG {
       params.push(isActive);
     }
     
-    sql += ' ORDER BY type, name';
+    // Стабильный порядок: при одинаковом name несколько строк (разные organization_id) не «прыгают».
+    sql += ' ORDER BY type, name, id';
     
     const result = await query(sql, params);
     return result.rows;

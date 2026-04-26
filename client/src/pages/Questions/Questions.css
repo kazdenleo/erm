@@ -103,9 +103,19 @@
   text-overflow: ellipsis;
 }
 
+.questions-col-name {
+  width: 7.25rem;
+  max-width: 9rem;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text, #334155);
+  opacity: 0.95;
+}
+
 .questions-col-question {
-  width: 20%;
-  max-width: 11rem;
+  width: auto;
   word-break: break-word;
   color: var(--text, #334155);
   opacity: 0.95;
@@ -162,7 +172,7 @@
 .questions-thread-msg {
   border-radius: 10px;
   padding: 10px 12px;
-  max-width: 95%;
+  max-width: 100%;
   font-size: 14px;
   line-height: 1.45;
 }

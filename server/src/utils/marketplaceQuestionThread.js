@@ -4,7 +4,11 @@
 
 function parseIso(v) {
   if (v == null || v === '') return null;
-  const d = new Date(v);
+  const n = typeof v === 'number' ? v : (typeof v === 'string' && /^\d+$/.test(v.trim()) ? Number(v.trim()) : NaN);
+  const d =
+    Number.isFinite(n) && n > 0
+      ? new Date(n < 1_000_000_000_000 ? n * 1000 : n)
+      : new Date(v);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
