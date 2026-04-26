@@ -2485,20 +2485,36 @@ function mapYMOrderStatus(status, substatus) {
   const sub = substatus == null || substatus === '' ? '' : String(substatus).trim().toUpperCase();
 
   if (normalized === 'PROCESSING') {
+    // Явные стадии сборки / отгрузки (см. справочник substatus для PROCESSING в Partner API).
+    if (sub === 'READY_TO_SHIP' || sub === 'PACKAGING') return 'in_assembly';
+    const processingAsTransit = new Set([
+      'SHIPPED',
+      'DELIVERY_SERVICE_RECEIVED',
+      'USER_RECEIVED',
+      'READY_FOR_LAST_MILE',
+      'LAST_MILE_STARTED',
+      'DELIVERY_USER_NOT_RECEIVED',
+      'DELIVERY_SERVICE_UNDELIVERED'
+    ]);
+    if (processingAsTransit.has(sub)) return 'in_transit';
     if (sub === 'STARTED') return 'new';
-    if (sub === 'READY_TO_SHIP') return 'in_assembly';
-    if (sub === 'PACKAGING') return 'in_assembly';
     const processingAsNew = new Set([
       'AWAIT_CONFIRMATION',
       'AWAIT_DELIVERY_DATES_CONFIRMATION',
       'WAITING_FOR_STOCKS',
       'PREORDER',
       'ASYNC_PROCESSING',
-      'AWAIT_PAYMENT'
+      'AWAIT_PAYMENT',
+      'WAITING_USER_INPUT',
+      'WAITING_BANK_DECISION',
+      'AS_PART_OF_MULTI_ORDER',
+      'ANTIFRAUD'
     ]);
     if (processingAsNew.has(sub)) return 'new';
     if (!sub) return 'new';
-    return 'in_assembly';
+    // Раньше неизвестный substatus маппили в in_assembly — в ЛК Яндекса эти заказы часто в «Новых».
+    // Безопаснее считать неизвестное PROCESSING «новым», пока не появится явная стадия сборки/логистики.
+    return 'new';
   }
 
   const statusMap = {
