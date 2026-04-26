@@ -5,9 +5,32 @@
  */
 
 import * as repo from '../repositories/marketplace_cabinets.repository.pg.js';
+import organizationsRepository from '../repositories/organizations.repository.pg.js';
 import integrationsService from '../services/integrations.service.js';
 
 const VALID_TYPES = ['ozon', 'wildberries', 'yandex'];
+
+/**
+ * Сохраняет кабинет в integrations с теми же profile_id + organization_id, что и у организации.
+ * Без этих полей saveMarketplaceConfig в PostgreSQL не находит запись (findByCode) и дубли в integrations не сходят с UI.
+ */
+async function syncCabinetToIntegrations(organizationId, marketplaceType, cabinetConfig) {
+  const oid = organizationId != null && String(organizationId).trim() !== '' ? Number(organizationId) : null;
+  if (oid == null || Number.isNaN(oid)) return null;
+  const org = await organizationsRepository.findById(oid);
+  const profileId = org?.profile_id;
+  if (profileId == null || profileId === '') {
+    console.warn(
+      '[Marketplace Cabinets] У организации нет profile_id — пропуск синхронизации в integrations. organization_id=',
+      oid
+    );
+    return null;
+  }
+  return integrationsService.saveMarketplaceConfig(marketplaceType, cabinetConfig, {
+    profileId,
+    organizationId: oid
+  });
+}
 
 export const marketplaceCabinetsController = {
   async list(req, res, next) {
@@ -57,7 +80,7 @@ export const marketplaceCabinetsController = {
         sort_order: sort_order ?? 0
       });
       try {
-        const syncResult = await integrationsService.saveMarketplaceConfig(marketplace_type, cabinetConfig);
+        const syncResult = await syncCabinetToIntegrations(organizationId, marketplace_type, cabinetConfig);
         if (syncResult?.config && cabinet?.id) {
           await repo.update(cabinet.id, { config: syncResult.config });
           cabinet = await repo.findById(cabinet.id);
@@ -82,7 +105,11 @@ export const marketplaceCabinetsController = {
       const configToSync = updated?.config ?? cabinet?.config;
       if (configToSync && updated?.marketplace_type) {
         try {
-          const syncResult = await integrationsService.saveMarketplaceConfig(updated.marketplace_type, configToSync);
+          const syncResult = await syncCabinetToIntegrations(
+            cabinet.organization_id,
+            updated.marketplace_type,
+            configToSync
+          );
           if (syncResult?.config && updated?.id) {
             updated = await repo.update(id, { config: syncResult.config });
           }
