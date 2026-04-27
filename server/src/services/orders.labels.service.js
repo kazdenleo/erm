@@ -8,6 +8,7 @@
 import fs from 'fs';
 import { join } from 'path';
 import fetch from 'node-fetch';
+import crypto from 'crypto';
 import { readData } from '../utils/storage.js';
 import config from '../config/index.js';
 import ordersService from './orders.service.js';
@@ -95,6 +96,17 @@ function normalizeOrgId(value) {
   if (!s) return null;
   const n = Number(s);
   return Number.isFinite(n) && n > 0 ? String(Math.trunc(n)) : s;
+}
+
+function keyFp(raw) {
+  try {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    // md5 удобнее сравнивать с PostgreSQL: md5(config->>'api_key')
+    return crypto.createHash('md5').update(s).digest('hex').slice(0, 10);
+  } catch {
+    return '';
+  }
 }
 
 class OrdersLabelsService {
@@ -296,7 +308,11 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
     });
     if (!check.ok) {
       const text = await check.text();
-      logLabelEvent(`[Ozon] get posting failed ${check.status}: ${text.substring(0, 300)}`);
+      const org = normalizeOrgId(organizationId);
+      const fp = keyFp(ozon.api_key);
+      logLabelEvent(
+        `[Ozon] get posting failed ${check.status}${org ? ` org=${org}` : ''}${fp ? ` key_fp=${fp}` : ''}: ${text.substring(0, 300)}`
+      );
       const err =
         check.status === 403
           ? new Error(
@@ -473,7 +489,11 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
     }
 
     if (!resp.ok) {
-      logLabelEvent(`[WB] label error ${resp.status}: ${text.substring(0, 300)}`);
+      const org = normalizeOrgId(organizationId);
+      const fp = keyFp(wb.api_key);
+      logLabelEvent(
+        `[WB] label error ${resp.status}${org ? ` org=${org}` : ''}${fp ? ` key_fp=${fp}` : ''}: ${text.substring(0, 300)}`
+      );
       throw new Error(`WB label error ${resp.status}: ${text.substring(0, 200)}`);
     }
 
@@ -673,7 +693,11 @@ async function fetchYMLabel(order, { organizationId = null } = {}) {
 
       const text = await response.text();
       lastErr = `${response.status}: ${text.substring(0, 280)}`;
-      logLabelEvent(`[YM] labels ${campaignId}/${orderIdNum} -> ${lastErr}`);
+      const org = normalizeOrgId(organizationId);
+      const fp = keyFp(api_key);
+      logLabelEvent(
+        `[YM] labels ${campaignId}/${orderIdNum}${org ? ` org=${org}` : ''}${fp ? ` key_fp=${fp}` : ''} -> ${lastErr}`
+      );
       if (response.status === 403) {
         const err = new Error(
           'Яндекс.Маркет: доступ запрещён (403) при запросе этикетки. Проверьте Api-Key и права (FBS/DBS/communication) в «Интеграции → Яндекс.Маркет», а также campaign_id.'
