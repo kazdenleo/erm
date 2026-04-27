@@ -106,7 +106,10 @@ class OrdersService {
                o.marketplace,
                o.order_id,
                o.quantity,
-               o.product_id
+               o.product_id,
+               o.offer_id,
+               o.marketplace_sku,
+               o.product_name
         FROM refs r
         JOIN orders o
           ON o.marketplace = r.marketplace
@@ -130,7 +133,11 @@ class OrdersService {
         o.order_id,
         COALESCE(o.quantity, 1)::int AS order_qty,
         COALESCE(r.reserved_qty, 0)::int AS reserved_qty,
-        p.id AS product_id,
+        o.product_id,
+        o.offer_id,
+        o.marketplace_sku,
+        o.product_name,
+        p.id AS joined_product_id,
         COALESCE(p.quantity, 0)::int AS product_qty,
         COALESCE(p.reserved_quantity, 0)::int AS product_reserved_qty
       FROM ord o
@@ -147,6 +154,7 @@ class OrdersService {
 
     const ok = [];
     const blocked = [];
+    const productCache = new Map(); // productId -> { qty, reserved }
     for (const o of refs) {
       const mp = this._marketplaceToOrdersDb(o?.marketplace);
       const oid = o?.orderId != null ? String(o.orderId).trim() : '';
@@ -158,9 +166,48 @@ class OrdersService {
       }
       const need = Number(row.order_qty) || 1;
       const resQty = Number(row.reserved_qty) || 0;
-      const prodId = row.product_id != null ? Number(row.product_id) : null;
-      const prodQty = Number(row.product_qty) || 0;
-      const prodRes = Number(row.product_reserved_qty) || 0;
+      let prodId = row.product_id != null ? Number(row.product_id) : null;
+      let prodQty = Number(row.product_qty) || 0;
+      let prodRes = Number(row.product_reserved_qty) || 0;
+
+      // Если product_id в orders ещё не заполнен, пытаемся сопоставить через product_skus (как в UI).
+      if (!prodId || !Number.isFinite(prodId) || prodId < 1) {
+        try {
+          const resolved = await this.resolveProductIdForAssemblyLine({
+            marketplace: row.marketplace,
+            offerId: row.offer_id,
+            offer_id: row.offer_id,
+            sku: row.marketplace_sku,
+            marketplace_sku: row.marketplace_sku,
+            productName: row.product_name,
+            product_name: row.product_name,
+          });
+          const rid = resolved != null ? Number(resolved) : null;
+          if (rid && Number.isFinite(rid) && rid > 0) {
+            prodId = rid;
+            if (productCache.has(prodId)) {
+              const c = productCache.get(prodId);
+              prodQty = c.qty;
+              prodRes = c.reserved;
+            } else {
+              const pr = await query(
+                `SELECT COALESCE(quantity, 0)::int AS quantity,
+                        COALESCE(reserved_quantity, 0)::int AS reserved_quantity
+                 FROM products
+                 WHERE id = $1
+                 LIMIT 1`,
+                [prodId]
+              );
+              const prow = pr.rows?.[0] || {};
+              prodQty = Number(prow.quantity) || 0;
+              prodRes = Number(prow.reserved_quantity) || 0;
+              productCache.set(prodId, { qty: prodQty, reserved: prodRes });
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
 
       if (!prodId || !Number.isFinite(prodId) || prodId < 1) {
         blocked.push({ marketplace: o.marketplace, orderId: oid, reason: 'не определён товар (product_id)' });
