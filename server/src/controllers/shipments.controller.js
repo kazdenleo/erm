@@ -10,7 +10,9 @@ import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfi
 function shipmentsProfileOpts(req) {
   const tid = tenantListProfileId(req);
   if (tid === TENANT_LIST_EMPTY) return { blocked: true };
-  return { profileId: tid != null ? tid : null };
+  const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+  const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+  return { profileId: tid != null ? tid : null, organizationId };
 }
 
 /** Абсолютный URL PNG стикера поставки для <img> (учитывает req.baseUrl `/api` vs `/api/shipments`). */
@@ -35,7 +37,7 @@ class ShipmentsController {
           }
         });
       }
-      const data = await shipmentsService.getShipments({ profileId: sp.profileId });
+      const data = await shipmentsService.getShipments({ profileId: sp.profileId, organizationId: sp.organizationId });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -49,7 +51,7 @@ class ShipmentsController {
         return res.status(404).json({ ok: false, message: 'Поставка не найдена' });
       }
       const { id } = req.params;
-      const shipment = await shipmentsService.getShipmentById(id, { profileId: sp.profileId });
+      const shipment = await shipmentsService.getShipmentById(id, { profileId: sp.profileId, organizationId: sp.organizationId });
       if (!shipment) {
         return res.status(404).json({ ok: false, message: 'Поставка не найдена' });
       }
@@ -66,7 +68,7 @@ class ShipmentsController {
         return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
       }
       const { marketplace, name } = req.body || {};
-      const shipment = await shipmentsService.createShipment({ marketplace, name, profileId: sp.profileId });
+      const shipment = await shipmentsService.createShipment({ marketplace, name, profileId: sp.profileId, organizationId: sp.organizationId });
       return res.status(201).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -82,7 +84,7 @@ class ShipmentsController {
       }
       const { id } = req.params;
       const { orderIds } = req.body || {};
-      const shipment = await shipmentsService.addOrdersToShipment(id, orderIds, { profileId: sp.profileId });
+      const shipment = await shipmentsService.addOrdersToShipment(id, orderIds, { profileId: sp.profileId, organizationId: sp.organizationId });
       return res.status(200).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -97,7 +99,7 @@ class ShipmentsController {
         return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
       }
       const { id } = req.params;
-      const shipment = await shipmentsService.closeShipment(id, { profileId: sp.profileId });
+      const shipment = await shipmentsService.closeShipment(id, { profileId: sp.profileId, organizationId: sp.organizationId });
       return res.status(200).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -113,7 +115,7 @@ class ShipmentsController {
       }
       const { id } = req.params;
       const { orderIds } = req.body || {};
-      const shipment = await shipmentsService.removeOrdersFromShipment(id, orderIds, { profileId: sp.profileId });
+      const shipment = await shipmentsService.removeOrdersFromShipment(id, orderIds, { profileId: sp.profileId, organizationId: sp.organizationId });
       return res.status(200).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
@@ -128,7 +130,7 @@ class ShipmentsController {
         return res.status(404).json({ ok: false, message: 'QR-стикер поставки не найден' });
       }
       const { id } = req.params;
-      const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: sp.profileId });
+      const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: sp.profileId, organizationId: sp.organizationId });
       if (!filePath) {
         return res.status(404).json({ ok: false, message: 'QR-стикер поставки не найден' });
       }
@@ -151,7 +153,7 @@ class ShipmentsController {
         return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
       }
       const { id } = req.params;
-      const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: sp.profileId });
+      const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: sp.profileId, organizationId: sp.organizationId });
       if (!filePath) {
         return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
       }

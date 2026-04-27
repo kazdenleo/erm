@@ -432,8 +432,14 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
     try {
       wb = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
     } catch (_) {}
-    if (!wb?.api_key) wb = await readData('wildberries');
-    if (!wb || !wb.api_key) return null;
+    // В мульти-кабинетах нельзя падать обратно на глобальный readData('wildberries'):
+    // иначе есть риск взять ключ "чужой" организации/аккаунта и получить 403/пустые stickers.
+    if (!wb?.api_key && profileId == null) wb = await readData('wildberries');
+    if (!wb || !wb.api_key) {
+      const err = new Error('Wildberries: не настроен API-ключ для этого аккаунта');
+      err.statusCode = 400;
+      throw err;
+    }
     // WB: для большинства v3 методов корректный формат — Authorization: Bearer <token>
     // (в т.ч. /ping и часть marketplace-api). Оставляем совместимость: если уже передан Bearer — не дублируем.
     const rawToken = String(wb.api_key || '').trim();

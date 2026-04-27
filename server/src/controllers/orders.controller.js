@@ -313,8 +313,45 @@ class OrdersController {
           message: 'Передайте массив заказов orderIds: [{ marketplace, orderId }, ...]'
         });
       }
+
+      const warnings = [];
+
+      // Правило (опционально): запрет «На сборку», если под заказ нет фактического резерва на складе.
+      // Управляется тумблером в общих настройках аккаунта (profiles.require_reserved_stock_for_assembly).
+      const profileId = req.user?.profileId ?? null;
+      try {
+        const prof = profileId != null ? await profilesRepo.findById(profileId) : null;
+        const requireReserve = prof?.require_reserved_stock_for_assembly === true;
+        if (requireReserve) {
+          const check = await ordersService.validateReservedStockForAssembly(orderIds, { profileId });
+          if (Array.isArray(check?.blocked) && check.blocked.length > 0) {
+            const allowed = Array.isArray(check?.ok) ? check.ok : [];
+            if (allowed.length === 0) {
+              const sample = check.blocked.slice(0, 8).map((x) => `${x.orderId}${x.reason ? ` — ${x.reason}` : ''}`).join('; ');
+              return res.status(409).json({
+                ok: false,
+                message:
+                  'Нельзя отправить на сборку: нет фактически зарезервированного товара под заказ. ' +
+                  `Проверьте резерв/остатки. Примеры: ${sample}${check.blocked.length > 8 ? '…' : ''}`
+              });
+            }
+            // Частичный пропуск: разрешённые уйдут на сборку, заблокированные останутся как есть.
+            req.body.orderIds = allowed;
+            warnings.push({
+              marketplace: 'erm',
+              message:
+                `Часть заказов не отправлена на сборку из-за отсутствия фактического резерва: ` +
+                check.blocked.slice(0, 12).map((x) => String(x.orderId)).join(', ') +
+                (check.blocked.length > 12 ? '…' : '')
+            });
+          }
+        }
+      } catch (_) {
+        // best effort: не ломаем сборку из-за сбоя проверки
+      }
       const byMarketplace = {};
-      for (const o of orderIds) {
+      const effectiveOrderIds = req.body?.orderIds;
+      for (const o of effectiveOrderIds) {
         const mp = (o.marketplace || '').toLowerCase();
         const code = mp === 'wb' ? 'wildberries' : mp;
         if (!['ozon', 'wildberries', 'yandex'].includes(code)) continue;
@@ -322,17 +359,16 @@ class OrdersController {
         byMarketplace[code].push({ marketplace: o.marketplace, orderId: String(o.orderId) });
       }
       const shipmentsUsed = [];
-      const warnings = [];
       for (const [code, list] of Object.entries(byMarketplace)) {
         if (list.length === 0) continue;
         // Идемпотентность: если заказ уже привязан к какой-то поставке — используем её и не добавляем заново.
-        const profileId = req.user?.profileId ?? null;
         const openShipment = await shipmentsService.getOrCreateOpenShipment(code, { profileId, organizationId });
         const byShipmentId = new Map(); // shipmentId -> { shipment, orderIds: [] }
 
         for (const o of list) {
           const existingShip = await shipmentsService.findLocalShipmentContainingOrder(code, o.orderId, {
-            profileId
+            profileId,
+            organizationId
           });
           const useShip = existingShip || openShipment;
           if (!byShipmentId.has(useShip.id)) {
@@ -380,13 +416,13 @@ class OrdersController {
           }
         }
       }
-      const result = await ordersService.sendToAssembly(orderIds, req.user?.profileId ?? null);
+      const result = await ordersService.sendToAssembly(effectiveOrderIds, profileId);
 
       // Автопредзагрузка этикеток после перевода «На сборке».
       // Делается в фоне: чтобы UI не ждал WB/Ozon/YM и не ловил 504/таймауты.
       try {
-        const uniq = Array.isArray(orderIds)
-          ? [...new Set(orderIds.map((o) => (o?.orderId != null ? String(o.orderId) : '')).filter(Boolean))]
+        const uniq = Array.isArray(effectiveOrderIds)
+          ? [...new Set(effectiveOrderIds.map((o) => (o?.orderId != null ? String(o.orderId) : '')).filter(Boolean))]
           : [];
         setTimeout(() => {
           for (const oid of uniq) {

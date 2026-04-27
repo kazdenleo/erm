@@ -32,6 +32,23 @@ function shipmentVisibleForProfile(s, profileId) {
   return Number.isFinite(sn) && sn === n;
 }
 
+function normalizeOrgId(value) {
+  if (value == null || value === '') return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? String(Math.trunc(n)) : s;
+}
+
+/** Локальные поставки не должны смешиваться между организациями в рамках одного профиля. */
+function shipmentVisibleForScope(s, profileId, organizationId) {
+  if (!shipmentVisibleForProfile(s, profileId)) return false;
+  const org = normalizeOrgId(organizationId);
+  if (org == null) return true;
+  const so = normalizeOrgId(s?.organizationId ?? s?.organization_id ?? null);
+  return so != null && String(so) === String(org);
+}
+
 async function getWildberriesConfigForScope(profileId, { organizationId = null } = {}) {
   if (profileId != null && profileId !== '') {
     const cfg = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
@@ -77,7 +94,7 @@ async function saveLocalShipments(shipments) {
  */
 async function getShipments({ profileId, organizationId } = {}) {
   const localAll = await getLocalShipments();
-  const local = localAll.filter((s) => shipmentVisibleForProfile(s, profileId));
+  const local = localAll.filter((s) => shipmentVisibleForScope(s, profileId, organizationId));
   const byMarketplace = { ozon: [], wildberries: [], yandex: [] };
 
   for (const s of local) {
@@ -161,6 +178,7 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
   const shipments = await getLocalShipments();
   const id = generateId();
   const now = new Date().toISOString();
+  const org = normalizeOrgId(organizationId);
 
   if (code === 'wildberries') {
     const wbConfig = await getWildberriesConfigForScope(profileId, { organizationId });
@@ -176,6 +194,7 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
         orderIds: [],
         createdAt: now,
         ...(profileId != null && profileId !== '' ? { profileId } : {}),
+        ...(org ? { organizationId: org } : {}),
       };
       shipments.push(local);
       await saveLocalShipments(shipments);
@@ -195,6 +214,7 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
       createdAt: now,
       localWbOnly: true,
       ...(profileId != null && profileId !== '' ? { profileId } : {}),
+      ...(org ? { organizationId: org } : {}),
     };
     shipments.push(local);
     await saveLocalShipments(shipments);
@@ -209,7 +229,8 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
     closed: false,
     orderIds: [],
     createdAt: now,
-    ...(profileId != null && profileId !== '' ? { profileId } : {})
+    ...(profileId != null && profileId !== '' ? { profileId } : {}),
+    ...(org ? { organizationId: org } : {}),
   };
   shipments.push(local);
   await saveLocalShipments(shipments);
@@ -228,10 +249,11 @@ async function getOrCreateOpenShipment(marketplace, { profileId = null, organiza
     throw err;
   }
   const shipments = await getLocalShipments();
+  const org = normalizeOrgId(organizationId);
   const open = shipments.find(s => {
     const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     if (m !== code || s.closed === true) return false;
-    return shipmentVisibleForProfile(s, profileId);
+    return shipmentVisibleForScope(s, profileId, org);
   });
   if (open) return normalizeShipment(open);
   return createShipment({
@@ -253,7 +275,7 @@ async function closeShipment(shipmentId, { profileId = null, organizationId = nu
     err.statusCode = 404;
     throw err;
   }
-  if (!shipmentVisibleForProfile(ship, profileId)) {
+  if (!shipmentVisibleForScope(ship, profileId, organizationId)) {
     const err = new Error('Поставка не найдена');
     err.statusCode = 404;
     throw err;
@@ -460,7 +482,7 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
     err.statusCode = 404;
     throw err;
   }
-  if (!shipmentVisibleForProfile(ship, profileId)) {
+  if (!shipmentVisibleForScope(ship, profileId, organizationId)) {
     const err = new Error('Поставка не найдена');
     err.statusCode = 404;
     throw err;
@@ -485,7 +507,9 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
     }
     if (ozonConfig?.client_id && ozonConfig?.api_key) {
       const ozonErrors = [];
-      for (const postingNumber of toAdd) {
+      // Даже если заказ уже числится в локальной поставке, повторная «На сборку» должна
+      // попытаться перевести его на Ozon в «Ожидает отгрузки», иначе этикетка может быть недоступна (409).
+      for (const postingNumber of uniqueRequested) {
         try {
           await ozonPassToAwaitingDeliver(ozonConfig, String(postingNumber));
           logger.info(`[Shipments Ozon] Постинг ${postingNumber} переведён в «Ожидает отгрузки»`);
@@ -509,11 +533,17 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
   if (code === 'wildberries') {
     const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
     if (wbConfig?.api_key) {
+      // Важный кейс: раньше WB-ключа могло не быть, и заказы добавлялись только "локально" (localWbOnly=true).
+      // После добавления ключа, повторная "На сборку" должна создать поставку в ЛК WB и назначить туда эти заказы,
+      // даже если локально они уже числятся в поставке (toAdd может быть пустым).
+      const forceSyncAll = ship.localWbOnly === true || !ship.externalId;
+      const toSync = forceSyncAll ? uniqueRequested : toAdd;
+
       // Для WB этикетки появляются через stickers API только когда сборочное задание в статусе confirm/complete.
       // Поэтому перед добавлением в поставку переводим заказы в confirm на стороне WB.
-      if (toAdd.length > 0) {
+      if (toSync.length > 0) {
         try {
-          await confirmWBOrdersForAssembly(wbConfig, toAdd);
+          await confirmWBOrdersForAssembly(wbConfig, toSync);
         } catch (e) {
           // Новые методы WB могут быть недоступны для части заказов (404) — не блокируем перевод в "На сборке" в ERM.
           // Дальше всё равно попробуем добавить в поставку: это зачастую и переводит заказы в нужный статус на WB.
@@ -529,8 +559,8 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
         logger.info(`[Shipments WB] Created new supply ${supplyId} for shipment ${ship.id}`);
       }
       try {
-        if (toAdd.length > 0) {
-          await addOrdersToWBSupplyBatch(wbConfig, supplyId, toAdd);
+        if (toSync.length > 0) {
+          await addOrdersToWBSupplyBatch(wbConfig, supplyId, toSync);
         }
       } catch (e) {
         if (e.message && e.message.includes('404') && supplyId) {
@@ -539,12 +569,19 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
           ship.externalId = newSupplyId;
           ship.name = ship.name || newSupplyId;
           await saveLocalShipments(shipments);
-          if (toAdd.length > 0) {
-            await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, toAdd);
+          if (toSync.length > 0) {
+            await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, toSync);
           }
         } else {
           throw e;
         }
+      }
+
+      // Если мы дошли до этого места без исключения — синк с ЛК WB был выполнен (или попытка была успешной).
+      // Снимаем флаг "только локально", чтобы UI не вводил в заблуждение.
+      if (ship.localWbOnly === true) {
+        ship.localWbOnly = false;
+        await saveLocalShipments(shipments);
       }
     } else {
       logger.warn(
@@ -564,7 +601,7 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
  * Найти локальную поставку, в которой уже есть orderId (чтобы не пытаться добавлять повторно).
  * @returns {Promise<object|null>} normalizeShipment(row) или null
  */
-async function findLocalShipmentContainingOrder(marketplace, orderId, { profileId = null } = {}) {
+async function findLocalShipmentContainingOrder(marketplace, orderId, { profileId = null, organizationId = null } = {}) {
   const code = marketplace === 'wb' ? 'wildberries' : marketplace;
   const oid = String(orderId || '').trim();
   if (!oid) return null;
@@ -572,7 +609,7 @@ async function findLocalShipmentContainingOrder(marketplace, orderId, { profileI
   const found = shipments.find((s) => {
     const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     if (m !== code) return false;
-    if (!shipmentVisibleForProfile(s, profileId)) return false;
+    if (!shipmentVisibleForScope(s, profileId, organizationId)) return false;
     return Array.isArray(s.orderIds) && s.orderIds.some((x) => String(x) === oid);
   });
   return found ? normalizeShipment(found) : null;
@@ -724,11 +761,11 @@ async function removeOrdersFromWBSupply(config, supplyId, orderIds) {
 /**
  * Вернуть абсолютный путь к файлу QR-стикера поставки (для отдачи в HTTP). Если нет — null.
  */
-async function getQrStickerFilePath(shipmentId, { profileId = null } = {}) {
+async function getQrStickerFilePath(shipmentId, { profileId = null, organizationId = null } = {}) {
   const shipments = await getLocalShipments();
   const ship = shipments.find(s => s.id === shipmentId);
   if (!ship?.qrStickerPath) return null;
-  if (!shipmentVisibleForProfile(ship, profileId)) return null;
+  if (!shipmentVisibleForScope(ship, profileId, organizationId)) return null;
   const abs = join(DATA_DIR, ship.qrStickerPath);
   return fs.existsSync(abs) ? abs : null;
 }
@@ -737,11 +774,11 @@ async function getQrStickerFilePath(shipmentId, { profileId = null } = {}) {
  * Получить поставку по id (только локальные поставки из нашего хранилища).
  * Для просмотра заказов и удаления заказов из поставки.
  */
-async function getShipmentById(shipmentId, { profileId = null } = {}) {
+async function getShipmentById(shipmentId, { profileId = null, organizationId = null } = {}) {
   const shipments = await getLocalShipments();
   const ship = shipments.find(s => s.id === shipmentId);
   if (!ship) return null;
-  if (!shipmentVisibleForProfile(ship, profileId)) return null;
+  if (!shipmentVisibleForScope(ship, profileId, organizationId)) return null;
   return normalizeShipment(ship);
 }
 
@@ -762,7 +799,7 @@ async function removeOrdersFromShipment(shipmentId, orderIdsToRemove, { profileI
     err.statusCode = 404;
     throw err;
   }
-  if (!shipmentVisibleForProfile(ship, profileId)) {
+  if (!shipmentVisibleForScope(ship, profileId, organizationId)) {
     const err = new Error('Поставка не найдена');
     err.statusCode = 404;
     throw err;

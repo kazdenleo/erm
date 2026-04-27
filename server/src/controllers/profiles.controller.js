@@ -28,6 +28,13 @@ function pickAccountOwnerProfilePayload(body) {
     const v = b.allow_private_orders ?? b.allowPrivateOrders;
     out.allow_private_orders = v === true || v === '1' || v === 'true';
   }
+  if (
+    b.require_reserved_stock_for_assembly !== undefined ||
+    b.requireReservedStockForAssembly !== undefined
+  ) {
+    const v = b.require_reserved_stock_for_assembly ?? b.requireReservedStockForAssembly;
+    out.require_reserved_stock_for_assembly = v === true || v === '1' || v === 'true';
+  }
   return out;
 }
 

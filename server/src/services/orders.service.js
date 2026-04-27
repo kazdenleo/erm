@@ -59,6 +59,131 @@ class OrdersService {
     this.repository = repositoryFactory.getOrdersRepository();
   }
 
+  _marketplaceToOrdersDb(marketplace) {
+    return marketplaceToOrdersDb(marketplace);
+  }
+
+  /**
+   * Проверка перед «На сборку»: можно ли собирать заказ по правилу "есть фактически зарезервированный товар".
+   *
+   * Требование интерпретируем строго:
+   * - по заказу должен быть резерв в stock_movements (reserved_qty >= quantity)
+   * - общий резерв товара должен быть покрыт фактическим остатком (products.quantity >= products.reserved_quantity),
+   *   т.е. резерв не опирается на incoming_quantity.
+   *
+   * @param {Array<{ marketplace: string, orderId: string }>} orderIds
+   * @returns {Promise<{ ok: Array, blocked: Array<{ marketplace: string, orderId: string, reason: string }> }>}
+   */
+  async validateReservedStockForAssembly(orderIds, { profileId = null } = {}) {
+    const refs = Array.isArray(orderIds) ? orderIds : [];
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { ok: refs, blocked: [] };
+    }
+    if (refs.length === 0) return { ok: [], blocked: [] };
+
+    const values = [];
+    const params = [];
+    let i = 1;
+    for (const o of refs) {
+      const mp = this._marketplaceToOrdersDb(o?.marketplace);
+      const oid = o?.orderId != null ? String(o.orderId) : '';
+      if (!mp || !oid.trim()) continue;
+      values.push(`($${i++}, $${i++})`);
+      params.push(mp, oid.trim());
+    }
+    if (values.length === 0) return { ok: [], blocked: [] };
+
+    const pid = profileId != null && String(profileId).trim() !== '' ? Number(profileId) : null;
+    const profileFilterSql = pid && Number.isFinite(pid) ? `AND o.profile_id = ${pid}` : '';
+
+    const q = await query(
+      `
+      WITH refs(marketplace, order_id) AS (
+        VALUES ${values.join(',\n')}
+      ),
+      ord AS (
+        SELECT o.id,
+               o.marketplace,
+               o.order_id,
+               o.quantity,
+               o.product_id
+        FROM refs r
+        JOIN orders o
+          ON o.marketplace = r.marketplace
+         AND o.order_id = r.order_id
+        ${profileFilterSql}
+      ),
+      res AS (
+        SELECT (sm.meta->>'order_id')::bigint AS oid,
+          GREATEST(
+            0,
+            COALESCE(SUM(CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change ELSE 0 END), 0)
+            - COALESCE(SUM(CASE WHEN sm.type = 'unreserve' THEN sm.quantity_change ELSE 0 END), 0)
+          )::int AS reserved_qty
+        FROM stock_movements sm
+        WHERE (sm.type = 'reserve' OR sm.type = 'unreserve')
+          AND sm.meta ? 'order_id'
+        GROUP BY (sm.meta->>'order_id')::bigint
+      )
+      SELECT
+        o.marketplace,
+        o.order_id,
+        COALESCE(o.quantity, 1)::int AS order_qty,
+        COALESCE(r.reserved_qty, 0)::int AS reserved_qty,
+        p.id AS product_id,
+        COALESCE(p.quantity, 0)::int AS product_qty,
+        COALESCE(p.reserved_quantity, 0)::int AS product_reserved_qty
+      FROM ord o
+      LEFT JOIN res r ON r.oid = o.id::bigint
+      LEFT JOIN products p ON p.id = o.product_id
+      `,
+      params
+    );
+
+    const byKey = new Map();
+    for (const row of q.rows || []) {
+      byKey.set(`${row.marketplace}|${row.order_id}`, row);
+    }
+
+    const ok = [];
+    const blocked = [];
+    for (const o of refs) {
+      const mp = this._marketplaceToOrdersDb(o?.marketplace);
+      const oid = o?.orderId != null ? String(o.orderId).trim() : '';
+      if (!mp || !oid) continue;
+      const row = byKey.get(`${mp}|${oid}`);
+      if (!row) {
+        blocked.push({ marketplace: o.marketplace, orderId: oid, reason: 'заказ не найден' });
+        continue;
+      }
+      const need = Number(row.order_qty) || 1;
+      const resQty = Number(row.reserved_qty) || 0;
+      const prodId = row.product_id != null ? Number(row.product_id) : null;
+      const prodQty = Number(row.product_qty) || 0;
+      const prodRes = Number(row.product_reserved_qty) || 0;
+
+      if (!prodId || !Number.isFinite(prodId) || prodId < 1) {
+        blocked.push({ marketplace: o.marketplace, orderId: oid, reason: 'не определён товар (product_id)' });
+        continue;
+      }
+      if (resQty < need) {
+        blocked.push({ marketplace: o.marketplace, orderId: oid, reason: `нет резерва под заказ (зарезервировано: ${resQty}, нужно: ${need})` });
+        continue;
+      }
+      if (prodQty < prodRes) {
+        blocked.push({
+          marketplace: o.marketplace,
+          orderId: oid,
+          reason: `резерв товара не покрыт фактическим остатком (факт: ${prodQty}, общий резерв: ${prodRes})`
+        });
+        continue;
+      }
+      ok.push(o);
+    }
+
+    return { ok, blocked };
+  }
+
   async setAssemblyStickerNumber(marketplace, orderId, stickerNumber, profileId = null) {
     if (!repositoryFactory.isUsingPostgreSQL()) return null;
     if (!marketplace || orderId == null) return null;

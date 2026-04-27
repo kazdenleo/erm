@@ -29,6 +29,7 @@ export function Settings() {
     contact_email: '',
     contact_phone: '',
     allow_private_orders: false,
+    require_reserved_stock_for_assembly: false,
   });
 
   const loadAccount = useCallback(async () => {
@@ -44,6 +45,7 @@ export function Settings() {
           contact_email: p.contact_email ?? '',
           contact_phone: p.contact_phone ?? '',
           allow_private_orders: p.allow_private_orders === true,
+          require_reserved_stock_for_assembly: p.require_reserved_stock_for_assembly === true,
         });
       }
     } catch (err) {
@@ -71,6 +73,7 @@ export function Settings() {
         contact_email: form.contact_email.trim() || null,
         contact_phone: form.contact_phone.trim() || null,
         allow_private_orders: form.allow_private_orders,
+        require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
       });
       await refreshUser();
       alert('Сохранено');
@@ -262,6 +265,21 @@ export function Settings() {
                   onChange={(e) => setForm((f) => ({ ...f, contact_phone: e.target.value }))}
                   autoComplete="tel"
                 />
+              </label>
+              <label className="settings-account-toggle" style={{ marginTop: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={form.require_reserved_stock_for_assembly === true}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, require_reserved_stock_for_assembly: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Запрет «На сборку» без фактического резерва</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Если включено — заказ нельзя отправить «На сборку», пока под него не создан резерв товара и он покрыт фактическим остатком на складе.
+                  </span>
+                </span>
               </label>
               <label className="settings-account-toggle">
                 <input
