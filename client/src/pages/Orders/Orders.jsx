@@ -312,7 +312,7 @@ async function resolvePurchaseLinesByCatalogSku(lines) {
 
 export function Orders() {
   const navigate = useNavigate();
-  const { profile, selectedOrganizationId: contextOrganizationId } = useAuth();
+  const { profile, selectedOrganizationId: contextOrganizationId, setSelectedOrganizationId } = useAuth();
   const allowPrivateOrders = profile?.allow_private_orders === true;
   const { warehouses, loadWarehouses } = useWarehouses();
   const { organizations } = useOrganizations();
@@ -337,6 +337,16 @@ export function Orders() {
   const [sortByArticle, setSortByArticle] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [markShippedLoadingKey, setMarkShippedLoadingKey] = useState(null);
+
+  // Если организация ещё не выбрана — выберем первую доступную,
+  // иначе X-Organization-Id не уйдёт и "На сборку" не переведёт заказы на маркетплейсе.
+  useEffect(() => {
+    if (contextOrganizationId) return;
+    const first = (organizations || [])[0];
+    if (first?.id != null) {
+      setSelectedOrganizationId(String(first.id));
+    }
+  }, [contextOrganizationId, organizations, setSelectedOrganizationId]);
   const [deleteLoadingKey, setDeleteLoadingKey] = useState(null);
   const [returnToNewLoadingKey, setReturnToNewLoadingKey] = useState(null);
   const [cancelOrderLoadingKey, setCancelOrderLoadingKey] = useState(null);
