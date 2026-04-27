@@ -128,17 +128,34 @@ class SchedulerService {
       const wbUpdateJob = cron.schedule('0 1 * * *', async () => {
         logger.info('[Scheduler] Starting scheduled WB categories and commissions update...');
         try {
-          await wbMarketplaceService.updateCategoriesAndCommissions();
+          const res = await wbMarketplaceService.updateCategoriesAndCommissions();
+          if (res?.skipped) {
+            logger.warn(`[Scheduler] WB update skipped: ${res.message || 'skipped'}`);
+            return;
+          }
           logger.info('[Scheduler] WB update completed successfully');
         } catch (error) {
+          const status = error?.statusCode ?? error?.status ?? null;
+          const msg = error?.message || String(error);
+          const isRateLimit = status === 429 || String(msg).includes('429');
+          const isNoKey =
+            String(msg).toLowerCase().includes('api key not configured') ||
+            String(msg).toLowerCase().includes('not configured');
+
+          // Для отсутствия ключа — не шумим ошибкой: это штатная ситуация (аккаунт без WB).
+          if (isNoKey) {
+            logger.warn('[Scheduler] WB update skipped (no API key)');
+            return;
+          }
+
           logger.error('[Scheduler] WB update failed:', error);
           await addRuntimeNotification({
             type: 'job_failed',
-            severity: 'error',
+            severity: isRateLimit ? 'warning' : 'error',
             source: 'scheduler',
-            title: 'Сбой ночного обновления WB',
-            message: `WB categories/commissions update failed: ${error?.message || String(error)}`,
-            marketplace: 'wildberries'
+            title: isRateLimit ? 'WB: лимит API (429)' : 'Сбой ночного обновления WB',
+            message: `WB categories/commissions update failed: ${msg}`,
+            marketplace: 'wildberries',
           });
         }
       }, {

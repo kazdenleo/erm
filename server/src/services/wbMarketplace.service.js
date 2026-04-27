@@ -8,6 +8,22 @@ import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import fetch from 'node-fetch';
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryAfterMsFromResponse(response, fallbackMs) {
+  try {
+    const ra = response?.headers?.get?.('retry-after');
+    if (!ra) return fallbackMs;
+    const sec = parseInt(String(ra).trim(), 10);
+    if (Number.isFinite(sec) && sec > 0) return sec * 1000;
+  } catch {
+    /* ignore */
+  }
+  return fallbackMs;
+}
+
 class WBMarketplaceService {
   /**
    * Загрузить все категории WB из API
@@ -25,18 +41,35 @@ class WBMarketplaceService {
         const url = `https://content-api.wildberries.ru/content/v2/object/all?limit=${limit}&offset=${offset}`;
         
         logger.debug(`[WB Marketplace] Fetching categories: offset=${offset}, limit=${limit}`);
-        
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-            'Authorization': String(apiKey)
-          },
-          timeout: 15000
-        });
+
+        let response;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          response = await fetch(url, {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+              Authorization: String(apiKey),
+            },
+            timeout: 15000,
+          });
+          if (response.ok) break;
+          if (response.status === 429 && attempt < 3) {
+            const waitMs = retryAfterMsFromResponse(response, 5000 * (attempt + 1));
+            logger.warn(`[WB Marketplace] rate limited 429 (categories), retry in ${Math.round(waitMs / 1000)}s...`);
+            await sleep(waitMs);
+            continue;
+          }
+          break;
+        }
 
         if (!response.ok) {
           logger.warn(`[WB Marketplace] API error: ${response.status} ${response.statusText}`);
+          // 429 после всех ретраев — считаем это ошибкой джоба, пусть планировщик покажет warning
+          if (response.status === 429) {
+            const err = new Error('WB API error: 429');
+            err.statusCode = 429;
+            throw err;
+          }
           break;
         }
 
@@ -51,7 +84,7 @@ class WBMarketplaceService {
           } else {
             offset += limit;
             // Небольшая задержка между запросами
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await sleep(1000);
           }
         } else {
           hasMore = false;
@@ -181,20 +214,34 @@ class WBMarketplaceService {
   async loadCommissionsFromAPI(apiKey) {
     try {
       logger.info('[WB Marketplace] Loading commissions from API...');
-      
-      const response = await fetch('https://common-api.wildberries.ru/api/v1/tariffs/commission', {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': String(apiKey)
-        },
-        timeout: 30000
-      });
+
+      const url = 'https://common-api.wildberries.ru/api/v1/tariffs/commission';
+      let response;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            Authorization: String(apiKey),
+          },
+          timeout: 30000,
+        });
+        if (response.ok) break;
+        if (response.status === 429 && attempt < 3) {
+          const waitMs = retryAfterMsFromResponse(response, 5000 * (attempt + 1));
+          logger.warn(`[WB Marketplace] rate limited 429 (commissions), retry in ${Math.round(waitMs / 1000)}s...`);
+          await sleep(waitMs);
+          continue;
+        }
+        break;
+      }
       
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'Unknown error');
         logger.error(`[WB Marketplace] API error: ${response.status} ${errorText}`);
-        throw new Error(`WB API error: ${response.status}`);
+        const err = new Error(`WB API error: ${response.status}`);
+        err.statusCode = response.status;
+        throw err;
       }
       
       const data = await response.json();
@@ -332,7 +379,8 @@ class WBMarketplaceService {
       // Получаем конфигурацию WB
       const wbConfig = await integrationsService.getMarketplaceConfig('wildberries');
       if (!wbConfig || !wbConfig.api_key) {
-        throw new Error('WB API key not configured');
+        logger.warn('[WB Marketplace] WB API key not configured, skipping update');
+        return { success: false, skipped: true, message: 'WB API key not configured' };
       }
       
       // Загружаем и сохраняем категории
