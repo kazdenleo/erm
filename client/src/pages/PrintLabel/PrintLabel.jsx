@@ -2,6 +2,27 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Navigate } from 'react-router-dom';
 import api from '../../services/api';
 
+async function errorMessageFromAxiosBlob(err) {
+  const status = err?.response?.status || null;
+  const data = err?.response?.data;
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    try {
+      const text = await data.text();
+      try {
+        const j = text ? JSON.parse(text) : null;
+        const msg = j?.message || j?.error || '';
+        if (msg) return String(msg);
+      } catch {
+        /* ignore */
+      }
+      if (text && text.trim()) return text.trim();
+    } catch {
+      /* ignore */
+    }
+  }
+  return String(err?.response?.data?.message || err?.response?.data?.error || err?.message || (status ? `HTTP ${status}` : ''));
+}
+
 export function PrintLabel() {
   const { orderId } = useParams();
   const id = useMemo(() => (orderId != null ? String(orderId).trim() : ''), [orderId]);
@@ -42,7 +63,7 @@ export function PrintLabel() {
         setBlobUrl(url);
       } catch (e) {
         if (cancelled) return;
-        const msg = e?.response?.data?.message || e?.message || 'Не удалось загрузить этикетку';
+        const msg = (await errorMessageFromAxiosBlob(e)) || 'Не удалось загрузить этикетку';
         setError(String(msg));
       }
     })();

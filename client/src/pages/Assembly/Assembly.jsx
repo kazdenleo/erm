@@ -329,7 +329,22 @@ export function Assembly() {
           status = 200;
         } catch (e) {
           status = e?.response?.status || 0;
-          msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || '';
+          const data = e?.response?.data;
+          if (typeof Blob !== 'undefined' && data instanceof Blob) {
+            try {
+              const text = await data.text();
+              try {
+                const j = text ? JSON.parse(text) : null;
+                msg = j?.message || j?.error || '';
+              } catch {
+                msg = text || '';
+              }
+              msg = String(msg || '').trim();
+            } catch {
+              msg = '';
+            }
+          }
+          if (!msg) msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || '';
         }
 
         if (status !== 200) {
