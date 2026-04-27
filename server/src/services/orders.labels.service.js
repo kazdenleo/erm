@@ -89,17 +89,25 @@ function orderProfileId(order) {
   return Number.isFinite(n) ? n : String(raw);
 }
 
+function normalizeOrgId(value) {
+  if (value == null || value === '') return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? String(Math.trunc(n)) : s;
+}
+
 class OrdersLabelsService {
   /**
    * Получить путь к этикетке заказа, при необходимости скачав её.
    * Возвращает абсолютный путь к файлу.
    */
-  async ensureLabelFile(order) {
+  async ensureLabelFile(order, { organizationId = null } = {}) {
     const filePath = getOrderLabelPath(order);
 
     if (!fs.existsSync(filePath)) {
       try {
-        const out = await fetchMarketplaceLabel(order);
+        const out = await fetchMarketplaceLabel(order, { organizationId });
         const buf = out && Buffer.isBuffer(out.buffer) ? out.buffer : (Buffer.isBuffer(out) ? out : null);
         const stickerNumber = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
         if (!buf || !Buffer.isBuffer(buf) || buf.length === 0) {
@@ -113,7 +121,8 @@ class OrdersLabelsService {
           try { fs.unlinkSync(filePath); } catch (_) {}
           throw new Error('Этикетка от маркетплейса пуста');
         }
-        logLabelEvent(`Cached(on-demand) ${order.marketplace}:${order.orderId}`);
+        const org = normalizeOrgId(organizationId);
+        logLabelEvent(`Cached(on-demand) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''}`);
         // Сохраняем номер стикера (если маркетплейс его возвращает вместе с этикеткой)
         try {
           if (stickerNumber != null && String(stickerNumber).trim() !== '') {
@@ -140,7 +149,7 @@ class OrdersLabelsService {
     return filePath;
   }
 
-  async getLabelStatus(order) {
+  async getLabelStatus(order, { organizationId = null } = {}) {
     const filePath = getOrderLabelPath(order);
     const exists = fs.existsSync(filePath);
 
@@ -151,14 +160,15 @@ class OrdersLabelsService {
         const mp = normalizeMarketplaceForLabel(order?.marketplace);
         const isWB = mp === 'wildberries';
         const maxAttempts = isWB ? 4 : 1;
+        const org = normalizeOrgId(organizationId);
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
-            const out = await fetchMarketplaceLabel(order);
+            const out = await fetchMarketplaceLabel(order, { organizationId });
             const buf = out && Buffer.isBuffer(out.buffer) ? out.buffer : (Buffer.isBuffer(out) ? out : null);
             const stickerNumber = out && typeof out === 'object' ? (out.stickerNumber ?? out.sticker_id ?? null) : null;
             if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
               fs.writeFileSync(filePath, buf);
-              logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId} attempt=${attempt}`);
+              logLabelEvent(`Cached(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}`);
             }
             try {
               if (stickerNumber != null && String(stickerNumber).trim() !== '') {
@@ -172,7 +182,7 @@ class OrdersLabelsService {
           } catch (e) {
             const status = e?.statusCode;
             logLabelEvent(
-              `Error(status) ${order.marketplace}:${order.orderId} attempt=${attempt}/${maxAttempts} status=${status || ''} -> ${e?.message || String(e)}`
+              `Error(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}/${maxAttempts} status=${status || ''} -> ${e?.message || String(e)}`
             );
             if (!isWB || attempt >= maxAttempts) return;
             // backoff: 5s, 15s, 30s (для 409/429), иначе не ретраим
@@ -191,7 +201,7 @@ class OrdersLabelsService {
    * Предзагрузка этикеток для массива заказов.
    * По умолчанию: new, in_assembly, assembled (и accepted для совместимости).
    */
-  async preloadLabels(orders, statuses = ['new', 'in_assembly', 'assembled', 'accepted']) {
+  async preloadLabels(orders, statuses = ['new', 'in_assembly', 'assembled', 'accepted'], { organizationId = null } = {}) {
     const toProcess = Array.isArray(orders)
       ? orders.filter(
           o => !hasLabelCached(o) && (!statuses || statuses.includes(o.status))
@@ -207,7 +217,7 @@ class OrdersLabelsService {
       if (fs.existsSync(filePath)) continue;
       try {
         logLabelEvent(`Fetching ${order.marketplace}:${order.orderId}`);
-        const buf = await fetchMarketplaceLabel(order);
+        const buf = await fetchMarketplaceLabel(order, { organizationId });
         if (buf && Buffer.isBuffer(buf) && buf.length > 0) {
           fs.writeFileSync(filePath, buf);
           logLabelEvent(`Cached ${order.marketplace}:${order.orderId}`);
@@ -238,18 +248,20 @@ class OrdersLabelsService {
 
 async function fetchMarketplaceLabel(order) {
   const mp = normalizeMarketplaceForLabel(order.marketplace);
-  if (mp === 'ozon') return { buffer: await fetchOzonLabel(order), stickerNumber: null };
-  if (mp === 'wildberries') return fetchWBLabel(order);
-  if (mp === 'yandex') return { buffer: await fetchYMLabel(order), stickerNumber: null };
+  const ctx = arguments.length >= 2 && arguments[1] && typeof arguments[1] === 'object' ? arguments[1] : {};
+  const organizationId = ctx.organizationId ?? null;
+  if (mp === 'ozon') return { buffer: await fetchOzonLabel(order, { organizationId }), stickerNumber: null };
+  if (mp === 'wildberries') return fetchWBLabel(order, { organizationId });
+  if (mp === 'yandex') return { buffer: await fetchYMLabel(order, { organizationId }), stickerNumber: null };
   return null;
 }
 
-async function fetchOzonLabel(order) {
+async function fetchOzonLabel(order, { organizationId = null } = {}) {
   try {
     const profileId = orderProfileId(order);
     let ozon = null;
     try {
-      ozon = await integrationsService.getMarketplaceConfig('ozon', { profileId });
+      ozon = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
     } catch (_) {}
     // В мульти-кабинетах нельзя падать обратно на глобальный readData('ozon'):
     // это приводит к "чужому кабинету" и 404 по стикерам.
@@ -381,7 +393,7 @@ async function fetchOzonLabel(order) {
   }
 }
 
-async function fetchWBLabel(order) {
+async function fetchWBLabel(order, { organizationId = null } = {}) {
   try {
     let wb = null;
     const profileIdRaw = order?.profileId ?? order?.profile_id ?? null;
@@ -390,7 +402,7 @@ async function fetchWBLabel(order) {
         ? null
         : (Number.isFinite(Number(profileIdRaw)) ? Number(profileIdRaw) : String(profileIdRaw));
     try {
-      wb = await integrationsService.getMarketplaceConfig('wildberries', { profileId });
+      wb = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
     } catch (_) {}
     if (!wb?.api_key) wb = await readData('wildberries');
     if (!wb || !wb.api_key) return null;
@@ -568,11 +580,11 @@ async function fetchWBLabel(order) {
  * PDF этикетки Яндекс Маркет (FBS/DBS/Express): GET v2/campaigns/{campaignId}/orders/{orderId}/delivery/labels
  * @see https://yandex.ru/dev/market/partner-api/doc/en/reference/orders/generateOrderLabels
  */
-async function fetchYMLabel(order) {
+async function fetchYMLabel(order, { organizationId = null } = {}) {
   let ym = null;
   try {
     const profileId = orderProfileId(order);
-    ym = await integrationsService.getMarketplaceConfig('yandex', { profileId });
+    ym = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId });
   } catch (_) {
     /* use file fallback */
   }

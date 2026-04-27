@@ -304,6 +304,8 @@ class OrdersController {
 
   async sendToAssembly(req, res, next) {
     try {
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const orderIds = req.body?.orderIds;
       if (!Array.isArray(orderIds) || orderIds.length === 0) {
         return res.status(400).json({
@@ -380,7 +382,7 @@ class OrdersController {
             // getLabelStatus сам поставит скачивание в фон, если файла ещё нет
             ordersLabelsService
               .findOrderById(oid)
-              .then((order) => ordersLabelsService.getLabelStatus(order))
+              .then((order) => ordersLabelsService.getLabelStatus(order, { organizationId }))
               .catch(() => {});
           }
         }, 0);
@@ -561,8 +563,10 @@ class OrdersController {
   async getLabel(req, res, next) {
     try {
       const { orderId } = req.params;
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const order = await ordersLabelsService.findOrderById(orderId);
-      const filePath = await ordersLabelsService.ensureLabelFile(order);
+      const filePath = await ordersLabelsService.ensureLabelFile(order, { organizationId });
       const stat = fs.statSync(filePath);
       if (!stat || stat.size === 0) {
         try { fs.unlinkSync(filePath); } catch (_) {}
@@ -592,8 +596,10 @@ class OrdersController {
   async getLabelPrint(req, res, next) {
     try {
       const { orderId } = req.params;
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const order = await ordersLabelsService.findOrderById(orderId);
-      await ordersLabelsService.ensureLabelFile(order);
+      await ordersLabelsService.ensureLabelFile(order, { organizationId });
       const baseUrl = `${req.protocol}://${req.get('host') || ''}${req.baseUrl || ''}`.replace(/\/$/, '');
       const labelUrl = `${baseUrl}/${encodeURIComponent(orderId)}/label`;
       const jsUrl = `${baseUrl}/label/print.js`;
@@ -641,8 +647,10 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
   async getLabelStatus(req, res, next) {
     try {
       const { orderId } = req.params;
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const order = await ordersLabelsService.findOrderById(orderId);
-      const status = await ordersLabelsService.getLabelStatus(order);
+      const status = await ordersLabelsService.getLabelStatus(order, { organizationId });
       return res.status(200).json({ ok: true, data: status });
     } catch (error) {
       next(error);
