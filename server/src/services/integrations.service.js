@@ -88,12 +88,10 @@ class IntegrationsService {
     }
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const integration = await this.repository.findByCode(type, profileId, organizationId);
-      if (integration) return integration.config || {};
-      // Если интеграция не задана в integrations, попробуем взять ключи из marketplace_cabinets выбранной организации.
-      // Это основной UI для Ozon/Яндекс (и WB тоже хранится там как "кабинет" организации).
       if (organizationId != null && organizationId !== '') {
         try {
+          // Основной источник ключей для МП — marketplace_cabinets конкретной организации.
+          // Это устраняет путаницу, когда в integrations остались старые ключи на ту же организацию.
           const list = await findAllMarketplaceCabinets(String(organizationId), { marketplaceType: type });
           const active = (list || []).filter((r) => r && (r.is_active ?? r.isActive) !== false);
           const first = active[0] || list?.[0] || null;
@@ -102,6 +100,9 @@ class IntegrationsService {
           logger.warn('[Integrations Service] marketplace_cabinets config lookup:', e?.message || e);
         }
       }
+      // Fallback: integrations (если вдруг ключи хранятся там — legacy).
+      const integration = await this.repository.findByCode(type, profileId, organizationId);
+      if (integration) return integration.config || {};
       return {};
     } else {
       // Старое хранилище
