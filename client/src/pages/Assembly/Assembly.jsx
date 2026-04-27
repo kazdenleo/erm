@@ -9,6 +9,7 @@ import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { OrderLabelIcon } from '../../components/common/OrderLabelIcon/OrderLabelIcon';
 import { ordersApi, assemblyApi } from '../../services/orders.api';
+import api from '../../services/api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getStoredLabelSize } from '../Settings/Labels';
 import './Assembly.css';
@@ -267,8 +268,8 @@ export function Assembly() {
   useEffect(() => {
     const orderId = currentOrderData?.order?.orderId;
     if (!orderId) return;
-    fetch(`${API_BASE.replace(/\/$/, '')}/orders/${encodeURIComponent(orderId)}/label/status`)
-      .catch(() => {});
+    // Важно: используем api-клиент, чтобы передавались Authorization / X-Account-Id / X-Organization-Id
+    api.get(`/orders/${encodeURIComponent(orderId)}/label/status`, { timeout: 45000 }).catch(() => {});
   }, [currentOrderData?.order?.orderId]);
 
   /**
@@ -281,6 +282,7 @@ export function Assembly() {
     // Печать через фронтовую страницу: она умеет скачивать этикетку с Authorization: Bearer из localStorage.
     const labelPrintPageUrl = `/print/label/${encodeURIComponent(id)}`;
     const labelFileUrl = `${API_BASE}/orders/${encodeURIComponent(id)}/label`;
+    const labelFilePath = `/orders/${encodeURIComponent(id)}/label`;
 
     // Если печатаем через страницу /label/print (без локального helper),
     // лучше открыть вкладку синхронно по клику — иначе браузер может заблокировать window.print().
@@ -314,20 +316,23 @@ export function Assembly() {
       const warmAc = new AbortController();
       const warmT = setTimeout(() => warmAc.abort(), PRINT_HELPER_FETCH_MS);
       try {
-        const warmR = await fetch(labelFileUrl, { method: 'GET', cache: 'no-store', signal: warmAc.signal });
-        if (!warmR.ok) {
-          const status = warmR.status;
-          let msg = '';
-          try {
-            const j = await warmR.json();
-            msg = j?.message || j?.error || '';
-          } catch {
-            try {
-              msg = (await warmR.text()) || '';
-            } catch {
-              /* ignore */
-            }
-          }
+        // Важно: используем api-клиент, чтобы передавались Authorization / X-Account-Id / X-Organization-Id
+        let status = 0;
+        let msg = '';
+        try {
+          await api.get(labelFilePath, {
+            responseType: 'blob',
+            timeout: PRINT_HELPER_FETCH_MS,
+            headers: { Accept: '*/*' },
+            signal: warmAc.signal
+          });
+          status = 200;
+        } catch (e) {
+          status = e?.response?.status || 0;
+          msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || '';
+        }
+
+        if (status !== 200) {
           const base =
             status === 409
               ? 'Этикетка ещё не готова или недоступна в Wildberries для этого заказа.'
@@ -335,7 +340,9 @@ export function Assembly() {
                 ? 'Слишком много запросов к этикеткам/синхронизации. Подождите и повторите.'
                 : status === 404
                   ? 'Этикетка для заказа не найдена.'
-                  : `Не удалось получить этикетку (HTTP ${status}).`;
+                  : status
+                    ? `Не удалось получить этикетку (HTTP ${status}).`
+                    : 'Не удалось получить этикетку (сеть/таймаут).';
           const detail = msg ? ` ${String(msg).trim()}` : '';
           setLabelPrintError(`${base}${detail}`);
           setTimeout(() => setLabelPrintError(null), 12000);
@@ -346,7 +353,6 @@ export function Assembly() {
           }
           return;
         }
-        await warmR.blob();
       } finally {
         clearTimeout(warmT);
       }
