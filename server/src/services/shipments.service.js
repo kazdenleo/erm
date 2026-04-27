@@ -533,11 +533,11 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
   if (code === 'wildberries') {
     const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
     if (wbConfig?.api_key) {
-      // Важный кейс: раньше WB-ключа могло не быть, и заказы добавлялись только "локально" (localWbOnly=true).
-      // После добавления ключа, повторная "На сборку" должна создать поставку в ЛК WB и назначить туда эти заказы,
-      // даже если локально они уже числятся в поставке (toAdd может быть пустым).
-      const forceSyncAll = ship.localWbOnly === true || !ship.externalId;
-      const toSync = forceSyncAll ? uniqueRequested : toAdd;
+      // WB: всегда пытаемся назначить заказ в поставку на МП при «На сборку».
+      // Даже если он уже числится в локальной поставке (toAdd пустой), на WB он мог не попасть из‑за
+      // предыдущего сбоя/отсутствия ключа/ошибки сети. Повторная операция должна быть "дожимающей".
+      // Если WB вернёт 409 (уже в другой поставке/статус) — это уйдёт в предупреждение на уровне контроллера.
+      const toSync = uniqueRequested;
 
       // Для WB этикетки появляются через stickers API только когда сборочное задание в статусе confirm/complete.
       // Поэтому перед добавлением в поставку переводим заказы в confirm на стороне WB.
