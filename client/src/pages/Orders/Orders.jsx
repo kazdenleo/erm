@@ -39,6 +39,20 @@ function appendLocalWbOnlyAssemblyHint(msg, shipments) {
   return `${msg} Wildberries: без ключа API поставка только в ERM; в личном кабинете WB не создаётся. Добавьте токен WB в «Интеграции» для привязки к МП.`.trim();
 }
 
+function appendAssemblyWarnings(msg, warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return msg;
+  const parts = warnings
+    .map((w) => {
+      const mp = w?.marketplace ? String(w.marketplace) : 'mp';
+      const m = w?.message ? String(w.message) : '';
+      const failed = Array.isArray(w?.failedOrderIds) ? w.failedOrderIds.filter(Boolean).slice(0, 8).join(', ') : '';
+      return `${mp}: ${m}${failed ? ` (не удалось: ${failed})` : ''}`.trim();
+    })
+    .filter(Boolean);
+  if (parts.length === 0) return msg;
+  return `${msg} Предупреждения МП: ${parts.join('; ')}`.trim();
+}
+
 /**
  * Один запрос to-procurement на группу в БД: по сырому order_group_id, даже если UI не склеивает строки
  * (например, ненадёжный WB uid в orderGroupKey возвращает пустую строку).
@@ -911,6 +925,7 @@ export function Orders() {
       if (result?.shipments?.length) {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
+      msg = appendAssemblyWarnings(msg, result?.warnings);
       setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       await reloadOrders({ silent: true });
     } catch (e) {
@@ -1289,6 +1304,7 @@ export function Orders() {
       if (result?.shipments?.length) {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
+      msg = appendAssemblyWarnings(msg, result?.warnings);
       setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       setSelectedKeys((prev) => {
         const next = new Set(prev);
@@ -1365,9 +1381,7 @@ export function Orders() {
         );
         const updated = result?.updated ?? toSend.length;
         let msg = `В системе статус «На сборке» обновлён для строк: ${updated} из ${toSend.length}.`;
-        if (result?.warnings?.length) {
-          msg += ` Предупреждения по поставкам МП: ${result.warnings.length}.`;
-        }
+        msg = appendAssemblyWarnings(msg, result?.warnings);
         setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       }
       setSelectedKeys((prev) => {
