@@ -5,6 +5,7 @@
 
 import integrationsService from '../services/integrations.service.js';
 import logger from '../utils/logger.js';
+import { clearRuntimeNotifications } from '../utils/runtime-notifications.js';
 import {
   isOzonSellerApiErrorMessage,
   parseOzonSellerApiHttpStatus
@@ -248,6 +249,22 @@ class IntegrationsController {
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
+    }
+  }
+
+  /**
+   * POST /api/integrations/runtime-notifications/clear
+   * Очистить runtime-уведомления (ошибки фоновых задач).
+   */
+  async clearRuntimeNotifications(req, res, next) {
+    try {
+      const out = await clearRuntimeNotifications();
+      if (!out?.ok) {
+        return res.status(500).json({ ok: false, message: out?.error || 'Не удалось очистить уведомления' });
+      }
+      return res.status(200).json({ ok: true, data: { ok: true } });
+    } catch (e) {
+      next(e);
     }
   }
 

@@ -285,7 +285,12 @@ async function fetchOzonLabel(order) {
     if (!check.ok) {
       const text = await check.text();
       logLabelEvent(`[Ozon] get posting failed ${check.status}: ${text.substring(0, 300)}`);
-      const err = new Error(`Ozon get failed ${check.status}`);
+      const err =
+        check.status === 403
+          ? new Error(
+              'Ozon: доступ запрещён (403) при запросе этикетки. Проверьте Client-Id/Api-Key в «Интеграции → Ozon» для этого аккаунта и права ключа.'
+            )
+          : new Error(`Ozon get failed ${check.status}`);
       err.statusCode = check.status;
       throw err;
     }
@@ -657,6 +662,13 @@ async function fetchYMLabel(order) {
       const text = await response.text();
       lastErr = `${response.status}: ${text.substring(0, 280)}`;
       logLabelEvent(`[YM] labels ${campaignId}/${orderIdNum} -> ${lastErr}`);
+      if (response.status === 403) {
+        const err = new Error(
+          'Яндекс.Маркет: доступ запрещён (403) при запросе этикетки. Проверьте Api-Key и права (FBS/DBS/communication) в «Интеграции → Яндекс.Маркет», а также campaign_id.'
+        );
+        err.statusCode = 403;
+        throw err;
+      }
       if (response.status === 404) {
         campaignFailed404 = true;
         break;

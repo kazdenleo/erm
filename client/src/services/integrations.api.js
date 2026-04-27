@@ -64,6 +64,12 @@ export const integrationsApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Очистить runtime-уведомления (ошибки фоновых задач). */
+  clearRuntimeNotifications: async () => {
+    const response = await api.post('/integrations/runtime-notifications/clear', {});
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Балансы на маркетплейсах (дашборд).
    * @returns {Promise<{ no_profile?: boolean, ozon?: object, wildberries?: object, yandex?: object }>}

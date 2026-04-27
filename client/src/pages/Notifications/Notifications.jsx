@@ -11,6 +11,7 @@ export function Notifications() {
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
+  const [clearing, setClearing] = useState(false);
 
   const load = async () => {
     try {
@@ -38,6 +39,26 @@ export function Notifications() {
       <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
         <Button type="button" variant="secondary" onClick={load} disabled={loading}>
           {loading ? 'Загрузка…' : 'Обновить'}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={async () => {
+            try {
+              setClearing(true);
+              setError('');
+              await integrationsApi.clearRuntimeNotifications();
+              await load();
+            } catch (e) {
+              setError(e?.message || 'Не удалось очистить системные уведомления');
+            } finally {
+              setClearing(false);
+            }
+          }}
+          disabled={loading || clearing}
+          title="Очистить ошибки фоновых задач (runtime notifications)"
+        >
+          {clearing ? 'Очистка…' : 'Очистить системные'}
         </Button>
       </div>
 

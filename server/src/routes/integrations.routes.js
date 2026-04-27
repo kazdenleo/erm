@@ -33,6 +33,7 @@ router.get('/marketplaces/account-balances', wrapAsync(integrationsController.ge
 // Проверка токенов маркетплейсов + уведомления
 router.get('/marketplaces/:type/token-status', wrapAsync(integrationsController.getMarketplaceTokenStatus));
 router.get('/notifications', wrapAsync(integrationsController.getNotifications));
+router.post('/runtime-notifications/clear', wrapAsync(integrationsController.clearRuntimeNotifications));
 
 // Тарифы и комиссии Wildberries
 router.get('/marketplaces/wildberries/product-info', wrapAsync(integrationsController.getWildberriesProductInfo));
