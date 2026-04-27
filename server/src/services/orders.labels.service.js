@@ -391,6 +391,18 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
     } else {
       logLabelEvent(`[Ozon] package-label/create ${createResp.status}: ${createBody.substring(0, 300)}`);
       const detail = createBody.replace(/\s+/g, ' ').trim().substring(0, 300);
+      // Частая ситуация: Ozon не даёт batch-этикетку, если отправление ещё "Ожидает сборки" / не в подходящем статусе.
+      if (
+        createResp.status === 400 &&
+        (createBody.includes('NO_POSTINGS_FOR_BATCH_DOWNLOAD') || detail.includes('NO_POSTINGS_FOR_BATCH_DOWNLOAD'))
+      ) {
+        const err = new Error(
+          'Ozon: этикетка недоступна на текущем статусе отправления (NO_POSTINGS_FOR_BATCH_DOWNLOAD). ' +
+            'Обычно она появляется после сборки/упаковки, когда отправление переходит в «Ожидает отгрузки/к отгрузке».'
+        );
+        err.statusCode = 409;
+        throw err;
+      }
       const err = new Error(
         `Ozon: не удалось создать задание на этикетку (${createResp.status}). ${detail || 'Заказ должен быть в статусе «Ожидает отгрузки».'}`
       );
@@ -577,7 +589,12 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
         }
       })();
       logLabelEvent(`[WB] no stickers for order=${orderIdNum}: ${msg}${statusDiag}${diag}`);
-      const err = new Error(`WB: ${msg}`);
+      const hint = statusDiag
+        ? ` (${statusDiag.trim()})`
+        : '';
+      const err = new Error(
+        `WB: этикетка пока недоступна (stickers пустой). Обычно появляется после перевода заказа в сборку/подтверждение.${hint}`
+      );
       // 200 OK, но без stickers — это обычно "этикетка недоступна" (не 502 от нашего API).
       err.statusCode = 409;
       throw err;
