@@ -209,6 +209,50 @@ class IntegrationsService {
         await this._ozonApiPost('/v1/description-category/tree', { language: 'DEFAULT' }, { profileId, ozonOverride: cfg });
         checks.push({ scope: 'ozon_v1', valid: true, message: 'Ozon: v1 OK (categories)' });
 
+        // Важно: часть ключей может быть "валидной" для справочников/цен, но отключена для Seller Posting API,
+        // из-за чего падают этикетки (/v3/posting/fbs/get, package-label/*).
+        // Поэтому делаем отдельную проверку контура постингов.
+        try {
+          const now = new Date();
+          const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 дней назад
+          const to = now.toISOString();
+          await this._ozonApiPost(
+            '/v3/posting/fbs/list',
+            {
+              dir: 'ASC',
+              filter: { since, to },
+              limit: 1,
+              offset: 0
+            },
+            { profileId, ozonOverride: cfg }
+          );
+          checks.push({ scope: 'ozon_v3_postings', valid: true, message: 'Ozon: v3 OK (postings)' });
+        } catch (e) {
+          const m = String(e?.message || '');
+          const deactivated = m.toLowerCase().includes('api-key is deactivated');
+          checks.push({
+            scope: 'ozon_v3_postings',
+            valid: false,
+            message: deactivated
+              ? 'Ozon: API ключ деактивирован (v3 postings)'
+              : `Ozon: v3 postings check failed: ${m.slice(0, 140)}`
+          });
+          if (deactivated) {
+            valid = false;
+            message = 'Ozon: API ключ деактивирован';
+            await addRuntimeNotification({
+              type: 'marketplace_api_error',
+              severity: 'error',
+              source: 'integrations.token-status',
+              marketplace: 'ozon',
+              title: 'Ozon: API ключ деактивирован',
+              message:
+                'Ozon Seller API вернул "Api-key is deactivated" при проверке /v3/posting/fbs/list. Этикетки и сборка постингов будут недоступны, пока не выпустите новый ключ.',
+              meta: profileId != null ? { profile_id: profileId } : undefined
+            });
+          }
+        }
+
         // Доп. проверка боевого эндпоинта цен (v5) — он нужен для комиссий/мин. цен.
         // Берём любой offer_id из БД (если есть), чтобы проверить именно рабочий контур.
         let probeOfferId = null;
