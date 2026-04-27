@@ -157,6 +157,8 @@ export function Assembly() {
   /** URL локального Print Helper для тихой печати (с сервера или из env) — один билд для всех ПК */
   const [printHelperUrl, setPrintHelperUrl] = useState(PRINT_HELPER_URL_DEFAULT);
   const [labelPrintError, setLabelPrintError] = useState(null);
+  /** orderId -> true, если файл этикетки уже загружен на сервер (можно показывать иконку печати) */
+  const [labelReadyByOrderId, setLabelReadyByOrderId] = useState(() => ({}));
   const [ordersAutoSyncPaused, setOrdersAutoSyncPaused] = useState(false);
   const barcodeInputRef = useRef(null);
   /** Актуальная строка штрихкода для глобального перехвата скана (фокус не в поле). */
@@ -271,6 +273,63 @@ export function Assembly() {
     // Важно: используем api-клиент, чтобы передавались Authorization / X-Account-Id / X-Organization-Id
     api.get(`/orders/${encodeURIComponent(orderId)}/label/status`, { timeout: 45000 }).catch(() => {});
   }, [currentOrderData?.order?.orderId]);
+
+  // Фоновая проверка: показываем иконку печати только если файл этикетки уже кэширован на сервере.
+  useEffect(() => {
+    const ids = new Set();
+    for (const o of assemblyOrders || []) {
+      const oid = o?.orderId ?? o?.order_id;
+      if (oid != null && String(oid).trim() !== '') ids.add(String(oid));
+    }
+    for (const o of collectedOrders || []) {
+      const oid = o?.orderId ?? o?.order_id;
+      if (oid != null && String(oid).trim() !== '') ids.add(String(oid));
+    }
+    const cur = currentOrderData?.order?.orderId;
+    if (cur != null && String(cur).trim() !== '') ids.add(String(cur));
+
+    const toFetch = [];
+    for (const id of ids) {
+      if (labelReadyByOrderId?.[id] === true) continue;
+      toFetch.push(id);
+    }
+    if (toFetch.length === 0) return;
+
+    let cancelled = false;
+    const ac = new AbortController();
+
+    // Ограничим количество параллельных запросов, чтобы не ловить 429 на WB.
+    const limit = 12;
+    const runChunk = async (id) => {
+      try {
+        const r = await api.get(`/orders/${encodeURIComponent(id)}/label/status`, {
+          timeout: 15000,
+          signal: ac.signal,
+        });
+        const exists = r?.data?.data?.exists === true || r?.data?.exists === true;
+        if (!exists) return;
+        if (cancelled) return;
+        setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [id]: true }));
+      } catch {
+        // ignore
+      }
+    };
+
+    const run = async () => {
+      for (let i = 0; i < toFetch.length; i += limit) {
+        const chunk = toFetch.slice(i, i + limit);
+        await Promise.all(chunk.map((id) => runChunk(id)));
+        if (cancelled) return;
+      }
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+      try { ac.abort(); } catch { /* ignore */ }
+    };
+  }, [assemblyOrders, collectedOrders, currentOrderData?.order?.orderId, labelReadyByOrderId]);
 
   /**
    * Та же логика, что после «заказ собран»: Print Helper (тихая печать) или страница /label/print с window.print().
@@ -998,16 +1057,18 @@ export function Assembly() {
                   >
                     {finishScanSubmitting ? '…' : 'Завершить сборку и напечатать'}
                   </Button>
-                  <button
-                    type="button"
-                    className="assembly-label-link assembly-label-link-inline"
-                    title="Только печать этикетки (без смены статуса)"
-                    aria-label="Печать этикетки заказа"
-                    disabled={finishScanSubmitting}
-                    onClick={() => requestLabelPrint(currentOrderData.order.orderId)}
-                  >
-                    <OrderLabelIcon size={20} />
-                  </button>
+                  {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
+                    <button
+                      type="button"
+                      className="assembly-label-link assembly-label-link-inline"
+                      title="Только печать этикетки (без смены статуса)"
+                      aria-label="Печать этикетки заказа"
+                      disabled={finishScanSubmitting}
+                      onClick={() => requestLabelPrint(currentOrderData.order.orderId)}
+                    >
+                      <OrderLabelIcon size={20} />
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -1021,15 +1082,17 @@ export function Assembly() {
                     </>
                   ) : null}
                   {' '}
-                  <button
-                    type="button"
-                    className="assembly-label-link assembly-label-link-inline"
-                    title="Печать этикетки"
-                    aria-label="Печать этикетки заказа"
-                    onClick={() => requestLabelPrint(currentOrderData.order.orderId)}
-                  >
-                    <OrderLabelIcon size={20} />
-                  </button>
+                  {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
+                    <button
+                      type="button"
+                      className="assembly-label-link assembly-label-link-inline"
+                      title="Печать этикетки"
+                      aria-label="Печать этикетки заказа"
+                      onClick={() => requestLabelPrint(currentOrderData.order.orderId)}
+                    >
+                      <OrderLabelIcon size={20} />
+                    </button>
+                  )}
                 </p>
               </div>
             )}
@@ -1158,15 +1221,17 @@ export function Assembly() {
                     <td>{sticker}</td>
                     <td>
                       <div className="assembly-row-actions">
-                        <button
-                          type="button"
-                          className="assembly-label-link"
-                          title="Печать стикера"
-                          aria-label="Печать этикетки заказа"
-                          onClick={() => requestLabelPrint(primary.orderId)}
-                        >
-                          <OrderLabelIcon size={20} />
-                        </button>
+                        {labelReadyByOrderId?.[String(primary.orderId)] === true && (
+                          <button
+                            type="button"
+                            className="assembly-label-link"
+                            title="Печать стикера"
+                            aria-label="Печать этикетки заказа"
+                            onClick={() => requestLabelPrint(primary.orderId)}
+                          >
+                            <OrderLabelIcon size={20} />
+                          </button>
+                        )}
                         <Button
                           variant="primary"
                           size="small"
@@ -1272,15 +1337,17 @@ export function Assembly() {
                     <td>{sticker}</td>
                     <td>
                       <div className="assembly-row-actions">
-                        <button
-                          type="button"
-                          className="assembly-label-link"
-                          title="Печать стикера"
-                          aria-label="Печать этикетки заказа"
-                          onClick={() => requestLabelPrint(o.orderId)}
-                        >
-                          <OrderLabelIcon size={20} />
-                        </button>
+                        {labelReadyByOrderId?.[String(o.orderId)] === true && (
+                          <button
+                            type="button"
+                            className="assembly-label-link"
+                            title="Печать стикера"
+                            aria-label="Печать этикетки заказа"
+                            onClick={() => requestLabelPrint(o.orderId)}
+                          >
+                            <OrderLabelIcon size={20} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
