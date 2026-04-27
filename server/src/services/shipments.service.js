@@ -32,9 +32,9 @@ function shipmentVisibleForProfile(s, profileId) {
   return Number.isFinite(sn) && sn === n;
 }
 
-async function getWildberriesConfigForScope(profileId) {
+async function getWildberriesConfigForScope(profileId, { organizationId = null } = {}) {
   if (profileId != null && profileId !== '') {
-    const cfg = await integrationsService.getMarketplaceConfig('wildberries', { profileId });
+    const cfg = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
     return cfg && cfg.api_key ? cfg : null;
   }
   const { marketplaces } = await integrationsService.getAllConfigs();
@@ -75,7 +75,7 @@ async function saveLocalShipments(shipments) {
 /**
  * Список поставок: Ozon/Яндекс — из локального хранилища; WB — с маркетплейса + локальные (созданные через нас).
  */
-async function getShipments({ profileId } = {}) {
+async function getShipments({ profileId, organizationId } = {}) {
   const localAll = await getLocalShipments();
   const local = localAll.filter((s) => shipmentVisibleForProfile(s, profileId));
   const byMarketplace = { ozon: [], wildberries: [], yandex: [] };
@@ -88,7 +88,7 @@ async function getShipments({ profileId } = {}) {
   }
 
   try {
-    const wbConfig = await getWildberriesConfigForScope(profileId);
+    const wbConfig = await getWildberriesConfigForScope(profileId, { organizationId });
     if (wbConfig?.api_key) {
       const wbList = await fetchWBSupplies(wbConfig);
       const localWbIds = new Set(byMarketplace.wildberries.map(s => s.externalId).filter(Boolean));
@@ -150,7 +150,7 @@ async function fetchWBSupplies(config) {
 /**
  * Создать поставку. Ozon/Яндекс — только локально. WB — создать на маркетплейсе и сохранить у себя.
  */
-async function createShipment({ marketplace, name, profileId = null }) {
+async function createShipment({ marketplace, name, profileId = null, organizationId = null }) {
   const code = marketplace === 'wb' ? 'wildberries' : marketplace;
   if (!['ozon', 'wildberries', 'yandex'].includes(code)) {
     const err = new Error('Неизвестный маркетплейс');
@@ -163,7 +163,7 @@ async function createShipment({ marketplace, name, profileId = null }) {
   const now = new Date().toISOString();
 
   if (code === 'wildberries') {
-    const wbConfig = await getWildberriesConfigForScope(profileId);
+    const wbConfig = await getWildberriesConfigForScope(profileId, { organizationId });
     if (wbConfig?.api_key) {
       const supplyId = await createWBSupply(wbConfig);
       const local = {
@@ -220,7 +220,7 @@ async function createShipment({ marketplace, name, profileId = null }) {
  * Получить текущую открытую поставку по маркетплейсу или создать новую.
  * Используется при «Отправить на сборку»: все заказы до закрытия идут в одну поставку.
  */
-async function getOrCreateOpenShipment(marketplace, { profileId = null } = {}) {
+async function getOrCreateOpenShipment(marketplace, { profileId = null, organizationId = null } = {}) {
   const code = marketplace === 'wb' ? 'wildberries' : marketplace;
   if (!['ozon', 'wildberries', 'yandex'].includes(code)) {
     const err = new Error('Неизвестный маркетплейс');
@@ -237,14 +237,15 @@ async function getOrCreateOpenShipment(marketplace, { profileId = null } = {}) {
   return createShipment({
     marketplace: code,
     name: `Сборка ${new Date().toLocaleDateString('ru-RU')}`,
-    profileId
+    profileId,
+    organizationId
   });
 }
 
 /**
  * Закрыть поставку. После закрытия новые заказы «на сборку» пойдут в новую поставку.
  */
-async function closeShipment(shipmentId, { profileId = null } = {}) {
+async function closeShipment(shipmentId, { profileId = null, organizationId = null } = {}) {
   const shipments = await getLocalShipments();
   const ship = shipments.find(s => s.id === shipmentId);
   if (!ship) {
@@ -268,7 +269,7 @@ async function closeShipment(shipmentId, { profileId = null } = {}) {
 
   if (ship.marketplace === 'wildberries' && ship.externalId) {
     try {
-      const wbConfig = await getWildberriesConfigForScope(ship.profileId);
+      const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
       if (wbConfig?.api_key) {
         await wbDeliverSupply(wbConfig, ship.externalId);
         const barcodeBase64 = await wbGetSupplyBarcode(wbConfig, ship.externalId, 'png');
@@ -445,7 +446,7 @@ async function ozonPassToAwaitingDeliver(config, postingNumber) {
 /**
  * Добавить заказы в поставку. WB — вызов PATCH на маркетплейсе; Ozon — добавить локально и перевести в «Ожидает отгрузки» на маркетплейсе.
  */
-async function addOrdersToShipment(shipmentId, orderIds, { profileId = null } = {}) {
+async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, organizationId = null } = {}) {
   if (!Array.isArray(orderIds) || orderIds.length === 0) {
     const err = new Error('Передайте массив orderIds');
     err.statusCode = 400;
@@ -475,9 +476,12 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null } = 
   if (code === 'ozon') {
     let ozonConfig;
     try {
-      ozonConfig = await integrationsService.getMarketplaceConfig('ozon', { profileId: ship.profileId ?? null });
+      ozonConfig = await integrationsService.getMarketplaceConfig('ozon', {
+        profileId: ship.profileId ?? null,
+        organizationId
+      });
     } catch (_) {
-      ozonConfig = await readData('ozon');
+      ozonConfig = null;
     }
     if (ozonConfig?.client_id && ozonConfig?.api_key) {
       const ozonErrors = [];
@@ -503,7 +507,7 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null } = 
   }
 
   if (code === 'wildberries') {
-    const wbConfig = await getWildberriesConfigForScope(ship.profileId);
+    const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
     if (wbConfig?.api_key) {
       // Для WB этикетки появляются через stickers API только когда сборочное задание в статусе confirm/complete.
       // Поэтому перед добавлением в поставку переводим заказы в confirm на стороне WB.
@@ -745,7 +749,7 @@ async function getShipmentById(shipmentId, { profileId = null } = {}) {
  * Удалить заказы из поставки (только локальная запись; для WB заказ на маркетплейсе остаётся в поставке).
  * Только для локальных поставок (id вида ship-*). Не закрытые поставки можно редактировать.
  */
-async function removeOrdersFromShipment(shipmentId, orderIdsToRemove, { profileId = null } = {}) {
+async function removeOrdersFromShipment(shipmentId, orderIdsToRemove, { profileId = null, organizationId = null } = {}) {
   if (!Array.isArray(orderIdsToRemove) || orderIdsToRemove.length === 0) {
     const err = new Error('Передайте массив orderIds для удаления');
     err.statusCode = 400;
@@ -771,7 +775,7 @@ async function removeOrdersFromShipment(shipmentId, orderIdsToRemove, { profileI
 
   // Если это WB и поставка уже создана на WB — удаляем и на маркетплейсе тоже.
   if (ship.marketplace === 'wildberries' && ship.externalId) {
-    const wbConfig = await getWildberriesConfigForScope(ship.profileId);
+    const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
     if (!wbConfig?.api_key) {
       const err = new Error('Wildberries API не настроен');
       err.statusCode = 400;

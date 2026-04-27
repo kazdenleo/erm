@@ -327,7 +327,7 @@ class OrdersController {
         if (list.length === 0) continue;
         // Идемпотентность: если заказ уже привязан к какой-то поставке — используем её и не добавляем заново.
         const profileId = req.user?.profileId ?? null;
-        const openShipment = await shipmentsService.getOrCreateOpenShipment(code, { profileId });
+        const openShipment = await shipmentsService.getOrCreateOpenShipment(code, { profileId, organizationId });
         const byShipmentId = new Map(); // shipmentId -> { shipment, orderIds: [] }
 
         for (const o of list) {
@@ -343,7 +343,7 @@ class OrdersController {
 
         for (const { shipment, orderIds } of byShipmentId.values()) {
           try {
-            const s = await shipmentsService.addOrdersToShipment(shipment.id, orderIds, { profileId });
+            const s = await shipmentsService.addOrdersToShipment(shipment.id, orderIds, { profileId, organizationId });
             shipmentsUsed.push({
               marketplace: code,
               shipmentId: s.id,
@@ -352,6 +352,17 @@ class OrdersController {
               localWbOnly: s.localWbOnly === true,
             });
           } catch (e) {
+            // Ozon 502: не удалось перевести постинги в «Ожидает отгрузки» (статус/ошибка Ozon API).
+            // По требованию: заказ всё равно уходит «На сборке» в ERM, а проблему показываем как предупреждение.
+            if (code === 'ozon' && e?.statusCode === 502) {
+              warnings.push({
+                marketplace: code,
+                shipmentId: shipment.id,
+                message: e.message,
+                failedOrderIds: Array.isArray(e?.ozonErrors) ? e.ozonErrors.map((x) => String(x?.postingNumber || '')).filter(Boolean) : []
+              });
+              continue;
+            }
             // WB 409: часть заказов уже в другой поставке WB или статус не подходит.
             // По требованию: такие заказы всё равно отправляем "На сборку" в ERM (физически они у нас),
             // а ошибку превращаем в предупреждение.
