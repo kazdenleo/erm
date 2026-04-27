@@ -925,6 +925,10 @@ export function Orders() {
     const toSend = row.orders || [row.first];
     const items = toSend.map(o => ({ marketplace: o.marketplace, orderId: o.orderId }));
     if (items.length === 0) return;
+    if (!contextOrganizationId) {
+      setAssemblyMessage('Выберите организацию (вверху/в настройках аккаунта), затем повторите «На сборку».');
+      return;
+    }
     try {
       setSendToAssemblyRowKey(row.key);
       setAssemblyMessage(null);
@@ -1305,6 +1309,10 @@ export function Orders() {
     // При выборе одного заказа из группы (orderGroupId) отправляем на сборку всю группу (все выделенные страницы)
     const toSend = expandSelectedOrdersForBulkActions(orderPoolForSelection, selectedKeys);
     if (toSend.length === 0) return;
+    if (!contextOrganizationId) {
+      setAssemblyMessage('Выберите организацию (вверху/в настройках аккаунта), затем повторите «На сборку».');
+      return;
+    }
     setAssemblyLoading(true);
     setAssemblyMessage(null);
     try {
@@ -1386,6 +1394,10 @@ export function Orders() {
           ].join('')
         );
       } else if (targetStatus === 'in_assembly') {
+        if (!contextOrganizationId) {
+          setAssemblyMessage('Выберите организацию (вверху/в настройках аккаунта), затем повторите перевод «На сборке».');
+          return;
+        }
         const result = await ordersApi.sendToAssembly(
           toSend.map((o) => ({ marketplace: o.marketplace, orderId: o.orderId }))
         );
