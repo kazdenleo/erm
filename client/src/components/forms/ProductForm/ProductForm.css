@@ -3,3 +3,12 @@
   max-width: 980px;
 }
 
+.kit-picker-row {
+  /* подсказки position:absolute — не схлопывать строку */
+  min-height: 2.5rem;
+}
+
+.kit-suggest-list {
+  background: var(--bs-body-bg, #fff);
+}
+

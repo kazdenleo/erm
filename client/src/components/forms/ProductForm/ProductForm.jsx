@@ -9,6 +9,7 @@ import { Modal } from '../../common/Modal/Modal';
 import { productAttributesApi } from '../../../services/productAttributes.api';
 import { integrationsApi } from '../../../services/integrations.api';
 import { productsApi } from '../../../services/products.api';
+import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import './ProductForm.css';
 
@@ -213,6 +214,51 @@ const COUNTRY_OPTIONS = [
   'Новая Зеландия'
 ];
 
+/** Как у useProducts: ответ GET /products { ok, data: Product[] }. */
+function normalizeProductsFromListPayload(raw) {
+  if (raw == null) return [];
+  if (Array.isArray(raw?.data)) return raw.data.filter(Boolean);
+  if (Array.isArray(raw?.data?.data)) return raw.data.data.filter(Boolean);
+  if (Array.isArray(raw?.items)) return raw.items.filter(Boolean);
+  return [];
+}
+
+const KIT_SUGGEST_DEBOUNCE_MS = 280;
+const KIT_SUGGEST_LIMIT = 40;
+
+/** Подпись товара в строке комплектующих */
+function formatKitProductLabel(p) {
+  if (!p || p.id == null) return '';
+  const sku = String(p.sku || '').trim();
+  const name = String(p.name || '').trim();
+  if (sku && name) return `${sku} — ${name}`;
+  return sku || name || `Товар #${p.id}`;
+}
+
+/** Подпись из блока комплектующих в карточке товара (GET /products/:id до догрузки полных карточек) */
+function labelFromKitApiHint(part) {
+  if (!part) return '';
+  const sku = String(part.component_sku || part.product_sku || '').trim();
+  const name = String(part.product_name || part.component_name || '').trim();
+  if (sku && name) return `${sku} — ${name}`;
+  return sku || name || '';
+}
+
+/** Организация для запроса подсказок: карточка → фильтр списка → сессия */
+function resolveKitPickerOrganizationId(formOrgId, productsListOrganizationId) {
+  const fromF =
+    formOrgId != null && formOrgId !== '' && String(formOrgId).trim() !== ''
+      ? String(formOrgId).trim()
+      : '';
+  const fromList =
+    productsListOrganizationId != null && String(productsListOrganizationId).trim() !== ''
+      ? String(productsListOrganizationId).trim()
+      : '';
+  const { organizationId: sessOrg } = getApiSessionContext();
+  const fromSession = sessOrg != null && String(sessOrg).trim() !== '' ? String(sessOrg).trim() : '';
+  return fromF || fromList || fromSession || undefined;
+}
+
 const EMPTY_PRODUCT_FORM_DATA = {
     name: '',
     sku: '',
@@ -245,7 +291,18 @@ const EMPTY_PRODUCT_FORM_DATA = {
   mp_ym_description: ''
 };
 
-export function ProductForm({ product, categories = [], brands = [], organizations = [], products = [], onSubmit, onCancel, onProductUpdate }) {
+export function ProductForm({
+  product,
+  categories = [],
+  brands = [],
+  organizations = [],
+  products = [],
+  /** Фильтр организации со страницы списка — если в карточке не выбрана, подставляем для поиска комплектующих */
+  productsListOrganizationId = '',
+  onSubmit,
+  onCancel,
+  onProductUpdate,
+}) {
   // Локальное состояние для хранения актуальных данных товара
   const [currentProduct, setCurrentProduct] = useState(product);
 
@@ -263,7 +320,21 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
   const [ozonResolvedPair, setOzonResolvedPair] = useState({ descId: null, typeId: 0 });
   const [activeTab, setActiveTab] = useState('main');
   const [kitModalOpen, setKitModalOpen] = useState(false);
-  const [kitComponentSearch, setKitComponentSearch] = useState('');
+  /** По одной строке UI на каждое комплектующее: текст поиска, подсказки */
+  const [kitRowsUi, setKitRowsUi] = useState([]);
+  /** Карточки по id для подписей, если строки списка товаров не содержат товар */
+  const [kitPickerExtras, setKitPickerExtras] = useState([]);
+  const [kitPickerError, setKitPickerError] = useState('');
+  const kitModalWasOpenRef = useRef(false);
+  const kitSuggestTimersRef = useRef({});
+  const kitSuggestGenByRowRef = useRef({});
+  /** Актуальные параметры без лишних пересозданий колбэков */
+  const kitSearchDepsRef = useRef({});
+  kitSearchDepsRef.current = {
+    formOrganizationId: formData.organizationId,
+    productsListOrganizationId,
+    excludeProductId: currentProduct?.id,
+  };
   const [ozonSyncLoading, setOzonSyncLoading] = useState(false);
   const [ozonSyncError, setOzonSyncError] = useState('');
   const [ozonSyncSuccess, setOzonSyncSuccess] = useState('');
@@ -395,7 +466,15 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
         height: currentProduct.height || '',
         volume: currentProduct.volume || '',
         kit_components: Array.isArray(currentProduct.kit_components) && currentProduct.kit_components.length > 0
-          ? currentProduct.kit_components.map(c => ({ productId: c.productId ?? c.component_product_id, quantity: c.quantity || 1 }))
+          ? currentProduct.kit_components.map((c) => {
+              const pid = c.productId ?? c.component_product_id;
+              const hint = labelFromKitApiHint(c);
+              return {
+                productId: pid,
+                quantity: c.quantity || 1,
+                ...(hint ? { kit_hint_label: hint } : {}),
+              };
+            })
           : [],
         attributeValues: currentProduct.attribute_values && typeof currentProduct.attribute_values === 'object'
           ? Object.fromEntries(
@@ -1430,21 +1509,216 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
     }
   };
 
-  const addKitComponent = () => {
-    setFormData(prev => ({ ...prev, kit_components: [...prev.kit_components, { productId: '', quantity: 1 }] }));
-  };
-  const removeKitComponent = (index) => {
-    setFormData(prev => ({
-      ...prev,
-      kit_components: prev.kit_components.filter((_, i) => i !== index)
-    }));
-  };
   const updateKitComponent = (index, field, value) => {
-    setFormData(prev => {
+    setFormData((prev) => {
       const next = [...prev.kit_components];
       next[index] = { ...next[index], [field]: value };
       return { ...prev, kit_components: next };
     });
+  };
+
+  const addKitComponent = () => {
+    setFormData((prev) => ({
+      ...prev,
+      kit_components: [...prev.kit_components, { productId: '', quantity: 1 }],
+    }));
+    if (kitModalOpen) {
+      setKitRowsUi((prev) => [...prev, { query: '', results: [], loading: false, open: false }]);
+    }
+  };
+
+  const removeKitComponent = (index) => {
+    Object.values(kitSuggestTimersRef.current).forEach((t) => clearTimeout(t));
+    kitSuggestTimersRef.current = {};
+    kitSuggestGenByRowRef.current = {};
+
+    const emptyRow = { productId: '', quantity: 1 };
+    const emptyUi = { query: '', results: [], loading: false, open: false };
+
+    setFormData((prev) => {
+      const filtered = prev.kit_components.filter((_, i) => i !== index);
+      if (filtered.length === 0) {
+        return { ...prev, kit_components: [emptyRow] };
+      }
+      return { ...prev, kit_components: filtered };
+    });
+    setKitRowsUi((prev) => {
+      const filtered = prev.filter((_, i) => i !== index);
+      if (filtered.length === 0) {
+        return [emptyUi];
+      }
+      return filtered;
+    });
+  };
+
+  const scheduleKitRowSuggest = (index, rawQuery) => {
+    const key = String(index);
+    const pending = kitSuggestTimersRef.current[key];
+    if (pending) clearTimeout(pending);
+
+    const q = String(rawQuery || '').trim();
+    if (!q) {
+      setKitRowsUi((prev) => {
+        const next = [...prev];
+        if (!next[index]) return prev;
+        next[index] = { ...next[index], results: [], loading: false };
+        return next;
+      });
+      delete kitSuggestTimersRef.current[key];
+      return;
+    }
+
+    kitSuggestTimersRef.current[key] = setTimeout(() => {
+      void runKitRowSuggest(index, q);
+    }, KIT_SUGGEST_DEBOUNCE_MS);
+  };
+
+  async function runKitRowSuggest(index, q) {
+    const key = String(index);
+    const gen = (kitSuggestGenByRowRef.current[key] || 0) + 1;
+    kitSuggestGenByRowRef.current[key] = gen;
+
+    setKitRowsUi((prev) => {
+      const next = [...prev];
+      if (!next[index]) return prev;
+      next[index] = { ...next[index], loading: true, open: true };
+      return next;
+    });
+
+    const { formOrganizationId, productsListOrganizationId: listOrgId, excludeProductId } =
+      kitSearchDepsRef.current;
+    const organizationId = resolveKitPickerOrganizationId(formOrganizationId, listOrgId);
+    const excl = excludeProductId != null && excludeProductId !== '' ? String(excludeProductId) : '';
+
+    try {
+      setKitPickerError('');
+      let raw = await productsApi.getAll({
+        cacheBust: true,
+        organizationId,
+        limit: KIT_SUGGEST_LIMIT,
+        offset: 0,
+        search: q,
+      });
+      let list = normalizeProductsFromListPayload(raw);
+      if (list.length === 0 && organizationId) {
+        raw = await productsApi.getAll({
+          cacheBust: true,
+          limit: KIT_SUGGEST_LIMIT,
+          offset: 0,
+          search: q,
+        });
+        list = normalizeProductsFromListPayload(raw);
+      }
+      list = list.filter((p) => p && String(p.id) !== excl);
+
+      if (kitSuggestGenByRowRef.current[key] !== gen) return;
+
+      setKitRowsUi((prev) => {
+        const next = [...prev];
+        if (!next[index]) return prev;
+        if (kitSuggestGenByRowRef.current[key] !== gen) return prev;
+        next[index] = { ...next[index], results: list, loading: false, open: true };
+        return next;
+      });
+    } catch (e) {
+      if (kitSuggestGenByRowRef.current[key] !== gen) return;
+      setKitRowsUi((prev) => {
+        const next = [...prev];
+        if (!next[index]) return prev;
+        next[index] = { ...next[index], results: [], loading: false, open: true };
+        return next;
+      });
+      setKitPickerError(
+        e?.response?.data?.message ||
+          e?.message ||
+          'Не удалось загрузить подсказки.'
+      );
+    }
+  }
+
+  const handleKitRowQueryChange = (index, value) => {
+    setKitRowsUi((prev) => {
+      const next = [...prev];
+      while (next.length <= index) {
+        next.push({ query: '', results: [], loading: false, open: false });
+      }
+      next[index] = {
+        ...(next[index] || { query: '', results: [], loading: false, open: false }),
+        query: value,
+        open: true,
+      };
+      return next;
+    });
+
+    const row = formData.kit_components[index];
+    if (row?.productId) {
+      const pool = [...products, ...kitPickerExtras];
+      const p = pool.find((x) => String(x?.id) === String(row.productId));
+      const fromPool = p ? formatKitProductLabel(p) : '';
+      const fromHint =
+        typeof row.kit_hint_label === 'string' ? String(row.kit_hint_label).trim() : '';
+      const canonical = fromPool || fromHint;
+      if (!canonical || String(value).trim() !== canonical.trim()) {
+        setFormData((prev) => {
+          const kc = [...prev.kit_components];
+          const cur = kc[index] ? { ...kc[index], productId: '' } : null;
+          if (!cur) return prev;
+          delete cur.kit_hint_label;
+          kc[index] = cur;
+          return { ...prev, kit_components: kc };
+        });
+      }
+    }
+
+    scheduleKitRowSuggest(index, value);
+  };
+
+  const pickKitSuggestProduct = (index, picked) => {
+    if (!picked?.id) return;
+    const ex = kitSearchDepsRef.current.excludeProductId;
+    if (ex != null && String(picked.id) === String(ex)) return;
+
+    const key = String(index);
+    if (kitSuggestTimersRef.current[key]) {
+      clearTimeout(kitSuggestTimersRef.current[key]);
+      delete kitSuggestTimersRef.current[key];
+    }
+
+    setFormData((prev) => {
+      const kc = [...prev.kit_components];
+      const cur = kc[index] ? { ...kc[index], productId: Number(picked.id) } : null;
+      if (!cur) return prev;
+      delete cur.kit_hint_label;
+      kc[index] = cur;
+      return { ...prev, kit_components: kc };
+    });
+    setKitRowsUi((prev) => {
+      const next = [...prev];
+      while (next.length <= index) {
+        next.push({ query: '', results: [], loading: false, open: false });
+      }
+      next[index] = {
+        query: formatKitProductLabel(picked),
+        results: [],
+        loading: false,
+        open: false,
+      };
+      return next;
+    });
+    kitSuggestGenByRowRef.current[key] =
+      (kitSuggestGenByRowRef.current[key] || 0) + 1;
+  };
+
+  /** Задержка, чтобы успел отработать mousedown по пункту подсказки до blur инпута */
+  const closeKitSuggestDelayed = (index) => {
+    setTimeout(() => {
+      setKitRowsUi((prev) => {
+        const next = [...prev];
+        if (!next[index]) return prev;
+        next[index] = { ...next[index], open: false };
+        return next;
+      });
+    }, 220);
   };
 
   const handleAttributeChange = (attributeId, value) => {
@@ -1455,24 +1729,131 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
     }));
   };
 
-  const availableComponents = (products || []).filter(p => p && String(p.id) !== String(currentProduct?.id));
-  const filteredAvailableComponents = useMemo(() => {
-    const q = String(kitComponentSearch || '').trim().toLowerCase();
-    const list = Array.isArray(availableComponents) ? availableComponents : [];
-    if (!q) return list.slice(0, 200);
-    return list
-      .filter((p) => {
-        const sku = String(p?.sku || '').toLowerCase();
-        const name = String(p?.name || '').toLowerCase();
-        return sku.includes(q) || name.includes(q);
-      })
-      .slice(0, 200);
-  }, [availableComponents, kitComponentSearch]);
+  useEffect(() => {
+    if (!kitModalOpen) {
+      Object.values(kitSuggestTimersRef.current).forEach((t) => clearTimeout(t));
+      kitSuggestTimersRef.current = {};
+      kitSuggestGenByRowRef.current = {};
+      kitModalWasOpenRef.current = false;
+      setKitRowsUi([]);
+      setKitPickerExtras([]);
+      setKitPickerError('');
+      return;
+    }
+
+    if (!kitModalWasOpenRef.current) {
+      kitModalWasOpenRef.current = true;
+      setKitPickerExtras([]);
+      setKitPickerError('');
+      const hasRows =
+        Array.isArray(formData.kit_components) && formData.kit_components.length > 0;
+      const seeded = hasRows
+        ? [...formData.kit_components]
+        : [{ productId: '', quantity: 1 }];
+      if (!hasRows) {
+        setFormData((prev) =>
+          prev.kit_components?.length > 0
+            ? prev
+            : { ...prev, kit_components: [{ productId: '', quantity: 1 }] }
+        );
+      }
+      setKitRowsUi(
+        seeded.map((row) => {
+          let q = '';
+          if (row.productId) {
+            const p = (products || []).find((x) => String(x?.id) === String(row.productId));
+            if (p) q = formatKitProductLabel(p);
+            else {
+              const fromApi = typeof row.kit_hint_label === 'string' ? row.kit_hint_label.trim() : '';
+              if (fromApi) q = fromApi;
+            }
+          }
+          return { query: q, results: [], loading: false, open: false };
+        })
+      );
+    }
+  }, [kitModalOpen]);
 
   useEffect(() => {
-    if (kitModalOpen) return;
-    setKitComponentSearch('');
-  }, [kitModalOpen]);
+    if (!kitModalOpen || !kitModalWasOpenRef.current) return undefined;
+    setKitRowsUi((prev) => {
+      const n = formData.kit_components.length;
+      if (prev.length === n) return prev;
+      const next = [...prev];
+      while (next.length < n) next.push({ query: '', results: [], loading: false, open: false });
+      return next.slice(0, n);
+    });
+    return undefined;
+  }, [kitModalOpen, formData.kit_components.length]);
+
+  useEffect(() => {
+    if (!kitModalOpen || !kitModalWasOpenRef.current) return undefined;
+
+    setKitRowsUi((prev) => {
+      if (prev.length !== formData.kit_components.length) return prev;
+      return prev.map((ui, i) => {
+        const row = formData.kit_components[i];
+        if (!row?.productId) return ui;
+        if (ui.open && (ui.results?.length > 0 || ui.loading)) return ui;
+        const pool = [...(products || []), ...kitPickerExtras];
+        const p = pool.find((x) => String(x?.id) === String(row.productId));
+        const fromPool = p ? formatKitProductLabel(p) : '';
+        const fromHint =
+          typeof row.kit_hint_label === 'string' ? String(row.kit_hint_label).trim() : '';
+        const label = fromPool || fromHint;
+        if (!label) return ui;
+        if (label === ui.query) return ui;
+        return { ...ui, query: label, results: [], open: false };
+      });
+    });
+    return undefined;
+  }, [kitModalOpen, kitPickerExtras, products, formData.kit_components]);
+
+  useEffect(() => {
+    if (!kitModalOpen) return undefined;
+    const exclude = String(currentProduct?.id ?? '');
+    const parentIds = new Set((products || []).map((p) => String(p?.id)));
+    const extraIds = new Set((kitPickerExtras || []).map((p) => String(p?.id)));
+
+    const ids = [...new Set(
+      (formData.kit_components || [])
+        .map((r) => r.productId)
+        .filter((pid) => pid !== '' && pid != null && String(pid) !== exclude)
+        .map((pid) => String(pid))
+    )].filter((id) => !parentIds.has(id) && !extraIds.has(id));
+
+    if (ids.length === 0) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const results = await Promise.all(
+          ids.map(async (id) => {
+            try {
+              const raw = await productsApi.getById(id);
+              const p = raw?.data ?? raw;
+              return p && p.id != null ? p : null;
+            } catch {
+              return null;
+            }
+          })
+        );
+        const rows = results.filter(Boolean);
+        if (cancelled || rows.length === 0) return;
+        setKitPickerExtras((prev) => {
+          const map = new Map(prev.map((p) => [String(p.id), p]));
+          rows.forEach((p) => map.set(String(p.id), p));
+          return Array.from(map.values());
+        });
+      } catch {
+        /* ignore */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [kitModalOpen, products, kitPickerExtras, formData.kit_components, currentProduct?.id]);
 
   const validate = () => {
     const newErrors = {};
@@ -2045,7 +2426,14 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
             <Button
               type="button"
               variant="secondary"
-              onClick={() => setKitModalOpen(true)}
+              onClick={() => {
+                setFormData((prev) => {
+                  if (prev.product_type !== 'kit') return prev;
+                  if (prev.kit_components?.length > 0) return prev;
+                  return { ...prev, kit_components: [{ productId: '', quantity: 1 }] };
+                });
+                setKitModalOpen(true);
+              }}
               style={{ whiteSpace: 'nowrap' }}
             >
               {formData.kit_components?.length ? `Комплектующие (${formData.kit_components.length})` : 'Указать комплектующие'}
@@ -2059,63 +2447,109 @@ export function ProductForm({ product, categories = [], brands = [], organizatio
         onClose={() => setKitModalOpen(false)}
         title="Комплектующие"
         size="large"
+        usePortal
       >
-          <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '10px' }}>
-            Выберите товары, входящие в комплект, и их количество.
-          </p>
-          <div style={{ marginBottom: 10 }}>
-            <input
-              type="text"
-              className="form-control form-control-sm"
-              placeholder="Поиск по артикулу или названию…"
-              value={kitComponentSearch}
-              onChange={(e) => setKitComponentSearch(e.target.value)}
-              autoComplete="off"
-              autoFocus
-            />
-            <div className="text-muted" style={{ fontSize: 12, marginTop: 6 }}>
-              Показано вариантов: {filteredAvailableComponents.length}{' '}
-              {kitComponentSearch.trim() ? '(поиск)' : '(первые 200)'}
-            </div>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {formData.kit_components.map((row, index) => (
-              <div key={index} style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                <select
-                className="form-select form-select-sm"
-                  value={row.productId || ''}
-                  onChange={(e) => updateKitComponent(index, 'productId', e.target.value ? Number(e.target.value) : '')}
-                  style={{ flex: '1 1 200px', minWidth: '140px' }}
-                >
-                  <option value="">— Выберите товар —</option>
-                  {filteredAvailableComponents.map(p => (
-                    <option key={p.id} value={p.id}>{p.sku ? `${p.sku} — ` : ''}{p.name}</option>
-                  ))}
-                </select>
-                <input
-                  type="number"
-                className="form-control form-control-sm"
-                  min={1}
-                  step={1}
-                  value={row.quantity}
-                  onChange={(e) => updateKitComponent(index, 'quantity', e.target.value)}
-                  placeholder="Кол-во"
-                  style={{ width: '80px' }}
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => removeKitComponent(index)}
-                  style={{ padding: '8px 12px', color: '#fca5a5', borderColor: '#fca5a5' }}
-                >
-                  ✕
-                </Button>
+        <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
+          В каждой строке введите название, артикул или штрихкод и выберите товар из подсказок. Рядом укажите количество.
+        </p>
+        {kitPickerError ? (
+          <div className="text-danger small mb-2">{kitPickerError}</div>
+        ) : null}
+        <div className="d-flex flex-column gap-2 kit-components-modal-rows">
+          {formData.kit_components.map((row, index) => {
+            const ui = kitRowsUi[index] || { query: '', results: [], loading: false, open: false };
+            const qTrim = String(ui.query || '').trim();
+            const showDropdown = ui.open && (ui.loading || qTrim.length > 0);
+            return (
+              <div key={index} className="position-relative kit-picker-row">
+                <div className="d-flex flex-wrap align-items-center gap-2">
+                  <div className="flex-grow-1" style={{ minWidth: '200px', maxWidth: '100%' }}>
+                    <input
+                      type="text"
+                      className="form-control form-control-sm kit-picker-input"
+                      placeholder="Название, артикул или штрихкод…"
+                      value={ui.query}
+                      onChange={(e) => handleKitRowQueryChange(index, e.target.value)}
+                      onFocus={() =>
+                        setKitRowsUi((prev) => {
+                          const next = [...prev];
+                          while (next.length <= index) {
+                            next.push({ query: '', results: [], loading: false, open: false });
+                          }
+                          next[index] = { ...next[index], open: true };
+                          return next;
+                        })
+                      }
+                      onBlur={() => closeKitSuggestDelayed(index)}
+                      autoComplete="off"
+                      {...(index === 0 ? { autoFocus: true } : {})}
+                    />
+                    {showDropdown ? (
+                      <ul
+                        className="list-group kit-suggest-list shadow-sm border rounded mt-1"
+                        role="listbox"
+                        style={{
+                          position: 'absolute',
+                          zIndex: 1080,
+                          left: 0,
+                          right: 0,
+                          maxHeight: 220,
+                          overflowY: 'auto',
+                        }}
+                      >
+                        {ui.loading ? (
+                          <li className="list-group-item list-group-item-action py-2 small text-muted">Загрузка…</li>
+                        ) : (ui.results || []).length === 0 ? (
+                          <li className="list-group-item list-group-item-action py-2 small text-muted">
+                            Ничего не найдено
+                          </li>
+                        ) : null}
+                        {!ui.loading
+                          ? (ui.results || []).map((p) => (
+                              <li
+                                key={p.id}
+                                className="list-group-item list-group-item-action py-2 small"
+                                role="option"
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  pickKitSuggestProduct(index, p);
+                                }}
+                              >
+                                {formatKitProductLabel(p)}
+                              </li>
+                            ))
+                          : null}
+                      </ul>
+                    ) : null}
+                  </div>
+                  <input
+                    type="number"
+                    className="form-control form-control-sm"
+                    min={1}
+                    step={1}
+                    value={row.quantity}
+                    onChange={(e) => updateKitComponent(index, 'quantity', e.target.value)}
+                    placeholder="Кол-во"
+                    style={{ width: '88px' }}
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => removeKitComponent(index)}
+                    style={{ padding: '8px 12px', color: '#fca5a5', borderColor: '#fca5a5' }}
+                  >
+                    ✕
+                  </Button>
+                </div>
               </div>
-            ))}
+            );
+          })}
+          {formData.kit_components.length >= 1 ? (
             <Button type="button" variant="secondary" onClick={addKitComponent} style={{ alignSelf: 'flex-start' }}>
               + Добавить комплектующее
             </Button>
-          </div>
+          ) : null}
+        </div>
       </Modal>
 
       <div className="row g-3 mt-1">

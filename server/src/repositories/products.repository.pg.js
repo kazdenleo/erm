@@ -66,6 +66,10 @@ function buildFindAllFilters(options = {}) {
         SELECT 1 FROM barcodes bc
         WHERE bc.product_id = p.id AND bc.barcode ILIKE $${paramIndex}
       )
+      OR EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
+      )
     )`;
     params.push(searchParam);
     paramIndex++;
@@ -855,7 +859,7 @@ class ProductsRepositoryPG {
     if (product.product_type === 'kit') {
       try {
         const kitResult = await query(
-          `SELECT kc.component_product_id, kc.quantity, p.name as component_name
+          `SELECT kc.component_product_id, kc.quantity, p.sku as component_sku, p.name as component_name
            FROM kit_components kc
            LEFT JOIN products p ON p.id = kc.component_product_id
            WHERE kc.kit_product_id = $1`,
@@ -864,6 +868,7 @@ class ProductsRepositoryPG {
         product.kit_components = kitResult.rows.map(r => ({
           productId: r.component_product_id,
           quantity: r.quantity,
+          component_sku: r.component_sku,
           product_name: r.component_name
         }));
       } catch (err) {
@@ -1630,6 +1635,10 @@ class ProductsRepositoryPG {
         OR EXISTS (
           SELECT 1 FROM barcodes bc
           WHERE bc.product_id = products.id AND bc.barcode ILIKE $${paramIndex}
+        )
+        OR EXISTS (
+          SELECT 1 FROM product_skus ps
+          WHERE ps.product_id = products.id AND COALESCE(TRIM(ps.sku::text), '') ILIKE $${paramIndex}
         )
       )`;
       params.push(sp);

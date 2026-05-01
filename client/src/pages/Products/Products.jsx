@@ -1179,6 +1179,7 @@ export function Products() {
         title={editingProduct ? 'Редактировать товар' : 'Создать товар'}
         size="full"
         closeOnBackdropClick={false}
+        usePortal={false}
       >
         <ProductForm
           product={editingProduct}
@@ -1186,6 +1187,7 @@ export function Products() {
           brands={brands}
           organizations={organizations}
           products={products}
+          productsListOrganizationId={filterOrganizationId}
           onSubmit={handleSubmit}
           onCancel={() => {
             setIsModalOpen(false);
