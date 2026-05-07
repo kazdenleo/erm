@@ -1566,6 +1566,14 @@ export function Orders() {
           >
             {assembledCount > 0 ? `📦 Сборка (${assembledCount})` : '📦 Сборка'}
           </Button>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => navigate('/shipments')}
+            title="Перейти к поставкам FBS"
+          >
+            🚚 Поставки FBS
+          </Button>
           {selectedCount > 0 && (
             <Button
               variant="secondary"
