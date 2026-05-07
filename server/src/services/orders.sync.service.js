@@ -267,8 +267,9 @@ class OrdersSyncService {
 
     ordersSyncCache.syncInProgress = true;
     ordersSyncCache.lastSyncTime = now;
+    const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0}`;
     if (force) {
-      logger.info('[Orders Sync] принудительный импорт заказов (полный опрос маркетплейсов, минутный лимит снят)');
+      logger.info(`[Orders Sync] принудительный импорт заказов (полный опрос маркетплейсов, минутный лимит снят) (${ctx})`);
     }
 
     try {
@@ -293,7 +294,11 @@ class OrdersSyncService {
     const ymConfig = marketplaces?.yandex || {};
 
     const ymApiKey = ymConfig?.api_key ?? ymConfig?.apiKey;
-    logger.info(`[Orders Sync] start: Ozon=${!!ozonConfig?.api_key} WB=${!!wbConfig?.api_key} Yandex api_key=${!!ymApiKey} campaign_id=${!!(ymConfig?.campaign_id ?? ymConfig?.campaignId)} keys=${Object.keys(ymConfig || {}).join(', ') || '(none)'}`);
+    logger.info(
+      `[Orders Sync] start (${ctx}): Ozon=${!!ozonConfig?.api_key} WB=${!!wbConfig?.api_key} ` +
+        `Yandex api_key=${!!ymApiKey} campaign_id=${!!(ymConfig?.campaign_id ?? ymConfig?.campaignId)} ` +
+        `keys=${Object.keys(ymConfig || {}).join(', ') || '(none)'}`
+    );
 
     // OZON
     try {
@@ -612,7 +617,10 @@ class OrdersSyncService {
 
       ordersSyncCache.lastSyncResult = results;
 
-      logger.info(`[Orders Sync] done: ozon=${results.ozon.success} wb=${results.wildberries.success} yandex=${results.yandex.success} (yandex api_key was ${ymApiKey ? 'set' : 'missing'})`);
+      logger.info(
+        `[Orders Sync] done (${ctx}): ozon=${results.ozon.success} wb=${results.wildberries.success} yandex=${results.yandex.success} ` +
+          `(yandex api_key was ${ymApiKey ? 'set' : 'missing'})`
+      );
       if (ymApiKey && results.yandex.success === 0) {
         logger.info(ymReason ? `[YM Orders] 0 orders: ${ymReason}` : '[YM Orders] 0 orders. Search log for "[YM Orders]" above for details.');
       }
