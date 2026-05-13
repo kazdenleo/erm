@@ -10,8 +10,16 @@ import {
   syncMarketplaceQuestions,
 } from '../services/marketplaceQuestions.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import logger from '../utils/logger.js';
 
 class QuestionsController {
+  parseOrganizationId(req) {
+    const raw = req.get('x-organization-id') || req.get('X-Organization-Id');
+    if (raw == null) return null;
+    const s = String(raw).trim();
+    return s === '' ? null : s;
+  }
+
   async getOne(req, res, next) {
     try {
       const tid = tenantListProfileId(req);
@@ -19,7 +27,8 @@ class QuestionsController {
         res.setHeader('Cache-Control', 'no-store');
         return res.status(200).json({ ok: true, data: null });
       }
-      const item = await getMarketplaceQuestionById(tid, req.params.id);
+      const organizationId = this.parseOrganizationId(req);
+      const item = await getMarketplaceQuestionById(tid, req.params.id, { organizationId });
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Вопрос не найден' });
       }
@@ -82,7 +91,9 @@ class QuestionsController {
       const onlyRaw = req.query?.marketplace;
       const only =
         onlyRaw != null && String(onlyRaw).trim() !== '' ? String(onlyRaw).trim().toLowerCase() : null;
-      const data = await syncMarketplaceQuestions(pid, { only });
+      const organizationId = this.parseOrganizationId(req);
+      logger.info('[Questions] sync', { profileId: pid, organizationId, only });
+      const data = await syncMarketplaceQuestions(pid, { only, organizationId });
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({ ok: true, data });
     } catch (error) {
@@ -103,7 +114,9 @@ class QuestionsController {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту.' });
       }
       const text = req.body?.text;
-      const data = await submitMarketplaceQuestionAnswer(pid, req.params.id, text);
+      const organizationId = this.parseOrganizationId(req);
+      logger.info('[Questions] answer', { profileId: pid, organizationId, questionRowId: req.params.id });
+      const data = await submitMarketplaceQuestionAnswer(pid, req.params.id, text, { organizationId });
       res.setHeader('Cache-Control', 'no-store');
       const isPendingWb =
         data?.marketplace === 'wildberries' && (data?.status === 'pending_wb_confirm' || !!data?.pendingAnswerText);

@@ -110,6 +110,14 @@ function keyFp(raw) {
 }
 
 class OrdersLabelsService {
+  hasLabelCached(order) {
+    try {
+      return hasLabelCached(order);
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Получить путь к этикетке заказа, при необходимости скачав её.
    * Возвращает абсолютный путь к файлу.

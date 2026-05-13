@@ -61,6 +61,26 @@ export function buildThreadMessagesFromRow(opts) {
       const ext = a.id != null ? String(a.id) : null;
       const dup = out.some((m) => m.text === txt && m.role === role && m.at === at);
       if (!dup) out.push({ role, text: txt, at: at ?? null, externalId: ext });
+
+      // Яндекс: комментарии к ответу — это продолжение ветки (покупатель/продавец).
+      const comments = Array.isArray(a.comments) ? a.comments : Array.isArray(a.commentaries) ? a.commentaries : [];
+      if (Array.isArray(comments) && comments.length > 0) {
+        const sortedComments = [...comments].sort((x, y) => {
+          const tx = parseIso(x?.createdAt ?? x?.created_at) || '';
+          const ty = parseIso(y?.createdAt ?? y?.created_at) || '';
+          if (tx !== ty) return tx.localeCompare(ty);
+          return (Number(x?.id) || 0) - (Number(y?.id) || 0);
+        });
+        for (const c of sortedComments) {
+          const cTxt = String(c?.text ?? c?.body ?? '').trim();
+          if (!cTxt) continue;
+          const cRole = inferYandexAnswerAuthor(c);
+          const cAt = parseIso(c?.createdAt ?? c?.created_at);
+          const cExt = c?.id != null ? String(c.id) : null;
+          const cDup = out.some((m) => m.text === cTxt && m.role === cRole && m.at === cAt);
+          if (!cDup) out.push({ role: cRole, text: cTxt, at: cAt ?? null, externalId: cExt });
+        }
+      }
     }
     return out;
   }

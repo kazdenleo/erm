@@ -9,6 +9,8 @@ import { questionsApi } from '../../services/questions.api';
 import { MARKETPLACE_TABLE_BADGES } from '../../constants/marketplaceUi';
 import { normalizeMarketplaceForUI } from '../../utils/orderListGroupKey';
 import { formatProductTheme } from './questionsDisplay';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { useOrganizations } from '../../hooks/useOrganizations';
 import './Questions.css';
 
 const ANSWERED_OPTIONS = [
@@ -50,6 +52,9 @@ function threadNeedsSellerReply(q) {
 const AUTO_SYNC_MS = 10 * 60 * 1000;
 
 export function Questions() {
+  const { selectedOrganizationId: contextOrganizationId, setSelectedOrganizationId } = useAuth();
+  const { organizations } = useOrganizations();
+
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [items, setItems] = useState([]);
@@ -100,6 +105,16 @@ export function Questions() {
   const loadRef = useRef(load);
   loadRef.current = load;
 
+  // Чтобы в заголовке `X-Organization-Id` уходил корректный orgId,
+  // иначе для Ozon/WB/YM может браться не тот API ключ.
+  useEffect(() => {
+    if (contextOrganizationId) return;
+    const first = (organizations || [])[0];
+    if (first?.id != null) {
+      setSelectedOrganizationId(String(first.id));
+    }
+  }, [contextOrganizationId, organizations, setSelectedOrganizationId]);
+
   useEffect(() => {
     load();
   }, [load]);
@@ -118,10 +133,11 @@ export function Questions() {
   }, []);
 
   useEffect(() => {
+    if (!contextOrganizationId) return undefined;
     syncFromMarketplaces();
     const id = setInterval(syncFromMarketplaces, AUTO_SYNC_MS);
     return () => clearInterval(id);
-  }, [syncFromMarketplaces]);
+  }, [syncFromMarketplaces, contextOrganizationId]);
 
   const mpTotalAll = mpCounts.ozon + mpCounts.wildberries + mpCounts.yandex;
 

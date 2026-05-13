@@ -18,6 +18,23 @@ import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
 import './Products.css';
 
+/** Текст подсказки со составом комплекта (title / native tooltip) */
+function buildKitCompositionTitle(components) {
+  if (!Array.isArray(components) || components.length === 0) {
+    return 'Комплектующие не указаны';
+  }
+  return components
+    .map((c) => {
+      const q = Math.max(1, Number(c.quantity) || 1);
+      const sku = c.component_sku ?? c.sku ?? '';
+      const name = c.product_name ?? c.name ?? '';
+      const label = [sku, name].filter(Boolean).join(' — ');
+      const id = c.productId ?? c.component_product_id;
+      return `${q}× ${label || (id != null ? `товар #${id}` : '—')}`;
+    })
+    .join('\n');
+}
+
 export function Products() {
   const PAGE_SIZE = 50;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -835,6 +852,16 @@ export function Products() {
                   }
                   
                   const productTypeLabel = product.product_type === 'kit' ? 'Комплект' : 'Товар';
+                  const kitComponents = Array.isArray(product.kit_components) ? product.kit_components : [];
+                  const kitHasComponents = product.product_type === 'kit' && kitComponents.length > 0;
+                  const typeBadgeClass =
+                    product.product_type === 'kit'
+                      ? kitHasComponents
+                        ? 'bg-info'
+                        : 'bg-secondary'
+                      : 'bg-secondary';
+                  const typeBadgeTitle =
+                    product.product_type === 'kit' ? buildKitCompositionTitle(kitComponents) : undefined;
                   const addExpRaw = product.additionalExpenses ?? product.additional_expenses;
                   const addExpNum =
                     addExpRaw != null && addExpRaw !== '' && !isNaN(Number(addExpRaw)) ? Number(addExpRaw) : null;
@@ -874,7 +901,11 @@ export function Products() {
                         </div>
                       </td>
                       <td>
-                        <span className={`badge ${product.product_type === 'kit' ? 'bg-info' : 'bg-secondary'}`}>
+                        <span
+                          className={`badge ${typeBadgeClass}`}
+                          title={typeBadgeTitle}
+                          style={product.product_type === 'kit' ? { cursor: 'help' } : undefined}
+                        >
                           {productTypeLabel}
                         </span>
                       </td>

@@ -5,6 +5,7 @@
  */
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
 import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { OrderLabelIcon } from '../../components/common/OrderLabelIcon/OrderLabelIcon';
@@ -139,6 +140,7 @@ function orderItemMatchesScannedProduct(item, product, itemsLength = 1) {
 }
 
 export function Assembly() {
+  const { openProductCard } = useProductCardModal();
   const [assemblyOrders, setAssemblyOrders] = useState([]);
   const [collectedOrders, setCollectedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -182,8 +184,20 @@ export function Assembly() {
         ordersApi.getAll({ status: 'in_assembly', limit: 500 }),
         ordersApi.getAll({ status: 'assembled', limit: 200 }),
       ]);
-      setAssemblyOrders(Array.isArray(assemblyResponse?.data) ? assemblyResponse.data : []);
-      setCollectedOrders(Array.isArray(collectedResponse?.data) ? collectedResponse.data : []);
+      const assemblyList = Array.isArray(assemblyResponse?.data) ? assemblyResponse.data : [];
+      const collectedList = Array.isArray(collectedResponse?.data) ? collectedResponse.data : [];
+      setAssemblyOrders(assemblyList);
+      setCollectedOrders(collectedList);
+      // Инициализируем иконки печати сразу из backend-поля hasLabel.
+      const initialReady = {};
+      for (const o of [...assemblyList, ...collectedList]) {
+        const oid = o?.orderId ?? o?.order_id;
+        if (oid == null || String(oid).trim() === '') continue;
+        if (o?.hasLabel === true || o?.has_label === true) initialReady[String(oid)] = true;
+      }
+      if (Object.keys(initialReady).length > 0) {
+        setLabelReadyByOrderId((prev) => ({ ...(prev || {}), ...initialReady }));
+      }
     } catch (err) {
       console.error('Error loading assembly orders:', err);
       setError(err.message || 'Ошибка загрузки заказов');
@@ -1019,13 +1033,15 @@ export function Assembly() {
                     {line.productId ? (
                       <>
                         {line.externalId ? `${line.externalId}, ` : ''}
-                        <Link
-                          to={`/products?open=${line.productId}`}
+                        <button
+                          type="button"
+                          onClick={() => openProductCard(line.productId)}
                           className="assembly-product-link"
-                          title="Открыть товар в каталоге"
+                          title="Открыть карточку товара"
+                          style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
                         >
                           {line.name}
-                        </Link>
+                        </button>
                         {` - ${line.q}шт`}
                       </>
                     ) : (
@@ -1201,13 +1217,15 @@ export function Assembly() {
                           return (
                             <div key={`${String(o.orderId)}-${i}`} className="assembly-table-line">
                               {erpPid ? (
-                                <Link
-                                  to={`/products?open=${erpPid}`}
+                                <button
+                                  type="button"
+                                  onClick={() => openProductCard(erpPid)}
                                   className="assembly-product-link"
-                                  title="Открыть товар в каталоге"
+                                  title="Открыть карточку товара"
+                                  style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
                                 >
                                   {name}
-                                </Link>
+                                </button>
                               ) : (
                                 name
                               )}
@@ -1320,13 +1338,15 @@ export function Assembly() {
                     </td>
                     <td>
                       {erpPidCol ? (
-                        <Link
-                          to={`/products?open=${erpPidCol}`}
+                        <button
+                          type="button"
+                          onClick={() => openProductCard(erpPidCol)}
                           className="assembly-product-link"
-                          title="Открыть товар в каталоге"
+                          title="Открыть карточку товара"
+                          style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
                         >
                           {o.productName || o.product_name || '—'}
-                        </Link>
+                        </button>
                       ) : (
                         o.productName || o.product_name || '—'
                       )}

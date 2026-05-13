@@ -3,6 +3,8 @@
 :root {
   --erm-sidebar-width: 280px;
   --erm-sidebar-width-closed: 80px;
+  /* Высота фиксированного хедера ArchitectUI (чтобы модалки не перекрывали верхнее меню) */
+  --erm-header-height: 60px;
 }
 
 /* Text brand (Header + Sidebar) */
@@ -34,6 +36,70 @@
 .sidebar-mobile-open .modal.modal-erm {
   left: 0;
   width: 100vw;
+}
+
+/* Prevent modals/backdrop from covering the fixed header (top menu) */
+.fixed-header .modal-backdrop-erm,
+.fixed-header .modal.modal-erm {
+  top: var(--erm-header-height);
+  height: calc(100vh - var(--erm-header-height));
+}
+
+/* Product card overlay (non-modal, inside app chrome) */
+.erm-product-card-overlay {
+  position: fixed;
+  top: var(--erm-header-height);
+  left: var(--erm-sidebar-width);
+  width: calc(100vw - var(--erm-sidebar-width));
+  height: calc(100vh - var(--erm-header-height));
+  z-index: 1100; /* below header (1200), above content */
+  background: #fff;
+  border-left: 1px solid rgba(0,0,0,0.08);
+  box-shadow: -12px 0 24px rgba(0,0,0,0.08);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.closed-sidebar .erm-product-card-overlay {
+  left: var(--erm-sidebar-width-closed);
+  width: calc(100vw - var(--erm-sidebar-width-closed));
+}
+.sidebar-mobile-open .erm-product-card-overlay {
+  left: 0;
+  width: 100vw;
+}
+.erm-product-card-overlay__header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  background: #fff;
+}
+.erm-product-card-overlay__title {
+  font-weight: 700;
+  font-size: 14px;
+}
+.erm-product-card-overlay__close {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: #fff;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  color: rgba(0,0,0,0.65);
+}
+.erm-product-card-overlay__close:hover {
+  background: rgba(0,0,0,0.04);
+}
+.erm-product-card-overlay__body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 12px 14px;
 }
 
 /* Fullscreen modals should also respect the sidebar offset */

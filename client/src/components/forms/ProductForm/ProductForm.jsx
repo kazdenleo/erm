@@ -15,6 +15,15 @@ import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
 
+/** Совпадает с productValidator.js / публичной документацией партнёрских API */
+const MP_LINK_MAX = {
+  OZON_OFFER_ID: 50,
+  OZON_PRODUCT_ID_DIGITS: 19,
+  WB_NMID: 20,
+  YM_OFFER_ID: 255,
+  WB_VENDOR_CODE: 255,
+};
+
 /** Порядок в массиве = порядок на карточке; первый элемент — главное фото. */
 function normalizeProductImagesOrder(images) {
   const arr = Array.isArray(images) ? [...images] : [];
@@ -272,6 +281,8 @@ const EMPTY_PRODUCT_FORM_DATA = {
     minPrice: '',
     description: '',
     sku_ozon: '',
+    /** Редактируемое поле числового product_id Ozon (сохраняется как marketplace_ozon_product_id) */
+    ozon_product_id: '',
     sku_wb: '',
     sku_ym: '',
     buyout_rate: 95,
@@ -456,6 +467,10 @@ export function ProductForm({
           : '',
         description: currentProduct.description || '',
         sku_ozon: currentProduct.sku_ozon || '',
+        ozon_product_id:
+          currentProduct.ozon_product_id != null && currentProduct.ozon_product_id !== ''
+            ? String(currentProduct.ozon_product_id)
+            : '',
         sku_wb: currentProduct.sku_wb || '',
         sku_ym: currentProduct.sku_ym || '',
         buyout_rate: buyoutRate,
@@ -1104,6 +1119,7 @@ export function ProductForm({
       setFormData((prev) => {
         const next = { ...prev };
         if (offerIdFromOzon) next.sku_ozon = offerIdFromOzon;
+        if (data.id != null) next.ozon_product_id = String(data.id);
         return next;
       });
       const attrs = data.attributes ?? data.attribute_values;
@@ -1874,7 +1890,29 @@ export function ProductForm({
     if (formData.additionalExpenses && parseFloat(formData.additionalExpenses) < 0) {
       newErrors.additionalExpenses = 'Дополнительные расходы не могут быть отрицательными';
     }
-    
+    const ozOffer = String(formData.sku_ozon || '').trim();
+    if (ozOffer.length > MP_LINK_MAX.OZON_OFFER_ID) {
+      newErrors.sku_ozon = `Ozon offer_id: не более ${MP_LINK_MAX.OZON_OFFER_ID} символов (Seller API)`;
+    }
+    const ozPidStr = String(formData.ozon_product_id || '').trim();
+    if (ozPidStr !== '') {
+      if (!/^\d{1,19}$/.test(ozPidStr)) {
+        newErrors.ozon_product_id = 'Ozon product_id: только цифры, до 19 знаков (BIGINT)';
+      }
+    }
+    const wbNm = String(formData.sku_wb || '').trim();
+    if (wbNm.length > MP_LINK_MAX.WB_NMID) {
+      newErrors.sku_wb = `Wildberries nmId: не более ${MP_LINK_MAX.WB_NMID} символов`;
+    }
+    const wbVendor = String(formData.mp_wb_vendor_code || '').trim();
+    if (wbVendor.length > MP_LINK_MAX.WB_VENDOR_CODE) {
+      newErrors.mp_wb_vendor_code = `WB vendorCode: не более ${MP_LINK_MAX.WB_VENDOR_CODE} символов`;
+    }
+    const ymOffer = String(formData.sku_ym || '').trim();
+    if (ymOffer.length > MP_LINK_MAX.YM_OFFER_ID) {
+      newErrors.sku_ym = `Яндекс Маркет offerId: не более ${MP_LINK_MAX.YM_OFFER_ID} символов (Partner API)`;
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -1962,9 +2000,19 @@ export function ProductForm({
       ozon_attributes: ozonAttributesPayload,
       wb_attributes: Object.keys(wbAttributeValues).length > 0 ? wbAttributeValues : undefined,
       ym_attributes: Object.keys(ymAttributeValues).length > 0 ? ymAttributeValues : undefined,
-      ...(syncedOzonProductId != null || currentProduct?.ozon_product_id != null
-        ? { marketplace_ozon_product_id: syncedOzonProductId ?? currentProduct?.ozon_product_id ?? null }
-        : {})
+      marketplace_ozon_product_id: (() => {
+        const manual = String(formData.ozon_product_id || '').trim();
+        if (manual !== '') {
+          const n = Number(manual);
+          return Number.isFinite(n) ? n : null;
+        }
+        if (syncedOzonProductId != null && Number.isFinite(Number(syncedOzonProductId))) {
+          return Number(syncedOzonProductId);
+        }
+        const cur = currentProduct?.ozon_product_id;
+        if (cur != null && cur !== '' && Number.isFinite(Number(cur))) return Number(cur);
+        return null;
+      })(),
     };
 
     console.log('[ProductForm] Submitting payload:', payload);
@@ -2058,6 +2106,115 @@ export function ProductForm({
         />
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '6px' }}>
           Символов: {String(formData.description || '').length}
+        </div>
+      </div>
+
+      <div
+        className="mt-3 p-3 rounded"
+        style={{ border: '1px solid rgba(0,91,255,0.22)', background: 'rgba(0,91,255,0.04)' }}
+        data-section="product-marketplace-links"
+      >
+        <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '4px', color: 'var(--text)' }}>
+          Связь с маркетплейсами
+        </h3>
+        <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '12px', lineHeight: 1.45 }}>
+          Идентификаторы из документации партнёрских API. Ограничения длины проверяются при сохранении. Расширение: кнопка «Создать на маркетплейсе»
+          — обработчик может вызвать API импорта и записать полученные ключи в таблицу <code>product_skus</code> (в т. ч. JSON-поле{' '}
+          <code>mp_extra</code> для вторичных ID вроде WB <code>chrtId</code>).
+        </p>
+        <div className="row g-3">
+          <div className="col-12">
+            <div className="fw-semibold small text-primary mb-2">Ozon Seller API</div>
+          </div>
+          <div className="col-12 col-md-6">
+            <label className="form-label" htmlFor="mp-link-ozon-offer">
+              offer_id (артикул продавца)
+            </label>
+            <input
+              id="mp-link-ozon-offer"
+              type="text"
+              className="form-control form-control-sm"
+              maxLength={MP_LINK_MAX.OZON_OFFER_ID}
+              placeholder="До 50 символов (/v2/product/import)"
+              autoComplete="off"
+              value={formData.sku_ozon}
+              onChange={(e) => handleChange('sku_ozon', e.target.value)}
+            />
+            {errors.sku_ozon && <div className="text-danger small mt-1">{errors.sku_ozon}</div>}
+          </div>
+          <div className="col-12 col-md-6">
+            <label className="form-label" htmlFor="mp-link-ozon-pid">
+              product_id (числовой ID карточки)
+            </label>
+            <input
+              id="mp-link-ozon-pid"
+              type="text"
+              inputMode="numeric"
+              className="form-control form-control-sm"
+              maxLength={MP_LINK_MAX.OZON_PRODUCT_ID_DIGITS}
+              placeholder="Подставляется после импорта или синхронизации"
+              autoComplete="off"
+              value={formData.ozon_product_id}
+              onChange={(e) => handleChange('ozon_product_id', e.target.value.replace(/\D/g, '').slice(0, MP_LINK_MAX.OZON_PRODUCT_ID_DIGITS))}
+            />
+            {errors.ozon_product_id && <div className="text-danger small mt-1">{errors.ozon_product_id}</div>}
+          </div>
+          <div className="col-12">
+            <div className="fw-semibold small text-primary mb-2">Wildberries API</div>
+          </div>
+          <div className="col-12 col-md-6">
+            <label className="form-label" htmlFor="mp-link-wb-nmid">
+              nmId (номенклатура)
+            </label>
+            <input
+              id="mp-link-wb-nmid"
+              type="text"
+              inputMode="numeric"
+              className="form-control form-control-sm"
+              maxLength={MP_LINK_MAX.WB_NMID}
+              placeholder="Например: 527548163 (числовой nmId или ваш ключ матчинга)"
+              autoComplete="off"
+              value={formData.sku_wb}
+              onChange={(e) => handleChange('sku_wb', e.target.value.slice(0, MP_LINK_MAX.WB_NMID))}
+            />
+            {errors.sku_wb && <div className="text-danger small mt-1">{errors.sku_wb}</div>}
+          </div>
+          <div className="col-12 col-md-6">
+            <label className="form-label" htmlFor="mp-link-wb-vendor">
+              vendorCode (артикул продавца)
+            </label>
+            <input
+              id="mp-link-wb-vendor"
+              type="text"
+              className="form-control form-control-sm"
+              maxLength={MP_LINK_MAX.WB_VENDOR_CODE}
+              autoComplete="off"
+              value={formData.mp_wb_vendor_code}
+              onChange={(e) => handleChange('mp_wb_vendor_code', e.target.value.slice(0, MP_LINK_MAX.WB_VENDOR_CODE))}
+            />
+            {errors.mp_wb_vendor_code && (
+              <div className="text-danger small mt-1">{errors.mp_wb_vendor_code}</div>
+            )}
+          </div>
+          <div className="col-12">
+            <div className="fw-semibold small text-primary mb-2">Яндекс Маркет Partner API</div>
+          </div>
+          <div className="col-12 col-md-6">
+            <label className="form-label" htmlFor="mp-link-ym-offer">
+              offerId / shopSku
+            </label>
+            <input
+              id="mp-link-ym-offer"
+              type="text"
+              className="form-control form-control-sm"
+              maxLength={MP_LINK_MAX.YM_OFFER_ID}
+              placeholder="1–255 символов (offerId в вашем каталоге)"
+              autoComplete="off"
+              value={formData.sku_ym}
+              onChange={(e) => handleChange('sku_ym', e.target.value.slice(0, MP_LINK_MAX.YM_OFFER_ID))}
+            />
+            {errors.sku_ym && <div className="text-danger small mt-1">{errors.sku_ym}</div>}
+          </div>
         </div>
       </div>
 
@@ -3082,18 +3239,9 @@ export function ProductForm({
             </div>
             );
           })()}
-          <div className="mt-2">
-            <label className="form-label" htmlFor="sku_ozon">Артикул Ozon</label>
-            <input
-              id="sku_ozon"
-              type="text"
-              className="form-control form-control-sm"
-              style={{ maxWidth: 320 }}
-              placeholder="Артикул Ozon"
-              value={formData.sku_ozon}
-              onChange={(e) => handleChange('sku_ozon', e.target.value)}
-            />
-          </div>
+          <p className="small text-muted mt-2 mb-0">
+            Идентификаторы связи (offer_id, product_id) заданы во вкладке «Основное» → блок «Связь с маркетплейсами».
+          </p>
           {formData.categoryId && (
             <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(255, 107, 0, 0.06)', borderRadius: '8px', border: '1px solid rgba(255, 107, 0, 0.25)' }}>
               <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
@@ -3340,21 +3488,9 @@ export function ProductForm({
               </div>
             </div>
           )}
-          <div className="mt-2">
-            <label className="form-label" htmlFor="sku_wb">Артикул WB (nmId)</label>
-            <input
-              id="sku_wb"
-            type="text"
-              className="form-control form-control-sm"
-              style={{ maxWidth: 320 }}
-              placeholder="Например: 527548163"
-              value={formData.sku_wb}
-              onChange={(e) => handleChange('sku_wb', e.target.value)}
-            />
-            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-              Номенклатурный номер из карточки товара на Wildberries. По нему в заказах подставляется название товара.
-        </div>
-      </div>
+          <p className="small text-muted mt-2 mb-0">
+            nmId и vendorCode задайте во вкладке «Основное» → «Связь с маркетплейсами».
+          </p>
 
           <div className="card mt-3 border-secondary">
             <div className="card-header">Текст и артикул продавца для Wildberries</div>
@@ -3684,18 +3820,9 @@ export function ProductForm({
             <span className="mp-badge ym">YM</span>
             Данные для Яндекс.Маркет
           </h4>
-          <div className="mt-2">
-            <label className="form-label" htmlFor="sku_ym">Артикул</label>
-            <input
-              id="sku_ym"
-              type="text"
-              className="form-control form-control-sm"
-              style={{ maxWidth: 320 }}
-              placeholder="Артикул Yandex"
-              value={formData.sku_ym}
-              onChange={(e) => handleChange('sku_ym', e.target.value)}
-            />
-          </div>
+          <p className="small text-muted mt-2 mb-0">
+            offerId задайте во вкладке «Основное» → «Связь с маркетплейсами».
+          </p>
 
           <div className="card mt-3 border-secondary">
             <div className="card-header">Название и описание для Яндекс.Маркета</div>

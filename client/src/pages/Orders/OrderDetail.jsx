@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
+import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
 import { ordersApi } from '../../services/orders.api';
 import { Button } from '../../components/common/Button/Button';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
@@ -27,12 +28,19 @@ function formatAssemblyWho(assembly) {
 
 /** Ссылка в каталог ERM по product_id из локальной строки заказа */
 function ProductTitleLink({ productId, children }) {
+  const { openProductCard } = useProductCardModal();
   const raw = productId != null && productId !== '' ? Number(productId) : NaN;
   if (!Number.isInteger(raw) || raw < 1) return <>{children}</>;
   return (
-    <Link to={`/products?open=${raw}`} className="order-detail-product-link" title="Открыть товар в каталоге">
+    <button
+      type="button"
+      onClick={() => openProductCard(raw)}
+      className="order-detail-product-link"
+      title="Открыть карточку товара"
+      style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
+    >
       {children}
-    </Link>
+    </button>
   );
 }
 

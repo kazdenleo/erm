@@ -13,6 +13,7 @@ import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import './Prices.css';
+import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
 
 // Нормализация ответа API: сервер возвращает { ok, data: result }, axios даёт response.data = этот объект
 function getPriceResult(r) {
@@ -344,6 +345,7 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
 export function Prices() {
   const { products, loading, error, loadProducts } = useProducts();
   const { warehouses } = useWarehouses();
+  const { openProductCard } = useProductCardModal();
   const [calculatedPrices, setCalculatedPrices] = useState({});
   const [loadingPrices, setLoadingPrices] = useState({});
   const [calculatorData, setCalculatorData] = useState({});
@@ -1342,10 +1344,30 @@ export function Prices() {
                   return (
                     <tr key={product.id}>
                       <td style={{fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap'}}>
-                        {product.sku || '—'}
+                        {product?.id ? (
+                          <button
+                            type="button"
+                            onClick={() => openProductCard(product.id)}
+                            title="Открыть карточку товара"
+                            style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                          >
+                            {product.sku || '—'}
+                          </button>
+                        ) : (product.sku || '—')}
                       </td>
                       <td style={{overflow: 'hidden', textOverflow: 'ellipsis'}}>
-                        <div>{product.name || 'Без названия'}</div>
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {product?.id ? (
+                            <button
+                              type="button"
+                              onClick={() => openProductCard(product.id)}
+                              title="Открыть карточку товара"
+                              style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer', textAlign: 'left' }}
+                            >
+                              {product.name || 'Без названия'}
+                            </button>
+                          ) : (product.name || 'Без названия')}
+                        </div>
                         {product.volume && (
                           <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px'}}>
                             Объем: {parseFloat(product.volume).toFixed(2)} л
@@ -1624,8 +1646,34 @@ export function Prices() {
                   <tbody>
                     {actionProducts.map((p) => (
                       <tr key={p.id} style={p.alert_max_action_price_failed ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
-                        <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>{p.our_product_name || '—'}</td>
-                        <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{p.our_sku ?? p.offer_id ?? '—'}</td>
+                        <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>
+                          {p.our_product_id != null ? (
+                            <button
+                              type="button"
+                              onClick={() => openProductCard(p.our_product_id)}
+                              title="Открыть карточку товара"
+                              style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer', textAlign: 'left' }}
+                            >
+                              {p.our_product_name || '—'}
+                            </button>
+                          ) : (
+                            p.our_product_name || '—'
+                          )}
+                        </td>
+                        <td style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                          {p.our_product_id != null ? (
+                            <button
+                              type="button"
+                              onClick={() => openProductCard(p.our_product_id)}
+                              title="Открыть карточку товара"
+                              style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                            >
+                              {p.our_sku ?? p.offer_id ?? '—'}
+                            </button>
+                          ) : (
+                            p.our_sku ?? p.offer_id ?? '—'
+                          )}
+                        </td>
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
                         <td style={{ color: 'var(--primary)' }}>{p.min_price_ozon != null ? `${p.min_price_ozon} ₽` : '—'}</td>
                         <td>{p.price != null ? `${p.price} ₽` : '—'}</td>

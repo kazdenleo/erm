@@ -10,14 +10,47 @@ import { questionsApi } from '../../../services/questions.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
 
 /** Подпункты «Склад»: операции склада (?op=) + закупка */
+const opsByKey = Object.fromEntries((WAREHOUSE_OPERATION_OPS || []).map((t) => [t.op, t]));
 const stockWarehouseChildren = [
-  ...WAREHOUSE_OPERATION_OPS.map((t) => ({
-    path: t.to,
-    label: t.label,
+  // Порядок в меню «Склад»:
+  // Остатки → Закупка → Приёмка → Возврат поставщику → Возврат от клиентов → Инвентаризация → Списание
+  {
+    path: opsByKey.table?.to || '/stock-levels/warehouse',
+    label: '📦 Остатки',
     iconClass: 'pe-7s-angle-right',
-    warehouseOp: t.op,
-  })),
+    warehouseOp: 'table',
+  },
   { path: '/stock-levels/purchases', label: '🧾 Закупка', iconClass: 'pe-7s-cart' },
+  {
+    path: opsByKey.receipts_list?.to || '/stock-levels/warehouse?op=receipts_list',
+    label: '📑 Приёмка',
+    iconClass: 'pe-7s-angle-right',
+    warehouseOp: 'receipts_list',
+  },
+  {
+    path: opsByKey.return_supplier?.to || '/stock-levels/warehouse?op=return_supplier',
+    label: '↩️ Возврат поставщику',
+    iconClass: 'pe-7s-angle-right',
+    warehouseOp: 'return_supplier',
+  },
+  {
+    path: opsByKey.return_customer?.to || '/stock-levels/warehouse?op=return_customer',
+    label: '📥 Возврат от клиентов',
+    iconClass: 'pe-7s-angle-right',
+    warehouseOp: 'return_customer',
+  },
+  {
+    path: opsByKey.inventory?.to || '/stock-levels/warehouse?op=inventory',
+    label: '📋 Инвентаризация',
+    iconClass: 'pe-7s-angle-right',
+    warehouseOp: 'inventory',
+  },
+  {
+    path: opsByKey.writeoff?.to || '/stock-levels/warehouse?op=writeoff',
+    label: '📤 Списание',
+    iconClass: 'pe-7s-angle-right',
+    warehouseOp: 'writeoff',
+  },
 ];
 
 const menuItems = [

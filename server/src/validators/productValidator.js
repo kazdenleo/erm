@@ -24,15 +24,34 @@ const optionalMpText = (maxLen) =>
     z.union([z.string(), z.null()]).optional()
   );
 
+/** Строковый идентификатор МП с лимитом длины (документация партнёрских API) */
+function mpLinkSku(maxLen, label) {
+  return z
+    .union([z.string(), z.number()])
+    .optional()
+    .nullable()
+    .transform((v) => {
+      if (v == null || v === '') return null;
+      const s = String(v).trim();
+      return s === '' ? null : s;
+    })
+    .refine((v) => v == null || v.length <= maxLen, { message: `${label}: не более ${maxLen} символов (см. документацию МП)` });
+}
+
 /**
  * Схема валидации для создания товара
  */
 export const createProductSchema = z.object({
   name: z.string().min(1, 'Название товара обязательно').max(500),
   sku: z.string().min(1, 'SKU обязательно').max(100),
-  sku_ozon: z.union([z.string(), z.number()]).optional().nullable().transform(v => (v == null || v === '' ? null : String(v).trim() || null)),
-  sku_wb: z.union([z.string(), z.number()]).optional().nullable().transform(v => (v == null || v === '' ? null : String(v).trim() || null)),
-  sku_ym: z.union([z.string(), z.number()]).optional().nullable().transform(v => (v == null || v === '' ? null : String(v).trim() || null)),
+  /** Ozon Seller API: offer_id, до 50 символов (/v2/product/import и смежные методы) */
+  sku_ozon: mpLinkSku(50, 'Ozon offer_id'),
+  /** Wildberries API: номенклатура nmId — числовой id, строкой до 20 символов */
+  sku_wb: mpLinkSku(20, 'Wildberries nmId'),
+  /** Яндекс Маркет Partner API: offerId / shopSku, 1–255 символов */
+  sku_ym: mpLinkSku(255, 'Яндекс Маркет offerId'),
+  /** Ozon Seller API: product_id (числовой id карточки после создания/импорта) */
+  marketplace_ozon_product_id: optionalNum(),
   categoryId: z.union([z.string(), z.number()]).optional().nullable().transform(v => {
     if (v === '' || v == null) return null;
     return typeof v === 'number' ? v : (String(v).trim() || null);

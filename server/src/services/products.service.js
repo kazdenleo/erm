@@ -713,19 +713,34 @@ class ProductsService {
       }
     }
 
-    // Маппинг артикулов маркетплейсов: фронт отправляет sku_ozon, sku_wb, sku_ym
-    if (!productData.marketplace_skus && (productData.sku_ozon != null || productData.sku_wb != null || productData.sku_ym != null)) {
+    // Маппинг артикулов маркетплейсов: фронт отправляет sku_ozon, sku_wb, sku_ym (и может только marketplace_ozon_product_id без offer_id)
+    if (
+      !productData.marketplace_skus &&
+      (productData.sku_ozon != null ||
+        productData.sku_wb != null ||
+        productData.sku_ym != null ||
+        productData.marketplace_ozon_product_id != null)
+    ) {
       productData.marketplace_skus = {};
       if (productData.sku_ozon && String(productData.sku_ozon).trim()) productData.marketplace_skus.ozon = String(productData.sku_ozon).trim();
       if (productData.sku_wb && String(productData.sku_wb).trim()) productData.marketplace_skus.wb = String(productData.sku_wb).trim();
       if (productData.sku_ym && String(productData.sku_ym).trim()) productData.marketplace_skus.ym = String(productData.sku_ym).trim();
     }
     if (productData.marketplace_skus?.ozon) {
-      try {
-        const ozonProductId = await pricesService.getOzonProductIdByOfferId(productData.marketplace_skus.ozon);
-        if (ozonProductId != null) productData.marketplace_ozon_product_id = ozonProductId;
-      } catch (e) {
-        console.warn('[Products Service] Could not resolve Ozon product_id for offer:', productData.marketplace_skus.ozon, e?.message);
+      const explicit = productData.marketplace_ozon_product_id;
+      if (
+        explicit != null &&
+        explicit !== '' &&
+        Number.isFinite(Number(explicit))
+      ) {
+        productData.marketplace_ozon_product_id = Number(explicit);
+      } else {
+        try {
+          const ozonProductId = await pricesService.getOzonProductIdByOfferId(productData.marketplace_skus.ozon);
+          if (ozonProductId != null) productData.marketplace_ozon_product_id = ozonProductId;
+        } catch (e) {
+          console.warn('[Products Service] Could not resolve Ozon product_id for offer:', productData.marketplace_skus.ozon, e?.message);
+        }
       }
     }
     if (productData.organizationId !== undefined) {
@@ -877,11 +892,20 @@ class ProductsService {
         ym: toStr(updates.sku_ym)
       };
       if (updates.marketplace_skus.ozon) {
-        try {
-          const ozonProductId = await pricesService.getOzonProductIdByOfferId(updates.marketplace_skus.ozon);
-          if (ozonProductId != null) updates.marketplace_ozon_product_id = ozonProductId;
-        } catch (e) {
-          console.warn('[Products Service] Could not resolve Ozon product_id for offer:', updates.marketplace_skus.ozon, e?.message);
+        const explicit = updates.marketplace_ozon_product_id;
+        if (
+          explicit != null &&
+          explicit !== '' &&
+          Number.isFinite(Number(explicit))
+        ) {
+          updates.marketplace_ozon_product_id = Number(explicit);
+        } else {
+          try {
+            const ozonProductId = await pricesService.getOzonProductIdByOfferId(updates.marketplace_skus.ozon);
+            if (ozonProductId != null) updates.marketplace_ozon_product_id = ozonProductId;
+          } catch (e) {
+            console.warn('[Products Service] Could not resolve Ozon product_id for offer:', updates.marketplace_skus.ozon, e?.message);
+          }
         }
       }
     }

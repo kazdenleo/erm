@@ -17,6 +17,65 @@ import {
 } from '../utils/marketplaceQuestionThread.js';
 import logger from '../utils/logger.js';
 
+async function enrichYandexQuestionWithAnswers(profileId, organizationId, rawQuestion, questionId) {
+  let config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId });
+  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
+    config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId: null });
+  }
+  const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
+  if (!apiKey) return rawQuestion;
+  const { businessId } = await getYandexBusinessAndCampaigns(config);
+  if (businessId == null || Number.isNaN(Number(businessId)) || Number(businessId) < 1) return rawQuestion;
+
+  const agent = getYandexHttpsAgent();
+
+  const all = [];
+  let pageToken = '';
+  for (let i = 0; i < 80; i++) {
+    const qs = new URLSearchParams();
+    qs.set('limit', '50');
+    if (pageToken) qs.set('pageToken', pageToken);
+    const url = `https://api.partner.market.yandex.ru/v1/businesses/${businessId}/goods-questions/answers?${qs.toString()}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Api-Key': apiKey,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ questionId: Number(questionId) }),
+      ...(agent && { agent }),
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      const err = new Error(`Яндекс.Маркет API ${resp.status}: ${text.substring(0, 400)}`);
+      err.statusCode = resp.status === 401 ? 403 : resp.status;
+      throw err;
+    }
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      break;
+    }
+    const result = json.result ?? json;
+    const answers = result.answers ?? [];
+    if (Array.isArray(answers) && answers.length > 0) {
+      all.push(...answers);
+    } else {
+      break;
+    }
+    pageToken = result.paging?.nextPageToken ?? '';
+    if (!pageToken) break;
+  }
+
+  // Совмещаем: в raw_payload.question — вопрос; raw_payload.answers — ответы (с комментариями).
+  return {
+    ...(rawQuestion && typeof rawQuestion === 'object' ? rawQuestion : {}),
+    answers: all,
+  };
+}
+
 const OZON_QUESTION_BODY = {
   filter: {},
   limit: 100,
@@ -307,14 +366,23 @@ function isOzonPremiumPlusQuestionsError(err) {
   );
 }
 
-async function syncOzon(profileId) {
+async function syncOzon(profileId, organizationId = null) {
   let imported = 0;
   let offset = 0;
   const limit = 100;
+  let ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
+  // Если для выбранной организации нет ключей — пробуем fallback по profileId без organizationId.
+  if ((!ozonCfg?.client_id || !ozonCfg?.api_key) && organizationId != null) {
+    ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId: null });
+  }
+  const ozonOverride =
+    ozonCfg?.client_id && ozonCfg?.api_key
+      ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
+      : null;
   try {
     for (let page = 0; page < 40; page++) {
       const body = { ...OZON_QUESTION_BODY, limit, offset };
-      const data = await integrationsService._ozonApiPost('/v1/question/list', body, { profileId });
+      const data = await integrationsService._ozonApiPost('/v1/question/list', body, { profileId, ozonOverride });
       const items = extractOzonQuestions(data);
       if (!items.length) break;
       for (const q of items) {
@@ -342,12 +410,17 @@ async function syncOzon(profileId) {
  * WB GET /api/v1/questions: параметр isAnswered обязателен (true / false).
  * Делаем два прохода — неотвеченные и отвеченные.
  */
-async function syncWildberries(profileId) {
-  const config = await integrationsService.getMarketplaceConfig('wildberries', { profileId });
+async function syncWildberries(profileId, organizationId = null) {
+  let config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
+  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
+    config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId: null });
+  }
   const raw = config?.api_key ?? config?.apiKey;
   const apiKey = raw ? integrationsService._normalizeWbToken(raw) : null;
   if (!apiKey) {
-    throw new Error('Wildberries: не настроен API-ключ (нужна категория «Вопросы и отзывы» в токене).');
+    const err = new Error('Wildberries: не настроен API-ключ (нужна категория «Вопросы и отзывы» в токене).');
+    err.statusCode = 400;
+    throw err;
   }
   let imported = 0;
   for (const isAnswered of [false, true]) {
@@ -369,7 +442,10 @@ async function syncWildberries(profileId) {
       });
       const text = await response.text();
       if (!response.ok) {
-        throw new Error(`Wildberries API ${response.status}: ${text.substring(0, 400)}`);
+        const err = new Error(`Wildberries API ${response.status}: ${text.substring(0, 400)}`);
+        // Не отдаём 401 наружу: это 401 WB, а не JWT ERM.
+        err.statusCode = response.status === 401 ? 403 : response.status;
+        throw err;
       }
       let json;
       try {
@@ -396,62 +472,99 @@ async function syncWildberries(profileId) {
   return imported;
 }
 
-async function syncYandex(profileId) {
-  const config = await integrationsService.getMarketplaceConfig('yandex', { profileId });
+async function syncYandex(profileId, organizationId = null) {
+  let config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId });
+  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
+    config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId: null });
+  }
   const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
   if (!apiKey) {
-    throw new Error('Яндекс.Маркет: не настроен Api-Key (нужен доступ «Общение с покупателями» / communication).');
+    const err = new Error(
+      'Яндекс.Маркет: не настроен Api-Key (нужен доступ «Общение с покупателями» / communication).'
+    );
+    err.statusCode = 400;
+    logger.warn('[MarketplaceQuestions] Yandex api_key missing for sync', {
+      profileId,
+      organizationId,
+      usedOrganization: organizationId != null,
+    });
+    throw err;
   }
   const { businessId } = await getYandexBusinessAndCampaigns(config);
   if (businessId == null || Number.isNaN(Number(businessId)) || Number(businessId) < 1) {
-    throw new Error(
+    const err = new Error(
       'Яндекс.Маркет: не удалось определить businessId. Укажите Business ID в интеграции или проверьте api_key.'
     );
+    err.statusCode = 400;
+    throw err;
   }
   const agent = getYandexHttpsAgent();
   let imported = 0;
-  let pageToken = '';
-  for (let i = 0; i < 80; i++) {
-    const qs = new URLSearchParams();
-    qs.set('limit', '50');
-    if (pageToken) qs.set('pageToken', pageToken);
-    const url = `https://api.partner.market.yandex.ru/v1/businesses/${businessId}/goods-questions?${qs.toString()}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Api-Key': apiKey,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        needAnswer: false,
-        sort: 'CREATED_AT_DESC',
-      }),
-      ...(agent && { agent }),
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`Яндекс.Маркет API ${response.status}: ${text.substring(0, 400)}`);
-    }
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error('Яндекс.Маркет: неверный JSON в ответе');
-    }
-    const result = json.result ?? json;
-    const questions = result.questions ?? [];
-    if (!Array.isArray(questions) || questions.length === 0) break;
-    for (const q of questions) {
-      const row = mapYandexQuestion(q, profileId);
-      if (row) {
-        await marketplaceQuestionsRepo.upsertRow(row);
-        imported += 1;
+
+  // Важно: API Яндекса ограничивает dateFrom/dateTo интервалом максимум 1 месяц.
+  // По умолчанию (без dateFrom/dateTo) Яндекс возвращает только ~последний месяц.
+  // Но "ветки" покупателя могут содержать несколько вопросов по одному offerId в разные даты.
+  // Поэтому выгружаем окнами по 1 месяцу, например за последние 6 месяцев.
+  const MONTH_WINDOWS = 6;
+  const now = new Date();
+  const startOfDay = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const toDateOnly = (d) => d.toISOString().slice(0, 10);
+
+  for (let w = 0; w < MONTH_WINDOWS; w++) {
+    const end = new Date(now);
+    end.setUTCMonth(end.getUTCMonth() - w);
+    const start = new Date(end);
+    start.setUTCMonth(start.getUTCMonth() - 1);
+
+    const dateTo = toDateOnly(startOfDay(end));
+    const dateFrom = toDateOnly(startOfDay(start));
+
+    let pageToken = '';
+    for (let i = 0; i < 80; i++) {
+      const qs = new URLSearchParams();
+      qs.set('limit', '50');
+      if (pageToken) qs.set('pageToken', pageToken);
+      const url = `https://api.partner.market.yandex.ru/v1/businesses/${businessId}/goods-questions?${qs.toString()}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Api-Key': apiKey,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          needAnswer: false,
+          sort: 'CREATED_AT_DESC',
+          dateFrom,
+          dateTo,
+        }),
+        ...(agent && { agent }),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(`Яндекс.Маркет API ${response.status}: ${text.substring(0, 400)}`);
       }
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error('Яндекс.Маркет: неверный JSON в ответе');
+      }
+      const result = json.result ?? json;
+      const questions = result.questions ?? [];
+      if (!Array.isArray(questions) || questions.length === 0) break;
+      for (const q of questions) {
+        const row = mapYandexQuestion(q, profileId);
+        if (row) {
+          await marketplaceQuestionsRepo.upsertRow(row);
+          imported += 1;
+        }
+      }
+      pageToken = result.paging?.nextPageToken ?? '';
+      if (!pageToken) break;
     }
-    pageToken = result.paging?.nextPageToken ?? '';
-    if (!pageToken) break;
   }
+
   await marketplaceQuestionsRepo.dedupeYandexDuplicateQuestionsByProfile(profileId);
   await marketplaceQuestionsRepo.normalizeYandexExternalIdsForProfile(profileId);
   return imported;
@@ -486,11 +599,11 @@ export async function syncMarketplaceQuestions(profileId, opts = {}) {
     try {
       let imported = 0;
       if (mp === 'ozon') {
-        imported = await syncOzon(profileId);
+        imported = await syncOzon(profileId, opts.organizationId ?? null);
       } else if (mp === 'wildberries') {
-        imported = await syncWildberries(profileId);
+        imported = await syncWildberries(profileId, opts.organizationId ?? null);
       } else if (mp === 'yandex') {
-        imported = await syncYandex(profileId);
+        imported = await syncYandex(profileId, opts.organizationId ?? null);
       }
       results.push({ marketplace: mp, ok: true, imported, error: null });
       logger.info(`[MarketplaceQuestions] ${mp} profile=${profileId} imported=${imported}`);
@@ -530,11 +643,43 @@ export async function listMarketplaceQuestions(profileId, query = {}) {
 }
 
 /** Одна карточка вопроса с веткой сообщений (для экрана «внутри вопроса»). */
-export async function getMarketplaceQuestionById(profileId, questionRowId) {
+export async function getMarketplaceQuestionById(profileId, questionRowId, opts = {}) {
   if (!repositoryFactory.isUsingPostgreSQL()) {
     return null;
   }
-  return await marketplaceQuestionsRepo.findOneApiByIdAndProfile(questionRowId, profileId);
+  const row = await marketplaceQuestionsRepo.findRowByIdAndProfile(questionRowId, profileId);
+  if (!row) return null;
+  const base = await marketplaceQuestionsRepo.findOneApiByIdAndProfile(questionRowId, profileId);
+  if (!base) return null;
+
+  if (String(row.marketplace || '').toLowerCase() !== 'yandex') return base;
+
+  // Для Яндекса ветка включает ответы и комментарии к ответам, которых нет в списке вопросов.
+  // Подтягиваем их "лениво" при открытии ветки, чтобы не утяжелять общую синхронизацию.
+  try {
+    const raw = row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {};
+    const qi = raw?.questionIdentifiers ?? raw?.question_identifiers ?? {};
+    const qid = qi?.id ?? raw?.id ?? raw?.questionId ?? raw?.question_id ?? row.external_id;
+    const questionId = Number(String(qid).trim());
+    if (!Number.isFinite(questionId) || questionId < 1) return base;
+
+    const enrichedRaw = await enrichYandexQuestionWithAnswers(profileId, opts.organizationId ?? null, raw, questionId);
+    const threadMessages = buildThreadMessagesFromRow({
+      marketplace: 'yandex',
+      rawPayload: enrichedRaw,
+      body: base.body,
+      answerText: base.answerText,
+      sourceCreatedAt: base.sourceCreatedAt,
+    });
+    return {
+      ...base,
+      rawPayload: enrichedRaw,
+      threadMessages,
+    };
+  } catch (e) {
+    logger.warn('[MarketplaceQuestions] Yandex enrich thread failed (non-fatal):', e?.message || e);
+    return base;
+  }
 }
 
 /**
@@ -605,10 +750,17 @@ function mergeWbRawAfterAnswer(row, trimmed) {
   return mergedRaw;
 }
 
-async function submitAnswerOzon(profileId, row, text) {
+async function submitAnswerOzon(profileId, row, text, organizationId = null) {
+  const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
+  const ozonOverride =
+    ozonCfg?.client_id && ozonCfg?.api_key
+      ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
+      : null;
   const questionId = parseOzonQuestionId(row);
   if (questionId == null) {
-    throw new Error('Ozon: не удалось определить ID вопроса (question_id).');
+    const err = new Error('Ozon: не удалось определить ID вопроса (question_id).');
+    err.statusCode = 400;
+    throw err;
   }
   const raw = row.raw_payload || {};
   const answersArr = Array.isArray(raw.answers) ? raw.answers : [];
@@ -625,7 +777,7 @@ async function submitAnswerOzon(profileId, row, text) {
       await integrationsService._ozonApiPost(
         '/v1/question/answer/update',
         { question_id: questionId, answer_id: existingAnswerId, text },
-        { profileId }
+        { profileId, ozonOverride }
       );
       return;
     } catch (e) {
@@ -643,7 +795,7 @@ async function submitAnswerOzon(profileId, row, text) {
     await integrationsService._ozonApiPost(
       '/v1/question/answer/create',
       { question_id: questionId, text },
-      { profileId }
+      { profileId, ozonOverride }
     );
   } catch (e) {
     if (isOzonPremiumPlusQuestionsError(e)) {
@@ -655,20 +807,29 @@ async function submitAnswerOzon(profileId, row, text) {
   }
 }
 
-async function submitAnswerWildberries(profileId, row, text) {
-  const config = await integrationsService.getMarketplaceConfig('wildberries', { profileId });
+async function submitAnswerWildberries(profileId, row, text, organizationId = null) {
+  let config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
+  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
+    config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId: null });
+  }
   const raw = config?.api_key ?? config?.apiKey;
   const apiKey = raw ? integrationsService._normalizeWbToken(raw) : null;
   if (!apiKey) {
-    throw new Error('Wildberries: не настроен API-ключ (нужна категория «Вопросы и отзывы» в токене).');
+    const err = new Error('Wildberries: не настроен API-ключ (нужна категория «Вопросы и отзывы» в токене).');
+    err.statusCode = 400;
+    throw err;
   }
   const ext = String(row.external_id ?? '').trim();
   if (!ext) {
-    throw new Error('Wildberries: нет external_id вопроса.');
+    const err = new Error('Wildberries: нет external_id вопроса.');
+    err.statusCode = 400;
+    throw err;
   }
   const trimmed = String(text ?? '').trim();
   if (!trimmed) {
-    throw new Error('Wildberries: пустой текст ответа.');
+    const err = new Error('Wildberries: пустой текст ответа.');
+    err.statusCode = 400;
+    throw err;
   }
 
   const url = 'https://feedbacks-api.wildberries.ru/api/v1/questions';
@@ -738,8 +899,11 @@ async function submitAnswerWildberries(profileId, row, text) {
       bodyPreview: t ? String(t).slice(0, 300) : '',
     });
     if (!resp.ok) {
+      // ВАЖНО: 401 от WB — это не 401 "сессия ERM протухла".
+      // Если отдать наружу 401, фронт удалит JWT и "выкинет" пользователя на логин.
+      const mappedStatus = resp.status === 401 ? 403 : resp.status;
       const err = new Error(`Wildberries API ${resp.status} (${label}): ${t.substring(0, 400)}`);
-      err.statusCode = resp.status;
+      err.statusCode = mappedStatus;
       err.wbLabel = label;
       err.wbState = payload?.state ?? null;
       err.wbBody = b;
@@ -951,21 +1115,41 @@ function parseYandexQuestionId(row) {
   return Number.isFinite(n) && n >= 1 ? n : null;
 }
 
-async function submitAnswerYandex(profileId, row, text) {
-  const config = await integrationsService.getMarketplaceConfig('yandex', { profileId });
+async function submitAnswerYandex(profileId, row, text, organizationId = null) {
+  let config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId });
+  let didFallback = false;
+  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
+    config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId: null });
+    didFallback = true;
+  }
   const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
   if (!apiKey) {
-    throw new Error('Яндекс.Маркет: не настроен Api-Key (нужен доступ «Общение с покупателями» / communication).');
+    const err = new Error(
+      'Яндекс.Маркет: не настроен Api-Key (нужен доступ «Общение с покупателями» / communication).'
+    );
+    err.statusCode = 400;
+    logger.warn('[MarketplaceQuestions] Yandex api_key missing for answer', {
+      profileId,
+      organizationId,
+      didFallback,
+    });
+    throw err;
   }
   const { businessId } = await getYandexBusinessAndCampaigns(config);
   if (businessId == null || Number.isNaN(Number(businessId)) || Number(businessId) < 1) {
-    throw new Error(
+    const err = new Error(
       'Яндекс.Маркет: не удалось определить businessId. Укажите Business ID в интеграции или проверьте api_key.'
     );
+    err.statusCode = 400;
+    throw err;
   }
   const questionId = parseYandexQuestionId(row);
   if (questionId == null) {
-    throw new Error('Яндекс.Маркет: не удалось определить числовой ID вопроса. Выполните синхронизацию заново.');
+    const err = new Error(
+      'Яндекс.Маркет: не удалось определить числовой ID вопроса. Выполните синхронизацию заново.'
+    );
+    err.statusCode = 400;
+    throw err;
   }
   const agent = getYandexHttpsAgent();
   const thread = buildThreadMessagesFromRow({
@@ -1029,7 +1213,7 @@ async function submitAnswerYandex(profileId, row, text) {
  * @param {string|number} questionRowId — id строки в marketplace_questions
  * @param {string} text
  */
-export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, text) {
+export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, text, opts = {}) {
   if (!repositoryFactory.isUsingPostgreSQL()) {
     const err = new Error('Ответы на вопросы доступны только при PostgreSQL');
     err.statusCode = 501;
@@ -1054,8 +1238,9 @@ export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, 
     externalId: row.external_id,
   });
   const mp = row.marketplace;
+  const organizationId = opts.organizationId ?? null;
   if (mp === 'ozon') {
-    await submitAnswerOzon(profileId, row, trimmed);
+    await submitAnswerOzon(profileId, row, trimmed, organizationId);
     const mergedRaw = mergeOzonRawAfterAnswer(row, trimmed);
     const thr = buildThreadMessagesFromRow({
       marketplace: 'ozon',
@@ -1073,7 +1258,7 @@ export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, 
     );
   }
   if (mp === 'wildberries') {
-    const out = await submitAnswerWildberries(profileId, row, trimmed);
+    const out = await submitAnswerWildberries(profileId, row, trimmed, organizationId);
     if (!out?.verified) {
       return await marketplaceQuestionsRepo.setPendingAnswer(questionRowId, profileId, trimmed);
     }
@@ -1094,7 +1279,7 @@ export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, 
     );
   }
   if (mp === 'yandex') {
-    const json = await submitAnswerYandex(profileId, row, trimmed);
+    const json = await submitAnswerYandex(profileId, row, trimmed, organizationId);
     const apiResult = json?.result;
     const mergedRaw = {
       ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}),

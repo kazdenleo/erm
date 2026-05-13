@@ -52,11 +52,15 @@ class OrdersController {
       const result = hasPaging
         ? await ordersService.getPage(options)
         : { items: await ordersService.getAll(options), total: null };
+      const itemsWithLabel = (result.items || []).map((o) => ({
+        ...o,
+        hasLabel: ordersLabelsService.hasLabelCached(o),
+      }));
       // Не кэшируем: список заказов часто меняется после синхронизации.
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({
         ok: true,
-        data: result.items,
+        data: itemsWithLabel,
         ...(hasPaging ? { meta: { total: result.total, limit, offset: Number.isFinite(offset) && offset > 0 ? offset : 0 } } : {}),
       });
     } catch (error) {

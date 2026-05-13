@@ -5,6 +5,53 @@
 
 import { query, transaction } from '../config/database.js';
 
+/**
+ * Сохраняет одну связку product_skus (Ozon допускает только marketplace_product_id; WB/ЯМ — непустой sku).
+ */
+async function upsertProductSkuRow(client, { productId, marketplace, skuRaw, marketplaceProductId }) {
+  const mp = String(marketplace || '').toLowerCase();
+  const sku =
+    skuRaw != null && String(skuRaw).trim() !== '' ? String(skuRaw).trim() : null;
+  let mpid =
+    marketplaceProductId != null && marketplaceProductId !== ''
+      ? Number(marketplaceProductId)
+      : null;
+  if (mpid != null && !Number.isFinite(mpid)) mpid = null;
+  const mpidArg = mp === 'ozon' ? mpid : null;
+
+  if (mp === 'ozon') {
+    if (!sku && mpidArg == null) return;
+  } else if (mp === 'wb' || mp === 'ym') {
+    if (!sku) return;
+  } else {
+    return;
+  }
+
+  try {
+    await client.query(
+      `INSERT INTO product_skus (product_id, marketplace, sku, marketplace_product_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (product_id, marketplace)
+       DO UPDATE SET sku = EXCLUDED.sku, marketplace_product_id = EXCLUDED.marketplace_product_id`,
+      [productId, mp, sku, mpidArg]
+    );
+  } catch (skusErr) {
+    if (
+      skusErr.message &&
+      (skusErr.message.includes('marketplace_product_id') || skusErr.message.includes('does not exist'))
+    ) {
+      await client.query(
+        `INSERT INTO product_skus (product_id, marketplace, sku)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (product_id, marketplace) DO UPDATE SET sku = EXCLUDED.sku`,
+        [productId, mp, sku]
+      );
+    } else {
+      throw skusErr;
+    }
+  }
+}
+
 function buildFindAllFilters(options = {}) {
   const { brandId, categoryId, organizationId, search, profileId, productType } = options;
   let whereSql = ' WHERE 1=1';
@@ -588,6 +635,56 @@ class ProductsRepositoryPG {
           console.warn('[Products Repository] product_attribute_values for export:', e.message);
         }
       }
+
+      // Комплектующие для комплектов в списке (один запрос на страницу)
+      const kitProductIds = products
+        .filter((p) => p.product_type === 'kit')
+        .map((p) => {
+          const raw = p.id;
+          const n = typeof raw === 'string' ? parseInt(raw, 10) : Number(raw);
+          return Number.isFinite(n) ? n : null;
+        })
+        .filter((n) => n != null);
+      if (kitProductIds.length > 0) {
+        try {
+          const kitRes = await query(
+            `SELECT kc.kit_product_id, kc.component_product_id, kc.quantity,
+                    p.sku AS component_sku, p.name AS component_name
+             FROM kit_components kc
+             LEFT JOIN products p ON p.id = kc.component_product_id
+             WHERE kc.kit_product_id = ANY($1::bigint[])`,
+            [kitProductIds]
+          );
+          const byKit = new Map();
+          for (const r of kitRes.rows) {
+            const key = String(r.kit_product_id);
+            if (!byKit.has(key)) byKit.set(key, []);
+            byKit.get(key).push({
+              productId: r.component_product_id,
+              quantity: r.quantity,
+              component_sku: r.component_sku,
+              product_name: r.component_name,
+            });
+          }
+          for (const p of products) {
+            if (p.product_type === 'kit') {
+              p.kit_components = byKit.get(String(p.id)) || [];
+            }
+          }
+        } catch (err) {
+          if (err.message && err.message.includes('kit_components')) {
+            for (const p of products) {
+              if (p.product_type === 'kit') p.kit_components = [];
+            }
+          } else {
+            throw err;
+          }
+        }
+      } else {
+        for (const p of products) {
+          if (p.product_type === 'kit') p.kit_components = [];
+        }
+      }
     }
 
     await this._reconcileReservedQuantityFromMovements(products);
@@ -1004,30 +1101,29 @@ class ProductsRepositoryPG {
         }
       }
       
-      // Добавляем SKU маркетплейсов (UNIQUE product_id, marketplace); для Ozon — также marketplace_product_id
-      if (productData.marketplace_skus) {
-        for (const [marketplace, sku] of Object.entries(productData.marketplace_skus)) {
-          if (sku && String(sku).trim()) {
-            const ozonProductId = marketplace === 'ozon' && productData.marketplace_ozon_product_id != null ? productData.marketplace_ozon_product_id : null;
-            try {
-              await client.query(
-                `INSERT INTO product_skus (product_id, marketplace, sku, marketplace_product_id) VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (product_id, marketplace) DO UPDATE SET sku = EXCLUDED.sku, marketplace_product_id = EXCLUDED.marketplace_product_id`,
-                [product.id, marketplace, String(sku).trim(), ozonProductId]
-              );
-            } catch (skusErr) {
-              if (skusErr.message && (skusErr.message.includes('marketplace_product_id') || skusErr.message.includes('does not exist'))) {
-                await client.query(
-                  `INSERT INTO product_skus (product_id, marketplace, sku) VALUES ($1, $2, $3)
-                   ON CONFLICT (product_id, marketplace) DO UPDATE SET sku = EXCLUDED.sku`,
-                  [product.id, marketplace, String(sku).trim()]
-                );
-              } else {
-                throw skusErr;
-              }
-            }
-          }
-        }
+      // SKU маркетплейсов: Ozon — offer_id и/или product_id; WB/ЯМ — непустой sku
+      if (productData.marketplace_skus && typeof productData.marketplace_skus === 'object') {
+        const mus = productData.marketplace_skus;
+        const ozonPid =
+          productData.marketplace_ozon_product_id != null ? productData.marketplace_ozon_product_id : null;
+        await upsertProductSkuRow(client, {
+          productId: product.id,
+          marketplace: 'ozon',
+          skuRaw: mus.ozon,
+          marketplaceProductId: ozonPid,
+        });
+        await upsertProductSkuRow(client, {
+          productId: product.id,
+          marketplace: 'wb',
+          skuRaw: mus.wb,
+          marketplaceProductId: null,
+        });
+        await upsertProductSkuRow(client, {
+          productId: product.id,
+          marketplace: 'ym',
+          skuRaw: mus.ym,
+          marketplaceProductId: null,
+        });
       }
       
       // Добавляем связи с маркетплейсами (UNIQUE product_id, marketplace)
@@ -1234,8 +1330,9 @@ class ProductsRepositoryPG {
         const mus = updates.marketplace_skus;
         let ozonProductId = null;
         if (Object.prototype.hasOwnProperty.call(updates, 'marketplace_ozon_product_id')) {
+          const raw = updates.marketplace_ozon_product_id;
           ozonProductId =
-            updates.marketplace_ozon_product_id != null ? updates.marketplace_ozon_product_id : null;
+            raw != null && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
         } else {
           const cur = await client.query(
             `SELECT marketplace_product_id FROM product_skus WHERE product_id = $1 AND marketplace = 'ozon'`,
@@ -1247,28 +1344,24 @@ class ProductsRepositoryPG {
           `DELETE FROM product_skus WHERE product_id = $1 AND marketplace IN ('ozon', 'wb', 'ym')`,
           [numId]
         );
-        for (const [marketplace, sku] of [['ozon', mus.ozon], ['wb', mus.wb], ['ym', mus.ym]]) {
-          if (sku != null && String(sku).trim() !== '') {
-            const mpid = marketplace === 'ozon' ? ozonProductId : null;
-            try {
-              await client.query(
-                `INSERT INTO product_skus (product_id, marketplace, sku, marketplace_product_id) VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (product_id, marketplace) DO UPDATE SET sku = $3, marketplace_product_id = $4`,
-                [numId, marketplace, String(sku).trim(), mpid]
-              );
-            } catch (skusErr) {
-              if (skusErr.message && (skusErr.message.includes('marketplace_product_id') || skusErr.message.includes('does not exist'))) {
-                await client.query(
-                  `INSERT INTO product_skus (product_id, marketplace, sku) VALUES ($1, $2, $3)
-                   ON CONFLICT (product_id, marketplace) DO UPDATE SET sku = $3`,
-                  [numId, marketplace, String(sku).trim()]
-                );
-              } else {
-                throw skusErr;
-              }
-            }
-          }
-        }
+        await upsertProductSkuRow(client, {
+          productId: numId,
+          marketplace: 'ozon',
+          skuRaw: mus.ozon,
+          marketplaceProductId: ozonProductId,
+        });
+        await upsertProductSkuRow(client, {
+          productId: numId,
+          marketplace: 'wb',
+          skuRaw: mus.wb,
+          marketplaceProductId: null,
+        });
+        await upsertProductSkuRow(client, {
+          productId: numId,
+          marketplace: 'ym',
+          skuRaw: mus.ym,
+          marketplaceProductId: null,
+        });
       }
 
       if (updates.mp_linked) {

@@ -15,6 +15,22 @@ import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 
 const SHIPMENT_STICKERS_DIR = join(DATA_DIR, 'shipment-stickers');
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryAfterMsFromResponse(response, fallbackMs) {
+  try {
+    const ra = response?.headers?.get?.('retry-after');
+    if (!ra) return fallbackMs;
+    const sec = parseInt(String(ra).trim(), 10);
+    if (Number.isFinite(sec) && sec > 0) return sec * 1000;
+  } catch {
+    /* ignore */
+  }
+  return fallbackMs;
+}
+
 const MARKETPLACES = [
   { code: 'ozon', name: 'Ozon', icon: '🟠', localOnly: true },
   { code: 'wildberries', name: 'Wildberries', icon: '🟣', localOnly: false },
@@ -143,12 +159,24 @@ function normalizeShipment(s) {
 async function fetchWBSupplies(config) {
   const { api_key } = config;
   const agent = getFetchProxyAgent();
-  const response = await fetch('https://marketplace-api.wildberries.ru/api/v3/supplies?next=0', {
-    method: 'GET',
-    headers: { Authorization: wbAuthHeaderFromConfig({ api_key }), Accept: 'application/json' },
-    ...(agent && { agent })
-  });
-  if (!response.ok) return [];
+  const url = 'https://marketplace-api.wildberries.ru/api/v3/supplies?next=0';
+  let response;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: wbAuthHeaderFromConfig({ api_key }), Accept: 'application/json' },
+      ...(agent && { agent })
+    });
+    if (response.ok) break;
+    if (response.status === 429 && attempt < 3) {
+      const waitMs = retryAfterMsFromResponse(response, 4000 * (attempt + 1));
+      logger.warn(`[Shipments WB] rate limited 429 (supplies list), retry in ${Math.round(waitMs / 1000)}s...`);
+      await sleep(waitMs);
+      continue;
+    }
+    break;
+  }
+  if (!response?.ok) return [];
   const data = await response.json().catch(() => ({}));
   const supplies = Array.isArray(data?.supplies) ? data.supplies : [];
   return supplies.map(s => ({
@@ -347,18 +375,37 @@ async function wbGetSupplyBarcode(config, supplyId, type = 'png') {
 async function createWBSupply(config) {
   const { api_key } = config;
   const agent = getFetchProxyAgent();
-  const response = await fetch('https://marketplace-api.wildberries.ru/api/v3/supplies', {
-    method: 'POST',
-    headers: {
-      Authorization: wbAuthHeaderFromConfig({ api_key }),
-      'Content-Type': 'application/json',
-      Accept: 'application/json'
-    },
-    body: JSON.stringify({}),
-    ...(agent && { agent })
-  });
+  const url = 'https://marketplace-api.wildberries.ru/api/v3/supplies';
+  let response;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: wbAuthHeaderFromConfig({ api_key }),
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({}),
+      ...(agent && { agent })
+    });
+    if (response.ok) break;
+    if (response.status === 429 && attempt < 3) {
+      const waitMs = retryAfterMsFromResponse(response, 5000 * (attempt + 1));
+      logger.warn(`[Shipments WB] rate limited 429 (create supply), retry in ${Math.round(waitMs / 1000)}s...`);
+      await sleep(waitMs);
+      continue;
+    }
+    break;
+  }
   if (!response.ok) {
     const text = await response.text();
+    if (response.status === 429) {
+      const waitMs = retryAfterMsFromResponse(response, 30000);
+      const err = new Error(`WB временно ограничил запросы (429). Попробуйте ещё раз через ${Math.max(1, Math.round(waitMs / 1000))} сек.`);
+      err.statusCode = 429;
+      err.retryAfterMs = waitMs;
+      throw err;
+    }
     const err = new Error(`WB API ${response.status}: ${text.slice(0, 200)}`);
     err.statusCode = response.status >= 400 ? response.status : 502;
     throw err;
@@ -653,17 +700,32 @@ async function addOrdersToWBSupplyBatch(config, supplyId, orderIds) {
     let lastError;
     for (const url of urlsToTry) {
       try {
-        const response = await fetch(url, {
-          method: 'PATCH',
-          headers: {
-            Authorization: auth,
-            'Content-Type': 'application/json',
-            Accept: 'application/json'
-          },
-          body,
-          ...(agent && { agent })
-        });
-        const text = await response.text();
+        let response;
+        let text = '';
+        for (let attempt = 0; attempt < 4; attempt++) {
+          response = await fetch(url, {
+            method: 'PATCH',
+            headers: {
+              Authorization: auth,
+              'Content-Type': 'application/json',
+              Accept: 'application/json'
+            },
+            body,
+            ...(agent && { agent })
+          });
+          if (response.ok) break;
+          if (response.status === 429 && attempt < 3) {
+            const waitMs = retryAfterMsFromResponse(response, 5000 * (attempt + 1));
+            logger.warn(
+              `[Shipments WB] rate limited 429 (add orders), retry in ${Math.round(waitMs / 1000)}s... supply=${supplyId}`
+            );
+            await sleep(waitMs);
+            continue;
+          }
+          break;
+        }
+
+        text = await response.text();
         if (response.ok) {
           if (text) {
             try {
@@ -692,6 +754,12 @@ async function addOrdersToWBSupplyBatch(config, supplyId, orderIds) {
       logger.error(
         `[Shipments WB] PATCH supplies/orders failed: ${lastError.status} ${lastError.text}`
       );
+
+      if (lastError.status === 429) {
+        const err = new Error('WB временно ограничил запросы (429). Подождите 30–60 секунд и нажмите «Собрать» ещё раз.');
+        err.statusCode = 429;
+        throw err;
+      }
 
       // 409: заказы не удалось назначить поставке (часто — уже в другой поставке или статус не подходит).
       if (lastError.status === 409) {
