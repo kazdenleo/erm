@@ -4,12 +4,11 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useProducts } from '../../hooks/useProducts';
 import { useCategories } from '../../hooks/useCategories';
 import { useBrands } from '../../hooks/useBrands';
 import { useOrganizations } from '../../hooks/useOrganizations';
-import { useWarehouses } from '../../hooks/useWarehouses';
 import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
@@ -35,14 +34,18 @@ function buildKitCompositionTitle(components) {
     .join('\n');
 }
 
+const PRODUCTS_LIST_PAGE_SIZES = [50, 100, 200];
+
+/** Значение фильтра «товары без ERP-категории»; должно совпадать с `buildFindAllFilters` на сервере. */
+const FILTER_CATEGORY_NONE = '__no_category__';
+
 export function Products() {
-  const PAGE_SIZE = 50;
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { products, meta, loading, listRefreshing, error, createProduct, updateProduct, deleteProduct, loadProducts } = useProducts({ autoLoad: false });
   const { categories, loadCategories } = useCategories();
   const { brands } = useBrands();
   const { organizations } = useOrganizations();
-  const { warehouses: warehousesList = [] } = useWarehouses();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [isRefreshingStocks, setIsRefreshingStocks] = useState(false);
@@ -54,18 +57,13 @@ export function Products() {
   /** true — в Excel без колонок маркетплейсов, только ERP; по умолчанию false (выгружаем все атрибуты МП) */
   const [exportExcludeMpAttributes, setExportExcludeMpAttributes] = useState(false);
   const [filterOrganizationId, setFilterOrganizationId] = useState('');
+  const [filterBrandId, setFilterBrandId] = useState('');
   const [filterCategoryId, setFilterCategoryId] = useState('');
   /** '' | 'product' | 'kit' */
   const [filterProductType, setFilterProductType] = useState('');
-  /** Остаток в списке по выбранному складу (свой склад, не поставщик) */
-  const [filterWarehouseId, setFilterWarehouseId] = useState(() => {
-    try {
-      return typeof localStorage !== 'undefined' ? localStorage.getItem('productsListWarehouseId') || '' : '';
-    } catch {
-      return '';
-    }
-  });
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  /** null — ещё не проверяли; иначе есть ли товары без категории в текущих фильтрах org/бренд/тип/поиск */
+  const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
+  const [filtersOpen, setFiltersOpen] = useState(true);
   /** Поиск по названию / артикулу / штрихкоду (сервер, debounce) */
   const [listSearch, setListSearch] = useState('');
   const listSearchDebounceRef = useRef(null);
@@ -77,6 +75,15 @@ export function Products() {
   const [importTemplateExcludeMpAttributes, setImportTemplateExcludeMpAttributes] = useState(false);
   const [importTemplateLoading, setImportTemplateLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('productsListPageSize') : null;
+      const n = parseInt(raw, 10);
+      return PRODUCTS_LIST_PAGE_SIZES.includes(n) ? n : 50;
+    } catch {
+      return 50;
+    }
+  });
   /** id выбранных строк в текущем отфильтрованном списке */
   const [selectedProductIds, setSelectedProductIds] = useState(() => new Set());
   const selectAllCheckboxRef = useRef(null);
@@ -135,21 +142,23 @@ export function Products() {
 
   const loadList = (partial = {}) => {
     const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
+    const brand = partial.brandId !== undefined ? partial.brandId : filterBrandId;
     const cat = partial.categoryId !== undefined ? partial.categoryId : filterCategoryId;
     const pt = partial.productType !== undefined ? partial.productType : filterProductType;
-    const wh = partial.warehouseId !== undefined ? partial.warehouseId : filterWarehouseId;
     const searchRaw = partial.search !== undefined ? partial.search : listSearch;
     const page = partial.page !== undefined ? partial.page : currentPage;
     const search = typeof searchRaw === 'string' ? searchRaw.trim() : '';
     const ptTrim = typeof pt === 'string' ? pt.trim() : '';
-    loadProducts({
+    const limitCandidate = partial.limit !== undefined ? Number(partial.limit) : pageSize;
+    const limit = PRODUCTS_LIST_PAGE_SIZES.includes(limitCandidate) ? limitCandidate : 50;
+    return loadProducts({
       organizationId: org || undefined,
+      brandId: brand || undefined,
       categoryId: cat || undefined,
       productType: ptTrim || undefined,
       search: search || undefined,
-      warehouseId: wh || undefined,
-      limit: PAGE_SIZE,
-      offset: Math.max(0, (page - 1) * PAGE_SIZE),
+      limit,
+      offset: Math.max(0, (page - 1) * limit),
       silent: true
     });
   };
@@ -158,45 +167,19 @@ export function Products() {
 
   const activeFiltersCount =
     (filterOrganizationId ? 1 : 0) +
+    (filterBrandId ? 1 : 0) +
     (filterCategoryId ? 1 : 0) +
-    (filterProductType ? 1 : 0) +
-    (filterWarehouseId ? 1 : 0);
+    (filterProductType ? 1 : 0);
   const totalProducts = Number.isFinite(Number(meta?.total)) ? Number(meta.total) : visibleProducts.length;
-  const totalPages = Math.max(1, Math.ceil(totalProducts / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(Math.max(0, totalProducts) / Math.max(1, pageSize)));
 
   const clearListFilters = () => {
     setCurrentPage(1);
     setFilterOrganizationId('');
+    setFilterBrandId('');
     setFilterCategoryId('');
     setFilterProductType('');
-    setFilterWarehouseId('');
-    try {
-      localStorage.removeItem('productsListWarehouseId');
-    } catch {
-      /* ignore */
-    }
-    loadList({ organizationId: '', categoryId: '', productType: '', warehouseId: '', page: 1 });
-  };
-
-  const ownWarehouses = useMemo(
-    () =>
-      (warehousesList || []).filter(
-        (w) => w && String(w.type || '').toLowerCase() !== 'supplier' && !w.supplierId
-      ),
-    [warehousesList]
-  );
-
-  const handleFilterWarehouseChange = (e) => {
-    const v = e.target.value;
-    setCurrentPage(1);
-    setFilterWarehouseId(v);
-    try {
-      if (v) localStorage.setItem('productsListWarehouseId', v);
-      else localStorage.removeItem('productsListWarehouseId');
-    } catch {
-      /* ignore */
-    }
-    loadList({ warehouseId: v, page: 1 });
+    loadList({ organizationId: '', brandId: '', categoryId: '', productType: '', page: 1 });
   };
 
   const handleListSearchChange = (e) => {
@@ -216,10 +199,57 @@ export function Products() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const delay = typeof listSearch === 'string' && listSearch.trim() !== '' ? 400 : 0;
+    const t = setTimeout(async () => {
+      try {
+        const searchTrim = typeof listSearch === 'string' ? listSearch.trim() : '';
+        const ptTrim = typeof filterProductType === 'string' ? filterProductType.trim() : '';
+        const res = await productsApi.getAll({
+          cacheBust: true,
+          organizationId: filterOrganizationId || undefined,
+          brandId: filterBrandId || undefined,
+          categoryId: FILTER_CATEGORY_NONE,
+          productType: ptTrim || undefined,
+          search: searchTrim || undefined,
+          limit: 1,
+          offset: 0,
+        });
+        if (cancelled) return;
+        const list = Array.isArray(res?.data) ? res.data : [];
+        const total = Number(res?.meta?.total);
+        const has = list.length > 0 || (Number.isFinite(total) && total > 0);
+        setShowUncategorizedCategoryOption(has);
+      } catch {
+        if (!cancelled) setShowUncategorizedCategoryOption(false);
+      }
+    }, delay);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [filterOrganizationId, filterBrandId, filterProductType, listSearch]);
+
+  const showNoneCategoryOption = useMemo(
+    () =>
+      showUncategorizedCategoryOption === true ||
+      (filterCategoryId === FILTER_CATEGORY_NONE && showUncategorizedCategoryOption !== false),
+    [showUncategorizedCategoryOption, filterCategoryId]
+  );
+
+  useEffect(() => {
+    if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
+      setFilterCategoryId('');
+      setCurrentPage(1);
+      loadListRef.current({ categoryId: '', page: 1 });
+    }
+  }, [showUncategorizedCategoryOption, filterCategoryId]);
+
+  useEffect(() => {
     if (currentPage > totalPages) {
       setCurrentPage(totalPages);
     }
-  }, [currentPage, totalPages]);
+  }, [currentPage, totalPages, pageSize]);
 
   const goToPage = (page) => {
     const next = Math.min(Math.max(1, page), totalPages);
@@ -228,7 +258,7 @@ export function Products() {
   };
 
   useEffect(() => {
-    loadListRef.current({ warehouseId: filterWarehouseId, page: currentPage });
+    loadListRef.current({ page: currentPage });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная загрузка списка; смена страницы/фильтров вызывает loadList из обработчиков
   }, []);
 
@@ -392,20 +422,30 @@ export function Products() {
 
   const handleFilterOrganizationChange = (e) => {
     const v = e.target.value;
+    setCurrentPage(1);
     setFilterOrganizationId(v);
-    loadList({ organizationId: v });
+    loadList({ organizationId: v, page: 1 });
   };
 
   const handleFilterCategoryChange = (e) => {
     const v = e.target.value;
+    setCurrentPage(1);
     setFilterCategoryId(v);
-    loadList({ categoryId: v });
+    loadList({ categoryId: v, page: 1 });
   };
 
   const handleFilterProductTypeChange = (e) => {
     const v = e.target.value;
+    setCurrentPage(1);
     setFilterProductType(v);
-    loadList({ productType: v });
+    loadList({ productType: v, page: 1 });
+  };
+
+  const handleFilterBrandChange = (e) => {
+    const v = e.target.value;
+    setCurrentPage(1);
+    setFilterBrandId(v);
+    loadList({ brandId: v, page: 1 });
   };
 
   const openExportModal = () => {
@@ -535,6 +575,86 @@ export function Products() {
     }
   };
 
+  const handlePageSizeChange = (e) => {
+    const next = parseInt(e.target.value, 10);
+    if (!PRODUCTS_LIST_PAGE_SIZES.includes(next)) return;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('productsListPageSize', String(next));
+    } catch {
+      /* ignore */
+    }
+    setPageSize(next);
+    setCurrentPage(1);
+    loadListRef.current({ page: 1, limit: next });
+  };
+
+  const renderProductsListPager = (placement) => {
+    const idSuffix = placement === 'top' ? 'top' : 'bottom';
+    return (
+      <div
+        className={`d-flex justify-content-between align-items-center px-3 py-2 flex-wrap gap-2 ${
+          placement === 'top' ? 'border-bottom' : 'border-top'
+        }`}
+      >
+        <div className="d-flex flex-wrap align-items-center gap-3 text-muted small">
+          <span>
+            Страница <strong>{currentPage}</strong> из <strong>{totalPages}</strong>
+          </span>
+          <label className="d-inline-flex align-items-center gap-2 mb-0" htmlFor={`products-list-page-size-${idSuffix}`}>
+            <span>На странице</span>
+            <select
+              id={`products-list-page-size-${idSuffix}`}
+              className="form-select form-select-sm"
+              style={{ width: 'auto', minWidth: '4.5rem' }}
+              value={pageSize}
+              onChange={handlePageSizeChange}
+              disabled={listRefreshing}
+            >
+              {PRODUCTS_LIST_PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="d-flex gap-2">
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={currentPage <= 1 || listRefreshing}
+          >
+            Назад
+          </Button>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={currentPage >= totalPages || listRefreshing}
+          >
+            Вперёд
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
+  const goBulkEdit = () => {
+    navigate('/products/bulk-edit', {
+      state: {
+        filters: {
+          organizationId: filterOrganizationId,
+          brandId: filterBrandId,
+          categoryId: filterCategoryId,
+          productType: filterProductType,
+          search: listSearch,
+        },
+        selectedIds: [...selectedProductIds],
+      },
+    });
+  };
+
   return (
     <div>
       <PageTitle
@@ -560,6 +680,16 @@ export function Products() {
           <>
             <Button className="btn-shadow me-2" variant="primary" size="small" onClick={handleCreate}>
               + Добавить
+            </Button>
+            <Button
+              className="btn-shadow me-2"
+              variant="secondary"
+              size="small"
+              onClick={goBulkEdit}
+              disabled={loading}
+              title="Таблица полей карточки; в каждом столбце — заполнение всех строк сразу"
+            >
+              Массовое редактирование
             </Button>
             <Button
               className="btn-shadow"
@@ -646,7 +776,7 @@ export function Products() {
                   className="btn-shadow"
                   onClick={() => setFiltersOpen((o) => !o)}
                   aria-expanded={filtersOpen}
-                  title="Организация, категория, тип товара"
+                  title="Организация, бренд, категория, тип товара"
                 >
                   {filtersOpen ? '▼ Фильтры' : '▶ Фильтры'}
                   {activeFiltersCount > 0 ? (
@@ -658,7 +788,7 @@ export function Products() {
             {filtersOpen ? (
               <div className="products-filters-panel">
                 <div className="row g-2 g-md-3 align-items-end">
-                  <div className="col-12 col-md-4">
+                  <div className="col-12 col-md-6 col-lg-3">
                     <label className="text-muted small mb-1 d-block" htmlFor="products-filter-org">
                       Организация
                     </label>
@@ -676,7 +806,28 @@ export function Products() {
                       ))}
                     </select>
                   </div>
-                  <div className="col-12 col-md-4">
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <label className="text-muted small mb-1 d-block" htmlFor="products-filter-brand">
+                      Бренд
+                    </label>
+                    <select
+                      id="products-filter-brand"
+                      className="form-select form-select-sm"
+                      value={filterBrandId}
+                      onChange={handleFilterBrandChange}
+                    >
+                      <option value="">Все бренды</option>
+                      {[...brands]
+                        .filter((b) => b && b.name)
+                        .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'))
+                        .map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="col-12 col-md-6 col-lg-3">
                     <label className="text-muted small mb-1 d-block" htmlFor="products-filter-cat">
                       Категория
                     </label>
@@ -687,6 +838,9 @@ export function Products() {
                       onChange={handleFilterCategoryChange}
                     >
                       <option value="">Все категории</option>
+                      {showNoneCategoryOption ? (
+                        <option value={FILTER_CATEGORY_NONE}>Без категории</option>
+                      ) : null}
                       {categories.map((c) => (
                         <option key={c.id} value={c.id}>
                           {c.name}
@@ -694,7 +848,7 @@ export function Products() {
                       ))}
                     </select>
                   </div>
-                  <div className="col-12 col-md-4">
+                  <div className="col-12 col-md-6 col-lg-3">
                     <label className="text-muted small mb-1 d-block" htmlFor="products-filter-type">
                       Тип товара
                     </label>
@@ -707,24 +861,6 @@ export function Products() {
                       <option value="">Все типы</option>
                       <option value="product">Товар</option>
                       <option value="kit">Комплект</option>
-                    </select>
-                  </div>
-                  <div className="col-12 col-md-6">
-                    <label className="text-muted small mb-1 d-block" htmlFor="products-filter-warehouse">
-                      Остаток по складу
-                    </label>
-                    <select
-                      id="products-filter-warehouse"
-                      className="form-select form-select-sm"
-                      value={filterWarehouseId}
-                      onChange={handleFilterWarehouseChange}
-                    >
-                      <option value="">Все склады (сумма)</option>
-                      {ownWarehouses.map((w) => (
-                        <option key={w.id} value={w.id}>
-                          {w.address || w.name || `Склад #${w.id}`}
-                        </option>
-                      ))}
                     </select>
                   </div>
                 </div>
@@ -750,29 +886,7 @@ export function Products() {
               </div>
             ) : (
               <div className="products-table-container">
-                <div className="d-flex justify-content-between align-items-center px-3 py-2 border-bottom flex-wrap gap-2">
-                  <span className="text-muted small">
-                    Страница <strong>{currentPage}</strong> из <strong>{totalPages}</strong>
-                  </span>
-                  <div className="d-flex gap-2">
-                    <Button
-                      variant="secondary"
-                      size="small"
-                      onClick={() => goToPage(currentPage - 1)}
-                      disabled={currentPage <= 1 || listRefreshing}
-                    >
-                      Назад
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="small"
-                      onClick={() => goToPage(currentPage + 1)}
-                      disabled={currentPage >= totalPages || listRefreshing}
-                    >
-                      Вперёд
-                    </Button>
-                  </div>
-                </div>
+                {renderProductsListPager('top')}
                 <div className="table-responsive">
                   <table className="products-table align-middle mb-0 table table-borderless table-striped table-hover">
                     <thead>
@@ -795,10 +909,7 @@ export function Products() {
                         <th>
                           Себестоимость / Остаток
                           <div className="text-muted fw-normal" style={{ fontSize: 10 }}>
-                            {filterWarehouseId
-                              ? ownWarehouses.find((w) => String(w.id) === filterWarehouseId)?.address ||
-                                'выбранный склад'
-                              : 'сумма по складам'}
+                            сумма по складам
                           </div>
                         </th>
                         <th>Маркетплейсы</th>
@@ -1054,6 +1165,7 @@ export function Products() {
                     </tbody>
                   </table>
                 </div>
+                {renderProductsListPager('bottom')}
               </div>
             )}
           </div>

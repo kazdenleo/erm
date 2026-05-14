@@ -87,10 +87,10 @@ export function Shipments() {
     setCloseLoadingId(shipment.id);
     try {
       const updated = await shipmentsApi.close(shipment.id);
-      await loadShipments();
       if (updated?.qrStickerPath) {
         window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
       }
+      await loadShipments();
     } catch (e) {
       setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка закрытия');
     } finally {

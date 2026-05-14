@@ -3,7 +3,7 @@
  * Custom hook для работы с пользовательскими категориями
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { userCategoriesApi } from '../services/userCategories.api';
 
 export function useCategories() {
@@ -11,11 +11,7 @@ export function useCategories() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    loadCategories();
-  }, []);
-
-  const loadCategories = async (opts = {}) => {
+  const loadCategories = useCallback(async (opts = {}) => {
     const silent = opts.silent === true;
     try {
       if (!silent) setLoading(true);
@@ -29,7 +25,11 @@ export function useCategories() {
     } finally {
       if (!silent) setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadCategories();
+  }, [loadCategories]);
 
   const createCategory = async (categoryData) => {
     try {

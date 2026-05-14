@@ -88,6 +88,13 @@ api.interceptors.response.use(
     const isAssemblyFind = error.config?.url?.includes('/assembly/find-by-barcode');
     if (error.response?.status === 404 && isAssemblyFind) {
       // Ошибка уже обрабатывается на странице сборки
+    } else if (error.config?.silentConsole === true) {
+      /* вызывающий код обрабатывает ошибку без шума в консоли */
+    } else if (
+      error.response?.status === 400 &&
+      String(error.config?.url || '').includes('/marketplace-attributes')
+    ) {
+      /* ожидаемые ответы без ключа МП / сопоставления категории */
     } else {
       const status = error.response?.status;
       const data = error.response?.data;

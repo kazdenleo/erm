@@ -15,13 +15,9 @@ function shipmentsProfileOpts(req) {
   return { profileId: tid != null ? tid : null, organizationId };
 }
 
-/** Абсолютный URL PNG стикера поставки для <img> (учитывает req.baseUrl `/api` vs `/api/shipments`). */
-function wbSupplyQrStickerImageUrl(req, shipmentId) {
-  const bu = req.baseUrl || '/api';
-  const basePath = bu.endsWith('/shipments') ? bu : `${bu.replace(/\/$/, '')}/shipments`;
-  const proto = req.protocol || 'http';
-  const host = req.get('host') || '';
-  return `${proto}://${host}${basePath}/${encodeURIComponent(shipmentId)}/qr-sticker`;
+/** Относительный URL публичного PNG — <img> в окне печати должен совпадать с origin страницы (иначе за прокси пустая картинка). */
+function wbSupplyQrStickerImagePath(shipmentId) {
+  return `/api/shipments/${encodeURIComponent(shipmentId)}/qr-sticker`;
 }
 
 class ShipmentsController {
@@ -157,7 +153,7 @@ class ShipmentsController {
       if (!filePath) {
         return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
       }
-      const stickerUrl = wbSupplyQrStickerImageUrl(req, id);
+      const stickerUrl = wbSupplyQrStickerImagePath(id);
       const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -221,7 +217,7 @@ class ShipmentsController {
       if (!filePath) {
         return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
       }
-      const stickerUrl = wbSupplyQrStickerImageUrl(req, id);
+      const stickerUrl = wbSupplyQrStickerImagePath(id);
       const html = `<!DOCTYPE html>
 <html>
 <head>

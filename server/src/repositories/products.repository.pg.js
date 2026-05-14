@@ -5,6 +5,19 @@
 
 import { query, transaction } from '../config/database.js';
 
+/** Единый ключ id товара для Map kit_components (PostgreSQL int8 в node-pg часто приходит строкой). */
+function productIdMapKey(rawId) {
+  if (rawId == null || rawId === '') return null;
+  const n = typeof rawId === 'string' ? parseInt(String(rawId).trim(), 10) : Number(rawId);
+  if (Number.isFinite(n) && n > 0) return String(n);
+  const s = String(rawId).trim();
+  return s === '' ? null : s;
+}
+
+function isKitProductType(raw) {
+  return String(raw || '').toLowerCase() === 'kit';
+}
+
 /**
  * Сохраняет одну связку product_skus (Ozon допускает только marketplace_product_id; WB/ЯМ — непустой sku).
  */
@@ -52,6 +65,23 @@ async function upsertProductSkuRow(client, { productId, marketplace, skuRaw, mar
   }
 }
 
+/** Значение фильтра «без ERP-категории» с фронта; в SQL только IS NULL, не подставляем в bigint. */
+const FILTER_CATEGORY_NONE = '__no_category__';
+
+/**
+ * Нормализация categoryId из query (Express может отдать строку или массив дублей).
+ */
+function normalizeListCategoryId(categoryId) {
+  if (categoryId == null) return '';
+  const first = Array.isArray(categoryId) ? categoryId[0] : categoryId;
+  let s = String(first ?? '').trim().replace(/^\uFEFF/, '');
+  if (s === '' || s === 'undefined' || s === 'null') return '';
+  if (s === FILTER_CATEGORY_NONE) return FILTER_CATEGORY_NONE;
+  const lower = s.toLowerCase();
+  if (lower === FILTER_CATEGORY_NONE) return FILTER_CATEGORY_NONE;
+  return s;
+}
+
 function buildFindAllFilters(options = {}) {
   const { brandId, categoryId, organizationId, search, profileId, productType } = options;
   let whereSql = ' WHERE 1=1';
@@ -64,13 +94,19 @@ function buildFindAllFilters(options = {}) {
   }
 
   if (brandId) {
-    whereSql += ` AND p.brand_id = $${paramIndex++}`;
-    params.push(brandId);
+    const bRaw = String(brandId).trim();
+    if (/^\d+$/.test(bRaw)) {
+      whereSql += ` AND p.brand_id = $${paramIndex++}`;
+      params.push(bRaw);
+    }
   }
 
-  if (categoryId) {
+  const categoryIdRaw = normalizeListCategoryId(categoryId);
+  if (categoryIdRaw === FILTER_CATEGORY_NONE) {
+    whereSql += ` AND p.user_category_id IS NULL`;
+  } else if (categoryIdRaw && /^\d+$/.test(categoryIdRaw)) {
     whereSql += ` AND p.user_category_id = $${paramIndex++}`;
-    params.push(categoryId);
+    params.push(categoryIdRaw);
   }
 
   if (organizationId != null && organizationId !== '') {
@@ -637,14 +673,19 @@ class ProductsRepositoryPG {
       }
 
       // Комплектующие для комплектов в списке (один запрос на страницу)
-      const kitProductIds = products
-        .filter((p) => p.product_type === 'kit')
-        .map((p) => {
-          const raw = p.id;
-          const n = typeof raw === 'string' ? parseInt(raw, 10) : Number(raw);
-          return Number.isFinite(n) ? n : null;
-        })
-        .filter((n) => n != null);
+      const kitProductIds = [
+        ...new Set(
+          products
+            .filter((p) => isKitProductType(p.product_type))
+            .map((p) => {
+              const key = productIdMapKey(p.id);
+              if (!key) return null;
+              const n = parseInt(key, 10);
+              return Number.isFinite(n) && n > 0 ? n : null;
+            })
+            .filter((n) => n != null)
+        ),
+      ];
       if (kitProductIds.length > 0) {
         try {
           const kitRes = await query(
@@ -657,7 +698,8 @@ class ProductsRepositoryPG {
           );
           const byKit = new Map();
           for (const r of kitRes.rows) {
-            const key = String(r.kit_product_id);
+            const key = productIdMapKey(r.kit_product_id);
+            if (!key) continue;
             if (!byKit.has(key)) byKit.set(key, []);
             byKit.get(key).push({
               productId: r.component_product_id,
@@ -667,14 +709,15 @@ class ProductsRepositoryPG {
             });
           }
           for (const p of products) {
-            if (p.product_type === 'kit') {
-              p.kit_components = byKit.get(String(p.id)) || [];
+            if (isKitProductType(p.product_type)) {
+              const key = productIdMapKey(p.id);
+              p.kit_components = key ? byKit.get(key) || [] : [];
             }
           }
         } catch (err) {
           if (err.message && err.message.includes('kit_components')) {
             for (const p of products) {
-              if (p.product_type === 'kit') p.kit_components = [];
+              if (isKitProductType(p.product_type)) p.kit_components = [];
             }
           } else {
             throw err;
@@ -682,7 +725,7 @@ class ProductsRepositoryPG {
         }
       } else {
         for (const p of products) {
-          if (p.product_type === 'kit') p.kit_components = [];
+          if (isKitProductType(p.product_type)) p.kit_components = [];
         }
       }
     }
@@ -1679,15 +1722,21 @@ class ProductsRepositoryPG {
     let paramIndex = 1;
     
     if (options.brandId) {
-      sql += ` AND brand_id = $${paramIndex++}`;
-      params.push(options.brandId);
+      const bRaw = String(options.brandId).trim();
+      if (/^\d+$/.test(bRaw)) {
+        sql += ` AND brand_id = $${paramIndex++}`;
+        params.push(bRaw);
+      }
     }
-    
-    if (options.categoryId) {
+
+    const catRaw = normalizeListCategoryId(options.categoryId);
+    if (catRaw === FILTER_CATEGORY_NONE) {
+      sql += ` AND user_category_id IS NULL`;
+    } else if (catRaw && /^\d+$/.test(catRaw)) {
       sql += ` AND user_category_id = $${paramIndex++}`;
-      params.push(options.categoryId);
+      params.push(catRaw);
     }
-    
+
     if (options.organizationId != null && options.organizationId !== '') {
       const organizationId = options.organizationId;
       const orgNum = typeof organizationId === 'string' ? parseInt(organizationId, 10) : Number(organizationId);

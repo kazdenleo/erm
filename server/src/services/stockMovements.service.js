@@ -83,11 +83,18 @@ class StockMovementsService {
 
     const metaOut = { ...metaObj, warehouse_id: warehouseId };
     const profId = product.profile_id ?? product.profileId ?? null;
+    const incAfter =
+      productAfter?.incoming_quantity != null ? Number(productAfter.incoming_quantity) : 0;
+    const resAfter =
+      productAfter?.reserved_quantity != null ? Number(productAfter.reserved_quantity) : 0;
+
     const movement = await this.repository.create({
       productId: idNum,
       type,
       quantityChange: safeDelta,
       balanceAfter: totalAfter,
+      incomingAfter: Number.isFinite(incAfter) ? incAfter : 0,
+      reservedAfter: Number.isFinite(resAfter) ? resAfter : 0,
       reason: reason || null,
       meta: metaOut,
       warehouseId,
@@ -121,6 +128,56 @@ class StockMovementsService {
    */
   async getHistory(productId, { limit = 100, profileId = null } = {}) {
     return await this.repository.findByProduct(productId, { limit, profileId });
+  }
+
+  /**
+   * Заказы, под которые сейчас числится ненулевой резерв товара (по журналу reserve/unreserve).
+   */
+  async listReservedOrdersForProduct(productId, { profileId = null } = {}) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) return [];
+
+    const tid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : null;
+    if (tid != null && Number.isFinite(tid) && tid > 0) {
+      const pr = await query(`SELECT profile_id FROM products WHERE id = $1`, [idNum]);
+      const own = pr.rows?.[0]?.profile_id;
+      if (own != null && String(own) !== String(tid)) return [];
+    }
+
+    const res = await query(
+      `WITH net AS (
+         SELECT (meta->>'order_id')::bigint AS order_row_id,
+           SUM(
+             CASE WHEN type = 'reserve' THEN -quantity_change
+                  WHEN type = 'unreserve' THEN quantity_change
+                  ELSE 0 END
+           )::int AS qty
+         FROM stock_movements
+         WHERE product_id = $1
+           AND (type = 'reserve' OR type = 'unreserve')
+           AND (meta->>'order_id') ~ '^[0-9]+$'
+         GROUP BY 1
+       )
+       SELECT o.id, o.marketplace, o.order_id, net.qty AS reserved_qty
+       FROM net
+       INNER JOIN orders o ON o.id = net.order_row_id
+       WHERE net.qty > 0
+       ORDER BY o.created_at DESC NULLS LAST, o.id DESC
+       LIMIT 200`,
+      [idNum]
+    );
+    return (res.rows || []).map((r) => ({
+      orderDbId: Number(r.id),
+      marketplace:
+        r.marketplace === 'wb' ? 'wildberries' : r.marketplace === 'ym' ? 'yandex' : 'ozon',
+      orderId: r.order_id,
+      reservedQty: Number(r.reserved_qty) || 0,
+    }));
   }
 
   /**
@@ -223,28 +280,17 @@ class StockMovementsService {
         [pid, toId, nextTo]
       );
 
-      // products.quantity обновится триггером trg_pws_refresh_product_qty.
-      const productAfter = await client.query(`SELECT quantity FROM products WHERE id = $1`, [pid]);
-      const totalAfter = productAfter.rows?.[0]?.quantity != null ? Number(productAfter.rows[0].quantity) : null;
-
       const insertMovement = async ({ delta, warehouseId, direction }) => {
         const metaMove = { ...metaObj, direction };
-        const rr = await client.query(
-          `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           RETURNING *`,
-          [
-            pid,
-            'transfer',
-            delta,
-            totalAfter,
-            reason || null,
-            metaMove,
-            warehouseId,
-            prodProfileId
-          ]
-        );
-        return rr.rows?.[0] ?? null;
+        return await this.repository.insertSnapshotAfterProduct(client, {
+          productId: pid,
+          type: 'transfer',
+          quantityChange: delta,
+          reason: reason || null,
+          meta: metaMove,
+          warehouseId,
+          profileId: prodProfileId,
+        });
       };
 
       const movementOut = await insertMovement({ delta: -q, warehouseId: fromId, direction: 'out' });

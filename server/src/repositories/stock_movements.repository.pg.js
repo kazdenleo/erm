@@ -22,12 +22,23 @@ class StockMovementsRepositoryPG {
    * @param {string|null} params.reason - человекочитаемое описание
    * @param {object|null} params.meta - произвольные дополнительные данные (JSON)
    */
-  async create({ productId, type, quantityChange, balanceAfter = null, reason = null, meta = null, warehouseId = null, profileId = null }) {
+  async create({
+    productId,
+    type,
+    quantityChange,
+    balanceAfter = null,
+    incomingAfter = null,
+    reservedAfter = null,
+    reason = null,
+    meta = null,
+    warehouseId = null,
+    profileId = null,
+  }) {
     const profId = normalizeProfileId(profileId);
     const sql = `
       INSERT INTO stock_movements
-        (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (product_id, type, quantity_change, balance_after, incoming_after, reserved_after, reason, meta, warehouse_id, profile_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING *
     `;
     const params = [
@@ -35,12 +46,40 @@ class StockMovementsRepositoryPG {
       type,
       quantityChange,
       balanceAfter,
+      incomingAfter,
+      reservedAfter,
       reason,
       meta ? JSON.stringify(meta) : null,
       warehouseId != null && warehouseId !== '' ? warehouseId : null,
-      profId
+      profId,
     ];
     const result = await query(sql, params);
+    return result.rows[0] || null;
+  }
+
+  /**
+   * Запись движения со снимком products.* после того, как вызывающий код уже обновил остатки (в той же транзакции).
+   * @param {import('pg').PoolClient|null} client — если null, используется пул
+   */
+  async insertSnapshotAfterProduct(client, { productId, type, quantityChange, reason = null, meta = null, warehouseId = null, profileId = null }) {
+    const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
+    const metaJson = meta == null ? null : typeof meta === 'string' ? meta : JSON.stringify(meta);
+    const wh = warehouseId != null && warehouseId !== '' ? warehouseId : null;
+    const profOverride = normalizeProfileId(profileId);
+    const sql = `
+      INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, incoming_after, reserved_after, reason, meta, warehouse_id, profile_id)
+      SELECT $1::bigint, $2::varchar(32), $3::int,
+             COALESCE(p.quantity, 0)::int,
+             COALESCE(p.incoming_quantity, 0)::int,
+             COALESCE(p.reserved_quantity, 0)::int,
+             $4, $5::jsonb, $6,
+             COALESCE($7::bigint, p.profile_id)
+      FROM products p
+      WHERE p.id = $1::bigint
+      RETURNING *
+    `;
+    const params = [productId, type, quantityChange, reason, metaJson, wh, profOverride];
+    const result = await run(sql, params);
     return result.rows[0] || null;
   }
 
@@ -59,14 +98,14 @@ class StockMovementsRepositoryPG {
 
     const sql = pid
       ? `
-      SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, meta, warehouse_id
+      SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, incoming_after, reserved_after, meta, warehouse_id
       FROM stock_movements
       WHERE product_id = $1 AND profile_id = $3
       ORDER BY created_at DESC, id DESC
       LIMIT $2
     `
       : `
-      SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, meta, warehouse_id
+      SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, incoming_after, reserved_after, meta, warehouse_id
       FROM stock_movements
       WHERE product_id = $1
       ORDER BY created_at DESC, id DESC

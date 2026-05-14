@@ -260,6 +260,15 @@
   font-weight: 600;
 }
 
+/* В кнопке-ссылке «Резерв» цвет дельты не перебивается стилем .btn-link */
+.stock-levels-history-reserve-btn .stock-change-plus {
+  color: var(--success, #10b981);
+}
+
+.stock-levels-history-reserve-btn .stock-change-minus {
+  color: #ef4444;
+}
+
 .stock-levels-history-link {
   color: var(--primary, #3b82f6);
   text-decoration: none;

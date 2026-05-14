@@ -3,6 +3,7 @@
  */
 
 import { query, transaction } from '../config/database.js';
+import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -194,9 +195,6 @@ class InventorySessionsService {
           [productId, whId, quantityAfter]
         );
 
-        const bal = await client.query('SELECT quantity FROM products WHERE id = $1', [productId]);
-        const totalAfter = bal.rows?.[0]?.quantity != null ? Number(bal.rows[0].quantity) : 0;
-
         await client.query(
           `INSERT INTO inventory_session_lines (session_id, product_id, quantity_before, quantity_after)
            VALUES ($1, $2, $3, $4)`,
@@ -204,18 +202,15 @@ class InventorySessionsService {
         );
 
         const delta = quantityAfter - before;
-        await client.query(
-          `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-           VALUES ($1, 'inventory', $2, $3, $4, $5::jsonb, $6, (SELECT profile_id FROM products WHERE id = $1))`,
-          [
-            productId,
-            delta,
-            totalAfter,
-            reasonBase,
-            JSON.stringify({ inventory_session_id: sessionId, warehouse_id: whId }),
-            whId,
-          ]
-        );
+        await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+          productId,
+          type: 'inventory',
+          quantityChange: delta,
+          reason: reasonBase,
+          meta: { inventory_session_id: sessionId, warehouse_id: whId },
+          warehouseId: whId,
+          profileId: null,
+        });
         applied++;
         affectedProductIds.add(productId);
       }
@@ -279,22 +274,17 @@ class InventorySessionsService {
           );
         }
 
-        const bal = await client.query('SELECT quantity FROM products WHERE id = $1', [productId]);
-        const totalAfter = bal.rows?.[0]?.quantity != null ? Number(bal.rows[0].quantity) : 0;
         const reverseDelta = qb - qa;
 
-        await client.query(
-          `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-           VALUES ($1, 'manual', $2, $3, $4, $5::jsonb, $6, (SELECT profile_id FROM products WHERE id = $1))`,
-          [
-            productId,
-            reverseDelta,
-            totalAfter,
-            reason,
-            JSON.stringify({ inventory_session_id: sid, deleted: true, warehouse_id: whId }),
-            whId || null,
-          ]
-        );
+        await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+          productId,
+          type: 'manual',
+          quantityChange: reverseDelta,
+          reason,
+          meta: { inventory_session_id: sid, deleted: true, warehouse_id: whId },
+          warehouseId: whId || null,
+          profileId: null,
+        });
         touchedIds.push(productId);
       }
 

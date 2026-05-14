@@ -13,6 +13,7 @@ export const productsApi = {
   getAll: async (options = {}) => {
     const params = { ...(options.cacheBust ? { _t: Date.now() } : {}) };
     if (options.organizationId != null && options.organizationId !== '') params.organizationId = options.organizationId;
+    if (options.brandId != null && options.brandId !== '') params.brandId = String(options.brandId);
     if (options.categoryId != null && options.categoryId !== '') params.categoryId = options.categoryId;
     if (options.search != null && String(options.search).trim() !== '') params.search = String(options.search).trim();
     if (options.productType != null && String(options.productType).trim() !== '') {

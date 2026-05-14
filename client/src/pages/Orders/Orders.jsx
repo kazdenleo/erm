@@ -310,6 +310,8 @@ async function resolvePurchaseLinesByCatalogSku(lines) {
   }
 }
 
+const ORDERS_LIST_PAGE_SIZES = [50, 100, 200];
+
 export function Orders() {
   const navigate = useNavigate();
   const { profile, selectedOrganizationId: contextOrganizationId, setSelectedOrganizationId } = useAuth();
@@ -318,7 +320,6 @@ export function Orders() {
   const { organizations } = useOrganizations();
   const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
   const initialOrdersLoadedRef = useRef(false);
-  const ORDERS_PAGE_SIZE = 50;
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncKind, setSyncKind] = useState(null);
@@ -336,6 +337,15 @@ export function Orders() {
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('ordersListPageSize') : null;
+      const n = parseInt(raw, 10);
+      return ORDERS_LIST_PAGE_SIZES.includes(n) ? n : 50;
+    } catch {
+      return 50;
+    }
+  });
   const [markShippedLoadingKey, setMarkShippedLoadingKey] = useState(null);
 
   // Если организация ещё не выбрана — выберем первую доступную,
@@ -476,8 +486,8 @@ export function Orders() {
   const buildOrdersListParams = useCallback(
     (page = currentPage) => {
       const params = {
-        limit: ORDERS_PAGE_SIZE,
-        offset: Math.max(0, page - 1) * ORDERS_PAGE_SIZE,
+        limit: pageSize,
+        offset: Math.max(0, page - 1) * pageSize,
       };
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
       if (statusFilter !== 'all') params.status = statusFilter;
@@ -485,7 +495,7 @@ export function Orders() {
       if (query) params.search = query;
       return params;
     },
-    [currentPage, marketplaceFilter, statusFilter, orderSearchQuery]
+    [currentPage, pageSize, marketplaceFilter, statusFilter, orderSearchQuery]
   );
 
   const reloadOrders = useCallback(
@@ -1231,11 +1241,78 @@ export function Orders() {
   );
 
   const totalOrders = meta?.total ?? orders.length;
-  const totalPages = meta?.total != null ? Math.max(1, Math.ceil(meta.total / ORDERS_PAGE_SIZE)) : 1;
-  const pageOffset = (meta?.offset ?? Math.max(0, currentPage - 1) * ORDERS_PAGE_SIZE);
+  const totalPages = meta?.total != null ? Math.max(1, Math.ceil(meta.total / Math.max(1, pageSize))) : 1;
+  const pageOffset = meta?.offset ?? Math.max(0, currentPage - 1) * pageSize;
   const goToPage = (page) => {
     const next = Math.min(Math.max(1, page), totalPages);
     if (next !== currentPage) setCurrentPage(next);
+  };
+
+  const handleOrdersPageSizeChange = (e) => {
+    const next = parseInt(e.target.value, 10);
+    if (!ORDERS_LIST_PAGE_SIZES.includes(next)) return;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('ordersListPageSize', String(next));
+    } catch {
+      /* ignore */
+    }
+    setPageSize(next);
+    setCurrentPage(1);
+  };
+
+  const renderOrdersListPager = (placement) => {
+    const idSuffix = placement === 'top' ? 'top' : 'bottom';
+    return (
+      <div
+        className={`d-flex justify-content-between align-items-center flex-wrap gap-2 ${
+          placement === 'top' ? 'mb-3' : 'mt-3'
+        }`}
+      >
+        <div className="d-flex flex-wrap align-items-center gap-3 text-muted small">
+          <span>
+            Показано: {sortedGroupedDisplayRows.length} из {totalOrders}
+          </span>
+          <span>
+            Страница <strong>{currentPage}</strong> из <strong>{totalPages}</strong>
+          </span>
+          <label className="d-inline-flex align-items-center gap-2 mb-0" htmlFor={`orders-list-page-size-${idSuffix}`}>
+            <span>На странице</span>
+            <select
+              id={`orders-list-page-size-${idSuffix}`}
+              className="form-select form-select-sm"
+              style={{ width: 'auto', minWidth: '4.5rem' }}
+              value={pageSize}
+              onChange={handleOrdersPageSizeChange}
+              disabled={loading}
+            >
+              {ORDERS_LIST_PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="d-flex align-items-center gap-2">
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={currentPage <= 1 || loading}
+          >
+            Назад
+          </Button>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={currentPage >= totalPages || loading}
+          >
+            Вперёд
+          </Button>
+        </div>
+      </div>
+    );
   };
 
   /** Кнопка «В закупку»: та же модалка, сигнатура как у прочих действий строки */
@@ -2128,34 +2205,7 @@ export function Orders() {
           </button>
         </div>
 
-        <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
-          <span className="text-muted small">
-            Показано: {sortedGroupedDisplayRows.length} из {totalOrders}
-          </span>
-          {totalPages > 1 ? (
-            <div className="d-flex align-items-center gap-2">
-              <Button
-                variant="secondary"
-                size="small"
-                onClick={() => goToPage(currentPage - 1)}
-                disabled={currentPage <= 1 || loading}
-              >
-                Назад
-              </Button>
-              <span className="text-muted small">
-                Страница {currentPage} из {totalPages}
-              </span>
-              <Button
-                variant="secondary"
-                size="small"
-                onClick={() => goToPage(currentPage + 1)}
-                disabled={currentPage >= totalPages || loading}
-              >
-                Вперёд
-              </Button>
-            </div>
-          ) : null}
-        </div>
+        {renderOrdersListPager('top')}
 
         <div className="orders-list" style={{marginTop: '16px'}}>
         {!loading && sortedGroupedDisplayRows.length === 0 ? (
@@ -2163,7 +2213,8 @@ export function Orders() {
             <p>Заказы не найдены</p>
           </div>
         ) : (
-          <table className="orders-table table">
+          <>
+            <table className="orders-table table">
             <thead>
               <tr>
                 <th className="orders-col-checkbox">
@@ -2544,6 +2595,8 @@ export function Orders() {
               })}
             </tbody>
           </table>
+            {renderOrdersListPager('bottom')}
+          </>
         )}
         </div>
       </div>

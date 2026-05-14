@@ -13,6 +13,7 @@ import { PublicRegister } from './pages/Register/PublicRegister.jsx';
 import { FirstLoginChangePassword } from './pages/FirstLoginChangePassword/FirstLoginChangePassword.jsx';
 import { Home } from './pages/Home/Home';
 import { Products } from './pages/Products/Products';
+import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
 import { Warehouses } from './pages/Warehouses/Warehouses';
 import { Suppliers } from './pages/Suppliers/Suppliers';
 import { Orders } from './pages/Orders/Orders';
@@ -49,7 +50,7 @@ import './styles/erp-filter-bar.css';
 
 function App() {
   return (
-    <BrowserRouter future={{ v7_relativeSplatPath: true }}>
+    <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -83,6 +84,7 @@ function App() {
           <Route path="/cabinet" element={<ProtectedRoute><Layout><Cabinet /></Layout></ProtectedRoute>} />
           <Route path="/support" element={<ProtectedRoute><Layout><Support /></Layout></ProtectedRoute>} />
           <Route path="/products" element={<ProtectedRoute><Layout><Products /></Layout></ProtectedRoute>} />
+          <Route path="/products/bulk-edit" element={<ProtectedRoute><Layout><ProductsBulkEdit /></Layout></ProtectedRoute>} />
           <Route path="/stock-levels" element={<ProtectedRoute><Layout><StockLevelsLayout /></Layout></ProtectedRoute>}>
             <Route index element={<Navigate to="/stock-levels/suppliers" replace />} />
             <Route path="suppliers" element={<SupplierStocks />} />

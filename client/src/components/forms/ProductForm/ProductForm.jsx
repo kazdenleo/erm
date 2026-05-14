@@ -3,7 +3,7 @@
  * Форма создания/редактирования товара
  */
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, useId } from 'react';
 import { Button } from '../../common/Button/Button';
 import { Modal } from '../../common/Modal/Modal';
 import { productAttributesApi } from '../../../services/productAttributes.api';
@@ -311,9 +311,10 @@ export function ProductForm({
   /** Фильтр организации со страницы списка — если в карточке не выбрана, подставляем для поиска комплектующих */
   productsListOrganizationId = '',
   onSubmit,
-  onCancel,
+  onCancel: _onCancel,
   onProductUpdate,
 }) {
+  const productFormDomId = useId();
   // Локальное состояние для хранения актуальных данных товара
   const [currentProduct, setCurrentProduct] = useState(product);
 
@@ -2030,7 +2031,8 @@ export function ProductForm({
   ];
 
   return (
-    <form className="product-form" onSubmit={handleSubmit}>
+    <>
+    <form id={productFormDomId} className="product-form" onSubmit={handleSubmit}>
       <ul className="nav nav-tabs mb-3">
         {tabButtons.map((tab) => (
           <li key={tab.id} className="nav-item" role="presentation">
@@ -4087,15 +4089,15 @@ export function ProductForm({
         </div>
       )}
 
-      <div className="d-flex justify-content-end gap-2 mt-4">
-        <Button type="button" variant="secondary" onClick={onCancel}>
-          Отмена
-        </Button>
-        <Button type="submit" variant="primary">
-          Сохранить
-        </Button>
-      </div>
     </form>
+      <div className="product-form__footer">
+        <div className="product-form__footer-inner">
+          <Button type="submit" form={productFormDomId} variant="primary">
+            Сохранить
+          </Button>
+        </div>
+      </div>
+    </>
   );
 }
 

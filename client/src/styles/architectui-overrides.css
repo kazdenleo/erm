@@ -102,6 +102,31 @@
   padding: 12px 14px;
 }
 
+/* Панель «Сохранить» привязана к низу оверлея карточки (не к левому краю экрана за сайдбаром) */
+.erm-product-card-overlay .product-form__footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: auto;
+  z-index: 3;
+}
+
+/* Полноэкранная модалка: нижняя панель внизу тела модалки */
+.modal-erm .modal-dialog.modal-fullscreen .modal-body {
+  position: relative;
+  padding-bottom: 72px;
+}
+
+.modal-erm .modal-dialog.modal-fullscreen .product-form__footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  z-index: 2;
+}
+
 /* Fullscreen modals should also respect the sidebar offset */
 .fixed-sidebar .modal.modal-erm[data-erm-size='full'] .modal-dialog {
   margin-left: 0;
@@ -213,4 +238,12 @@
   background: #d92550;
   color: #fff;
   box-shadow: 0 2px 6px rgba(217, 37, 80, 0.25);
+}
+
+/* Горизонтальный overflow у глубоко вложенного контента (напр. массовое редактирование):
+   у flex-элементов по умолчанию min-width: auto — дочерний блок не сжимается и не даёт
+   появиться overflow-x у внутреннего скролл-контейнера. */
+.fixed-sidebar .app-main .app-main__outer,
+.fixed-sidebar .app-main .app-main__inner {
+  min-width: 0;
 }

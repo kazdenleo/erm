@@ -47,6 +47,21 @@ class StockMovementsController {
     }
   }
 
+  /** Заказы с ненулевым резервом по товару (для истории остатков). */
+  async getReservedOrders(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      const { id } = req.params;
+      const rows = await stockMovementsService.listReservedOrdersForProduct(id, { profileId: tid });
+      return res.status(200).json({ ok: true, data: rows });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async transfer(req, res, next) {
     try {
       if (!req.user) {

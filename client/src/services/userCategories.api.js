@@ -25,7 +25,11 @@ export const userCategoriesApi = {
   async getMarketplaceAttributes(id, marketplace, opts = {}) {
     const params = { marketplace };
     if (opts.forceRefresh) params.force_refresh = '1';
-    const response = await api.get(`/user-categories/${id}/marketplace-attributes`, { params });
+    const response = await api.get(`/user-categories/${id}/marketplace-attributes`, {
+      params,
+      /** Нет ключа МП / сопоставления — ожидаемый 400; не засоряем консоль при массовых запросах */
+      silentConsole: true,
+    });
     return response.data;
   },
 

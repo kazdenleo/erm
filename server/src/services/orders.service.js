@@ -1036,7 +1036,7 @@ class OrdersService {
         );
       }
 
-      // 2) Фиксируем списание факта по собранным заказам в движениях остатков:
+      // 2) Фиксируем отгрузку по собранным заказам в движениях остатков:
       // - снимаем резерв (unreserve) на зарезервированное количество
       // - делаем shipment (-qty) по складу заказа (если есть маппинг) или складу по умолчанию
       for (const r of rows) {
@@ -1055,7 +1055,7 @@ class OrdersService {
           await stockMovementsService.applyChange(productId, {
             delta: release,
             type: 'unreserve',
-            reason: `Сборка: снятие резерва по заказу ${orderIdStr}`.trim(),
+            reason: `Отгрузка: снятие резерва по заказу ${orderIdStr}`.trim(),
             meta: { order_id: orderDbId, orderId: orderIdStr, assembled: true }
           });
         }
@@ -1064,7 +1064,7 @@ class OrdersService {
         await stockMovementsService.applyChange(productId, {
           delta: -qty,
           type: 'shipment',
-          reason: `Сборка: отгрузка по заказу ${orderIdStr}`.trim(),
+          reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
           meta: { order_id: orderDbId, orderId: orderIdStr, assembled: true, warehouse_id: warehouseId || null }
         });
       }

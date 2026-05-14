@@ -34,7 +34,10 @@ export function Notifications() {
   return (
     <div className="card">
       <h1 className="title">Уведомления</h1>
-      <p className="subtitle">Важные события по интеграциям и системе</p>
+      <p className="subtitle">
+        Важные события по интеграциям и системе, а также последние входящие новости и события от маркетплейсов
+        (Ozon, Wildberries, Яндекс Маркет).
+      </p>
 
       <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
         <Button type="button" variant="secondary" onClick={load} disabled={loading}>
@@ -89,19 +92,43 @@ export function Notifications() {
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
-                <div style={{ fontWeight: 600, fontSize: '13px' }}>{n.title || 'Уведомление'}</div>
-                {n.marketplace && (
-                  <div style={{ fontSize: '12px', color: 'var(--muted)' }}>{String(n.marketplace)}</div>
+                <div style={{ fontWeight: 600, fontSize: '13px' }}>
+                  {n.type === 'marketplace_event' && (
+                    <span
+                      style={{
+                        marginRight: '8px',
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.04em',
+                        color: 'var(--muted)',
+                      }}
+                    >
+                      Маркетплейс
+                    </span>
+                  )}
+                  {n.title || 'Уведомление'}
+                </div>
+                {(n.marketplace || n.source) && (
+                  <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                    {n.marketplace ? String(n.marketplace) : String(n.source)}
+                  </div>
                 )}
               </div>
               <div style={{ marginTop: '6px', fontSize: '12px', whiteSpace: 'pre-wrap' }}>
                 {n.message}
               </div>
-              {(n.expires_at || n.checked_at) && (
+              {(n.expires_at || n.checked_at || n.created_at) && (
                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--muted)' }}>
-                  {n.expires_at && <span>expires_at: {String(n.expires_at).slice(0, 19).replace('T', ' ')}</span>}
+                  {n.expires_at && <span>Действует до: {String(n.expires_at).slice(0, 19).replace('T', ' ')}</span>}
                   {n.expires_at && n.checked_at && <span style={{ margin: '0 8px' }}>•</span>}
-                  {n.checked_at && <span>checked_at: {String(n.checked_at).slice(0, 19).replace('T', ' ')}</span>}
+                  {n.checked_at && <span>Проверено: {String(n.checked_at).slice(0, 19).replace('T', ' ')}</span>}
+                  {n.created_at && n.type === 'marketplace_event' && (
+                    <>
+                      {(n.expires_at || n.checked_at) && <span style={{ margin: '0 8px' }}>•</span>}
+                      <span>Поступило: {String(n.created_at).slice(0, 19).replace('T', ' ')}</span>
+                    </>
+                  )}
                 </div>
               )}
             </div>

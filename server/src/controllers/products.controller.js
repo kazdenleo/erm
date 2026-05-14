@@ -25,6 +25,37 @@ function setAttachmentXlsx(res, filename) {
   );
 }
 
+/** Express query: одна строка или массив (дубли параметра в URL). */
+function firstQueryParam(val) {
+  if (val == null) return undefined;
+  const v = Array.isArray(val) ? val[0] : val;
+  if (v == null) return undefined;
+  const s = String(v).trim();
+  return s === '' ? undefined : s;
+}
+
+/** Как на фронте: фильтр «без ERP-категории»; нельзя подставлять в bigint user_category_id. */
+const FILTER_CATEGORY_NONE_TOKEN = '__no_category__';
+
+/**
+ * Безопасное значение categoryId для списка/экспорта: только sentinel или числовой id.
+ * Любой мусор в query — undefined (не 500).
+ */
+function parseProductListCategoryId(queryVal) {
+  const s = firstQueryParam(queryVal);
+  if (s == null) return undefined;
+  if (s === FILTER_CATEGORY_NONE_TOKEN) return FILTER_CATEGORY_NONE_TOKEN;
+  if (/^\d+$/.test(s)) return s;
+  return undefined;
+}
+
+/** Только числовой brand_id для SQL bigint. */
+function parseProductListBrandId(queryVal) {
+  const s = firstQueryParam(queryVal);
+  if (s == null || !/^\d+$/.test(s)) return undefined;
+  return s;
+}
+
 class ProductsController {
   constructor() {
     const __filename = fileURLToPath(import.meta.url);
@@ -40,9 +71,8 @@ class ProductsController {
       if (req.query.organizationId != null && String(req.query.organizationId).trim() !== '') {
         filters.organizationId = String(req.query.organizationId).trim();
       }
-      if (req.query.categoryId != null && String(req.query.categoryId).trim() !== '') {
-        filters.categoryId = String(req.query.categoryId).trim();
-      }
+      const cat = parseProductListCategoryId(req.query.categoryId);
+      if (cat != null) filters.categoryId = cat;
       if (req.query.search != null && String(req.query.search).trim() !== '') {
         filters.search = String(req.query.search).trim();
       }
@@ -77,8 +107,9 @@ class ProductsController {
         return res.status(403).json({ ok: false, message: 'Шаблон доступен только с привязкой к аккаунту' });
       }
       const filters = {};
-      if (req.query.categoryId != null && String(req.query.categoryId).trim() !== '') {
-        filters.categoryId = String(req.query.categoryId).trim();
+      const catTpl = parseProductListCategoryId(req.query.categoryId);
+      if (catTpl != null && catTpl !== FILTER_CATEGORY_NONE_TOKEN) {
+        filters.categoryId = catTpl;
       }
       if (tid != null) {
         filters.profileId = tid;
@@ -137,8 +168,10 @@ class ProductsController {
       if (req.query.organizationId != null && req.query.organizationId !== '') {
         options.organizationId = req.query.organizationId;
       }
-      if (req.query.brandId != null && req.query.brandId !== '') options.brandId = req.query.brandId;
-      if (req.query.categoryId != null && req.query.categoryId !== '') options.categoryId = req.query.categoryId;
+      const brandParsed = parseProductListBrandId(req.query.brandId);
+      if (brandParsed != null) options.brandId = brandParsed;
+      const catParsed = parseProductListCategoryId(req.query.categoryId);
+      if (catParsed != null) options.categoryId = catParsed;
       if (req.query.search != null && req.query.search !== '') options.search = req.query.search;
       if (req.query.productType != null && String(req.query.productType).trim() !== '') {
         options.productType = String(req.query.productType).trim();

@@ -11,6 +11,7 @@
 
 import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 import ordersService from './orders.service.js';
 
 // Anti-duplicate scans (in-memory): receiptId|barcode -> ts.
@@ -204,18 +205,15 @@ async function addIncomingDeltaForPurchaseInTx(client, purchaseId, productId, de
     'UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
     [newIncoming, pid]
   );
-  await client.query(
-    `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, profile_id)
-     VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6)`,
-    [
-      pid,
-      d,
-      newIncoming,
-      `Закупка №${purchaseId} — ожидание`,
-      JSON.stringify({ purchase_id: purchaseId }),
-      profileId,
-    ]
-  );
+  await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+    productId: pid,
+    type: 'incoming',
+    quantityChange: d,
+    reason: `Закупка №${purchaseId} — ожидание`,
+    meta: { purchase_id: purchaseId },
+    warehouseId: null,
+    profileId,
+  });
 }
 
 /** Снять incoming по ещё не принятой части удаляемой строки закупки. */
@@ -234,18 +232,15 @@ async function subtractIncomingForPurchaseLineRemovalInTx(client, purchaseId, pr
     'UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
     [newIncoming, pid]
   );
-  await client.query(
-    `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, profile_id)
-     VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6)`,
-    [
-      pid,
-      -rem,
-      newIncoming,
-      `Снятие ожидания при удалении строки закупки №${purchaseId}`,
-      JSON.stringify({ purchase_id: purchaseId, line_removed: true }),
-      profileIdForMove,
-    ]
-  );
+  await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+    productId: pid,
+    type: 'incoming',
+    quantityChange: -rem,
+    reason: `Снятие ожидания при удалении строки закупки №${purchaseId}`,
+    meta: { purchase_id: purchaseId, line_removed: true },
+    warehouseId: null,
+    profileId: profileIdForMove,
+  });
 }
 
 async function ensureWarehouseReceiptForPurchaseReceiptInTx(client, { purchaseId, purchaseReceiptId } = {}) {
@@ -469,26 +464,20 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
           [ch, pid]
         );
       }
-      const balRow = await client.query('SELECT quantity FROM products WHERE id = $1', [pid]);
-      const balanceAfter = balRow.rows?.[0]?.quantity != null ? Number(balRow.rows[0].quantity) : 0;
-      await client.query(
-        `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-         VALUES ($1, 'receipt', $2, $3, $4, $5::jsonb, $6, $7)`,
-        [
-          pid,
-          -ch,
-          balanceAfter,
-          `Сторно: откат приёмки №${rid}`,
-          JSON.stringify({
-            storno: true,
-            purchase_id: purchaseId,
-            purchase_receipt_id: rid,
-            reversal_of: m.id,
-          }),
-          wh && Number.isFinite(wh) ? wh : null,
-          profileIdForMove,
-        ]
-      );
+      await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+        productId: pid,
+        type: 'receipt',
+        quantityChange: -ch,
+        reason: `Сторно: откат приёмки №${rid}`,
+        meta: {
+          storno: true,
+          purchase_id: purchaseId,
+          purchase_receipt_id: rid,
+          reversal_of: m.id,
+        },
+        warehouseId: wh && Number.isFinite(wh) ? wh : null,
+        profileId: profileIdForMove,
+      });
     } else if (m.type === 'incoming' && ch < 0) {
       touchedProducts.add(pid);
       const addBack = -ch;
@@ -497,26 +486,20 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
         `UPDATE products SET incoming_quantity = COALESCE(incoming_quantity, 0) + $1::int, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
         [addBack, pid]
       );
-      const incRow = await client.query('SELECT incoming_quantity FROM products WHERE id = $1', [pid]);
-      const newInc = incRow.rows?.[0]?.incoming_quantity != null ? Number(incRow.rows[0].incoming_quantity) : 0;
-      await client.query(
-        `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-         VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6, $7)`,
-        [
-          pid,
-          addBack,
-          newInc,
-          `Сторно: возврат ожидания (incoming) по приёмке №${rid}`,
-          JSON.stringify({
-            storno: true,
-            purchase_id: purchaseId,
-            purchase_receipt_id: rid,
-            reversal_of: m.id,
-          }),
-          wh && Number.isFinite(wh) ? wh : null,
-          profileIdForMove,
-        ]
-      );
+      await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+        productId: pid,
+        type: 'incoming',
+        quantityChange: addBack,
+        reason: `Сторно: возврат ожидания (incoming) по приёмке №${rid}`,
+        meta: {
+          storno: true,
+          purchase_id: purchaseId,
+          purchase_receipt_id: rid,
+          reversal_of: m.id,
+        },
+        warehouseId: wh && Number.isFinite(wh) ? wh : null,
+        profileId: profileIdForMove,
+      });
     }
   }
   for (const [productId, qty] of byProductReceived) {
@@ -601,18 +584,15 @@ async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
       `UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
       [newIncoming, productId]
     );
-    await client.query(
-      `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, profile_id)
-       VALUES ($1, 'incoming', $2, $3, $4, $5::jsonb, $6)`,
-      [
-        productId,
-        -rem,
-        newIncoming,
-        `Сторно: снятие ожидания при удалении закупки №${purchaseId}`,
-        JSON.stringify({ storno: true, purchase_id: purchaseId, purchase_deleted: true }),
-        profileIdForMove,
-      ]
-    );
+    await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+      productId,
+      type: 'incoming',
+      quantityChange: -rem,
+      reason: `Сторно: снятие ожидания при удалении закупки №${purchaseId}`,
+      meta: { storno: true, purchase_id: purchaseId, purchase_deleted: true },
+      warehouseId: null,
+      profileId: profileIdForMove,
+    });
   }
 }
 
@@ -1763,11 +1743,58 @@ class PurchasesService {
             'UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
             [newIncoming, productId]
           );
+          await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+            productId,
+            type: 'receipt',
+            quantityChange: moveQty,
+            reason: `Приёмка по закупке №${purchaseId}`,
+            meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
+            warehouseId: dwId || null,
+            profileId: pid,
+          });
+          await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+            productId,
+            type: 'incoming',
+            quantityChange: -moveQty,
+            reason: `Списание incoming по приёмке №${rid}`,
+            meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
+            warehouseId: dwId || null,
+            profileId: pid,
+          });
         } else if (!dwId) {
-          await client.query(
-            'UPDATE products SET quantity = $1, incoming_quantity = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-            [newActual, newIncoming, productId]
-          );
+          if (moveQty > 0) {
+            await client.query(
+              'UPDATE products SET quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+              [newActual, productId]
+            );
+            await client.query(
+              'UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+              [newIncoming, productId]
+            );
+            await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+              productId,
+              type: 'receipt',
+              quantityChange: moveQty,
+              reason: `Приёмка по закупке №${purchaseId}`,
+              meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
+              warehouseId: null,
+              profileId: pid,
+            });
+            await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+              productId,
+              type: 'incoming',
+              quantityChange: -moveQty,
+              reason: `Списание incoming по приёмке №${rid}`,
+              meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
+              warehouseId: null,
+              profileId: pid,
+            });
+          } else {
+            await client.query(
+              'UPDATE products SET quantity = $1, incoming_quantity = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+              [newActual, newIncoming, productId]
+            );
+          }
         } else {
           await client.query(
             'UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
@@ -1781,41 +1808,6 @@ class PurchasesService {
           'UPDATE purchase_items SET received_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE purchase_id = $2 AND product_id = $3',
           [newReceived, purchaseId, productId]
         );
-
-        // movements: actual receipt (+moveQty) and incoming consumption (-moveQty)
-        if (moveQty > 0) {
-          const balRow = await client.query('SELECT quantity FROM products WHERE id = $1', [productId]);
-          const balanceActual =
-            balRow.rows?.[0]?.quantity != null ? Number(balRow.rows[0].quantity) : newActual;
-          await client.query(
-            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-             VALUES ($1, 'receipt', $2, $3, $4, $5, $6, $7)`,
-            [
-              productId,
-              moveQty,
-              balanceActual,
-              `Приёмка по закупке №${purchaseId}`,
-              JSON.stringify({ purchase_id: purchaseId, purchase_receipt_id: rid }),
-              dwId || null,
-              pid,
-            ]
-          );
-        }
-        if (moveQty > 0) {
-          await client.query(
-            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-             VALUES ($1, 'incoming', $2, $3, $4, $5, $6, $7)`,
-            [
-              productId,
-              -moveQty,
-              newIncoming,
-              `Списание incoming по приёмке №${rid}`,
-              JSON.stringify({ purchase_id: purchaseId, purchase_receipt_id: rid }),
-              dwId || null,
-              pid,
-            ]
-          );
-        }
 
         deltas.push({
           productId,
@@ -2195,21 +2187,15 @@ class PurchasesService {
           } else {
             await addToDefaultWarehouseStock(client, line.productId, d);
           }
-          const na = await client.query('SELECT quantity FROM products WHERE id = $1', [line.productId]);
-          const newActual = na.rows?.[0]?.quantity != null ? Number(na.rows[0].quantity) : 0;
-          await client.query(
-            `INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, reason, meta, warehouse_id, profile_id)
-             VALUES ($1, 'receipt', $2, $3, $4, $5, $6, $7)`,
-            [
-              line.productId,
-              line.quantity,
-              newActual,
-              `Излишки по закупке №${purchaseId}`,
-              JSON.stringify({ purchase_id: purchaseId, purchase_receipt_id: rid, extra: true }),
-              receiptWarehouseId || null,
-              pid,
-            ]
-          );
+          await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+            productId: line.productId,
+            type: 'receipt',
+            quantityChange: line.quantity,
+            reason: `Излишки по закупке №${purchaseId}`,
+            meta: { purchase_id: purchaseId, purchase_receipt_id: rid, extra: true },
+            warehouseId: receiptWarehouseId || null,
+            profileId: pid,
+          });
         }
         await client.query('UPDATE purchase_receipts SET extras_resolved = true, updated_at = CURRENT_TIMESTAMP WHERE id = $1', [rid]);
         return { ok: true, action: 'accept', extras };

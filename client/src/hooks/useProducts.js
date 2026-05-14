@@ -39,6 +39,7 @@ export function useProducts(options = {}) {
       }
       const params = { cacheBust: true };
       if (opts.organizationId != null && opts.organizationId !== '') params.organizationId = opts.organizationId;
+      if (opts.brandId != null && opts.brandId !== '') params.brandId = String(opts.brandId);
       if (opts.categoryId != null && opts.categoryId !== '') params.categoryId = opts.categoryId;
       if (opts.search != null && String(opts.search).trim() !== '') params.search = String(opts.search).trim();
       if (opts.productType != null && String(opts.productType).trim() !== '') {

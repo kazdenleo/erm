@@ -90,6 +90,18 @@ class PlatformMarketplaceNotificationsRepositoryPG {
     );
     return { rows: result.rows.map(rowEventToApi), total };
   }
+
+  /** Последние события без COUNT — для ленты уведомлений пользователя. */
+  async listRecentEvents({ limit = 25 } = {}) {
+    const lim = Math.min(Math.max(Number(limit) || 25, 1), 100);
+    const result = await query(
+      `SELECT * FROM platform_marketplace_events
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [lim]
+    );
+    return result.rows.map(rowEventToApi);
+  }
 }
 
 export default new PlatformMarketplaceNotificationsRepositoryPG();

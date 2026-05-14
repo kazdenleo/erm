@@ -53,7 +53,13 @@ function normalizeMarketplaceCardTextFields(obj) {
 }
 
 async function loadCategoryMappingsMapById(categoryIds) {
-  const unique = [...new Set((categoryIds || []).map((x) => String(x).trim()).filter(Boolean))];
+  const unique = [
+    ...new Set(
+      (categoryIds || [])
+        .map((x) => String(x).trim())
+        .filter((x) => x && x !== '__no_category__')
+    ),
+  ];
   if (unique.length === 0) return {};
   try {
     const r = await query(

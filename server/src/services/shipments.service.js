@@ -106,6 +106,44 @@ async function saveLocalShipments(shipments) {
 }
 
 /**
+ * Перед созданием новой поставки: в ERM храним только открытые и закрытые до следующего создания.
+ * Удаляем из локального JSON закрытые поставки того же МП и того же scope (профиль/организация), файл QR — с диска.
+ */
+async function pruneClosedLocalShipmentsForNewCreate(marketplaceCode, { profileId = null, organizationId = null } = {}) {
+  const org = normalizeOrgId(organizationId);
+  const all = await getLocalShipments();
+  const next = [];
+  for (const s of all) {
+    const isLocal = s?.id && String(s.id).startsWith('ship-');
+    const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
+    const drop =
+      isLocal &&
+      m === marketplaceCode &&
+      s.closed === true &&
+      shipmentVisibleForScope(s, profileId, org);
+    if (drop) {
+      try {
+        if (s.qrStickerPath) {
+          const abs = join(DATA_DIR, s.qrStickerPath);
+          if (fs.existsSync(abs)) fs.unlinkSync(abs);
+        }
+      } catch (e) {
+        logger.warn('[Shipments] prune closed: unlink sticker', e.message);
+      }
+      continue;
+    }
+    next.push(s);
+  }
+  if (next.length !== all.length) {
+    await saveLocalShipments(next);
+    logger.info(
+      `[Shipments] Pruned ${all.length - next.length} closed local shipment(s) for ${marketplaceCode} before new create`
+    );
+  }
+  return next;
+}
+
+/**
  * Список поставок: Ozon/Яндекс — из локального хранилища; WB — с маркетплейса + локальные (созданные через нас).
  */
 async function getShipments({ profileId, organizationId } = {}) {
@@ -203,6 +241,7 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
     throw err;
   }
 
+  await pruneClosedLocalShipmentsForNewCreate(code, { profileId, organizationId });
   const shipments = await getLocalShipments();
   const id = generateId();
   const now = new Date().toISOString();
@@ -322,13 +361,20 @@ async function closeShipment(shipmentId, { profileId = null, organizationId = nu
       const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
       if (wbConfig?.api_key) {
         await wbDeliverSupply(wbConfig, ship.externalId);
-        const barcodeBase64 = await wbGetSupplyBarcode(wbConfig, ship.externalId, 'png');
+        let barcodeBase64 = null;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          if (attempt > 0) await sleep(600);
+          barcodeBase64 = await wbGetSupplyBarcode(wbConfig, ship.externalId, 'png');
+          if (barcodeBase64) break;
+        }
         if (barcodeBase64) {
           if (!fs.existsSync(SHIPMENT_STICKERS_DIR)) fs.mkdirSync(SHIPMENT_STICKERS_DIR, { recursive: true });
           const safeName = `${(ship.id || ship.externalId).replace(/[^a-zA-Z0-9-_]/g, '_')}.png`;
           const filePath = join(SHIPMENT_STICKERS_DIR, safeName);
           fs.writeFileSync(filePath, Buffer.from(barcodeBase64, 'base64'));
           ship.qrStickerPath = `shipment-stickers/${safeName}`;
+        } else {
+          logger.warn('[Shipments] WB supply barcode empty after deliver (retries exhausted)', ship.externalId);
         }
       }
     } catch (e) {

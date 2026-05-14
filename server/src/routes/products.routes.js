@@ -79,6 +79,12 @@ router.get(
   wrapAsync(stockMovementsController.getHistory.bind(stockMovementsController))
 );
 
+router.get(
+  '/:id/stock-reserved-orders',
+  validateProductId,
+  wrapAsync(stockMovementsController.getReservedOrders.bind(stockMovementsController))
+);
+
 // Изображения товара (должны быть ДО PUT /:id)
 router.get(
   '/:id/images',

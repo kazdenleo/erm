@@ -10,6 +10,44 @@ import { query, transaction } from '../config/database.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
+import platformMpNotificationsRepo, {
+  isMissingRelationError as isMissingMpNotificationsRelationError
+} from '../repositories/platform_marketplace_notifications.repository.pg.js';
+
+function marketplaceEventSourceLabel(source) {
+  const s = String(source || '').toLowerCase().trim();
+  if (s === 'ozon') return 'Ozon';
+  if (s === 'wildberries' || s === 'wb') return 'Wildberries';
+  if (s === 'yandex' || s.startsWith('yandex')) return 'Яндекс Маркет';
+  if (!s || s === 'unknown') return 'Маркетплейс';
+  return String(source || 'Маркетплейс');
+}
+
+function marketplaceEventBodyText(payload, eventType) {
+  const lines = [];
+  if (eventType) lines.push(`Тип события: ${eventType}`);
+  if (payload && typeof payload === 'object') {
+    for (const k of ['title', 'message', 'text', 'body', 'description', 'news', 'content', 'detail']) {
+      const v = payload[k];
+      if (typeof v === 'string' && v.trim()) {
+        lines.push(v.trim());
+        break;
+      }
+    }
+    if (lines.length <= (eventType ? 1 : 0)) {
+      try {
+        const s = JSON.stringify(payload);
+        lines.push(s.length > 900 ? `${s.slice(0, 900)}…` : s);
+      } catch {
+        lines.push('(не удалось разобрать тело уведомления)');
+      }
+    }
+  } else if (payload != null && payload !== '') {
+    lines.push(String(payload).slice(0, 900));
+  }
+  const text = lines.join('\n').trim();
+  return text || 'Входящее уведомление от маркетплейса (см. тип и источник).';
+}
 
 class IntegrationsService {
   constructor() {
@@ -639,6 +677,44 @@ class IntegrationsService {
         out.push(...runtime.filter((n) => !shouldHideAsStale(n)));
       }
     } catch (_) {}
+
+    // Новости/события маркетплейсов (журнал platform_marketplace_events — те же данные, что в супер-админе)
+    if (this.usePostgreSQL) {
+      try {
+        const events = await platformMpNotificationsRepo.listRecentEvents({ limit: 25 });
+        if (Array.isArray(events)) {
+          for (const ev of events) {
+            if (!ev?.id) continue;
+            const srcRaw = String(ev.source || '').toLowerCase().trim();
+            const mp =
+              srcRaw === 'ozon' || srcRaw === 'wildberries' || srcRaw === 'wb' || srcRaw === 'yandex'
+                ? srcRaw === 'wb'
+                  ? 'wildberries'
+                  : srcRaw
+                : undefined;
+            const label = marketplaceEventSourceLabel(ev.source);
+            const title = ev.eventType
+              ? `${label}: ${ev.eventType}`
+              : `Событие от ${label}`;
+            out.push({
+              id: `mp_event_${ev.id}`,
+              type: 'marketplace_event',
+              severity: 'info',
+              title,
+              message: marketplaceEventBodyText(ev.payload, ev.eventType),
+              marketplace: mp || undefined,
+              source: ev.source,
+              event_type: ev.eventType || null,
+              created_at: ev.createdAt ? new Date(ev.createdAt).toISOString() : null
+            });
+          }
+        }
+      } catch (e) {
+        if (!isMissingMpNotificationsRelationError(e)) {
+          logger.warn('[Integrations Service] marketplace events for notifications:', e?.message || e);
+        }
+      }
+    }
 
     // сортировка: error выше warn
     const prio = { error: 0, warn: 1, info: 2 };
