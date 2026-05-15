@@ -786,6 +786,13 @@ export function WarehouseStocks() {
         warehouseScoped: true
       });
       const data = res?.data ?? res;
+      if (res?.status === 202 || data?.inProgress) {
+        window.alert(
+          data?.message ||
+            'Отправка остатков на маркетплейсы запущена в фоне. Подождите 5–30 минут и проверьте остатки в личных кабинетах Ozon / WB / Яндекс.'
+        );
+        return;
+      }
       const pushed = data?.pushed ?? 0;
       const failed = data?.failed ?? 0;
       const skipped = data?.skipped ?? 0;

@@ -26,6 +26,14 @@ export const marketplaceStockApi = {
       warehouseId: warehouseId ?? null,
       warehouseScoped: warehouseScoped === true
     });
-    return response.data;
+    return {
+      status: response.status,
+      data: response.data?.data ?? response.data
+    };
+  },
+
+  getSyncStatus: async () => {
+    const response = await api.get('/marketplace-stock/sync/status');
+    return response.data?.data ?? response.data;
   }
 };

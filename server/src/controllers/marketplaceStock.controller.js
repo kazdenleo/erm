@@ -38,13 +38,75 @@ class MarketplaceStockController {
           message: 'Укажите warehouseId — остатки отправляются на МП, привязанные к этому складу'
         });
       }
+
+      const idsList = Array.isArray(productIds) ? productIds : [];
+      const useBackground =
+        warehouseScoped === true || idsList.length > Number(process.env.MP_STOCK_PUSH_INLINE_MAX || 25);
+
+      if (useBackground) {
+        const { startMpStockPushInBackground, getMpStockPushStatus } = await import(
+          '../services/marketplaceStockPush.job.js'
+        );
+        const { findOrganizationMarketplaceLinkedProductIds } = await import(
+          '../services/marketplaceWarehouseStockSync.service.js'
+        );
+
+        const status = getMpStockPushStatus();
+        if (status.inProgress) {
+          return res.status(200).json({
+            ok: true,
+            data: {
+              inProgress: true,
+              started: false,
+              message:
+                'Отправка остатков на маркетплейсы уже выполняется. Подождите несколько минут и обновите страницу.'
+            }
+          });
+        }
+
+        let productsTotal = idsList.length;
+        if (warehouseScoped === true) {
+          const allIds = await findOrganizationMarketplaceLinkedProductIds(organizationId);
+          productsTotal = allIds.length;
+        }
+
+        const started = startMpStockPushInBackground(organizationId, {
+          productIds: warehouseScoped === true ? undefined : idsList,
+          warehouseId: warehouseId ?? null,
+          warehouseScoped: warehouseScoped === true,
+          source: 'api_bulk',
+          productsTotal
+        });
+
+        return res.status(202).json({
+          ok: true,
+          data: {
+            inProgress: true,
+            started: started.started,
+            productsTotal,
+            message: `Отправка остатков запущена в фоне${productsTotal ? ` (~${productsTotal} товаров)` : ''}. Это может занять 5–30 минут — затем проверьте остатки на маркетплейсах.`
+          }
+        });
+      }
+
       const result = await syncOrganizationWarehouseStockToMarketplaces(organizationId, {
-        productIds: warehouseScoped === true ? undefined : Array.isArray(productIds) ? productIds : undefined,
+        productIds: idsList.length > 0 ? idsList : undefined,
         warehouseId: warehouseId ?? null,
         warehouseScoped: warehouseScoped === true,
-        source: 'api_bulk'
+        source: 'api_bulk',
+        includeDetails: true
       });
       return res.status(200).json({ ok: true, data: result });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  /** GET /api/marketplace-stock/sync/status */
+  async syncStatus(req, res, next) {
+    try {
+      const { getMpStockPushStatus } = await import('../services/marketplaceStockPush.job.js');
+      return res.status(200).json({ ok: true, data: getMpStockPushStatus() });
     } catch (e) {
       next(e);
     }

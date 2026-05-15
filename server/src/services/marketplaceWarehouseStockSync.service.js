@@ -375,40 +375,16 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
   }
 
   if (productIds && productIds.length > 0) {
-    const summary = {
-      pushed: 0,
-      failed: 0,
-      skipped: 0,
-      skipReasons: {},
-      noMappings: 0,
-      policySkipped: 0,
-      productsTouched: 0,
-      productsTotal: productIds.length,
-      warehouseId: warehouseId ?? null,
+    return runBulkWarehouseStockSync(productIds, organizationId, {
+      warehouseId,
+      strictWarehouse,
       warehouseScoped,
+      source: opts.source || (warehouseScoped ? 'bulk_org_warehouse' : 'bulk'),
       marketplaces: opts._warehouseMarketplaces
         ? opts._warehouseMarketplaces.map((mp) => MP_LABELS[mp] || mp)
         : undefined,
-      results: []
-    };
-    for (const pid of productIds) {
-      const r = await syncWarehouseStockToMarketplaces(pid, {
-        organizationId,
-        source: opts.source || (warehouseScoped ? 'bulk_org_warehouse' : 'bulk'),
-        warehouseId: warehouseId ?? null,
-        strictWarehouse
-      });
-      tallySyncResult(summary, r);
-      summary.results.push({ productId: pid, ...r });
-    }
-    summary.skipReasonsText = formatSkipReasonsSummary(summary.skipReasons);
-    if (summary.noMappings > 0 && summary.pushed === 0 && summary.failed === 0) {
-      summary.message =
-        'Нет сопоставления складов ERP ↔ маркетплейс. Настройте в разделе «Склады» → сопоставление с Ozon / WB / Яндекс.';
-    } else if (warehouseScoped && summary.marketplaces?.length) {
-      summary.message = `Склад ERP → ${summary.marketplaces.join(', ')}. Обработано товаров: ${summary.productsTotal}.`;
-    }
-    return { skipped: false, organizationId, ...summary };
+      includeDetails: opts.includeDetails === true
+    });
   }
 
   const gate = await assertMarketplaceStockPushAllowed({
@@ -431,6 +407,88 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
     productIds: ids,
     source: opts.source || 'bulk_org'
   });
+}
+
+/**
+ * Параллельная массовая отправка (не блокирует HTTP при фоновом job).
+ */
+export async function runBulkWarehouseStockSync(productIds, organizationId, opts = {}) {
+  const ids = [
+    ...new Set(
+      (productIds || [])
+        .map((id) => (typeof id === 'string' ? parseInt(id, 10) : Number(id)))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    )
+  ];
+
+  const summary = {
+    organizationId,
+    pushed: 0,
+    failed: 0,
+    skipped: 0,
+    skipReasons: {},
+    noMappings: 0,
+    policySkipped: 0,
+    productsTouched: 0,
+    productsTotal: ids.length,
+    warehouseId: opts.warehouseId ?? null,
+    warehouseScoped: opts.warehouseScoped === true,
+    marketplaces: opts.marketplaces,
+    results: opts.includeDetails === true ? [] : undefined
+  };
+
+  if (ids.length === 0) {
+    return summary;
+  }
+
+  const concurrency = Math.max(
+    1,
+    Math.min(12, parseInt(process.env.MP_STOCK_PUSH_CONCURRENCY || '4', 10) || 4)
+  );
+  let index = 0;
+
+  const worker = async () => {
+    while (index < ids.length) {
+      const pid = ids[index++];
+      try {
+        const r = await syncWarehouseStockToMarketplaces(pid, {
+          organizationId,
+          source: opts.source || 'bulk',
+          warehouseId: opts.warehouseId ?? null,
+          strictWarehouse: opts.strictWarehouse === true
+        });
+        tallySyncResult(summary, r);
+        if (opts.includeDetails === true && Array.isArray(summary.results)) {
+          summary.results.push({ productId: pid, ...r });
+        }
+      } catch (e) {
+        summary.failed += 1;
+        logger.warn(`[MP Stock Push] bulk product ${pid}:`, e?.message || e);
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, ids.length) }, () => worker())
+  );
+
+  summary.skipReasonsText = formatSkipReasonsSummary(summary.skipReasons);
+  if (summary.noMappings > 0 && summary.pushed === 0 && summary.failed === 0) {
+    summary.message =
+      'Нет сопоставления складов ERP ↔ маркетплейс. Настройте в разделе «Склады» → сопоставление с Ozon / WB / Яндекс.';
+  } else if (summary.warehouseScoped && summary.marketplaces?.length) {
+    summary.message = `Склад ERP → ${summary.marketplaces.join(', ')}. Обработано товаров: ${summary.productsTotal}.`;
+  }
+
+  logger.info('[MP Stock Push] bulk sync done', {
+    organizationId,
+    productsTotal: ids.length,
+    pushed: summary.pushed,
+    failed: summary.failed,
+    skipped: summary.skipped
+  });
+
+  return summary;
 }
 
 const mpSyncDebounceTimers = new Map();
@@ -518,6 +576,7 @@ export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) 
 export default {
   syncWarehouseStockToMarketplaces,
   syncOrganizationWarehouseStockToMarketplaces,
+  runBulkWarehouseStockSync,
   syncMarketplaceStocksForProductIds,
   scheduleWarehouseStockMarketplaceSync,
   formatSkipReasonsSummary,

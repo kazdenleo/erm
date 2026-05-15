@@ -16,5 +16,9 @@ router.post(
   wrapAsync(marketplaceStockController.syncProduct.bind(marketplaceStockController))
 );
 router.post('/sync', wrapAsync(marketplaceStockController.syncBulk.bind(marketplaceStockController)));
+router.get(
+  '/sync/status',
+  wrapAsync(marketplaceStockController.syncStatus.bind(marketplaceStockController))
+);
 
 export default router;
