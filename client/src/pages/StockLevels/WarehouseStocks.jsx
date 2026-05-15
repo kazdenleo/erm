@@ -124,6 +124,22 @@ function formatAfterDeltaSmart(after, prev, m, column) {
   return formatAfterDelta(after, eff);
 }
 
+/** Доступно к продаже после операции: наличие + в пути − резерв (как в таблице остатков). */
+function availableFromSnapshot(snap) {
+  if (!snap) return null;
+  const bal = snap.bal != null && !Number.isNaN(Number(snap.bal)) ? Number(snap.bal) : null;
+  const inc = snap.inc != null && !Number.isNaN(Number(snap.inc)) ? Number(snap.inc) : null;
+  const res = snap.res != null && !Number.isNaN(Number(snap.res)) ? Number(snap.res) : null;
+  if (bal == null && inc == null && res == null) return null;
+  return (bal ?? 0) + (inc ?? 0) - (res ?? 0);
+}
+
+function formatAvailableHistoryCell(curSnap, prevSnap) {
+  const after = availableFromSnapshot(curSnap);
+  const prev = availableFromSnapshot(prevSnap);
+  return formatAfterDelta(after, prev);
+}
+
 const HISTORY_REASON_MAX_LEN = 96;
 
 /** Ключ «одно время» как в колонке истории (ru-RU, без секунд) — иначе два резерва в одну минуту не схлопываются. */
@@ -1473,6 +1489,7 @@ export function WarehouseStocks() {
                   <th>В пути</th>
                   <th>Резерв</th>
                   <th>Наличие</th>
+                  <th>Доступно</th>
                 </tr>
               </thead>
               <tbody>
@@ -1485,6 +1502,7 @@ export function WarehouseStocks() {
                   const incCell = formatAfterDeltaSmart(cur.inc, prev?.inc, mInferInc, 'inc');
                   const resCell = formatAfterDeltaSmart(cur.res, prev?.res, mInferRes, 'res');
                   const balCell = formatAfterDeltaSmart(cur.bal, prev?.bal, mInferBal, 'bal');
+                  const availCell = formatAvailableHistoryCell(cur, prev);
 
                   if (item.kind === 'outboundGroup') {
                     const oids = orderIdsFromOutboundMovements(item.movements);
@@ -1512,6 +1530,7 @@ export function WarehouseStocks() {
                           </button>
                         </td>
                         <td>{renderStockHistoryQtyCell(balCell)}</td>
+                        <td>{renderStockHistoryQtyCell(availCell)}</td>
                       </tr>
                     );
                   }
@@ -1561,6 +1580,7 @@ export function WarehouseStocks() {
                           </button>
                         </td>
                         <td>{renderStockHistoryQtyCell(balCell)}</td>
+                        <td>{renderStockHistoryQtyCell(availCell)}</td>
                       </tr>
                     );
                   }
@@ -1602,6 +1622,7 @@ export function WarehouseStocks() {
                         </button>
                       </td>
                       <td>{renderStockHistoryQtyCell(balCell)}</td>
+                      <td>{renderStockHistoryQtyCell(availCell)}</td>
                     </tr>
                   );
                 })}

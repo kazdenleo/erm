@@ -283,8 +283,12 @@
 
 .stock-levels-history-table th:nth-child(3),
 .stock-levels-history-table th:nth-child(4),
+.stock-levels-history-table th:nth-child(5),
+.stock-levels-history-table th:nth-child(6),
 .stock-levels-history-table td:nth-child(3),
-.stock-levels-history-table td:nth-child(4) {
+.stock-levels-history-table td:nth-child(4),
+.stock-levels-history-table td:nth-child(5),
+.stock-levels-history-table td:nth-child(6) {
   text-align: right;
 }
 
