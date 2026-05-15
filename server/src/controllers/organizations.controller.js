@@ -8,6 +8,17 @@ import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfi
 
 const repo = repositoryFactory.getOrganizationsRepository();
 
+function normalizeOrganizationBody(body) {
+  if (!body || typeof body !== 'object') return body;
+  const out = { ...body };
+  if (out.skip_marketplace_stock_sync !== undefined || out.skipMarketplaceStockSync !== undefined) {
+    const v = out.skip_marketplace_stock_sync ?? out.skipMarketplaceStockSync;
+    out.skip_marketplace_stock_sync = v === true || v === 'true' || v === 1 || v === '1';
+    delete out.skipMarketplaceStockSync;
+  }
+  return out;
+}
+
 export const organizationsController = {
   async getAll(req, res, next) {
     try {
@@ -44,7 +55,7 @@ export const organizationsController = {
 
   async create(req, res, next) {
     try {
-      const body = { ...req.body };
+      const body = normalizeOrganizationBody({ ...req.body });
       if (req.user && req.user.role !== 'admin') {
         body.profile_id = req.user.profileId;
       }
@@ -65,7 +76,7 @@ export const organizationsController = {
       if (req.user && req.user.role !== 'admin' && existing.profile_id != null && Number(existing.profile_id) !== req.user.profileId) {
         return res.status(403).json({ ok: false, message: 'Нет доступа к этой организации' });
       }
-      const item = await repo.update(id, req.body);
+      const item = await repo.update(id, normalizeOrganizationBody(req.body));
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Организация не найдена' });
       }

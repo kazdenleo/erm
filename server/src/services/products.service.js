@@ -26,6 +26,12 @@ import {
   buildOzonDictionaryLabelToValueIdMap,
   resolveOzonAttributesDictionaryLabels
 } from './productsImport.service.js';
+import { resolveMarketplaceListingByErpSku } from './productMarketplaceLink.service.js';
+import {
+  getProductParticipation,
+  getProductParticipationBatch,
+  PRODUCT_DELETE_BLOCKED_MESSAGE,
+} from './productParticipation.service.js';
 
 const MAX_EXPORT_PRODUCTS = 25000;
 
@@ -139,13 +145,81 @@ class ProductsService {
   }
 
   async getAll(options = {}) {
-    return await this.repository.findAll(options);
+    const items = await this.repository.findAll(options);
+    return this._attachParticipationFlags(items);
   }
 
   async getPage(options = {}) {
     const items = await this.repository.findAll(options);
+    const withFlags = await this._attachParticipationFlags(items);
     const total = await this.repository.countAll(options);
-    return { items, total };
+    return { items: withFlags, total };
+  }
+
+  async _attachParticipationFlags(products) {
+    if (!Array.isArray(products) || products.length === 0) return products;
+    if (!repositoryFactory.isUsingPostgreSQL()) return products;
+    const batch = await getProductParticipationBatch(products.map((p) => p.id));
+    return products.map((p) => {
+      const info = batch.get(String(p.id)) || { hasParticipation: false, reasons: [] };
+      const isArchived = Boolean(p.is_archived);
+      return {
+        ...p,
+        isArchived,
+        hasParticipation: info.hasParticipation,
+        participationReasons: info.reasons,
+        canDelete: !info.hasParticipation && !isArchived,
+      };
+    });
+  }
+
+  async getParticipation(id) {
+    const product = await this.repository.findById(id);
+    if (!product) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+    const participation = await getProductParticipation(id);
+    const isArchived = Boolean(product.is_archived);
+    return {
+      productId: product.id,
+      isArchived,
+      ...participation,
+      canDelete: !participation.hasParticipation && !isArchived,
+    };
+  }
+
+  async archive(id) {
+    const product = await this.repository.findById(id);
+    if (!product) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+    const row = await this.repository.setArchived(id, true);
+    if (!row) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+    return await this.getByIdWithDetails(id);
+  }
+
+  async unarchive(id) {
+    const product = await this.repository.findById(id);
+    if (!product) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+    const row = await this.repository.setArchived(id, false);
+    if (!row) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+    return await this.getByIdWithDetails(id);
   }
 
   /**
@@ -648,11 +722,15 @@ class ProductsService {
   }
 
   async getByIdWithDetails(id) {
+    let product;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      return await this.repository.findByIdWithDetails(id);
+      product = await this.repository.findByIdWithDetails(id);
     } else {
-      return await this.getById(id);
+      product = await this.getById(id);
     }
+    if (!product) return null;
+    const [withFlags] = await this._attachParticipationFlags([product]);
+    return withFlags;
   }
 
   /**
@@ -892,11 +970,16 @@ class ProductsService {
       Object.prototype.hasOwnProperty.call(updates, 'sku_ym');
     if (mpSkuTouched) {
       const toStr = (v) => (v != null && String(v).trim() !== '') ? String(v).trim() : null;
-      updates.marketplace_skus = {
-        ozon: toStr(updates.sku_ozon),
-        wb: toStr(updates.sku_wb),
-        ym: toStr(updates.sku_ym)
-      };
+      updates.marketplace_skus = {};
+      if (Object.prototype.hasOwnProperty.call(updates, 'sku_ozon')) {
+        updates.marketplace_skus.ozon = toStr(updates.sku_ozon);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'sku_wb')) {
+        updates.marketplace_skus.wb = toStr(updates.sku_wb);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'sku_ym')) {
+        updates.marketplace_skus.ym = toStr(updates.sku_ym);
+      }
       if (updates.marketplace_skus.ozon) {
         const explicit = updates.marketplace_ozon_product_id;
         if (
@@ -961,13 +1044,28 @@ class ProductsService {
   }
 
   async delete(id) {
+    const product = await this.repository.findById(id);
+    if (!product) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const participation = await getProductParticipation(id);
+    if (participation.hasParticipation) {
+      const error = new Error(PRODUCT_DELETE_BLOCKED_MESSAGE);
+      error.statusCode = 409;
+      error.details = { reasons: participation.reasons, kinds: participation.kinds };
+      throw error;
+    }
+
     const deleted = await this.repository.delete(id);
     if (!deleted) {
       const error = new Error('Товар не найден');
       error.statusCode = 404;
       throw error;
     }
-    return deleted;
+    return { id, deleted: true };
   }
 
   async count(options = {}) {
@@ -1071,6 +1169,45 @@ class ProductsService {
       console.error('[Products Service] Error in refreshSupplierStocks:', error.message);
       throw error;
     }
+  }
+
+  /**
+   * Связать товар ERP с карточкой на маркетплейсе по артикулу ERP (кабинет организации).
+   * @param {number|string} productId
+   * @param {'ozon'|'wb'|'ym'|string} marketplace
+   * @param {{ profileId?: number|string|null }} [options]
+   */
+  async linkProductToMarketplace(productId, marketplace, options = {}) {
+    const product = await this.getById(productId);
+    if (!product) {
+      const err = new Error('Товар не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+    const orgId = product.organization_id ?? product.organizationId;
+    const erpSku = product.sku;
+    const resolved = await resolveMarketplaceListingByErpSku({
+      marketplace,
+      erpSku,
+      profileId: options.profileId ?? product.profile_id ?? product.profileId ?? null,
+      organizationId: orgId
+    });
+
+    const updates = {
+      mp_linked: { [resolved.marketplace]: true }
+    };
+    if (resolved.marketplace === 'ozon') {
+      updates.sku_ozon = resolved.sku_ozon;
+      updates.marketplace_ozon_product_id = resolved.marketplace_ozon_product_id;
+    } else if (resolved.marketplace === 'wb') {
+      updates.sku_wb = resolved.sku_wb;
+      if (resolved.mp_wb_vendor_code) updates.mp_wb_vendor_code = resolved.mp_wb_vendor_code;
+    } else if (resolved.marketplace === 'ym') {
+      updates.sku_ym = resolved.sku_ym;
+    }
+
+    const updated = await this.update(productId, updates);
+    return { product: updated, link: resolved };
   }
 }
 

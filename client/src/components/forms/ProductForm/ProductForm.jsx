@@ -11,18 +11,11 @@ import { integrationsApi } from '../../../services/integrations.api';
 import { productsApi } from '../../../services/products.api';
 import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
+import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
+import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
 import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
-
-/** Совпадает с productValidator.js / публичной документацией партнёрских API */
-const MP_LINK_MAX = {
-  OZON_OFFER_ID: 50,
-  OZON_PRODUCT_ID_DIGITS: 19,
-  WB_NMID: 20,
-  YM_OFFER_ID: 255,
-  WB_VENDOR_CODE: 255,
-};
 
 /** Порядок в массиве = порядок на карточке; первый элемент — главное фото. */
 function normalizeProductImagesOrder(images) {
@@ -1402,6 +1395,23 @@ export function ProductForm({
     }
   };
 
+  const handleMarketplaceLinked = (updatedProduct) => {
+    if (!updatedProduct) return;
+    setCurrentProduct(updatedProduct);
+    setFormData((prev) => ({
+      ...prev,
+      sku_ozon: updatedProduct.sku_ozon ?? prev.sku_ozon,
+      ozon_product_id:
+        updatedProduct.ozon_product_id != null && updatedProduct.ozon_product_id !== ''
+          ? String(updatedProduct.ozon_product_id)
+          : prev.ozon_product_id,
+      sku_wb: updatedProduct.sku_wb ?? prev.sku_wb,
+      mp_wb_vendor_code: updatedProduct.mp_wb_vendor_code ?? prev.mp_wb_vendor_code,
+      sku_ym: updatedProduct.sku_ym ?? prev.sku_ym,
+    }));
+    onProductUpdate?.(updatedProduct);
+  };
+
   const handleBarcodeChange = (index, value) => {
     setFormData((prev) => {
       const newBarcodes = [...prev.barcodes];
@@ -2111,116 +2121,7 @@ export function ProductForm({
         </div>
       </div>
 
-      <div
-        className="mt-3 p-3 rounded"
-        style={{ border: '1px solid rgba(0,91,255,0.22)', background: 'rgba(0,91,255,0.04)' }}
-        data-section="product-marketplace-links"
-      >
-        <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '4px', color: 'var(--text)' }}>
-          Связь с маркетплейсами
-        </h3>
-        <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '12px', lineHeight: 1.45 }}>
-          Идентификаторы из документации партнёрских API. Ограничения длины проверяются при сохранении. Расширение: кнопка «Создать на маркетплейсе»
-          — обработчик может вызвать API импорта и записать полученные ключи в таблицу <code>product_skus</code> (в т. ч. JSON-поле{' '}
-          <code>mp_extra</code> для вторичных ID вроде WB <code>chrtId</code>).
-        </p>
-        <div className="row g-3">
-          <div className="col-12">
-            <div className="fw-semibold small text-primary mb-2">Ozon Seller API</div>
-          </div>
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-ozon-offer">
-              offer_id (артикул продавца)
-            </label>
-            <input
-              id="mp-link-ozon-offer"
-              type="text"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.OZON_OFFER_ID}
-              placeholder="До 50 символов (/v2/product/import)"
-              autoComplete="off"
-              value={formData.sku_ozon}
-              onChange={(e) => handleChange('sku_ozon', e.target.value)}
-            />
-            {errors.sku_ozon && <div className="text-danger small mt-1">{errors.sku_ozon}</div>}
-          </div>
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-ozon-pid">
-              product_id (числовой ID карточки)
-            </label>
-            <input
-              id="mp-link-ozon-pid"
-              type="text"
-              inputMode="numeric"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.OZON_PRODUCT_ID_DIGITS}
-              placeholder="Подставляется после импорта или синхронизации"
-              autoComplete="off"
-              value={formData.ozon_product_id}
-              onChange={(e) => handleChange('ozon_product_id', e.target.value.replace(/\D/g, '').slice(0, MP_LINK_MAX.OZON_PRODUCT_ID_DIGITS))}
-            />
-            {errors.ozon_product_id && <div className="text-danger small mt-1">{errors.ozon_product_id}</div>}
-          </div>
-          <div className="col-12">
-            <div className="fw-semibold small text-primary mb-2">Wildberries API</div>
-          </div>
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-wb-nmid">
-              nmId (номенклатура)
-            </label>
-            <input
-              id="mp-link-wb-nmid"
-              type="text"
-              inputMode="numeric"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.WB_NMID}
-              placeholder="Например: 527548163 (числовой nmId или ваш ключ матчинга)"
-              autoComplete="off"
-              value={formData.sku_wb}
-              onChange={(e) => handleChange('sku_wb', e.target.value.slice(0, MP_LINK_MAX.WB_NMID))}
-            />
-            {errors.sku_wb && <div className="text-danger small mt-1">{errors.sku_wb}</div>}
-          </div>
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-wb-vendor">
-              vendorCode (артикул продавца)
-            </label>
-            <input
-              id="mp-link-wb-vendor"
-              type="text"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.WB_VENDOR_CODE}
-              autoComplete="off"
-              value={formData.mp_wb_vendor_code}
-              onChange={(e) => handleChange('mp_wb_vendor_code', e.target.value.slice(0, MP_LINK_MAX.WB_VENDOR_CODE))}
-            />
-            {errors.mp_wb_vendor_code && (
-              <div className="text-danger small mt-1">{errors.mp_wb_vendor_code}</div>
-            )}
-          </div>
-          <div className="col-12">
-            <div className="fw-semibold small text-primary mb-2">Яндекс Маркет Partner API</div>
-          </div>
-          <div className="col-12 col-md-6">
-            <label className="form-label" htmlFor="mp-link-ym-offer">
-              offerId / shopSku
-            </label>
-            <input
-              id="mp-link-ym-offer"
-              type="text"
-              className="form-control form-control-sm"
-              maxLength={MP_LINK_MAX.YM_OFFER_ID}
-              placeholder="1–255 символов (offerId в вашем каталоге)"
-              autoComplete="off"
-              value={formData.sku_ym}
-              onChange={(e) => handleChange('sku_ym', e.target.value.slice(0, MP_LINK_MAX.YM_OFFER_ID))}
-            />
-            {errors.sku_ym && <div className="text-danger small mt-1">{errors.sku_ym}</div>}
-          </div>
-        </div>
-      </div>
-
-      {/* Характеристики упаковки */}
+      /* Характеристики упаковки */}
       <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)' }}>
           📦 Характеристики упаковки
@@ -3051,6 +2952,16 @@ export function ProductForm({
             <span className="mp-badge ozon">OZ</span>
             Данные для Ozon
           </h4>
+          <ProductMarketplaceLinkSection
+            marketplace="ozon"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+          />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -3241,9 +3152,6 @@ export function ProductForm({
             </div>
             );
           })()}
-          <p className="small text-muted mt-2 mb-0">
-            Идентификаторы связи (offer_id, product_id) заданы во вкладке «Основное» → блок «Связь с маркетплейсами».
-          </p>
           {formData.categoryId && (
             <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(255, 107, 0, 0.06)', borderRadius: '8px', border: '1px solid rgba(255, 107, 0, 0.25)' }}>
               <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
@@ -3392,6 +3300,16 @@ export function ProductForm({
             <span className="mp-badge wb">WB</span>
             Данные для Wildberries
           </h4>
+          <ProductMarketplaceLinkSection
+            marketplace="wb"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+          />
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
@@ -3490,27 +3408,13 @@ export function ProductForm({
               </div>
             </div>
           )}
-          <p className="small text-muted mt-2 mb-0">
-            nmId и vendorCode задайте во вкладке «Основное» → «Связь с маркетплейсами».
-          </p>
-
           <div className="card mt-3 border-secondary">
-            <div className="card-header">Текст и артикул продавца для Wildberries</div>
+            <div className="card-header">Текст карточки Wildberries</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
-                Поля ниже относятся только к WB и не совпадают с названием/описанием/брендом на вкладке «Основное». Артикул ERP (<code>sku</code>) и артикул продавца на WB могут различаться.
+                Поля ниже относятся только к WB и не совпадают с названием/описанием/брендом на вкладке «Основное». Артикул продавца (vendorCode) и nmId — в блоке «Связь с маркетплейсом» выше.
               </p>
               <div className="row g-3">
-                <div className="col-md-6">
-                  <label className="form-label" htmlFor="wb-tab-vendor-sku">Артикул продавца (vendorCode)</label>
-                  <input
-                    id="wb-tab-vendor-sku"
-                    type="text"
-                    className="form-control form-control-sm"
-                    value={formData.mp_wb_vendor_code}
-                    onChange={(e) => handleChange('mp_wb_vendor_code', e.target.value)}
-                  />
-                </div>
                 <div className="col-md-6">
                   <label className="form-label" htmlFor="wb-tab-name-wb">Название (WB)</label>
                   <input
@@ -3822,9 +3726,16 @@ export function ProductForm({
             <span className="mp-badge ym">YM</span>
             Данные для Яндекс.Маркет
           </h4>
-          <p className="small text-muted mt-2 mb-0">
-            offerId задайте во вкладке «Основное» → «Связь с маркетплейсами».
-          </p>
+          <ProductMarketplaceLinkSection
+            marketplace="ym"
+            formData={formData}
+            errors={errors}
+            handleChange={handleChange}
+            productId={currentProduct?.id}
+            organizationId={formData.organizationId}
+            erpSku={formData.sku}
+            onLinked={handleMarketplaceLinked}
+          />
 
           <div className="card mt-3 border-secondary">
             <div className="card-header">Название и описание для Яндекс.Маркета</div>

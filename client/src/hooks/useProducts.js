@@ -54,6 +54,8 @@ export function useProducts(options = {}) {
       if (opts.offset != null && opts.offset !== '') {
         params.offset = Number(opts.offset);
       }
+      if (opts.includeArchived === true) params.includeArchived = true;
+      if (opts.archivedOnly === true) params.archivedOnly = true;
       const response = await productsApi.getAll(params);
       const list = Array.isArray(response?.data) ? response.data : (response?.data?.data ?? response ?? []);
       const productsList = Array.isArray(list) ? list.filter(Boolean) : [];
@@ -116,9 +118,41 @@ export function useProducts(options = {}) {
   const deleteProduct = async (id) => {
     try {
       await productsApi.delete(id);
-      setProducts(prev => prev.filter(p => p.id !== id));
+      setProducts(prev => prev.filter(p => String(p.id) !== String(id)));
     } catch (err) {
       console.error('Error deleting product:', err);
+      throw err;
+    }
+  };
+
+  const archiveProduct = async (id) => {
+    try {
+      const response = await productsApi.archive(id);
+      const updated = response?.data ?? response;
+      const idStr = String(id);
+      setProducts((prev) =>
+        prev.filter(Boolean).map((p) => (p && String(p.id) === idStr ? { ...p, ...updated, isArchived: true } : p))
+      );
+      return updated;
+    } catch (err) {
+      console.error('Error archiving product:', err);
+      throw err;
+    }
+  };
+
+  const unarchiveProduct = async (id) => {
+    try {
+      const response = await productsApi.unarchive(id);
+      const updated = response?.data ?? response;
+      const idStr = String(id);
+      setProducts((prev) =>
+        prev.filter(Boolean).map((p) =>
+          p && String(p.id) === idStr ? { ...p, ...updated, isArchived: false } : p
+        )
+      );
+      return updated;
+    } catch (err) {
+      console.error('Error unarchiving product:', err);
       throw err;
     }
   };
@@ -132,7 +166,9 @@ export function useProducts(options = {}) {
     loadProducts,
     createProduct,
     updateProduct,
-    deleteProduct
+    deleteProduct,
+    archiveProduct,
+    unarchiveProduct,
   };
 }
 

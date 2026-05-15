@@ -28,6 +28,8 @@ export const productsApi = {
     if (options.offset != null && options.offset !== '') {
       params.offset = String(options.offset);
     }
+    if (options.includeArchived === true) params.includeArchived = '1';
+    if (options.archivedOnly === true) params.archivedOnly = '1';
     const response = await api.get('/products', { params: Object.keys(params).length ? params : undefined });
     return response.data;
   },
@@ -144,6 +146,18 @@ export const productsApi = {
   },
 
   /**
+   * Связать товар с карточкой маркетплейса по артикулу ERP (кабинет организации).
+   * @param {number|string} productId
+   * @param {'ozon'|'wb'|'ym'} marketplace
+   */
+  linkMarketplace: async (productId, marketplace) => {
+    const id = encodeURIComponent(String(productId));
+    const mp = encodeURIComponent(String(marketplace).trim());
+    const response = await api.post(`/products/${id}/link-marketplace/${mp}`);
+    return response.data;
+  },
+
+  /**
    * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).
    */
   appendBarcode: async (productId, barcode) => {
@@ -208,6 +222,24 @@ export const productsApi = {
    */
   delete: async (id) => {
     const response = await api.delete(`/products/${id}`);
+    return response.data;
+  },
+
+  /** Участие в заказах и движениях (можно ли удалить) */
+  getParticipation: async (id) => {
+    const response = await api.get(`/products/${id}/participation`);
+    return response.data;
+  },
+
+  /** Отправить товар в архив */
+  archive: async (id) => {
+    const response = await api.post(`/products/${id}/archive`);
+    return response.data;
+  },
+
+  /** Вернуть товар из архива */
+  unarchive: async (id) => {
+    const response = await api.post(`/products/${id}/unarchive`);
     return response.data;
   },
 

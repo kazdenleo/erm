@@ -37,11 +37,21 @@ class OrganizationsRepositoryPG {
     const vat = (typeof data === 'object' && data.vat != null && data.vat !== '') ? data.vat : null;
     const articlePrefix = (typeof data === 'object' && data.article_prefix != null && String(data.article_prefix).trim() !== '') ? String(data.article_prefix).trim() : null;
     const profileId = (typeof data === 'object' && data.profile_id != null && data.profile_id !== '') ? data.profile_id : null;
+    const skipMpStock =
+      typeof data === 'object' &&
+      (data.skip_marketplace_stock_sync === true ||
+        data.skip_marketplace_stock_sync === 'true' ||
+        data.skip_marketplace_stock_sync === 1 ||
+        data.skip_marketplace_stock_sync === '1' ||
+        data.skipMarketplaceStockSync === true ||
+        data.skipMarketplaceStockSync === 'true' ||
+        data.skipMarketplaceStockSync === 1 ||
+        data.skipMarketplaceStockSync === '1');
     const result = await query(
-      `INSERT INTO organizations (name, inn, address, tax_system, vat, article_prefix, profile_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO organizations (name, inn, address, tax_system, vat, article_prefix, profile_id, skip_marketplace_stock_sync)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [name, inn, address, taxSystem, vat, articlePrefix, profileId]
+      [name, inn, address, taxSystem, vat, articlePrefix, profileId, skipMpStock]
     );
     return result.rows[0];
   }
@@ -79,6 +89,14 @@ class OrganizationsRepositoryPG {
     if (updates.profile_id !== undefined) {
       fields.push(`profile_id = $${i++}`);
       params.push(updates.profile_id === '' || updates.profile_id == null ? null : updates.profile_id);
+    }
+    if (
+      updates.skip_marketplace_stock_sync !== undefined ||
+      updates.skipMarketplaceStockSync !== undefined
+    ) {
+      const v = updates.skip_marketplace_stock_sync ?? updates.skipMarketplaceStockSync;
+      fields.push(`skip_marketplace_stock_sync = $${i++}`);
+      params.push(v === true || v === 'true' || v === 1 || v === '1');
     }
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

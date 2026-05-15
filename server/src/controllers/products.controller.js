@@ -179,6 +179,12 @@ class ProductsController {
       if (req.query.warehouseId != null && String(req.query.warehouseId).trim() !== '') {
         options.warehouseId = String(req.query.warehouseId).trim();
       }
+      if (req.query.includeArchived === 'true' || req.query.includeArchived === '1') {
+        options.includeArchived = true;
+      }
+      if (req.query.archivedOnly === 'true' || req.query.archivedOnly === '1') {
+        options.archivedOnly = true;
+      }
       const hasPaging = req.query.limit != null || req.query.offset != null;
       if (req.query.limit != null) options.limit = parseInt(req.query.limit, 10);
       if (req.query.offset != null) options.offset = parseInt(req.query.offset, 10);
@@ -277,6 +283,47 @@ class ProductsController {
     try {
       const { id } = req.params;
       const product = await productsService.update(id, req.body);
+      return res.status(200).json({ ok: true, data: product });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async linkMarketplace(req, res, next) {
+    try {
+      const { id, marketplace } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const result = await productsService.linkProductToMarketplace(id, marketplace, { profileId });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getParticipation(req, res, next) {
+    try {
+      const { id } = req.params;
+      const data = await productsService.getParticipation(id);
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async archive(req, res, next) {
+    try {
+      const { id } = req.params;
+      const product = await productsService.archive(id);
+      return res.status(200).json({ ok: true, data: product });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async unarchive(req, res, next) {
+    try {
+      const { id } = req.params;
+      const product = await productsService.unarchive(id);
       return res.status(200).json({ ok: true, data: product });
     } catch (error) {
       next(error);

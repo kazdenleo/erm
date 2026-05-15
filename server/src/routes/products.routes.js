@@ -115,6 +115,31 @@ router.post(
   wrapAsync(productsController.create.bind(productsController))
 );
 
+// Связать товар с карточкой маркетплейса по артикулу ERP (до PUT /:id)
+router.post(
+  '/:id/link-marketplace/:marketplace',
+  validateProductId,
+  wrapAsync(productsController.linkMarketplace.bind(productsController))
+);
+
+router.get(
+  '/:id/participation',
+  validateProductId,
+  wrapAsync(productsController.getParticipation.bind(productsController))
+);
+
+router.post(
+  '/:id/archive',
+  validateProductId,
+  wrapAsync(productsController.archive.bind(productsController))
+);
+
+router.post(
+  '/:id/unarchive',
+  validateProductId,
+  wrapAsync(productsController.unarchive.bind(productsController))
+);
+
 // Обновить товар (с валидацией) - должен быть ПОСЛЕ всех специфических маршрутов
 router.put(
   '/:id',

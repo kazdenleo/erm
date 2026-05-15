@@ -39,10 +39,59 @@ const PRODUCTS_LIST_PAGE_SIZES = [50, 100, 200];
 /** Значение фильтра «товары без ERP-категории»; должно совпадать с `buildFindAllFilters` на сервере. */
 const FILTER_CATEGORY_NONE = '__no_category__';
 
+/** Бейджи МП слева от фото — по сохранённым sku / product_id в product_skus */
+function getProductMarketplaceLinkBadges(product) {
+  const badges = [];
+  const ozonSku = product?.sku_ozon != null ? String(product.sku_ozon).trim() : '';
+  const ozonPid =
+    product?.ozon_product_id != null && String(product.ozon_product_id).trim() !== ''
+      ? String(product.ozon_product_id).trim()
+      : '';
+  if (ozonSku || ozonPid) {
+    badges.push({
+      key: 'ozon',
+      className: 'ozon',
+      label: 'OZ',
+      title: ozonSku ? `Ozon: ${ozonSku}` : `Ozon: product_id ${ozonPid}`,
+    });
+  }
+  const wbSku = product?.sku_wb != null ? String(product.sku_wb).trim() : '';
+  if (wbSku) {
+    badges.push({
+      key: 'wb',
+      className: 'wb',
+      label: 'WB',
+      title: `Wildberries: ${wbSku}`,
+    });
+  }
+  const ymSku = product?.sku_ym != null ? String(product.sku_ym).trim() : '';
+  if (ymSku) {
+    badges.push({
+      key: 'ym',
+      className: 'ym',
+      label: 'YM',
+      title: `Яндекс.Маркет: ${ymSku}`,
+    });
+  }
+  return badges;
+}
+
 export function Products() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { products, meta, loading, listRefreshing, error, createProduct, updateProduct, deleteProduct, loadProducts } = useProducts({ autoLoad: false });
+  const {
+    products,
+    meta,
+    loading,
+    listRefreshing,
+    error,
+    createProduct,
+    updateProduct,
+    deleteProduct,
+    archiveProduct,
+    unarchiveProduct,
+    loadProducts,
+  } = useProducts({ autoLoad: false });
   const { categories, loadCategories } = useCategories();
   const { brands } = useBrands();
   const { organizations } = useOrganizations();
@@ -61,6 +110,8 @@ export function Products() {
   const [filterCategoryId, setFilterCategoryId] = useState('');
   /** '' | 'product' | 'kit' */
   const [filterProductType, setFilterProductType] = useState('');
+  /** '' — только активные; 'include' — с архивом; 'only' — только архив */
+  const [filterArchiveMode, setFilterArchiveMode] = useState('');
   /** null — ещё не проверяли; иначе есть ли товары без категории в текущих фильтрах org/бренд/тип/поиск */
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(true);
@@ -145,6 +196,8 @@ export function Products() {
     const brand = partial.brandId !== undefined ? partial.brandId : filterBrandId;
     const cat = partial.categoryId !== undefined ? partial.categoryId : filterCategoryId;
     const pt = partial.productType !== undefined ? partial.productType : filterProductType;
+    const archiveMode =
+      partial.archiveMode !== undefined ? partial.archiveMode : filterArchiveMode;
     const searchRaw = partial.search !== undefined ? partial.search : listSearch;
     const page = partial.page !== undefined ? partial.page : currentPage;
     const search = typeof searchRaw === 'string' ? searchRaw.trim() : '';
@@ -157,6 +210,8 @@ export function Products() {
       categoryId: cat || undefined,
       productType: ptTrim || undefined,
       search: search || undefined,
+      includeArchived: archiveMode === 'include' || archiveMode === 'only',
+      archivedOnly: archiveMode === 'only',
       limit,
       offset: Math.max(0, (page - 1) * limit),
       silent: true
@@ -169,7 +224,8 @@ export function Products() {
     (filterOrganizationId ? 1 : 0) +
     (filterBrandId ? 1 : 0) +
     (filterCategoryId ? 1 : 0) +
-    (filterProductType ? 1 : 0);
+    (filterProductType ? 1 : 0) +
+    (filterArchiveMode ? 1 : 0);
   const totalProducts = Number.isFinite(Number(meta?.total)) ? Number(meta.total) : visibleProducts.length;
   const totalPages = Math.max(1, Math.ceil(Math.max(0, totalProducts) / Math.max(1, pageSize)));
 
@@ -179,7 +235,8 @@ export function Products() {
     setFilterBrandId('');
     setFilterCategoryId('');
     setFilterProductType('');
-    loadList({ organizationId: '', brandId: '', categoryId: '', productType: '', page: 1 });
+    setFilterArchiveMode('');
+    loadList({ organizationId: '', brandId: '', categoryId: '', productType: '', archiveMode: '', page: 1 });
   };
 
   const handleListSearchChange = (e) => {
@@ -329,8 +386,8 @@ export function Products() {
   };
 
   const handleProductUpdate = (updatedProduct) => {
-    // Обновляем editingProduct после синхронизации процента выкупа
     setEditingProduct(updatedProduct);
+    void loadList();
   };
 
   const handleSubmit = async (productData) => {
@@ -361,14 +418,38 @@ export function Products() {
   };
 
   const handleDelete = async (id) => {
-    if (window.confirm('Вы уверены, что хотите удалить этот товар?')) {
-      try {
-        await deleteProduct(id);
+    if (!window.confirm('Вы уверены, что хотите удалить этот товар?')) return;
+    try {
+      await deleteProduct(id);
+      await loadList();
     } catch (error) {
       console.error('Error deleting product:', error);
       const message = error.response?.data?.message || error.message || 'Неизвестная ошибка';
       alert('Ошибка удаления товара: ' + message);
     }
+  };
+
+  const handleArchive = async (id) => {
+    if (!window.confirm('Отправить товар в архив? Он скроется из списка по умолчанию, история сохранится.')) return;
+    try {
+      await archiveProduct(id);
+      await loadList();
+    } catch (error) {
+      console.error('Error archiving product:', error);
+      const message = error.response?.data?.message || error.message || 'Неизвестная ошибка';
+      alert('Ошибка архивации товара: ' + message);
+    }
+  };
+
+  const handleUnarchive = async (id) => {
+    if (!window.confirm('Вернуть товар из архива?')) return;
+    try {
+      await unarchiveProduct(id);
+      await loadList();
+    } catch (error) {
+      console.error('Error unarchiving product:', error);
+      const message = error.response?.data?.message || error.message || 'Неизвестная ошибка';
+      alert('Ошибка восстановления товара: ' + message);
     }
   };
 
@@ -439,6 +520,13 @@ export function Products() {
     setCurrentPage(1);
     setFilterProductType(v);
     loadList({ productType: v, page: 1 });
+  };
+
+  const handleFilterArchiveModeChange = (e) => {
+    const v = e.target.value;
+    setCurrentPage(1);
+    setFilterArchiveMode(v);
+    loadList({ archiveMode: v, page: 1 });
   };
 
   const handleFilterBrandChange = (e) => {
@@ -863,6 +951,21 @@ export function Products() {
                       <option value="kit">Комплект</option>
                     </select>
                   </div>
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <label className="text-muted small mb-1 d-block" htmlFor="products-filter-archive">
+                      Архив
+                    </label>
+                    <select
+                      id="products-filter-archive"
+                      className="form-select form-select-sm"
+                      value={filterArchiveMode}
+                      onChange={handleFilterArchiveModeChange}
+                    >
+                      <option value="">Скрыть архивные</option>
+                      <option value="include">Включая архивные</option>
+                      <option value="only">Только архивные</option>
+                    </select>
+                  </div>
                 </div>
                 {activeFiltersCount > 0 ? (
                   <div className="mt-2">
@@ -912,7 +1015,6 @@ export function Products() {
                             сумма по складам
                           </div>
                         </th>
-                        <th>Маркетплейсы</th>
                         <th>Габариты</th>
                         <th className="text-end">Действия</th>
                       </tr>
@@ -978,11 +1080,15 @@ export function Products() {
                     addExpRaw != null && addExpRaw !== '' && !isNaN(Number(addExpRaw)) ? Number(addExpRaw) : null;
                   const addExpTitle = addExpNum != null ? `${addExpNum.toFixed(2)}₽` : '—';
                   const thumbUrl = getPrimaryProductImageUrl(product);
+                  const mpLinkBadges = getProductMarketplaceLinkBadges(product);
                   const rowSelected = selectedProductIds.has(String(product.id));
+                  const isArchived = Boolean(product.isArchived ?? product.is_archived);
+                  const hasParticipation = Boolean(product.hasParticipation);
+                  const canDelete = product.canDelete === true;
                   return (
                     <tr
                       key={product.id}
-                      className={`product-row-editable${rowSelected ? ' products-table-row--selected' : ''}`}
+                      className={`product-row-editable${rowSelected ? ' products-table-row--selected' : ''}${isArchived ? ' products-table-row--archived' : ''}`}
                       title="Открыть карточку товара"
                       onClick={() => handleEdit(product)}
                     >
@@ -1001,14 +1107,32 @@ export function Products() {
                         />
                       </td>
                       <td className="product-thumb-cell">
-                        <div className="product-thumb" title={thumbUrl ? 'Изображение товара' : 'Нет изображения'}>
-                          {thumbUrl ? (
-                            <img src={thumbUrl} alt="" loading="lazy" decoding="async" />
-                          ) : (
-                            <span className="product-thumb--empty" aria-hidden>
-                              ◻
-                            </span>
+                        <div className="product-thumb-wrap">
+                          {mpLinkBadges.length > 0 && (
+                            <div className="product-thumb-mp-badges" aria-label="Связь с маркетплейсами">
+                              {mpLinkBadges.map((b) => (
+                                <span
+                                  key={b.key}
+                                  className={`mp-badge ${b.className}`}
+                                  title={b.title}
+                                >
+                                  {b.label}
+                                </span>
+                              ))}
+                            </div>
                           )}
+                          <div
+                            className="product-thumb"
+                            title={thumbUrl ? 'Изображение товара' : 'Нет изображения'}
+                          >
+                            {thumbUrl ? (
+                              <img src={thumbUrl} alt="" loading="lazy" decoding="async" />
+                            ) : (
+                              <span className="product-thumb--empty" aria-hidden>
+                                ◻
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td>
@@ -1023,6 +1147,9 @@ export function Products() {
                       <td>
                         <div className="product-name">{product.name || 'Без названия'}</div>
                         <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center'}}>
+                          {isArchived ? (
+                            <span className="badge bg-secondary" title="Товар в архиве">Архив</span>
+                          ) : null}
                           {product.brand && (
                             <span>{product.brand}</span>
                           )}
@@ -1075,58 +1202,6 @@ export function Products() {
                         </div>
                       </td>
                       <td>
-                        <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
-                          {product.sku_ozon && (
-                            <div style={{display: 'flex', alignItems: 'center', gap: '6px'}}>
-                              <span className="mp-badge ozon">OZ</span>
-                              <span style={{fontSize: '11px'}}>{product.sku_ozon}</span>
-                              {product.buyout_rate_ozon !== null && product.buyout_rate_ozon !== undefined && (
-                                <span style={{
-                                  fontSize: '10px', 
-                                  color: product.buyout_rate_ozon === 100 ? 'var(--muted)' : (product.buyout_rate_ozon >= 80 ? '#f59e0b' : '#ef4444'),
-                                  fontWeight: 600
-                                }}>
-                                  ({product.buyout_rate_ozon}%)
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          {product.sku_wb && (
-                            <div style={{display: 'flex', alignItems: 'center', gap: '6px'}}>
-                              <span className="mp-badge wb">WB</span>
-                              <span style={{fontSize: '11px'}}>{product.sku_wb}</span>
-                              {product.buyout_rate_wb !== null && product.buyout_rate_wb !== undefined && (
-                                <span style={{
-                                  fontSize: '10px', 
-                                  color: product.buyout_rate_wb === 100 ? 'var(--muted)' : (product.buyout_rate_wb >= 80 ? '#f59e0b' : '#ef4444'),
-                                  fontWeight: 600
-                                }}>
-                                  ({product.buyout_rate_wb}%)
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          {product.sku_ym && (
-                            <div style={{display: 'flex', alignItems: 'center', gap: '6px'}}>
-                              <span className="mp-badge ym">YM</span>
-                              <span style={{fontSize: '11px'}}>{product.sku_ym}</span>
-                              {product.buyout_rate_ym !== null && product.buyout_rate_ym !== undefined && (
-                                <span style={{
-                                  fontSize: '10px', 
-                                  color: product.buyout_rate_ym === 100 ? 'var(--muted)' : (product.buyout_rate_ym >= 80 ? '#f59e0b' : '#ef4444'),
-                                  fontWeight: 600
-                                }}>
-                                  ({product.buyout_rate_ym}%)
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          {!product.sku_ozon && !product.sku_wb && !product.sku_ym && (
-                            <span style={{color: 'var(--muted)', fontSize: '11px'}}>—</span>
-                          )}
-                        </div>
-                      </td>
-                      <td>
                         {packagingParts.length > 0 ? (
                           <div style={{fontSize: '11px', lineHeight: '1.6'}}>
                             {packagingParts.map((part, idx) => (
@@ -1148,15 +1223,42 @@ export function Products() {
                           >
                             ✏️
                           </Button>
-                          <Button 
-                            variant="danger" 
-                            size="small"
-                            onClick={() => handleDelete(product.id)}
-                            title="Удалить"
-                            className="btn-icon btn-icon-only"
-                          >
-                            🗑️
-                          </Button>
+                          {isArchived ? (
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              onClick={() => handleUnarchive(product.id)}
+                              title="Вернуть из архива"
+                              className="btn-icon btn-icon-only"
+                            >
+                              ↩️
+                            </Button>
+                          ) : (
+                            <>
+                              {hasParticipation ? (
+                                <Button
+                                  variant="secondary"
+                                  size="small"
+                                  onClick={() => handleArchive(product.id)}
+                                  title="В архив (есть история движений и заказов)"
+                                  className="btn-icon btn-icon-only"
+                                >
+                                  📦
+                                </Button>
+                              ) : null}
+                              {canDelete ? (
+                                <Button
+                                  variant="danger"
+                                  size="small"
+                                  onClick={() => handleDelete(product.id)}
+                                  title="Удалить"
+                                  className="btn-icon btn-icon-only"
+                                >
+                                  🗑️
+                                </Button>
+                              ) : null}
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>

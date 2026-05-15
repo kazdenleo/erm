@@ -42,12 +42,10 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
     name: '',
     description: '',
     parentId: '',
+    skip_marketplace_stock_sync: false,
     wbCategoryId: '',
     ozonCategoryId: '',
-    ymCategoryId: '',
-    certificateNumber: '',
-    certificateValidFrom: '',
-    certificateValidTo: ''
+    ymCategoryId: ''
   });
   const [attributeIds, setAttributeIds] = useState([]);
   const [selectedAttributeId, setSelectedAttributeId] = useState('');
@@ -308,9 +306,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         name: category.name || '',
         description: category.description || '',
         parentId: category.parent_id || category.parentId || '',
-        certificateNumber: category.certificateNumber || category.certificate_number || '',
-        certificateValidFrom: category.certificateValidFrom || category.certificate_valid_from || '',
-        certificateValidTo: category.certificateValidTo || category.certificate_valid_to || ''
+        skip_marketplace_stock_sync: category.skip_marketplace_stock_sync === true
         // Не сбрасываем wbCategoryId, ozonCategoryId, ymCategoryId здесь,
         // они устанавливаются в loadExistingMappings после загрузки категорий
       }));
@@ -323,12 +319,10 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         name: '',
         description: '',
         parentId: '',
+        skip_marketplace_stock_sync: false,
         wbCategoryId: '',
         ozonCategoryId: '',
-        ymCategoryId: '',
-        certificateNumber: '',
-        certificateValidFrom: '',
-        certificateValidTo: ''
+        ymCategoryId: ''
       });
       setAttributeIds([]);
       setSelectedAttributeId('');
@@ -407,9 +401,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
       description: formData.description.trim() || null,
       parent_id: formData.parentId || null,
       attribute_ids: attributeIds.length > 0 ? attributeIds : [],
-      certificate_number: formData.certificateNumber.trim() || null,
-      certificate_valid_from: formData.certificateValidFrom || null,
-      certificate_valid_to: formData.certificateValidTo || null,
+      skip_marketplace_stock_sync: formData.skip_marketplace_stock_sync === true,
       marketplaceMappings: {
         wb: wbCategoryId && !isNaN(wbCategoryId) && wbCategoryId > 0 ? wbCategoryId : null,
         ozon: ozonCategoryId || null,
@@ -468,44 +460,25 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         />
       </div>
 
-      <div className="field" style={{ marginTop: '8px' }}>
-        <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '4px' }}>Сертификат соответствия (для маркетплейсов)</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px 160px', gap: '10px' }}>
-          <div>
-            <label className="label" htmlFor="catCertNumber">Номер сертификата</label>
-            <input
-              id="catCertNumber"
-              type="text"
-              className="form-control form-control-sm"
-              value={formData.certificateNumber}
-              onChange={(e) => handleChange('certificateNumber', e.target.value)}
-              placeholder="Например: RU C-RU.АБ12.В.12345/20"
-            />
-          </div>
-          <div>
-            <label className="label" htmlFor="catCertFrom">Дата начала</label>
-            <input
-              id="catCertFrom"
-              type="date"
-              className="form-control form-control-sm"
-              value={formData.certificateValidFrom}
-              onChange={(e) => handleChange('certificateValidFrom', e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="label" htmlFor="catCertTo">Дата окончания</label>
-            <input
-              id="catCertTo"
-              type="date"
-              className="form-control form-control-sm"
-              value={formData.certificateValidTo}
-              onChange={(e) => handleChange('certificateValidTo', e.target.value)}
-            />
-          </div>
+      <div className="field">
+        <div className="form-check form-switch mb-0">
+          <input
+            className="form-check-input"
+            type="checkbox"
+            role="switch"
+            id="categorySkipMpStock"
+            checked={formData.skip_marketplace_stock_sync === true}
+            onChange={(e) => handleChange('skip_marketplace_stock_sync', e.target.checked)}
+          />
+          <label className="form-check-label" htmlFor="categorySkipMpStock">
+            Не передавать остатки на маркетплейс
+          </label>
         </div>
-        <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
-          Эти поля могут автоматически обновляться из раздела «Настройки → Сертификаты».
-        </div>
+        <p className="text-muted small mt-1 mb-0">
+          При включении остатки товаров этой категории не отправляются на Ozon, Wildberries и Яндекс.Маркет.
+          Для дочерних категорий учитывается также настройка родительской категории.
+          Импорт остатков с маркетплейсов и другие операции не затрагиваются.
+        </p>
       </div>
 
       <div className="field">

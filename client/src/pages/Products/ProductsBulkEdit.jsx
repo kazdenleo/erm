@@ -75,7 +75,6 @@ const COLUMNS = [
   { key: 'length', label: 'Длина', input: 'number', minW: 64 },
   { key: 'width', label: 'Ширина', input: 'number', minW: 64 },
   { key: 'height', label: 'Высота', input: 'number', minW: 64 },
-  { key: 'volume', label: 'Объём (л)', input: 'number', minW: 72 },
   /* остальное */
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 88 },
   { key: 'categoryId', label: 'Категория', input: 'select_category', minW: 140 },
@@ -410,6 +409,17 @@ function buildMpAttrColumnDefs(products, labelMaps = { ozon: {}, wb: {}, ym: {} 
   return cols;
 }
 
+/** Объём в литрах из габаритов в мм — как в ProductForm (мм³ / 1_000_000). */
+function volumeLitersFromMmDims(rowOrProduct) {
+  const len = Number(rowOrProduct.length);
+  const wid = Number(rowOrProduct.width);
+  const hei = Number(rowOrProduct.height);
+  if (![len, wid, hei].every((n) => Number.isFinite(n) && n > 0)) return '';
+  const liters = (len * wid * hei) / 1_000_000;
+  if (!Number.isFinite(liters) || liters <= 0) return '';
+  return String(Number(liters.toFixed(3)));
+}
+
 function productToRow(p, mpAttrColDefs = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
   const barcodes = Array.isArray(p.barcodes) ? p.barcodes : [];
@@ -459,7 +469,6 @@ function productToRow(p, mpAttrColDefs = []) {
     length: p.length != null && p.length !== '' ? str(p.length) : '',
     width: p.width != null && p.width !== '' ? str(p.width) : '',
     height: p.height != null && p.height !== '' ? str(p.height) : '',
-    volume: p.volume != null && p.volume !== '' ? str(p.volume) : '',
     _mpAttrBaseline: { ozon: { ...oz }, wb: { ...wb }, ym: { ...ym } },
     _productRef: p,
   };
@@ -571,7 +580,14 @@ function buildUpdatePayload(original, current, mpAttrColDefs = []) {
   if (!eq(original.length, current.length)) touch('length', parseOptionalNumber(current.length));
   if (!eq(original.width, current.width)) touch('width', parseOptionalNumber(current.width));
   if (!eq(original.height, current.height)) touch('height', parseOptionalNumber(current.height));
-  if (!eq(original.volume, current.volume)) touch('volume', parseOptionalNumber(current.volume));
+  const dimTouched =
+    !eq(original.length, current.length) ||
+    !eq(original.width, current.width) ||
+    !eq(original.height, current.height);
+  if (dimTouched) {
+    const vCalc = volumeLitersFromMmDims(current);
+    touch('volume', vCalc === '' ? null : parseOptionalNumber(vCalc));
+  }
 
   if (mpAttrColDefs.length > 0) {
     const map = { ozon: 'ozon_attributes', wb: 'wb_attributes', ym: 'ym_attributes' };
@@ -979,6 +995,14 @@ export function ProductsBulkEdit() {
   }, [rows.length, appliedSelectedIds.length]);
 
   const renderInput = (col, row) => {
+    if (col.readonly) {
+      const text = str(row[col.key]).trim();
+      return (
+        <span className="text-muted small text-nowrap d-block" title={col.hint || undefined}>
+          {text !== '' ? text : '—'}
+        </span>
+      );
+    }
     const v = row[col.key];
     const common = {
       className: `products-bulk-cell-input ${col.input === 'textarea' || col.mpAttr ? 'products-bulk-cell-textarea' : ''}`,

@@ -65,6 +65,57 @@ async function upsertProductSkuRow(client, { productId, marketplace, skuRaw, mar
   }
 }
 
+/**
+ * Частичное обновление product_skus: только ключи, присутствующие в mus (ozon/wb/ym).
+ * Пустое значение — удалить строку для этого маркетплейса.
+ */
+async function applyMarketplaceSkusPatch(client, productId, mus, { ozonProductId = undefined } = {}) {
+  if (!mus || typeof mus !== 'object') return;
+  const numId = Number(productId);
+  if (!Number.isFinite(numId) || numId < 1) return;
+
+  const patchMp = async (mp, skuRaw, marketplaceProductId) => {
+    const empty = skuRaw == null || String(skuRaw).trim() === '';
+    if (mp === 'ozon' && empty && marketplaceProductId == null) {
+      await client.query(`DELETE FROM product_skus WHERE product_id = $1 AND marketplace = $2`, [numId, mp]);
+      return;
+    }
+    if ((mp === 'wb' || mp === 'ym') && empty) {
+      await client.query(`DELETE FROM product_skus WHERE product_id = $1 AND marketplace = $2`, [numId, mp]);
+      return;
+    }
+    await upsertProductSkuRow(client, {
+      productId: numId,
+      marketplace: mp,
+      skuRaw,
+      marketplaceProductId: mp === 'ozon' ? marketplaceProductId : null,
+    });
+  };
+
+  if (Object.prototype.hasOwnProperty.call(mus, 'ozon')) {
+    let ozonPid = null;
+    if (ozonProductId !== undefined) {
+      ozonPid =
+        ozonProductId != null && ozonProductId !== '' && Number.isFinite(Number(ozonProductId))
+          ? Number(ozonProductId)
+          : null;
+    } else {
+      const cur = await client.query(
+        `SELECT marketplace_product_id FROM product_skus WHERE product_id = $1 AND marketplace = 'ozon'`,
+        [numId]
+      );
+      ozonPid = cur.rows[0]?.marketplace_product_id ?? null;
+    }
+    await patchMp('ozon', mus.ozon, ozonPid);
+  }
+  if (Object.prototype.hasOwnProperty.call(mus, 'wb')) {
+    await patchMp('wb', mus.wb, null);
+  }
+  if (Object.prototype.hasOwnProperty.call(mus, 'ym')) {
+    await patchMp('ym', mus.ym, null);
+  }
+}
+
 /** Значение фильтра «без ERP-категории» с фронта; в SQL только IS NULL, не подставляем в bigint. */
 const FILTER_CATEGORY_NONE = '__no_category__';
 
@@ -83,10 +134,17 @@ function normalizeListCategoryId(categoryId) {
 }
 
 function buildFindAllFilters(options = {}) {
-  const { brandId, categoryId, organizationId, search, profileId, productType } = options;
+  const { brandId, categoryId, organizationId, search, profileId, productType, includeArchived, archivedOnly } =
+    options;
   let whereSql = ' WHERE 1=1';
   const params = [];
   let paramIndex = 1;
+
+  if (archivedOnly === true || archivedOnly === 'true' || archivedOnly === '1') {
+    whereSql += ` AND COALESCE(p.is_archived, false) = true`;
+  } else if (!(includeArchived === true || includeArchived === 'true' || includeArchived === '1')) {
+    whereSql += ` AND COALESCE(p.is_archived, false) = false`;
+  }
 
   if (profileId != null && profileId !== '') {
     whereSql += ` AND p.profile_id = $${paramIndex++}`;
@@ -330,6 +388,7 @@ class ProductsRepositoryPG {
               coalesce(json_agg(id ORDER BY id), '[]'::json) AS product_ids
        FROM products
        ${where}
+         AND COALESCE(is_archived, false) = false
        GROUP BY user_category_id`
     , params);
     const out = {};
@@ -1371,40 +1430,10 @@ class ProductsRepositoryPG {
 
       if (updates.marketplace_skus !== undefined) {
         const mus = updates.marketplace_skus;
-        let ozonProductId = null;
-        if (Object.prototype.hasOwnProperty.call(updates, 'marketplace_ozon_product_id')) {
-          const raw = updates.marketplace_ozon_product_id;
-          ozonProductId =
-            raw != null && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
-        } else {
-          const cur = await client.query(
-            `SELECT marketplace_product_id FROM product_skus WHERE product_id = $1 AND marketplace = 'ozon'`,
-            [numId]
-          );
-          ozonProductId = cur.rows[0]?.marketplace_product_id ?? null;
-        }
-        await client.query(
-          `DELETE FROM product_skus WHERE product_id = $1 AND marketplace IN ('ozon', 'wb', 'ym')`,
-          [numId]
-        );
-        await upsertProductSkuRow(client, {
-          productId: numId,
-          marketplace: 'ozon',
-          skuRaw: mus.ozon,
-          marketplaceProductId: ozonProductId,
-        });
-        await upsertProductSkuRow(client, {
-          productId: numId,
-          marketplace: 'wb',
-          skuRaw: mus.wb,
-          marketplaceProductId: null,
-        });
-        await upsertProductSkuRow(client, {
-          productId: numId,
-          marketplace: 'ym',
-          skuRaw: mus.ym,
-          marketplaceProductId: null,
-        });
+        const ozonPidOpt = Object.prototype.hasOwnProperty.call(updates, 'marketplace_ozon_product_id')
+          ? updates.marketplace_ozon_product_id
+          : undefined;
+        await applyMarketplaceSkusPatch(client, numId, mus, { ozonProductId: ozonPidOpt });
       }
 
       if (updates.mp_linked) {
@@ -1627,6 +1656,31 @@ class ProductsRepositoryPG {
   async delete(id) {
     const result = await query('DELETE FROM products WHERE id = $1 RETURNING id', [id]);
     return result.rows.length > 0;
+  }
+
+  /**
+   * Отправить товар в архив / вернуть из архива
+   */
+  async setArchived(id, isArchived) {
+    const numId = typeof id === 'string' ? parseInt(id, 10) : Number(id);
+    if (!Number.isFinite(numId) || numId < 1) return null;
+    const flag = Boolean(isArchived);
+    const result = await query(
+      `UPDATE products
+       SET is_archived = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1
+       RETURNING id, is_archived`,
+      [numId, flag]
+    );
+    return result.rows[0] || null;
+  }
+
+  async findArchivedFlag(id) {
+    const numId = typeof id === 'string' ? parseInt(id, 10) : Number(id);
+    if (!Number.isFinite(numId) || numId < 1) return null;
+    const result = await query('SELECT is_archived FROM products WHERE id = $1', [numId]);
+    if (!result.rows.length) return null;
+    return Boolean(result.rows[0].is_archived);
   }
   
   /**

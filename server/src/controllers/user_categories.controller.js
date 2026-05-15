@@ -24,6 +24,15 @@ function parseMarketplaceMappings(raw) {
   return mm;
 }
 
+function normalizeSkipMarketplaceStockSync(body) {
+  if (!body || typeof body !== 'object') return undefined;
+  if (body.skip_marketplace_stock_sync === undefined && body.skipMarketplaceStockSync === undefined) {
+    return undefined;
+  }
+  const v = body.skip_marketplace_stock_sync ?? body.skipMarketplaceStockSync;
+  return v === true || v === 'true' || v === 1 || v === '1';
+}
+
 class UserCategoriesController {
   async getAll(req, res, next) {
     try {
@@ -249,6 +258,7 @@ class UserCategoriesController {
   async create(req, res, next) {
     try {
       const { name, description, parent_id, attribute_ids, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
+      const skipMpStock = normalizeSkipMarketplaceStockSync(req.body);
       const tid = tenantListProfileId(req);
       if (tid === TENANT_LIST_EMPTY || tid == null) {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
@@ -259,8 +269,8 @@ class UserCategoriesController {
       }
       
       const result = await query(
-        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO user_categories (profile_id, name, description, parent_id, certificate_number, certificate_valid_from, certificate_valid_to, skip_marketplace_stock_sync)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
         [
           tid,
@@ -269,7 +279,8 @@ class UserCategoriesController {
           parent_id || null,
           certificate_number || null,
           certificate_valid_from || null,
-          certificate_valid_to || null
+          certificate_valid_to || null,
+          skipMpStock === true
         ]
       );
       
@@ -296,6 +307,7 @@ class UserCategoriesController {
     try {
       const { id } = req.params;
       const { name, description, parent_id, marketplace_mappings, attribute_ids, certificate_number, certificate_valid_from, certificate_valid_to } = req.body;
+      const skipMpStock = normalizeSkipMarketplaceStockSync(req.body);
       const tid = tenantListProfileId(req);
       if (tid === TENANT_LIST_EMPTY || tid == null) {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
@@ -355,6 +367,11 @@ class UserCategoriesController {
       if (certificate_valid_to !== undefined) {
         updateFields.push(`certificate_valid_to = $${paramIndex++}`);
         params.push(certificate_valid_to || null);
+      }
+
+      if (skipMpStock !== undefined) {
+        updateFields.push(`skip_marketplace_stock_sync = $${paramIndex++}`);
+        params.push(skipMpStock === true);
       }
       
       if (updateFields.length === 0 && attribute_ids === undefined) {

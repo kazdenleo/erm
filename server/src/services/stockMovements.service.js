@@ -6,6 +6,7 @@
 import { query } from '../config/database.js';
 import { getClient } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
 
 class StockMovementsService {
   constructor() {
@@ -111,6 +112,12 @@ class StockMovementsService {
       } catch {
         // не блокируем движение при сбое пересчёта резервов
       }
+
+      scheduleWarehouseStockMarketplaceSync(idNum, {
+        source: `stock_movement:${type}`,
+        warehouseId,
+        organizationId: product.organization_id ?? product.organizationId ?? null
+      });
     }
 
     return {

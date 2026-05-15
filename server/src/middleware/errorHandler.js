@@ -35,7 +35,7 @@ export function errorHandler(err, req, res, next) {
 
   // statusCode уже задан выше
   let message = err.message || 'Internal Server Error';
-  let details = null;
+  let details = err.details ?? null;
 
   // Обработка ошибок базы данных - возвращаем 400 вместо 500
   if (err.code === '42P01' || message.includes('does not exist') || message.includes('relation')) {

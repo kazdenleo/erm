@@ -10,44 +10,6 @@ import { query, transaction } from '../config/database.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
-import platformMpNotificationsRepo, {
-  isMissingRelationError as isMissingMpNotificationsRelationError
-} from '../repositories/platform_marketplace_notifications.repository.pg.js';
-
-function marketplaceEventSourceLabel(source) {
-  const s = String(source || '').toLowerCase().trim();
-  if (s === 'ozon') return 'Ozon';
-  if (s === 'wildberries' || s === 'wb') return 'Wildberries';
-  if (s === 'yandex' || s.startsWith('yandex')) return 'Яндекс Маркет';
-  if (!s || s === 'unknown') return 'Маркетплейс';
-  return String(source || 'Маркетплейс');
-}
-
-function marketplaceEventBodyText(payload, eventType) {
-  const lines = [];
-  if (eventType) lines.push(`Тип события: ${eventType}`);
-  if (payload && typeof payload === 'object') {
-    for (const k of ['title', 'message', 'text', 'body', 'description', 'news', 'content', 'detail']) {
-      const v = payload[k];
-      if (typeof v === 'string' && v.trim()) {
-        lines.push(v.trim());
-        break;
-      }
-    }
-    if (lines.length <= (eventType ? 1 : 0)) {
-      try {
-        const s = JSON.stringify(payload);
-        lines.push(s.length > 900 ? `${s.slice(0, 900)}…` : s);
-      } catch {
-        lines.push('(не удалось разобрать тело уведомления)');
-      }
-    }
-  } else if (payload != null && payload !== '') {
-    lines.push(String(payload).slice(0, 900));
-  }
-  const text = lines.join('\n').trim();
-  return text || 'Входящее уведомление от маркетплейса (см. тип и источник).';
-}
 
 class IntegrationsService {
   constructor() {
@@ -678,44 +640,6 @@ class IntegrationsService {
       }
     } catch (_) {}
 
-    // Новости/события маркетплейсов (журнал platform_marketplace_events — те же данные, что в супер-админе)
-    if (this.usePostgreSQL) {
-      try {
-        const events = await platformMpNotificationsRepo.listRecentEvents({ limit: 25 });
-        if (Array.isArray(events)) {
-          for (const ev of events) {
-            if (!ev?.id) continue;
-            const srcRaw = String(ev.source || '').toLowerCase().trim();
-            const mp =
-              srcRaw === 'ozon' || srcRaw === 'wildberries' || srcRaw === 'wb' || srcRaw === 'yandex'
-                ? srcRaw === 'wb'
-                  ? 'wildberries'
-                  : srcRaw
-                : undefined;
-            const label = marketplaceEventSourceLabel(ev.source);
-            const title = ev.eventType
-              ? `${label}: ${ev.eventType}`
-              : `Событие от ${label}`;
-            out.push({
-              id: `mp_event_${ev.id}`,
-              type: 'marketplace_event',
-              severity: 'info',
-              title,
-              message: marketplaceEventBodyText(ev.payload, ev.eventType),
-              marketplace: mp || undefined,
-              source: ev.source,
-              event_type: ev.eventType || null,
-              created_at: ev.createdAt ? new Date(ev.createdAt).toISOString() : null
-            });
-          }
-        }
-      } catch (e) {
-        if (!isMissingMpNotificationsRelationError(e)) {
-          logger.warn('[Integrations Service] marketplace events for notifications:', e?.message || e);
-        }
-      }
-    }
-
     // сортировка: error выше warn
     const prio = { error: 0, warn: 1, info: 2 };
     out.sort((a, b) => {
@@ -1215,10 +1139,14 @@ class IntegrationsService {
    */
   async _wbContentApiPost(path, body, opts = {}) {
     const profileId = opts.profileId ?? opts.profile_id ?? null;
-    const config = await this.getMarketplaceConfig(
-      'wildberries',
-      profileId != null && profileId !== '' ? { profileId } : {}
-    );
+    const organizationId = opts.organizationId ?? opts.organization_id ?? null;
+    const config =
+      opts.wbOverride && typeof opts.wbOverride === 'object'
+        ? opts.wbOverride
+        : await this.getMarketplaceConfig('wildberries', {
+            ...(profileId != null && profileId !== '' ? { profileId } : {}),
+            ...(organizationId != null && organizationId !== '' ? { organizationId } : {})
+          });
     if (!config || !config.api_key) {
       const err = new Error('API ключ Wildberries не настроен');
       err.statusCode = 400;
@@ -1502,6 +1430,146 @@ class IntegrationsService {
       }
     }
     return map;
+  }
+
+  /**
+   * Карточка WB по артикулу продавца (vendorCode) через textSearch в Content API.
+   * @param {string} vendorCode
+   * @param {{ profileId?: number|string|null, organizationId?: number|string|null, wbOverride?: object }} [opts]
+   */
+  async getWildberriesProductByVendorCode(vendorCode, opts = {}) {
+    const vc = vendorCode != null ? String(vendorCode).trim() : '';
+    if (!vc) {
+      const err = new Error('Укажите артикул продавца (vendorCode).');
+      err.statusCode = 400;
+      throw err;
+    }
+    const body = {
+      settings: {
+        cursor: { limit: 20 },
+        filter: { withPhoto: -1, textSearch: vc }
+      }
+    };
+    const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, opts);
+    const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
+    if (!Array.isArray(cards) || cards.length === 0) return null;
+    const norm = (s) => String(s || '').trim().toLowerCase();
+    const exact = cards.find((c) => norm(c?.vendorCode ?? c?.vendor_code) === norm(vc));
+    const first = exact || cards[0];
+    const nm = first.nmID ?? first.nmId ?? null;
+    if (nm == null) return null;
+    return {
+      nmId: Number(nm),
+      vendorCode: String(first.vendorCode ?? first.vendor_code ?? vc).trim()
+    };
+  }
+
+  /**
+   * Предложение Яндекс.Маркета по offerId (артикул ERP) через offer-mappings.
+   * @param {string} offerId
+   * @param {{ profileId?: number|string|null, organizationId?: number|string|null }} [opts]
+   */
+  async getYandexOfferByOfferId(offerId, opts = {}) {
+    const oid = offerId != null ? String(offerId).trim() : '';
+    if (!oid) {
+      const err = new Error('Укажите offerId.');
+      err.statusCode = 400;
+      throw err;
+    }
+    const cfg = await this.getMarketplaceConfig('yandex', {
+      profileId: opts.profileId ?? opts.profile_id ?? null,
+      organizationId: opts.organizationId ?? opts.organization_id ?? null
+    });
+    const apiKey = this._normalizeYandexApiKey(cfg?.api_key ?? cfg?.apiKey);
+    if (!apiKey) {
+      const err = new Error('Api-Key Яндекс.Маркета не настроен для организации.');
+      err.statusCode = 400;
+      throw err;
+    }
+    let businessId = cfg?.business_id ?? cfg?.businessId ?? null;
+    const campaignId = cfg?.campaign_id ?? cfg?.campaignId ?? null;
+    if ((businessId == null || businessId === '') && campaignId != null && String(campaignId).trim() !== '') {
+      try {
+        const meta = await this._fetchYandexCampaignSnapshot(campaignId, apiKey);
+        businessId = meta?.businessId ?? businessId;
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    const bid = businessId != null ? Number(businessId) : NaN;
+    if (!Number.isFinite(bid) || bid < 1) {
+      const err = new Error('Укажите business_id в кабинете Яндекс.Маркета организации.');
+      err.statusCode = 400;
+      throw err;
+    }
+    const fetch = (await import('node-fetch')).default;
+    const agent = getYandexHttpsAgent();
+    const url = `https://api.partner.market.yandex.ru/v2/businesses/${encodeURIComponent(String(bid))}/offer-mappings`;
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'Api-Key': apiKey
+        },
+        body: JSON.stringify({ offerIds: [oid] }),
+        ...(agent ? { agent } : {})
+      });
+    } catch (e) {
+      throw new Error(`Яндекс.Маркет: не удалось запросить offer-mappings. ${formatYandexNetworkError(e)}`);
+    }
+    const text = await response.text().catch(() => '');
+    if (!response.ok) {
+      let msg = `Яндекс.Маркет API ${response.status}`;
+      try {
+        const j = JSON.parse(text);
+        if (j?.errors?.[0]?.message) msg += `: ${j.errors[0].message}`;
+        else if (j?.message) msg += `: ${j.message}`;
+      } catch (_) {
+        if (text) msg += `: ${text.substring(0, 200)}`;
+      }
+      const err = new Error(msg);
+      err.statusCode = response.status >= 400 && response.status < 500 ? response.status : 502;
+      throw err;
+    }
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_) {
+      data = {};
+    }
+    const mappings =
+      data?.result?.offerMappings ??
+      data?.offerMappings ??
+      data?.result?.mappings ??
+      [];
+    const list = Array.isArray(mappings) ? mappings : [];
+    const hit =
+      list.find((m) => String(m?.offer?.offerId ?? m?.offerId ?? '').trim() === oid) || list[0];
+    if (!hit) return null;
+    const resolvedOfferId = String(hit?.offer?.offerId ?? hit?.offerId ?? oid).trim();
+    const shopSku = hit?.offer?.shopSku ?? hit?.shopSku ?? null;
+    return {
+      offerId: resolvedOfferId,
+      shopSku: shopSku != null ? String(shopSku).trim() : null
+    };
+  }
+
+  _hasOzonCredentials(cfg) {
+    if (!cfg || typeof cfg !== 'object') return false;
+    return !!(cfg.client_id || cfg.clientId) && !!(cfg.api_key || cfg.apiKey);
+  }
+
+  _hasWbCredentials(cfg) {
+    if (!cfg || typeof cfg !== 'object') return false;
+    return !!this._normalizeWbToken(cfg.api_key ?? cfg.apiKey);
+  }
+
+  _hasYandexCredentials(cfg) {
+    if (!cfg || typeof cfg !== 'object') return false;
+    return !!this._normalizeYandexApiKey(cfg.api_key ?? cfg.apiKey);
   }
 
   /**
@@ -1995,7 +2063,25 @@ class IntegrationsService {
     const body = productId != null && productId > 0
       ? { product_id: [productId] }
       : { offer_id: [offerId] };
-    const data = await this._ozonApiPost('/v3/product/info/list', body);
+    let ozonOverride = params.ozonOverride ?? null;
+    if (
+      (!ozonOverride || typeof ozonOverride !== 'object' || (!ozonOverride.client_id && !ozonOverride.api_key)) &&
+      params.organizationId != null &&
+      params.organizationId !== ''
+    ) {
+      ozonOverride = await this.getMarketplaceConfig('ozon', {
+        organizationId: params.organizationId,
+        profileId: params.profileId ?? params.profile_id ?? null
+      });
+    }
+    const ozonApiOpts = {
+      profileId: params.profileId ?? params.profile_id ?? null,
+      ozonOverride:
+        ozonOverride && typeof ozonOverride === 'object' && (ozonOverride.client_id || ozonOverride.api_key)
+          ? ozonOverride
+          : null
+    };
+    const data = await this._ozonApiPost('/v3/product/info/list', body, ozonApiOpts);
     const items = data.result?.items ?? data.items ?? [];
     const raw = Array.isArray(items) && items.length > 0 ? items[0] : null;
     if (!raw) return null;
@@ -2011,10 +2097,10 @@ class IntegrationsService {
       if (filter) {
         const attrsBody = { filter, limit: 100 };
         try {
-          v4Data = await this._ozonApiPost('/v4/product/info/attributes', attrsBody);
+          v4Data = await this._ozonApiPost('/v4/product/info/attributes', attrsBody, ozonApiOpts);
         } catch (pathErr) {
           if (String(pathErr?.message || '').includes('404')) {
-            v4Data = await this._ozonApiPost('/v4/products/info/attributes', attrsBody);
+            v4Data = await this._ozonApiPost('/v4/products/info/attributes', attrsBody, ozonApiOpts);
           } else {
             throw pathErr;
           }
