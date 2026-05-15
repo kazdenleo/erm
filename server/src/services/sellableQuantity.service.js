@@ -12,6 +12,33 @@ import {
   computeKitMarketplaceStock
 } from './kitStock.service.js';
 
+/** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
+async function getReservedQuantityFromMovements(productId) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+  try {
+    const r = await query(
+      `SELECT GREATEST(0, COALESCE(SUM(
+          CASE
+            WHEN type = 'reserve' THEN -(quantity_change::numeric)
+            WHEN type = 'unreserve' THEN -(quantity_change::numeric)
+            ELSE 0
+          END
+        ), 0))::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+      [pid]
+    );
+    return Number(r.rows[0]?.rv ?? 0) || 0;
+  } catch {
+    const pr = await query(
+      `SELECT COALESCE(reserved_quantity, 0)::int AS reserved FROM products WHERE id = $1`,
+      [pid]
+    );
+    return Number(pr.rows[0]?.reserved ?? 0) || 0;
+  }
+}
+
 /**
  * @param {number|string} productId
  * @param {{ warehouseId?: number|string|null, profileId?: number|string|null, forMarketplace?: boolean }} [opts]
@@ -86,15 +113,21 @@ export async function computeAvailableQuantity(productId, opts = {}) {
 
   let reserved = 0;
   if (opts.forMarketplace === true) {
-    const pr = await query(
-      `SELECT COALESCE(reserved_quantity, 0)::int AS reserved FROM products WHERE id = $1`,
-      [pid]
-    );
-    reserved = Number(pr.rows[0]?.reserved ?? 0) || 0;
+    reserved = await getReservedQuantityFromMovements(pid);
   }
 
   const available = Math.max(0, Math.floor(onHand + suppliers - reserved));
-  return { available, onHand, suppliers, ...(opts.forMarketplace ? { reserved } : {}) };
+  return {
+    available,
+    onHand,
+    suppliers,
+    ...(opts.forMarketplace
+      ? {
+          reserved,
+          displayAvailable: Math.max(0, Math.floor(onHand + suppliers))
+        }
+      : {})
+  };
 }
 
 export default { computeAvailableQuantity };

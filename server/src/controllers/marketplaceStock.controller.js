@@ -117,13 +117,29 @@ class MarketplaceStockController {
     }
   }
 
-  /** GET /api/marketplace-stock/available/:productId?warehouseId= */
+  /** GET /api/marketplace-stock/available/:productId?warehouseId=&forMarketplace=1 */
   async getAvailable(req, res, next) {
     try {
       const productId = req.params.productId;
       const warehouseId = req.query?.warehouseId ?? null;
-      const data = await computeAvailableQuantity(productId, { warehouseId });
-      return res.status(200).json({ ok: true, data });
+      const forMp =
+        req.query?.forMarketplace === 'true' ||
+        req.query?.forMarketplace === '1' ||
+        req.query?.forMarketplace === true;
+      if (!forMp) {
+        const data = await computeAvailableQuantity(productId, { warehouseId });
+        return res.status(200).json({ ok: true, data });
+      }
+      const mp = await computeAvailableQuantity(productId, { warehouseId, forMarketplace: true });
+      const ui = await computeAvailableQuantity(productId, { warehouseId });
+      return res.status(200).json({
+        ok: true,
+        data: {
+          ...mp,
+          uiAvailable: ui.available,
+          marketplaceAvailable: mp.available
+        }
+      });
     } catch (e) {
       next(e);
     }

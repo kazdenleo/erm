@@ -259,10 +259,29 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
     }
 
     const erpWarehouseId = mapping.warehouse_id;
-    const { available, onHand, suppliers, reserved } = await computeAvailableQuantity(productId, {
-      warehouseId: erpWarehouseId,
-      profileId,
-      forMarketplace: true
+    const whForStock =
+      opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
+        ? opts.warehouseId
+        : erpWarehouseId;
+    const { available, onHand, suppliers, reserved, displayAvailable } = await computeAvailableQuantity(
+      productId,
+      {
+        warehouseId: whForStock,
+        profileId,
+        forMarketplace: true
+      }
+    );
+
+    logger.info('[MP Stock Push] qty breakdown', {
+      productId,
+      sku: ctx.product?.sku,
+      marketplace: mp,
+      erpWarehouseId: whForStock,
+      onHand,
+      suppliers,
+      reserved,
+      displayAvailable: displayAvailable ?? onHand + suppliers,
+      pushQuantity: available
     });
 
     try {
@@ -511,12 +530,18 @@ export function scheduleWarehouseStockMarketplaceSync(productId, opts = {}) {
     0,
     Math.min(30_000, parseInt(process.env.MP_STOCK_PUSH_DEBOUNCE_MS || '1500', 10) || 1500)
   );
+  const syncOpts = {
+    ...opts,
+    strictWarehouse:
+      opts.strictWarehouse === true ||
+      (opts.warehouseId != null && String(opts.warehouseId).trim() !== '')
+  };
   if (mpSyncDebounceTimers.has(key)) {
     clearTimeout(mpSyncDebounceTimers.get(key));
   }
   const timer = setTimeout(() => {
     mpSyncDebounceTimers.delete(key);
-    syncWarehouseStockToMarketplaces(productId, opts).catch((e) => {
+    syncWarehouseStockToMarketplaces(productId, syncOpts).catch((e) => {
       logger.warn('[MP Stock Push] async sync failed:', e?.message || e);
     });
   }, delayMs);
