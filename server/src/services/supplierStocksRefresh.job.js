@@ -39,7 +39,8 @@ export function startSupplierStocksSyncInBackground() {
       logger.info('[SupplierStocksSync] Background refresh completed', {
         total: lastResult?.total ?? 0,
         success: lastResult?.success ?? 0,
-        failed: lastResult?.failed ?? 0
+        failed: lastResult?.failed ?? 0,
+        marketplacePushScheduled: lastResult?.marketplacePushScheduled ?? 0
       });
     } catch (error) {
       lastError = error?.message || String(error);

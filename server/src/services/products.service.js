@@ -880,11 +880,13 @@ class ProductsService {
   /**
    * Загрузить остатки и цены у поставщиков для товара
    */
-  async loadSupplierStocksForProduct(product) {
+  async loadSupplierStocksForProduct(product, opts = {}) {
     if (!product || !product.sku) {
       return;
     }
-    
+
+    const suppressMarketplacePush = opts.suppressMarketplacePush === true;
+
     try {
       // Получаем список активных поставщиков
       const suppliersService = await import('./suppliers.service.js');
@@ -928,7 +930,16 @@ class ProductsService {
       // Ждем завершения всех загрузок
       await Promise.allSettled(loadPromises);
       console.log(`[Products Service] Finished loading supplier stocks for SKU: ${product.sku}`);
-      
+
+      if (!suppressMarketplacePush && product.id != null) {
+        const { scheduleWarehouseStockMarketplaceSync } = await import(
+          './marketplaceWarehouseStockSync.service.js'
+        );
+        scheduleWarehouseStockMarketplaceSync(product.id, {
+          source: 'supplier_stocks_updated',
+          organizationId: product.organization_id ?? product.organizationId ?? null
+        });
+      }
     } catch (error) {
       console.error('[Products Service] Error in loadSupplierStocksForProduct:', error.message);
       throw error;
@@ -1120,9 +1131,13 @@ class ProductsService {
         total: productsToUpdate.length,
         success: 0,
         failed: 0,
-        details: []
+        details: [],
+        marketplacePushScheduled: 0
       };
-      
+
+      const isBulkRefresh = !productId;
+      const successProductIds = [];
+
       const concurrency = Math.max(
         1,
         Math.min(12, parseInt(process.env.SUPPLIER_STOCKS_REFRESH_CONCURRENCY || '6', 10) || 6)
@@ -1141,11 +1156,16 @@ class ProductsService {
           return;
         }
         try {
-          await this.loadSupplierStocksForProduct(product);
+          await this.loadSupplierStocksForProduct(product, {
+            suppressMarketplacePush: isBulkRefresh
+          });
           if (product.id) {
             await this.repository.updateCostFromSupplierStocks(product.id);
           }
           results.success++;
+          if (product.id != null) {
+            successProductIds.push(product.id);
+          }
           results.details.push({
             productId: product.id,
             sku: product.sku,
@@ -1170,8 +1190,31 @@ class ProductsService {
         }
       });
       await Promise.all(workers);
-      
-      console.log(`[Products Service] Supplier stocks refresh completed: ${results.success} success, ${results.failed} failed`);
+
+      if (isBulkRefresh && successProductIds.length > 0) {
+        const { syncMarketplaceStocksForProductIds } = await import(
+          './marketplaceWarehouseStockSync.service.js'
+        );
+        const ids = [...successProductIds];
+        results.marketplacePushScheduled = ids.length;
+        setImmediate(() => {
+          syncMarketplaceStocksForProductIds(ids, { source: 'supplier_stocks_scheduled' }).catch(
+            (e) => {
+              console.error(
+                '[Products Service] MP push after supplier stocks failed:',
+                e?.message || e
+              );
+            }
+          );
+        });
+      }
+
+      console.log(
+        `[Products Service] Supplier stocks refresh completed: ${results.success} success, ${results.failed} failed` +
+          (results.marketplacePushScheduled
+            ? `, MP push scheduled for ${results.marketplacePushScheduled} products`
+            : '')
+      );
       return results;
       
     } catch (error) {

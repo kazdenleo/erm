@@ -384,13 +384,6 @@ class ProductsController {
 
       console.log(`[Products Controller] Refreshing supplier stocks for product ID: ${productIdNum}`);
       const result = await productsService.refreshSupplierStocks(productIdNum);
-      const { scheduleWarehouseStockMarketplaceSync } = await import(
-        '../services/marketplaceWarehouseStockSync.service.js'
-      );
-      scheduleWarehouseStockMarketplaceSync(productIdNum, {
-        source: 'refresh_supplier_stocks',
-        organizationId: result?.organizationId ?? null
-      });
       return res.status(200).json({
         ok: true,
         data: {

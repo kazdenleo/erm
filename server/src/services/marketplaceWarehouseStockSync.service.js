@@ -239,16 +239,89 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
   });
 }
 
+const mpSyncDebounceTimers = new Map();
+
 export function scheduleWarehouseStockMarketplaceSync(productId, opts = {}) {
-  setImmediate(() => {
+  const key = String(productId);
+  const delayMs = Math.max(
+    0,
+    Math.min(30_000, parseInt(process.env.MP_STOCK_PUSH_DEBOUNCE_MS || '1500', 10) || 1500)
+  );
+  if (mpSyncDebounceTimers.has(key)) {
+    clearTimeout(mpSyncDebounceTimers.get(key));
+  }
+  const timer = setTimeout(() => {
+    mpSyncDebounceTimers.delete(key);
     syncWarehouseStockToMarketplaces(productId, opts).catch((e) => {
       logger.warn('[MP Stock Push] async sync failed:', e?.message || e);
     });
+  }, delayMs);
+  mpSyncDebounceTimers.set(key, timer);
+}
+
+/**
+ * Пакетная отправка на МП после массового обновления остатков поставщиков.
+ * @param {Array<number|string>} productIds
+ */
+export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) {
+  const ids = [
+    ...new Set(
+      (productIds || [])
+        .map((id) => (typeof id === 'string' ? parseInt(id, 10) : Number(id)))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    )
+  ];
+  if (ids.length === 0) {
+    return { total: 0, products: 0, pushed: 0, failed: 0 };
+  }
+
+  const concurrency = Math.max(
+    1,
+    Math.min(12, parseInt(process.env.MP_STOCK_PUSH_CONCURRENCY || '4', 10) || 4)
+  );
+  let index = 0;
+  let productsProcessed = 0;
+  let pushed = 0;
+  let failed = 0;
+
+  const worker = async () => {
+    while (index < ids.length) {
+      const pid = ids[index++];
+      try {
+        const r = await syncWarehouseStockToMarketplaces(pid, {
+          source: opts.source || 'supplier_stocks_batch',
+          warehouseId: opts.warehouseId ?? null
+        });
+        if (!r.skipped) {
+          productsProcessed += 1;
+          pushed += r.pushed || 0;
+          failed += r.failed || 0;
+        }
+      } catch (e) {
+        failed += 1;
+        logger.warn(`[MP Stock Push] batch product ${pid}:`, e?.message || e);
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, ids.length) }, () => worker())
+  );
+
+  logger.info('[MP Stock Push] batch after supplier stocks', {
+    products: ids.length,
+    processed: productsProcessed,
+    pushed,
+    failed,
+    source: opts.source
   });
+
+  return { total: ids.length, products: productsProcessed, pushed, failed };
 }
 
 export default {
   syncWarehouseStockToMarketplaces,
   syncOrganizationWarehouseStockToMarketplaces,
+  syncMarketplaceStocksForProductIds,
   scheduleWarehouseStockMarketplaceSync
 };
