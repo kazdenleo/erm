@@ -1041,7 +1041,7 @@ class OrdersRepositoryPG {
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
         o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number
        FROM orders o
-       WHERE o.status IN ('new', 'in_procurement')
+       WHERE o.status IN ('new', 'in_procurement', 'in_assembly')
          AND ${byProductMatch}
        ORDER BY o.created_at ASC NULLS LAST, o.id ASC
        LIMIT $2`,

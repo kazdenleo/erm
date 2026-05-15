@@ -24,6 +24,118 @@ export async function isKitProductId(productId) {
   return isKitProductType(r.rows[0]?.product_type);
 }
 
+function marketplaceForProductSkus(marketplace) {
+  const m = String(marketplace || '').toLowerCase();
+  if (m === 'wildberries' || m === 'wb') return 'wb';
+  if (m === 'yandex' || m === 'ym' || m === 'yandexmarket') return 'ym';
+  return m === 'ozon' ? 'ozon' : m;
+}
+
+/** Карточка комплекта: product_type = kit или задан состав kit_components. */
+function kitProductSql(alias = 'p') {
+  return `(
+    LOWER(TRIM(COALESCE(${alias}.product_type::text, ''))) = 'kit'
+    OR EXISTS (SELECT 1 FROM kit_components kc WHERE kc.kit_product_id = ${alias}.id)
+  )`;
+}
+
+/**
+ * Найти id комплекта по артикулу в заказе (offer_id / marketplace_sku), напр. DTST4333RL.
+ */
+async function findKitProductIdByOrderSku(marketplace, offer, msku) {
+  const mp = marketplaceForProductSkus(marketplace);
+  if (!mp) return null;
+  let off = String(offer || '').trim();
+  const sku = String(msku || '').trim();
+  if (mp === 'wb' && off) {
+    const m = off.match(/([0-9]{5,})$/);
+    if (m) off = m[1];
+  }
+  if (!off && !sku) return null;
+
+  const params = [mp, off, sku];
+  let ozonClause = '';
+  if (mp === 'ozon' && sku && /^[0-9]+$/.test(sku)) {
+    ozonClause = `OR (ps.marketplace = 'ozon' AND ps.marketplace_product_id = $4::bigint)`;
+    params.push(sku);
+  }
+
+  const r = await query(
+    `SELECT p.id AS kit_id
+     FROM products p
+     LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = $1
+     WHERE ${kitProductSql('p')}
+       AND (
+         ($2 <> '' AND TRIM(ps.sku) = TRIM($2))
+         OR ($3 <> '' AND TRIM(ps.sku) = TRIM($3))
+         OR ($2 <> '' AND TRIM(COALESCE(p.sku, '')) = TRIM($2))
+         OR ($3 <> '' AND TRIM(COALESCE(p.sku, '')) = TRIM($3))
+         ${ozonClause}
+       )
+     ORDER BY p.id
+     LIMIT 1`,
+    params
+  );
+  const kid = r.rows[0]?.kit_id;
+  return kid != null ? Number(kid) : null;
+}
+
+/**
+ * Заказ на комплект (DTST4333RL): резерв/отгрузка по kit_components (2× DTST4333),
+ * даже если в orders.product_id ошибочно указана комплектующая.
+ */
+export async function findKitProductIdForMarketplaceOrder(productId, orderRow = {}) {
+  let offer = String(orderRow.offerId ?? orderRow.offer_id ?? '').trim();
+  const msku = String(orderRow.marketplace_sku ?? orderRow.sku ?? '').trim();
+
+  const bySku = await findKitProductIdByOrderSku(orderRow.marketplace, offer, msku);
+  if (bySku) return bySku;
+
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return pid;
+  if (await isKitProductId(pid)) return pid;
+  const hasComponents = await query(
+    `SELECT 1 FROM kit_components WHERE kit_product_id = $1 LIMIT 1`,
+    [pid]
+  );
+  if (hasComponents.rows?.length) return pid;
+
+  const mp = marketplaceForProductSkus(orderRow.marketplace);
+  if (!mp) return pid;
+
+  if (mp === 'wb' && offer) {
+    const m = offer.match(/([0-9]{5,})$/);
+    if (m) offer = m[1];
+  }
+
+  const params = [pid, mp, offer, msku];
+  let ozonClause = '';
+  if (mp === 'ozon' && msku && /^[0-9]+$/.test(msku)) {
+    ozonClause = `OR (ps.marketplace = 'ozon' AND ps.marketplace_product_id = $5::bigint)`;
+    params.push(msku);
+  }
+
+  const r = await query(
+    `SELECT kc.kit_product_id
+     FROM kit_components kc
+     INNER JOIN products pk ON pk.id = kc.kit_product_id
+     INNER JOIN product_skus ps ON ps.product_id = kc.kit_product_id AND ps.marketplace = $2
+     WHERE ${kitProductSql('pk')}
+       AND kc.component_product_id = $1
+       AND (
+         ($3 <> '' AND TRIM(ps.sku) = TRIM($3))
+         OR ($4 <> '' AND TRIM(ps.sku) = TRIM($4))
+         ${ozonClause}
+       )
+     ORDER BY kc.kit_product_id
+     LIMIT 1`,
+    params
+  );
+
+  const kid = r.rows[0]?.kit_product_id;
+  return kid != null ? Number(kid) : pid;
+}
+
 /** @returns {Promise<Array<{ component_product_id: number, quantity: number }>>} */
 export async function getKitComponents(kitProductId) {
   const kitId = Number(kitProductId);
@@ -504,9 +616,165 @@ export async function recalculateAllKitStocks() {
   return n;
 }
 
+/**
+ * Для списка товаров: у комплектов с составом — «целое по карточке комплекта» / «полных комплектов из комплектующих»
+ * (склад, в пути по карточке комплектующих, остатки у поставщиков по комплектующим).
+ * Не зависит от того, попали ли комплектующие в ту же страницу ответа API.
+ *
+ * @param {object[]} products
+ * @param {{ warehouseId?: number|string|null, warehouse_id?: number|string|null }} [options]
+ */
+export async function attachKitWarehouseSplitMetrics(products, options = {}) {
+  if (!Array.isArray(products) || products.length === 0) return;
+
+  const widRaw = options.warehouseId ?? options.warehouse_id ?? null;
+  const warehouseIdParsed =
+    widRaw != null && String(widRaw).trim() !== ''
+      ? typeof widRaw === 'string'
+        ? parseInt(widRaw, 10)
+        : Number(widRaw)
+      : null;
+  const wid =
+    warehouseIdParsed != null && Number.isFinite(warehouseIdParsed) && warehouseIdParsed > 0
+      ? warehouseIdParsed
+      : null;
+
+  const kitRows = products.filter(
+    (p) =>
+      isKitProductType(p.product_type) &&
+      Array.isArray(p.kit_components) &&
+      p.kit_components.length > 0
+  );
+  if (kitRows.length === 0) return;
+
+  const kitIds = [
+    ...new Set(
+      kitRows
+        .map((p) => {
+          const n = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+          return Number.isFinite(n) && n > 0 ? n : null;
+        })
+        .filter((x) => x != null)
+    ),
+  ];
+  if (kitIds.length === 0) return;
+
+  const pKit = [kitIds];
+  const pKitWid = wid != null ? [kitIds, wid] : [kitIds];
+
+  const wholeOnHandSql = wid
+    ? `SELECT product_id::text AS kit_id, COALESCE(quantity, 0)::int AS v
+       FROM product_warehouse_stock
+       WHERE warehouse_id = $2 AND product_id = ANY($1::bigint[])`
+    : `SELECT product_id::text AS kit_id, COALESCE(SUM(quantity), 0)::int AS v
+       FROM product_warehouse_stock
+       WHERE product_id = ANY($1::bigint[])
+       GROUP BY product_id`;
+
+  const fromOnHandSql = wid
+    ? `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
+       FROM (
+         SELECT kc.kit_product_id,
+           FLOOR(COALESCE(SUM(pws.quantity), 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
+         FROM kit_components kc
+         LEFT JOIN product_warehouse_stock pws
+           ON pws.product_id = kc.component_product_id AND pws.warehouse_id = $2
+         WHERE kc.kit_product_id = ANY($1::bigint[])
+         GROUP BY kc.kit_product_id, kc.component_product_id, kc.quantity
+       ) t
+       GROUP BY kit_product_id`
+    : `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
+       FROM (
+         SELECT kc.kit_product_id,
+           FLOOR(COALESCE(SUM(pws.quantity), 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
+         FROM kit_components kc
+         LEFT JOIN product_warehouse_stock pws ON pws.product_id = kc.component_product_id
+         WHERE kc.kit_product_id = ANY($1::bigint[])
+         GROUP BY kc.kit_product_id, kc.component_product_id, kc.quantity
+       ) t
+       GROUP BY kit_product_id`;
+
+  const wholeIncSql = `SELECT id::text AS kit_id, COALESCE(incoming_quantity, 0)::int AS v
+     FROM products WHERE id = ANY($1::bigint[])`;
+
+  const fromIncSql = `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
+     FROM (
+       SELECT kc.kit_product_id,
+         FLOOR(COALESCE(pr.incoming_quantity, 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
+       FROM kit_components kc
+       INNER JOIN products pr ON pr.id = kc.component_product_id
+       WHERE kc.kit_product_id = ANY($1::bigint[])
+     ) t
+     GROUP BY kit_product_id`;
+
+  const wholeSupSql = `SELECT product_id::text AS kit_id, COALESCE(SUM(stock), 0)::int AS v
+     FROM supplier_stocks WHERE product_id = ANY($1::bigint[])
+     GROUP BY product_id`;
+
+  const fromSupSql = `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
+     FROM (
+       SELECT kc.kit_product_id,
+         FLOOR(COALESCE(ss.tot, 0) / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
+       FROM kit_components kc
+       LEFT JOIN (
+         SELECT product_id, SUM(stock)::numeric AS tot
+         FROM supplier_stocks
+         WHERE product_id IN (SELECT DISTINCT component_product_id FROM kit_components WHERE kit_product_id = ANY($1::bigint[]))
+         GROUP BY product_id
+       ) ss ON ss.product_id = kc.component_product_id
+       WHERE kc.kit_product_id = ANY($1::bigint[])
+     ) t
+     GROUP BY kit_product_id`;
+
+  const [
+    wholeOnHandRes,
+    fromOnHandRes,
+    wholeIncRes,
+    fromIncRes,
+    wholeSupRes,
+    fromSupRes
+  ] = await Promise.all([
+    query(wholeOnHandSql, pKitWid),
+    query(fromOnHandSql, pKitWid),
+    query(wholeIncSql, pKit),
+    query(fromIncSql, pKit),
+    query(wholeSupSql, pKit),
+    query(fromSupSql, pKit)
+  ]);
+
+  const toMap = (res) => {
+    const m = new Map();
+    for (const row of res.rows || []) {
+      const k = String(row.kit_id);
+      m.set(k, Math.max(0, Number(row.v) || 0));
+    }
+    return m;
+  };
+
+  const mWholeOh = toMap(wholeOnHandRes);
+  const mFromOh = toMap(fromOnHandRes);
+  const mWholeIn = toMap(wholeIncRes);
+  const mFromIn = toMap(fromIncRes);
+  const mWholeSup = toMap(wholeSupRes);
+  const mFromSup = toMap(fromSupRes);
+
+  for (const p of kitRows) {
+    const key = String(typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id));
+    p.kit_stock_split = {
+      whole_on_hand: mWholeOh.get(key) ?? 0,
+      from_components_on_hand: mFromOh.get(key) ?? 0,
+      whole_incoming: mWholeIn.get(key) ?? 0,
+      from_components_incoming: mFromIn.get(key) ?? 0,
+      whole_suppliers: mWholeSup.get(key) ?? 0,
+      from_components_suppliers: mFromSup.get(key) ?? 0
+    };
+  }
+}
+
 export default {
   isKitProductType,
   isKitProductId,
+  findKitProductIdForMarketplaceOrder,
   getKitComponents,
   computeKitMetricsFromComponents,
   computeKitDisplayStock,
@@ -521,5 +789,6 @@ export default {
   enrichKitProductStock,
   scheduleMarketplaceSyncForParentKits,
   applyKitOrderReserve,
-  releaseAllReservesForOrder
+  releaseAllReservesForOrder,
+  attachKitWarehouseSplitMetrics
 };

@@ -103,6 +103,25 @@ class ShipmentsController {
     }
   }
 
+  /** Повторное списание остатков по заказам уже закрытой поставки. */
+  async reapplyStock(req, res, next) {
+    try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
+      }
+      const { id } = req.params;
+      const result = await shipmentsService.reapplyStockForShipment(id, {
+        profileId: sp.profileId,
+        organizationId: sp.organizationId
+      });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
+      next(error);
+    }
+  }
+
   async removeOrders(req, res, next) {
     try {
       const sp = shipmentsProfileOpts(req);

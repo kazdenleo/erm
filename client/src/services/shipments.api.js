@@ -3,9 +3,9 @@
  * Локальные поставки (Ozon, Яндекс) и создание поставки на WB + добавление заказов, QR-стикер при закрытии WB.
  */
 
-import api from './api';
+import api, { resolveApiBaseUrl } from './api';
 
-const API_BASE = process.env.REACT_APP_API_URL || '/api';
+const API_BASE = resolveApiBaseUrl();
 
 /** URL изображения QR-стикера поставки (WB, после закрытия) */
 export function getQrStickerUrl(shipmentId) {

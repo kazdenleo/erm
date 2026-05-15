@@ -105,9 +105,27 @@ async function saveLocalShipments(shipments) {
   await writeData('shipments', { shipments, updatedAt: new Date().toISOString() });
 }
 
+/** Минимальная запись только для печати сохранённого QR после «подчистки» списка перед новой поставкой. */
+function buildStickerArchiveStub(s) {
+  const org = normalizeOrgId(s.organizationId ?? s.organization_id ?? null);
+  const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
+  return {
+    id: s.id,
+    marketplace: m,
+    closed: true,
+    stickerArchiveOnly: true,
+    qrStickerPath: s.qrStickerPath,
+    orderIds: [],
+    createdAt: s.createdAt || new Date().toISOString(),
+    ...(s.profileId != null && s.profileId !== '' ? { profileId: s.profileId } : {}),
+    ...(org ? { organizationId: org } : {})
+  };
+}
+
 /**
  * Перед созданием новой поставки: в ERM храним только открытые и закрытые до следующего создания.
- * Удаляем из локального JSON закрытые поставки того же МП и того же scope (профиль/организация), файл QR — с диска.
+ * Закрытые поставки того же МП и scope убираем из «списка»: при наличии QR оставляем компактную запись
+ * stickerArchiveOnly (файл на диске не трогаем), чтобы этикетку можно было напечатать по ссылке позже.
  */
 async function pruneClosedLocalShipmentsForNewCreate(marketplaceCode, { profileId = null, organizationId = null } = {}) {
   const org = normalizeOrgId(organizationId);
@@ -120,15 +138,11 @@ async function pruneClosedLocalShipmentsForNewCreate(marketplaceCode, { profileI
       isLocal &&
       m === marketplaceCode &&
       s.closed === true &&
-      shipmentVisibleForScope(s, profileId, org);
+      shipmentVisibleForScope(s, profileId, org) &&
+      !s.stickerArchiveOnly;
     if (drop) {
-      try {
-        if (s.qrStickerPath) {
-          const abs = join(DATA_DIR, s.qrStickerPath);
-          if (fs.existsSync(abs)) fs.unlinkSync(abs);
-        }
-      } catch (e) {
-        logger.warn('[Shipments] prune closed: unlink sticker', e.message);
+      if (s.qrStickerPath) {
+        next.push(buildStickerArchiveStub(s));
       }
       continue;
     }
@@ -152,6 +166,7 @@ async function getShipments({ profileId, organizationId } = {}) {
   const byMarketplace = { ozon: [], wildberries: [], yandex: [] };
 
   for (const s of local) {
+    if (s.stickerArchiveOnly) continue;
     const code = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     if (byMarketplace[code]) {
       byMarketplace[code].push(normalizeShipment(s));
@@ -383,7 +398,51 @@ async function closeShipment(shipmentId, { profileId = null, organizationId = nu
   }
 
   await saveLocalShipments(shipments);
+
+  const orderIds = Array.isArray(ship.orderIds) ? ship.orderIds : [];
+  if (orderIds.length > 0 && ship.marketplace) {
+    try {
+      const { default: ordersService } = await import('./orders.service.js');
+      const fin = await ordersService.applyAssemblyStockForShipmentOrders(
+        ship.marketplace,
+        orderIds,
+        profileId
+      );
+      if (fin?.processed > 0 || fin?.stockOnly > 0) {
+        logger.info(
+          `[Shipments] Закрытие ${shipmentId}: списание остатков — собрано ${fin.processed}, движения без смены статуса ${fin.stockOnly}`
+        );
+      }
+    } catch (e) {
+      logger.warn('[Shipments] Закрытие поставки: не удалось списать остатки по заказам:', e?.message || e);
+    }
+  }
+
   return normalizeShipment(ship);
+}
+
+/**
+ * Повторно списать остатки по заказам закрытой поставки (если при первом закрытии движения не создались).
+ */
+async function reapplyStockForShipment(shipmentId, { profileId = null, organizationId = null } = {}) {
+  const shipments = await getLocalShipments();
+  const ship = shipments.find((s) => s.id === shipmentId);
+  if (!ship) {
+    const err = new Error('Поставка не найдена');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!shipmentVisibleForScope(ship, profileId, organizationId)) {
+    const err = new Error('Поставка не найдена');
+    err.statusCode = 404;
+    throw err;
+  }
+  const orderIds = Array.isArray(ship.orderIds) ? ship.orderIds : [];
+  if (orderIds.length === 0 || !ship.marketplace) {
+    return { processed: 0, stockOnly: 0 };
+  }
+  const { default: ordersService } = await import('./orders.service.js');
+  return ordersService.applyAssemblyStockForShipmentOrders(ship.marketplace, orderIds, profileId);
 }
 
 /** Передать поставку WB в доставку (обязательно перед запросом QR). */
@@ -951,6 +1010,7 @@ const shipmentsService = {
   getOrCreateOpenShipment,
   findLocalShipmentContainingOrder,
   closeShipment,
+  reapplyStockForShipment,
   getQrStickerFilePath,
   getMarketplaces: () => MARKETPLACES
 };

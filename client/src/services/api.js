@@ -6,7 +6,8 @@
 import axios from 'axios';
 import { getApiSessionContext } from './apiSession.js';
 
-function resolveApiBaseUrl() {
+/** База API для axios, window.open печати и т.п. Экспортируем, чтобы другие клиентские модули не дублировали логику. */
+export function resolveApiBaseUrl() {
   const env = process.env.REACT_APP_API_URL;
   // На HTTPS-странице браузер блокирует любые XHR на http:// (Mixed Content).
   // Поэтому для прод-HTTPS всегда используем относительный '/api' (через тот же origin).
@@ -17,7 +18,16 @@ function resolveApiBaseUrl() {
   } catch {
     // ignore
   }
-  return env || '/api';
+  const base = env && String(env).trim() !== '' ? String(env).trim() : '/api';
+  if (typeof base === 'string' && /^https?:\/\//i.test(base)) {
+    const trimmed = base.replace(/\/+$/, '');
+    // Один билд часто задаёт только origin; бэкенд смонтирован на /api (см. app.use('/api', routes)).
+    if (!/\/api$/i.test(trimmed)) {
+      return `${trimmed}/api`;
+    }
+    return trimmed;
+  }
+  return base;
 }
 
 const API_BASE_URL = resolveApiBaseUrl();

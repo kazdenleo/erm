@@ -806,6 +806,9 @@ class ProductsRepositoryPG {
       }
 
       await this._applyKitDerivedStockFromDb(products, options);
+
+      const { attachKitWarehouseSplitMetrics } = await import('../services/kitStock.service.js');
+      await attachKitWarehouseSplitMetrics(products, options);
     }
 
     await this._reconcileReservedQuantityFromMovements(products);

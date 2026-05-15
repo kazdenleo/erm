@@ -12,7 +12,11 @@ import {
   applyKitOrderReserve,
   computeMaxKitUnitsReservable,
   getReservedKitUnitsForOrder,
-  releaseAllReservesForOrder
+  releaseAllReservesForOrder,
+  persistKitStock,
+  getKitComponents,
+  recalculateKitsForComponent,
+  findKitProductIdForMarketplaceOrder
 } from './kitStock.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
@@ -136,6 +140,7 @@ class OrdersService {
         GROUP BY (sm.meta->>'order_id')::bigint
       )
       SELECT
+        o.id AS order_db_id,
         o.marketplace,
         o.order_id,
         COALESCE(o.quantity, 1)::int AS order_qty,
@@ -145,6 +150,7 @@ class OrdersService {
         o.marketplace_sku,
         o.product_name,
         p.id AS joined_product_id,
+        p.product_type,
         COALESCE(p.quantity, 0)::int AS product_qty,
         COALESCE(p.reserved_quantity, 0)::int AS product_reserved_qty
       FROM ord o
@@ -173,6 +179,7 @@ class OrdersService {
       }
       const need = Number(row.order_qty) || 1;
       const resQty = Number(row.reserved_qty) || 0;
+      const orderDbId = row.order_db_id != null ? Number(row.order_db_id) : null;
       let prodId = row.product_id != null ? Number(row.product_id) : null;
       let prodQty = Number(row.product_qty) || 0;
       let prodRes = Number(row.product_reserved_qty) || 0;
@@ -180,7 +187,7 @@ class OrdersService {
       // Если product_id в orders ещё не заполнен, пытаемся сопоставить через product_skus (как в UI).
       if (!prodId || !Number.isFinite(prodId) || prodId < 1) {
         try {
-          const resolved = await this.resolveProductIdForAssemblyLine({
+          const resolved = await this._resolveProductIdForOrderStock({
             marketplace: row.marketplace,
             offerId: row.offer_id,
             offer_id: row.offer_id,
@@ -188,6 +195,7 @@ class OrdersService {
             marketplace_sku: row.marketplace_sku,
             productName: row.product_name,
             product_name: row.product_name,
+            productId: row.product_id
           });
           const rid = resolved != null ? Number(resolved) : null;
           if (rid && Number.isFinite(rid) && rid > 0) {
@@ -220,7 +228,20 @@ class OrdersService {
         blocked.push({ marketplace: o.marketplace, orderId: oid, reason: 'не определён товар (product_id)' });
         continue;
       }
-      if (resQty < need) {
+      if (await isKitProductId(prodId)) {
+        const kitReserved =
+          orderDbId && Number.isFinite(orderDbId)
+            ? await getReservedKitUnitsForOrder(prodId, orderDbId)
+            : 0;
+        if (kitReserved < need) {
+          blocked.push({
+            marketplace: o.marketplace,
+            orderId: oid,
+            reason: `нет резерва комплекта (зарезервировано: ${kitReserved} компл., нужно: ${need})`
+          });
+          continue;
+        }
+      } else if (resQty < need) {
         blocked.push({ marketplace: o.marketplace, orderId: oid, reason: `нет резерва под заказ (зарезервировано: ${resQty}, нужно: ${need})` });
         continue;
       }
@@ -358,60 +379,13 @@ class OrdersService {
     return await stockMovementsService.productsRepository.resolveOwnWarehouseId(null);
   }
 
+  /**
+   * Попытка резерва при появлении/синхронизации заказа или остатка.
+   * Раньше: при любом уже существующем резерве или при maxKits < qty для комплекта выходили без дозаполнения.
+   */
   async _reserveForOrderIfStockAvailable(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
-    const id = orderRowDbId(orderRow);
-    if (!id) return;
-    if (await this._hasDbReserveForOrder(id)) return;
-
-    let productId = orderRow.productId ?? orderRow.product_id;
-    if (!productId) productId = await this.resolveProductIdForAssemblyLine(orderRow);
-    productId = Number(productId);
-    if (!Number.isFinite(productId) || productId < 1) return;
-
-    const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
-    const metaOrderId = id;
-    const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
-    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
-
-    if (await isKitProductId(productId)) {
-      const maxKits = await computeMaxKitUnitsReservable(productId);
-      if (maxKits < qty) return;
-      await applyKitOrderReserve(
-        productId,
-        qty,
-        orderIdStr || String(id),
-        { order_id: metaOrderId, orderId: orderIdStr, warehouse_id: warehouseId },
-        (compId, compQty, oid, m) =>
-          this._applyReserveForOrderComponent(compId, compQty, oid, m)
-      );
-      return;
-    }
-
-    // Общее правило как у _applyReserveForOrder: доступно quantity + incoming − reserved
-    // (ручные и «Новые» с МП тоже могут резервировать «в пути», если факта недостаточно).
-    const pr = await query(
-      `SELECT COALESCE(quantity, 0) AS quantity,
-              COALESCE(incoming_quantity, 0) AS incoming_quantity,
-              COALESCE(reserved_quantity, 0) AS reserved_quantity
-       FROM products
-       WHERE id = $1
-       LIMIT 1`,
-      [productId]
-    );
-    const row = pr.rows?.[0];
-    const actual = row?.quantity != null ? Number(row.quantity) : 0;
-    const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
-    const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
-    const supply = actual + incoming;
-    const availableSupply = Math.max(0, supply - reserved);
-    if (availableSupply < qty) return;
-
-    await this._applyReserveForOrder(productId, qty, orderIdStr || String(id), {
-      order_id: metaOrderId,
-      orderId: orderIdStr,
-      warehouse_id: warehouseId
-    });
+    await this._applyReserveForOrderIfAbsent(orderRow);
   }
 
   /**
@@ -500,20 +474,185 @@ class OrdersService {
     return Math.max(0, reserved - unreserved);
   }
 
-  /** Резерв для строки заказа из БД, если ещё нет резерва с тем же orders.id (идемпотентно). */
+  /** Нетто-резерв под заказ по конкретному товару (для комплектующих). */
+  async _getReservedQtyForOrderProduct(orderDbId, productId) {
+    if (!orderDbId || !productId || !repositoryFactory.isUsingPostgreSQL()) return 0;
+    const oid = Number(orderDbId);
+    const pid = Number(productId);
+    if (!Number.isFinite(oid) || !Number.isFinite(pid)) return 0;
+    const r = await query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
+         COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)::int AS unreserved
+       FROM stock_movements
+       WHERE product_id = $2
+         AND (type = 'reserve' OR type = 'unreserve')
+         AND (meta->>'order_id')::bigint = $1::bigint`,
+      [oid, pid]
+    );
+    const row = r.rows?.[0];
+    const reserved = row?.reserved != null ? Number(row.reserved) : 0;
+    const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
+    return Math.max(0, reserved - unreserved);
+  }
+
+  /** Уже списано по заказу и товару (для идемпотентности отгрузки). */
+  async _getShippedQtyForOrderProduct(orderDbId, productId) {
+    if (!orderDbId || !productId || !repositoryFactory.isUsingPostgreSQL()) return 0;
+    const oid = Number(orderDbId);
+    const pid = Number(productId);
+    if (!Number.isFinite(oid) || !Number.isFinite(pid)) return 0;
+    const r = await query(
+      `SELECT COALESCE(SUM(CASE WHEN type = 'shipment' THEN -quantity_change ELSE 0 END), 0)::int AS shipped
+       FROM stock_movements
+       WHERE product_id = $2
+         AND type = 'shipment'
+         AND (meta->>'order_id')::bigint = $1::bigint`,
+      [oid, pid]
+    );
+    return Math.max(0, Number(r.rows?.[0]?.shipped) || 0);
+  }
+
+  /**
+   * Снять резерв и списать факт при сборке/закрытии поставки.
+   * Для комплекта — по каждой комплектующей (резерв в журнале на компонентах, не на карточке комплекта).
+   */
+  async _applyAssemblyStockForOrderRow(orderRow) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId) return;
+
+    const productId = await this._resolveProductIdForOrderStock(orderRow);
+    if (!productId) return;
+
+    const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
+    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    const metaBase = {
+      order_id: orderDbId,
+      orderId: orderIdStr,
+      assembled: true,
+      warehouse_id: warehouseId || null
+    };
+
+    if (await isKitProductId(productId)) {
+      const components = await getKitComponents(productId);
+      const kitsOrdered = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
+      const reservedKits = await getReservedKitUnitsForOrder(productId, orderDbId);
+      const kitsToFulfill = Math.max(kitsOrdered, reservedKits);
+
+      for (const c of components) {
+        const compId = Number(c.component_product_id);
+        if (!Number.isFinite(compId) || compId < 1) continue;
+        const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+        const targetQty = kitsToFulfill * perKit;
+        const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, compId);
+        const shipQty = targetQty - alreadyShipped;
+        if (shipQty <= 0) continue;
+
+        const net = await this._getReservedQtyForOrderProduct(orderDbId, compId);
+        const unreserveQty = Math.min(net, shipQty);
+        if (unreserveQty > 0) {
+          await stockMovementsService.applyChange(compId, {
+            delta: unreserveQty,
+            type: 'unreserve',
+            reason: `Отгрузка: снятие резерва по заказу ${orderIdStr}`.trim(),
+            meta: { ...metaBase, kit_product_id: productId }
+          });
+        }
+        await stockMovementsService.applyChange(compId, {
+          delta: -shipQty,
+          type: 'shipment',
+          reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
+          meta: { ...metaBase, kit_product_id: productId }
+        });
+        await recalculateKitsForComponent(compId, { warehouseId });
+      }
+      await persistKitStock(productId, { warehouseId });
+      return;
+    }
+
+    const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
+    const net = await this._getReservedQtyForOrderProduct(orderDbId, productId);
+    const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, productId);
+    const shipQty = Math.max(0, qty - alreadyShipped);
+    if (shipQty <= 0) return;
+    const release = net > 0 ? Math.min(shipQty, net) : 0;
+
+    if (release > 0) {
+      await stockMovementsService.applyChange(productId, {
+        delta: release,
+        type: 'unreserve',
+        reason: `Отгрузка: снятие резерва по заказу ${orderIdStr}`.trim(),
+        meta: metaBase
+      });
+    }
+
+    await stockMovementsService.applyChange(productId, {
+      delta: -shipQty,
+      type: 'shipment',
+      reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
+      meta: metaBase
+    });
+  }
+
+  /**
+   * При закрытии поставки FBS: снять резерв и списать товар по заказам из поставки.
+   * Уже «Собран» — только движения (если при закрытии поставки не было списания).
+   */
+  async applyAssemblyStockForShipmentOrders(marketplace, orderIds, profileId = null) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
+      return { processed: 0, stockOnly: 0 };
+    }
+    const mp = String(marketplace).trim();
+    let processed = 0;
+    let stockOnly = 0;
+
+    for (const rawOid of orderIds) {
+      const orderId = String(rawOid).trim();
+      if (!orderId) continue;
+      try {
+        let order = await this.repository.findByMarketplaceAndOrderId(mp, orderId, profileId);
+        if (!order && profileId != null) {
+          order = await this.repository.findByMarketplaceAndOrderId(mp, orderId, null);
+        }
+        if (!order) continue;
+        const status = String(order.status || '').toLowerCase();
+        if (status === 'cancelled' || status === 'new') continue;
+
+        const rows = order.orderGroupId
+          ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
+          : [order];
+
+        if (status === 'in_assembly') {
+          await this.markOrderAsAssembled(mp, orderId, null, profileId, null);
+          processed += 1;
+          continue;
+        }
+
+        if (status === 'assembled' || status === 'shipped') {
+          for (const r of rows) {
+            await this._applyAssemblyStockForOrderRow(r);
+          }
+          stockOnly += 1;
+        }
+      } catch (e) {
+        console.warn('[Orders] applyAssemblyStockForShipmentOrders:', orderId, e?.message || e);
+      }
+    }
+
+    return { processed, stockOnly };
+  }
+
+  /** Резерв для строки заказа из БД: частичный резерв и дозаполнение до qty при появлении остатка. */
   async _applyReserveForOrderIfAbsent(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
     const id = orderRowDbId(orderRow);
     const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
     const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
     if (!id) return;
-    let productId = orderRow.productId ?? orderRow.product_id;
-    if (!productId) {
-      productId = await this.resolveProductIdForAssemblyLine(orderRow);
-    }
+    const productId = await this._resolveProductIdForOrderStock(orderRow);
     if (!productId) return;
-    productId = Number(productId);
-    if (!Number.isFinite(productId) || productId < 1) return;
+    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
 
     // Частичный резерв:
     // - резервируем только то, что уже есть (факт + ожидается - уже зарезервировано)
@@ -532,6 +671,7 @@ class OrdersService {
         {
           order_id: id,
           orderId: orderIdStr,
+          warehouse_id: warehouseId,
           partial: reserveKits < need
         },
         (compId, compQty, oid, m) =>
@@ -564,6 +704,7 @@ class OrdersService {
     await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
       order_id: id,
       orderId: orderIdStr,
+      warehouse_id: warehouseId,
       partial: reserveNow < need
     });
   }
@@ -646,13 +787,28 @@ class OrdersService {
     const availableSupply = Math.max(0, actual + incoming - reserved);
     if (availableSupply <= 0) return;
 
-    // FIFO: сначала более ранние «Новый» и «В закупке»; учёт совпадения по SKU при пустом product_id (как в репозитории).
-    const queue =
-      typeof this.repository.findReserveQueueOrdersByProductId === 'function'
-        ? await this.repository.findReserveQueueOrdersByProductId(pid, 500)
-        : [];
-    for (const o of queue) {
-      await this._applyReserveForOrderIfAbsent(o).catch(() => {});
+    const runQueueForProduct = async (forPid) => {
+      const fp = Number(forPid);
+      if (!Number.isFinite(fp) || fp < 1) return;
+      const q =
+        typeof this.repository.findReserveQueueOrdersByProductId === 'function'
+          ? await this.repository.findReserveQueueOrdersByProductId(fp, 500)
+          : [];
+      for (const o of q) {
+        await this._applyReserveForOrderIfAbsent(o).catch(() => {});
+      }
+    };
+
+    await runQueueForProduct(pid);
+
+    // Заказы на комплект (product_id = kit) не попадают в выборку по component id — дозаполняем резерв по родительским комплектам.
+    const kitParents = await query(
+      `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+      [pid]
+    );
+    for (const kr of kitParents.rows || []) {
+      const kid = Number(kr.kit_product_id);
+      await runQueueForProduct(kid);
     }
   }
 
@@ -910,6 +1066,17 @@ class OrdersService {
    * Уточнить product_id строки заказа для UI сборки, если в orders.product_id пусто
    * (типично Yandex/WB до сопоставления): по offer_id / marketplace_sku и таблице product_skus.
    */
+  /** Товар для резерва/отгрузки: комплект, если заказ по SKU комплекта, даже при product_id комплектующей. */
+  async _resolveProductIdForOrderStock(orderRow) {
+    let productId = orderRow?.productId ?? orderRow?.product_id;
+    if (!productId) {
+      productId = await this.resolveProductIdForAssemblyLine(orderRow);
+    }
+    productId = Number(productId);
+    if (!Number.isFinite(productId) || productId < 1) return null;
+    return findKitProductIdForMarketplaceOrder(productId, orderRow);
+  }
+
   async resolveProductIdForAssemblyLine(orderRow) {
     const raw = orderRow.productId ?? orderRow.product_id;
     if (raw != null && String(raw).trim() !== '') {
@@ -1041,6 +1208,7 @@ class OrdersService {
       return { sent: 0, updated: 0 };
     }
     let updated = 0;
+    const touchedProductIds = new Set();
     if (repositoryFactory.isUsingPostgreSQL()) {
       for (const { marketplace, orderId } of orderIds) {
         if (!marketplace || orderId == null) continue;
@@ -1050,7 +1218,19 @@ class OrdersService {
           { status: 'in_assembly' },
           profileId
         );
-        if (row) updated++;
+        if (row) {
+          updated++;
+          await this._applyReserveForOrderIfAbsent(row).catch(() => {});
+          let pid = await this._resolveProductIdForOrderStock(row).catch(() => null);
+          if (!pid) {
+            pid = row.productId ?? row.product_id;
+          }
+          const pn = Number(pid);
+          if (Number.isFinite(pn) && pn > 0) touchedProductIds.add(pn);
+        }
+      }
+      for (const pid of touchedProductIds) {
+        await this.ensureReservesForProductIfSupplyAvailable(pid).catch(() => {});
       }
     } else {
       const { readData, writeData } = await import('../utils/storage.js');
@@ -1106,37 +1286,9 @@ class OrdersService {
         );
       }
 
-      // 2) Фиксируем отгрузку по собранным заказам в движениях остатков:
-      // - снимаем резерв (unreserve) на зарезервированное количество
-      // - делаем shipment (-qty) по складу заказа (если есть маппинг) или складу по умолчанию
+      // 2) Снятие резерва и списание (для комплектов — по комплектующим)
       for (const r of rows) {
-        const orderDbId = r?.id != null ? Number(r.id) : null;
-        if (!orderDbId || !Number.isFinite(orderDbId)) continue;
-        let productId = r.productId ?? r.product_id;
-        if (!productId) productId = await this.resolveProductIdForAssemblyLine(r);
-        productId = Number(productId);
-        if (!Number.isFinite(productId) || productId < 1) continue;
-        const qty = Math.max(1, parseInt(r.quantity, 10) || 1);
-        const orderIdStr = String(r.orderId ?? r.order_id ?? orderId);
-
-        const reservedForOrder = await this._getReservedQtyForOrder(orderDbId);
-        const release = Math.min(qty, reservedForOrder);
-        if (release > 0) {
-          await stockMovementsService.applyChange(productId, {
-            delta: release,
-            type: 'unreserve',
-            reason: `Отгрузка: снятие резерва по заказу ${orderIdStr}`.trim(),
-            meta: { order_id: orderDbId, orderId: orderIdStr, assembled: true }
-          });
-        }
-
-        const warehouseId = await this._resolveOwnWarehouseIdForOrder(r);
-        await stockMovementsService.applyChange(productId, {
-          delta: -qty,
-          type: 'shipment',
-          reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
-          meta: { order_id: orderDbId, orderId: orderIdStr, assembled: true, warehouse_id: warehouseId || null }
-        });
+        await this._applyAssemblyStockForOrderRow(r);
       }
 
       return this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);

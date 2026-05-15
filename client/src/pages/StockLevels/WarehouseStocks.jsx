@@ -14,7 +14,7 @@ import { stockMovementsApi } from '../../services/stockMovements.api';
 import { supplierStocksApi } from '../../services/supplierStocks.api';
 import { productsApi } from '../../services/products.api';
 import { marketplaceStockApi } from '../../services/marketplaceStock.api';
-import { buildStockRowsWithKits } from '../../utils/kitStockMetrics';
+import { buildStockRowsWithKits, stockTableAvailable, isKitProduct } from '../../utils/kitStockMetrics';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import './StockLevels.css';
@@ -59,29 +59,44 @@ function parseMovementMeta(m) {
   return {};
 }
 
+function movementNum(m, snakeKey) {
+  if (!m) return null;
+  const camelKey = snakeKey.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+  const raw = m[snakeKey] ?? m[camelKey];
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** Снимок «в пути / резерв / наличие» из строки журнала (учёт старых записей без incoming_after). */
 function snapshotFromMovement(m) {
-  const hasNew =
-    (m.incoming_after != null && m.incoming_after !== '') ||
-    (m.reserved_after != null && m.reserved_after !== '');
-  const inc =
-    m.incoming_after != null && m.incoming_after !== ''
-      ? Number(m.incoming_after)
-      : m.type === 'incoming' && m.balance_after != null && !hasNew
-        ? Number(m.balance_after)
-        : null;
-  const res = m.reserved_after != null && m.reserved_after !== '' ? Number(m.reserved_after) : null;
-  const bal =
-    m.balance_after != null && m.balance_after !== ''
-      ? Number(m.balance_after)
-      : null;
-  if (movementTypeLower(m) === 'incoming' && !hasNew) {
-    return { inc, res: res != null && !Number.isNaN(res) ? res : null, bal: null };
+  const incDb = movementNum(m, 'incoming_after');
+  const resDb = movementNum(m, 'reserved_after');
+  const balDb = movementNum(m, 'balance_after');
+  const hasNew = incDb != null || resDb != null;
+  const t = movementTypeLower(m);
+
+  let inc = incDb;
+  if (inc == null && t === 'incoming' && balDb != null && !hasNew) {
+    inc = balDb;
+  }
+  let res = resDb;
+  let bal = balDb;
+
+  if (t === 'incoming' && !hasNew) {
+    return { inc, res: res != null ? res : null, bal: null };
+  }
+  if (t === 'reserve' || t === 'unreserve') {
+    return {
+      inc: inc != null ? inc : null,
+      res: res != null ? res : null,
+      bal: bal != null ? bal : null,
+    };
   }
   return {
-    inc: inc != null && !Number.isNaN(inc) ? inc : null,
-    res: res != null && !Number.isNaN(res) ? res : null,
-    bal: bal != null && !Number.isNaN(bal) ? bal : null,
+    inc: inc != null ? inc : null,
+    res: res != null ? res : null,
+    bal: bal != null ? bal : null,
   };
 }
 
@@ -390,16 +405,34 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
         : null;
 
   if (reserveMs && reserveMs.length) {
+    const head = reserveMs[0];
     const sumQc = sumMovementsQuantityChange(reserveMs);
-    if (out.inc == null && prevLineBelow != null && prevLineBelow.inc != null && !Number.isNaN(prevLineBelow.inc)) {
+    const dbInc = movementNum(head, 'incoming_after');
+    const dbRes = movementNum(head, 'reserved_after');
+    const dbBal = movementNum(head, 'balance_after');
+
+    if (dbInc != null) out.inc = dbInc;
+    else if (out.inc == null && prevLineBelow?.inc != null && !Number.isNaN(prevLineBelow.inc)) {
       out.inc = prevLineBelow.inc;
     }
-    if (out.res == null && prevLineBelow != null && prevLineBelow.res != null && Number.isFinite(sumQc)) {
+
+    if (dbRes != null) out.res = dbRes;
+    else if (out.res == null && prevLineBelow?.res != null && Number.isFinite(sumQc)) {
       out.res = prevLineBelow.res - sumQc;
     }
-    if (out.bal == null && prevLineBelow != null && prevLineBelow.bal != null && !Number.isNaN(prevLineBelow.bal)) {
+
+    if (dbBal != null) out.bal = dbBal;
+    else if (
+      prevLineBelow != null &&
+      (prevLineBelow.inc ?? 0) > 0 &&
+      (prevLineBelow.bal ?? 0) === 0
+    ) {
+      out.bal = 0;
+    } else if (out.bal == null && prevLineBelow?.bal != null && !Number.isNaN(prevLineBelow.bal)) {
       out.bal = prevLineBelow.bal;
     }
+    if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
+    if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
     if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
     return out;
   }
@@ -420,22 +453,28 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
       if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
     }
     if (t === 'receipt' && /при[её]мка\s+по\s+закупке/i.test(reason)) {
-      if (out.inc == null || Number.isNaN(Number(out.inc))) {
-        const raw = m.incoming_after != null && m.incoming_after !== '' ? Number(m.incoming_after) : 0;
-        out.inc = Number.isFinite(raw) ? raw : 0;
-      }
-      if (out.res == null && prevLineBelow != null && prevLineBelow.res != null) {
-        out.res = prevLineBelow.res;
-      }
-      if (out.res == null && m.reserved_after != null && m.reserved_after !== '') {
-        const rv = Number(m.reserved_after);
-        out.res = Number.isFinite(rv) ? rv : null;
-      }
+      const dbInc = movementNum(m, 'incoming_after');
+      const dbRes = movementNum(m, 'reserved_after');
+      const dbBal = movementNum(m, 'balance_after');
+      if (dbInc != null) out.inc = dbInc;
+      else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
+      if (dbRes != null) out.res = dbRes;
+      else if (out.res == null && prevLineBelow?.res != null) out.res = prevLineBelow.res;
       if (out.res != null && out.res > 0) {
         out.bal = 0;
-      } else if (out.bal == null && m.balance_after != null && m.balance_after !== '') {
-        out.bal = Number(m.balance_after);
+      } else if (dbBal != null) {
+        out.bal = dbBal;
       }
+    }
+    if (t === 'inventory') {
+      const dbInc = movementNum(m, 'incoming_after');
+      const dbRes = movementNum(m, 'reserved_after');
+      const dbBal = movementNum(m, 'balance_after');
+      if (dbInc != null) out.inc = dbInc;
+      if (dbRes != null) out.res = dbRes;
+      else if (out.res == null) out.res = 0;
+      if (dbBal != null) out.bal = dbBal;
+      if (out.inc == null) out.inc = 0;
     }
   }
 
@@ -611,7 +650,10 @@ function enrichSupplierDetailsLabels(details, warehouses, mainWarehouseId) {
   }));
 }
 
-function SupplierStockCell({ total, details }) {
+function SupplierStockCell({ total, details, splitDisplay }) {
+  if (splitDisplay != null && String(splitDisplay).trim() !== '') {
+    return <span className="stock-main-value">{splitDisplay}</span>;
+  }
   const hasSuppliers = Array.isArray(details) && details.length > 0;
   const totalStock = hasSuppliers
     ? details.reduce((s, d) => s + (Number(d.stock) || 0), 0)
@@ -1196,7 +1238,7 @@ export function WarehouseStocks() {
           stockWarehouseId || null
         );
         const suppliers = supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0);
-        const available = onHand + suppliers;
+        const available = stockTableAvailable({ onHand, incoming, reserved, suppliers });
         return { onHand, incoming, reserved, suppliers, supplierDetails, available };
       }),
     [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]
@@ -1324,11 +1366,25 @@ export function WarehouseStocks() {
                   >
                     <td className="sku-cell">{row.product.sku || '—'}</td>
                     <td className="name-cell">{row.product.name || 'Без названия'}</td>
-                    <td>{row.incoming}</td>
+                    <td
+                      title={
+                        isKitProduct(row.product)
+                          ? row.product?.kit_stock_split || row.product?.kitStockSplit
+                            ? 'Целое по карточке комплекта / полных комплектов из метрик по комплектующим (склад, в пути, поставщики).'
+                            : 'По комплекту «в пути» здесь не показываем: закупки по комплектующим; ожидание в штуках комплекта учтено в «Доступно».'
+                          : undefined
+                      }
+                    >
+                      {row.incomingDisplay ?? row.incoming}
+                    </td>
                     <td className="stock-levels-reserved-cell">{row.reserved}</td>
-                    <td className="main-warehouse-cell">{row.onHand}</td>
+                    <td className="main-warehouse-cell">{row.onHandDisplay ?? row.onHand}</td>
                     <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
-                      <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
+                      <SupplierStockCell
+                        total={row.suppliers}
+                        details={row.supplierDetails}
+                        splitDisplay={row.suppliersDisplay}
+                      />
                     </td>
                     <td>{row.available}</td>
                   </tr>
@@ -1482,13 +1538,21 @@ export function WarehouseStocks() {
         ) : (
           <div className="stock-levels-history-table-wrap">
             <table className="stock-levels-table table stock-levels-history-table">
+              <colgroup>
+                <col className="stock-levels-history-col-date" />
+                <col className="stock-levels-history-col-reason" />
+                <col className="stock-levels-history-col-qty" />
+                <col className="stock-levels-history-col-qty" />
+                <col className="stock-levels-history-col-qty" />
+                <col className="stock-levels-history-col-qty" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Дата и время</th>
                   <th>Причина</th>
                   <th>В пути</th>
                   <th>Резерв</th>
-                  <th>Наличие</th>
+                  <th className="stock-levels-history-col-onhand">Наличие</th>
                   <th>Доступно</th>
                 </tr>
               </thead>

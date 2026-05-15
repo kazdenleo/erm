@@ -228,12 +228,15 @@ class InventorySessionsService {
     if (result?.sessionId && Array.isArray(result.productIds) && result.productIds.length > 0) {
       try {
         const { default: ordersService } = await import('./orders.service.js');
+        const { recalculateKitsForComponent } = await import('./kitStock.service.js');
         const sid = result.sessionId;
         for (const pid of result.productIds) {
           await ordersService.trimExcessReservesForProduct(pid, {
             reason: `После инвентаризации №${sid}`,
             meta: { inventory_session_id: sid }
           });
+          await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
+          await recalculateKitsForComponent(pid, {});
         }
       } catch {
         // ignore

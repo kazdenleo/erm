@@ -275,10 +275,29 @@
   overflow-y: auto;
 }
 
+.stock-levels-history-table {
+  width: 100%;
+  min-width: 640px;
+  table-layout: fixed;
+}
+
+.stock-levels-history-col-date {
+  width: 11rem;
+}
+
+.stock-levels-history-col-reason {
+  width: auto;
+}
+
+.stock-levels-history-col-qty {
+  width: 4.75rem;
+}
+
 .stock-levels-history-table th,
 .stock-levels-history-table td {
   padding: 10px 12px;
   text-align: left;
+  vertical-align: top;
 }
 
 .stock-levels-history-table th:nth-child(3),
@@ -290,6 +309,11 @@
 .stock-levels-history-table td:nth-child(5),
 .stock-levels-history-table td:nth-child(6) {
   text-align: right;
+  white-space: nowrap;
+}
+
+.stock-levels-history-col-onhand {
+  font-weight: 600;
 }
 
 .stock-change-plus {
