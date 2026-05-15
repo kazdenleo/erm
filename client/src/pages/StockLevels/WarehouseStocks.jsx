@@ -763,17 +763,27 @@ export function WarehouseStocks() {
       window.alert('Выберите организацию в фильтре — остатки отправляются в кабинет этой организации.');
       return;
     }
+    if (!stockWarehouseId) {
+      window.alert(
+        'Выберите склад в фильтре «Склад (остаток)». Остатки уйдут на маркетплейсы, привязанные к этому складу (Ozon / WB / Яндекс в разделе «Привязка складов маркетплейсов»).'
+      );
+      return;
+    }
+    const whLabel =
+      selectedWarehouse?.address || selectedWarehouse?.name || `склад #${stockWarehouseId}`;
+    const orgLabel =
+      organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
+      filterOrganizationId;
     const ok = window.confirm(
-      'Отправить на маркетплейсы остатки из колонки «Доступно» (наличие на складе + поставщики) для товаров в таблице? Учитываются только товары, связанные с МП, и настроенные сопоставления складов.'
+      `Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «${whLabel}», для всех товаров организации «${orgLabel}» со связью с МП?\n\nБудут использованы только привязки этого склада (не вся таблица на экране).`
     );
     if (!ok) return;
     setMpStockSyncing(true);
     try {
-      const productIds = rows.map((r) => r.product?.id).filter((id) => id != null && id !== '');
       const res = await marketplaceStockApi.syncBulk({
         organizationId: filterOrganizationId,
-        productIds: productIds.length > 0 ? productIds : undefined,
-        warehouseId: stockWarehouseId || null
+        warehouseId: stockWarehouseId,
+        warehouseScoped: true
       });
       const data = res?.data ?? res;
       const pushed = data?.pushed ?? 0;
@@ -783,7 +793,9 @@ export function WarehouseStocks() {
         window.alert('Отправка отключена в настройках организации или категории товара.');
         return;
       }
+      const total = data?.productsTotal;
       let details = `Готово.\nУспешно обновлено на МП: ${pushed}\nПропущено: ${skipped}\nОшибок: ${failed}`;
+      if (total != null) details += `\nТоваров организации: ${total}`;
       if (data?.message) details += `\n\n${data.message}`;
       if (data?.skipReasonsText) details += `\n\nПричины пропуска:\n${data.skipReasonsText}`;
       else if (pushed === 0 && failed === 0 && skipped === 0 && (data?.noMappings ?? 0) > 0) {

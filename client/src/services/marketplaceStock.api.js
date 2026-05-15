@@ -19,11 +19,12 @@ export const marketplaceStockApi = {
     return response.data;
   },
 
-  syncBulk: async ({ organizationId, productIds, warehouseId }) => {
+  syncBulk: async ({ organizationId, productIds, warehouseId, warehouseScoped }) => {
     const response = await api.post('/marketplace-stock/sync', {
       organizationId,
-      productIds: productIds ?? undefined,
-      warehouseId: warehouseId ?? null
+      productIds: warehouseScoped ? undefined : productIds ?? undefined,
+      warehouseId: warehouseId ?? null,
+      warehouseScoped: warehouseScoped === true
     });
     return response.data;
   }

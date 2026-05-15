@@ -28,13 +28,20 @@ class MarketplaceStockController {
   /** POST /api/marketplace-stock/sync */
   async syncBulk(req, res, next) {
     try {
-      const { organizationId, productIds, warehouseId } = req.body || {};
+      const { organizationId, productIds, warehouseId, warehouseScoped } = req.body || {};
       if (!organizationId) {
         return res.status(400).json({ ok: false, message: 'Укажите organizationId' });
       }
+      if (warehouseScoped === true && (warehouseId == null || String(warehouseId).trim() === '')) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Укажите warehouseId — остатки отправляются на МП, привязанные к этому складу'
+        });
+      }
       const result = await syncOrganizationWarehouseStockToMarketplaces(organizationId, {
-        productIds: Array.isArray(productIds) ? productIds : undefined,
+        productIds: warehouseScoped === true ? undefined : Array.isArray(productIds) ? productIds : undefined,
         warehouseId: warehouseId ?? null,
+        warehouseScoped: warehouseScoped === true,
         source: 'api_bulk'
       });
       return res.status(200).json({ ok: true, data: result });
