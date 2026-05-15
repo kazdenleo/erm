@@ -77,6 +77,24 @@ class IntegrationsService {
     return await this.cacheRepository.upsert({ cache_type, cache_key, cache_value, expires_at });
   }
 
+  _normalizeIntegrationScope(opts = {}) {
+    const organizationId = opts.organizationId ?? opts.organization_id ?? null;
+    const profileId = opts.profileId ?? opts.profile_id ?? null;
+    return {
+      organizationId:
+        organizationId != null && String(organizationId).trim() !== ''
+          ? String(organizationId).trim()
+          : null,
+      profileId:
+        profileId != null && String(profileId).trim() !== '' ? profileId : null
+    };
+  }
+
+  _integrationCacheKey(base, scope = {}) {
+    const oid = scope.organizationId ? `org:${scope.organizationId}` : 'global';
+    return `${base}:${oid}`;
+  }
+
   /**
    * Получить настройки маркетплейса
    */
@@ -962,7 +980,8 @@ class IntegrationsService {
    * Получить тарифы на логистику Wildberries
    * Сначала проверяет кэш, если данных нет или они устарели - загружает из API
    */
-  async getWildberriesTariffs(date = null) {
+  async getWildberriesTariffs(date = null, opts = {}) {
+    const scope = this._normalizeIntegrationScope(opts);
     try {
       // Сначала проверяем кэш
       const cachedData = await readData('wbTariffsCache');
@@ -980,12 +999,12 @@ class IntegrationsService {
 
       // Если кэша нет или он устарел, загружаем из API
       logger.info('[Integrations Service] Loading WB tariffs from API');
-      return await this._fetchWildberriesTariffsFromAPI(date);
+      return await this._fetchWildberriesTariffsFromAPI(date, scope);
     } catch (error) {
       logger.error('[Integrations Service] Error getting WB tariffs:', error);
       // Если ошибка при получении из кэша, пробуем загрузить из API
       try {
-        return await this._fetchWildberriesTariffsFromAPI(date);
+        return await this._fetchWildberriesTariffsFromAPI(date, scope);
       } catch (apiError) {
         throw apiError;
       }
@@ -996,8 +1015,8 @@ class IntegrationsService {
    * Загрузить тарифы из API Wildberries
    * @private
    */
-  async _fetchWildberriesTariffsFromAPI(date = null) {
-    const config = await this.getMarketplaceConfig('wildberries');
+  async _fetchWildberriesTariffsFromAPI(date = null, scope = {}) {
+    const config = await this.getMarketplaceConfig('wildberries', scope);
     if (!config || !config.api_key) {
       const err = new Error('API ключ Wildberries не настроен');
       err.statusCode = 400;
@@ -1032,8 +1051,9 @@ class IntegrationsService {
    * Ozon: список складов продавца (для сопоставления с фактическим складом).
    * @returns {Promise<object>} сырой ответ API Ozon
    */
-  async getOzonWarehouses() {
-    const config = await this.getMarketplaceConfig('ozon');
+  async getOzonWarehouses(opts = {}) {
+    const scope = this._normalizeIntegrationScope(opts);
+    const config = await this.getMarketplaceConfig('ozon', scope);
     const clientId = config?.client_id ?? config?.clientId;
     const apiKey = config?.api_key ?? config?.apiKey;
     if (!clientId || !apiKey) {
@@ -1043,7 +1063,10 @@ class IntegrationsService {
     }
 
     // кэш на 6 часов
-    const cached = await this._cacheGet({ cache_type: 'ozon', cache_key: 'warehouses' });
+    const cached = await this._cacheGet({
+      cache_type: 'ozon',
+      cache_key: this._integrationCacheKey('warehouses', scope)
+    });
     if (cached) return cached;
 
     // v1/warehouse/list выключен (ошибка: "obsolete method cannot be used"), используем v2.
@@ -1064,7 +1087,12 @@ class IntegrationsService {
       throw err;
     }
     const data = await response.json();
-    await this._cacheSet({ cache_type: 'ozon', cache_key: 'warehouses', cache_value: data, ttl_ms: 6 * 60 * 60 * 1000 });
+    await this._cacheSet({
+      cache_type: 'ozon',
+      cache_key: this._integrationCacheKey('warehouses', scope),
+      cache_value: data,
+      ttl_ms: 6 * 60 * 60 * 1000
+    });
     return data;
   }
 
@@ -1072,8 +1100,9 @@ class IntegrationsService {
    * Wildberries: список офисов (складов WB) для FBS, которые требуют пропуск.
    * Это именно те "офисы", которые приходят в заказах FBS в поле offices[].
    */
-  async getWildberriesOfficesForPass() {
-    const config = await this.getMarketplaceConfig('wildberries');
+  async getWildberriesOfficesForPass(opts = {}) {
+    const scope = this._normalizeIntegrationScope(opts);
+    const config = await this.getMarketplaceConfig('wildberries', scope);
     const apiKey = this._normalizeWbToken(config?.api_key);
     if (!apiKey) {
       const err = new Error('Wildberries не настроен (api_key)');
@@ -1081,7 +1110,10 @@ class IntegrationsService {
       throw err;
     }
 
-    const cached = await this._cacheGet({ cache_type: 'wb', cache_key: 'pass_offices' });
+    const cached = await this._cacheGet({
+      cache_type: 'wb',
+      cache_key: this._integrationCacheKey('pass_offices', scope)
+    });
     if (cached) return cached;
 
     const response = await fetch('https://marketplace-api.wildberries.ru/api/v3/passes/offices', {
@@ -1095,7 +1127,12 @@ class IntegrationsService {
       throw err;
     }
     const data = await response.json();
-    await this._cacheSet({ cache_type: 'wb', cache_key: 'pass_offices', cache_value: data, ttl_ms: 6 * 60 * 60 * 1000 });
+    await this._cacheSet({
+      cache_type: 'wb',
+      cache_key: this._integrationCacheKey('pass_offices', scope),
+      cache_value: data,
+      ttl_ms: 6 * 60 * 60 * 1000
+    });
     return data;
   }
 
@@ -1103,8 +1140,9 @@ class IntegrationsService {
    * Wildberries: список складов продавца (FBS).
    * Док: GET /api/v3/warehouses (Marketplace API).
    */
-  async getWildberriesSellerWarehouses() {
-    const config = await this.getMarketplaceConfig('wildberries');
+  async getWildberriesSellerWarehouses(opts = {}) {
+    const scope = this._normalizeIntegrationScope(opts);
+    const config = await this.getMarketplaceConfig('wildberries', scope);
     const apiKey = this._normalizeWbToken(config?.api_key);
     if (!apiKey) {
       const err = new Error('Wildberries не настроен (api_key)');
@@ -1112,7 +1150,10 @@ class IntegrationsService {
       throw err;
     }
 
-    const cached = await this._cacheGet({ cache_type: 'wb', cache_key: 'seller_warehouses' });
+    const cached = await this._cacheGet({
+      cache_type: 'wb',
+      cache_key: this._integrationCacheKey('seller_warehouses', scope)
+    });
     if (cached) return cached;
 
     const response = await fetch('https://marketplace-api.wildberries.ru/api/v3/warehouses', {
@@ -1126,15 +1167,21 @@ class IntegrationsService {
       throw err;
     }
     const data = await response.json();
-    await this._cacheSet({ cache_type: 'wb', cache_key: 'seller_warehouses', cache_value: data, ttl_ms: 6 * 60 * 60 * 1000 });
+    await this._cacheSet({
+      cache_type: 'wb',
+      cache_key: this._integrationCacheKey('seller_warehouses', scope),
+      cache_value: data,
+      ttl_ms: 6 * 60 * 60 * 1000
+    });
     return data;
   }
 
   /**
    * Yandex Market: список кампаний (используем campaignId как "склад" для сопоставления).
    */
-  async getYandexCampaigns() {
-    const config = await this.getMarketplaceConfig('yandex');
+  async getYandexCampaigns(opts = {}) {
+    const scope = this._normalizeIntegrationScope(opts);
+    const config = await this.getMarketplaceConfig('yandex', scope);
     const apiKey = this._normalizeYandexApiKey(config?.api_key);
     if (!apiKey) {
       const err = new Error('Yandex Market не настроен (api_key)');
@@ -1142,7 +1189,10 @@ class IntegrationsService {
       throw err;
     }
 
-    const cached = await this._cacheGet({ cache_type: 'yandex', cache_key: 'campaigns' });
+    const cached = await this._cacheGet({
+      cache_type: 'yandex',
+      cache_key: this._integrationCacheKey('campaigns', scope)
+    });
     if (cached) return cached;
 
     const agent = getYandexHttpsAgent();
@@ -1159,7 +1209,12 @@ class IntegrationsService {
       throw err;
     }
     const data = await response.json();
-    await this._cacheSet({ cache_type: 'yandex', cache_key: 'campaigns', cache_value: data, ttl_ms: 6 * 60 * 60 * 1000 });
+    await this._cacheSet({
+      cache_type: 'yandex',
+      cache_key: this._integrationCacheKey('campaigns', scope),
+      cache_value: data,
+      ttl_ms: 6 * 60 * 60 * 1000
+    });
     return data;
   }
 

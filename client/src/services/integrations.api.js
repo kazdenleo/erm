@@ -82,8 +82,11 @@ export const integrationsApi = {
   /**
    * Получить тарифы Wildberries
    */
-  getWildberriesTariffs: async (date = null) => {
-    const params = date ? { date } : {};
+  getWildberriesTariffs: async (date = null, { organizationId } = {}) => {
+    const params = { ...(date ? { date } : {}) };
+    if (organizationId != null && String(organizationId).trim() !== '') {
+      params.organizationId = String(organizationId).trim();
+    }
     const response = await api.get('/integrations/marketplaces/wildberries/tariffs', { params });
     return response.data;
   },
@@ -91,32 +94,48 @@ export const integrationsApi = {
   /**
    * Список офисов WB для FBS (значения совпадают с order.offices[])
    */
-  getWildberriesOffices: async () => {
-    const response = await api.get('/integrations/marketplaces/wildberries/offices');
+  getWildberriesOffices: async ({ organizationId } = {}) => {
+    const params = {};
+    if (organizationId != null && String(organizationId).trim() !== '') {
+      params.organizationId = String(organizationId).trim();
+    }
+    const response = await api.get('/integrations/marketplaces/wildberries/offices', { params });
     return response.data;
   },
 
   /**
    * Список складов продавца WB (FBS)
    */
-  getWildberriesSellerWarehouses: async () => {
-    const response = await api.get('/integrations/marketplaces/wildberries/warehouses');
+  getWildberriesSellerWarehouses: async ({ organizationId } = {}) => {
+    const params = {};
+    if (organizationId != null && String(organizationId).trim() !== '') {
+      params.organizationId = String(organizationId).trim();
+    }
+    const response = await api.get('/integrations/marketplaces/wildberries/warehouses', { params });
     return response.data;
   },
 
   /**
    * Получить склады Ozon (для сопоставления с фактическим складом)
    */
-  getOzonWarehouses: async () => {
-    const response = await api.get('/integrations/marketplaces/ozon/warehouses');
+  getOzonWarehouses: async ({ organizationId } = {}) => {
+    const params = {};
+    if (organizationId != null && String(organizationId).trim() !== '') {
+      params.organizationId = String(organizationId).trim();
+    }
+    const response = await api.get('/integrations/marketplaces/ozon/warehouses', { params });
     return response.data;
   },
 
   /**
    * Получить кампании Яндекс.Маркета (campaignId) для сопоставления с фактическим складом
    */
-  getYandexCampaigns: async () => {
-    const response = await api.get('/integrations/marketplaces/yandex/campaigns');
+  getYandexCampaigns: async ({ organizationId } = {}) => {
+    const params = {};
+    if (organizationId != null && String(organizationId).trim() !== '') {
+      params.organizationId = String(organizationId).trim();
+    }
+    const response = await api.get('/integrations/marketplaces/yandex/campaigns', { params });
     return response.data;
   },
 

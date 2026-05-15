@@ -39,6 +39,14 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
   const [mappingsLoading, setMappingsLoading] = useState(false);
   const [mappingsError, setMappingsError] = useState(null);
 
+  const integrationOrganizationId =
+    formData.organizationId ||
+    (warehouse?.organizationId != null
+      ? String(warehouse.organizationId)
+      : warehouse?.organization_id != null
+        ? String(warehouse.organization_id)
+        : '');
+
   const loadMappings = async (warehouseId) => {
     const wid = warehouseId != null ? String(warehouseId) : '';
     if (!wid) return;
@@ -55,12 +63,18 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
     }
   };
 
-  // Загрузка списка складов Wildberries из тарифов
+  // Загрузка списка складов Wildberries из тарифов (ключи — по организации)
   useEffect(() => {
+    const orgId = String(integrationOrganizationId || '').trim();
+    if (!orgId) {
+      setWbWarehouses([]);
+      setLoadingWbWarehouses(false);
+      return;
+    }
     const loadWBWarehouses = async () => {
       setLoadingWbWarehouses(true);
       try {
-        const response = await integrationsApi.getWildberriesTariffs();
+        const response = await integrationsApi.getWildberriesTariffs(null, { organizationId: orgId });
         console.log('[WarehouseForm] WB tariffs response:', response);
         if (response?.data?.response?.data?.warehouseList) {
           const warehousesList = response.data.response.data.warehouseList;
@@ -94,15 +108,22 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
     };
     
     loadWBWarehouses();
-  }, []);
+  }, [integrationOrganizationId]);
 
   // Загрузка складов продавца WB (FBS)
   useEffect(() => {
+    const orgId = String(integrationOrganizationId || '').trim();
+    if (!orgId) {
+      setWbOffices([]);
+      setWbOfficesError(null);
+      setLoadingWbOffices(false);
+      return;
+    }
     const loadOffices = async () => {
       setLoadingWbOffices(true);
       setWbOfficesError(null);
       try {
-        const response = await integrationsApi.getWildberriesSellerWarehouses();
+        const response = await integrationsApi.getWildberriesSellerWarehouses({ organizationId: orgId });
         const payload = response?.data ?? response;
         const list = payload?.warehouses ?? payload?.data ?? payload ?? [];
         const arr = Array.isArray(list) ? list : [];
@@ -113,12 +134,13 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
             const idStr = id != null && String(id).trim() !== '' ? String(id).trim() : '';
             const nameStr = String(name || '').trim();
             return {
-              id,
+              id: idStr || null,
               name: idStr && nameStr ? `${idStr} — ${nameStr}` : (nameStr || idStr),
+              bindValue: idStr || nameStr,
               address: o.address ?? '',
             };
           })
-          .filter((x) => String(x.name || '').trim() !== '');
+          .filter((x) => String(x.bindValue || '').trim() !== '');
         normalized.sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru', { sensitivity: 'base' }));
         setWbOffices(normalized);
       } catch (err) {
@@ -130,15 +152,22 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
       }
     };
     loadOffices();
-  }, []);
+  }, [integrationOrganizationId]);
 
   // Загрузка кампаний Яндекс.Маркета
   useEffect(() => {
+    const orgId = String(integrationOrganizationId || '').trim();
+    if (!orgId) {
+      setYmCampaigns([]);
+      setYmCampaignsError(null);
+      setLoadingYmCampaigns(false);
+      return;
+    }
     const loadYm = async () => {
       setLoadingYmCampaigns(true);
       setYmCampaignsError(null);
       try {
-        const response = await integrationsApi.getYandexCampaigns();
+        const response = await integrationsApi.getYandexCampaigns({ organizationId: orgId });
         const payload = response?.data ?? response;
         const list = payload?.campaigns ?? payload?.result?.campaigns ?? payload?.data ?? [];
         const arr = Array.isArray(list) ? list : [];
@@ -158,15 +187,22 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
       }
     };
     loadYm();
-  }, []);
+  }, [integrationOrganizationId]);
 
   // Загрузка списка складов Ozon из API
   useEffect(() => {
+    const orgId = String(integrationOrganizationId || '').trim();
+    if (!orgId) {
+      setOzonWarehouses([]);
+      setOzonWarehousesError(null);
+      setLoadingOzonWarehouses(false);
+      return;
+    }
     const loadOzonWarehouses = async () => {
       setLoadingOzonWarehouses(true);
       setOzonWarehousesError(null);
       try {
-        const response = await integrationsApi.getOzonWarehouses();
+        const response = await integrationsApi.getOzonWarehouses({ organizationId: orgId });
         const payload = response?.data ?? response;
         const list = payload?.result ?? payload?.warehouses ?? payload?.data ?? [];
         const arr = Array.isArray(list) ? list : [];
@@ -176,9 +212,13 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
             const name = x.name ?? x.warehouse_name ?? x.title ?? '';
             const idStr = id != null && String(id).trim() !== '' ? String(id).trim() : '';
             const nameStr = String(name || '').trim();
-            return { id, name: idStr && nameStr ? `${idStr} — ${nameStr}` : (nameStr || idStr) };
+            return {
+              id: idStr || null,
+              name: idStr && nameStr ? `${idStr} — ${nameStr}` : (nameStr || idStr),
+              bindValue: idStr || nameStr
+            };
           })
-          .filter((x) => String(x.name || '').trim() !== '');
+          .filter((x) => String(x.bindValue || '').trim() !== '');
         normalized.sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru', { sensitivity: 'base' }));
         setOzonWarehouses(normalized);
       } catch (err) {
@@ -190,7 +230,7 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
       }
     };
     loadOzonWarehouses();
-  }, []);
+  }, [integrationOrganizationId]);
 
   useEffect(() => {
     if (warehouse) {
@@ -375,8 +415,19 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
             <option key={org.id} value={org.id}>{org.name}</option>
           ))}
         </select>
+        {!integrationOrganizationId ? (
+          <div className="text-muted small mt-1">
+            Выберите организацию — списки складов Ozon / WB / Яндекс подгрузятся из API-ключей кабинетов этой организации.
+          </div>
+        ) : null}
       </div>
       </div>
+
+      {formData.type === 'warehouse' && !integrationOrganizationId && (
+        <div className="alert alert-info py-2 mt-3">
+          Укажите организацию склада, чтобы загрузить склады маркетплейсов из личного кабинета для выбора в списке.
+        </div>
+      )}
 
       {formData.type === 'warehouse' && (
         <div className="mt-3">
@@ -490,7 +541,7 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
               >
                 <option value="">-- Выберите склад WB (FBS) --</option>
                 {wbOffices.map((o) => (
-                  <option key={String(o.id ?? o.name)} value={String(o.name)}>
+                  <option key={String(o.id ?? o.bindValue ?? o.name)} value={String(o.bindValue ?? o.id ?? o.name)}>
                     {String(o.name)}{o.address ? ` · ${o.address}` : ''}
                   </option>
                 ))}
@@ -557,7 +608,7 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
               >
                 <option value="">-- Выберите склад Ozon --</option>
                 {ozonWarehouses.map((w, i) => (
-                  <option key={String(w.id ?? i)} value={String(w.name)}>
+                  <option key={String(w.id ?? i)} value={String(w.bindValue ?? w.id ?? w.name)}>
                     {String(w.name)}
                   </option>
                 ))}

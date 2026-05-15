@@ -123,10 +123,17 @@ class IntegrationsController {
    * GET /api/integrations/marketplaces/wildberries/tariffs
    * Получить тарифы на логистику Wildberries
    */
+  _integrationScopeFromQuery(req) {
+    return {
+      organizationId: req.query.organizationId ?? req.query.organization_id ?? null,
+      profileId: req.query.profileId ?? req.query.profile_id ?? null
+    };
+  }
+
   async getWildberriesTariffs(req, res, next) {
     try {
       const { date } = req.query;
-      const tariffs = await integrationsService.getWildberriesTariffs(date);
+      const tariffs = await integrationsService.getWildberriesTariffs(date, this._integrationScopeFromQuery(req));
       return res.status(200).json({ ok: true, data: tariffs });
     } catch (error) {
       next(error);
@@ -138,7 +145,7 @@ class IntegrationsController {
    */
   async getOzonWarehouses(req, res, next) {
     try {
-      const data = await integrationsService.getOzonWarehouses();
+      const data = await integrationsService.getOzonWarehouses(this._integrationScopeFromQuery(req));
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -150,7 +157,7 @@ class IntegrationsController {
    */
   async getYandexCampaigns(req, res, next) {
     try {
-      const data = await integrationsService.getYandexCampaigns();
+      const data = await integrationsService.getYandexCampaigns(this._integrationScopeFromQuery(req));
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -162,7 +169,7 @@ class IntegrationsController {
    */
   async getWildberriesOffices(req, res, next) {
     try {
-      const data = await integrationsService.getWildberriesOfficesForPass();
+      const data = await integrationsService.getWildberriesOfficesForPass(this._integrationScopeFromQuery(req));
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -174,7 +181,7 @@ class IntegrationsController {
    */
   async getWildberriesSellerWarehouses(req, res, next) {
     try {
-      const data = await integrationsService.getWildberriesSellerWarehouses();
+      const data = await integrationsService.getWildberriesSellerWarehouses(this._integrationScopeFromQuery(req));
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
