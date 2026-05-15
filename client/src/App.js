@@ -24,7 +24,6 @@ import { Shipments } from './pages/Shipments/Shipments';
 import { Assembly } from './pages/Assembly/Assembly';
 import { PrintLabel } from './pages/PrintLabel/PrintLabel.jsx';
 import { StockLevelsLayout } from './pages/StockLevels/StockLevelsLayout';
-import { SupplierStocks } from './pages/StockLevels/SupplierStocks';
 import { WarehouseStocks } from './pages/StockLevels/WarehouseStocks';
 import { Purchases } from './pages/StockLevels/Purchases';
 import { Integrations } from './pages/Integrations/Integrations';
@@ -86,8 +85,8 @@ function App() {
           <Route path="/products" element={<ProtectedRoute><Layout><Products /></Layout></ProtectedRoute>} />
           <Route path="/products/bulk-edit" element={<ProtectedRoute><Layout><ProductsBulkEdit /></Layout></ProtectedRoute>} />
           <Route path="/stock-levels" element={<ProtectedRoute><Layout><StockLevelsLayout /></Layout></ProtectedRoute>}>
-            <Route index element={<Navigate to="/stock-levels/suppliers" replace />} />
-            <Route path="suppliers" element={<SupplierStocks />} />
+            <Route index element={<Navigate to="/stock-levels/warehouse" replace />} />
+            <Route path="suppliers" element={<Navigate to="/stock-levels/warehouse" replace />} />
             <Route path="warehouse" element={<WarehouseStocks />} />
             <Route path="purchases" element={<Purchases />} />
             <Route path="problems" element={<Navigate to="/stock-levels/warehouse" replace />} />
@@ -118,4 +117,3 @@ function App() {
 }
 
 export default App;
-

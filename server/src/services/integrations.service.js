@@ -751,10 +751,24 @@ class IntegrationsService {
     }
   }
 
+  _parseIntegrationConfig(config) {
+    if (!config) return {};
+    if (typeof config === 'string') {
+      try {
+        return JSON.parse(config);
+      } catch {
+        return {};
+      }
+    }
+    return config;
+  }
+
   /**
    * Получить настройки поставщика
+   * @param {string} type — mikado | moskvorechie
+   * @param {{ profileId?: number|string|null, organizationId?: number|string|null }} [options]
    */
-  async getSupplierConfig(type) {
+  async getSupplierConfig(type, { profileId = null, organizationId = null } = {}) {
     if (!['mikado', 'moskvorechie'].includes(type)) {
       const err = new Error('Неизвестный тип поставщика');
       err.statusCode = 400;
@@ -762,12 +776,31 @@ class IntegrationsService {
     }
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const integration = await this.repository.findByCode(type);
-      return integration ? integration.config : {};
-    } else {
-      // Старое хранилище
-      return await readData(type) || {};
+      let integration = null;
+      if (profileId != null && profileId !== '') {
+        integration = await this.repository.findByCode(type, profileId, organizationId);
+      }
+      if (!integration) {
+        integration = await this.repository.findFirstActiveSupplierByCode(type);
+      }
+      const fromFile = (await readData(type)) || {};
+      if (integration) {
+        const fromDb = this._parseIntegrationConfig(integration.config);
+        return {
+          ...fromFile,
+          ...fromDb,
+          user_id: fromDb.user_id || fromFile.user_id,
+          password: fromDb.password || fromFile.password,
+          apiKey: fromDb.apiKey || fromFile.apiKey,
+          warehouses:
+            Array.isArray(fromDb.warehouses) && fromDb.warehouses.length > 0
+              ? fromDb.warehouses
+              : fromFile.warehouses
+        };
+      }
+      return fromFile;
     }
+    return (await readData(type)) || {};
   }
 
   /**

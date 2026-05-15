@@ -11,6 +11,7 @@ import integrationsService from './integrations.service.js';
 import productsService from './products.service.js';
 import { getCache, setCache } from '../config/redis.js';
 import logger from '../utils/logger.js';
+import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
 
 class SupplierStocksService {
   /**
@@ -33,16 +34,16 @@ class SupplierStocksService {
       throw err;
     }
 
+    const apiSupplierCode = canonicalSupplierApiCode(supplier);
+
     // Получаем конфигурацию поставщика
     // Сначала пробуем получить из таблицы suppliers (новый способ)
     let supplierConfig = null;
     if (repositoryFactory.isUsingPostgreSQL()) {
       try {
         const suppliersService = await import('./suppliers.service.js');
-        // Нормализуем код поставщика для поиска
-        const normalizedCode = supplier.toLowerCase().replace('москворечье', 'moskvorechie');
-        const supplierData = await suppliersService.default.getByCode(normalizedCode);
-        logger.info(`[Supplier Stocks] Supplier data from DB for ${supplier} (normalized: ${normalizedCode}): ${JSON.stringify(supplierData, null, 2)}`);
+        const supplierData = await suppliersService.default.getByCode(supplier);
+        logger.info(`[Supplier Stocks] Supplier data from DB for ${supplier} (api: ${apiSupplierCode}): ${JSON.stringify(supplierData, null, 2)}`);
         if (supplierData && supplierData.apiConfig) {
           supplierConfig = supplierData.apiConfig;
           logger.info(`[Supplier Stocks] apiConfig for ${supplier}: ${JSON.stringify(supplierConfig, null, 2)}`);
@@ -52,13 +53,11 @@ class SupplierStocksService {
       }
     }
     
-    // Если не нашли в suppliers или нет учетных данных, пробуем старый способ через integrations
-    // Нормализуем код поставщика для поиска в integrations
-    const normalizedSupplierForIntegrations = supplier.toLowerCase().replace('москворечье', 'moskvorechie');
+    // Если не нашли в suppliers или нет учётных данных — integrations (+ файл data/*.json)
     if (!supplierConfig || (!supplierConfig.user_id && !supplierConfig.password && !supplierConfig.apiKey)) {
       try {
-        const integrationsConfig = await integrationsService.getSupplierConfig(normalizedSupplierForIntegrations);
-        logger.info(`[Supplier Stocks] Config from integrations for ${normalizedSupplierForIntegrations}: ${JSON.stringify(integrationsConfig, null, 2)}`);
+        const integrationsConfig = await integrationsService.getSupplierConfig(apiSupplierCode);
+        logger.info(`[Supplier Stocks] Config from integrations for ${apiSupplierCode}: ${JSON.stringify(integrationsConfig, null, 2)}`);
         // Объединяем конфигурации: сначала из suppliers, потом из integrations
         supplierConfig = {
           ...(supplierConfig || {}),
@@ -88,30 +87,18 @@ class SupplierStocksService {
 
     // Если forceRefresh = true, пропускаем все кэши и сразу идем в API
     if (!forceRefresh) {
-      // 1. Пытаемся взять из Redis кэша (временно отключено для Москворечье для отладки)
-      if (supplier !== 'moskvorechie') {
-      const redisKey = `supplier_stock:${supplier}:${sku}`;
+      // 1. Redis
+      const redisKey = `supplier_stock:${apiSupplierCode}:${sku}`;
       stockData = await getCache(redisKey);
       if (stockData) {
-        logger.info(`[Supplier Stocks] Got from Redis cache for ${supplier}:${sku}`);
-        logger.info(`[Supplier Stocks] Redis cache warehouses type: ${typeof stockData.warehouses}, isArray: ${Array.isArray(stockData.warehouses)}`);
-        if (stockData.warehouses && Array.isArray(stockData.warehouses)) {
-          logger.info(`[Supplier Stocks] Redis cached warehouses: ${stockData.warehouses.map(w => w.city || w.name || JSON.stringify(w)).join(', ')}`);
-        } else if (stockData.warehouses) {
-          logger.info(`[Supplier Stocks] Redis cached warehouses (not array): ${JSON.stringify(stockData.warehouses)}`);
-        } else {
-          logger.info(`[Supplier Stocks] No warehouses in Redis cache for ${supplier}:${sku}`);
-        }
+        logger.info(`[Supplier Stocks] Got from Redis cache for ${apiSupplierCode}:${sku}`);
       }
-    } else {
-      logger.info(`[Supplier Stocks] Cache disabled for ${supplier} - fetching fresh data from API`);
-    }
 
-    // 2. Если нет в Redis, пробуем PostgreSQL (временно отключено для Москворечье для отладки)
-    if (!stockData && repositoryFactory.isUsingPostgreSQL() && supplier !== 'moskvorechie') {
+    // 2. PostgreSQL supplier_stocks
+    if (!stockData && repositoryFactory.isUsingPostgreSQL()) {
       try {
         const supplierStocksService = await import('./supplier_stocks.service.js');
-        const stockRecord = await supplierStocksService.default.getBySupplierAndProduct(supplier, sku);
+        const stockRecord = await supplierStocksService.default.getBySupplierAndProduct(apiSupplierCode, sku);
         if (stockRecord && stockRecord.cached_at) {
           // Проверяем, не устарел ли кэш (24 часа)
           const cacheAge = Date.now() - new Date(stockRecord.cached_at).getTime();
@@ -138,11 +125,8 @@ class SupplierStocksService {
               console.log(`[Supplier Stocks] No warehouses in cache for ${supplier}:${sku}`);
             }
             
-            // Сохраняем в Redis на 1 час (временно отключено для Москворечье)
-            if (supplier !== 'moskvorechie') {
-              const redisKey = `supplier_stock:${supplier}:${sku}`;
-              await setCache(redisKey, stockData, 3600);
-            }
+            const redisKey = `supplier_stock:${apiSupplierCode}:${sku}`;
+            await setCache(redisKey, stockData, 3600);
           }
         }
       } catch (error) {
@@ -150,11 +134,11 @@ class SupplierStocksService {
       }
     }
 
-    // 3. Если нет в PostgreSQL, пробуем файловый кэш (старое хранилище) (временно отключено для Москворечье)
-    if (!stockData && supplier !== 'moskvorechie') {
+    // 3. Файловый кэш (legacy)
+    if (!stockData) {
       try {
         const stockCache = await readData('supplierStockCache');
-        const supplierCache = stockCache?.[supplier] || {};
+        const supplierCache = stockCache?.[apiSupplierCode] || stockCache?.[supplier] || {};
         if (supplierCache[sku]) {
           stockData = supplierCache[sku];
         }
@@ -162,16 +146,19 @@ class SupplierStocksService {
         logger.error('[Supplier Stocks] Error reading file cache:', error.message);
       }
     }
+
+    // Старый кэш Mikado хранил только первый склад — перезапрашиваем API
+    if (apiSupplierCode === 'mikado' && stockData && !Array.isArray(stockData.warehouses)) {
+      logger.info(`[Supplier Stocks] Stale Mikado cache (no warehouses) for ${sku}, refreshing from API`);
+      stockData = null;
+    }
     }
 
     // 4. Если нет в кэше или forceRefresh = true – получаем из API
     if (!stockData) {
-      // Нормализуем код поставщика (преобразуем кириллицу в латиницу для сравнения)
-      const normalizedSupplier = supplier.toLowerCase().replace('москворечье', 'moskvorechie');
-      
-      if (normalizedSupplier === 'mikado') {
+      if (apiSupplierCode === 'mikado') {
         stockData = await getMikadoStock(sku, brand, supplierConfig);
-      } else if (normalizedSupplier === 'moskvorechie') {
+      } else if (apiSupplierCode === 'moskvorechie') {
         stockData = await getMoskvorechieStock(sku, supplierConfig);
       } else {
         const err = new Error(`Неподдерживаемый поставщик: ${supplier}`);
@@ -185,50 +172,8 @@ class SupplierStocksService {
         return null;
       }
 
-      // Сохраняем в кэш после получения из API
-      // Redis кэш на 1 час (временно отключено для Москворечье)
-      if (supplier !== 'moskvorechie') {
-        const redisKey = `supplier_stock:${supplier}:${sku}`;
-        await setCache(redisKey, stockData, 3600);
-      }
-      
-      // PostgreSQL кэш (если используется)
-      if (repositoryFactory.isUsingPostgreSQL()) {
-        try {
-          const supplierStocksService = await import('./supplier_stocks.service.js');
-          const product = await productsService.getBySku(sku);
-          if (product) {
-            // Нормализуем код поставщика перед сохранением (кириллица -> латиница)
-            const normalizedSupplier = supplier.toLowerCase().replace('москворечье', 'moskvorechie');
-            console.log(`[Supplier Stocks] Saving to PostgreSQL: supplier=${supplier} (normalized: ${normalizedSupplier}), sku=${sku}, stock=${stockData.stock}, price=${stockData.price}`);
-            await supplierStocksService.default.upsert(normalizedSupplier, sku, {
-              stock: stockData.stock || 0,
-              price: stockData.price || null,
-              deliveryDays: stockData.deliveryDays || stockData.delivery_days || 0,
-              stockName: stockData.stockName || stockData.stock_name || null,
-              source: 'api',
-              warehouses: stockData.warehouses || null,
-              cached_at: new Date()
-            });
-            console.log(`[Supplier Stocks] ✓ Successfully saved to PostgreSQL: supplier=${normalizedSupplier}, sku=${sku}`);
-          } else {
-            console.warn(`[Supplier Stocks] Product not found for SKU: ${sku}, cannot save stock data`);
-          }
-        } catch (error) {
-          console.error(`[Supplier Stocks] Error saving to PostgreSQL for ${supplier}:${sku}:`, error.message);
-          console.error('[Supplier Stocks] Error stack:', error.stack);
-        }
-      }
-      
-      // Файловый кэш (для обратной совместимости)
-      try {
-        const stockCache = await readData('supplierStockCache') || {};
-        if (!stockCache[supplier]) stockCache[supplier] = {};
-        stockCache[supplier][sku] = stockData;
-        await writeData('supplierStockCache', stockCache);
-      } catch (error) {
-        console.error('[Supplier Stocks] Error saving to file cache:', error.message);
-      }
+      const redisKey = `supplier_stock:${apiSupplierCode}:${sku}`;
+      await setCache(redisKey, stockData, 3600);
     }
 
     // 3. Фильтрация по складам, если заданы города
@@ -363,6 +308,8 @@ class SupplierStocksService {
       };
     }
 
+    await this._persistSupplierStockToCaches(apiSupplierCode, supplier, sku, stockData);
+
     const result = {
       supplier,
       sku,
@@ -378,6 +325,59 @@ class SupplierStocksService {
     }
 
     return result;
+  }
+
+  /** Сохранить остаток в PostgreSQL и файловый кэш (после фильтрации по складам). */
+  async _persistSupplierStockToCaches(apiSupplierCode, supplier, sku, stockData) {
+    if (!stockData) return;
+    try {
+      const redisKey = `supplier_stock:${apiSupplierCode}:${sku}`;
+      await setCache(redisKey, stockData, 3600);
+    } catch (e) {
+      logger.error('[Supplier Stocks] Redis save error:', e.message);
+    }
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      try {
+        const supplierStocksPg = await import('./supplier_stocks.service.js');
+        const product = await productsService.getBySku(sku);
+        if (product) {
+          await supplierStocksPg.default.upsert(apiSupplierCode, sku, {
+            stock: stockData.stock || 0,
+            price: stockData.price || null,
+            deliveryDays: stockData.deliveryDays || stockData.delivery_days || 0,
+            stockName: stockData.stockName || stockData.stock_name || null,
+            source: stockData.source || 'api',
+            warehouses: stockData.warehouses || null,
+            cached_at: new Date()
+          });
+        }
+      } catch (error) {
+        logger.error(`[Supplier Stocks] PostgreSQL save error for ${supplier}:${sku}:`, error.message);
+      }
+    }
+    try {
+      const stockCache = (await readData('supplierStockCache')) || {};
+      if (!stockCache[apiSupplierCode]) stockCache[apiSupplierCode] = {};
+      stockCache[apiSupplierCode][sku] = stockData;
+      await writeData('supplierStockCache', stockCache);
+    } catch (error) {
+      logger.error('[Supplier Stocks] File cache save error:', error.message);
+    }
+  }
+
+  /**
+   * Разбивка остатков по поставщикам для списка товаров (из БД supplier_stocks).
+   * @param {number[]|string[]} productIds
+   */
+  async getBreakdownByProductIds(productIds, options = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return [];
+    }
+    const repo = repositoryFactory.getSupplierStocksRepository();
+    if (!repo || typeof repo.findBreakdownByProductIds !== 'function') {
+      return [];
+    }
+    return await repo.findBreakdownByProductIds(productIds, options);
   }
 
   /**
@@ -401,95 +401,35 @@ class SupplierStocksService {
       moskvorechie: {}
     };
 
-    // Mikado
     for (const product of products) {
       if (!product.sku) continue;
-      try {
-        const mikadoStock = await getMikadoStock(product.sku, product.brand);
-        if (mikadoStock) {
-          results.mikado.success++;
-          results.mikado.details.push({
+      for (const code of ['mikado', 'moskvorechie']) {
+        try {
+          const data = await this.getSupplierStock({
+            supplier: code,
             sku: product.sku,
-            stock: mikadoStock.stock,
-            deliveryDays: mikadoStock.deliveryDays,
-            price: mikadoStock.price
+            brand: product.brand,
+            forceRefresh: true
           });
-          stockCache.mikado[product.sku] = mikadoStock;
-        } else {
-          results.mikado.failed++;
+          if (data && !data.excluded && (data.stock || 0) > 0) {
+            results[code].success++;
+            results[code].details.push({
+              sku: product.sku,
+              stock: data.stock,
+              deliveryDays: data.deliveryDays,
+              price: data.price
+            });
+            stockCache[code][product.sku] = data;
+          } else {
+            results[code].failed++;
+          }
+        } catch (error) {
+          results[code].failed++;
+          console.error(`[Supplier Stocks] Sync error ${code} for SKU`, product.sku, error);
         }
-      } catch (error) {
-        results.mikado.failed++;
-        console.error('[Mikado Stock] Error for SKU', product.sku, error);
       }
     }
 
-    // Moskvorechie
-    for (const product of products) {
-      if (!product.sku) continue;
-      try {
-        const moskvorechieStock = await getMoskvorechieStock(product.sku);
-        if (moskvorechieStock) {
-          results.moskvorechie.success++;
-          results.moskvorechie.details.push({
-            sku: product.sku,
-            stock: moskvorechieStock.stock,
-            deliveryDays: moskvorechieStock.deliveryDays,
-            price: moskvorechieStock.price
-          });
-          stockCache.moskvorechie[product.sku] = moskvorechieStock;
-        } else {
-          results.moskvorechie.failed++;
-        }
-      } catch (error) {
-        results.moskvorechie.failed++;
-        console.error('[Moskvorechie Stock] Error for SKU', product.sku, error);
-      }
-    }
-
-    // Сохраняем в кэш
-    // PostgreSQL кэш
-    if (repositoryFactory.isUsingPostgreSQL()) {
-      try {
-        const supplierStocksService = await import('./supplier_stocks.service.js');
-        for (const product of products) {
-          if (!product.sku) continue;
-          
-          const productRecord = await productsService.getBySku(product.sku);
-          if (!productRecord) continue;
-          
-          // Mikado
-          if (stockCache.mikado[product.sku]) {
-            await supplierStocksService.default.upsert('mikado', product.sku, {
-              stock: stockCache.mikado[product.sku].stock || 0,
-              price: stockCache.mikado[product.sku].price || null,
-              deliveryDays: stockCache.mikado[product.sku].deliveryDays || 0,
-              stockName: stockCache.mikado[product.sku].stockName || null,
-              source: 'api',
-              warehouses: stockCache.mikado[product.sku].warehouses || null,
-              cached_at: new Date()
-            });
-          }
-          
-          // Moskvorechie
-          if (stockCache.moskvorechie[product.sku]) {
-            await supplierStocksService.default.upsert('moskvorechie', product.sku, {
-              stock: stockCache.moskvorechie[product.sku].stock || 0,
-              price: stockCache.moskvorechie[product.sku].price || null,
-              deliveryDays: stockCache.moskvorechie[product.sku].deliveryDays || 0,
-              stockName: stockCache.moskvorechie[product.sku].stockName || null,
-              source: 'api',
-              warehouses: stockCache.moskvorechie[product.sku].warehouses || null,
-              cached_at: new Date()
-            });
-          }
-        }
-      } catch (error) {
-        console.error('[Supplier Stocks] Error saving to PostgreSQL:', error.message);
-      }
-    }
-    
-    // Файловый кэш (для обратной совместимости)
     await writeData('supplierStockCache', stockCache);
 
     return {
@@ -547,15 +487,87 @@ async function fetchWithTimeout(url, options = {}, timeout = 10000) {
   }
 }
 
+/** Разбор XML Mikado: остатки по складам (CodeBrandLine), не только первый StockQTY. */
+function parseMikadoStockXml(xmlText) {
+  const lineMatches = xmlText.matchAll(/<CodeBrandLine>([\s\S]*?)<\/CodeBrandLine>/gi);
+  const warehouses = [];
+
+  for (const match of lineMatches) {
+    const itemXml = match[1];
+    const nameMatch = itemXml.match(/<StokName>(.*?)<\/StokName>/i);
+    const stockMatch =
+      itemXml.match(/<StockQTY>(\d+)<\/StockQTY>/i) ||
+      itemXml.match(/<Stock>(\d+)<\/Stock>/i) ||
+      itemXml.match(/<Quantity>(\d+)<\/Quantity>/i) ||
+      itemXml.match(/<StockQuantity>(\d+)<\/StockQuantity>/i) ||
+      itemXml.match(/<Qty>(\d+)<\/Qty>/i);
+    if (!stockMatch) continue;
+
+    const city = (nameMatch?.[1] || 'Неизвестно').trim();
+    const stock = parseInt(stockMatch[1], 10) || 0;
+    const deliveryMatch =
+      itemXml.match(/<DeliveryDelay>(\d+)<\/DeliveryDelay>/i) ||
+      itemXml.match(/<DeliveryDays>(\d+)<\/DeliveryDays>/i) ||
+      itemXml.match(/<Delivery>(\d+)<\/Delivery>/i);
+    const priceMatch =
+      itemXml.match(/<PriceRUR>([\d.]+)<\/PriceRUR>/i) ||
+      itemXml.match(/<Price>([\d.]+)<\/Price>/i) ||
+      itemXml.match(/<PriceRub>([\d.]+)<\/PriceRub>/i) ||
+      itemXml.match(/<Cost>([\d.]+)<\/Cost>/i);
+
+    warehouses.push({
+      city,
+      name: city,
+      stock,
+      deliveryDays: deliveryMatch ? parseInt(deliveryMatch[1], 10) : 3,
+      price: priceMatch ? parseFloat(priceMatch[1]) : 0
+    });
+  }
+
+  if (warehouses.length > 0) {
+    let totalStock = 0;
+    let minDeliveryDays = 999;
+    let firstPrice = 0;
+    for (const w of warehouses) {
+      totalStock += w.stock;
+      if (w.deliveryDays < minDeliveryDays) minDeliveryDays = w.deliveryDays;
+      if (w.price > 0 && firstPrice === 0) firstPrice = w.price;
+    }
+    return {
+      stock: totalStock,
+      stockName: 'Склад Mikado',
+      deliveryDays: minDeliveryDays === 999 ? 3 : minDeliveryDays,
+      price: firstPrice,
+      source: 'api',
+      warehouses
+    };
+  }
+
+  const stockMatch =
+    xmlText.match(/<StockQTY>(\d+)<\/StockQTY>/i) ||
+    xmlText.match(/<Stock>(\d+)<\/Stock>/i) ||
+    xmlText.match(/<Quantity>(\d+)<\/Quantity>/i);
+  if (!stockMatch) return null;
+
+  const priceMatch =
+    xmlText.match(/<PriceRUR>([\d.]+)<\/PriceRUR>/i) ||
+    xmlText.match(/<Price>([\d.]+)<\/Price>/i);
+  const deliveryMatch =
+    xmlText.match(/<DeliveryDelay>(\d+)<\/DeliveryDelay>/i) ||
+    xmlText.match(/<DeliveryDays>(\d+)<\/DeliveryDays>/i);
+
+  return {
+    stock: parseInt(stockMatch[1], 10) || 0,
+    stockName: 'Склад Mikado',
+    deliveryDays: deliveryMatch ? parseInt(deliveryMatch[1], 10) : 3,
+    price: priceMatch ? parseFloat(priceMatch[1]) : 0,
+    source: 'api'
+  };
+}
+
 async function getMikadoStock(sku, brand = '', config = null) {
   try {
     const mikadoConfig = config || await integrationsService.getSupplierConfig('mikado');
-    console.log(`[Mikado Stock] Config check:`, {
-      hasConfig: !!mikadoConfig,
-      hasUserId: !!mikadoConfig?.user_id,
-      hasPassword: !!mikadoConfig?.password,
-      configKeys: mikadoConfig ? Object.keys(mikadoConfig) : []
-    });
     if (!mikadoConfig || !mikadoConfig.user_id || !mikadoConfig.password) {
       console.log('[Mikado Stock] No credentials configured');
       return null;
@@ -568,8 +580,6 @@ async function getMikadoStock(sku, brand = '', config = null) {
     )}&ClientID=${encodeURIComponent(
       mikadoConfig.user_id
     )}&Password=${encodeURIComponent(mikadoConfig.password)}`;
-
-    console.log('[Mikado Stock] Request:', url);
 
     const response = await fetchWithTimeout(
       url,
@@ -585,43 +595,17 @@ async function getMikadoStock(sku, brand = '', config = null) {
     }
 
     const xmlText = await response.text();
-
-    let stockMatch =
-      xmlText.match(/<StockQTY>(\d+)<\/StockQTY>/i) ||
-      xmlText.match(/<Stock>(\d+)<\/Stock>/i) ||
-      xmlText.match(/<Quantity>(\d+)<\/Quantity>/i) ||
-      xmlText.match(/<StockQuantity>(\d+)<\/StockQuantity>/i) ||
-      xmlText.match(/<Qty>(\d+)<\/Qty>/i) ||
-      xmlText.match(/quantity="(\d+)"/i);
-
-    let priceMatch =
-      xmlText.match(/<PriceRUR>([\d.]+)<\/PriceRUR>/i) ||
-      xmlText.match(/<Price>([\d.]+)<\/Price>/i) ||
-      xmlText.match(/<PriceRub>([\d.]+)<\/PriceRub>/i) ||
-      xmlText.match(/<Cost>([\d.]+)<\/Cost>/i);
-
-    let deliveryMatch =
-      xmlText.match(/<DeliveryDelay>(\d+)<\/DeliveryDelay>/i) ||
-      xmlText.match(/<DeliveryDays>(\d+)<\/DeliveryDays>/i) ||
-      xmlText.match(/<Delivery>(\d+)<\/Delivery>/i) ||
-      xmlText.match(/<Days>(\d+)<\/Days>/i);
-
-    if (!stockMatch) {
+    const parsed = parseMikadoStockXml(xmlText);
+    if (!parsed) {
       console.log('[Mikado Stock] No stock data in XML for', sku);
       return null;
     }
-
-    const stock = parseInt(stockMatch[1], 10) || 0;
-    const price = priceMatch ? parseFloat(priceMatch[1]) : 0;
-    const deliveryDays = deliveryMatch ? parseInt(deliveryMatch[1], 10) : 3;
-
-    return {
-      stock,
-      stockName: 'Склад Mikado',
-      deliveryDays,
-      price,
-      source: 'api'
-    };
+    if (parsed.warehouses?.length) {
+      logger.info(
+        `[Mikado Stock] ${sku}: ${parsed.warehouses.length} warehouse(s), total=${parsed.stock}: ${parsed.warehouses.map((w) => `${w.city}=${w.stock}`).join(', ')}`
+      );
+    }
+    return parsed;
   } catch (error) {
     console.error('[Mikado Stock] Error:', error);
     return null;

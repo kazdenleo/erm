@@ -42,6 +42,7 @@ import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
 import downloadsRoutes from './downloads.routes.js';
 import marketplaceInventoryRoutes from './marketplaceInventory.routes.js';
+import marketplaceStockRoutes from './marketplaceStock.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -160,6 +161,7 @@ router.use('/platform/marketplace-notifications', platformMarketplaceNotificatio
 router.use('/reviews', reviewsRoutes);
 router.use('/downloads', downloadsRoutes);
 router.use('/marketplace-inventory', marketplaceInventoryRoutes);
+router.use('/marketplace-stock', marketplaceStockRoutes);
 
 // Products API
 router.use('/products', (req, res, next) => {

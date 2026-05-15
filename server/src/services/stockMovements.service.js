@@ -112,13 +112,14 @@ class StockMovementsService {
       } catch {
         // не блокируем движение при сбое пересчёта резервов
       }
-
-      scheduleWarehouseStockMarketplaceSync(idNum, {
-        source: `stock_movement:${type}`,
-        warehouseId,
-        organizationId: product.organization_id ?? product.organizationId ?? null
-      });
     }
+
+    // Резерв/снятие резерва меняет «доступно к продаже» на МП — отправляем обновлённый остаток.
+    scheduleWarehouseStockMarketplaceSync(idNum, {
+      source: `stock_movement:${type}`,
+      warehouseId,
+      organizationId: product.organization_id ?? product.organizationId ?? null
+    });
 
     return {
       productId: idNum,

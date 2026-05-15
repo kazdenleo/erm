@@ -110,6 +110,69 @@ class SupplierStocksRepositoryPG {
   }
 
   /**
+   * Разбивка остатков по поставщикам для списка товаров (из кэша supplier_stocks).
+   * @param {number[]} productIds
+   * @param {{ mainWarehouseId?: string|number|null, profileId?: string|number|null }} [options]
+   * @returns {Promise<Array>}
+   */
+  async findBreakdownByProductIds(productIds, options = {}) {
+    const ids = (Array.isArray(productIds) ? productIds : [])
+      .map((id) => (typeof id === 'string' ? parseInt(id, 10) : Number(id)))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (ids.length === 0) return [];
+
+    const mainWarehouseId =
+      options.mainWarehouseId != null && String(options.mainWarehouseId).trim() !== ''
+        ? String(options.mainWarehouseId).trim()
+        : null;
+    const profileId =
+      options.profileId != null && String(options.profileId).trim() !== ''
+        ? String(options.profileId).trim()
+        : null;
+
+    const params = [ids];
+    let warehouseFilterSql = `
+      AND EXISTS (
+        SELECT 1 FROM warehouses w
+        WHERE w.supplier_id = s.id
+          AND w.type = 'supplier'
+          AND w.main_warehouse_id IS NOT NULL`;
+
+    if (mainWarehouseId) {
+      params.push(mainWarehouseId);
+      warehouseFilterSql += `
+          AND w.main_warehouse_id = $${params.length}`;
+    }
+    if (profileId) {
+      params.push(profileId);
+      warehouseFilterSql += `
+          AND (w.profile_id = $${params.length} OR w.profile_id IS NULL)`;
+    }
+    warehouseFilterSql += `
+      )`;
+
+    const result = await query(
+      `SELECT
+         ss.product_id,
+         ss.stock,
+         ss.price,
+         ss.delivery_days,
+         ss.stock_name,
+         s.id AS supplier_id,
+         s.name AS supplier_name,
+         s.code AS supplier_code
+       FROM supplier_stocks ss
+       JOIN suppliers s ON ss.supplier_id = s.id
+       WHERE ss.product_id = ANY($1::int[])
+         AND COALESCE(ss.stock, 0) > 0
+         ${warehouseFilterSql}
+       ORDER BY ss.product_id, s.name NULLS LAST`,
+      params
+    );
+    return result.rows || [];
+  }
+
+  /**
    * Получить остатки по поставщику
    */
   async findBySupplier(supplierId) {

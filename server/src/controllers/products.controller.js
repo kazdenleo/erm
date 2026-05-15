@@ -353,21 +353,63 @@ class ProductsController {
     try {
       const { productId } = req.query;
       const productIdNum = productId ? parseInt(productId, 10) : null;
-      
-      console.log(`[Products Controller] Refreshing supplier stocks${productIdNum ? ` for product ID: ${productIdNum}` : ' for all products'}`);
-      
+
+      if (!productIdNum) {
+        const { startSupplierStocksSyncInBackground, getSupplierStocksSyncStatus } = await import(
+          '../services/supplierStocksRefresh.job.js'
+        );
+        const status = getSupplierStocksSyncStatus();
+        if (status.inProgress) {
+          return res.status(200).json({
+            ok: true,
+            data: {
+              inProgress: true,
+              started: false,
+              message:
+                'Синхронизация остатков поставщиков уже выполняется. Обновите страницу через несколько минут.'
+            }
+          });
+        }
+        const started = startSupplierStocksSyncInBackground();
+        return res.status(202).json({
+          ok: true,
+          data: {
+            inProgress: true,
+            started: started.started,
+            message:
+              'Синхронизация остатков поставщиков запущена в фоне. Это может занять 10–30 минут — затем обновите страницу остатков.'
+          }
+        });
+      }
+
+      console.log(`[Products Controller] Refreshing supplier stocks for product ID: ${productIdNum}`);
       const result = await productsService.refreshSupplierStocks(productIdNum);
-      return res.status(200).json({ 
-        ok: true, 
+      const { scheduleWarehouseStockMarketplaceSync } = await import(
+        '../services/marketplaceWarehouseStockSync.service.js'
+      );
+      scheduleWarehouseStockMarketplaceSync(productIdNum, {
+        source: 'refresh_supplier_stocks',
+        organizationId: result?.organizationId ?? null
+      });
+      return res.status(200).json({
+        ok: true,
         data: {
-          message: productIdNum 
-            ? `Остатки обновлены для товара` 
-            : `Остатки обновлены для ${result.success} товаров`,
+          message: 'Остатки обновлены для товара',
+          inProgress: false,
           ...result
         }
       });
     } catch (error) {
       console.error('[Products Controller] Refresh supplier stocks error:', error?.message);
+      next(error);
+    }
+  }
+
+  async refreshSupplierStocksStatus(req, res, next) {
+    try {
+      const { getSupplierStocksSyncStatus } = await import('../services/supplierStocksRefresh.job.js');
+      return res.status(200).json({ ok: true, data: getSupplierStocksSyncStatus() });
+    } catch (error) {
       next(error);
     }
   }

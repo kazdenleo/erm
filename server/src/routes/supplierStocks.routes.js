@@ -8,6 +8,11 @@ import supplierStocksController from '../controllers/supplierStocks.controller.j
 
 const router = express.Router();
 
+// GET /api/supplier-stocks/breakdown?productIds=1,2,3
+router.get('/breakdown', (req, res, next) =>
+  supplierStocksController.getBreakdown(req, res, next)
+);
+
 // GET /api/supplier-stocks?supplier=&sku=&brand=&cities=
 router.get('/', (req, res, next) =>
   supplierStocksController.getStock(req, res, next)

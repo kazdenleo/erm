@@ -11,6 +11,29 @@ function normalizeProfileId(v) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** Канонический код для API интеграций (mikado / moskvorechie). */
+export function canonicalSupplierApiCode(code) {
+  const c = String(code || '').trim().toLowerCase();
+  if (c === 'москворечье' || c === 'moskvorechie') return 'moskvorechie';
+  if (c === 'микадо' || c === 'mikado') return 'mikado';
+  return c;
+}
+
+/** Варианты code для поиска (латиница/кириллица в БД могут отличаться). */
+export function supplierCodeLookupAliases(code) {
+  const c = String(code || '').trim().toLowerCase();
+  const aliases = new Set([c]);
+  if (c === 'moskvorechie' || c === 'москворечье') {
+    aliases.add('moskvorechie');
+    aliases.add('москворечье');
+  }
+  if (c === 'mikado' || c === 'микадо') {
+    aliases.add('mikado');
+    aliases.add('микадо');
+  }
+  return [...aliases];
+}
+
 class SuppliersRepositoryPG {
   /**
    * Получить всех поставщиков
@@ -106,9 +129,20 @@ class SuppliersRepositoryPG {
    */
   async findByCode(code, profileId = null) {
     const pid = normalizeProfileId(profileId);
+    const aliases = supplierCodeLookupAliases(code);
     const result = pid
-      ? await query('SELECT * FROM suppliers WHERE LOWER(TRIM(code)) = LOWER(TRIM($1)) AND profile_id = $2', [code, pid])
-      : await query('SELECT * FROM suppliers WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))', [code]);
+      ? await query(
+          `SELECT * FROM suppliers
+           WHERE LOWER(TRIM(code)) = ANY($1::text[]) AND profile_id = $2
+           LIMIT 1`,
+          [aliases, pid]
+        )
+      : await query(
+          `SELECT * FROM suppliers
+           WHERE LOWER(TRIM(code)) = ANY($1::text[])
+           LIMIT 1`,
+          [aliases]
+        );
     if (!result.rows[0]) {
       return null;
     }

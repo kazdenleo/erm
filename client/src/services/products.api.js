@@ -260,16 +260,15 @@ export const productsApi = {
     if (productId) {
       url += `?productId=${productId}`;
     }
-    console.log('[Products API] Calling refreshSupplierStocks:', url);
-    try {
-      const response = await api.post(url);
-      console.log('[Products API] Response status:', response.status);
-      return response.data;
-    } catch (error) {
-      console.error('[Products API] Error calling refreshSupplierStocks:', error.response?.status, error.response?.statusText, error.message);
-      console.error('[Products API] Request URL:', error.config?.url);
-      throw error;
-    }
+    const response = await api.post(url, {}, {
+      timeout: productId ? 120000 : 20000
+    });
+    return response.data;
+  },
+
+  refreshSupplierStocksStatus: async () => {
+    const response = await api.get('/products/refresh-supplier-stocks/status', { timeout: 15000 });
+    return response.data;
   }
 };
 

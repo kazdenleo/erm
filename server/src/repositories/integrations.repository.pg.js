@@ -68,6 +68,20 @@ class IntegrationsRepositoryPG {
     // Legacy: если organizationId не передали — не возвращаем интеграции, чтобы не смешивать организации.
     return null;
   }
+
+  /**
+   * Первая активная интеграция поставщика по code (для фоновой синхронизации без HTTP-контекста).
+   */
+  async findFirstActiveSupplierByCode(code) {
+    const result = await query(
+      `SELECT * FROM integrations
+       WHERE code = $1 AND type = 'supplier' AND is_active = true
+       ORDER BY id
+       LIMIT 1`,
+      [code]
+    );
+    return result.rows[0] || null;
+  }
   
   /**
    * Получить интеграции по типу

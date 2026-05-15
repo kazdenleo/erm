@@ -21,12 +21,14 @@ const uploadProductExcel = createProductExcelImportUpload();
 
 // Принудительно обновить остатки и цены у поставщиков (должен быть ДО маршрута /:id)
 // POST /api/products/refresh-supplier-stocks?productId=123 (опционально)
-router.post('/refresh-supplier-stocks', (req, res, next) => {
-  console.log('[Products Routes] POST /refresh-supplier-stocks called');
-  console.log('[Products Routes] Query params:', req.query);
-  console.log('[Products Routes] Body:', req.body);
-  wrapAsync(productsController.refreshSupplierStocks.bind(productsController))(req, res, next);
-});
+router.post(
+  '/refresh-supplier-stocks',
+  wrapAsync(productsController.refreshSupplierStocks.bind(productsController))
+);
+router.get(
+  '/refresh-supplier-stocks/status',
+  wrapAsync(productsController.refreshSupplierStocksStatus.bind(productsController))
+);
 
 // Обновить все товары (массовое обновление)
 router.put(

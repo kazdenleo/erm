@@ -902,11 +902,13 @@ class ProductsService {
       const supplierStocksService = await import('./supplierStocks.service.js');
       
       // Загружаем данные от каждого поставщика асинхронно
+      const { canonicalSupplierApiCode } = await import('../repositories/suppliers.repository.pg.js');
       const loadPromises = activeSuppliers.map(async (supplier) => {
         try {
-          console.log(`[Products Service] Loading stock from ${supplier.code} for SKU: ${product.sku} (forceRefresh: true)`);
+          const supplierCode = canonicalSupplierApiCode(supplier.code) || supplier.code;
+          console.log(`[Products Service] Loading stock from ${supplierCode} for SKU: ${product.sku} (forceRefresh: true)`);
           const stockData = await supplierStocksService.default.getSupplierStock({
-            supplier: supplier.code,
+            supplier: supplierCode,
             sku: product.sku,
             brand: product.brand || product.brand_name,
             forceRefresh: true // Принудительно обновляем из API при ручном обновлении остатков
@@ -1121,8 +1123,13 @@ class ProductsService {
         details: []
       };
       
-      // Загружаем остатки для каждого товара
-      for (const product of productsToUpdate) {
+      const concurrency = Math.max(
+        1,
+        Math.min(12, parseInt(process.env.SUPPLIER_STOCKS_REFRESH_CONCURRENCY || '6', 10) || 6)
+      );
+      let index = 0;
+
+      const processOne = async (product) => {
         if (!product.sku) {
           results.failed++;
           results.details.push({
@@ -1131,19 +1138,13 @@ class ProductsService {
             status: 'skipped',
             reason: 'No SKU'
           });
-          continue;
+          return;
         }
-        
         try {
-          console.log(`[Products Service] Starting stock refresh for product ID: ${product.id}, SKU: ${product.sku}`);
           await this.loadSupplierStocksForProduct(product);
-          
-          // Обновляем себестоимость в БД на основе данных поставщиков
           if (product.id) {
             await this.repository.updateCostFromSupplierStocks(product.id);
           }
-          
-          console.log(`[Products Service] ✓ Successfully refreshed stocks for product ID: ${product.id}, SKU: ${product.sku}`);
           results.success++;
           results.details.push({
             productId: product.id,
@@ -1160,7 +1161,15 @@ class ProductsService {
           });
           console.error(`[Products Service] Error refreshing stocks for ${product.sku}:`, error.message);
         }
-      }
+      };
+
+      const workers = Array.from({ length: Math.min(concurrency, productsToUpdate.length) }, async () => {
+        while (index < productsToUpdate.length) {
+          const product = productsToUpdate[index++];
+          await processOne(product);
+        }
+      });
+      await Promise.all(workers);
       
       console.log(`[Products Service] Supplier stocks refresh completed: ${results.success} success, ${results.failed} failed`);
       return results;

@@ -457,37 +457,38 @@ export function Products() {
     if (isRefreshingStocks) return;
     
     const confirmed = window.confirm(
-      'Обновить остатки и цены у поставщиков для всех товаров? Это может занять некоторое время.'
+      'Запустить обновление остатков у поставщиков для всех товаров? Синхронизация выполняется в фоне (10–30 минут).'
     );
-    
+
     if (!confirmed) return;
-    
+
     setIsRefreshingStocks(true);
     try {
-      console.log('[Products] Refreshing supplier stocks for all products...');
-      console.log('[Products] Calling API: POST /products/refresh-supplier-stocks');
       const result = await productsApi.refreshSupplierStocks();
-      console.log('[Products] API response:', result);
-      
+
       if (result?.ok && result?.data) {
+        if (result.data.inProgress && result.data.started !== false) {
+          alert(
+            result.data.message ||
+              'Синхронизация запущена в фоне. Через 10–30 минут обновите страницу.'
+          );
+          return;
+        }
+        if (result.data.inProgress && result.data.started === false) {
+          alert(result.data.message || 'Синхронизация уже выполняется.');
+          return;
+        }
         const { success, failed, total } = result.data;
         alert(
-          `Обновление завершено!\n\n` +
-          `Всего товаров: ${total}\n` +
-          `Успешно обновлено: ${success}\n` +
-          `Ошибок: ${failed}`
+          `Обновление завершено!\n\nВсего товаров: ${total}\nУспешно: ${success}\nОшибок: ${failed}`
         );
-        
-        // Перезагружаем список товаров, чтобы отобразить обновленные остатки и себестоимость
-        console.log('[Products] Reloading products list after stock refresh...');
         await loadList();
-        console.log('[Products] Products list reloaded');
       } else {
         alert('Ошибка обновления остатков: ' + (result?.message || 'Неизвестная ошибка'));
       }
     } catch (error) {
       console.error('[Products] Error refreshing supplier stocks:', error);
-      alert('Ошибка обновления остатков: ' + (error.message || 'Неизвестная ошибка'));
+      alert('Ошибка обновления остатков: ' + (error.response?.data?.message || error.message || 'Неизвестная ошибка'));
     } finally {
       setIsRefreshingStocks(false);
     }

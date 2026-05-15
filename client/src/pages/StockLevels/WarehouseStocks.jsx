@@ -2,7 +2,7 @@
  * Остатки на складе — складской учёт, поступление, списание, инвентаризация
  */
 
-import React, { useState, useEffect, useMemo, useLayoutEffect, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useLayoutEffect, useCallback, useRef } from 'react';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { useProducts } from '../../hooks/useProducts';
 import { useWarehouses } from '../../hooks/useWarehouses';
@@ -11,13 +11,16 @@ import { useCategories } from '../../hooks/useCategories';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { stockMovementsApi } from '../../services/stockMovements.api';
+import { supplierStocksApi } from '../../services/supplierStocks.api';
+import { productsApi } from '../../services/products.api';
+import { marketplaceStockApi } from '../../services/marketplaceStock.api';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import './StockLevels.css';
 
 const MOVEMENT_TYPE_LABELS = {
   receipt: 'Поступление',
-  incoming: 'Ожидается (incoming)',
+  incoming: 'В пути',
   writeoff: 'Списание',
   shipment: 'Отгрузка',
   reserve: 'Резерв',
@@ -528,6 +531,136 @@ function getMovementLink(m) {
 
 const STOCK_WAREHOUSE_LS = 'stockLevelsWarehouseId';
 
+function buildSupplierBreakdownMap(rows) {
+  const map = {};
+  for (const row of rows || []) {
+    const pid = String(row.product_id ?? row.productId ?? '');
+    if (!pid) continue;
+    const stock = Number(row.stock) || 0;
+    if (stock <= 0) continue;
+    if (!map[pid]) map[pid] = [];
+    map[pid].push({
+      supplierId: String(row.supplier_id ?? row.supplierId ?? ''),
+      supplier: row.supplier_name || row.supplier_code || 'Поставщик',
+      name: row.stock_name || row.supplier_name || row.supplier_code || '—',
+      stock,
+      price: row.price != null && row.price !== '' ? Number(row.price) : null,
+      deliveryDays: Number(row.delivery_days ?? row.deliveryDays ?? 0) || 0
+    });
+  }
+  return map;
+}
+
+function warehouseSupplierId(w) {
+  const sid = w?.supplierId ?? w?.supplier_id;
+  if (sid == null || sid === '') return null;
+  return String(sid);
+}
+
+function isSupplierWarehouseRecord(w) {
+  if (!w) return false;
+  const sid = warehouseSupplierId(w);
+  if (!sid) return false;
+  const t = String(w.type || '').toLowerCase();
+  const mainId = String(w.mainWarehouseId ?? w.main_warehouse_id ?? '').trim();
+  return t === 'supplier' || Boolean(mainId);
+}
+
+/** Подписи складов поставщиков для всплывающего списка (данные уже отфильтрованы API при наличии mainWarehouseId). */
+function enrichSupplierDetailsLabels(details, warehouses, mainWarehouseId) {
+  if (!Array.isArray(details) || details.length === 0) return [];
+
+  const mwId =
+    mainWarehouseId != null && String(mainWarehouseId).trim() !== ''
+      ? String(mainWarehouseId).trim()
+      : null;
+
+  const warehouseLabelBySupplierId = {};
+  for (const w of warehouses || []) {
+    if (!isSupplierWarehouseRecord(w)) continue;
+    const attachedMainId = String(w.mainWarehouseId ?? w.main_warehouse_id ?? '').trim();
+    if (!attachedMainId) continue;
+    if (mwId && attachedMainId !== mwId) continue;
+    const supplierId = warehouseSupplierId(w);
+    if (!supplierId) continue;
+    if (!warehouseLabelBySupplierId[supplierId]) {
+      warehouseLabelBySupplierId[supplierId] = w.address || w.name || '';
+    }
+  }
+
+  return details.map((d) => ({
+    ...d,
+    name: warehouseLabelBySupplierId[String(d.supplierId)] || d.name
+  }));
+}
+
+function SupplierStockCell({ total, details }) {
+  const hasSuppliers = Array.isArray(details) && details.length > 0;
+  const totalStock = hasSuppliers
+    ? details.reduce((s, d) => s + (Number(d.stock) || 0), 0)
+    : Number(total) || 0;
+  const [isHovered, setIsHovered] = useState(false);
+  const [showAbove, setShowAbove] = useState(false);
+  const containerRef = useRef(null);
+
+  const handleMouseEnter = () => {
+    setIsHovered(true);
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setShowAbove(window.innerHeight - rect.bottom < 300);
+    }
+  };
+
+  if (totalStock <= 0) {
+    return <span className="muted">—</span>;
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="stock-cell-container"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <span className="stock-main-value">
+        {totalStock} <span className="stock-main-caret">{showAbove ? '▲' : '▼'}</span>
+      </span>
+      {isHovered && hasSuppliers && (
+        <div
+          className={`stock-details-dropdown ${showAbove ? 'dropdown-above' : ''}`}
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
+        >
+          <div className="dropdown-header">Остатки по поставщикам</div>
+          {details.map((detail, idx) => (
+            <div key={idx} className="dropdown-item">
+              <div className="dropdown-item-main">
+                <div className="dropdown-item-title" title={detail.name}>
+                  {detail.name}
+                </div>
+                <div className="dropdown-item-sub">
+                  {detail.supplier}
+                  {detail.deliveryDays ? ` • ${detail.deliveryDays}д` : ''}
+                </div>
+              </div>
+              <div className="dropdown-item-meta">
+                <span className="dropdown-item-stock">{detail.stock}</span>
+                {detail.price != null && Number.isFinite(detail.price) ? (
+                  <span className="dropdown-item-price">{detail.price}₽</span>
+                ) : null}
+              </div>
+            </div>
+          ))}
+          <div className="dropdown-footer">
+            <span>Итого:</span>
+            <span>{totalStock}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WarehouseStocks() {
   const { products, loading: productsLoading, error: productsError, loadProducts } = useProducts();
   const { warehouses, loading: warehousesLoading, error: warehousesError } = useWarehouses();
@@ -550,6 +683,9 @@ export function WarehouseStocks() {
   const [reserveLoading, setReserveLoading] = useState(false);
   /** Список заказов из сгруппированной строки журнала (без запроса к API). */
   const [reserveListOverride, setReserveListOverride] = useState(null);
+  const [supplierBreakdownByProductId, setSupplierBreakdownByProductId] = useState({});
+  const [supplierStocksRefreshing, setSupplierStocksRefreshing] = useState(false);
+  const [mpStockSyncing, setMpStockSyncing] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = useMemo(
@@ -587,6 +723,69 @@ export function WarehouseStocks() {
       ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
       ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {})
     });
+  };
+
+  const handlePushStocksToMarketplaces = async () => {
+    if (!filterOrganizationId) {
+      window.alert('Выберите организацию в фильтре — остатки отправляются в кабинет этой организации.');
+      return;
+    }
+    const ok = window.confirm(
+      'Отправить на маркетплейсы остатки из колонки «Доступно» (наличие на складе + поставщики) для товаров в таблице? Учитываются только товары, связанные с МП, и настроенные сопоставления складов.'
+    );
+    if (!ok) return;
+    setMpStockSyncing(true);
+    try {
+      const productIds = rows.map((r) => r.product?.id).filter((id) => id != null && id !== '');
+      const res = await marketplaceStockApi.syncBulk({
+        organizationId: filterOrganizationId,
+        productIds: productIds.length > 0 ? productIds : undefined,
+        warehouseId: stockWarehouseId || null
+      });
+      const data = res?.data ?? res;
+      const pushed = data?.pushed ?? 0;
+      const failed = data?.failed ?? 0;
+      if (data?.skipped && data?.reason === 'skip_marketplace_stock_sync') {
+        window.alert('Отправка отключена в настройках организации или категории товара.');
+        return;
+      }
+      window.alert(
+        `Готово.\nУспешно обновлено на МП: ${pushed}\nОшибок: ${failed}` +
+          (data?.message ? `\n\n${data.message}` : '')
+      );
+    } catch (e) {
+      window.alert(`Ошибка: ${e.response?.data?.message || e.message || 'Не удалось отправить остатки'}`);
+    } finally {
+      setMpStockSyncing(false);
+    }
+  };
+
+  const handleRefreshWarehouseAndSupplierStocks = async () => {
+    const ok = window.confirm(
+      'Запустить обновление остатков у поставщиков (Микадо, Москворечье) для всех товаров? Синхронизация идёт в фоне 10–30 минут.'
+    );
+    if (!ok) return;
+    setSupplierStocksRefreshing(true);
+    try {
+      const res = await productsApi.refreshSupplierStocks();
+      const msg =
+        res?.data?.message ||
+        'Синхронизация запущена. Через несколько минут нажмите «Обновить склад» или обновите страницу.';
+      window.alert(msg);
+      if (!res?.data?.inProgress) {
+        await loadProducts({
+          ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
+          ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
+          ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
+          silent: true
+        });
+      }
+    } catch (e) {
+      const msg = e.response?.data?.message || e.message || 'Не удалось запустить обновление';
+      window.alert(`Ошибка: ${msg}`);
+    } finally {
+      setSupplierStocksRefreshing(false);
+    }
   };
 
   const handleOrganizationFilterChange = (e) => {
@@ -659,6 +858,50 @@ export function WarehouseStocks() {
   }, []);
 
   useEffect(() => {
+    if (activeTab !== 'table' || !products.length) {
+      setSupplierBreakdownByProductId({});
+      return undefined;
+    }
+    let cancelled = false;
+    const ids = products.map((p) => p.id).filter((id) => id != null);
+    if (!ids.length) {
+      setSupplierBreakdownByProductId({});
+      return undefined;
+    }
+
+    const mainWarehouseId =
+      stockWarehouseId != null && String(stockWarehouseId).trim() !== ''
+        ? String(stockWarehouseId).trim()
+        : null;
+
+    const chunkSize = 80;
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      chunks.push(ids.slice(i, i + chunkSize));
+    }
+
+    (async () => {
+      try {
+        const allRows = [];
+        for (const chunk of chunks) {
+          if (cancelled) return;
+          const res = await supplierStocksApi.getBreakdown(chunk, { mainWarehouseId });
+          const rows = res?.data ?? (Array.isArray(res) ? res : []);
+          if (Array.isArray(rows)) allRows.push(...rows);
+        }
+        if (cancelled) return;
+        setSupplierBreakdownByProductId(buildSupplierBreakdownMap(allRows));
+      } catch {
+        if (!cancelled) setSupplierBreakdownByProductId({});
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [products, activeTab, stockWarehouseId]);
+
+  useEffect(() => {
     if (!historyProduct) {
       setHistoryList([]);
       return;
@@ -719,6 +962,32 @@ export function WarehouseStocks() {
     };
   }, [reserveModalOpen, reserveListOverride, historyProduct?.id]);
 
+  const selectedWarehouse = stockWarehouseId
+    ? ownWarehouses.find((w) => String(w.id) === stockWarehouseId)
+    : null;
+  const mainWarehouseName = selectedWarehouse
+    ? selectedWarehouse.address || selectedWarehouse.name || 'Склад'
+    : 'Все склады (сумма)';
+
+  const rows = useMemo(
+    () =>
+      products.map((product) => {
+        const onHand = Number(product.quantity ?? 0) || 0;
+        const incoming = Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0;
+        const reserved = Number(product.reserved_quantity ?? product.reservedQuantity ?? 0) || 0;
+        const allDetails = supplierBreakdownByProductId[String(product.id)] || [];
+        const supplierDetails = enrichSupplierDetailsLabels(
+          allDetails,
+          warehouses,
+          stockWarehouseId || null
+        );
+        const suppliers = supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0);
+        const available = onHand + suppliers;
+        return { product, onHand, incoming, reserved, suppliers, supplierDetails, available };
+      }),
+    [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]
+  );
+
   if (productsLoading || warehousesLoading) {
     return <div className="loading">Загрузка остатков на складе...</div>;
   }
@@ -728,20 +997,6 @@ export function WarehouseStocks() {
   if (warehousesError) {
     return <div className="error">Ошибка загрузки складов: {warehousesError}</div>;
   }
-
-  const selectedWarehouse = stockWarehouseId
-    ? ownWarehouses.find((w) => String(w.id) === stockWarehouseId)
-    : null;
-  const mainWarehouseName = selectedWarehouse
-    ? selectedWarehouse.address || selectedWarehouse.name || 'Склад'
-    : 'Все склады (сумма)';
-
-  const rows = products.map(product => ({
-    product,
-    mainWarehouseStock: product.quantity ?? 0,
-    incoming: product.incoming_quantity ?? product.incomingQuantity ?? 0,
-    reserved: product.reserved_quantity ?? product.reservedQuantity ?? 0
-  }));
 
   return (
     <>
@@ -813,40 +1068,33 @@ export function WarehouseStocks() {
                 <tr>
                   <th>Артикул</th>
                   <th>Товар</th>
-                  <th>{mainWarehouseName}</th>
-                  <th>Наличие</th>
-                  <th>Ожидается</th>
+                  <th>В пути</th>
                   <th>Резерв</th>
+                  <th>Наличие</th>
+                  <th>Поставщики</th>
                   <th>Доступно</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map(row => (
-                  (() => {
-                    const actual = row.mainWarehouseStock;
-                    // reserved_quantity — логический резерв и не уменьшает quantity на складе,
-                    // поэтому «Доступно» считаем как supply = actual + incoming - reserved.
-                    const available = (row.mainWarehouseStock + row.incoming - row.reserved);
-                    const availableSafe = Number.isFinite(available) ? available : 0;
-                    return (
+                {rows.map((row) => (
                   <tr
                     key={row.product.sku || row.product.id}
                     className="stock-levels-row-clickable"
                     onClick={() => setHistoryProduct(row.product)}
                     role="button"
                     tabIndex={0}
-                    onKeyDown={e => e.key === 'Enter' && setHistoryProduct(row.product)}
+                    onKeyDown={(e) => e.key === 'Enter' && setHistoryProduct(row.product)}
                   >
                     <td className="sku-cell">{row.product.sku || '—'}</td>
                     <td className="name-cell">{row.product.name || 'Без названия'}</td>
-                    <td className="main-warehouse-cell">{row.mainWarehouseStock}</td>
-                    <td>{actual}</td>
                     <td>{row.incoming}</td>
                     <td className="stock-levels-reserved-cell">{row.reserved}</td>
-                    <td className={availableSafe < 0 ? 'stock-change-minus' : ''}>{availableSafe}</td>
+                    <td className="main-warehouse-cell">{row.onHand}</td>
+                    <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
+                      <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
+                    </td>
+                    <td>{row.available}</td>
                   </tr>
-                    );
-                  })()
                 ))}
               </tbody>
             </table>
@@ -855,7 +1103,26 @@ export function WarehouseStocks() {
           <p className="stock-levels-history-hint">Нажмите на строку товара, чтобы открыть историю изменений остатков.</p>
 
           <div className="actions" style={{ marginTop: '16px' }}>
-            <Button variant="secondary" onClick={applyFilters}>📦 Обновить остатки на складе</Button>
+            <Button variant="secondary" onClick={applyFilters} disabled={supplierStocksRefreshing || mpStockSyncing}>
+              Обновить склад
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleRefreshWarehouseAndSupplierStocks}
+              disabled={supplierStocksRefreshing || mpStockSyncing || productsLoading}
+              style={{ marginLeft: 8 }}
+            >
+              {supplierStocksRefreshing ? 'Обновление поставщиков…' : 'Обновить остатки поставщиков'}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={handlePushStocksToMarketplaces}
+              disabled={mpStockSyncing || supplierStocksRefreshing || productsLoading}
+              style={{ marginLeft: 8 }}
+              title="Отправить значения из колонки «Доступно» на Ozon, Wildberries и Яндекс.Маркет"
+            >
+              {mpStockSyncing ? 'Отправка на МП…' : 'Отправить на маркетплейсы'}
+            </Button>
           </div>
         </>
       )}

@@ -193,7 +193,6 @@ export function Warehouses() {
                 <th>Поставщик</th>
                 <th>Основной склад</th>
                 <th>Склад Wildberries</th>
-                <th>Время приема заказов</th>
                 <th style={{textAlign: 'right'}}>Действия</th>
               </tr>
             </thead>
@@ -206,7 +205,6 @@ export function Warehouses() {
                   <td>{w.supplierId ? suppliers.find(s => s.id === w.supplierId)?.name || w.supplierId : '—'}</td>
                   <td>{w.mainWarehouseId || '—'}</td>
                   <td>{w.type === 'warehouse' && w.wbWarehouseName ? w.wbWarehouseName : '—'}</td>
-                  <td>{w.type === 'supplier' && w.orderAcceptanceTime ? w.orderAcceptanceTime : '—'}</td>
                   <td>
                     <div style={{display: 'flex', gap: '6px', justifyContent: 'flex-end'}}>
                       <Button 

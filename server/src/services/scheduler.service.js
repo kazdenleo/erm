@@ -47,6 +47,46 @@ function getReviewsSyncCronExpression() {
   return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
 }
 
+/** Фоновая синхронизация остатков поставщиков (Mikado, Москворечье). Выкл: SUPPLIER_STOCKS_SYNC_ENABLED=0 */
+function isSupplierStocksSyncEnabled() {
+  const v = process.env.SUPPLIER_STOCKS_SYNC_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (node-cron, Europe/Moscow). По умолчанию каждые 10 минут; переопределение: SUPPLIER_STOCKS_SYNC_CRON */
+function getSupplierStocksSyncCronExpression() {
+  const c = process.env.SUPPLIER_STOCKS_SYNC_CRON;
+  return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
+}
+
+async function runSupplierStocksSync() {
+  const { runSupplierStocksSyncBlocking, getSupplierStocksSyncStatus } = await import(
+    './supplierStocksRefresh.job.js'
+  );
+  if (getSupplierStocksSyncStatus().inProgress) {
+    logger.info('[Scheduler] Supplier stocks sync: skip (previous run still in progress)');
+    return;
+  }
+  try {
+    const result = await runSupplierStocksSyncBlocking();
+    logger.info('[Scheduler] Supplier stocks sync done', {
+      total: result?.total ?? 0,
+      success: result?.success ?? 0,
+      failed: result?.failed ?? 0
+    });
+  } catch (error) {
+    logger.warn('[Scheduler] Supplier stocks sync failed:', error?.message || String(error));
+    await addRuntimeNotification({
+      type: 'job_failed',
+      severity: 'warning',
+      source: 'scheduler',
+      title: 'Сбой синхронизации остатков поставщиков',
+      message: error?.message || String(error)
+    });
+  }
+}
+
 /**
  * Ночной полный пересчёт мин. цен: после обновления комиссий/категорий (последняя пачка — YM в 2:00 МСК).
  * По умолчанию 3:15 МСК — запас после ночных справочников; переопределение: MIN_PRICES_NIGHTLY_CRON.
@@ -423,6 +463,20 @@ class SchedulerService {
         logger.info('[Scheduler] FBS orders background sync disabled (ORDERS_FBS_SYNC_ENABLED)');
       }
 
+      let supplierStocksSyncJob = null;
+      const supplierStocksCron = getSupplierStocksSyncCronExpression();
+      if (isSupplierStocksSyncEnabled()) {
+        supplierStocksSyncJob = cron.schedule(supplierStocksCron, async () => {
+          logger.info('[Scheduler] Supplier stocks sync (cron)...');
+          await runSupplierStocksSync();
+        }, {
+          scheduled: false,
+          timezone: 'Europe/Moscow'
+        });
+      } else {
+        logger.info('[Scheduler] Supplier stocks background sync disabled (SUPPLIER_STOCKS_SYNC_ENABLED)');
+      }
+
       this.jobs.push({
         name: 'wb-marketplace-update',
         job: wbUpdateJob,
@@ -515,6 +569,16 @@ class SchedulerService {
         });
       }
 
+      if (supplierStocksSyncJob) {
+        this.jobs.push({
+          name: 'supplier-stocks-sync',
+          job: supplierStocksSyncJob,
+          schedule: supplierStocksCron,
+          description:
+            'Синхронизация остатков поставщиков (Mikado, Москворечье). Интервал: SUPPLIER_STOCKS_SYNC_CRON, по умолчанию */10 * * * *'
+        });
+      }
+
       // Запускаем задачи
       wbUpdateJob.start();
       wbTariffsJob.start();
@@ -529,6 +593,9 @@ class SchedulerService {
       if (ordersFbsSyncJob) {
         ordersFbsSyncJob.start();
       }
+      if (supplierStocksSyncJob) {
+        supplierStocksSyncJob.start();
+      }
       this.isRunning = true;
 
       if (isOrdersFbsSyncEnabled()) {
@@ -542,6 +609,19 @@ class SchedulerService {
             }
           })();
         }, 90 * 1000);
+      }
+
+      if (supplierStocksSyncJob && isSupplierStocksSyncEnabled()) {
+        setTimeout(() => {
+          (async () => {
+            try {
+              logger.info('[Scheduler] Deferred supplier stocks sync (~120s after startup)...');
+              await runSupplierStocksSync();
+            } catch (e) {
+              logger.warn('[Scheduler] Deferred supplier stocks sync:', e?.message || e);
+            }
+          })();
+        }, 120 * 1000);
       }
 
       if (reviewsSyncJob && isReviewsSyncEnabled()) {
@@ -711,6 +791,19 @@ class SchedulerService {
       setInterval(runFbs, ivMin * 60 * 1000);
       setTimeout(runFbs, 90 * 1000);
       logger.info(`[Scheduler] FBS orders sync: каждые ${ivMin} мин (fallback, ORDERS_FBS_SYNC_INTERVAL_MINUTES)`);
+    }
+
+    if (isSupplierStocksSyncEnabled()) {
+      const ivMin = Math.max(10, Number(process.env.SUPPLIER_STOCKS_SYNC_INTERVAL_MINUTES || 10));
+      const runSupplierStocks = async () => {
+        logger.info('[Scheduler] Supplier stocks sync (fallback interval)...');
+        await runSupplierStocksSync();
+      };
+      setInterval(runSupplierStocks, ivMin * 60 * 1000);
+      setTimeout(runSupplierStocks, 120 * 1000);
+      logger.info(
+        `[Scheduler] Supplier stocks sync: каждые ${ivMin} мин (fallback, SUPPLIER_STOCKS_SYNC_INTERVAL_MINUTES)`
+      );
     }
   }
 

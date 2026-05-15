@@ -41,16 +41,12 @@ class SupplierStocksService {
       throw new Error('Supplier stocks repository not available');
     }
 
-    // Получаем supplier_id по коду (нормализуем код: кириллица -> латиница)
     const suppliersRepo = repositoryFactory.getRepository('suppliers');
-    // Нормализуем код поставщика для поиска в базе
-    const normalizedCode = supplierName.toLowerCase().replace('москворечье', 'moskvorechie');
-    const supplier = await suppliersRepo.findByCode(normalizedCode);
+    const supplier = await suppliersRepo.findByCode(supplierName);
     if (!supplier) {
-      // Пробуем найти по имени, если не нашли по коду
       const supplierByName = await suppliersRepo.findByName(supplierName);
       if (!supplierByName) {
-        throw new Error(`Supplier ${supplierName} (normalized: ${normalizedCode}) not found`);
+        throw new Error(`Supplier ${supplierName} not found`);
       }
       return await this.upsert(supplierByName.code, sku, data);
     }

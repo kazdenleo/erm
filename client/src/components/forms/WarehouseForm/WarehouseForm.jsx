@@ -15,7 +15,6 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
     organizationId: '',
     supplierId: '',
     mainWarehouseId: '',
-    orderAcceptanceTime: '',
     wbWarehouseName: ''
   });
   
@@ -201,7 +200,6 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
         organizationId: warehouse.organizationId != null ? String(warehouse.organizationId) : (warehouse.organization_id != null ? String(warehouse.organization_id) : ''),
         supplierId: warehouse.supplierId ? String(warehouse.supplierId) : '',
         mainWarehouseId: warehouse.mainWarehouseId ? String(warehouse.mainWarehouseId) : '',
-        orderAcceptanceTime: warehouse.orderAcceptanceTime || '',
         wbWarehouseName: warehouse.wbWarehouseName || ''
       });
       setOzonWarehouseName('');
@@ -216,7 +214,6 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
         organizationId: '',
         supplierId: '',
         mainWarehouseId: '',
-        orderAcceptanceTime: '',
         wbWarehouseName: ''
       });
       setOzonWarehouseName('');
@@ -314,7 +311,7 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
       organizationId: formData.organizationId && formData.organizationId.trim() !== '' ? formData.organizationId : null,
       supplierId: formData.type === 'supplier' ? (formData.supplierId || null) : null,
       mainWarehouseId: formData.type === 'supplier' ? (formData.mainWarehouseId || null) : null,
-      orderAcceptanceTime: formData.type === 'supplier' ? (formData.orderAcceptanceTime || null) : null,
+      orderAcceptanceTime: null,
       wbWarehouseName: formData.type === 'warehouse' 
         ? (formData.wbWarehouseName && formData.wbWarehouseName.trim() !== '' 
             ? formData.wbWarehouseName.trim() 
@@ -750,23 +747,9 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
             </select>
           </div>
 
-          <div className="mt-3">
-            <label className="form-label" htmlFor="orderAcceptanceTime">
-              Время приема заказов
-            </label>
-            <div className="text-muted small mb-2">
-              Укажите время, до которого принимаются заказы на этом складе поставщика (формат ЧЧ:ММ, например, 18:00).
-            </div>
-            <input
-              type="time"
-              id="orderAcceptanceTime"
-              className="form-control form-control-sm"
-              style={{ maxWidth: 180 }}
-              value={formData.orderAcceptanceTime}
-              onChange={(e) => handleChange('orderAcceptanceTime', e.target.value)}
-              placeholder="18:00"
-            />
-          </div>
+          <p className="text-muted small mt-2 mb-0">
+            Время приёма заказов и склады для остатков настраиваются в разделе «Поставщики».
+          </p>
         </>
       )}
 
