@@ -1,9 +1,11 @@
 /**
- * Остатки комплектов: всегда из БД по составу kit_components (независимо от фильтров списка).
+ * Остатки комплектов: расчёт из kit_components → запись в product_warehouse_stock и products.
+ * UI и маркетплейсы читают сохранённые значения (как у обычных товаров).
  * Резерв по заказу на комплект — резерв комплектующих.
  */
 
 import { query } from '../config/database.js';
+import repositoryFactory from '../config/repository-factory.js';
 import { computeAvailableQuantity } from './sellableQuantity.service.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
 import logger from '../utils/logger.js';
@@ -60,10 +62,35 @@ async function getComponentWarehouseSupply(componentProductId) {
   };
 }
 
+/** Резерв комплектов из журнала комплектующих: min(floor(reserve_i / qty_in_kit)). */
+export async function computeKitReservedFromComponents(kitProductId) {
+  const components = await getKitComponents(kitProductId);
+  if (components.length === 0) return 0;
+
+  let minKits = Infinity;
+  for (const c of components) {
+    const r = await query(
+      `SELECT GREATEST(0, COALESCE(SUM(
+          CASE
+            WHEN type = 'reserve' THEN -(quantity_change::numeric)
+            WHEN type = 'unreserve' THEN -(quantity_change::numeric)
+            ELSE 0
+          END
+        ), 0))::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+      [c.component_product_id]
+    );
+    const rv = Number(r.rows[0]?.rv ?? 0) || 0;
+    minKits = Math.min(minKits, Math.floor(rv / c.quantity));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
 /**
- * Остатки комплекта для UI и МП: min(floor(остаток комплектующего / qty в комплекте)).
+ * Расчёт остатков комплекта из комплектующих (только для пересчёта перед записью в БД).
  */
-export async function computeKitDisplayStock(kitProductId, opts = {}) {
+export async function computeKitMetricsFromComponents(kitProductId, opts = {}) {
   const components = await getKitComponents(kitProductId);
   if (components.length === 0) {
     return { onHand: 0, incoming: 0, reserved: 0, suppliers: 0, available: 0 };
@@ -89,18 +116,273 @@ export async function computeKitDisplayStock(kitProductId, opts = {}) {
   const onHand = Number.isFinite(minOnHand) ? Math.max(0, minOnHand) : 0;
   const suppliers = Number.isFinite(minSuppliers) ? Math.max(0, minSuppliers) : 0;
   const incoming = Number.isFinite(minIncoming) ? Math.max(0, minIncoming) : 0;
+  const reserved = await computeKitReservedFromComponents(kitProductId);
   const available = onHand + suppliers;
-
-  const kr = await query(
-    `SELECT COALESCE(reserved_quantity, 0)::int AS reserved FROM products WHERE id = $1`,
-    [Number(kitProductId)]
-  );
-  const reserved = Number(kr.rows[0]?.reserved ?? 0) || 0;
 
   return { onHand, incoming, reserved, suppliers, available };
 }
 
-/** Сколько комплектов уже зарезервировано под orders.id (по движениям комплектующих). */
+/** @deprecated Используйте computeKitMetricsFromComponents или readKitStockFromDb */
+export async function computeKitDisplayStock(kitProductId, opts = {}) {
+  return computeKitMetricsFromComponents(kitProductId, opts);
+}
+
+async function syncProductQuantityFromWarehouseStock(productId) {
+  const pid = Number(productId);
+  const r = await query(
+    `SELECT COALESCE(SUM(quantity), 0)::int AS total
+     FROM product_warehouse_stock WHERE product_id = $1`,
+    [pid]
+  );
+  const total = Math.max(0, Number(r.rows[0]?.total ?? 0) || 0);
+  await query(
+    `UPDATE products SET quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+    [total, pid]
+  );
+  return total;
+}
+
+async function resolveWarehouseIdsForKitRecalc(kitProductId, warehouseId = null) {
+  if (warehouseId != null && String(warehouseId).trim() !== '') {
+    const w = typeof warehouseId === 'string' ? parseInt(warehouseId, 10) : Number(warehouseId);
+    return Number.isFinite(w) && w > 0 ? [w] : [];
+  }
+
+  const components = await getKitComponents(kitProductId);
+  const compIds = components.map((c) => c.component_product_id);
+  const kitId = Number(kitProductId);
+  let ids = [];
+
+  if (compIds.length > 0) {
+    const r = await query(
+      `SELECT DISTINCT warehouse_id FROM product_warehouse_stock
+       WHERE product_id = ANY($1::bigint[]) OR product_id = $2`,
+      [compIds, kitId]
+    );
+    ids = (r.rows || [])
+      .map((row) => Number(row.warehouse_id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+
+  if (ids.length === 0) {
+    const repo = repositoryFactory.getProductsRepository();
+    if (repo && typeof repo.getDefaultOwnWarehouseId === 'function') {
+      const def = await repo.getDefaultOwnWarehouseId();
+      if (def) ids = [def];
+    }
+  }
+
+  return [...new Set(ids)];
+}
+
+/**
+ * Пересчитать остатки комплекта из комплектующих и сохранить в БД.
+ */
+export async function persistKitStock(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return null;
+
+  const repo = repositoryFactory.getProductsRepository();
+  if (!repo || typeof repo.setWarehouseFreeStock !== 'function') {
+    return null;
+  }
+
+  const warehouseIds = await resolveWarehouseIdsForKitRecalc(kitId, opts.warehouseId);
+  const profileId = opts.profileId ?? null;
+
+  for (const wid of warehouseIds) {
+    const metrics = await computeKitMetricsFromComponents(kitId, {
+      warehouseId: wid,
+      profileId
+    });
+    await repo.setWarehouseFreeStock(kitId, wid, metrics.onHand);
+  }
+
+  const summaryWarehouseId =
+    opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
+      ? opts.warehouseId
+      : warehouseIds[0] ?? null;
+
+  const summary = await computeKitMetricsFromComponents(kitId, {
+    warehouseId: summaryWarehouseId,
+    profileId
+  });
+
+  try {
+    await query(
+      `UPDATE products
+       SET incoming_quantity = $1,
+           reserved_quantity = $2,
+           kit_supplier_stock = $3,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $4`,
+      [summary.incoming, summary.reserved, summary.suppliers, kitId]
+    );
+  } catch (e) {
+    if (!String(e?.message || '').includes('kit_supplier_stock')) {
+      throw e;
+    }
+    await query(
+      `UPDATE products
+       SET incoming_quantity = $1, reserved_quantity = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3`,
+      [summary.incoming, summary.reserved, kitId]
+    );
+  }
+
+  await syncProductQuantityFromWarehouseStock(kitId);
+
+  logger.info('[Kit Stock] persisted', {
+    kitProductId: kitId,
+    warehouseIds,
+    onHand: summary.onHand,
+    suppliers: summary.suppliers,
+    reserved: summary.reserved,
+    productsQuantity: await repo.getWarehouseFreeStock?.(kitId, summaryWarehouseId)
+  });
+
+  return summary;
+}
+
+/** Пересчитать все комплекты, в состав которых входит товар. */
+export async function recalculateKitsForComponent(componentProductId, opts = {}) {
+  const pid = Number(componentProductId);
+  if (!Number.isFinite(pid) || pid < 1) return [];
+
+  const r = await query(
+    `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+    [pid]
+  );
+  const kitIds = (r.rows || [])
+    .map((row) => Number(row.kit_product_id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  for (const kitId of kitIds) {
+    await persistKitStock(kitId, opts);
+  }
+  return kitIds;
+}
+
+/**
+ * Остатки комплекта из БД (product_warehouse_stock + products).
+ */
+export async function readKitStockFromDb(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) {
+    return { onHand: 0, incoming: 0, reserved: 0, suppliers: 0, available: 0 };
+  }
+
+  const warehouseId =
+    opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
+      ? typeof opts.warehouseId === 'string'
+        ? parseInt(opts.warehouseId, 10)
+        : Number(opts.warehouseId)
+      : null;
+
+  let onHand = 0;
+  if (warehouseId != null && Number.isFinite(warehouseId) && warehouseId > 0) {
+    const r = await query(
+      `SELECT COALESCE(quantity, 0)::int AS quantity
+       FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2`,
+      [kitId, warehouseId]
+    );
+    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
+  } else {
+    const r = await query(
+      `SELECT COALESCE(SUM(quantity), 0)::int AS quantity
+       FROM product_warehouse_stock WHERE product_id = $1`,
+      [kitId]
+    );
+    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
+  }
+
+  let incoming = 0;
+  let reserved = 0;
+  let suppliers = 0;
+  try {
+    const pr = await query(
+      `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity,
+              COALESCE(reserved_quantity, 0)::int AS reserved_quantity,
+              COALESCE(kit_supplier_stock, 0)::int AS kit_supplier_stock
+       FROM products WHERE id = $1`,
+      [kitId]
+    );
+    const row = pr.rows[0] || {};
+    incoming = Number(row.incoming_quantity ?? 0) || 0;
+    reserved = Number(row.reserved_quantity ?? 0) || 0;
+    suppliers = Number(row.kit_supplier_stock ?? 0) || 0;
+  } catch (e) {
+    if (!String(e?.message || '').includes('kit_supplier_stock')) {
+      throw e;
+    }
+    const pr = await query(
+      `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity,
+              COALESCE(reserved_quantity, 0)::int AS reserved_quantity
+       FROM products WHERE id = $1`,
+      [kitId]
+    );
+    incoming = Number(pr.rows[0]?.incoming_quantity ?? 0) || 0;
+    reserved = Number(pr.rows[0]?.reserved_quantity ?? 0) || 0;
+  }
+
+  const available = onHand + suppliers;
+  return { onHand, incoming, reserved, suppliers, available };
+}
+
+/** Для отправки на МП: из БД, с вычетом резерва комплекта (как у обычного товара). */
+export async function readKitMarketplaceStockFromDb(kitProductId, opts = {}) {
+  const base = await readKitStockFromDb(kitProductId, opts);
+  const reserved = base.reserved;
+  const available = Math.max(0, Math.floor(base.onHand + base.suppliers - reserved));
+  return {
+    ...base,
+    available,
+    displayAvailable: Math.max(0, Math.floor(base.onHand + base.suppliers))
+  };
+}
+
+export async function computeKitMarketplaceStock(kitProductId, opts = {}) {
+  const data = await readKitMarketplaceStockFromDb(kitProductId, opts);
+  return data.available;
+}
+
+/** Подставить в объект товара-комплекта остатки из БД. */
+export async function enrichKitProductStock(product, opts = {}) {
+  if (!product || !isKitProductType(product.product_type)) return product;
+  const metrics = await readKitStockFromDb(product.id, opts);
+  product.quantity = metrics.onHand;
+  product.incoming_quantity = metrics.incoming;
+  product.reserved_quantity = metrics.reserved;
+  product.supplierStockTotal = metrics.suppliers;
+  product.kit_quantity_derived = false;
+  product.kit_stock_persisted = true;
+  product.kit_display_stock = metrics;
+  return product;
+}
+
+export function scheduleMarketplaceSyncForParentKits(componentProductId, opts = {}) {
+  setImmediate(async () => {
+    try {
+      const pid = Number(componentProductId);
+      if (!Number.isFinite(pid) || pid < 1) return;
+
+      const kitIds = await recalculateKitsForComponent(pid, opts);
+
+      for (const kitId of kitIds) {
+        scheduleWarehouseStockMarketplaceSync(kitId, {
+          source: opts.source || 'kit_component_changed',
+          organizationId: opts.organizationId ?? null,
+          warehouseId: opts.warehouseId ?? null,
+          strictWarehouse:
+            opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
+        });
+      }
+    } catch (e) {
+      logger.warn('[Kit Stock] scheduleMarketplaceSyncForParentKits:', e?.message || e);
+    }
+  });
+}
+
 export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
   const components = await getKitComponents(kitProductId);
   if (components.length === 0) return 0;
@@ -128,7 +410,6 @@ export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
-/** Сколько комплектов можно зарезервировать (по складу: факт + в пути − резерв комплектующих). */
 export async function computeMaxKitUnitsReservable(kitProductId) {
   const components = await getKitComponents(kitProductId);
   if (components.length === 0) return 0;
@@ -142,63 +423,6 @@ export async function computeMaxKitUnitsReservable(kitProductId) {
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
-export async function computeKitMarketplaceStock(kitProductId, opts = {}) {
-  const components = await getKitComponents(kitProductId);
-  if (components.length === 0) return 0;
-
-  let minKits = Infinity;
-  for (const c of components) {
-    const perKit = c.quantity;
-    const { available } = await computeAvailableQuantity(c.component_product_id, {
-      warehouseId: opts.warehouseId ?? null,
-      profileId: opts.profileId ?? null,
-      forMarketplace: true
-    });
-    minKits = Math.min(minKits, Math.floor(available / perKit));
-  }
-  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
-}
-
-/** Подставить в объект товара-комплекта рассчитанные остатки (для API). */
-export async function enrichKitProductStock(product, opts = {}) {
-  if (!product || !isKitProductType(product.product_type)) return product;
-  const metrics = await computeKitDisplayStock(product.id, opts);
-  product.quantity = metrics.onHand;
-  product.supplierStockTotal = metrics.suppliers;
-  product.kit_quantity_derived = true;
-  product.kit_display_stock = metrics;
-  return product;
-}
-
-/** После изменения остатка комплектующего — обновить остатки на МП у родительских комплектов. */
-export function scheduleMarketplaceSyncForParentKits(componentProductId, opts = {}) {
-  setImmediate(async () => {
-    try {
-      const pid = Number(componentProductId);
-      if (!Number.isFinite(pid) || pid < 1) return;
-      const r = await query(
-        `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
-        [pid]
-      );
-      for (const row of r.rows || []) {
-        const kitId = row.kit_product_id;
-        if (kitId == null) continue;
-        scheduleWarehouseStockMarketplaceSync(kitId, {
-          source: opts.source || 'kit_component_changed',
-          organizationId: opts.organizationId ?? null,
-          warehouseId: opts.warehouseId ?? null
-        });
-      }
-    } catch (e) {
-      logger.warn('[Kit Stock] scheduleMarketplaceSyncForParentKits:', e?.message || e);
-    }
-  });
-}
-
-/**
- * Резерв под заказ на комплект: резервируем комплектующие.
- * @returns {Promise<number>} фактически зарезервировано комплектов (единиц kit)
- */
 export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabel, meta, applyReserveFn) {
   const kitId = Number(kitProductId);
   const wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
@@ -217,16 +441,23 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
     });
   }
 
+  await persistKitStock(kitId, {
+    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
+    organizationId: meta?.organizationId ?? null
+  });
+
   scheduleWarehouseStockMarketplaceSync(kitId, {
     source: 'kit_order_reserve',
     organizationId: meta?.organizationId ?? null,
-    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
+    strictWarehouse:
+      (meta?.warehouse_id ?? meta?.warehouseId) != null &&
+      String(meta?.warehouse_id ?? meta?.warehouseId).trim() !== ''
   });
 
   return kitsToReserve;
 }
 
-/** Снять все резервы по orders.id (в т.ч. по комплектующим). @returns {Promise<number[]>} product_id с затронутым резервом */
 export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unreserveFn) {
   const oid = Number(orderDbId);
   if (!Number.isFinite(oid) || oid < 1) return [];
@@ -260,14 +491,33 @@ export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unrese
   return affected;
 }
 
+/** Массовый пересчёт всех комплектов (после миграции / админ). */
+export async function recalculateAllKitStocks() {
+  const r = await query(
+    `SELECT id FROM products WHERE LOWER(TRIM(COALESCE(product_type::text, ''))) = 'kit'`
+  );
+  let n = 0;
+  for (const row of r.rows || []) {
+    await persistKitStock(row.id, {});
+    n += 1;
+  }
+  return n;
+}
+
 export default {
   isKitProductType,
   isKitProductId,
   getKitComponents,
+  computeKitMetricsFromComponents,
   computeKitDisplayStock,
   computeMaxKitUnitsReservable,
   getReservedKitUnitsForOrder,
   computeKitMarketplaceStock,
+  readKitStockFromDb,
+  readKitMarketplaceStockFromDb,
+  persistKitStock,
+  recalculateKitsForComponent,
+  recalculateAllKitStocks,
   enrichKitProductStock,
   scheduleMarketplaceSyncForParentKits,
   applyKitOrderReserve,

@@ -860,6 +860,11 @@ class ProductsService {
       error.statusCode = 500;
       throw error;
     }
+
+    if (String(createdProduct.product_type || '').toLowerCase() === 'kit') {
+      const { persistKitStock } = await import('./kitStock.service.js');
+      await persistKitStock(createdProduct.id, {});
+    }
     
     // Автоматически загружаем цены и наличие у поставщиков для нового товара
     if (createdProduct?.sku && createdProduct?.id != null) {
@@ -1043,6 +1048,11 @@ class ProductsService {
       const error = new Error('Товар не найден');
       error.statusCode = 404;
       throw error;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'kit_components')) {
+      const { persistKitStock } = await import('./kitStock.service.js');
+      await persistKitStock(updated.id, {});
     }
 
     const priceAffectingKeys = ['cost', 'weight', 'length', 'width', 'height'];

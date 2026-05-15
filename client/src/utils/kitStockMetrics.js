@@ -71,7 +71,7 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
   }
 
   return products.map((product) => {
-    if (isKitProduct(product) && product.kit_quantity_derived) {
+    if (isKitProduct(product) && (product.kit_stock_persisted || !product.kit_quantity_derived)) {
       const onHand = Number(product.quantity ?? 0) || 0;
       const suppliers = Number(product.supplierStockTotal ?? 0) || 0;
       const reserved =

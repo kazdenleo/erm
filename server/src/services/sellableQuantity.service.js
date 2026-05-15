@@ -6,11 +6,7 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import {
-  isKitProductId,
-  computeKitDisplayStock,
-  computeKitMarketplaceStock
-} from './kitStock.service.js';
+import { isKitProductId, readKitMarketplaceStockFromDb, readKitStockFromDb } from './kitStock.service.js';
 
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
 async function getReservedQuantityFromMovements(productId) {
@@ -52,20 +48,21 @@ export async function computeAvailableQuantity(productId, opts = {}) {
 
   if (await isKitProductId(pid)) {
     if (opts.forMarketplace === true) {
-      const available = await computeKitMarketplaceStock(pid, opts);
-      const display = await computeKitDisplayStock(pid, opts);
+      const mp = await readKitMarketplaceStockFromDb(pid, opts);
       return {
-        available,
-        onHand: display.onHand,
-        suppliers: display.suppliers,
-        reserved: display.reserved
+        available: mp.available,
+        onHand: mp.onHand,
+        suppliers: mp.suppliers,
+        reserved: mp.reserved,
+        displayAvailable: mp.displayAvailable
       };
     }
-    const display = await computeKitDisplayStock(pid, opts);
+    const ui = await readKitStockFromDb(pid, opts);
     return {
-      available: display.available,
-      onHand: display.onHand,
-      suppliers: display.suppliers
+      available: ui.available,
+      onHand: ui.onHand,
+      suppliers: ui.suppliers,
+      reserved: ui.reserved
     };
   }
 
