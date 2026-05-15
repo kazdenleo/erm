@@ -758,6 +758,16 @@ export function WarehouseStocks() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- реакция на debounced search и тип товара
   }, [filterSearchDebounced, filterProductType]);
 
+  /** ID товаров в текущей таблице (уже с учётом фильтров списка). */
+  const tableProductIdsForMpPush = useMemo(() => {
+    if (!Array.isArray(products) || products.length === 0) return [];
+    return [
+      ...new Set(
+        products.map((p) => p?.id).filter((id) => id != null && id !== '').map((id) => Number(id))
+      )
+    ].filter((n) => Number.isFinite(n) && n > 0);
+  }, [products]);
+
   const handlePushStocksToMarketplaces = async () => {
     if (!filterOrganizationId) {
       window.alert('Выберите организацию в фильтре — остатки отправляются в кабинет этой организации.');
@@ -774,14 +784,32 @@ export function WarehouseStocks() {
     const orgLabel =
       organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
       filterOrganizationId;
+    if (tableProductIdsForMpPush.length === 0) {
+      window.alert('В таблице нет товаров для отправки. Измените фильтры или обновите список.');
+      return;
+    }
+    const filterParts = [];
+    if (filterCategoryId) {
+      const cat = categories.find((c) => String(c.id) === String(filterCategoryId));
+      filterParts.push(`категория: ${cat?.name || filterCategoryId}`);
+    }
+    if (filterProductType) {
+      filterParts.push(`тип: ${filterProductType === 'kit' ? 'комплект' : 'товар'}`);
+    }
+    if (filterSearchDebounced) filterParts.push(`поиск: «${filterSearchDebounced}»`);
+    const filterHint =
+      filterParts.length > 0 ? `\n\nФильтры: ${filterParts.join('; ')}.` : '';
     const ok = window.confirm(
-      `Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «${whLabel}», для всех товаров организации «${orgLabel}» со связью с МП?\n\nБудут использованы только привязки этого склада (не вся таблица на экране).`
+      `Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «${whLabel}»?\n\n` +
+        `Будет обработано позиций в таблице: ${tableProductIdsForMpPush.length} (организация «${orgLabel}»).` +
+        `${filterHint}\n\nПозиции без связи с МП или без SKU будут пропущены.`
     );
     if (!ok) return;
     setMpStockSyncing(true);
     try {
       const res = await marketplaceStockApi.syncBulk({
         organizationId: filterOrganizationId,
+        productIds: tableProductIdsForMpPush,
         warehouseId: stockWarehouseId,
         warehouseScoped: true
       });
@@ -802,7 +830,7 @@ export function WarehouseStocks() {
       }
       const total = data?.productsTotal;
       let details = `Готово.\nУспешно обновлено на МП: ${pushed}\nПропущено: ${skipped}\nОшибок: ${failed}`;
-      if (total != null) details += `\nТоваров организации: ${total}`;
+      if (total != null) details += `\nПозиций в отправке: ${total}`;
       if (data?.message) details += `\n\n${data.message}`;
       if (data?.skipReasonsText) details += `\n\nПричины пропуска:\n${data.skipReasonsText}`;
       else if (pushed === 0 && failed === 0 && skipped === 0 && (data?.noMappings ?? 0) > 0) {

@@ -64,14 +64,10 @@ class MarketplaceStockController {
           });
         }
 
-        let productsTotal = idsList.length;
-        if (warehouseScoped === true) {
-          const allIds = await findOrganizationMarketplaceLinkedProductIds(organizationId);
-          productsTotal = allIds.length;
-        }
+        const productsTotal = idsList.length;
 
         const started = startMpStockPushInBackground(organizationId, {
-          productIds: warehouseScoped === true ? undefined : idsList,
+          productIds: idsList.length > 0 ? idsList : undefined,
           warehouseId: warehouseId ?? null,
           warehouseScoped: warehouseScoped === true,
           source: 'api_bulk',

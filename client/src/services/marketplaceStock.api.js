@@ -22,7 +22,7 @@ export const marketplaceStockApi = {
   syncBulk: async ({ organizationId, productIds, warehouseId, warehouseScoped }) => {
     const response = await api.post('/marketplace-stock/sync', {
       organizationId,
-      productIds: warehouseScoped ? undefined : productIds ?? undefined,
+      productIds: Array.isArray(productIds) && productIds.length > 0 ? productIds : undefined,
       warehouseId: warehouseId ?? null,
       warehouseScoped: warehouseScoped === true
     });

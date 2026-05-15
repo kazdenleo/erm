@@ -357,9 +357,19 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
       };
     }
     const mps = [...new Set(whMappings.map((m) => normalizeMpKey(m.marketplace)).filter(Boolean))];
-    productIds = await findOrganizationMarketplaceLinkedProductIds(organizationId);
     opts._warehouseMarketplaces = mps;
     opts._warehouseMappingsCount = whMappings.length;
+
+    const explicitIds = Array.isArray(opts.productIds)
+      ? opts.productIds
+          .map((id) => (typeof id === 'string' ? parseInt(id, 10) : Number(id)))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    if (explicitIds.length > 0) {
+      productIds = [...new Set(explicitIds)];
+    } else {
+      productIds = await findOrganizationMarketplaceLinkedProductIds(organizationId);
+    }
     if (productIds.length === 0) {
       return {
         organizationId,
@@ -369,7 +379,9 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
         productsTotal: 0,
         warehouseId,
         marketplaces: mps.map((mp) => MP_LABELS[mp] || mp),
-        message: 'В организации нет товаров со связью с маркетплейсами (SKU / product_links).'
+        message: explicitIds.length > 0
+          ? 'В выбранном списке нет товаров для отправки.'
+          : 'В организации нет товаров со связью с маркетплейсами (SKU / product_links).'
       };
     }
   }
