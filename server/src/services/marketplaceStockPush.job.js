@@ -10,6 +10,21 @@ let lastStartedAt = null;
 let lastFinishedAt = null;
 let lastOrganizationId = null;
 
+const STALE_MS = Math.max(
+  5 * 60 * 1000,
+  parseInt(process.env.MP_STOCK_PUSH_STALE_MS || String(90 * 60 * 1000), 10) || 90 * 60 * 1000
+);
+
+export function isMpStockPushStale() {
+  if (!inProgress || !lastStartedAt) return false;
+  const t = new Date(lastStartedAt).getTime();
+  return Number.isFinite(t) && Date.now() - t > STALE_MS;
+}
+
+export function resetMpStockPushJob() {
+  inProgress = false;
+}
+
 export function getMpStockPushStatus() {
   return {
     inProgress,
@@ -27,8 +42,15 @@ export function getMpStockPushStatus() {
  * @returns {{ started: boolean, inProgress: boolean, productsTotal?: number }}
  */
 export function startMpStockPushInBackground(organizationId, opts = {}) {
-  if (inProgress) {
+  if (inProgress && isMpStockPushStale()) {
+    logger.warn('[MP Stock Push] Сброс зависшего флага inProgress (превышен таймаут ожидания)');
+    inProgress = false;
+  }
+  if (inProgress && opts.force !== true) {
     return { started: false, inProgress: true, organizationId: lastOrganizationId };
+  }
+  if (opts.force === true) {
+    inProgress = false;
   }
   inProgress = true;
   lastError = null;

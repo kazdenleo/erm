@@ -690,6 +690,7 @@ export function WarehouseStocks() {
   const [supplierBreakdownByProductId, setSupplierBreakdownByProductId] = useState({});
   const [supplierStocksRefreshing, setSupplierStocksRefreshing] = useState(false);
   const [mpStockSyncing, setMpStockSyncing] = useState(false);
+  const [mpStockPushBanner, setMpStockPushBanner] = useState(null);
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = useMemo(
@@ -759,6 +760,41 @@ export function WarehouseStocks() {
   }, [filterSearchDebounced, filterProductType]);
 
   /** ID товаров в текущей таблице (уже с учётом фильтров списка). */
+  const refreshMpStockPushStatus = useCallback(async () => {
+    try {
+      const status = await marketplaceStockApi.getSyncStatus();
+      if (status?.inProgress) {
+        setMpStockPushBanner(
+          status.lastStartedAt
+            ? `Идёт отправка остатков на МП (с ${new Date(status.lastStartedAt).toLocaleString('ru-RU')})…`
+            : 'Идёт отправка остатков на МП…'
+        );
+        return status;
+      }
+      if (status?.lastFinishedAt && status?.lastResult) {
+        const r = status.lastResult;
+        const finishedMs = new Date(status.lastFinishedAt).getTime();
+        if (Number.isFinite(finishedMs) && Date.now() - finishedMs < 30 * 60 * 1000) {
+          const err = status.lastError ? ` Ошибка: ${status.lastError}` : '';
+          setMpStockPushBanner(
+            `Последняя отправка на МП: успешно ${r.pushed ?? 0}, пропущено ${r.skipped ?? 0}, ошибок ${r.failed ?? 0}.${err}`
+          );
+          return status;
+        }
+      }
+      setMpStockPushBanner(null);
+      return status;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshMpStockPushStatus();
+    const t = setInterval(refreshMpStockPushStatus, 15000);
+    return () => clearInterval(t);
+  }, [refreshMpStockPushStatus]);
+
   const tableProductIdsForMpPush = useMemo(() => {
     if (!Array.isArray(products) || products.length === 0) return [];
     return [
@@ -805,20 +841,44 @@ export function WarehouseStocks() {
         `${filterHint}\n\nПозиции без связи с МП или без SKU будут пропущены.`
     );
     if (!ok) return;
+
+    let force = false;
+    try {
+      const st = await marketplaceStockApi.getSyncStatus();
+      if (st?.inProgress) {
+        const again = window.confirm(
+          (st.lastError
+            ? `Предыдущая отправка ещё помечена как активная. Ошибка: ${st.lastError}\n\n`
+            : 'Отправка остатков на МП уже выполняется.\n\n') +
+            'Запустить повторно? (зависшая задача будет сброшена)'
+        );
+        if (!again) return;
+        force = true;
+      }
+    } catch {
+      // статус недоступен — продолжаем
+    }
+
     setMpStockSyncing(true);
     try {
       const res = await marketplaceStockApi.syncBulk({
         organizationId: filterOrganizationId,
         productIds: tableProductIdsForMpPush,
         warehouseId: stockWarehouseId,
-        warehouseScoped: true
+        warehouseScoped: true,
+        force
       });
       const data = res?.data ?? res;
-      if (res?.status === 202 || data?.inProgress) {
+      if (res?.status === 202) {
+        await refreshMpStockPushStatus();
         window.alert(
           data?.message ||
-            'Отправка остатков на маркетплейсы запущена в фоне. Подождите 5–30 минут и проверьте остатки в личных кабинетах Ozon / WB / Яндекс.'
+            `Отправка запущена в фоне (~${data?.productsTotal ?? tableProductIdsForMpPush.length} поз.). Статус обновится на странице; до 50 позиций в таблице результат показывается сразу после отправки.`
         );
+        return;
+      }
+      if (data?.inProgress && data?.started === false) {
+        window.alert(data?.message || 'Отправка уже выполняется. Подождите или запустите повторно.');
         return;
       }
       const pushed = data?.pushed ?? 0;
@@ -841,6 +901,7 @@ export function WarehouseStocks() {
           '\n\nТовары в таблице есть, но отправка не выполнена (нет SKU на МП, API-ключей или сопоставления складов).';
       }
       window.alert(details);
+      await refreshMpStockPushStatus();
     } catch (e) {
       window.alert(`Ошибка: ${e.response?.data?.message || e.message || 'Не удалось отправить остатки'}`);
     } finally {
@@ -1183,6 +1244,12 @@ export function WarehouseStocks() {
           </div>
 
           <p className="stock-levels-history-hint">Нажмите на строку товара, чтобы открыть историю изменений остатков.</p>
+
+          {mpStockPushBanner ? (
+            <div className="alert alert-info py-2 mt-3" role="status">
+              {mpStockPushBanner}
+            </div>
+          ) : null}
 
           <div className="actions" style={{ marginTop: '16px' }}>
             <Button variant="secondary" onClick={applyFilters} disabled={supplierStocksRefreshing || mpStockSyncing}>
