@@ -651,16 +651,19 @@ function enrichSupplierDetailsLabels(details, warehouses, mainWarehouseId) {
 }
 
 function SupplierStockCell({ total, details, splitDisplay }) {
-  if (splitDisplay != null && String(splitDisplay).trim() !== '') {
-    return <span className="stock-main-value">{splitDisplay}</span>;
+  const [isHovered, setIsHovered] = useState(false);
+  const [showAbove, setShowAbove] = useState(false);
+  const containerRef = useRef(null);
+
+  const hasSplit = splitDisplay != null && String(splitDisplay).trim() !== '';
+  if (hasSplit) {
+    return <span className="stock-main-value">{String(splitDisplay).trim()}</span>;
   }
+
   const hasSuppliers = Array.isArray(details) && details.length > 0;
   const totalStock = hasSuppliers
     ? details.reduce((s, d) => s + (Number(d.stock) || 0), 0)
     : Number(total) || 0;
-  const [isHovered, setIsHovered] = useState(false);
-  const [showAbove, setShowAbove] = useState(false);
-  const containerRef = useRef(null);
 
   const handleMouseEnter = () => {
     setIsHovered(true);
