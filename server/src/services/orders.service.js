@@ -7,6 +7,13 @@ import fetch from 'node-fetch';
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsService from './stockMovements.service.js';
+import {
+  isKitProductId,
+  applyKitOrderReserve,
+  computeMaxKitUnitsReservable,
+  getReservedKitUnitsForOrder,
+  releaseAllReservesForOrder
+} from './kitStock.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
@@ -364,6 +371,22 @@ class OrdersService {
 
     const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
     const metaOrderId = id;
+    const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
+    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
+
+    if (await isKitProductId(productId)) {
+      const maxKits = await computeMaxKitUnitsReservable(productId);
+      if (maxKits < qty) return;
+      await applyKitOrderReserve(
+        productId,
+        qty,
+        orderIdStr || String(id),
+        { order_id: metaOrderId, orderId: orderIdStr, warehouse_id: warehouseId },
+        (compId, compQty, oid, m) =>
+          this._applyReserveForOrderComponent(compId, compQty, oid, m)
+      );
+      return;
+    }
 
     // Общее правило как у _applyReserveForOrder: доступно quantity + incoming − reserved
     // (ручные и «Новые» с МП тоже могут резервировать «в пути», если факта недостаточно).
@@ -384,9 +407,6 @@ class OrdersService {
     const availableSupply = Math.max(0, supply - reserved);
     if (availableSupply < qty) return;
 
-    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
-
-    const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
     await this._applyReserveForOrder(productId, qty, orderIdStr || String(id), {
       order_id: metaOrderId,
       orderId: orderIdStr,
@@ -396,12 +416,29 @@ class OrdersService {
 
   /**
    * Установить резерв по заказу: уменьшить доступный остаток и записать движение в историю.
-   * @param {number} productId
-   * @param {number} quantity
-   * @param {string} orderId - номер заказа для отображения в истории
-   * @param {object} [meta] - order id, order_group_id и т.д.
+   * Для комплекта резервируются комплектующие.
    */
   async _applyReserveForOrder(productId, quantity, orderId, meta = {}) {
+    if (!productId || quantity < 1) return;
+    const qtyWanted = Math.max(1, parseInt(quantity, 10) || 1);
+
+    if (await isKitProductId(productId)) {
+      await applyKitOrderReserve(
+        productId,
+        qtyWanted,
+        orderId,
+        meta,
+        (compId, compQty, oid, m) =>
+          this._applyReserveForOrderComponent(compId, compQty, oid, m)
+      );
+      return;
+    }
+
+    await this._applyReserveForOrderComponent(productId, qtyWanted, orderId, meta);
+  }
+
+  /** Резерв одной позиции (не комплект): факт + в пути − уже зарезервировано. */
+  async _applyReserveForOrderComponent(productId, quantity, orderId, meta = {}) {
     if (!productId || quantity < 1) return;
     const qtyWanted = Math.max(1, parseInt(quantity, 10) || 1);
 
@@ -481,6 +518,28 @@ class OrdersService {
     // Частичный резерв:
     // - резервируем только то, что уже есть (факт + ожидается - уже зарезервировано)
     // - если пришла часть товара, резервируем эту часть, даже если до количества заказа не хватает
+    if (await isKitProductId(productId)) {
+      const alreadyReservedKits = await getReservedKitUnitsForOrder(productId, id);
+      const need = Math.max(0, qty - alreadyReservedKits);
+      if (need <= 0) return;
+      const maxKits = await computeMaxKitUnitsReservable(productId);
+      const reserveKits = Math.min(need, maxKits);
+      if (reserveKits <= 0) return;
+      await applyKitOrderReserve(
+        productId,
+        reserveKits,
+        orderIdStr || String(id),
+        {
+          order_id: id,
+          orderId: orderIdStr,
+          partial: reserveKits < need
+        },
+        (compId, compQty, oid, m) =>
+          this._applyReserveForOrderComponent(compId, compQty, oid, m)
+      );
+      return;
+    }
+
     const alreadyReservedForOrder = await this._getReservedQtyForOrder(id);
     const need = Math.max(0, qty - alreadyReservedForOrder);
     if (need <= 0) return;
@@ -532,22 +591,33 @@ class OrdersService {
     if (!productId) {
       productId = await this.resolveProductIdForAssemblyLine(order);
     }
-    if (!productId) return;
-    productId = Number(productId);
-    if (!Number.isFinite(productId) || productId < 1) return;
-    const qty = Math.max(1, parseInt(order.quantity, 10) || 1);
     const oid = String(order.orderId ?? order.order_id ?? orderId);
     const orderRowDbId = typeof id === 'bigint' ? Number(id) : Number(id);
     const metaOrderId = Number.isFinite(orderRowDbId) ? orderRowDbId : id;
-    await stockMovementsService.applyChange(productId, {
-      delta: qty,
-      type: 'unreserve',
-      reason: `Снятие резерва: возврат заказа ${oid} из закупки`,
-      meta: { order_id: metaOrderId, orderId: oid }
-    });
 
-    // Освободили supply (факт/в пути) — попробуем сразу отдать его следующему нуждающемуся заказу в «В закупке».
-    await this.ensureReservesForProductIfSupplyAvailable(productId);
+    const affected = await releaseAllReservesForOrder(
+      metaOrderId,
+      oid,
+      async (pid, net, orderIdLabel, meta) => {
+        await stockMovementsService.applyChange(pid, {
+          delta: net,
+          type: 'unreserve',
+          reason: `Снятие резерва: возврат заказа ${orderIdLabel} из закупки`,
+          meta
+        });
+      }
+    );
+
+    const productIds = new Set(
+      (affected || []).map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0)
+    );
+    let kitId = order.productId ?? order.product_id;
+    if (!kitId) kitId = await this.resolveProductIdForAssemblyLine(order);
+    if (kitId) productIds.add(Number(kitId));
+
+    for (const pid of productIds) {
+      await this.ensureReservesForProductIfSupplyAvailable(pid).catch(() => {});
+    }
   }
 
   /**

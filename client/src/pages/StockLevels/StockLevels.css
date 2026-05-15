@@ -36,6 +36,21 @@
   border-color: var(--primary);
 }
 
+.stock-levels-filter-input {
+  min-width: 220px;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.stock-levels-filter-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
 .stock-levels-table-wrapper {
   overflow: visible !important;
 }

@@ -6,6 +6,11 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import {
+  isKitProductId,
+  computeKitDisplayStock,
+  computeKitMarketplaceStock
+} from './kitStock.service.js';
 
 /**
  * @param {number|string} productId
@@ -16,6 +21,25 @@ export async function computeAvailableQuantity(productId, opts = {}) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!Number.isFinite(pid) || pid < 1) {
     return { available: 0, onHand: 0, suppliers: 0 };
+  }
+
+  if (await isKitProductId(pid)) {
+    if (opts.forMarketplace === true) {
+      const available = await computeKitMarketplaceStock(pid, opts);
+      const display = await computeKitDisplayStock(pid, opts);
+      return {
+        available,
+        onHand: display.onHand,
+        suppliers: display.suppliers,
+        reserved: display.reserved
+      };
+    }
+    const display = await computeKitDisplayStock(pid, opts);
+    return {
+      available: display.available,
+      onHand: display.onHand,
+      suppliers: display.suppliers
+    };
   }
 
   const warehouseId =

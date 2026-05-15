@@ -296,6 +296,23 @@ class ProductsRepositoryPG {
   }
 
   /**
+   * Остатки комплектов из БД по kit_components (не зависит от фильтра списка).
+   */
+  async _applyKitDerivedStockFromDb(products, options = {}) {
+    if (!Array.isArray(products) || products.length === 0) return;
+    const { enrichKitProductStock } = await import('../services/kitStock.service.js');
+    const warehouseId = options.warehouseId ?? options.warehouse_id ?? null;
+    const kits = products.filter((p) => isKitProductType(p.product_type));
+    await Promise.all(
+      kits.map((p) =>
+        enrichKitProductStock(p, {
+          warehouseId: warehouseId != null && warehouseId !== '' ? warehouseId : null
+        })
+      )
+    );
+  }
+
+  /**
    * Агрегат products.reserved_quantity должен совпадать с журналом (типы reserve / unreserve).
    * Иначе после перезагрузки страницы «Остатки» показывают неверный резерв.
    */
@@ -787,6 +804,8 @@ class ProductsRepositoryPG {
           if (isKitProductType(p.product_type)) p.kit_components = [];
         }
       }
+
+      await this._applyKitDerivedStockFromDb(products, options);
     }
 
     await this._reconcileReservedQuantityFromMovements(products);

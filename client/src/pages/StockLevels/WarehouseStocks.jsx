@@ -14,6 +14,7 @@ import { stockMovementsApi } from '../../services/stockMovements.api';
 import { supplierStocksApi } from '../../services/supplierStocks.api';
 import { productsApi } from '../../services/products.api';
 import { marketplaceStockApi } from '../../services/marketplaceStock.api';
+import { buildStockRowsWithKits } from '../../utils/kitStockMetrics';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import './StockLevels.css';
@@ -675,6 +676,9 @@ export function WarehouseStocks() {
   const { categories = [] } = useCategories();
   const [filterOrganizationId, setFilterOrganizationId] = useState('');
   const [filterCategoryId, setFilterCategoryId] = useState('');
+  const [filterProductType, setFilterProductType] = useState('');
+  const [filterSearch, setFilterSearch] = useState('');
+  const [filterSearchDebounced, setFilterSearchDebounced] = useState('');
   const [historyProduct, setHistoryProduct] = useState(null);
   const [historyList, setHistoryList] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -717,13 +721,42 @@ export function WarehouseStocks() {
     }
   }, [location.pathname, location.search, location.state, navigate]);
 
+  const buildListParams = useCallback(
+    (extra = {}) => {
+      const search = (extra.search !== undefined ? extra.search : filterSearchDebounced).trim();
+      const productType = extra.productType !== undefined ? extra.productType : filterProductType;
+      return {
+        ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
+        ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
+        ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
+        ...(productType ? { productType } : {}),
+        ...(search ? { search } : {}),
+        ...extra
+      };
+    },
+    [
+      filterOrganizationId,
+      filterCategoryId,
+      stockWarehouseId,
+      filterProductType,
+      filterSearchDebounced
+    ]
+  );
+
   const applyFilters = () => {
-    loadProducts({
-      ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
-      ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
-      ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {})
-    });
+    setFilterSearchDebounced(filterSearch.trim());
+    loadProducts(buildListParams({ silent: false }));
   };
+
+  useEffect(() => {
+    const t = setTimeout(() => setFilterSearchDebounced(filterSearch.trim()), 400);
+    return () => clearTimeout(t);
+  }, [filterSearch]);
+
+  useEffect(() => {
+    loadProducts(buildListParams({ silent: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- реакция на debounced search и тип товара
+  }, [filterSearchDebounced, filterProductType]);
 
   const handlePushStocksToMarketplaces = async () => {
     if (!filterOrganizationId) {
@@ -773,12 +806,7 @@ export function WarehouseStocks() {
         'Синхронизация запущена. Через несколько минут нажмите «Обновить склад» или обновите страницу.';
       window.alert(msg);
       if (!res?.data?.inProgress) {
-        await loadProducts({
-          ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
-          ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
-          ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
-          silent: true
-        });
+        await loadProducts(buildListParams({ silent: true }));
       }
     } catch (e) {
       const msg = e.response?.data?.message || e.message || 'Не удалось запустить обновление';
@@ -791,21 +819,17 @@ export function WarehouseStocks() {
   const handleOrganizationFilterChange = (e) => {
     const v = e.target.value;
     setFilterOrganizationId(v);
-    loadProducts({
-      ...(v ? { organizationId: v } : {}),
-      ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
-      ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {})
-    });
+    loadProducts(buildListParams({ organizationId: v || undefined, silent: true }));
   };
 
   const handleCategoryFilterChange = (e) => {
     const v = e.target.value;
     setFilterCategoryId(v);
-    loadProducts({
-      ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
-      ...(v ? { categoryId: v } : {}),
-      ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {})
-    });
+    loadProducts(buildListParams({ categoryId: v || undefined, silent: true }));
+  };
+
+  const handleProductTypeFilterChange = (e) => {
+    setFilterProductType(e.target.value);
   };
 
   const ownWarehouses = useMemo(
@@ -825,37 +849,17 @@ export function WarehouseStocks() {
     } catch {
       /* ignore */
     }
-    loadProducts({
-      ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
-      ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
-      ...(v ? { warehouseId: v } : {}),
-      silent: true
-    });
+    loadProducts(buildListParams({ warehouseId: v || undefined, silent: true }));
   };
 
   /** Подгрузка остатков по конкретному складу (инвентаризация без подстановки «первого склада» при «Все склады»). */
   const reloadProductsWithWarehouse = useCallback(
     (warehouseId) => {
       const w = warehouseId != null && warehouseId !== '' ? String(warehouseId) : '';
-      loadProducts({
-        ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
-        ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
-        ...(w ? { warehouseId: w } : {}),
-        silent: true
-      });
+      loadProducts(buildListParams({ warehouseId: w || undefined, silent: true }));
     },
-    [loadProducts, filterOrganizationId, filterCategoryId]
+    [loadProducts, buildListParams]
   );
-
-  useEffect(() => {
-    loadProducts({
-      ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
-      ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
-      ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
-      silent: true
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная подгрузка; смена фильтров вызывает loadProducts из обработчиков
-  }, []);
 
   useEffect(() => {
     if (activeTab !== 'table' || !products.length) {
@@ -971,7 +975,7 @@ export function WarehouseStocks() {
 
   const rows = useMemo(
     () =>
-      products.map((product) => {
+      buildStockRowsWithKits(products, (product) => {
         const onHand = Number(product.quantity ?? 0) || 0;
         const incoming = Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0;
         const reserved = Number(product.reserved_quantity ?? product.reservedQuantity ?? 0) || 0;
@@ -983,7 +987,7 @@ export function WarehouseStocks() {
         );
         const suppliers = supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0);
         const available = onHand + suppliers;
-        return { product, onHand, incoming, reserved, suppliers, supplierDetails, available };
+        return { onHand, incoming, reserved, suppliers, supplierDetails, available };
       }),
     [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]
   );
@@ -1060,6 +1064,29 @@ export function WarehouseStocks() {
                   <option key={cat.id} value={cat.id}>{cat.name || cat.id}</option>
                 ))}
               </select>
+            </label>
+            <label className="stock-levels-filter-label">
+              <span>Тип товара:</span>
+              <select
+                value={filterProductType}
+                onChange={handleProductTypeFilterChange}
+                className="stock-levels-filter-select"
+              >
+                <option value="">Все</option>
+                <option value="product">Товар</option>
+                <option value="kit">Комплект</option>
+              </select>
+            </label>
+            <label className="stock-levels-filter-label">
+              <span>Поиск:</span>
+              <input
+                type="search"
+                className="stock-levels-filter-input"
+                placeholder="Артикул, название, штрихкод"
+                value={filterSearch}
+                onChange={(e) => setFilterSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
+              />
             </label>
           </div>
           <div className="stock-levels-table-wrapper" style={{ marginTop: '16px', width: '100%' }}>

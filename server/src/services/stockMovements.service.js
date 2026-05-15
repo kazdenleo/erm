@@ -7,6 +7,7 @@ import { query } from '../config/database.js';
 import { getClient } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
+import { scheduleMarketplaceSyncForParentKits } from './kitStock.service.js';
 
 class StockMovementsService {
   constructor() {
@@ -115,10 +116,16 @@ class StockMovementsService {
     }
 
     // Резерв/снятие резерва меняет «доступно к продаже» на МП — отправляем обновлённый остаток.
+    const orgId = product.organization_id ?? product.organizationId ?? null;
     scheduleWarehouseStockMarketplaceSync(idNum, {
       source: `stock_movement:${type}`,
       warehouseId,
-      organizationId: product.organization_id ?? product.organizationId ?? null
+      organizationId: orgId
+    });
+    scheduleMarketplaceSyncForParentKits(idNum, {
+      source: `stock_movement:${type}`,
+      warehouseId,
+      organizationId: orgId
     });
 
     return {
