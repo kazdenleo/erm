@@ -63,25 +63,17 @@ export function Warehouses() {
   };
 
   const handleSubmit = async (warehouseData) => {
-    try {
-      console.log('[Warehouses] Submitting warehouse data:', warehouseData);
-      console.log('[Warehouses] warehouseData keys:', Object.keys(warehouseData));
-      console.log('[Warehouses] warehouseData.wbWarehouseName:', warehouseData.wbWarehouseName);
-      console.log('[Warehouses] warehouseData.wbWarehouseName type:', typeof warehouseData.wbWarehouseName);
-      console.log('[Warehouses] warehouseData JSON:', JSON.stringify(warehouseData, null, 2));
-      if (editingWarehouse) {
-        await updateWarehouse(editingWarehouse.id, warehouseData);
-      } else {
-        await createWarehouse(warehouseData);
-      }
-      // Перезагружаем список складов, чтобы увидеть обновленные данные
-      await loadWarehouses();
-      setIsModalOpen(false);
-      setEditingWarehouse(null);
-    } catch (error) {
-      console.error('Error saving warehouse:', error);
-      alert('Ошибка сохранения склада: ' + error.message);
+    if (editingWarehouse) {
+      return await updateWarehouse(editingWarehouse.id, warehouseData);
     }
+    return await createWarehouse(warehouseData);
+  };
+
+  const handleWarehouseSaved = async () => {
+    await loadWarehouses();
+    await loadMappings();
+    setIsModalOpen(false);
+    setEditingWarehouse(null);
   };
 
   const handleDelete = async (id) => {
@@ -300,6 +292,7 @@ export function Warehouses() {
           warehouses={warehouses}
           organizations={organizations}
           onSubmit={handleSubmit}
+          onSaved={handleWarehouseSaved}
           onCancel={() => {
             setIsModalOpen(false);
             setEditingWarehouse(null);

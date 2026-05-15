@@ -34,8 +34,9 @@ export function useWarehouses() {
   const createWarehouse = async (warehouseData) => {
     try {
       const response = await warehousesApi.create(warehouseData);
-      setWarehouses(prev => [...prev, response.data]);
-      return response.data;
+      const created = response?.data ?? response;
+      setWarehouses(prev => [...prev, created]);
+      return created;
     } catch (err) {
       console.error('Error creating warehouse:', err);
       throw err;
@@ -50,8 +51,9 @@ export function useWarehouses() {
       console.log('[useWarehouses] updates.wbWarehouseName:', updates.wbWarehouseName);
       console.log('[useWarehouses] updates JSON:', JSON.stringify(updates, null, 2));
       const response = await warehousesApi.update(id, updates);
-      setWarehouses(prev => prev.map(w => w.id === id ? response.data : w));
-      return response.data;
+      const updated = response?.data ?? response;
+      setWarehouses(prev => prev.map(w => w.id === id ? updated : w));
+      return updated;
     } catch (err) {
       console.error('Error updating warehouse:', err);
       throw err;

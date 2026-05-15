@@ -8,7 +8,15 @@ import { Button } from '../../common/Button/Button';
 import { integrationsApi } from '../../../services/integrations.api';
 import { warehouseMappingsApi } from '../../../services/warehouseMappings.api';
 
-export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], organizations = [], onSubmit, onCancel }) {
+export function WarehouseForm({
+  warehouse,
+  suppliers = [],
+  warehouses = [],
+  organizations = [],
+  onSubmit,
+  onSaved,
+  onCancel
+}) {
   const [formData, setFormData] = useState({
     type: '',
     address: '',
@@ -267,17 +275,66 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
 
   const canManageMappings = Boolean(warehouse?.id);
 
+  const normalizeMp = (mp) => {
+    const m = String(mp || '').toLowerCase();
+    if (m === 'wildberries') return 'wb';
+    if (m === 'yandex' || m === 'yandexmarket') return 'ym';
+    return m;
+  };
+
+  const upsertMarketplaceMapping = async (warehouseId, marketplace, marketplaceWarehouseId) => {
+    const mw = String(marketplaceWarehouseId || '').trim();
+    if (!mw) return;
+    const mp = normalizeMp(marketplace);
+    const list = await warehouseMappingsApi.list({ warehouseId: String(warehouseId) });
+    const found = (Array.isArray(list) ? list : []).find((m) => normalizeMp(m.marketplace) === mp);
+    const payload = { warehouseId, marketplace: mp, marketplaceWarehouseId: mw };
+    if (found?.id) {
+      const cur = String(found.marketplace_warehouse_id ?? found.marketplaceWarehouseId ?? '').trim();
+      if (cur === mw) return;
+      await warehouseMappingsApi.update(found.id, payload);
+    } else {
+      try {
+        await warehouseMappingsApi.create(payload);
+      } catch (e) {
+        const list2 = await warehouseMappingsApi.list({ warehouseId: String(warehouseId) });
+        const found2 = (Array.isArray(list2) ? list2 : []).find((m) => normalizeMp(m.marketplace) === mp);
+        if (found2?.id) {
+          await warehouseMappingsApi.update(found2.id, payload);
+        } else {
+          throw e;
+        }
+      }
+    }
+  };
+
+  /** Сохранить выбранные в форме привязки Ozon / WB FBS / ЯМ (при нажатии «Сохранить»). */
+  const savePendingMarketplaceMappings = async (warehouseId) => {
+    const wid = warehouseId != null ? String(warehouseId) : '';
+    if (!wid || formData.type !== 'warehouse') return;
+
+    const pending = [
+      ['wb', wbOfficeToBind],
+      ['ozon', ozonWarehouseName],
+      ['ym', ymCampaignId]
+    ];
+
+    for (const [mp, value] of pending) {
+      const v = String(value || '').trim();
+      if (v) {
+        await upsertMarketplaceMapping(wid, mp, v);
+      }
+    }
+    await loadMappings(wid);
+  };
+
   const bindMarketplaceWarehouse = async (marketplace, marketplaceWarehouseId) => {
     if (!canManageMappings) return;
     const mw = String(marketplaceWarehouseId || '').trim();
     if (!mw) return;
     setMappingBusy(true);
     try {
-      await warehouseMappingsApi.create({
-        warehouseId: warehouse.id,
-        marketplace,
-        marketplaceWarehouseId: mw,
-      });
+      await upsertMarketplaceMapping(warehouse.id, marketplace, mw);
       await loadMappings(warehouse.id);
       alert(`Привязка сохранена: ${marketplace.toUpperCase()} → "${mw}"`);
     } catch (e) {
@@ -338,9 +395,16 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e) => {
+  const resolveSavedWarehouseId = (saved) => {
+    if (!saved) return warehouse?.id ?? null;
+    if (saved.id != null) return saved.id;
+    if (saved.data?.id != null) return saved.data.id;
+    return warehouse?.id ?? null;
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (!validate()) {
       return;
     }
@@ -352,21 +416,30 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
       supplierId: formData.type === 'supplier' ? (formData.supplierId || null) : null,
       mainWarehouseId: formData.type === 'supplier' ? (formData.mainWarehouseId || null) : null,
       orderAcceptanceTime: null,
-      wbWarehouseName: formData.type === 'warehouse' 
-        ? (formData.wbWarehouseName && formData.wbWarehouseName.trim() !== '' 
-            ? formData.wbWarehouseName.trim() 
-            : null)
-        : null
+      wbWarehouseName:
+        formData.type === 'warehouse'
+          ? formData.wbWarehouseName && formData.wbWarehouseName.trim() !== ''
+            ? formData.wbWarehouseName.trim()
+            : null
+          : null
     };
-    
-    console.log('[WarehouseForm] Submitting payload:', JSON.stringify(payload, null, 2));
-    console.log('[WarehouseForm] formData.wbWarehouseName:', formData.wbWarehouseName);
-    console.log('[WarehouseForm] formData.type:', formData.type);
-    console.log('[WarehouseForm] payload.wbWarehouseName:', payload.wbWarehouseName);
-    console.log('[WarehouseForm] payload.wbWarehouseName type:', typeof payload.wbWarehouseName);
-    console.log('[WarehouseForm] payload.wbWarehouseName length:', payload.wbWarehouseName ? payload.wbWarehouseName.length : 0);
 
-    onSubmit(payload);
+    setMappingBusy(true);
+    try {
+      const saved = await onSubmit(payload);
+      const warehouseId = resolveSavedWarehouseId(saved);
+      if (warehouseId && formData.type === 'warehouse') {
+        await savePendingMarketplaceMappings(warehouseId);
+      }
+      if (typeof onSaved === 'function') {
+        await onSaved(saved);
+      }
+    } catch (error) {
+      const msg = error.response?.data?.message || error.message || 'Не удалось сохранить склад';
+      alert('Ошибка сохранения: ' + msg);
+    } finally {
+      setMappingBusy(false);
+    }
   };
 
   return (
@@ -695,6 +768,9 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
       {formData.type === 'warehouse' && canManageMappings && (
         <div className="mt-3">
           <label className="form-label">Текущие привязки маркетплейсов</label>
+          <div className="text-muted small mb-2">
+            Выбранные Ozon / WB (FBS) / Яндекс сохраняются при нажатии «Сохранить» (кнопка «Привязать» не обязательна).
+          </div>
           {mappingsError && <div className="alert alert-warning py-2">{mappingsError}</div>}
           {mappingsLoading ? (
             <div className="alert alert-secondary py-2">Загрузка привязок…</div>
@@ -812,7 +888,9 @@ export function WarehouseForm({ warehouse, suppliers = [], warehouses = [], orga
 
       <div className="d-flex justify-content-end gap-2 mt-4">
         <Button type="button" variant="secondary" onClick={onCancel}>Отмена</Button>
-        <Button type="submit" variant="primary">Сохранить</Button>
+        <Button type="submit" variant="primary" disabled={mappingBusy}>
+          {mappingBusy ? 'Сохранение…' : 'Сохранить'}
+        </Button>
       </div>
     </form>
   );
