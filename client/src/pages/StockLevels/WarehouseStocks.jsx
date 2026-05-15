@@ -8,7 +8,6 @@ import { useProducts } from '../../hooks/useProducts';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useCategories } from '../../hooks/useCategories';
-import { useAuth } from '../../context/AuthContext.jsx';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { stockMovementsApi } from '../../services/stockMovements.api';
@@ -692,9 +691,8 @@ export function WarehouseStocks() {
   const [supplierStocksRefreshing, setSupplierStocksRefreshing] = useState(false);
   const [mpStockSyncing, setMpStockSyncing] = useState(false);
   const [mpStockPushBanner, setMpStockPushBanner] = useState(null);
-  /** error | confirm | force | working | result */
-  const [mpPushModal, setMpPushModal] = useState(null);
-  const { selectedOrganizationId } = useAuth();
+  /** error | confirm | force | working | result — панель на странице (не window.alert) */
+  const [mpPushPanel, setMpPushPanel] = useState(null);
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = useMemo(
@@ -799,6 +797,34 @@ export function WarehouseStocks() {
     return () => clearInterval(t);
   }, [refreshMpStockPushStatus]);
 
+  useEffect(() => {
+    let cancelled = false;
+    marketplaceStockApi
+      .getSyncStatus()
+      .then((st) => {
+        if (cancelled) return;
+        if (!st?.inProgress) setMpStockSyncing(false);
+      })
+      .catch(() => {
+        if (!cancelled) setMpStockSyncing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (filterOrganizationId) return;
+    try {
+      const raw = localStorage.getItem('erp_selected_organization_id');
+      if (raw != null && String(raw).trim() !== '') {
+        setFilterOrganizationId(String(raw).trim());
+      }
+    } catch {
+      // ignore
+    }
+  }, [filterOrganizationId]);
+
   const tableProductIdsForMpPush = useMemo(() => {
     if (!Array.isArray(products) || products.length === 0) return [];
     const ids = products
@@ -811,11 +837,6 @@ export function WarehouseStocks() {
       .filter((id) => (typeof id === 'number' && id > 0) || (typeof id === 'string' && id.length > 0));
     return [...new Set(ids)];
   }, [products]);
-
-  useEffect(() => {
-    if (!selectedOrganizationId || filterOrganizationId) return;
-    setFilterOrganizationId(String(selectedOrganizationId));
-  }, [selectedOrganizationId, filterOrganizationId]);
 
   const mpPushBlockReason = useMemo(() => {
     if (!filterOrganizationId) {
@@ -868,7 +889,7 @@ export function WarehouseStocks() {
   const runMpStockPush = useCallback(
     async (force = false) => {
       setMpStockSyncing(true);
-      setMpPushModal({ type: 'working' });
+      setMpPushPanel({ type: 'working' });
       try {
         const res = await marketplaceStockApi.syncBulk({
           organizationId: filterOrganizationId,
@@ -880,7 +901,7 @@ export function WarehouseStocks() {
         const data = res?.data ?? res;
         if (res?.status === 202) {
           await refreshMpStockPushStatus();
-          setMpPushModal({
+          setMpPushPanel({
             type: 'result',
             title: 'Отправка в фоне',
             details:
@@ -890,20 +911,20 @@ export function WarehouseStocks() {
           return;
         }
         if (data?.inProgress && data?.started === false) {
-          setMpPushModal({
+          setMpPushPanel({
             type: 'error',
             message: data?.message || 'Отправка уже выполняется. Подождите или запустите повторно.'
           });
           return;
         }
         await refreshMpStockPushStatus();
-        setMpPushModal({
+        setMpPushPanel({
           type: 'result',
           title: 'Отправка завершена',
           details: formatMpPushResultDetails(data)
         });
       } catch (e) {
-        setMpPushModal({
+        setMpPushPanel({
           type: 'error',
           message: e.response?.data?.message || e.message || 'Не удалось отправить остатки'
         });
@@ -920,32 +941,44 @@ export function WarehouseStocks() {
     ]
   );
 
-  const handleMpPushButtonClick = () => {
-    if (mpStockSyncing) return;
-    if (mpPushBlockReason) {
-      setMpPushModal({ type: 'error', message: mpPushBlockReason });
-      return;
+  const handleMpPushButtonClick = (e) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    try {
+      if (mpPushBlockReason) {
+        setMpPushPanel({ type: 'error', message: mpPushBlockReason });
+        return;
+      }
+      const wh =
+        stockWarehouseId && Array.isArray(warehouses)
+          ? warehouses.find((w) => String(w.id) === String(stockWarehouseId))
+          : null;
+      const whLabel = wh?.address || wh?.name || `склад #${stockWarehouseId}`;
+      const orgLabel =
+        organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
+        filterOrganizationId;
+      const filterHint = buildMpPushFilterHint();
+      setMpPushPanel({
+        type: 'confirm',
+        whLabel,
+        orgLabel,
+        count: tableProductIdsForMpPush.length,
+        filterHint
+      });
+    } catch (err) {
+      console.error('[MP Push] handleMpPushButtonClick:', err);
+      setMpPushPanel({
+        type: 'error',
+        message: err?.message || 'Не удалось открыть диалог отправки'
+      });
     }
-    const whLabel =
-      selectedWarehouse?.address || selectedWarehouse?.name || `склад #${stockWarehouseId}`;
-    const orgLabel =
-      organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
-      filterOrganizationId;
-    const filterHint = buildMpPushFilterHint();
-    setMpPushModal({
-      type: 'confirm',
-      whLabel,
-      orgLabel,
-      count: tableProductIdsForMpPush.length,
-      filterHint
-    });
   };
 
   const handleMpPushConfirm = async () => {
     try {
       const st = await marketplaceStockApi.getSyncStatus();
       if (st?.inProgress) {
-        setMpPushModal({ type: 'force', lastError: st.lastError || null });
+        setMpPushPanel({ type: 'force', lastError: st.lastError || null });
         return;
       }
     } catch {
@@ -1296,6 +1329,96 @@ export function WarehouseStocks() {
             </div>
           ) : null}
 
+          {mpPushPanel ? (
+            <div className="stock-levels-mp-push-panel" role="dialog" aria-label="Отправка на маркетплейсы">
+              <div className="stock-levels-mp-push-panel-header">
+                <strong>
+                  {mpPushPanel.type === 'confirm'
+                    ? 'Отправка на маркетплейсы'
+                    : mpPushPanel.type === 'force'
+                      ? 'Повторная отправка'
+                      : mpPushPanel.type === 'working'
+                        ? 'Отправка…'
+                        : mpPushPanel.type === 'result'
+                          ? mpPushPanel.title || 'Результат'
+                          : 'Отправка на маркетплейсы'}
+                </strong>
+                {mpPushPanel.type !== 'working' ? (
+                  <button
+                    type="button"
+                    className="btn-close"
+                    aria-label="Закрыть"
+                    onClick={() => setMpPushPanel(null)}
+                  />
+                ) : null}
+              </div>
+              {mpPushPanel.type === 'error' ? <p className="mb-0">{mpPushPanel.message}</p> : null}
+              {mpPushPanel.type === 'confirm' ? (
+                <>
+                  <p className="mb-2">
+                    Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «{mpPushPanel.whLabel}»?
+                  </p>
+                  <p className="mb-2 text-muted small">
+                    Позиций в таблице: <strong>{mpPushPanel.count}</strong> (организация «{mpPushPanel.orgLabel}»).
+                    {mpPushPanel.filterHint ? (
+                      <>
+                        <br />
+                        Фильтры: {mpPushPanel.filterHint}.
+                      </>
+                    ) : null}
+                  </p>
+                  <p className="mb-0 text-muted small">Позиции без связи с МП или без SKU будут пропущены.</p>
+                  <div className="d-flex justify-content-end gap-2 mt-3">
+                    <Button variant="secondary" onClick={() => setMpPushPanel(null)}>
+                      Отмена
+                    </Button>
+                    <Button variant="primary" onClick={() => void handleMpPushConfirm()} disabled={mpStockSyncing}>
+                      Отправить
+                    </Button>
+                  </div>
+                </>
+              ) : null}
+              {mpPushPanel.type === 'force' ? (
+                <>
+                  <p className="mb-0">
+                    {mpPushPanel.lastError
+                      ? `Предыдущая отправка ещё активна. Ошибка: ${mpPushPanel.lastError}`
+                      : 'Отправка остатков на МП уже выполняется.'}
+                  </p>
+                  <p className="mt-2 mb-0">Запустить повторно? Зависшая задача будет сброшена.</p>
+                  <div className="d-flex justify-content-end gap-2 mt-3">
+                    <Button variant="secondary" onClick={() => setMpPushPanel(null)}>
+                      Отмена
+                    </Button>
+                    <Button variant="primary" onClick={() => void runMpStockPush(true)} disabled={mpStockSyncing}>
+                      Запустить снова
+                    </Button>
+                  </div>
+                </>
+              ) : null}
+              {mpPushPanel.type === 'working' ? (
+                <p className="mb-0">Идёт отправка остатков на маркетплейсы, подождите…</p>
+              ) : null}
+              {mpPushPanel.type === 'result' ? (
+                <>
+                  <pre className="mb-0 stock-levels-mp-push-pre">{mpPushPanel.details}</pre>
+                  <div className="d-flex justify-content-end mt-3">
+                    <Button variant="primary" onClick={() => setMpPushPanel(null)}>
+                      OK
+                    </Button>
+                  </div>
+                </>
+              ) : null}
+              {mpPushPanel.type === 'error' ? (
+                <div className="d-flex justify-content-end mt-3">
+                  <Button variant="primary" onClick={() => setMpPushPanel(null)}>
+                    OK
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="actions" style={{ marginTop: '16px' }}>
             <Button variant="secondary" onClick={applyFilters} disabled={supplierStocksRefreshing || mpStockSyncing}>
               Обновить склад
@@ -1311,7 +1434,7 @@ export function WarehouseStocks() {
             <Button
               variant="secondary"
               onClick={handleMpPushButtonClick}
-              disabled={mpStockSyncing || supplierStocksRefreshing}
+              disabled={supplierStocksRefreshing}
               style={{ marginLeft: 8 }}
               title="Отправить значения из колонки «Доступно» на Ozon, Wildberries и Яндекс.Маркет"
             >
@@ -1549,96 +1672,6 @@ export function WarehouseStocks() {
             ))}
           </ul>
         )}
-      </Modal>
-
-      <Modal
-        isOpen={mpPushModal != null}
-        onClose={() => {
-          if (mpPushModal?.type !== 'working') setMpPushModal(null);
-        }}
-        title={
-          mpPushModal?.type === 'confirm'
-            ? 'Отправка на маркетплейсы'
-            : mpPushModal?.type === 'force'
-              ? 'Повторная отправка'
-              : mpPushModal?.type === 'working'
-                ? 'Отправка…'
-                : mpPushModal?.type === 'result'
-                  ? mpPushModal.title || 'Результат'
-                  : 'Отправка на маркетплейсы'
-        }
-        closeOnBackdropClick={mpPushModal?.type !== 'working'}
-        closeOnEscape={mpPushModal?.type !== 'working'}
-        size="small"
-      >
-        {mpPushModal?.type === 'error' ? <p className="mb-0">{mpPushModal.message}</p> : null}
-        {mpPushModal?.type === 'confirm' ? (
-          <>
-            <p className="mb-2">
-              Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «{mpPushModal.whLabel}»?
-            </p>
-            <p className="mb-2 text-muted small">
-              Позиций в таблице: <strong>{mpPushModal.count}</strong> (организация «{mpPushModal.orgLabel}»).
-              {mpPushModal.filterHint ? (
-                <>
-                  <br />
-                  Фильтры: {mpPushModal.filterHint}.
-                </>
-              ) : null}
-            </p>
-            <p className="mb-0 text-muted small">
-              Позиции без связи с МП или без SKU будут пропущены.
-            </p>
-            <div className="d-flex justify-content-end gap-2 mt-3">
-              <Button variant="secondary" onClick={() => setMpPushModal(null)}>
-                Отмена
-              </Button>
-              <Button variant="primary" onClick={() => void handleMpPushConfirm()}>
-                Отправить
-              </Button>
-            </div>
-          </>
-        ) : null}
-        {mpPushModal?.type === 'force' ? (
-          <>
-            <p className="mb-0">
-              {mpPushModal.lastError
-                ? `Предыдущая отправка ещё активна. Ошибка: ${mpPushModal.lastError}`
-                : 'Отправка остатков на МП уже выполняется.'}
-            </p>
-            <p className="mt-2 mb-0">Запустить повторно? Зависшая задача будет сброшена.</p>
-            <div className="d-flex justify-content-end gap-2 mt-3">
-              <Button variant="secondary" onClick={() => setMpPushModal(null)}>
-                Отмена
-              </Button>
-              <Button variant="primary" onClick={() => void runMpStockPush(true)}>
-                Запустить снова
-              </Button>
-            </div>
-          </>
-        ) : null}
-        {mpPushModal?.type === 'working' ? (
-          <p className="mb-0">Идёт отправка остатков на маркетплейсы, подождите…</p>
-        ) : null}
-        {mpPushModal?.type === 'result' ? (
-          <>
-            <pre className="mb-0" style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
-              {mpPushModal.details}
-            </pre>
-            <div className="d-flex justify-content-end mt-3">
-              <Button variant="primary" onClick={() => setMpPushModal(null)}>
-                OK
-              </Button>
-            </div>
-          </>
-        ) : null}
-        {mpPushModal?.type === 'error' ? (
-          <div className="d-flex justify-content-end mt-3">
-            <Button variant="primary" onClick={() => setMpPushModal(null)}>
-              OK
-            </Button>
-          </div>
-        ) : null}
       </Modal>
     </>
   );

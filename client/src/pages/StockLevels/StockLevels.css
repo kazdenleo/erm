@@ -115,6 +115,29 @@
   opacity: 0.7;
 }
 
+.stock-levels-mp-push-panel {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid rgba(13, 110, 253, 0.35);
+  border-radius: 8px;
+  background: var(--bg-secondary, #f8f9fa);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.stock-levels-mp-push-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.stock-levels-mp-push-pre {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 14px;
+  margin: 0;
+}
+
 .stock-details-dropdown {
   position: absolute;
   top: calc(100% + 4px);
