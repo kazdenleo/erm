@@ -8,6 +8,7 @@ import { useProducts } from '../../hooks/useProducts';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useCategories } from '../../hooks/useCategories';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { stockMovementsApi } from '../../services/stockMovements.api';
@@ -691,6 +692,9 @@ export function WarehouseStocks() {
   const [supplierStocksRefreshing, setSupplierStocksRefreshing] = useState(false);
   const [mpStockSyncing, setMpStockSyncing] = useState(false);
   const [mpStockPushBanner, setMpStockPushBanner] = useState(null);
+  /** error | confirm | force | working | result */
+  const [mpPushModal, setMpPushModal] = useState(null);
+  const { selectedOrganizationId } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = useMemo(
@@ -797,33 +801,36 @@ export function WarehouseStocks() {
 
   const tableProductIdsForMpPush = useMemo(() => {
     if (!Array.isArray(products) || products.length === 0) return [];
-    return [
-      ...new Set(
-        products.map((p) => p?.id).filter((id) => id != null && id !== '').map((id) => Number(id))
-      )
-    ].filter((n) => Number.isFinite(n) && n > 0);
+    const ids = products
+      .map((p) => p?.id)
+      .filter((id) => id != null && id !== '')
+      .map((id) => {
+        const n = Number(id);
+        return Number.isFinite(n) && n > 0 ? n : String(id).trim();
+      })
+      .filter((id) => (typeof id === 'number' && id > 0) || (typeof id === 'string' && id.length > 0));
+    return [...new Set(ids)];
   }, [products]);
 
-  const handlePushStocksToMarketplaces = async () => {
+  useEffect(() => {
+    if (!selectedOrganizationId || filterOrganizationId) return;
+    setFilterOrganizationId(String(selectedOrganizationId));
+  }, [selectedOrganizationId, filterOrganizationId]);
+
+  const mpPushBlockReason = useMemo(() => {
     if (!filterOrganizationId) {
-      window.alert('Выберите организацию в фильтре — остатки отправляются в кабинет этой организации.');
-      return;
+      return 'Выберите организацию в фильтре (не «Все») — остатки уходят в кабинет этой организации.';
     }
     if (!stockWarehouseId) {
-      window.alert(
-        'Выберите склад в фильтре «Склад (остаток)». Остатки уйдут на маркетплейсы, привязанные к этому складу (Ozon / WB / Яндекс в разделе «Привязка складов маркетплейсов»).'
-      );
-      return;
+      return 'Выберите склад в фильтре «Склад (остаток)» (не «Все склады») — нужны привязки Ozon / WB / Яндекс.';
     }
-    const whLabel =
-      selectedWarehouse?.address || selectedWarehouse?.name || `склад #${stockWarehouseId}`;
-    const orgLabel =
-      organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
-      filterOrganizationId;
     if (tableProductIdsForMpPush.length === 0) {
-      window.alert('В таблице нет товаров для отправки. Измените фильтры или обновите список.');
-      return;
+      return 'В таблице нет товаров для отправки. Измените фильтры или нажмите «Обновить склад».';
     }
+    return null;
+  }, [filterOrganizationId, stockWarehouseId, tableProductIdsForMpPush.length]);
+
+  const buildMpPushFilterHint = useCallback(() => {
     const filterParts = [];
     if (filterCategoryId) {
       const cat = categories.find((c) => String(c.id) === String(filterCategoryId));
@@ -833,80 +840,118 @@ export function WarehouseStocks() {
       filterParts.push(`тип: ${filterProductType === 'kit' ? 'комплект' : 'товар'}`);
     }
     if (filterSearchDebounced) filterParts.push(`поиск: «${filterSearchDebounced}»`);
-    const filterHint =
-      filterParts.length > 0 ? `\n\nФильтры: ${filterParts.join('; ')}.` : '';
-    const ok = window.confirm(
-      `Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «${whLabel}»?\n\n` +
-        `Будет обработано позиций в таблице: ${tableProductIdsForMpPush.length} (организация «${orgLabel}»).` +
-        `${filterHint}\n\nПозиции без связи с МП или без SKU будут пропущены.`
-    );
-    if (!ok) return;
+    return filterParts.length > 0 ? filterParts.join('; ') : '';
+  }, [filterCategoryId, filterProductType, filterSearchDebounced, categories]);
 
-    let force = false;
+  const formatMpPushResultDetails = useCallback((data) => {
+    const pushed = data?.pushed ?? 0;
+    const failed = data?.failed ?? 0;
+    const skipped = data?.skipped ?? 0;
+    if (data?.skipped && data?.reason === 'skip_marketplace_stock_sync') {
+      return 'Отправка отключена в настройках организации или категории товара.';
+    }
+    const total = data?.productsTotal;
+    let details = `Успешно обновлено на МП: ${pushed}\nПропущено: ${skipped}\nОшибок: ${failed}`;
+    if (total != null) details += `\nПозиций в отправке: ${total}`;
+    if (data?.message) details += `\n\n${data.message}`;
+    if (data?.skipReasonsText) details += `\n\nПричины пропуска:\n${data.skipReasonsText}`;
+    else if (pushed === 0 && failed === 0 && skipped === 0 && (data?.noMappings ?? 0) > 0) {
+      details +=
+        '\n\nНи у одного товара нет сопоставления вашего склада с складами Ozon / WB / Яндекс. Проверьте раздел «Склады».';
+    } else if (pushed === 0 && failed === 0 && skipped > 0) {
+      details +=
+        '\n\nТовары в таблице есть, но отправка не выполнена (нет SKU на МП, API-ключей или сопоставления складов).';
+    }
+    return details;
+  }, []);
+
+  const runMpStockPush = useCallback(
+    async (force = false) => {
+      setMpStockSyncing(true);
+      setMpPushModal({ type: 'working' });
+      try {
+        const res = await marketplaceStockApi.syncBulk({
+          organizationId: filterOrganizationId,
+          productIds: tableProductIdsForMpPush,
+          warehouseId: stockWarehouseId,
+          warehouseScoped: true,
+          force
+        });
+        const data = res?.data ?? res;
+        if (res?.status === 202) {
+          await refreshMpStockPushStatus();
+          setMpPushModal({
+            type: 'result',
+            title: 'Отправка в фоне',
+            details:
+              data?.message ||
+              `Отправка запущена (~${data?.productsTotal ?? tableProductIdsForMpPush.length} поз.). Статус обновится на странице; до 50 позиций результат показывается сразу.`
+          });
+          return;
+        }
+        if (data?.inProgress && data?.started === false) {
+          setMpPushModal({
+            type: 'error',
+            message: data?.message || 'Отправка уже выполняется. Подождите или запустите повторно.'
+          });
+          return;
+        }
+        await refreshMpStockPushStatus();
+        setMpPushModal({
+          type: 'result',
+          title: 'Отправка завершена',
+          details: formatMpPushResultDetails(data)
+        });
+      } catch (e) {
+        setMpPushModal({
+          type: 'error',
+          message: e.response?.data?.message || e.message || 'Не удалось отправить остатки'
+        });
+      } finally {
+        setMpStockSyncing(false);
+      }
+    },
+    [
+      filterOrganizationId,
+      tableProductIdsForMpPush,
+      stockWarehouseId,
+      refreshMpStockPushStatus,
+      formatMpPushResultDetails
+    ]
+  );
+
+  const handleMpPushButtonClick = () => {
+    if (mpStockSyncing) return;
+    if (mpPushBlockReason) {
+      setMpPushModal({ type: 'error', message: mpPushBlockReason });
+      return;
+    }
+    const whLabel =
+      selectedWarehouse?.address || selectedWarehouse?.name || `склад #${stockWarehouseId}`;
+    const orgLabel =
+      organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
+      filterOrganizationId;
+    const filterHint = buildMpPushFilterHint();
+    setMpPushModal({
+      type: 'confirm',
+      whLabel,
+      orgLabel,
+      count: tableProductIdsForMpPush.length,
+      filterHint
+    });
+  };
+
+  const handleMpPushConfirm = async () => {
     try {
       const st = await marketplaceStockApi.getSyncStatus();
       if (st?.inProgress) {
-        const again = window.confirm(
-          (st.lastError
-            ? `Предыдущая отправка ещё помечена как активная. Ошибка: ${st.lastError}\n\n`
-            : 'Отправка остатков на МП уже выполняется.\n\n') +
-            'Запустить повторно? (зависшая задача будет сброшена)'
-        );
-        if (!again) return;
-        force = true;
+        setMpPushModal({ type: 'force', lastError: st.lastError || null });
+        return;
       }
     } catch {
       // статус недоступен — продолжаем
     }
-
-    setMpStockSyncing(true);
-    try {
-      const res = await marketplaceStockApi.syncBulk({
-        organizationId: filterOrganizationId,
-        productIds: tableProductIdsForMpPush,
-        warehouseId: stockWarehouseId,
-        warehouseScoped: true,
-        force
-      });
-      const data = res?.data ?? res;
-      if (res?.status === 202) {
-        await refreshMpStockPushStatus();
-        window.alert(
-          data?.message ||
-            `Отправка запущена в фоне (~${data?.productsTotal ?? tableProductIdsForMpPush.length} поз.). Статус обновится на странице; до 50 позиций в таблице результат показывается сразу после отправки.`
-        );
-        return;
-      }
-      if (data?.inProgress && data?.started === false) {
-        window.alert(data?.message || 'Отправка уже выполняется. Подождите или запустите повторно.');
-        return;
-      }
-      const pushed = data?.pushed ?? 0;
-      const failed = data?.failed ?? 0;
-      const skipped = data?.skipped ?? 0;
-      if (data?.skipped && data?.reason === 'skip_marketplace_stock_sync') {
-        window.alert('Отправка отключена в настройках организации или категории товара.');
-        return;
-      }
-      const total = data?.productsTotal;
-      let details = `Готово.\nУспешно обновлено на МП: ${pushed}\nПропущено: ${skipped}\nОшибок: ${failed}`;
-      if (total != null) details += `\nПозиций в отправке: ${total}`;
-      if (data?.message) details += `\n\n${data.message}`;
-      if (data?.skipReasonsText) details += `\n\nПричины пропуска:\n${data.skipReasonsText}`;
-      else if (pushed === 0 && failed === 0 && skipped === 0 && (data?.noMappings ?? 0) > 0) {
-        details +=
-          '\n\nНи у одного товара нет сопоставления вашего склада с складами Ozon / WB / Яндекс. Проверьте раздел «Склады».';
-      } else if (pushed === 0 && failed === 0 && skipped > 0) {
-        details +=
-          '\n\nТовары в таблице есть, но отправка не выполнена (нет SKU на МП, API-ключей или сопоставления складов).';
-      }
-      window.alert(details);
-      await refreshMpStockPushStatus();
-    } catch (e) {
-      window.alert(`Ошибка: ${e.response?.data?.message || e.message || 'Не удалось отправить остатки'}`);
-    } finally {
-      setMpStockSyncing(false);
-    }
+    await runMpStockPush(false);
   };
 
   const handleRefreshWarehouseAndSupplierStocks = async () => {
@@ -1265,14 +1310,19 @@ export function WarehouseStocks() {
             </Button>
             <Button
               variant="secondary"
-              onClick={handlePushStocksToMarketplaces}
-              disabled={mpStockSyncing || supplierStocksRefreshing || productsLoading}
+              onClick={handleMpPushButtonClick}
+              disabled={mpStockSyncing || supplierStocksRefreshing}
               style={{ marginLeft: 8 }}
               title="Отправить значения из колонки «Доступно» на Ozon, Wildberries и Яндекс.Маркет"
             >
               {mpStockSyncing ? 'Отправка на МП…' : 'Отправить на маркетплейсы'}
             </Button>
           </div>
+          {mpPushBlockReason ? (
+            <p className="text-warning small mt-2 mb-0" role="status">
+              {mpPushBlockReason}
+            </p>
+          ) : null}
         </>
       )}
 
@@ -1499,6 +1549,96 @@ export function WarehouseStocks() {
             ))}
           </ul>
         )}
+      </Modal>
+
+      <Modal
+        isOpen={mpPushModal != null}
+        onClose={() => {
+          if (mpPushModal?.type !== 'working') setMpPushModal(null);
+        }}
+        title={
+          mpPushModal?.type === 'confirm'
+            ? 'Отправка на маркетплейсы'
+            : mpPushModal?.type === 'force'
+              ? 'Повторная отправка'
+              : mpPushModal?.type === 'working'
+                ? 'Отправка…'
+                : mpPushModal?.type === 'result'
+                  ? mpPushModal.title || 'Результат'
+                  : 'Отправка на маркетплейсы'
+        }
+        closeOnBackdropClick={mpPushModal?.type !== 'working'}
+        closeOnEscape={mpPushModal?.type !== 'working'}
+        size="small"
+      >
+        {mpPushModal?.type === 'error' ? <p className="mb-0">{mpPushModal.message}</p> : null}
+        {mpPushModal?.type === 'confirm' ? (
+          <>
+            <p className="mb-2">
+              Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «{mpPushModal.whLabel}»?
+            </p>
+            <p className="mb-2 text-muted small">
+              Позиций в таблице: <strong>{mpPushModal.count}</strong> (организация «{mpPushModal.orgLabel}»).
+              {mpPushModal.filterHint ? (
+                <>
+                  <br />
+                  Фильтры: {mpPushModal.filterHint}.
+                </>
+              ) : null}
+            </p>
+            <p className="mb-0 text-muted small">
+              Позиции без связи с МП или без SKU будут пропущены.
+            </p>
+            <div className="d-flex justify-content-end gap-2 mt-3">
+              <Button variant="secondary" onClick={() => setMpPushModal(null)}>
+                Отмена
+              </Button>
+              <Button variant="primary" onClick={() => void handleMpPushConfirm()}>
+                Отправить
+              </Button>
+            </div>
+          </>
+        ) : null}
+        {mpPushModal?.type === 'force' ? (
+          <>
+            <p className="mb-0">
+              {mpPushModal.lastError
+                ? `Предыдущая отправка ещё активна. Ошибка: ${mpPushModal.lastError}`
+                : 'Отправка остатков на МП уже выполняется.'}
+            </p>
+            <p className="mt-2 mb-0">Запустить повторно? Зависшая задача будет сброшена.</p>
+            <div className="d-flex justify-content-end gap-2 mt-3">
+              <Button variant="secondary" onClick={() => setMpPushModal(null)}>
+                Отмена
+              </Button>
+              <Button variant="primary" onClick={() => void runMpStockPush(true)}>
+                Запустить снова
+              </Button>
+            </div>
+          </>
+        ) : null}
+        {mpPushModal?.type === 'working' ? (
+          <p className="mb-0">Идёт отправка остатков на маркетплейсы, подождите…</p>
+        ) : null}
+        {mpPushModal?.type === 'result' ? (
+          <>
+            <pre className="mb-0" style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+              {mpPushModal.details}
+            </pre>
+            <div className="d-flex justify-content-end mt-3">
+              <Button variant="primary" onClick={() => setMpPushModal(null)}>
+                OK
+              </Button>
+            </div>
+          </>
+        ) : null}
+        {mpPushModal?.type === 'error' ? (
+          <div className="d-flex justify-content-end mt-3">
+            <Button variant="primary" onClick={() => setMpPushModal(null)}>
+              OK
+            </Button>
+          </div>
+        ) : null}
       </Modal>
     </>
   );
