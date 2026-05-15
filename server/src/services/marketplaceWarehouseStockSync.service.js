@@ -57,20 +57,107 @@ async function loadProductContext(productId) {
   };
 }
 
+function normalizeMpKey(marketplace) {
+  const m = String(marketplace || '').toLowerCase().trim();
+  if (m === 'wildberries') return 'wb';
+  if (m === 'yandex' || m === 'yandexmarket' || m === 'yandex market') return 'ym';
+  return m;
+}
+
+/** Связь с МП: product_links, product_skus или поля sku_ozon / sku_wb / sku_ym на товаре (как в каталоге). */
 function isMarketplaceLinked(marketplace, ctx) {
-  const mp = String(marketplace || '').toLowerCase();
+  const mp = normalizeMpKey(marketplace);
+  if (!mp) return false;
   if (ctx.linked[mp] === true) return true;
-  return (ctx.productSkus || []).some((s) => s.marketplace === mp && s.sku);
+
+  const p = ctx.product || {};
+  for (const row of ctx.productSkus || []) {
+    const rowMp = normalizeMpKey(row.marketplace);
+    if (rowMp !== mp) continue;
+    if (row.sku != null && String(row.sku).trim() !== '') return true;
+    if (mp === 'ozon' && row.marketplace_product_id != null && String(row.marketplace_product_id).trim() !== '') {
+      return true;
+    }
+  }
+
+  if (mp === 'ozon') {
+    if (p.sku_ozon != null && String(p.sku_ozon).trim() !== '') return true;
+    if (p.ozon_product_id != null && String(p.ozon_product_id).trim() !== '') return true;
+  }
+  if (mp === 'wb' && p.sku_wb != null && String(p.sku_wb).trim() !== '') return true;
+  if (mp === 'ym' && p.sku_ym != null && String(p.sku_ym).trim() !== '') return true;
+
+  return false;
 }
 
 async function loadMappingsForSync({ warehouseId, profileId }) {
   const repo = repositoryFactory.getWarehouseMappingsRepository();
-  if (!repo) return [];
-  if (warehouseId != null && String(warehouseId).trim() !== '') {
-    const rows = await repo.findByWarehouse(warehouseId);
-    return rows || [];
+  if (!repo) return { rows: [], mappingFallback: false };
+  const wid =
+    warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId).trim() : null;
+
+  if (wid) {
+    const byWh = (await repo.findByWarehouse(wid)) || [];
+    if (byWh.length > 0) {
+      return { rows: byWh, mappingFallback: false };
+    }
+    const all = (await repo.findAll({ profileId: profileId ?? null })) || [];
+    if (all.length > 0) {
+      logger.info('[MP Stock Push] для выбранного склада нет маппинга МП — используем все сопоставления профиля', {
+        warehouseId: wid,
+        profileId,
+        mappings: all.length
+      });
+      return { rows: all, mappingFallback: true };
+    }
+    return { rows: [], mappingFallback: false };
   }
-  return (await repo.findAll({ profileId: profileId ?? null })) || [];
+
+  return {
+    rows: (await repo.findAll({ profileId: profileId ?? null })) || [],
+    mappingFallback: false
+  };
+}
+
+function tallySyncResult(summary, r) {
+  if (!r || r.skipped === true) {
+    if (r?.reason === 'skip_marketplace_stock_sync') {
+      summary.policySkipped = (summary.policySkipped || 0) + 1;
+    }
+    return;
+  }
+  if (r.message && (!r.results || r.results.length === 0)) {
+    summary.noMappings = (summary.noMappings || 0) + 1;
+    return;
+  }
+  summary.productsTouched = (summary.productsTouched || 0) + 1;
+  for (const item of r.results || []) {
+    if (item.ok) {
+      summary.pushed += 1;
+    } else if (item.skipped) {
+      summary.skipped += 1;
+      const reason = item.reason || 'unknown';
+      summary.skipReasons[reason] = (summary.skipReasons[reason] || 0) + 1;
+    } else {
+      summary.failed += 1;
+    }
+  }
+}
+
+const SKIP_REASON_LABELS = {
+  not_linked: 'нет связи с МП (SKU/ссылка)',
+  no_credentials: 'нет API-ключей маркетплейса',
+  no_warehouse_mapping: 'не указан склад МП в сопоставлении',
+  no_product_sku: 'нет артикула на МП',
+  no_wb_barcode: 'нет штрихкода WB',
+  unsupported_marketplace: 'маркетплейс не поддерживается'
+};
+
+export function formatSkipReasonsSummary(skipReasons = {}) {
+  const parts = Object.entries(skipReasons)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${SKIP_REASON_LABELS[k] || k}: ${n}`);
+  return parts.length ? parts.join('\n') : '';
 }
 
 /**
@@ -107,7 +194,7 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
   }
 
   const profileId = ctx.product.profile_id ?? ctx.product.profileId ?? null;
-  const mappings = await loadMappingsForSync({
+  const { rows: mappings, mappingFallback } = await loadMappingsForSync({
     warehouseId: opts.warehouseId ?? null,
     profileId
   });
@@ -117,14 +204,20 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
     return {
       skipped: false,
       organizationId,
+      productId,
+      pushed: 0,
+      failed: 0,
+      skippedMarketplaces: 0,
       results: [],
-      message: 'Нет сопоставления складов ERP ↔ маркетплейс'
+      noMappings: true,
+      message:
+        'Нет сопоставления складов ERP ↔ маркетплейс. Настройте в разделе «Склады» → сопоставление с Ozon / WB / Яндекс.'
     };
   }
 
   const results = [];
   for (const mapping of mappings) {
-    const mp = String(mapping.marketplace || '').toLowerCase();
+    const mp = normalizeMpKey(mapping.marketplace);
     if (!isMarketplaceLinked(mp, ctx)) {
       results.push({ marketplace: mp, ok: false, skipped: true, reason: 'not_linked' });
       continue;
@@ -170,15 +263,24 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
     }
   }
 
-  const pushed = results.filter((r) => r.ok);
+  const pushedOk = results.filter((r) => r.ok);
   const failed = results.filter((r) => r.ok === false && !r.skipped);
+  const skippedItems = results.filter((r) => r.skipped);
+  const skipReasons = {};
+  for (const item of skippedItems) {
+    const reason = item.reason || 'unknown';
+    skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+  }
 
   return {
     skipped: false,
     organizationId,
     productId,
-    pushed: pushed.length,
+    pushed: pushedOk.length,
     failed: failed.length,
+    skippedMarketplaces: skippedItems.length,
+    skipReasons,
+    mappingFallback: mappingFallback === true,
     results
   };
 }
@@ -190,20 +292,29 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
   const productIds = Array.isArray(opts.productIds) ? opts.productIds : null;
 
   if (productIds && productIds.length > 0) {
-    const summary = { pushed: 0, failed: 0, skipped: 0, results: [] };
+    const summary = {
+      pushed: 0,
+      failed: 0,
+      skipped: 0,
+      skipReasons: {},
+      noMappings: 0,
+      policySkipped: 0,
+      productsTouched: 0,
+      results: []
+    };
     for (const pid of productIds) {
       const r = await syncWarehouseStockToMarketplaces(pid, {
         organizationId,
         source: opts.source || 'bulk',
         warehouseId: opts.warehouseId ?? null
       });
-      if (r.skipped && r.reason === 'skip_marketplace_stock_sync') {
-        summary.skipped += 1;
-        continue;
-      }
-      summary.pushed += r.pushed || 0;
-      summary.failed += r.failed || 0;
+      tallySyncResult(summary, r);
       summary.results.push({ productId: pid, ...r });
+    }
+    summary.skipReasonsText = formatSkipReasonsSummary(summary.skipReasons);
+    if (summary.noMappings > 0 && summary.pushed === 0 && summary.failed === 0) {
+      summary.message =
+        'Нет сопоставления складов ERP ↔ маркетплейс. Настройте в разделе «Склады» → сопоставление с Ozon / WB / Яндекс.';
     }
     return { skipped: false, organizationId, ...summary };
   }
@@ -283,6 +394,7 @@ export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) 
   let productsProcessed = 0;
   let pushed = 0;
   let failed = 0;
+  let skipped = 0;
 
   const worker = async () => {
     while (index < ids.length) {
@@ -296,6 +408,7 @@ export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) 
           productsProcessed += 1;
           pushed += r.pushed || 0;
           failed += r.failed || 0;
+          skipped += r.skippedMarketplaces || 0;
         }
       } catch (e) {
         failed += 1;
@@ -316,12 +429,13 @@ export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) 
     source: opts.source
   });
 
-  return { total: ids.length, products: productsProcessed, pushed, failed };
+  return { total: ids.length, products: productsProcessed, pushed, failed, skipped };
 }
 
 export default {
   syncWarehouseStockToMarketplaces,
   syncOrganizationWarehouseStockToMarketplaces,
   syncMarketplaceStocksForProductIds,
-  scheduleWarehouseStockMarketplaceSync
+  scheduleWarehouseStockMarketplaceSync,
+  formatSkipReasonsSummary
 };

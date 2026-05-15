@@ -778,14 +778,22 @@ export function WarehouseStocks() {
       const data = res?.data ?? res;
       const pushed = data?.pushed ?? 0;
       const failed = data?.failed ?? 0;
+      const skipped = data?.skipped ?? 0;
       if (data?.skipped && data?.reason === 'skip_marketplace_stock_sync') {
         window.alert('Отправка отключена в настройках организации или категории товара.');
         return;
       }
-      window.alert(
-        `Готово.\nУспешно обновлено на МП: ${pushed}\nОшибок: ${failed}` +
-          (data?.message ? `\n\n${data.message}` : '')
-      );
+      let details = `Готово.\nУспешно обновлено на МП: ${pushed}\nПропущено: ${skipped}\nОшибок: ${failed}`;
+      if (data?.message) details += `\n\n${data.message}`;
+      if (data?.skipReasonsText) details += `\n\nПричины пропуска:\n${data.skipReasonsText}`;
+      else if (pushed === 0 && failed === 0 && skipped === 0 && (data?.noMappings ?? 0) > 0) {
+        details +=
+          '\n\nНи у одного товара нет сопоставления вашего склада с складами Ozon / WB / Яндекс. Проверьте раздел «Склады».';
+      } else if (pushed === 0 && failed === 0 && skipped > 0) {
+        details +=
+          '\n\nТовары в таблице есть, но отправка не выполнена (нет SKU на МП, API-ключей или сопоставления складов).';
+      }
+      window.alert(details);
     } catch (e) {
       window.alert(`Ошибка: ${e.response?.data?.message || e.message || 'Не удалось отправить остатки'}`);
     } finally {
