@@ -619,10 +619,12 @@ export async function recalculateAllKitStocks() {
 /**
  * Для списка товаров: у комплектов с составом — слева / справа по метрикам:
  *
- * - **Слева** — как у обычного товара по SKU комплекта: склад (`product_warehouse_stock`), «в пути» и резерв
- *   с карточки комплекта (`products`), поставщики — сумма `supplier_stocks` по `product_id` комплекта.
- * - **Справа** — сколько полных комплектов дают **комплектующие**: min floor по наличию на складе, по
- *   `incoming_quantity`, по `reserved_quantity` и по остаткам у поставщиков соответственно.
+ * - **Слева** — остаток по SKU комплекта (склад, в пути, резерв, поставщики с карточки комплекта).
+ * - **Справа** — min по комплектующим (сколько полных комплектов можно «собрать»).
+ *
+ * `persistKitStock` копирует min по комплектующим в `product_warehouse_stock` и поля `products` комплекта,
+ * поэтому «сырое» слева часто равно справа. В ответе **слева** = только избыток над правой частью:
+ * `max(0, сырое − из_комплектующих)` — если целых комплектов на складе нет, будет `0 / N`, а не `N / N`.
  *
  * Вызывать после `_reconcileReservedQuantityFromMovements`, чтобы резерв слева совпадал с журналом.
  *
@@ -784,17 +786,23 @@ export async function attachKitWarehouseSplitMetrics(products, options = {}) {
   const mWholeSup = toMap(wholeSupRes);
   const mFromSup = toMap(fromSupRes);
 
+  const surplusWhole = (raw, from) => Math.max(0, (Number(raw) || 0) - (Number(from) || 0));
+
   for (const p of kitRows) {
     const key = String(typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id));
+    const fromOh = mFromOh.get(key) ?? 0;
+    const fromIn = mFromIn.get(key) ?? 0;
+    const fromRsv = mFromRsv.get(key) ?? 0;
+    const fromSup = mFromSup.get(key) ?? 0;
     p.kit_stock_split = {
-      whole_on_hand: mWholeOh.get(key) ?? 0,
-      from_components_on_hand: mFromOh.get(key) ?? 0,
-      whole_incoming: mWholeIn.get(key) ?? 0,
-      from_components_incoming: mFromIn.get(key) ?? 0,
-      whole_reserved: mWholeRsv.get(key) ?? 0,
-      from_components_reserved: mFromRsv.get(key) ?? 0,
-      whole_suppliers: mWholeSup.get(key) ?? 0,
-      from_components_suppliers: mFromSup.get(key) ?? 0
+      whole_on_hand: surplusWhole(mWholeOh.get(key), fromOh),
+      from_components_on_hand: fromOh,
+      whole_incoming: surplusWhole(mWholeIn.get(key), fromIn),
+      from_components_incoming: fromIn,
+      whole_reserved: surplusWhole(mWholeRsv.get(key), fromRsv),
+      from_components_reserved: fromRsv,
+      whole_suppliers: surplusWhole(mWholeSup.get(key), fromSup),
+      from_components_suppliers: fromSup
     };
   }
 }
