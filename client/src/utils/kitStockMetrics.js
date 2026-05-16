@@ -1,15 +1,15 @@
 /**
  * Таблица «Остатки на складе» — единая семантика для товара и комплекта:
  *
- * - Наличие — факт на вашем складе; у комплекта с **kit_stock_split** с бэкенда: в ячейке «целое / из комплектующих»,
- *   в формуле «Доступно» — сумма слагаемых (целое по SKU комплекта + min по составу).
- * - В пути — для комплекта с **kit_stock_split**: `incoming_комплекта / min по комплектующим`; без split — см. ниже.
- * - Резерв — под заказы (у комплекта резерв в БД по комплекту; движения — по комплектующим).
- * - Поставщики — у товара сумма по поставщикам; у комплекта с split — `остаток по SKU комплекта / min по комплектующим`.
- * - Доступно — (наличие_целое + наличие_из_деталей) + (в_пути_целое + в_пути_из_деталей) + (поставщики_целое + поставщики_из_деталей) − резерв (не ниже 0).
+ * У комплекта с **kit_stock_split** в колонках **Наличие / В пути / Резерв / Поставщики** — формат **слева / справа**:
+ * - **Слева** — как у обычного товара по одному SKU комплекта (склад, в пути, резерв, поставщики с карточки комплекта).
+ * - **Справа** — сколько полных комплектов дают комплектующие: min по их наличию, в пути, резерву и у поставщиков.
  *
- * Без **kit_stock_split** (старый режим): у комплекта в колонке «В пути» **0**, ожидание по деталям только в «Доступно»;
- * метрики по комплектующим на клиенте — только если комплектующие есть в том же списке товаров.
+ * «Доступно» — сумма слагаемых по наличию, в пути и поставщикам (слева + справа по каждой оси), минус суммарный
+ * резерв (слева + справа), не ниже нуля.
+ *
+ * Без **kit_stock_split**: у комплекта в «В пути» **0**, ожидание по деталям только в «Доступно»; метрики по
+ * комплектующим на клиенте — только если комплектующие есть в том же списке товаров.
  */
 
 /** В таблице «Остатки на складе»: наличие + в пути + у поставщиков − резерв (не ниже 0). */
@@ -26,7 +26,7 @@ export function isKitProduct(product) {
   return String(product?.product_type || '').toLowerCase() === 'kit';
 }
 
-/** @returns {null|{ whole_on_hand: number, from_components_on_hand: number, whole_incoming: number, from_components_incoming: number, whole_suppliers: number, from_components_suppliers: number }} */
+/** @returns {null|{ whole_on_hand: number, from_components_on_hand: number, whole_incoming: number, from_components_incoming: number, whole_reserved: number, from_components_reserved: number, whole_suppliers: number, from_components_suppliers: number }} */
 export function parseKitStockSplit(product) {
   const raw = product?.kit_stock_split ?? product?.kitStockSplit;
   if (!raw || typeof raw !== 'object') return null;
@@ -36,6 +36,8 @@ export function parseKitStockSplit(product) {
     from_components_on_hand: n('from_components_on_hand', 'fromComponentsOnHand'),
     whole_incoming: n('whole_incoming', 'wholeIncoming'),
     from_components_incoming: n('from_components_incoming', 'fromComponentsIncoming'),
+    whole_reserved: n('whole_reserved', 'wholeReserved'),
+    from_components_reserved: n('from_components_reserved', 'fromComponentsReserved'),
     whole_suppliers: n('whole_suppliers', 'wholeSuppliers'),
     from_components_suppliers: n('from_components_suppliers', 'fromComponentsSuppliers')
   };
@@ -136,7 +138,7 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
     const split = isKitProduct(product) ? parseKitStockSplit(product) : null;
     const comps = Array.isArray(product?.kit_components) ? product.kit_components : [];
     if (split && comps.length > 0) {
-      const reserved = Number(product.reserved_quantity ?? product.reservedQuantity ?? 0) || 0;
+      const reserved = split.whole_reserved + split.from_components_reserved;
       const onHand = split.whole_on_hand + split.from_components_on_hand;
       const incoming = split.whole_incoming + split.from_components_incoming;
       const suppliers = split.whole_suppliers + split.from_components_suppliers;
@@ -147,6 +149,7 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
         incoming,
         incomingDisplay: `${split.whole_incoming} / ${split.from_components_incoming}`,
         reserved,
+        reservedDisplay: `${split.whole_reserved} / ${split.from_components_reserved}`,
         suppliers,
         suppliersDisplay: `${split.whole_suppliers} / ${split.from_components_suppliers}`,
         supplierDetails: [],

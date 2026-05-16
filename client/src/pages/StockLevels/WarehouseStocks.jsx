@@ -1373,15 +1373,35 @@ export function WarehouseStocks() {
                       title={
                         isKitProduct(row.product)
                           ? row.product?.kit_stock_split || row.product?.kitStockSplit
-                            ? 'Целое по карточке комплекта / полных комплектов из метрик по комплектующим (склад, в пути, поставщики).'
+                            ? 'Слева — «в пути» по карточке комплекта (один SKU); справа — полных комплектов по incoming комплектующих.'
                             : 'По комплекту «в пути» здесь не показываем: закупки по комплектующим; ожидание в штуках комплекта учтено в «Доступно».'
                           : undefined
                       }
                     >
                       {row.incomingDisplay ?? row.incoming}
                     </td>
-                    <td className="stock-levels-reserved-cell">{row.reserved}</td>
-                    <td className="main-warehouse-cell">{row.onHandDisplay ?? row.onHand}</td>
+                    <td
+                      className="stock-levels-reserved-cell"
+                      title={
+                        isKitProduct(row.product) &&
+                        (row.product?.kit_stock_split || row.product?.kitStockSplit)
+                          ? 'Слева — резерв по SKU комплекта; справа — полных комплектов по резерву комплектующих.'
+                          : undefined
+                      }
+                    >
+                      {row.reservedDisplay ?? row.reserved}
+                    </td>
+                    <td
+                      className="main-warehouse-cell"
+                      title={
+                        isKitProduct(row.product) &&
+                        (row.product?.kit_stock_split || row.product?.kitStockSplit)
+                          ? 'Слева — наличие на складе по SKU комплекта; справа — полных комплектов по остаткам комплектующих.'
+                          : undefined
+                      }
+                    >
+                      {row.onHandDisplay ?? row.onHand}
+                    </td>
                     <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
                       <SupplierStockCell
                         total={row.suppliers}

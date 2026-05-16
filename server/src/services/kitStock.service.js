@@ -617,9 +617,14 @@ export async function recalculateAllKitStocks() {
 }
 
 /**
- * Для списка товаров: у комплектов с составом — «целое по карточке комплекта» / «полных комплектов из комплектующих»
- * (склад, в пути по карточке комплектующих, остатки у поставщиков по комплектующим).
- * Не зависит от того, попали ли комплектующие в ту же страницу ответа API.
+ * Для списка товаров: у комплектов с составом — слева / справа по метрикам:
+ *
+ * - **Слева** — как у обычного товара по SKU комплекта: склад (`product_warehouse_stock`), «в пути» и резерв
+ *   с карточки комплекта (`products`), поставщики — сумма `supplier_stocks` по `product_id` комплекта.
+ * - **Справа** — сколько полных комплектов дают **комплектующие**: min floor по наличию на складе, по
+ *   `incoming_quantity`, по `reserved_quantity` и по остаткам у поставщиков соответственно.
+ *
+ * Вызывать после `_reconcileReservedQuantityFromMovements`, чтобы резерв слева совпадал с журналом.
  *
  * @param {object[]} products
  * @param {{ warehouseId?: number|string|null, warehouse_id?: number|string|null }} [options]
@@ -694,13 +699,25 @@ export async function attachKitWarehouseSplitMetrics(products, options = {}) {
        ) t
        GROUP BY kit_product_id`;
 
-  const wholeIncSql = `SELECT id::text AS kit_id, COALESCE(incoming_quantity, 0)::int AS v
+  const kitCardSql = `SELECT id::text AS kit_id,
+       COALESCE(incoming_quantity, 0)::int AS incoming_v,
+       COALESCE(reserved_quantity, 0)::int AS reserved_v
      FROM products WHERE id = ANY($1::bigint[])`;
 
   const fromIncSql = `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
      FROM (
        SELECT kc.kit_product_id,
          FLOOR(COALESCE(pr.incoming_quantity, 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
+       FROM kit_components kc
+       INNER JOIN products pr ON pr.id = kc.component_product_id
+       WHERE kc.kit_product_id = ANY($1::bigint[])
+     ) t
+     GROUP BY kit_product_id`;
+
+  const fromReservedSql = `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
+     FROM (
+       SELECT kc.kit_product_id,
+         FLOOR(COALESCE(pr.reserved_quantity, 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
        FROM kit_components kc
        INNER JOIN products pr ON pr.id = kc.component_product_id
        WHERE kc.kit_product_id = ANY($1::bigint[])
@@ -729,15 +746,17 @@ export async function attachKitWarehouseSplitMetrics(products, options = {}) {
   const [
     wholeOnHandRes,
     fromOnHandRes,
-    wholeIncRes,
+    kitCardRes,
     fromIncRes,
+    fromReservedRes,
     wholeSupRes,
     fromSupRes
   ] = await Promise.all([
     query(wholeOnHandSql, pKitWid),
     query(fromOnHandSql, pKitWid),
-    query(wholeIncSql, pKit),
+    query(kitCardSql, pKit),
     query(fromIncSql, pKit),
+    query(fromReservedSql, pKit),
     query(wholeSupSql, pKit),
     query(fromSupSql, pKit)
   ]);
@@ -753,8 +772,15 @@ export async function attachKitWarehouseSplitMetrics(products, options = {}) {
 
   const mWholeOh = toMap(wholeOnHandRes);
   const mFromOh = toMap(fromOnHandRes);
-  const mWholeIn = toMap(wholeIncRes);
+  const mWholeIn = new Map();
+  const mWholeRsv = new Map();
+  for (const row of kitCardRes.rows || []) {
+    const k = String(row.kit_id);
+    mWholeIn.set(k, Math.max(0, Number(row.incoming_v) || 0));
+    mWholeRsv.set(k, Math.max(0, Number(row.reserved_v) || 0));
+  }
   const mFromIn = toMap(fromIncRes);
+  const mFromRsv = toMap(fromReservedRes);
   const mWholeSup = toMap(wholeSupRes);
   const mFromSup = toMap(fromSupRes);
 
@@ -765,6 +791,8 @@ export async function attachKitWarehouseSplitMetrics(products, options = {}) {
       from_components_on_hand: mFromOh.get(key) ?? 0,
       whole_incoming: mWholeIn.get(key) ?? 0,
       from_components_incoming: mFromIn.get(key) ?? 0,
+      whole_reserved: mWholeRsv.get(key) ?? 0,
+      from_components_reserved: mFromRsv.get(key) ?? 0,
       whole_suppliers: mWholeSup.get(key) ?? 0,
       from_components_suppliers: mFromSup.get(key) ?? 0
     };
