@@ -1,7 +1,6 @@
 /**
- * Остатки комплектов: расчёт из kit_components → запись в product_warehouse_stock и products.
- * UI и маркетплейсы читают сохранённые значения (как у обычных товаров).
- * Резерв по заказу на комплект — резерв комплектующих.
+ * Комплекты: движения остатков только по SKU комплекта (как у товара).
+ * Собираемость из комплектующих — только для отображения «Доступно» и лимита резерва, без записи в product_warehouse_stock.
  */
 
 import { query } from '../config/database.js';
@@ -287,76 +286,14 @@ async function resolveWarehouseIdsForKitRecalc(kitProductId, warehouseId = null)
   return [...new Set(ids)];
 }
 
-/**
- * Пересчитать остатки комплекта из комплектующих и сохранить в БД.
- */
+/** @deprecated Не пишем производные остатки комплекта в БД — только движения по SKU комплекта. */
 export async function persistKitStock(kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return null;
-
-  const repo = repositoryFactory.getProductsRepository();
-  if (!repo || typeof repo.setWarehouseFreeStock !== 'function') {
-    return null;
-  }
-
-  const warehouseIds = await resolveWarehouseIdsForKitRecalc(kitId, opts.warehouseId);
-  const profileId = opts.profileId ?? null;
-
-  for (const wid of warehouseIds) {
-    const metrics = await computeKitMetricsFromComponents(kitId, {
-      warehouseId: wid,
-      profileId
-    });
-    await repo.setWarehouseFreeStock(kitId, wid, metrics.onHand);
-  }
-
-  const summaryWarehouseId =
-    opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
-      ? opts.warehouseId
-      : warehouseIds[0] ?? null;
-
-  const summary = await computeKitMetricsFromComponents(kitId, {
-    warehouseId: summaryWarehouseId,
-    profileId
-  });
-
-  try {
-    await query(
-      `UPDATE products
-       SET incoming_quantity = $1,
-           reserved_quantity = $2,
-           kit_supplier_stock = $3,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4`,
-      [summary.incoming, summary.reserved, summary.suppliers, kitId]
-    );
-  } catch (e) {
-    if (!String(e?.message || '').includes('kit_supplier_stock')) {
-      throw e;
-    }
-    await query(
-      `UPDATE products
-       SET incoming_quantity = $1, reserved_quantity = $2, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $3`,
-      [summary.incoming, summary.reserved, kitId]
-    );
-  }
-
-  await syncProductQuantityFromWarehouseStock(kitId);
-
-  logger.info('[Kit Stock] persisted', {
-    kitProductId: kitId,
-    warehouseIds,
-    onHand: summary.onHand,
-    suppliers: summary.suppliers,
-    reserved: summary.reserved,
-    productsQuantity: await repo.getWarehouseFreeStock?.(kitId, summaryWarehouseId)
-  });
-
-  return summary;
+  return computeKitMetricsFromComponents(kitId, opts);
 }
 
-/** Пересчитать все комплекты, в состав которых входит товар. */
+/** После изменения остатка комплектующего — пересчёт на МП для родительских комплектов (без движений по комплекту). */
 export async function recalculateKitsForComponent(componentProductId, opts = {}) {
   const pid = Number(componentProductId);
   if (!Number.isFinite(pid) || pid < 1) return [];
@@ -370,7 +307,13 @@ export async function recalculateKitsForComponent(componentProductId, opts = {})
     .filter((n) => Number.isFinite(n) && n > 0);
 
   for (const kitId of kitIds) {
-    await persistKitStock(kitId, opts);
+    scheduleWarehouseStockMarketplaceSync(kitId, {
+      source: opts.source || 'kit_component_changed',
+      organizationId: opts.organizationId ?? null,
+      warehouseId: opts.warehouseId ?? null,
+      strictWarehouse:
+        opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
+    });
   }
   return kitIds;
 }
@@ -441,15 +384,16 @@ export async function readKitStockFromDb(kitProductId, opts = {}) {
   return { onHand, incoming, reserved, suppliers, available };
 }
 
-/** Для отправки на МП: из БД, с вычетом резерва комплекта (как у обычного товара). */
+/** Для отправки на МП: собираемость из комплектующих + доступно по SKU комплекта. */
 export async function readKitMarketplaceStockFromDb(kitProductId, opts = {}) {
   const base = await readKitStockFromDb(kitProductId, opts);
-  const reserved = base.reserved;
-  const available = Math.max(0, Math.floor(base.onHand + base.suppliers - reserved));
+  const fromComponents = await computeAssemblableFromComponents(kitProductId, opts);
+  const wholeAvail = Math.max(0, base.onHand + base.incoming + base.suppliers - base.reserved);
+  const available = fromComponents + wholeAvail;
   return {
     ...base,
     available,
-    displayAvailable: Math.max(0, Math.floor(base.onHand + base.suppliers))
+    displayAvailable: available
   };
 }
 
@@ -458,7 +402,7 @@ export async function computeKitMarketplaceStock(kitProductId, opts = {}) {
   return data.available;
 }
 
-/** Подставить в объект товара-комплекта остатки из БД. */
+/** Подставить в объект комплекта остатки только по SKU комплекта (без пересчёта из комплектующих). */
 export async function enrichKitProductStock(product, opts = {}) {
   if (!product || !isKitProductType(product.product_type)) return product;
   const metrics = await readKitStockFromDb(product.id, opts);
@@ -467,7 +411,7 @@ export async function enrichKitProductStock(product, opts = {}) {
   product.reserved_quantity = metrics.reserved;
   product.supplierStockTotal = metrics.suppliers;
   product.kit_quantity_derived = false;
-  product.kit_stock_persisted = true;
+  product.kit_stock_persisted = false;
   product.kit_display_stock = metrics;
   return product;
 }
@@ -496,67 +440,91 @@ export function scheduleMarketplaceSyncForParentKits(componentProductId, opts = 
 }
 
 export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
-  const components = await getKitComponents(kitProductId);
-  if (components.length === 0) return 0;
+  const kitId = Number(kitProductId);
   const oid = Number(orderDbId);
-  if (!Number.isFinite(oid) || oid < 1) return 0;
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
 
-  let minKits = Infinity;
-  for (const c of components) {
-    const r = await query(
-      `SELECT
-         COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
-         COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)::int AS unreserved
-       FROM stock_movements
-       WHERE product_id = $1
-         AND type IN ('reserve', 'unreserve')
-         AND (meta->>'order_id')::bigint = $2::bigint`,
-      [c.component_product_id, oid]
-    );
-    const row = r.rows?.[0];
-    const reserved = row?.reserved != null ? Number(row.reserved) : 0;
-    const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
-    const net = Math.max(0, reserved - unreserved);
-    minKits = Math.min(minKits, Math.floor(net / c.quantity));
-  }
-  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+  const r = await query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
+       COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)::int AS unreserved
+     FROM stock_movements
+     WHERE product_id = $1
+       AND type IN ('reserve', 'unreserve')
+       AND (meta->>'order_id')::bigint = $2::bigint`,
+    [kitId, oid]
+  );
+  const row = r.rows?.[0];
+  const reserved = row?.reserved != null ? Number(row.reserved) : 0;
+  const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
+  return Math.max(0, reserved - unreserved);
 }
 
-export async function computeMaxKitUnitsReservable(kitProductId) {
-  const components = await getKitComponents(kitProductId);
+/** Сколько полных комплектов можно собрать из доступных комплектующих (наличие + в пути − резерв). */
+export async function computeAssemblableFromComponents(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+
+  const widRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const wid =
+    widRaw != null && String(widRaw).trim() !== ''
+      ? typeof widRaw === 'string'
+        ? parseInt(widRaw, 10)
+        : Number(widRaw)
+      : null;
+
+  const components = await getKitComponents(kitId);
   if (components.length === 0) return 0;
 
   let minKits = Infinity;
   for (const c of components) {
-    const supply = await getComponentWarehouseSupply(c.component_product_id);
-    const kitsFromComp = Math.floor(supply.availableSupply / c.quantity);
-    minKits = Math.min(minKits, kitsFromComp);
+    const perKit = Math.max(1, c.quantity);
+    let available = 0;
+    if (wid != null && Number.isFinite(wid) && wid > 0) {
+      const r = await query(
+        `SELECT COALESCE(pws.quantity, 0)::int AS qty,
+                COALESCE(pr.incoming_quantity, 0)::int AS incoming,
+                COALESCE(pr.reserved_quantity, 0)::int AS reserved
+         FROM products pr
+         LEFT JOIN product_warehouse_stock pws
+           ON pws.product_id = pr.id AND pws.warehouse_id = $2
+         WHERE pr.id = $1`,
+        [c.component_product_id, wid]
+      );
+      const row = r.rows[0] || {};
+      available = Math.max(
+        0,
+        (Number(row.qty) || 0) + (Number(row.incoming) || 0) - (Number(row.reserved) || 0)
+      );
+    } else {
+      const supply = await getComponentWarehouseSupply(c.component_product_id);
+      available = supply.availableSupply;
+    }
+    minKits = Math.min(minKits, Math.floor(available / perKit));
   }
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
+export async function computeMaxKitUnitsReservable(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+  const fromComponents = await computeAssemblableFromComponents(kitId, opts);
+  const whole = await readKitStockFromDb(kitId, opts);
+  const wholeAvail = Math.max(0, (whole.onHand || 0) + (whole.incoming || 0) - (whole.reserved || 0));
+  return fromComponents + wholeAvail;
+}
+
+/** Резерв по заказу — только на SKU комплекта (как у обычного товара). */
 export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabel, meta, applyReserveFn) {
   const kitId = Number(kitProductId);
   const wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
-  const maxKits = await computeMaxKitUnitsReservable(kitId);
+  const maxKits = await computeMaxKitUnitsReservable(kitId, {
+    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+  });
   const kitsToReserve = Math.min(wanted, maxKits);
   if (kitsToReserve <= 0) return 0;
 
-  const components = await getKitComponents(kitId);
-  for (const c of components) {
-    const compQty = kitsToReserve * c.quantity;
-    await applyReserveFn(c.component_product_id, compQty, orderIdLabel, {
-      ...meta,
-      kit_product_id: kitId,
-      kit_units: kitsToReserve,
-      component_per_kit: c.quantity
-    });
-  }
-
-  await persistKitStock(kitId, {
-    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
-    organizationId: meta?.organizationId ?? null
-  });
+  await applyReserveFn(kitId, kitsToReserve, orderIdLabel, meta);
 
   scheduleWarehouseStockMarketplaceSync(kitId, {
     source: 'kit_order_reserve',
@@ -603,47 +571,32 @@ export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unrese
   return affected;
 }
 
-/** Массовый пересчёт всех комплектов (после миграции / админ). */
+/** Массовый пересчёт: только синхронизация остатков на МП (без движений по комплекту). */
 export async function recalculateAllKitStocks() {
   const r = await query(
     `SELECT id FROM products WHERE LOWER(TRIM(COALESCE(product_type::text, ''))) = 'kit'`
   );
   let n = 0;
   for (const row of r.rows || []) {
-    await persistKitStock(row.id, {});
+    scheduleWarehouseStockMarketplaceSync(row.id, { source: 'recalculate_all_kits' });
     n += 1;
   }
   return n;
 }
 
 /**
- * Для списка товаров: у комплектов с составом — слева / справа по метрикам:
- *
- * - **Слева** — остаток по SKU комплекта (склад, в пути, резерв, поставщики с карточки комплекта).
- * - **Справа** — min по комплектующим (сколько полных комплектов можно «собрать»).
- *
- * `persistKitStock` копирует min по комплектующим в `product_warehouse_stock` и поля `products` комплекта,
- * поэтому «сырое» слева часто равно справа. В ответе **слева** = только избыток над правой частью:
- * `max(0, сырое − из_комплектующих)` — если целых комплектов на складе нет, будет `0 / N`, а не `N / N`.
- *
- * Вызывать после `_reconcileReservedQuantityFromMovements`, чтобы резерв слева совпадал с журналом.
- *
- * @param {object[]} products
- * @param {{ warehouseId?: number|string|null, warehouse_id?: number|string|null }} [options]
+ * Метрики отображения для комплектов в списке остатков.
+ * kit_display: whole_on_hand, assemblable_from_components, available_total.
  */
-export async function attachKitWarehouseSplitMetrics(products, options = {}) {
+export async function attachKitDisplayMetrics(products, options = {}) {
   if (!Array.isArray(products) || products.length === 0) return;
 
   const widRaw = options.warehouseId ?? options.warehouse_id ?? null;
-  const warehouseIdParsed =
+  const wid =
     widRaw != null && String(widRaw).trim() !== ''
       ? typeof widRaw === 'string'
         ? parseInt(widRaw, 10)
         : Number(widRaw)
-      : null;
-  const wid =
-    warehouseIdParsed != null && Number.isFinite(warehouseIdParsed) && warehouseIdParsed > 0
-      ? warehouseIdParsed
       : null;
 
   const kitRows = products.filter(
@@ -654,158 +607,34 @@ export async function attachKitWarehouseSplitMetrics(products, options = {}) {
   );
   if (kitRows.length === 0) return;
 
-  const kitIds = [
-    ...new Set(
-      kitRows
-        .map((p) => {
-          const n = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
-          return Number.isFinite(n) && n > 0 ? n : null;
-        })
-        .filter((x) => x != null)
-    ),
-  ];
-  if (kitIds.length === 0) return;
-
-  const pKit = [kitIds];
-  const pKitWid = wid != null ? [kitIds, wid] : [kitIds];
-
-  const wholeOnHandSql = wid
-    ? `SELECT product_id::text AS kit_id, COALESCE(quantity, 0)::int AS v
-       FROM product_warehouse_stock
-       WHERE warehouse_id = $2 AND product_id = ANY($1::bigint[])`
-    : `SELECT product_id::text AS kit_id, COALESCE(SUM(quantity), 0)::int AS v
-       FROM product_warehouse_stock
-       WHERE product_id = ANY($1::bigint[])
-       GROUP BY product_id`;
-
-  const fromOnHandSql = wid
-    ? `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
-       FROM (
-         SELECT kc.kit_product_id,
-           FLOOR(COALESCE(SUM(pws.quantity), 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
-         FROM kit_components kc
-         LEFT JOIN product_warehouse_stock pws
-           ON pws.product_id = kc.component_product_id AND pws.warehouse_id = $2
-         WHERE kc.kit_product_id = ANY($1::bigint[])
-         GROUP BY kc.kit_product_id, kc.component_product_id, kc.quantity
-       ) t
-       GROUP BY kit_product_id`
-    : `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
-       FROM (
-         SELECT kc.kit_product_id,
-           FLOOR(COALESCE(SUM(pws.quantity), 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
-         FROM kit_components kc
-         LEFT JOIN product_warehouse_stock pws ON pws.product_id = kc.component_product_id
-         WHERE kc.kit_product_id = ANY($1::bigint[])
-         GROUP BY kc.kit_product_id, kc.component_product_id, kc.quantity
-       ) t
-       GROUP BY kit_product_id`;
-
-  const kitCardSql = `SELECT id::text AS kit_id,
-       COALESCE(incoming_quantity, 0)::int AS incoming_v,
-       COALESCE(reserved_quantity, 0)::int AS reserved_v
-     FROM products WHERE id = ANY($1::bigint[])`;
-
-  const fromIncSql = `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
-     FROM (
-       SELECT kc.kit_product_id,
-         FLOOR(COALESCE(pr.incoming_quantity, 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
-       FROM kit_components kc
-       INNER JOIN products pr ON pr.id = kc.component_product_id
-       WHERE kc.kit_product_id = ANY($1::bigint[])
-     ) t
-     GROUP BY kit_product_id`;
-
-  const fromReservedSql = `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
-     FROM (
-       SELECT kc.kit_product_id,
-         FLOOR(COALESCE(pr.reserved_quantity, 0)::numeric / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
-       FROM kit_components kc
-       INNER JOIN products pr ON pr.id = kc.component_product_id
-       WHERE kc.kit_product_id = ANY($1::bigint[])
-     ) t
-     GROUP BY kit_product_id`;
-
-  const wholeSupSql = `SELECT product_id::text AS kit_id, COALESCE(SUM(stock), 0)::int AS v
-     FROM supplier_stocks WHERE product_id = ANY($1::bigint[])
-     GROUP BY product_id`;
-
-  const fromSupSql = `SELECT kit_product_id::text AS kit_id, MIN(comp_kits)::int AS v
-     FROM (
-       SELECT kc.kit_product_id,
-         FLOOR(COALESCE(ss.tot, 0) / NULLIF(GREATEST(kc.quantity::numeric, 1), 0))::int AS comp_kits
-       FROM kit_components kc
-       LEFT JOIN (
-         SELECT product_id, SUM(stock)::numeric AS tot
-         FROM supplier_stocks
-         WHERE product_id IN (SELECT DISTINCT component_product_id FROM kit_components WHERE kit_product_id = ANY($1::bigint[]))
-         GROUP BY product_id
-       ) ss ON ss.product_id = kc.component_product_id
-       WHERE kc.kit_product_id = ANY($1::bigint[])
-     ) t
-     GROUP BY kit_product_id`;
-
-  const [
-    wholeOnHandRes,
-    fromOnHandRes,
-    kitCardRes,
-    fromIncRes,
-    fromReservedRes,
-    wholeSupRes,
-    fromSupRes
-  ] = await Promise.all([
-    query(wholeOnHandSql, pKitWid),
-    query(fromOnHandSql, pKitWid),
-    query(kitCardSql, pKit),
-    query(fromIncSql, pKit),
-    query(fromReservedSql, pKit),
-    query(wholeSupSql, pKit),
-    query(fromSupSql, pKit)
-  ]);
-
-  const toMap = (res) => {
-    const m = new Map();
-    for (const row of res.rows || []) {
-      const k = String(row.kit_id);
-      m.set(k, Math.max(0, Number(row.v) || 0));
-    }
-    return m;
-  };
-
-  const mWholeOh = toMap(wholeOnHandRes);
-  const mFromOh = toMap(fromOnHandRes);
-  const mWholeIn = new Map();
-  const mWholeRsv = new Map();
-  for (const row of kitCardRes.rows || []) {
-    const k = String(row.kit_id);
-    mWholeIn.set(k, Math.max(0, Number(row.incoming_v) || 0));
-    mWholeRsv.set(k, Math.max(0, Number(row.reserved_v) || 0));
-  }
-  const mFromIn = toMap(fromIncRes);
-  const mFromRsv = toMap(fromReservedRes);
-  const mWholeSup = toMap(wholeSupRes);
-  const mFromSup = toMap(fromSupRes);
-
-  const surplusWhole = (raw, from) => Math.max(0, (Number(raw) || 0) - (Number(from) || 0));
-
   for (const p of kitRows) {
-    const key = String(typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id));
-    const fromOh = mFromOh.get(key) ?? 0;
-    const fromIn = mFromIn.get(key) ?? 0;
-    const fromRsv = mFromRsv.get(key) ?? 0;
-    const fromSup = mFromSup.get(key) ?? 0;
-    p.kit_stock_split = {
-      whole_on_hand: surplusWhole(mWholeOh.get(key), fromOh),
-      from_components_on_hand: fromOh,
-      whole_incoming: surplusWhole(mWholeIn.get(key), fromIn),
-      from_components_incoming: fromIn,
-      whole_reserved: surplusWhole(mWholeRsv.get(key), fromRsv),
-      from_components_reserved: fromRsv,
-      whole_suppliers: surplusWhole(mWholeSup.get(key), fromSup),
-      from_components_suppliers: fromSup
+    const kitId = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+    if (!Number.isFinite(kitId) || kitId < 1) continue;
+
+    const wholeOnHand =
+      p.quantity != null
+        ? Math.max(0, Number(p.quantity) || 0)
+        : (
+            await readKitStockFromDb(kitId, { warehouseId: wid })
+          ).onHand;
+
+    const assemblable = await computeAssemblableFromComponents(kitId, { warehouseId: wid });
+    const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
+    const reserved = Math.max(0, Number(p.reserved_quantity ?? p.reservedQuantity ?? 0) || 0);
+    const suppliers = Math.max(0, Number(p.supplierStockTotal ?? 0) || 0);
+    const wholeAvail = Math.max(0, wholeOnHand + incoming + suppliers - reserved);
+    const availableTotal = assemblable + wholeAvail;
+
+    p.kit_display = {
+      whole_on_hand: wholeOnHand,
+      assemblable_from_components: assemblable,
+      available_total: availableTotal
     };
   }
 }
+
+/** @deprecated Используйте attachKitDisplayMetrics */
+export const attachKitWarehouseSplitMetrics = attachKitDisplayMetrics;
 
 export default {
   isKitProductType,
@@ -826,5 +655,7 @@ export default {
   scheduleMarketplaceSyncForParentKits,
   applyKitOrderReserve,
   releaseAllReservesForOrder,
-  attachKitWarehouseSplitMetrics
+  attachKitDisplayMetrics,
+  attachKitWarehouseSplitMetrics,
+  computeAssemblableFromComponents
 };

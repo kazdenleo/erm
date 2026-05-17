@@ -650,15 +650,10 @@ function enrichSupplierDetailsLabels(details, warehouses, mainWarehouseId) {
   }));
 }
 
-function SupplierStockCell({ total, details, splitDisplay }) {
+function SupplierStockCell({ total, details }) {
   const [isHovered, setIsHovered] = useState(false);
   const [showAbove, setShowAbove] = useState(false);
   const containerRef = useRef(null);
-
-  const hasSplit = splitDisplay != null && String(splitDisplay).trim() !== '';
-  if (hasSplit) {
-    return <span className="stock-main-value">{String(splitDisplay).trim()}</span>;
-  }
 
   const hasSuppliers = Array.isArray(details) && details.length > 0;
   const totalStock = hasSuppliers
@@ -1369,47 +1364,21 @@ export function WarehouseStocks() {
                   >
                     <td className="sku-cell">{row.product.sku || '—'}</td>
                     <td className="name-cell">{row.product.name || 'Без названия'}</td>
+                    <td>{row.incoming}</td>
+                    <td className="stock-levels-reserved-cell">{row.reserved}</td>
+                    <td className="main-warehouse-cell">{row.onHand}</td>
+                    <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
+                      <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
+                    </td>
                     <td
                       title={
                         isKitProduct(row.product)
-                          ? row.product?.kit_stock_split || row.product?.kitStockSplit
-                            ? 'Слева — «в пути» по карточке комплекта (один SKU); справа — полных комплектов по incoming комплектующих.'
-                            : 'По комплекту «в пути» здесь не показываем: закупки по комплектующим; ожидание в штуках комплекта учтено в «Доступно».'
+                          ? 'Всего доступно комплектов (из комплектующих + по SKU комплекта); в скобках — целые комплекты на складе (1 SKU).'
                           : undefined
                       }
                     >
-                      {row.incomingDisplay ?? row.incoming}
+                      {row.availableDisplay ?? row.available}
                     </td>
-                    <td
-                      className="stock-levels-reserved-cell"
-                      title={
-                        isKitProduct(row.product) &&
-                        (row.product?.kit_stock_split || row.product?.kitStockSplit)
-                          ? 'Слева — резерв по SKU комплекта; справа — полных комплектов по резерву комплектующих.'
-                          : undefined
-                      }
-                    >
-                      {row.reservedDisplay ?? row.reserved}
-                    </td>
-                    <td
-                      className="main-warehouse-cell"
-                      title={
-                        isKitProduct(row.product) &&
-                        (row.product?.kit_stock_split || row.product?.kitStockSplit)
-                          ? 'Слева — наличие на складе по SKU комплекта; справа — полных комплектов по остаткам комплектующих.'
-                          : undefined
-                      }
-                    >
-                      {row.onHandDisplay ?? row.onHand}
-                    </td>
-                    <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
-                      <SupplierStockCell
-                        total={row.suppliers}
-                        details={row.supplierDetails}
-                        splitDisplay={row.suppliersDisplay}
-                      />
-                    </td>
-                    <td>{row.available}</td>
                   </tr>
                 ))}
               </tbody>

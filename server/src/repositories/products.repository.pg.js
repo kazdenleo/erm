@@ -811,8 +811,8 @@ class ProductsRepositoryPG {
     await this._reconcileReservedQuantityFromMovements(products);
 
     if (products.length > 0) {
-      const { attachKitWarehouseSplitMetrics } = await import('../services/kitStock.service.js');
-      await attachKitWarehouseSplitMetrics(products, options);
+      const { attachKitDisplayMetrics } = await import('../services/kitStock.service.js');
+      await attachKitDisplayMetrics(products, options);
     }
     return products;
   }

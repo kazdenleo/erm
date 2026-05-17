@@ -13,9 +13,6 @@ import {
   computeMaxKitUnitsReservable,
   getReservedKitUnitsForOrder,
   releaseAllReservesForOrder,
-  persistKitStock,
-  getKitComponents,
-  recalculateKitsForComponent,
   findKitProductIdForMarketplaceOrder
 } from './kitStock.service.js';
 import integrationsService from './integrations.service.js';
@@ -228,24 +225,19 @@ class OrdersService {
         blocked.push({ marketplace: o.marketplace, orderId: oid, reason: 'не определён товар (product_id)' });
         continue;
       }
-      if (await isKitProductId(prodId)) {
-        const kitReserved =
-          orderDbId && Number.isFinite(orderDbId)
-            ? await getReservedKitUnitsForOrder(prodId, orderDbId)
-            : 0;
-        if (kitReserved < need) {
-          blocked.push({
-            marketplace: o.marketplace,
-            orderId: oid,
-            reason: `нет резерва комплекта (зарезервировано: ${kitReserved} компл., нужно: ${need})`
-          });
-          continue;
-        }
-      } else if (resQty < need) {
-        blocked.push({ marketplace: o.marketplace, orderId: oid, reason: `нет резерва под заказ (зарезервировано: ${resQty}, нужно: ${need})` });
+      const reservedForLine =
+        orderDbId && Number.isFinite(orderDbId) && (await isKitProductId(prodId))
+          ? await getReservedKitUnitsForOrder(prodId, orderDbId)
+          : resQty;
+      if (reservedForLine < need) {
+        blocked.push({
+          marketplace: o.marketplace,
+          orderId: oid,
+          reason: `нет резерва под заказ (зарезервировано: ${reservedForLine}, нужно: ${need})`
+        });
         continue;
       }
-      if (prodQty < prodRes) {
+      if (!(await isKitProductId(prodId)) && prodQty < prodRes) {
         blocked.push({
           marketplace: o.marketplace,
           orderId: oid,
@@ -390,7 +382,7 @@ class OrdersService {
 
   /**
    * Установить резерв по заказу: уменьшить доступный остаток и записать движение в историю.
-   * Для комплекта резервируются комплектующие.
+   * Для комплекта — резерв на SKU комплекта (лимит: собираемость из комплектующих + остаток комплекта).
    */
   async _applyReserveForOrder(productId, quantity, orderId, meta = {}) {
     if (!productId || quantity < 1) return;
@@ -411,27 +403,32 @@ class OrdersService {
     await this._applyReserveForOrderComponent(productId, qtyWanted, orderId, meta);
   }
 
-  /** Резерв одной позиции (не комплект): факт + в пути − уже зарезервировано. */
+  /** Резерв одной позиции: факт + в пути − уже зарезервировано; у комплекта — + собираемость из комплектующих. */
   async _applyReserveForOrderComponent(productId, quantity, orderId, meta = {}) {
     if (!productId || quantity < 1) return;
     const qtyWanted = Math.max(1, parseInt(quantity, 10) || 1);
 
-    // Жёсткая защита: нельзя создавать резерв без покрытия (факт + ожидается - уже зарезервировано).
-    // Это предотвращает ситуацию, когда резерв появляется до закупки/поступления.
-    const pr = await query(
-      `SELECT COALESCE(quantity, 0) AS quantity,
-              COALESCE(incoming_quantity, 0) AS incoming_quantity,
-              COALESCE(reserved_quantity, 0) AS reserved_quantity
-       FROM products
-       WHERE id = $1
-       LIMIT 1`,
-      [productId]
-    );
-    const row = pr.rows?.[0];
-    const actual = row?.quantity != null ? Number(row.quantity) : 0;
-    const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
-    const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
-    const availableSupply = Math.max(0, actual + incoming - reserved);
+    let availableSupply;
+    if (await isKitProductId(productId)) {
+      availableSupply = await computeMaxKitUnitsReservable(productId, {
+        warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+      });
+    } else {
+      const pr = await query(
+        `SELECT COALESCE(quantity, 0) AS quantity,
+                COALESCE(incoming_quantity, 0) AS incoming_quantity,
+                COALESCE(reserved_quantity, 0) AS reserved_quantity
+         FROM products
+         WHERE id = $1
+         LIMIT 1`,
+        [productId]
+      );
+      const row = pr.rows?.[0];
+      const actual = row?.quantity != null ? Number(row.quantity) : 0;
+      const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
+      const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
+      availableSupply = Math.max(0, actual + incoming - reserved);
+    }
     const qty = Math.min(qtyWanted, Math.floor(availableSupply));
     if (qty <= 0) return;
 
@@ -533,41 +530,6 @@ class OrdersService {
       assembled: true,
       warehouse_id: warehouseId || null
     };
-
-    if (await isKitProductId(productId)) {
-      const components = await getKitComponents(productId);
-      const kitsOrdered = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
-
-      for (const c of components) {
-        const compId = Number(c.component_product_id);
-        if (!Number.isFinite(compId) || compId < 1) continue;
-        const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
-        const targetQty = kitsOrdered * perKit;
-        const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, compId);
-        const shipQty = Math.max(0, targetQty - alreadyShipped);
-        const net = await this._getReservedQtyForOrderProduct(orderDbId, compId);
-        if (net > 0) {
-          const unreserveQty = shipQty > 0 ? Math.min(net, shipQty) : net;
-          await stockMovementsService.applyChange(compId, {
-            delta: unreserveQty,
-            type: 'unreserve',
-            reason: `Отгрузка: снятие резерва по заказу ${orderIdStr}`.trim(),
-            meta: { ...metaBase, kit_product_id: productId }
-          });
-        }
-        if (shipQty > 0) {
-          await stockMovementsService.applyChange(compId, {
-            delta: -shipQty,
-            type: 'shipment',
-            reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
-            meta: { ...metaBase, kit_product_id: productId }
-          });
-          await recalculateKitsForComponent(compId, { warehouseId });
-        }
-      }
-      await persistKitStock(productId, { warehouseId });
-      return;
-    }
 
     const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
     const net = await this._getReservedQtyForOrderProduct(orderDbId, productId);
