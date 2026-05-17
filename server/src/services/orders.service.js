@@ -546,12 +546,10 @@ class OrdersService {
         const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
         const targetQty = kitsToFulfill * perKit;
         const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, compId);
-        const shipQty = targetQty - alreadyShipped;
-        if (shipQty <= 0) continue;
-
+        const shipQty = Math.max(0, targetQty - alreadyShipped);
         const net = await this._getReservedQtyForOrderProduct(orderDbId, compId);
-        const unreserveQty = Math.min(net, shipQty);
-        if (unreserveQty > 0) {
+        if (net > 0) {
+          const unreserveQty = shipQty > 0 ? Math.min(net, shipQty) : net;
           await stockMovementsService.applyChange(compId, {
             delta: unreserveQty,
             type: 'unreserve',
@@ -559,13 +557,15 @@ class OrdersService {
             meta: { ...metaBase, kit_product_id: productId }
           });
         }
-        await stockMovementsService.applyChange(compId, {
-          delta: -shipQty,
-          type: 'shipment',
-          reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
-          meta: { ...metaBase, kit_product_id: productId }
-        });
-        await recalculateKitsForComponent(compId, { warehouseId });
+        if (shipQty > 0) {
+          await stockMovementsService.applyChange(compId, {
+            delta: -shipQty,
+            type: 'shipment',
+            reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
+            meta: { ...metaBase, kit_product_id: productId }
+          });
+          await recalculateKitsForComponent(compId, { warehouseId });
+        }
       }
       await persistKitStock(productId, { warehouseId });
       return;
@@ -575,10 +575,9 @@ class OrdersService {
     const net = await this._getReservedQtyForOrderProduct(orderDbId, productId);
     const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, productId);
     const shipQty = Math.max(0, qty - alreadyShipped);
-    if (shipQty <= 0) return;
-    const release = net > 0 ? Math.min(shipQty, net) : 0;
 
-    if (release > 0) {
+    if (net > 0) {
+      const release = shipQty > 0 ? Math.min(shipQty, net) : net;
       await stockMovementsService.applyChange(productId, {
         delta: release,
         type: 'unreserve',
@@ -587,12 +586,14 @@ class OrdersService {
       });
     }
 
-    await stockMovementsService.applyChange(productId, {
-      delta: -shipQty,
-      type: 'shipment',
-      reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
-      meta: metaBase
-    });
+    if (shipQty > 0) {
+      await stockMovementsService.applyChange(productId, {
+        delta: -shipQty,
+        type: 'shipment',
+        reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
+        meta: metaBase
+      });
+    }
   }
 
   /**
@@ -617,7 +618,7 @@ class OrdersService {
         }
         if (!order) continue;
         const status = String(order.status || '').toLowerCase();
-        if (status === 'cancelled' || status === 'new') continue;
+        if (status === 'cancelled' || status === 'new' || status === 'in_procurement') continue;
 
         const rows = order.orderGroupId
           ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
@@ -629,12 +630,12 @@ class OrdersService {
           continue;
         }
 
-        if (status === 'assembled' || status === 'shipped') {
-          for (const r of rows) {
-            await this._applyAssemblyStockForOrderRow(r);
-          }
-          stockOnly += 1;
+        // Закрытая поставка = отгрузка: снять резерв и списать для любого рабочего статуса
+        // (раньше только assembled/shipped — после синхронизации с МП резерв «зависал»).
+        for (const r of rows) {
+          await this._applyAssemblyStockForOrderRow(r);
         }
+        stockOnly += 1;
       } catch (e) {
         console.warn('[Orders] applyAssemblyStockForShipmentOrders:', orderId, e?.message || e);
       }
@@ -1408,6 +1409,12 @@ class OrdersService {
     if (repositoryFactory.isUsingPostgreSQL()) {
       const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       if (!order) return null;
+      const rows = order.orderGroupId
+        ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
+        : [order];
+      for (const r of rows) {
+        await this._applyAssemblyStockForOrderRow(r);
+      }
       if (order.orderGroupId) {
         await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'shipped', profileId);
         return order;

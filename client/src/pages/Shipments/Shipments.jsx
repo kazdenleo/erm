@@ -19,6 +19,7 @@ export function Shipments() {
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState(null);
   const [closeLoadingId, setCloseLoadingId] = useState(null);
+  const [reapplyLoadingId, setReapplyLoadingId] = useState(null);
   const [openShipmentDetail, setOpenShipmentDetail] = useState(null);
   const [openDetailError, setOpenDetailError] = useState(null);
   const [removingOrderId, setRemovingOrderId] = useState(null);
@@ -79,6 +80,22 @@ export function Shipments() {
       setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка удаления заказа из поставки');
     } finally {
       setRemovingOrderId(null);
+    }
+  };
+
+  const handleReapplyStock = async (shipment) => {
+    if (!shipment?.id || !isLocalShipment(shipment) || !shipment.closed) return;
+    setReapplyLoadingId(shipment.id);
+    setOpenDetailError(null);
+    try {
+      await shipmentsApi.reapplyStock(shipment.id);
+      await loadShipments();
+    } catch (e) {
+      setOpenDetailError(
+        e.response?.data?.message || e.message || 'Не удалось повторить списание остатков'
+      );
+    } finally {
+      setReapplyLoadingId(null);
     }
   };
 
@@ -177,6 +194,19 @@ export function Shipments() {
                                 disabled={closeLoadingId === item.id}
                               >
                                 {closeLoadingId === item.id ? 'Закрытие...' : 'Закрыть поставку'}
+                              </Button>
+                            )}
+                            {item.closed && isLocalShipment(item) && (
+                              <Button
+                                variant="secondary"
+                                size="small"
+                                onClick={() => handleReapplyStock(item)}
+                                disabled={reapplyLoadingId === item.id}
+                                title="Снять зависший резерв и списать по заказам поставки"
+                              >
+                                {reapplyLoadingId === item.id
+                                  ? 'Списание…'
+                                  : 'Повторить списание'}
                               </Button>
                             )}
                             {item.closed && item.qrStickerPath && (

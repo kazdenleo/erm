@@ -70,6 +70,12 @@ router.post(
   wrapAsync(ordersController.sendToAssembly.bind(ordersController))
 );
 
+// Повторно снять резерв и списать по заказам (после закрытой поставки)
+router.post(
+  '/reapply-assembly-stock',
+  wrapAsync(ordersController.reapplyAssemblyStock.bind(ordersController))
+);
+
 // Вернуть заказ в статус «Новый» (со сборки / собран)
 router.put(
   '/:marketplace/:orderId/return-to-new',

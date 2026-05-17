@@ -718,6 +718,23 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
       next(error);
     }
   }
+
+  /** Снять резерв и списать по списку заказов (если при закрытии поставки движения не создались). */
+  async reapplyAssemblyStock(req, res, next) {
+    try {
+      const marketplace = req.body?.marketplace != null ? String(req.body.marketplace).trim() : '';
+      const orderIds = Array.isArray(req.body?.orderIds) ? req.body.orderIds.map((x) => String(x).trim()).filter(Boolean) : [];
+      if (!marketplace || orderIds.length === 0) {
+        return res.status(400).json({ ok: false, message: 'Укажите marketplace и массив orderIds' });
+      }
+      const tid = tenantListProfileId(req);
+      const profileId = tid === TENANT_LIST_EMPTY ? null : tid;
+      const data = await ordersService.applyAssemblyStockForShipmentOrders(marketplace, orderIds, profileId);
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new OrdersController();
