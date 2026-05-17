@@ -408,14 +408,15 @@ async function closeShipment(shipmentId, { profileId = null, organizationId = nu
         orderIds,
         profileId
       );
-      if (fin?.processed > 0 || fin?.stockOnly > 0) {
-        logger.info(
-          `[Shipments] Закрытие ${shipmentId}: списание остатков — собрано ${fin.processed}, движения без смены статуса ${fin.stockOnly}`
-        );
-      }
+      logger.info(
+        `[Shipments] Закрытие ${shipmentId}: резерв и списание по заказам — собрано ${fin?.processed ?? 0}, ` +
+          `только движения ${fin?.stockOnly ?? 0}, пропущено (отмена) ${fin?.skipped ?? 0}, не найдено в БД ${fin?.notFound ?? 0}`
+      );
     } catch (e) {
       logger.warn('[Shipments] Закрытие поставки: не удалось списать остатки по заказам:', e?.message || e);
     }
+  } else if (orderIds.length === 0) {
+    logger.warn(`[Shipments] Закрытие ${shipmentId}: в поставке нет orderIds — движения остатков не созданы`);
   }
 
   return normalizeShipment(ship);

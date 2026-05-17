@@ -514,8 +514,8 @@ class OrdersService {
   }
 
   /**
-   * Снять резерв и списать факт при сборке/закрытии поставки.
-   * Для комплекта — по каждой комплектующей (резерв в журнале на компонентах, не на карточке комплекта).
+   * Закрытие поставки / сборка: снять резерв и уменьшить наличие на quantity строки заказа.
+   * Для комплекта — по комплектующим (резерв в журнале на component_product_id).
    */
   async _applyAssemblyStockForOrderRow(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
@@ -537,14 +537,12 @@ class OrdersService {
     if (await isKitProductId(productId)) {
       const components = await getKitComponents(productId);
       const kitsOrdered = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
-      const reservedKits = await getReservedKitUnitsForOrder(productId, orderDbId);
-      const kitsToFulfill = Math.max(kitsOrdered, reservedKits);
 
       for (const c of components) {
         const compId = Number(c.component_product_id);
         if (!Number.isFinite(compId) || compId < 1) continue;
         const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
-        const targetQty = kitsToFulfill * perKit;
+        const targetQty = kitsOrdered * perKit;
         const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, compId);
         const shipQty = Math.max(0, targetQty - alreadyShipped);
         const net = await this._getReservedQtyForOrderProduct(orderDbId, compId);
@@ -597,16 +595,17 @@ class OrdersService {
   }
 
   /**
-   * При закрытии поставки FBS: снять резерв и списать товар по заказам из поставки.
-   * Уже «Собран» — только движения (если при закрытии поставки не было списания).
+   * При закрытии поставки FBS: по каждому заказу из ship.orderIds — unreserve + shipment на quantity.
    */
   async applyAssemblyStockForShipmentOrders(marketplace, orderIds, profileId = null) {
     if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
-      return { processed: 0, stockOnly: 0 };
+      return { processed: 0, stockOnly: 0, skipped: 0, notFound: 0 };
     }
     const mp = String(marketplace).trim();
     let processed = 0;
     let stockOnly = 0;
+    let skipped = 0;
+    let notFound = 0;
 
     for (const rawOid of orderIds) {
       const orderId = String(rawOid).trim();
@@ -616,9 +615,15 @@ class OrdersService {
         if (!order && profileId != null) {
           order = await this.repository.findByMarketplaceAndOrderId(mp, orderId, null);
         }
-        if (!order) continue;
+        if (!order) {
+          notFound += 1;
+          continue;
+        }
         const status = String(order.status || '').toLowerCase();
-        if (status === 'cancelled' || status === 'new' || status === 'in_procurement') continue;
+        if (status === 'cancelled') {
+          skipped += 1;
+          continue;
+        }
 
         const rows = order.orderGroupId
           ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
@@ -630,8 +635,6 @@ class OrdersService {
           continue;
         }
 
-        // Закрытая поставка = отгрузка: снять резерв и списать для любого рабочего статуса
-        // (раньше только assembled/shipped — после синхронизации с МП резерв «зависал»).
         for (const r of rows) {
           await this._applyAssemblyStockForOrderRow(r);
         }
@@ -641,7 +644,7 @@ class OrdersService {
       }
     }
 
-    return { processed, stockOnly };
+    return { processed, stockOnly, skipped, notFound };
   }
 
   /** Резерв для строки заказа из БД: частичный резерв и дозаполнение до qty при появлении остатка. */
