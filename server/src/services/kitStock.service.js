@@ -505,26 +505,64 @@ export async function computeAssemblableFromComponents(kitProductId, opts = {}) 
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
-export async function computeMaxKitUnitsReservable(kitProductId, opts = {}) {
+/** Доступно к резерву: целые комплекты (1 SKU) и собираемость из комплектующих. */
+export async function computeKitReservableBreakdown(kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
-  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+  if (!Number.isFinite(kitId) || kitId < 1) {
+    return { wholeAvail: 0, fromComponents: 0, total: 0 };
+  }
   const fromComponents = await computeAssemblableFromComponents(kitId, opts);
   const whole = await readKitStockFromDb(kitId, opts);
-  const wholeAvail = Math.max(0, (whole.onHand || 0) + (whole.incoming || 0) - (whole.reserved || 0));
-  return fromComponents + wholeAvail;
+  const wholeAvail = Math.max(
+    0,
+    (whole.onHand || 0) + (whole.incoming || 0) - (whole.reserved || 0)
+  );
+  return {
+    wholeAvail,
+    fromComponents,
+    total: wholeAvail + fromComponents
+  };
+}
+
+export async function computeMaxKitUnitsReservable(kitProductId, opts = {}) {
+  const b = await computeKitReservableBreakdown(kitProductId, opts);
+  return b.total;
+}
+
+/**
+ * Сколько комплектов зарезервировать: сначала из наличия 1 SKU, остаток — из комплектующих.
+ * @returns {{ kitsToReserve: number, fromWhole: number, fromComponents: number }}
+ */
+export function allocateKitReservePriority(kitsWanted, breakdown) {
+  const wanted = Math.max(0, parseInt(kitsWanted, 10) || 0);
+  const wholeAvail = Math.max(0, Number(breakdown?.wholeAvail) || 0);
+  const fromComponents = Math.max(0, Number(breakdown?.fromComponents) || 0);
+  const fromWhole = Math.min(wanted, wholeAvail);
+  const fromComp = Math.min(Math.max(0, wanted - fromWhole), fromComponents);
+  return {
+    kitsToReserve: fromWhole + fromComp,
+    fromWhole,
+    fromComponents: fromComp
+  };
 }
 
 /** Резерв по заказу — только на SKU комплекта (как у обычного товара). */
 export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabel, meta, applyReserveFn) {
   const kitId = Number(kitProductId);
   const wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
-  const maxKits = await computeMaxKitUnitsReservable(kitId, {
+  const reserveOpts = {
     warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
-  });
-  const kitsToReserve = Math.min(wanted, maxKits);
-  if (kitsToReserve <= 0) return 0;
+  };
+  const breakdown = await computeKitReservableBreakdown(kitId, reserveOpts);
+  const alloc = allocateKitReservePriority(wanted, breakdown);
+  if (alloc.kitsToReserve <= 0) return 0;
 
-  await applyReserveFn(kitId, kitsToReserve, orderIdLabel, meta);
+  await applyReserveFn(kitId, alloc.kitsToReserve, orderIdLabel, {
+    ...meta,
+    kit_reserve_preallocated: alloc.kitsToReserve,
+    kit_reserve_from_whole: alloc.fromWhole,
+    kit_reserve_from_components: alloc.fromComponents
+  });
 
   scheduleWarehouseStockMarketplaceSync(kitId, {
     source: 'kit_order_reserve',
@@ -535,7 +573,7 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
       String(meta?.warehouse_id ?? meta?.warehouseId).trim() !== ''
   });
 
-  return kitsToReserve;
+  return alloc.kitsToReserve;
 }
 
 export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unreserveFn) {
@@ -644,6 +682,8 @@ export default {
   computeKitMetricsFromComponents,
   computeKitDisplayStock,
   computeMaxKitUnitsReservable,
+  computeKitReservableBreakdown,
+  allocateKitReservePriority,
   getReservedKitUnitsForOrder,
   computeKitMarketplaceStock,
   readKitStockFromDb,

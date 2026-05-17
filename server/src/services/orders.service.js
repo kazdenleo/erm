@@ -11,6 +11,8 @@ import {
   isKitProductId,
   applyKitOrderReserve,
   computeMaxKitUnitsReservable,
+  computeKitReservableBreakdown,
+  allocateKitReservePriority,
   getReservedKitUnitsForOrder,
   releaseAllReservesForOrder,
   findKitProductIdForMarketplaceOrder
@@ -409,10 +411,18 @@ class OrdersService {
     const qtyWanted = Math.max(1, parseInt(quantity, 10) || 1);
 
     let availableSupply;
+    let qty;
     if (await isKitProductId(productId)) {
-      availableSupply = await computeMaxKitUnitsReservable(productId, {
-        warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
-      });
+      const pre = meta?.kit_reserve_preallocated;
+      if (pre != null && Number(pre) > 0) {
+        qty = Math.min(qtyWanted, Math.floor(Number(pre)));
+      } else {
+        const breakdown = await computeKitReservableBreakdown(productId, {
+          warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+        });
+        const alloc = allocateKitReservePriority(qtyWanted, breakdown);
+        qty = alloc.kitsToReserve;
+      }
     } else {
       const pr = await query(
         `SELECT COALESCE(quantity, 0) AS quantity,
@@ -428,14 +438,22 @@ class OrdersService {
       const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
       const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
       availableSupply = Math.max(0, actual + incoming - reserved);
+      qty = Math.min(qtyWanted, Math.floor(availableSupply));
     }
-    const qty = Math.min(qtyWanted, Math.floor(availableSupply));
     if (qty <= 0) return;
+
+    const reasonBase = `Резерв по заказу ${orderId || ''}`.trim() || 'Резерв';
+    const fromWhole = Number(meta?.kit_reserve_from_whole) || 0;
+    const fromComp = Number(meta?.kit_reserve_from_components) || 0;
+    const reason =
+      fromWhole > 0
+        ? `${reasonBase} (${fromWhole} целым SKU${fromComp > 0 ? `, ${fromComp} из комплектующих` : ''})`
+        : reasonBase;
 
     await stockMovementsService.applyChange(productId, {
       delta: -qty,
       type: 'reserve',
-      reason: `Резерв по заказу ${orderId || ''}`.trim() || 'Резерв',
+      reason,
       meta: { ...meta }
     });
   }
@@ -627,7 +645,7 @@ class OrdersService {
       const alreadyReservedKits = await getReservedKitUnitsForOrder(productId, id);
       const need = Math.max(0, qty - alreadyReservedKits);
       if (need <= 0) return;
-      const maxKits = await computeMaxKitUnitsReservable(productId);
+      const maxKits = await computeMaxKitUnitsReservable(productId, { warehouseId });
       const reserveKits = Math.min(need, maxKits);
       if (reserveKits <= 0) return;
       await applyKitOrderReserve(
