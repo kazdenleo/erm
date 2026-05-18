@@ -87,8 +87,13 @@ class StockMovementsService {
     const profId = product.profile_id ?? product.profileId ?? null;
     const incAfter =
       productAfter?.incoming_quantity != null ? Number(productAfter.incoming_quantity) : 0;
-    const resAfter =
+    let resAfter =
       productAfter?.reserved_quantity != null ? Number(productAfter.reserved_quantity) : 0;
+    if (type === 'reserve' && safeDelta < 0) {
+      resAfter = newReserved;
+    } else if (type === 'unreserve' && safeDelta > 0) {
+      resAfter = newReserved;
+    }
 
     const movement = await this.repository.create({
       productId: idNum,
