@@ -59,9 +59,20 @@ class StockMovementsService {
     let newWh = currentWh + safeDelta;
     if (newWh < 0) newWh = 0;
 
+    const incomingQty = product.incoming_quantity != null ? Number(product.incoming_quantity) : 0;
+    const availableForReserve = Math.max(0, totalBefore + incomingQty - currentReserved);
+
     let newReserved = currentReserved;
     if (type === 'reserve' && safeDelta < 0) {
-      newReserved = currentReserved + Math.abs(safeDelta);
+      const reserveAdd = Math.abs(safeDelta);
+      if (reserveAdd > availableForReserve) {
+        const err = new Error(
+          `Недостаточно остатка для резерва (доступно: ${availableForReserve}, запрошено: ${reserveAdd})`
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+      newReserved = currentReserved + reserveAdd;
     } else if (type === 'unreserve' && safeDelta > 0) {
       newReserved = Math.max(0, currentReserved - safeDelta);
     }

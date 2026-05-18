@@ -447,6 +447,18 @@ class OrdersService {
     }
     if (qty <= 0) return;
 
+    const orderDbIdRaw = meta?.order_id ?? meta?.orderId;
+    const orderDbId =
+      orderDbIdRaw != null && String(orderDbIdRaw).trim() !== ''
+        ? Number(orderDbIdRaw)
+        : null;
+    if (Number.isFinite(orderDbId) && orderDbId > 0) {
+      const alreadyForOrder = await this._getReservedQtyForOrderProduct(orderDbId, productId);
+      if (alreadyForOrder >= qtyWanted) return;
+      qty = Math.min(qty, qtyWanted - alreadyForOrder);
+      if (qty <= 0) return;
+    }
+
     const reasonBase = `Резерв по заказу ${orderId || ''}`.trim() || 'Резерв';
     const fromWhole = Number(meta?.kit_reserve_from_whole) || 0;
     const fromComp = Number(meta?.kit_reserve_from_components) || 0;
@@ -849,7 +861,7 @@ class OrdersService {
       return;
     }
 
-    const alreadyReservedForOrder = await this._getReservedQtyForOrder(id);
+    const alreadyReservedForOrder = await this._getReservedQtyForOrderProduct(id, productId);
     const need = Math.max(0, qty - alreadyReservedForOrder);
     if (need <= 0) return;
 
@@ -925,8 +937,11 @@ class OrdersService {
     if (!kitId) kitId = await this.resolveProductIdForAssemblyLine(order);
     if (kitId) productIds.add(Number(kitId));
 
+    const excludeIds = metaOrderId != null ? [metaOrderId] : [];
     for (const pid of productIds) {
-      await this.ensureReservesForProductIfSupplyAvailable(pid).catch(() => {});
+      await this.ensureReservesForProductIfSupplyAvailable(pid, {
+        excludeOrderDbIds: excludeIds
+      }).catch(() => {});
     }
   }
 
@@ -936,10 +951,15 @@ class OrdersService {
    * Важно: не делаем глобальную "пересборку" (которая пишет unreserve+reserve пачкой),
    * а только ДОрезервируем тем, кому не хватает.
    */
-  async ensureReservesForProductIfSupplyAvailable(productId) {
+  async ensureReservesForProductIfSupplyAvailable(productId, { excludeOrderDbIds = null } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return;
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
+    const exclude = new Set(
+      (excludeOrderDbIds || [])
+        .map((id) => Number(id))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    );
     const pr = await query(
       `SELECT COALESCE(quantity, 0) AS quantity,
               COALESCE(incoming_quantity, 0) AS incoming_quantity,
@@ -966,6 +986,8 @@ class OrdersService {
           ? await this.repository.findReserveQueueOrdersByProductId(fp, 500)
           : [];
       for (const o of q) {
+        const oid = orderRowDbId(o);
+        if (oid && exclude.has(oid)) continue;
         await this._applyReserveForOrderIfAbsent(o).catch(() => {});
       }
     };
@@ -1310,6 +1332,7 @@ class OrdersService {
   /** Повторная попытка резерва (новый / закупка / после поступления остатка). */
   async _reapplyReserveForOrderRows(rows) {
     const list = Array.isArray(rows) ? rows : [];
+    const excludeIds = list.map((r) => orderRowDbId(r)).filter((id) => id != null);
     const touchedKitIds = new Set();
     for (const row of list) {
       if (!row) continue;
@@ -1320,12 +1343,16 @@ class OrdersService {
           const kid = Number(kitId);
           if (Number.isFinite(kid) && kid > 0 && !touchedKitIds.has(kid)) {
             touchedKitIds.add(kid);
-            await this.ensureReservesForProductIfSupplyAvailable(kid).catch(() => {});
+            await this.ensureReservesForProductIfSupplyAvailable(kid, {
+              excludeOrderDbIds: excludeIds
+            }).catch(() => {});
             const components = await getKitComponents(kid);
             for (const c of components) {
               const cpid = Number(c.component_product_id);
               if (Number.isFinite(cpid) && cpid > 0) {
-                await this.ensureReservesForProductIfSupplyAvailable(cpid).catch(() => {});
+                await this.ensureReservesForProductIfSupplyAvailable(cpid, {
+                  excludeOrderDbIds: excludeIds
+                }).catch(() => {});
               }
             }
           }
@@ -2231,7 +2258,18 @@ class OrdersService {
     for (const row of rows || []) {
       const id = orderRowDbId(row);
       const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
-      const reserved = id ? await this._getReservedQtyForOrder(id) : 0;
+      let reserved = 0;
+      if (id) {
+        const productId = await this._resolveProductIdForOrderStock(row).catch(() => null);
+        const pid = Number(productId);
+        if (Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
+          reserved = await getReservedKitUnitsForOrder(pid, id);
+        } else if (Number.isFinite(pid) && pid > 0) {
+          reserved = await this._getReservedQtyForOrderProduct(id, pid);
+        } else {
+          reserved = await this._getReservedQtyForOrder(id);
+        }
+      }
       reservedQty += reserved;
       needQty += qty;
       lines.push({
@@ -2293,6 +2331,7 @@ class OrdersService {
     const doUnreserve = act === 'unreserve' || (act === 'toggle' && before.hasReserve);
 
     if (doUnreserve) {
+      const excludedDbIds = rows.map((r) => orderRowDbId(r)).filter((id) => id != null);
       const productIds = new Set();
       for (const row of rows) {
         const id = orderRowDbId(row);
@@ -2308,9 +2347,12 @@ class OrdersService {
         });
         for (const pid of affected || []) productIds.add(Number(pid));
       }
+      // Не перераспределяем освободившийся остаток сразу на те же заказы (иначе «двойной» резерв при повторной постановке).
       for (const pid of productIds) {
         if (Number.isFinite(pid) && pid > 0) {
-          await this.ensureReservesForProductIfSupplyAvailable(pid).catch(() => {});
+          await this.ensureReservesForProductIfSupplyAvailable(pid, {
+            excludeOrderDbIds: excludedDbIds
+          }).catch(() => {});
         }
       }
     } else {
@@ -2323,7 +2365,12 @@ class OrdersService {
           err.statusCode = 400;
           throw err;
         }
-        await this._applyReserveForOrderIfAbsent(row);
+        try {
+          await this._applyReserveForOrderIfAbsent(row);
+        } catch (e) {
+          if (e?.statusCode === 400) throw e;
+          /* ignore */
+        }
       }
     }
 

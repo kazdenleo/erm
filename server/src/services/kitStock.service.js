@@ -698,16 +698,7 @@ export async function computeAssemblableFromComponents(kitProductId, opts = {}) 
     const available = await getComponentAssemblableUnits(c.component_product_id, opts);
     minKits = Math.min(minKits, Math.floor(available / perKit));
   }
-  let fromComp = Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
-
-  // Закупка часто кладёт incoming на SKU комплекта, а не на комплектующие.
-  // Если целых комплектов на складе нет — «в пути» по комплекту всё равно можно собрать в резерв через состав.
-  const whole = await readKitStockFromDb(kitId, opts);
-  const kitIncomingAvail = Math.max(0, (whole.incoming || 0) - (whole.reserved || 0));
-  if ((whole.onHand || 0) <= 0 && kitIncomingAvail > 0) {
-    fromComp = Math.max(fromComp, kitIncomingAvail);
-  }
-  return fromComp;
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
 /** Доступно к резерву: целые комплекты (1 SKU) и собираемость из комплектующих. */
@@ -722,10 +713,15 @@ export async function computeKitReservableBreakdown(kitProductId, opts = {}) {
     0,
     (whole.onHand || 0) + (whole.incoming || 0) - (whole.reserved || 0)
   );
+  const allocCap = allocateKitReservePriority(9999, {
+    wholeAvail,
+    fromComponents,
+    physicalOnHand: whole.onHand || 0
+  });
   return {
     wholeAvail,
     fromComponents,
-    total: wholeAvail + fromComponents,
+    total: allocCap.kitsToReserve,
     physicalOnHand: whole.onHand || 0
   };
 }
@@ -744,7 +740,8 @@ export function allocateKitReservePriority(kitsWanted, breakdown) {
   const physicalOnHand = Math.max(0, Number(breakdown?.physicalOnHand) || 0);
   const wholeAvail = Math.max(0, Number(breakdown?.wholeAvail) || 0);
   const fromComponents = Math.max(0, Number(breakdown?.fromComponents) || 0);
-  const wholePool = physicalOnHand > 0 ? wholeAvail : 0;
+  // Целый комплект: наличие + «в пути» на SKU комплекта (не только физический остаток).
+  const wholePool = wholeAvail;
   const fromWhole = Math.min(wanted, wholePool);
   const fromComp = Math.min(Math.max(0, wanted - fromWhole), fromComponents);
   return {
@@ -774,8 +771,7 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   if (alloc.kitsToReserve <= 0) return 0;
 
   if (alloc.fromWhole > 0) {
-    const physicalWhole = await readKitPhysicalOnHandFromDb(kitId, null, reserveOpts);
-    const wholeUnits = Math.min(alloc.fromWhole, physicalWhole);
+    const wholeUnits = alloc.fromWhole;
     if (wholeUnits > 0) {
       await applyReserveFn(kitId, wholeUnits, orderIdLabel, {
         ...meta,
@@ -784,6 +780,27 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
         kit_reserve_from_components: 0,
         kit_reserve_scope: 'whole'
       });
+    }
+  }
+
+  if (alloc.fromComponents > 0) {
+    const components = await getKitComponents(kitId);
+    let canReserveFromComponents = components.length > 0;
+    for (const c of components) {
+      const perKit = Math.max(1, c.quantity);
+      const compQty = alloc.fromComponents * perKit;
+      const compAvail = await getComponentAssemblableUnits(c.component_product_id, reserveOpts);
+      if (compAvail < compQty) {
+        canReserveFromComponents = false;
+        break;
+      }
+    }
+    if (!canReserveFromComponents) {
+      alloc = {
+        kitsToReserve: alloc.fromWhole,
+        fromWhole: alloc.fromWhole,
+        fromComponents: 0
+      };
     }
   }
 
