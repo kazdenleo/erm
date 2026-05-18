@@ -45,8 +45,16 @@ export const shipmentsApi = {
     return response.data?.data ?? response.data;
   },
 
-  close: async (shipmentId) => {
-    const response = await api.post(`/shipments/${encodeURIComponent(shipmentId)}/close`);
+  getClosePreview: async (shipmentId) => {
+    const response = await api.get(`/shipments/${encodeURIComponent(shipmentId)}/close-preview`);
+    return response.data?.data ?? response.data;
+  },
+
+  close: async (shipmentId, options = {}) => {
+    const body = {};
+    if (options.notAssembled != null) body.notAssembled = options.notAssembled;
+    if (options.cancelled != null) body.cancelled = options.cancelled;
+    const response = await api.post(`/shipments/${encodeURIComponent(shipmentId)}/close`, body);
     return response.data?.data ?? response.data;
   },
 

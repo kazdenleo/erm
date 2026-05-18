@@ -94,7 +94,9 @@ class AssemblyController {
       let orderItems;
       if (order.orderGroupId) {
         const groupOrders = await ordersService.getByOrderGroupId(order.orderGroupId);
-        orderItems = await buildAssemblyOrderItemsFromGroup(groupOrders, ordersService);
+        orderItems = await buildAssemblyOrderItemsFromGroup(groupOrders, ordersService, {
+          scannedProductId: product.id
+        });
         if (!orderItems.length) {
           orderItems = await Promise.all(
             (groupOrders || []).map(async (o) => {
@@ -118,7 +120,9 @@ class AssemblyController {
           );
         }
       } else {
-        orderItems = await buildAssemblyOrderItems(order, ordersService);
+        orderItems = await buildAssemblyOrderItems(order, ordersService, {
+          scannedProductId: product.id
+        });
         if (!orderItems.length) {
           let linePid = order.productId ?? order.product_id;
           if (linePid == null) {

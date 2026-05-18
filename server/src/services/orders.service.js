@@ -587,8 +587,43 @@ class OrdersService {
   }
 
   /**
+   * Сколько списать/снять с резерва по product_id (комплектующие — qty × perKit, иначе max(orderQty, net)).
+   */
+  async _resolveShipmentQtyForOrderProduct(orderRow, productId) {
+    const pid = Number(productId);
+    const orderQty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
+    if (!Number.isFinite(pid) || pid < 1) return orderQty;
+
+    let kitId = await this._resolveProductIdForOrderStock(orderRow);
+    if (kitId != null && !(await isKitProductId(kitId))) kitId = null;
+    if (kitId == null) {
+      const bySku = await findKitProductIdForMarketplaceOrder(0, orderRow);
+      if (bySku != null && (await isKitProductId(bySku))) kitId = bySku;
+    }
+    if (kitId == null) {
+      const byLine = await findKitProductIdForMarketplaceOrder(pid, orderRow);
+      if (byLine != null && (await isKitProductId(byLine))) kitId = byLine;
+    }
+
+    if (kitId != null) {
+      const components = await getKitComponents(kitId);
+      const row = components.find((c) => Number(c.component_product_id) === pid);
+      if (row) {
+        return orderQty * Math.max(1, parseInt(row.quantity, 10) || 1);
+      }
+    }
+
+    const orderDbId = orderRowDbId(orderRow);
+    if (orderDbId) {
+      const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
+      if (net > 0) return Math.max(orderQty, net);
+    }
+    return orderQty;
+  }
+
+  /**
    * Снять резерв и списать наличие по одному product_id (строка заказа).
-   * @param {number|null} targetQty — сколько списать; по умолчанию quantity строки заказа.
+   * @param {number|null} targetQty — сколько списать; по умолчанию — из состава комплекта или резерва.
    */
   async _applyAssemblyStockForOrderProduct(orderRow, productId, targetQty = null) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow || !productId) return;
@@ -603,7 +638,7 @@ class OrdersService {
     const lineQty =
       targetQty != null
         ? Math.max(0, parseInt(targetQty, 10) || 0)
-        : Math.max(1, parseInt(orderRow.quantity, 10) || 1);
+        : await this._resolveShipmentQtyForOrderProduct(orderRow, pid);
     if (lineQty <= 0) return;
 
     const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
@@ -703,7 +738,8 @@ class OrdersService {
       }
       for (const pid of componentOnly) {
         if (!skipComponentIds.has(pid)) {
-          await this._applyAssemblyStockForOrderProduct(orderRow, pid);
+          const shipQty = await this._resolveShipmentQtyForOrderProduct(orderRow, pid);
+          await this._applyAssemblyStockForOrderProduct(orderRow, pid, shipQty);
         }
       }
       for (const kitId of kitIds) {
@@ -724,7 +760,8 @@ class OrdersService {
   }
 
   /**
-   * При закрытии поставки FBS: по каждому заказу из ship.orderIds — unreserve + shipment на quantity.
+   * При закрытии поставки FBS: снять резерв и списать наличие по заказам «Собран» / «Отгружен».
+   * Несобранные и отменённые обрабатываются до вызова (см. closeShipment).
    */
   async applyAssemblyStockForShipmentOrders(marketplace, orderIds, profileId = null) {
     if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
@@ -750,35 +787,19 @@ class OrdersService {
           skipped += 1;
           continue;
         }
+        if (status !== 'assembled' && status !== 'shipped') {
+          skipped += 1;
+          continue;
+        }
 
         const rows = order.orderGroupId
           ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
           : [order];
 
-        if (status === 'in_assembly') {
-          const marked = await this.markOrderAsAssembled(mp, orderId, null, profileId, null);
-          if (!marked) {
-            for (const r of rows) {
-              await this._applyAssemblyStockForOrderRow(r);
-            }
-            if (order.orderGroupId) {
-              await this.repository.markAssembledByOrderGroupId(
-                order.orderGroupId,
-                null,
-                null,
-                null
-              );
-            } else {
-              await this.repository.markAssembledByMarketplaceAndOrderId(mp, orderId, null, null, null);
-            }
-          }
-          processed += 1;
-          continue;
-        }
-
         for (const r of rows) {
           await this._applyAssemblyStockForOrderRow(r);
         }
+        processed += 1;
         stockOnly += 1;
       } catch (e) {
         console.warn('[Orders] applyAssemblyStockForShipmentOrders:', orderId, e?.message || e);
@@ -1474,21 +1495,15 @@ class OrdersService {
 
   /**
    * Отметить заказ как собранный: статус 'assembled', убирается из списка сборки.
+   * Списание остатков — только при закрытии поставки (applyAssemblyStockForShipmentOrders).
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
-   * @param {string} marketplace
-   * @param {string} orderId
-   * @returns {Promise<object|null>} обновлённый заказ или null
    */
   async markOrderAsAssembled(marketplace, orderId, assembledByUserId = null, profileId = null, stickerNumber = null) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
       const order = await this._findOrderByMarketplaceAndOrderId(marketplace, orderId, profileId);
       if (!order) return null;
-      const rows = order.orderGroupId
-        ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
-        : [order];
 
-      // 1) Ставим assembled (как раньше)
       if (order.orderGroupId) {
         await this.repository.markAssembledByOrderGroupId(
           order.orderGroupId,
@@ -1504,11 +1519,6 @@ class OrdersService {
           profileId,
           stickerNumber
         );
-      }
-
-      // 2) Снятие резерва и списание (для комплектов — по комплектующим)
-      for (const r of rows) {
-        await this._applyAssemblyStockForOrderRow(r);
       }
 
       return this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
@@ -1616,8 +1626,8 @@ class OrdersService {
   }
 
   /**
-   * Отметить заказ как отгруженный: статус 'shipped'.
-   * Если у заказа есть orderGroupId — обновляются все заказы группы.
+   * Отметить заказ как отгруженный: статус 'shipped' (ручные заказы без поставки FBS).
+   * Для FBS списание — при закрытии поставки; здесь движения только для ручного сценария.
    */
   async markOrderAsShipped(marketplace, orderId, profileId = null) {
     if (!marketplace || orderId == null) return null;

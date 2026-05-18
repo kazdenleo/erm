@@ -105,6 +105,22 @@ export const strictRateLimiter = rateLimit({
   },
 });
 
+/** Синхронизация заказов FBS — отдельный лимит по пользователю (не общий IP). */
+export const ordersSyncRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  keyGenerator: (req) => {
+    const uid = req.user?.id;
+    return uid != null ? `orders-sync:${uid}` : req.ip;
+  },
+  message: {
+    success: false,
+    message: 'Too many requests to this endpoint, please try again later.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 /**
  * JSON body size limit middleware
  * Ограничение размера JSON тела запроса

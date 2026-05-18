@@ -600,9 +600,14 @@ export function Orders() {
       .finally(() => setDetailModalLoading(false));
   }, [detailModalRow]);
 
+  const syncInFlightRef = useRef(false);
+
   const runSync = useCallback(
     async (silent = false, opts = {}) => {
+      if (syncInFlightRef.current) return;
+      syncInFlightRef.current = true;
       const forceImport = opts.force === true;
+      const refreshStatuses = opts.refreshStatuses === true;
       try {
         if (!silent) {
           setSyncLoading(true);
@@ -610,7 +615,10 @@ export function Orders() {
           setSyncError(null);
           setSyncInfo(null);
         }
-        const result = await ordersApi.syncFbs({ force: forceImport });
+        const result = await ordersApi.syncFbs({
+          force: forceImport,
+          refreshStatuses
+        });
         if (!silent) setSyncInfo(result);
 
         // Сервер может ответить 202 и запустить синк в фоне — дождёмся завершения через status endpoint.
@@ -649,6 +657,7 @@ export function Orders() {
           }
         }
       } finally {
+        syncInFlightRef.current = false;
         if (!silent) {
           setSyncLoading(false);
           setSyncKind(null);

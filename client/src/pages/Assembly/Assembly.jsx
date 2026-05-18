@@ -580,9 +580,6 @@ export function Assembly() {
           const product = data.product;
 
           if (items.length === 0) {
-            const pid = Number(product.id);
-            const pidKey = Number.isNaN(pid) ? product.id : pid;
-            next[pidKey] = (next[pidKey] || 0) + 1;
             return next;
           }
 
@@ -797,14 +794,20 @@ export function Assembly() {
     });
   }, [currentOrderData, scannedQuantities]);
 
+  const isKitAssembly = useMemo(() => {
+    const items = currentOrderData?.orderItems || [];
+    return items.some((i) => i.isKitComponent || i.kitProductId);
+  }, [currentOrderData]);
+
   const implicitSingleLineDone = useMemo(() => {
+    if (isKitAssembly) return false;
     if (!currentOrderData?.order?.orderId || (currentOrderData.orderItems?.length ?? 0) > 0) return false;
     const need = currentOrderData.order.quantity ?? 1;
     const pid = Number(currentOrderData.product?.id);
     const pk = Number.isNaN(pid) ? currentOrderData.product?.id : pid;
     const scanned = scannedQuantities[pk] ?? 0;
     return scanned >= need;
-  }, [currentOrderData, scannedQuantities]);
+  }, [currentOrderData, scannedQuantities, isKitAssembly]);
 
   const isOrderFullyCollected =
     !!currentOrderData?.order &&
@@ -817,8 +820,9 @@ export function Assembly() {
     isOrderFullyCollected &&
     String(currentOrderData?.order?.status ?? '').toLowerCase() !== 'assembled';
 
-  // Автозавершение скан-сборки: как только все позиции отсканированы — сразу отмечаем «Собран» и печатаем.
+  // Автозавершение скан-сборки (не для комплектов — там завершение вручную).
   useEffect(() => {
+    if (isKitAssembly) return;
     if (!showScanStickerFinish) return;
     if (!currentOrderData?.order || !currentOrderKey) return;
     if (finishScanSubmitting || printingFlowRef.current) return;
@@ -831,7 +835,7 @@ export function Assembly() {
       void handleFinishScanAssembly();
     }, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- намеренно не добавляем handleFinishScanAssembly (не stable)
-  }, [showScanStickerFinish, currentOrderKey, currentOrderData?.order, finishScanSubmitting]);
+  }, [showScanStickerFinish, currentOrderKey, currentOrderData?.order, finishScanSubmitting, isKitAssembly]);
 
   const handleFinishScanAssembly = async () => {
     if (!currentOrderData?.order || !currentOrderKey || finishScanSubmitting) return;

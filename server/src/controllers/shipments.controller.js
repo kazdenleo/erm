@@ -88,6 +88,30 @@ class ShipmentsController {
     }
   }
 
+  async closePreview(req, res, next) {
+    try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
+      }
+      const { id } = req.params;
+      const preview = await shipmentsService.getShipmentClosePreview(id, {
+        profileId: sp.profileId,
+        organizationId: sp.organizationId
+      });
+      return res.status(200).json({ ok: true, data: preview });
+    } catch (error) {
+      if (error.statusCode) {
+        return res.status(error.statusCode).json({
+          ok: false,
+          message: error.message,
+          ...(error.details && { details: error.details })
+        });
+      }
+      next(error);
+    }
+  }
+
   async close(req, res, next) {
     try {
       const sp = shipmentsProfileOpts(req);
@@ -95,10 +119,24 @@ class ShipmentsController {
         return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
       }
       const { id } = req.params;
-      const shipment = await shipmentsService.closeShipment(id, { profileId: sp.profileId, organizationId: sp.organizationId });
+      const body = req.body || {};
+      const closeOptions = {};
+      if (body.notAssembled != null) closeOptions.notAssembled = String(body.notAssembled);
+      if (body.cancelled != null) closeOptions.cancelled = String(body.cancelled);
+      const shipment = await shipmentsService.closeShipment(id, {
+        profileId: sp.profileId,
+        organizationId: sp.organizationId,
+        closeOptions: Object.keys(closeOptions).length ? closeOptions : null
+      });
       return res.status(200).json({ ok: true, data: shipment });
     } catch (error) {
-      if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
+      if (error.statusCode) {
+        return res.status(error.statusCode).json({
+          ok: false,
+          message: error.message,
+          ...(error.details && { details: error.details })
+        });
+      }
       next(error);
     }
   }

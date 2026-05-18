@@ -11,6 +11,7 @@ const router = express.Router();
 
 router.get('/', wrapAsync(shipmentsController.getAll.bind(shipmentsController)));
 // QR этикетка WB без Bearer — см. главный router (routes/index.js) до optionalAuth.
+router.get('/:id/close-preview', wrapAsync(shipmentsController.closePreview.bind(shipmentsController)));
 router.get('/:id', wrapAsync(shipmentsController.getById.bind(shipmentsController)));
 router.post('/', wrapAsync(shipmentsController.create.bind(shipmentsController)));
 router.post('/:id/orders', wrapAsync(shipmentsController.addOrders.bind(shipmentsController)));

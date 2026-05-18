@@ -346,12 +346,109 @@ async function getOrCreateOpenShipment(marketplace, { profileId = null, organiza
   });
 }
 
+const ASSEMBLED_CLOSE_STATUSES = new Set(['assembled', 'shipped']);
+
+function orderStatusLabel(status) {
+  const s = String(status || '').toLowerCase();
+  const map = {
+    new: 'Новый',
+    in_procurement: 'В закупке',
+    in_assembly: 'На сборке',
+    assembled: 'Собран',
+    shipped: 'Отгружен',
+    cancelled: 'Отменён',
+    not_found: 'Не найден в ERP'
+  };
+  return map[s] || s || '—';
+}
+
+function isOrderCancelledForClose(status) {
+  return String(status || '').toLowerCase() === 'cancelled';
+}
+
+function isOrderReadyForShipmentClose(status) {
+  return ASSEMBLED_CLOSE_STATUSES.has(String(status || '').toLowerCase());
+}
+
+/**
+ * Проверка заказов в поставке перед закрытием.
+ */
+async function inspectShipmentOrdersForClose(ship, profileId) {
+  const { default: ordersService } = await import('./orders.service.js');
+  const mp = ship.marketplace;
+  const notAssembled = [];
+  const cancelled = [];
+  const ready = [];
+
+  for (const rawOid of ship.orderIds || []) {
+    const orderId = String(rawOid).trim();
+    if (!orderId) continue;
+    const order = await ordersService.getByMarketplaceAndOrderId(mp, orderId, { profileId });
+    const st = order ? String(order.status || '').toLowerCase() : 'not_found';
+    const item = {
+      orderId,
+      status: st,
+      statusLabel: orderStatusLabel(st),
+      productName: order?.productName || order?.product_name || null
+    };
+    if (!order || st === 'not_found') {
+      notAssembled.push(item);
+    } else if (isOrderCancelledForClose(st)) {
+      cancelled.push(item);
+    } else if (!isOrderReadyForShipmentClose(st)) {
+      notAssembled.push(item);
+    } else {
+      ready.push(item);
+    }
+  }
+
+  return { notAssembled, cancelled, ready };
+}
+
+async function getShipmentClosePreview(shipmentId, { profileId = null, organizationId = null } = {}) {
+  const ship = await getShipmentById(shipmentId, { profileId, organizationId });
+  if (!ship) {
+    const err = new Error('Поставка не найдена');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (ship.closed) {
+    const err = new Error('Поставка уже закрыта');
+    err.statusCode = 400;
+    throw err;
+  }
+  const issues = await inspectShipmentOrdersForClose(ship, profileId);
+  return {
+    shipmentId: ship.id,
+    canCloseImmediately: !issues.notAssembled.length && !issues.cancelled.length,
+    ...issues
+  };
+}
+
+function shipmentCloseConfirmError(preview) {
+  const err = new Error(
+    'Перед закрытием поставки нужно решить, что делать с несобранными и отменёнными заказами'
+  );
+  err.statusCode = 409;
+  err.details = {
+    code: 'SHIPMENT_CLOSE_CONFIRM_REQUIRED',
+    notAssembled: preview.notAssembled,
+    cancelled: preview.cancelled,
+    ready: preview.ready
+  };
+  return err;
+}
+
 /**
  * Закрыть поставку. После закрытия новые заказы «на сборку» пойдут в новую поставку.
+ * @param {{ notAssembled?: 'assemble'|'remove', cancelled?: 'remove'|'keep' }} [closeOptions]
  */
-async function closeShipment(shipmentId, { profileId = null, organizationId = null } = {}) {
+async function closeShipment(
+  shipmentId,
+  { profileId = null, organizationId = null, closeOptions = null } = {}
+) {
   const shipments = await getLocalShipments();
-  const ship = shipments.find(s => s.id === shipmentId);
+  let ship = shipments.find(s => s.id === shipmentId);
   if (!ship) {
     const err = new Error('Поставка не найдена');
     err.statusCode = 404;
@@ -367,6 +464,53 @@ async function closeShipment(shipmentId, { profileId = null, organizationId = nu
     err.statusCode = 400;
     throw err;
   }
+
+  const preview = await inspectShipmentOrdersForClose(ship, profileId);
+  const hasNotAssembled = preview.notAssembled.length > 0;
+  const hasCancelled = preview.cancelled.length > 0;
+
+  if (hasNotAssembled || hasCancelled) {
+    const opts = closeOptions && typeof closeOptions === 'object' ? closeOptions : null;
+    const notAssembledAction = opts?.notAssembled != null ? String(opts.notAssembled) : null;
+    const cancelledAction = opts?.cancelled != null ? String(opts.cancelled) : null;
+
+    if (hasNotAssembled && notAssembledAction !== 'assemble' && notAssembledAction !== 'remove') {
+      throw shipmentCloseConfirmError(preview);
+    }
+    if (hasCancelled && cancelledAction !== 'remove' && cancelledAction !== 'keep') {
+      throw shipmentCloseConfirmError(preview);
+    }
+
+    const { default: ordersService } = await import('./orders.service.js');
+    const mp = ship.marketplace;
+
+    if (hasNotAssembled && notAssembledAction === 'assemble') {
+      for (const item of preview.notAssembled) {
+        if (item.status === 'not_found') continue;
+        try {
+          await ordersService.markOrderAsAssembled(mp, item.orderId, null, profileId, null);
+        } catch (e) {
+          logger.warn(`[Shipments] mark assembled ${item.orderId}: ${e?.message || e}`);
+        }
+      }
+    }
+
+    const toRemove = [];
+    if (hasNotAssembled && notAssembledAction === 'remove') {
+      toRemove.push(...preview.notAssembled.map((i) => i.orderId));
+    }
+    if (hasCancelled && cancelledAction === 'remove') {
+      toRemove.push(...preview.cancelled.map((i) => i.orderId));
+    }
+    if (toRemove.length) {
+      await removeOrdersFromShipment(shipmentId, [...new Set(toRemove)], {
+        profileId,
+        organizationId
+      });
+      ship = (await getLocalShipments()).find((s) => s.id === shipmentId) || ship;
+    }
+  }
+
   ship.closed = true;
   ship.status = 'closed';
   ship.closedAt = new Date().toISOString();
@@ -1041,6 +1185,7 @@ const shipmentsService = {
   removeOrderFromOpenShipments,
   getOrCreateOpenShipment,
   findLocalShipmentContainingOrder,
+  getShipmentClosePreview,
   closeShipment,
   reapplyStockForShipment,
   getQrStickerFilePath,

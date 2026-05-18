@@ -56,9 +56,15 @@ export const ordersApi = {
         force: options.force === true,
         refreshStatuses: options.refreshStatuses === true
       },
-      { timeout: 90000 }
+      { timeout: 120000 }
     );
     return response.data;
+  },
+
+  /** Импорт / обновление одного заказа Яндекс.Маркета по orderId. */
+  refreshYandex: async (orderId) => {
+    const response = await api.post(`/orders/yandex/${encodeURIComponent(orderId)}/refresh`);
+    return response.data?.data ?? response.data;
   },
 
   /** Статус ручной/фоновой синхронизации FBS (inProgress, lastSyncTime, lastSyncResult). */

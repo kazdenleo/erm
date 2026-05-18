@@ -6,7 +6,7 @@
 import express from 'express';
 import ordersController from '../controllers/orders.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
-import { strictRateLimiter } from '../middleware/security.js';
+import { ordersSyncRateLimiter } from '../middleware/security.js';
 import { requireAuth } from '../middleware/auth.js';
 import {
   validateSyncOrders,
@@ -36,7 +36,7 @@ router.post(
 // Синхронизация FBS‑заказов (с strict rate limit)
 router.post(
   '/sync-fbs',
-  strictRateLimiter,
+  ordersSyncRateLimiter,
   validateSyncOrders,
   wrapAsync(ordersController.syncFbs.bind(ordersController))
 );
@@ -62,6 +62,13 @@ router.post(
   '/ozon/:orderId/refresh',
   validateOrderId,
   wrapAsync(ordersController.refreshOzon.bind(ordersController))
+);
+
+// Импорт / обновление конкретного заказа Яндекс.Маркета по orderId
+router.post(
+  '/yandex/:orderId/refresh',
+  validateOrderId,
+  wrapAsync(ordersController.refreshYandex.bind(ordersController))
 );
 
 // Отправить выбранные заказы на сборку

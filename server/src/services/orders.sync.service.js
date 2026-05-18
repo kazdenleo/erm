@@ -894,6 +894,128 @@ class OrdersSyncService {
   }
 
   /**
+   * Импорт / принудительное обновление заказа Яндекс.Маркета по orderId (GET order по API).
+   */
+  async refreshYandexOrder(orderIdRaw, { profileId = null } = {}) {
+    const storageOrderId = decodeURIComponent(String(orderIdRaw || '').trim());
+    const baseId = yandexOrderIdForApi(storageOrderId);
+    if (!baseId) {
+      const err = new Error('ID заказа Яндекс.Маркета не указан');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const { marketplaces } = await integrationsService.getAllConfigs({ profileId });
+    const ymConfig = marketplaces?.yandex || {};
+    const api_key = normalizeYandexApiKey(ymConfig?.api_key ?? ymConfig?.apiKey);
+    if (!api_key) {
+      const err = new Error('Яндекс.Маркет API не настроен');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    let syncRows = [];
+    try {
+      const raw = await fetchYandexOrderDetailRaw(ymConfig, baseId);
+      syncRows = mapYandexBusinessOrderToInternal(raw);
+    } catch (error) {
+      const err = new Error(
+        error.message
+          ? `Не удалось загрузить заказ ${storageOrderId} из API Яндекс.Маркета: ${error.message}`
+          : `Заказ ${storageOrderId} не найден в API Яндекс.Маркета`
+      );
+      err.statusCode = error.statusCode === 404 ? 404 : 500;
+      throw err;
+    }
+
+    if (!syncRows.length) {
+      const err = new Error(`Заказ ${storageOrderId} не найден в API Яндекс.Маркета`);
+      err.statusCode = 404;
+      throw err;
+    }
+
+    let oldStatus = null;
+    let statusChanged = false;
+    let lastMerged = null;
+
+    const mergeYmRow = (existing, incoming) => {
+      let nextStatus = incoming.status;
+      if (existing?.status === 'in_procurement' && !isTerminalMarketplaceStatus(incoming.status)) {
+        nextStatus = existing.status;
+      } else if (existing) {
+        nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
+        if (existing.returnedToNewAt) {
+          nextStatus = applyReturnedToNewStatusGuard(nextStatus);
+        }
+      }
+      nextStatus = preventAutoInAssembly(existing, nextStatus);
+      const rowStatusChanged = existing ? existing.status !== nextStatus : true;
+      return {
+        merged: {
+          ...incoming,
+          status: nextStatus,
+          returnedToNewAt: existing?.returnedToNewAt ?? incoming.returnedToNewAt ?? null,
+          profileId: existing?.profileId ?? existing?.profile_id ?? profileId ?? incoming.profileId
+        },
+        rowStatusChanged
+      };
+    };
+
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      const ordersRepo = repositoryFactory.getOrdersRepository();
+      const existingFirst = await ordersRepo.findByMarketplaceAndOrderId('yandex', storageOrderId, profileId);
+      if (existingFirst) oldStatus = existingFirst.status;
+
+      for (const row of syncRows) {
+        const existing = await ordersRepo.findByMarketplaceAndOrderId(
+          'yandex',
+          String(row.orderId),
+          profileId
+        );
+        const { merged, rowStatusChanged } = mergeYmRow(existing, row);
+        if (rowStatusChanged) statusChanged = true;
+        if (!existing && profileId != null && merged.profileId == null) {
+          merged.profileId = profileId;
+        }
+        await ordersRepo.upsertFromSync(merged);
+        lastMerged = merged;
+      }
+    } else {
+      const existingData = await readData('orders');
+      const existingOrders = (existingData && existingData.orders) || [];
+      const idxFirst = existingOrders.findIndex(
+        (o) => o.marketplace === 'yandex' && (o.orderId || o.order_id) === storageOrderId
+      );
+      if (idxFirst >= 0) oldStatus = existingOrders[idxFirst].status;
+
+      for (const row of syncRows) {
+        const rid = String(row.orderId);
+        const idx = existingOrders.findIndex(
+          (o) => o.marketplace === 'yandex' && (o.orderId || o.order_id) === rid
+        );
+        const existing = idx >= 0 ? existingOrders[idx] : null;
+        const { merged, rowStatusChanged } = mergeYmRow(existing, row);
+        if (rowStatusChanged) statusChanged = true;
+        if (idx >= 0) existingOrders[idx] = merged;
+        else existingOrders.push(merged);
+        lastMerged = merged;
+      }
+      await writeData('orders', {
+        orders: existingOrders,
+        lastSync: new Date().toISOString()
+      });
+    }
+
+    return {
+      message: `Заказ ${storageOrderId} импортирован / обновлён`,
+      order: lastMerged,
+      oldStatus,
+      statusChanged,
+      imported: !oldStatus
+    };
+  }
+
+  /**
    * Получить детальную информацию по заказу для страницы «Карточка заказа».
    * Ozon: POST v3/posting/fbs/get с полным with.
    * WB: список заказов за период с пагинацией, поиск по id.

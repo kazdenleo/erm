@@ -23,6 +23,9 @@ export function Shipments() {
   const [openShipmentDetail, setOpenShipmentDetail] = useState(null);
   const [openDetailError, setOpenDetailError] = useState(null);
   const [removingOrderId, setRemovingOrderId] = useState(null);
+  const [closeConfirm, setCloseConfirm] = useState(null);
+  const [closeNotAssembledAction, setCloseNotAssembledAction] = useState('');
+  const [closeCancelledAction, setCloseCancelledAction] = useState('');
 
   const loadShipments = async () => {
     setLoading(true);
@@ -99,15 +102,73 @@ export function Shipments() {
     }
   };
 
+  const finishCloseShipment = async (shipment, options = {}) => {
+    const updated = await shipmentsApi.close(shipment.id, options);
+    if (updated?.qrStickerPath) {
+      window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
+    }
+    setCloseConfirm(null);
+    setCloseNotAssembledAction('');
+    setCloseCancelledAction('');
+    if (openShipmentDetail?.id === shipment.id) {
+      setOpenShipmentDetail(updated);
+    }
+    await loadShipments();
+  };
+
   const handleCloseShipment = async (shipment) => {
     if (!canClose(shipment)) return;
     setCloseLoadingId(shipment.id);
+    setOpenDetailError(null);
     try {
-      const updated = await shipmentsApi.close(shipment.id);
-      if (updated?.qrStickerPath) {
-        window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
+      const preview = await shipmentsApi.getClosePreview(shipment.id);
+      const hasNotAssembled = (preview?.notAssembled?.length ?? 0) > 0;
+      const hasCancelled = (preview?.cancelled?.length ?? 0) > 0;
+      if (hasNotAssembled || hasCancelled) {
+        setCloseNotAssembledAction(hasNotAssembled ? '' : 'remove');
+        setCloseCancelledAction(hasCancelled ? '' : 'keep');
+        setCloseConfirm({ shipment, preview });
+        return;
       }
-      await loadShipments();
+      await finishCloseShipment(shipment);
+    } catch (e) {
+      const details = e.response?.data?.details;
+      if (e.response?.status === 409 && details?.code === 'SHIPMENT_CLOSE_CONFIRM_REQUIRED') {
+        setCloseNotAssembledAction('');
+        setCloseCancelledAction('');
+        setCloseConfirm({
+          shipment,
+          preview: {
+            notAssembled: details.notAssembled || [],
+            cancelled: details.cancelled || []
+          }
+        });
+        return;
+      }
+      setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка закрытия');
+    } finally {
+      setCloseLoadingId(null);
+    }
+  };
+
+  const handleConfirmCloseShipment = async () => {
+    if (!closeConfirm?.shipment) return;
+    const { shipment, preview } = closeConfirm;
+    const hasNotAssembled = (preview?.notAssembled?.length ?? 0) > 0;
+    const hasCancelled = (preview?.cancelled?.length ?? 0) > 0;
+    if (hasNotAssembled && closeNotAssembledAction !== 'assemble' && closeNotAssembledAction !== 'remove') {
+      return;
+    }
+    if (hasCancelled && closeCancelledAction !== 'remove' && closeCancelledAction !== 'keep') {
+      return;
+    }
+    setCloseLoadingId(shipment.id);
+    setOpenDetailError(null);
+    try {
+      const options = {};
+      if (hasNotAssembled) options.notAssembled = closeNotAssembledAction;
+      if (hasCancelled) options.cancelled = closeCancelledAction;
+      await finishCloseShipment(shipment, options);
     } catch (e) {
       setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка закрытия');
     } finally {
@@ -267,6 +328,130 @@ export function Shipments() {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!closeConfirm}
+        onClose={() => {
+          if (closeLoadingId) return;
+          setCloseConfirm(null);
+          setCloseNotAssembledAction('');
+          setCloseCancelledAction('');
+        }}
+        title="Закрытие поставки"
+        size="large"
+        closeOnBackdropClick={!closeLoadingId}
+        closeOnEscape={!closeLoadingId}
+      >
+        {closeConfirm && (
+          <div className="shipments-close-confirm">
+            {(closeConfirm.preview?.notAssembled?.length ?? 0) > 0 && (
+              <section className="shipments-close-section">
+                <h3 className="shipments-close-section-title">Несобранные заказы</h3>
+                <p className="shipments-close-hint">
+                  В поставке есть заказы, которые ещё не в статусе «Собран». Выберите действие:
+                </p>
+                <ul className="shipments-close-order-list">
+                  {closeConfirm.preview.notAssembled.map((o) => (
+                    <li key={o.orderId}>
+                      <span className="shipments-detail-order-id">{o.orderId}</span>
+                      {o.productName ? <span className="shipments-close-product"> — {o.productName}</span> : null}
+                      <span className="shipments-close-status"> ({o.statusLabel || o.status})</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="shipments-close-radios">
+                  <label>
+                    <input
+                      type="radio"
+                      name="notAssembledAction"
+                      value="assemble"
+                      checked={closeNotAssembledAction === 'assemble'}
+                      onChange={() => setCloseNotAssembledAction('assemble')}
+                    />
+                    Отметить собранными и закрыть поставку
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="notAssembledAction"
+                      value="remove"
+                      checked={closeNotAssembledAction === 'remove'}
+                      onChange={() => setCloseNotAssembledAction('remove')}
+                    />
+                    Удалить из поставки
+                  </label>
+                </div>
+              </section>
+            )}
+
+            {(closeConfirm.preview?.cancelled?.length ?? 0) > 0 && (
+              <section className="shipments-close-section">
+                <h3 className="shipments-close-section-title">Отменённые заказы</h3>
+                <p className="shipments-close-hint">В поставке есть отменённые заказы:</p>
+                <ul className="shipments-close-order-list">
+                  {closeConfirm.preview.cancelled.map((o) => (
+                    <li key={o.orderId}>
+                      <span className="shipments-detail-order-id">{o.orderId}</span>
+                      {o.productName ? <span className="shipments-close-product"> — {o.productName}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+                <div className="shipments-close-radios">
+                  <label>
+                    <input
+                      type="radio"
+                      name="cancelledAction"
+                      value="remove"
+                      checked={closeCancelledAction === 'remove'}
+                      onChange={() => setCloseCancelledAction('remove')}
+                    />
+                    Убрать из поставки
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="cancelledAction"
+                      value="keep"
+                      checked={closeCancelledAction === 'keep'}
+                      onChange={() => setCloseCancelledAction('keep')}
+                    />
+                    Оставить в поставке (без списания со склада)
+                  </label>
+                </div>
+              </section>
+            )}
+
+            <div className="shipments-modal-actions" style={{ marginTop: 16 }}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setCloseConfirm(null);
+                  setCloseNotAssembledAction('');
+                  setCloseCancelledAction('');
+                }}
+                disabled={!!closeLoadingId}
+              >
+                Отмена
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleConfirmCloseShipment}
+                disabled={
+                  !!closeLoadingId ||
+                  ((closeConfirm.preview?.notAssembled?.length ?? 0) > 0 &&
+                    closeNotAssembledAction !== 'assemble' &&
+                    closeNotAssembledAction !== 'remove') ||
+                  ((closeConfirm.preview?.cancelled?.length ?? 0) > 0 &&
+                    closeCancelledAction !== 'remove' &&
+                    closeCancelledAction !== 'keep')
+                }
+              >
+                {closeLoadingId ? 'Закрытие…' : 'Закрыть поставку'}
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       <Modal

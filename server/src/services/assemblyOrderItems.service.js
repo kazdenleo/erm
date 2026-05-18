@@ -58,7 +58,7 @@ export async function expandKitOrderToAssemblyItems(order, kitProductId) {
 /**
  * Собрать orderItems для ответа /assembly/find-by-barcode.
  */
-export async function buildAssemblyOrderItems(order, ordersService) {
+export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
   if (!order) return [];
 
   let linePid = order.productId ?? order.product_id;
@@ -83,6 +83,33 @@ export async function buildAssemblyOrderItems(order, ordersService) {
       kitId = null;
     }
   }
+  if (kitId == null && Number.isFinite(lineNum) && lineNum > 0) {
+    const compKits = await query(
+      `SELECT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+      [lineNum]
+    );
+    for (const row of compKits.rows || []) {
+      const kid = Number(row.kit_product_id);
+      if (kid > 0 && (await isKitProductId(kid))) {
+        kitId = kid;
+        break;
+      }
+    }
+  }
+  const scannedId = opts.scannedProductId != null ? Number(opts.scannedProductId) : NaN;
+  if (kitId == null && Number.isFinite(scannedId) && scannedId > 0) {
+    const compKits = await query(
+      `SELECT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+      [scannedId]
+    );
+    for (const row of compKits.rows || []) {
+      const kid = Number(row.kit_product_id);
+      if (kid > 0 && (await isKitProductId(kid))) {
+        kitId = kid;
+        break;
+      }
+    }
+  }
 
   if (kitId != null) {
     const expanded = await expandKitOrderToAssemblyItems(order, kitId);
@@ -104,13 +131,13 @@ export async function buildAssemblyOrderItems(order, ordersService) {
 /**
  * Несколько строк одной группы заказа (WB/Ozon) → плоский список для сборки.
  */
-export async function buildAssemblyOrderItemsFromGroup(groupOrders, ordersService) {
+export async function buildAssemblyOrderItemsFromGroup(groupOrders, ordersService, opts = {}) {
   const rows = Array.isArray(groupOrders) ? groupOrders : [];
   if (!rows.length) return [];
 
   const items = [];
   for (const o of rows) {
-    const part = await buildAssemblyOrderItems(o, ordersService);
+    const part = await buildAssemblyOrderItems(o, ordersService, opts);
     items.push(...part);
   }
   return items;

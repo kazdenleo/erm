@@ -317,6 +317,18 @@ class OrdersController {
     }
   }
 
+  async refreshYandex(req, res, next) {
+    try {
+      const { orderId } = req.params;
+      const result = await ordersSyncService.refreshYandexOrder(orderId, {
+        profileId: req.user?.profileId ?? null
+      });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async sendToAssembly(req, res, next) {
     try {
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
