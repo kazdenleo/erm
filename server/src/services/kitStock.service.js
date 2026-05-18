@@ -13,6 +13,42 @@ export function isKitProductType(raw) {
   return String(raw || '').toLowerCase() === 'kit';
 }
 
+/** Движения, меняющие фактическое наличие на складе по SKU комплекта (не резерв и не «в пути»). */
+export const KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES = [
+  'receipt',
+  'shipment',
+  'writeoff',
+  'inventory',
+  'manual',
+  'transfer',
+  'opening_balance'
+];
+
+/** Типы движений, которые показываем в истории остатков комплекта. */
+export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES;
+
+export function isKitPhysicalBalanceMovementType(type) {
+  return KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES.includes(String(type || '').toLowerCase());
+}
+
+export function isKitStockHistoryMovementType(type) {
+  return isKitPhysicalBalanceMovementType(type);
+}
+
+/** Были ли поступления/списания/инвентаризация по SKU комплекта (не резерв). */
+export async function kitHasPhysicalBalanceMovements(kitProductId) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return false;
+  const r = await query(
+    `SELECT 1 FROM stock_movements
+     WHERE product_id = $1
+       AND LOWER(TRIM(type::text)) = ANY($2::text[])
+     LIMIT 1`,
+    [kitId, KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES]
+  );
+  return (r.rows?.length ?? 0) > 0;
+}
+
 export async function isKitProductId(productId) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return false;
@@ -318,6 +354,34 @@ export async function recalculateKitsForComponent(componentProductId, opts = {})
   return kitIds;
 }
 
+async function readKitWarehouseOnHandRaw(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+
+  const warehouseId =
+    opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
+      ? typeof opts.warehouseId === 'string'
+        ? parseInt(opts.warehouseId, 10)
+        : Number(opts.warehouseId)
+      : null;
+
+  if (warehouseId != null && Number.isFinite(warehouseId) && warehouseId > 0) {
+    const r = await query(
+      `SELECT COALESCE(quantity, 0)::int AS quantity
+       FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2`,
+      [kitId, warehouseId]
+    );
+    return Number(r.rows[0]?.quantity ?? 0) || 0;
+  }
+
+  const r = await query(
+    `SELECT COALESCE(SUM(quantity), 0)::int AS quantity
+     FROM product_warehouse_stock WHERE product_id = $1`,
+    [kitId]
+  );
+  return Number(r.rows[0]?.quantity ?? 0) || 0;
+}
+
 /**
  * Остатки комплекта из БД (product_warehouse_stock + products).
  */
@@ -327,29 +391,7 @@ export async function readKitStockFromDb(kitProductId, opts = {}) {
     return { onHand: 0, incoming: 0, reserved: 0, suppliers: 0, available: 0 };
   }
 
-  const warehouseId =
-    opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
-      ? typeof opts.warehouseId === 'string'
-        ? parseInt(opts.warehouseId, 10)
-        : Number(opts.warehouseId)
-      : null;
-
-  let onHand = 0;
-  if (warehouseId != null && Number.isFinite(warehouseId) && warehouseId > 0) {
-    const r = await query(
-      `SELECT COALESCE(quantity, 0)::int AS quantity
-       FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2`,
-      [kitId, warehouseId]
-    );
-    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
-  } else {
-    const r = await query(
-      `SELECT COALESCE(SUM(quantity), 0)::int AS quantity
-       FROM product_warehouse_stock WHERE product_id = $1`,
-      [kitId]
-    );
-    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
-  }
+  const onHandRaw = await readKitWarehouseOnHandRaw(kitId, opts);
 
   let incoming = 0;
   let reserved = 0;
@@ -380,8 +422,28 @@ export async function readKitStockFromDb(kitProductId, opts = {}) {
     reserved = Number(pr.rows[0]?.reserved_quantity ?? 0) || 0;
   }
 
-  const available = onHand + suppliers;
-  return { onHand, incoming, reserved, suppliers, available };
+  const physicalOnHand = await readKitPhysicalOnHandFromDb(kitId, onHandRaw);
+  const available = physicalOnHand + suppliers;
+  return { onHand: physicalOnHand, incoming, reserved, suppliers, available };
+}
+
+/**
+ * Наличие комплекта на складе: только product_warehouse_stock по SKU комплекта.
+ * Если в БД остались «фантомные» остатки без движений поступления/списания — 0.
+ */
+export async function readKitPhysicalOnHandFromDb(kitProductId, rawOnHand = null, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+
+  let onHand = rawOnHand;
+  if (onHand == null) {
+    onHand = await readKitWarehouseOnHandRaw(kitId, opts);
+  }
+  onHand = Math.max(0, Number(onHand) || 0);
+  if (onHand <= 0) return 0;
+
+  const hasPhysical = await kitHasPhysicalBalanceMovements(kitId);
+  return hasPhysical ? onHand : 0;
 }
 
 /** Для отправки на МП: собираемость из комплектующих + доступно по SKU комплекта. */
@@ -637,6 +699,29 @@ export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unrese
   return affected;
 }
 
+/**
+ * Обнулить фантомные остатки комплектов в product_warehouse_stock (без движений поступления/списания).
+ * @returns {Promise<number>} число обнулённых строк pws
+ */
+export async function zeroPhantomKitWarehouseStock() {
+  const kits = await query(
+    `SELECT id FROM products WHERE LOWER(TRIM(COALESCE(product_type::text, ''))) = 'kit'`
+  );
+  let cleared = 0;
+  for (const row of kits.rows || []) {
+    const kitId = Number(row.id);
+    if (!Number.isFinite(kitId) || kitId < 1) continue;
+    const raw = await readKitWarehouseOnHandRaw(kitId, {});
+    if (raw <= 0) continue;
+    const hasPhysical = await kitHasPhysicalBalanceMovements(kitId);
+    if (hasPhysical) continue;
+    await query(`UPDATE product_warehouse_stock SET quantity = 0 WHERE product_id = $1`, [kitId]);
+    await syncProductQuantityFromWarehouseStock(kitId);
+    cleared += 1;
+  }
+  return cleared;
+}
+
 /** Массовый пересчёт: только синхронизация остатков на МП (без движений по комплекту). */
 export async function recalculateAllKitStocks() {
   const r = await query(
@@ -672,19 +757,13 @@ export async function attachKitDisplayMetrics(products, options = {}) {
     const kitId = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
     if (!Number.isFinite(kitId) || kitId < 1) continue;
 
-    const wholeOnHand =
-      p.quantity != null
-        ? Math.max(0, Number(p.quantity) || 0)
-        : (
-            await readKitStockFromDb(kitId, { warehouseId: wid })
-          ).onHand;
+    const wholeOnHand = await readKitPhysicalOnHandFromDb(kitId, null, { warehouseId: wid });
 
     const assemblable = await computeAssemblableFromComponents(kitId, { warehouseId: wid });
     const supplierKitUnits = await computeKitSupplierUnitsFromComponents(kitId, { warehouseId: wid });
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
     const reserved = Math.max(0, Number(p.reserved_quantity ?? p.reservedQuantity ?? 0) || 0);
-    const ownSuppliers = Math.max(0, Number(p.supplierStockTotal ?? 0) || 0);
-    const wholeAvail = Math.max(0, wholeOnHand + incoming + ownSuppliers - reserved);
+    const wholeAvail = Math.max(0, wholeOnHand + incoming - reserved);
     const availableTotal = assemblable + wholeAvail;
 
     p.supplierStockTotal = supplierKitUnits;
@@ -717,6 +796,7 @@ export default {
   persistKitStock,
   recalculateKitsForComponent,
   recalculateAllKitStocks,
+  zeroPhantomKitWarehouseStock,
   enrichKitProductStock,
   scheduleMarketplaceSyncForParentKits,
   applyKitOrderReserve,
@@ -724,5 +804,11 @@ export default {
   attachKitDisplayMetrics,
   attachKitWarehouseSplitMetrics,
   computeAssemblableFromComponents,
-  computeKitSupplierUnitsFromComponents
+  computeKitSupplierUnitsFromComponents,
+  readKitPhysicalOnHandFromDb,
+  kitHasPhysicalBalanceMovements,
+  isKitPhysicalBalanceMovementType,
+  isKitStockHistoryMovementType,
+  KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES,
+  KIT_STOCK_HISTORY_MOVEMENT_TYPES
 };

@@ -14,7 +14,12 @@ import { stockMovementsApi } from '../../services/stockMovements.api';
 import { supplierStocksApi } from '../../services/supplierStocks.api';
 import { productsApi } from '../../services/products.api';
 import { marketplaceStockApi } from '../../services/marketplaceStock.api';
-import { buildStockRowsWithKits, stockTableAvailable, isKitProduct } from '../../utils/kitStockMetrics';
+import {
+  buildStockRowsWithKits,
+  stockTableAvailable,
+  isKitProduct,
+  isKitStockHistoryMovement
+} from '../../utils/kitStockMetrics';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
@@ -1179,9 +1184,13 @@ export function WarehouseStocks() {
   }, [historyProduct]);
 
   const displayHistoryRows = useMemo(() => {
-    const visible = historyList.filter((m) => !isHiddenStockHistoryMovement(m));
+    const visible = historyList.filter(
+      (m) =>
+        !isHiddenStockHistoryMovement(m) &&
+        isKitStockHistoryMovement(m, historyProduct)
+    );
     return buildHistoryDisplayRows(visible);
-  }, [historyList]);
+  }, [historyList, historyProduct]);
 
   const historyDisplaySnapshots = useMemo(
     () => buildHistoryDisplaySnapshots(displayHistoryRows),

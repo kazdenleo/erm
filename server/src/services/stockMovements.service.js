@@ -142,7 +142,14 @@ class StockMovementsService {
    * Получить историю движений по товару
    */
   async getHistory(productId, { limit = 100, profileId = null } = {}) {
-    return await this.repository.findByProduct(productId, { limit, profileId });
+    const rows = await this.repository.findByProduct(productId, { limit, profileId });
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum)) return rows;
+
+    const { isKitProductId, isKitStockHistoryMovementType } = await import('./kitStock.service.js');
+    if (!(await isKitProductId(idNum))) return rows;
+
+    return rows.filter((m) => isKitStockHistoryMovementType(m?.type));
   }
 
   /**

@@ -21,6 +21,27 @@ export function isKitProduct(product) {
   return String(product?.product_type || '').toLowerCase() === 'kit';
 }
 
+/** Типы движений в истории остатков комплекта (только факт по SKU комплекта). */
+export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = [
+  'receipt',
+  'shipment',
+  'writeoff',
+  'inventory',
+  'manual',
+  'transfer',
+  'opening_balance'
+];
+
+export function isKitStockHistoryMovementType(type) {
+  return KIT_STOCK_HISTORY_MOVEMENT_TYPES.includes(String(type || '').toLowerCase());
+}
+
+export function isKitStockHistoryMovement(movement, product) {
+  if (!isKitProduct(product)) return true;
+  const t = movement?.type ?? movement?.movement_type ?? movement?.movementType;
+  return isKitStockHistoryMovementType(t);
+}
+
 /** @returns {null|{ whole_on_hand: number, assemblable_from_components: number, available_total: number }} */
 export function parseKitDisplayMetrics(product) {
   const raw = product?.kit_display ?? product?.kitDisplay ?? product?.kit_stock_split ?? product?.kitStockSplit;
@@ -106,12 +127,10 @@ function buildKitDisplayFromProduct(product, baseMetrics, allProducts) {
 
   const wholeOnHand = Math.max(0, Number(product.quantity) || 0);
   const assemblable = computeAssemblableFromLoadedProducts(product, allProducts);
-  const wholeAvailable = stockTableAvailable({
-    onHand: wholeOnHand,
-    incoming: baseMetrics.incoming,
-    reserved: baseMetrics.reserved,
-    suppliers: baseMetrics.suppliers
-  });
+  const wholeAvailable = Math.max(
+    0,
+    wholeOnHand + (Number(baseMetrics.incoming) || 0) - (Number(baseMetrics.reserved) || 0)
+  );
   return {
     whole_on_hand: wholeOnHand,
     assemblable_from_components: assemblable,
@@ -133,12 +152,10 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
     const display = buildKitDisplayFromProduct(product, base, products);
 
     if (display) {
-      const wholeAvailable = stockTableAvailable({
-        onHand: display.whole_on_hand,
-        incoming: base.incoming,
-        reserved: base.reserved,
-        suppliers: base.suppliers
-      });
+      const wholeAvailable = Math.max(
+        0,
+        (Number(display.whole_on_hand) || 0) + (Number(base.incoming) || 0) - (Number(base.reserved) || 0)
+      );
       const availableTotal = display.assemblable_from_components + wholeAvailable;
       const suppliersDisplay = formatKitSupplierDisplay(product, base.suppliers);
       return {
