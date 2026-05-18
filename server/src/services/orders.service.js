@@ -15,7 +15,9 @@ import {
   allocateKitReservePriority,
   getReservedKitUnitsForOrder,
   releaseAllReservesForOrder,
-  findKitProductIdForMarketplaceOrder
+  findKitProductIdForMarketplaceOrder,
+  getKitComponents,
+  readKitPhysicalOnHandFromDb
 } from './kitStock.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
@@ -528,35 +530,84 @@ class OrdersService {
     return Math.max(0, Number(r.rows?.[0]?.shipped) || 0);
   }
 
-  /**
-   * Закрытие поставки / сборка: снять резерв и уменьшить наличие на quantity строки заказа.
-   * Для комплекта — по комплектующим (резерв в журнале на component_product_id).
-   */
-  async _applyAssemblyStockForOrderRow(orderRow) {
-    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
+  /** Найти заказ с учётом profile_id (как при закрытии поставки). */
+  async _findOrderByMarketplaceAndOrderId(marketplace, orderId, profileId = null) {
+    let order = await this.repository.findByMarketplaceAndOrderId(
+      marketplace,
+      String(orderId),
+      profileId
+    );
+    if (!order && profileId != null) {
+      order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), null);
+    }
+    return order;
+  }
+
+  /** product_id с ненулевым резервом по строке заказа (orders.id). */
+  async _getReservedProductIdsForOrder(orderDbId) {
+    if (!orderDbId || !repositoryFactory.isUsingPostgreSQL()) return [];
+    const oid = Number(orderDbId);
+    if (!Number.isFinite(oid) || oid < 1) return [];
+    const r = await query(
+      `SELECT product_id,
+              GREATEST(0,
+                COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
+                                  WHEN type = 'unreserve' THEN quantity_change
+                                  ELSE 0 END), 0)
+              )::int AS net_reserved
+       FROM stock_movements
+       WHERE (meta->>'order_id')::bigint = $1::bigint
+         AND type IN ('reserve', 'unreserve')
+       GROUP BY product_id
+       HAVING COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
+                                 WHEN type = 'unreserve' THEN quantity_change
+                                 ELSE 0 END), 0) > 0`,
+      [oid]
+    );
+    return (r.rows || [])
+      .map((row) => Number(row.product_id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+
+  async _assemblyMetaForOrderRow(orderRow) {
     const orderDbId = orderRowDbId(orderRow);
-    if (!orderDbId) return;
-
-    const productId = await this._resolveProductIdForOrderStock(orderRow);
-    if (!productId) return;
-
     const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
     const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
-    const metaBase = {
+    return {
       order_id: orderDbId,
       orderId: orderIdStr,
       assembled: true,
       warehouse_id: warehouseId || null
     };
+  }
 
-    const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
-    const net = await this._getReservedQtyForOrderProduct(orderDbId, productId);
-    const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, productId);
-    const shipQty = Math.max(0, qty - alreadyShipped);
+  /**
+   * Снять резерв и списать наличие по одному product_id (строка заказа).
+   * @param {number|null} targetQty — сколько списать; по умолчанию quantity строки заказа.
+   */
+  async _applyAssemblyStockForOrderProduct(orderRow, productId, targetQty = null) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow || !productId) return;
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId) return;
+
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return;
+
+    const metaBase = await this._assemblyMetaForOrderRow(orderRow);
+    const orderIdStr = metaBase.orderId || '';
+    const lineQty =
+      targetQty != null
+        ? Math.max(0, parseInt(targetQty, 10) || 0)
+        : Math.max(1, parseInt(orderRow.quantity, 10) || 1);
+    if (lineQty <= 0) return;
+
+    const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
+    const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, pid);
+    const shipQty = Math.max(0, lineQty - alreadyShipped);
 
     if (net > 0) {
       const release = shipQty > 0 ? Math.min(shipQty, net) : net;
-      await stockMovementsService.applyChange(productId, {
+      await stockMovementsService.applyChange(pid, {
         delta: release,
         type: 'unreserve',
         reason: `Отгрузка: снятие резерва по заказу ${orderIdStr}`.trim(),
@@ -565,13 +616,106 @@ class OrdersService {
     }
 
     if (shipQty > 0) {
-      await stockMovementsService.applyChange(productId, {
+      await stockMovementsService.applyChange(pid, {
         delta: -shipQty,
         type: 'shipment',
         reason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
         meta: metaBase
       });
     }
+  }
+
+  /**
+   * Комплект: снять резерв с SKU комплекта (если был), списать целые комплекты со склада
+   * и списать комплектующие по составу.
+   */
+  async _applyAssemblyStockForKitOrder(orderRow, kitProductId) {
+    const kitId = Number(kitProductId);
+    if (!Number.isFinite(kitId) || kitId < 1) return;
+
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId) return;
+
+    const kitQty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
+    const metaBase = await this._assemblyMetaForOrderRow(orderRow);
+    const warehouseId = metaBase.warehouse_id ?? null;
+
+    const kitNet = await this._getReservedQtyForOrderProduct(orderDbId, kitId);
+    const kitShipped = await this._getShippedQtyForOrderProduct(orderDbId, kitId);
+    const kitsToFulfill = Math.max(0, kitQty - kitShipped);
+
+    if (kitNet > 0) {
+      const release = kitsToFulfill > 0 ? Math.min(kitsToFulfill, kitNet) : kitNet;
+      await stockMovementsService.applyChange(kitId, {
+        delta: release,
+        type: 'unreserve',
+        reason: `Отгрузка: снятие резерва комплекта по заказу ${metaBase.orderId}`.trim(),
+        meta: metaBase
+      });
+    }
+
+    const physicalWhole = await readKitPhysicalOnHandFromDb(kitId, null, {
+      warehouseId
+    });
+    const wholeShipQty = Math.min(kitsToFulfill, physicalWhole);
+    if (wholeShipQty > 0) {
+      await stockMovementsService.applyChange(kitId, {
+        delta: -wholeShipQty,
+        type: 'shipment',
+        reason: `Отгрузка: списание комплекта (1 SKU) по заказу ${metaBase.orderId}`.trim(),
+        meta: metaBase
+      });
+    }
+
+    const components = await getKitComponents(kitId);
+    for (const c of components) {
+      const compQty = kitQty * Math.max(1, c.quantity);
+      await this._applyAssemblyStockForOrderProduct(orderRow, c.component_product_id, compQty);
+    }
+  }
+
+  /**
+   * Закрытие поставки / сборка: снять резерв и уменьшить наличие.
+   * Комплект — резерв может быть на SKU комплекта и/или на комплектующих; списание — с комплектующих.
+   */
+  async _applyAssemblyStockForOrderRow(orderRow) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId) return;
+
+    const reservedProductIds = await this._getReservedProductIdsForOrder(orderDbId);
+    if (reservedProductIds.length > 0) {
+      const kitIds = [];
+      const componentOnly = [];
+      for (const pid of reservedProductIds) {
+        if (await isKitProductId(pid)) kitIds.push(pid);
+        else componentOnly.push(pid);
+      }
+      const skipComponentIds = new Set();
+      for (const kitId of kitIds) {
+        const comps = await getKitComponents(kitId);
+        for (const c of comps) skipComponentIds.add(c.component_product_id);
+      }
+      for (const pid of componentOnly) {
+        if (!skipComponentIds.has(pid)) {
+          await this._applyAssemblyStockForOrderProduct(orderRow, pid);
+        }
+      }
+      for (const kitId of kitIds) {
+        await this._applyAssemblyStockForKitOrder(orderRow, kitId);
+      }
+      return;
+    }
+
+    const productId = await this._resolveProductIdForOrderStock(orderRow);
+    if (!productId) return;
+
+    if (await isKitProductId(productId)) {
+      await this._applyAssemblyStockForKitOrder(orderRow, productId);
+      return;
+    }
+
+    await this._applyAssemblyStockForOrderProduct(orderRow, productId);
   }
 
   /**
@@ -591,10 +735,7 @@ class OrdersService {
       const orderId = String(rawOid).trim();
       if (!orderId) continue;
       try {
-        let order = await this.repository.findByMarketplaceAndOrderId(mp, orderId, profileId);
-        if (!order && profileId != null) {
-          order = await this.repository.findByMarketplaceAndOrderId(mp, orderId, null);
-        }
+        const order = await this._findOrderByMarketplaceAndOrderId(mp, orderId, profileId);
         if (!order) {
           notFound += 1;
           continue;
@@ -610,7 +751,22 @@ class OrdersService {
           : [order];
 
         if (status === 'in_assembly') {
-          await this.markOrderAsAssembled(mp, orderId, null, profileId, null);
+          const marked = await this.markOrderAsAssembled(mp, orderId, null, profileId, null);
+          if (!marked) {
+            for (const r of rows) {
+              await this._applyAssemblyStockForOrderRow(r);
+            }
+            if (order.orderGroupId) {
+              await this.repository.markAssembledByOrderGroupId(
+                order.orderGroupId,
+                null,
+                null,
+                null
+              );
+            } else {
+              await this.repository.markAssembledByMarketplaceAndOrderId(mp, orderId, null, null, null);
+            }
+          }
           processed += 1;
           continue;
         }
@@ -1246,7 +1402,7 @@ class OrdersService {
   async markOrderAsAssembled(marketplace, orderId, assembledByUserId = null, profileId = null, stickerNumber = null) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
+      const order = await this._findOrderByMarketplaceAndOrderId(marketplace, orderId, profileId);
       if (!order) return null;
       const rows = order.orderGroupId
         ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
