@@ -56,7 +56,7 @@ export const ordersApi = {
         force: options.force === true,
         refreshStatuses: options.refreshStatuses === true
       },
-      { timeout: 120000 }
+      { timeout: 30000 }
     );
     return response.data;
   },

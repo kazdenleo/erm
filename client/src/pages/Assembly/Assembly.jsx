@@ -120,27 +120,22 @@ function assemblyCompositionParts(item, quantityOverride) {
   };
 }
 
-/** Ключ строки состава для счётчика сканов (комплект: несколько product_id на один orderLineId). */
+/** Уникальный ключ строки состава (всегда с idx — защита от дублей productId / orderLineId). */
 function assemblyLineScanKey(item, idx) {
   const orderLineId = item.orderLineId != null ? String(item.orderLineId).trim() : '';
-  const pid = item.productId ?? item.product_id;
-  if (orderLineId !== '') {
-    if (pid != null && pid !== '') {
-      return `line:${orderLineId}:p:${pid}`;
-    }
-    return `line:${orderLineId}:row:${idx}`;
-  }
-  return `row:${idx}:p:${pid ?? 'x'}`;
+  const pid = item.productId ?? item.product_id ?? '';
+  return `asm:${idx}:${orderLineId}:${pid}`;
 }
 
-function scannedQtyForAssemblyLine(item, idx, scannedQuantities) {
+function scannedQtyForAssemblyLine(item, idx, scannedQuantities, itemsLength = 1) {
   const key = assemblyLineScanKey(item, idx);
   const fromKey = scannedQuantities[key];
   if (fromKey != null) return fromKey;
-  // Только для одной строки без orderLineId — legacy-счётчик по productId
-  const pid = item.productId ?? item.product_id;
-  if (pid != null && pid !== '') {
-    return scannedQuantities[pid] ?? scannedQuantities[Number(pid)] ?? 0;
+  if (itemsLength === 1) {
+    const pid = item.productId ?? item.product_id;
+    if (pid != null && pid !== '') {
+      return scannedQuantities[pid] ?? scannedQuantities[Number(pid)] ?? 0;
+    }
   }
   return 0;
 }
@@ -155,7 +150,8 @@ function orderItemMatchesScannedProduct(item, product, itemsLength = 1) {
     if (String(raw) === String(product.id)) return true;
   }
   const kitPid = item.kitProductId ?? item.kit_product_id;
-  if (kitPid != null && String(kitPid) === String(product.id)) return true;
+  // Скан штрихкода SKU комплекта не засчитывается на все комплектующие — только конкретные детали
+  if (kitPid != null && !item.isKitComponent && String(kitPid) === String(product.id)) return true;
   if (raw == null || raw === '') return itemsLength <= 1;
   return false;
 }
@@ -770,7 +766,8 @@ export function Assembly() {
     const result = [];
     currentOrderData.orderItems.forEach((item, idx) => {
       const need = item.quantity ?? 1;
-      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities);
+      const itemsLen = currentOrderData.orderItems.length;
+      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities, itemsLen);
       const remaining = Math.max(0, need - scanned);
       if (remaining > 0) {
         result.push({ ...item, need, scanned, remaining });
@@ -782,9 +779,10 @@ export function Assembly() {
   /** Все позиции состава с полями для отображения */
   const compositionLines = useMemo(() => {
     if (!currentOrderData?.orderItems?.length) return [];
+    const itemsLen = currentOrderData.orderItems.length;
     return currentOrderData.orderItems.map((item, idx) => {
       const need = item.quantity ?? 1;
-      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities);
+      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities, itemsLen);
       const remaining = Math.max(0, need - scanned);
       const parts = assemblyCompositionParts({ ...item, quantity: need }, need);
       return {
@@ -798,6 +796,7 @@ export function Assembly() {
 
   const isKitAssembly = useMemo(() => {
     const items = currentOrderData?.orderItems || [];
+    if (items.length > 1) return true;
     if (items.some((i) => i.isKitComponent || i.kitProductId)) return true;
     const lineIds = items
       .map((i) => (i.orderLineId != null ? String(i.orderLineId).trim() : ''))

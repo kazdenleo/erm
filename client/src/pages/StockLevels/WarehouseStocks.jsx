@@ -828,8 +828,8 @@ export function WarehouseStocks() {
       const search = (extra.search !== undefined ? extra.search : filterSearchDebounced).trim();
       const productType = extra.productType !== undefined ? extra.productType : filterProductType;
       return {
-        ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
-        ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
+      ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
+      ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
         ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
         ...(productType ? { productType } : {}),
         ...(search ? { search } : {}),

@@ -201,7 +201,7 @@ export async function findKitProductIdForMarketplaceOrder(productId, orderRow = 
   );
 
   const kid = r.rows[0]?.kit_product_id;
-  return kid != null ? Number(kid) : pid;
+  return kid != null ? Number(kid) : null;
 }
 
 /** @returns {Promise<Array<{ component_product_id: number, quantity: number }>>} */

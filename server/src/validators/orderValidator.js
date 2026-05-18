@@ -10,7 +10,8 @@ import { z } from 'zod';
  */
 export const syncOrdersSchema = z.object({
   marketplace: z.enum(['ozon', 'wildberries', 'yandex']).optional(),
-  force: z.boolean().optional().default(false),
+  force: z.coerce.boolean().optional().default(false),
+  refreshStatuses: z.coerce.boolean().optional().default(false),
 });
 
 /**

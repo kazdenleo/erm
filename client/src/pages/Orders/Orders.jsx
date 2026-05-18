@@ -604,7 +604,12 @@ export function Orders() {
 
   const runSync = useCallback(
     async (silent = false, opts = {}) => {
-      if (syncInFlightRef.current) return;
+      if (syncInFlightRef.current) {
+        if (!silent) {
+          setSyncInfo({ message: 'Синхронизация уже выполняется, подождите…' });
+        }
+        return;
+      }
       syncInFlightRef.current = true;
       const forceImport = opts.force === true;
       const refreshStatuses = opts.refreshStatuses === true;
@@ -621,17 +626,23 @@ export function Orders() {
         });
         if (!silent) setSyncInfo(result);
 
-        // Сервер может ответить 202 и запустить синк в фоне — дождёмся завершения через status endpoint.
-        if (result?.started || result?.inProgress) {
-          const startedAt = Date.now();
-          const MAX_WAIT_MS = 180000; // 3 мин на полный импорт
-          while (Date.now() - startedAt < MAX_WAIT_MS) {
-            // eslint-disable-next-line no-await-in-loop
-            await new Promise((r) => setTimeout(r, 1500));
-            // eslint-disable-next-line no-await-in-loop
-            const st = await ordersApi.getSyncFbsStatus().catch(() => null);
-            if (!st?.inProgress) break;
-          }
+        const startedAt = Date.now();
+        const MAX_WAIT_MS = 300000;
+        let lastStatus = null;
+        while (Date.now() - startedAt < MAX_WAIT_MS) {
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((r) => setTimeout(r, 1500));
+          // eslint-disable-next-line no-await-in-loop
+          lastStatus = await ordersApi.getSyncFbsStatus().catch(() => null);
+          if (!lastStatus?.inProgress) break;
+        }
+
+        if (lastStatus?.lastSyncError && !silent) {
+          setSyncError(String(lastStatus.lastSyncError));
+        } else if (lastStatus?.inProgress && !silent) {
+          setSyncError(
+            'Синхронизация на сервере ещё идёт. Обновите список заказов через минуту. Для одного заказа Яндекса: POST /api/orders/yandex/{orderId}/refresh'
+          );
         }
 
         await reloadOrders({ silent: true });
@@ -650,6 +661,10 @@ export function Orders() {
             setSyncError('Эндпоинт синхронизации не найден (404). Проверьте, что бэкенд запущен и адрес API указан верно (REACT_APP_API_URL).');
           } else if (status === 429) {
             setSyncError(msg || 'Слишком частые запросы. Подождите перед повторной синхронизацией.');
+          } else if (e.code === 'ECONNABORTED' || /timeout/i.test(String(e.message || ''))) {
+            setSyncError(
+              'Таймаут запроса. Импорт мог запуститься на сервере — подождите 1–2 минуты и обновите список. Проверьте логи pm2 при повторной ошибке.'
+            );
           } else if (!e.response) {
             setSyncError(`Нет связи с сервером: ${e.message || 'сетевая ошибка'}. Проверьте, что бэкенд запущен и доступен по адресу ${process.env.REACT_APP_API_URL || 'http://localhost:3001/api'}.`);
           } else {

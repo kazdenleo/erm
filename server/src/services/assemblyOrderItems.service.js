@@ -131,9 +131,62 @@ export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
 /**
  * Несколько строк одной группы заказа (WB/Ozon) → плоский список для сборки.
  */
+/**
+ * Если все строки группы — один комплект (несколько артикулов WB в одной поставке), развернуть в комплектующие.
+ */
+async function tryExpandGroupAsSingleKit(groupOrders, ordersService, opts = {}) {
+  const rows = Array.isArray(groupOrders) ? groupOrders : [];
+  if (rows.length < 2) return null;
+
+  let sharedKitId = null;
+  for (const o of rows) {
+    let linePid = o.productId ?? o.product_id;
+    if (linePid == null && ordersService) {
+      linePid = await ordersService.resolveProductIdForAssemblyLine(o);
+    }
+    const lineNum = linePid != null ? Number(linePid) : NaN;
+    if (!Number.isFinite(lineNum) || lineNum < 1) return null;
+
+    let kitId = null;
+    if (await isKitProductId(lineNum)) {
+      kitId = lineNum;
+    } else {
+      kitId = await findKitProductIdForMarketplaceOrder(lineNum, o);
+    }
+    if (kitId == null || !(await isKitProductId(kitId))) {
+      const compKits = await query(
+        `SELECT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+        [lineNum]
+      );
+      for (const row of compKits.rows || []) {
+        const kid = Number(row.kit_product_id);
+        if (kid > 0 && (await isKitProductId(kid))) {
+          kitId = kid;
+          break;
+        }
+      }
+    }
+    if (kitId == null) return null;
+    if (sharedKitId == null) sharedKitId = kitId;
+    else if (sharedKitId !== kitId) return null;
+  }
+
+  if (sharedKitId == null) return null;
+  const primary = rows.reduce((best, o) => {
+    const q = Math.max(1, parseInt(o.quantity, 10) || 1);
+    const bq = Math.max(1, parseInt(best?.quantity, 10) || 1);
+    return q >= bq ? o : best;
+  }, rows[0]);
+  const expanded = await expandKitOrderToAssemblyItems(primary, sharedKitId);
+  return expanded.length ? expanded : null;
+}
+
 export async function buildAssemblyOrderItemsFromGroup(groupOrders, ordersService, opts = {}) {
   const rows = Array.isArray(groupOrders) ? groupOrders : [];
   if (!rows.length) return [];
+
+  const asKit = await tryExpandGroupAsSingleKit(rows, ordersService, opts);
+  if (asKit?.length) return asKit;
 
   const items = [];
   for (const o of rows) {

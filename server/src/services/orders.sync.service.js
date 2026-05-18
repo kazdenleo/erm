@@ -22,6 +22,7 @@ import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 const ordersSyncCache = {
   lastSyncTime: null,
   lastSyncResult: null,
+  lastSyncError: null,
   syncInProgress: false
 };
 
@@ -206,6 +207,7 @@ class OrdersSyncService {
       inProgress: Boolean(ordersSyncCache.syncInProgress),
       lastSyncTime: ordersSyncCache.lastSyncTime ?? null,
       lastSyncResult: ordersSyncCache.lastSyncResult ?? null,
+      lastSyncError: ordersSyncCache.lastSyncError ?? null,
     };
   }
 
@@ -227,7 +229,8 @@ class OrdersSyncService {
     setTimeout(() => {
       this.syncFbs({ force, profileId, scheduler, refreshStatuses })
         .catch((e) => {
-          logger.error(`[Orders Sync] background sync failed: ${e?.message || String(e)}`);
+          ordersSyncCache.lastSyncError = e?.message || String(e);
+          logger.error(`[Orders Sync] background sync failed: ${ordersSyncCache.lastSyncError}`);
         });
     }, 0);
 
@@ -312,6 +315,7 @@ class OrdersSyncService {
 
     ordersSyncCache.syncInProgress = true;
     ordersSyncCache.lastSyncTime = now;
+    ordersSyncCache.lastSyncError = null;
     const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0}`;
     if (refreshStatuses) {
       logger.info(
@@ -708,13 +712,16 @@ class OrdersSyncService {
     }
 
       ordersSyncCache.lastSyncResult = results;
+      ordersSyncCache.lastSyncError = null;
 
       logger.info(
         `[Orders Sync] done (${ctx}): ozon=${results.ozon.success} wb=${results.wildberries.success} yandex=${results.yandex.success} ` +
           `(yandex api_key was ${ymApiKey ? 'set' : 'missing'})`
       );
       if (ymApiKey && results.yandex.success === 0) {
-        logger.info(ymReason ? `[YM Orders] 0 orders: ${ymReason}` : '[YM Orders] 0 orders. Search log for "[YM Orders]" above for details.');
+        const hint = ymReason ? `[YM Orders] 0 orders: ${ymReason}` : '[YM Orders] 0 orders. Search log for "[YM Orders]" above for details.';
+        logger.info(hint);
+        ordersSyncCache.lastSyncError = ymReason || 'Яндекс.Маркет: API не вернул заказов за период';
       }
 
       return {
