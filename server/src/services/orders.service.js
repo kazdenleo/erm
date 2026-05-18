@@ -386,7 +386,7 @@ class OrdersService {
 
   /**
    * Установить резерв по заказу: уменьшить доступный остаток и записать движение в историю.
-   * Для комплекта — резерв на SKU комплекта (лимит: собираемость из комплектующих + остаток комплекта).
+   * Для комплекта: целые — резерв на SKU комплекта; из деталей — на комплектующие.
    */
   async _applyReserveForOrder(productId, quantity, orderId, meta = {}) {
     if (!productId || quantity < 1) return;
@@ -447,10 +447,15 @@ class OrdersService {
     const reasonBase = `Резерв по заказу ${orderId || ''}`.trim() || 'Резерв';
     const fromWhole = Number(meta?.kit_reserve_from_whole) || 0;
     const fromComp = Number(meta?.kit_reserve_from_components) || 0;
-    const reason =
-      fromWhole > 0
-        ? `${reasonBase} (${fromWhole} целым SKU${fromComp > 0 ? `, ${fromComp} из комплектующих` : ''})`
-        : reasonBase;
+    const kitUnits = Number(meta?.kit_units) || fromComp || 0;
+    let reason = reasonBase;
+    if (fromWhole > 0 && fromComp > 0) {
+      reason = `${reasonBase} (${fromWhole} целым SKU, ${fromComp} из комплектующих)`;
+    } else if (fromWhole > 0) {
+      reason = `${reasonBase} (целым SKU: ${fromWhole})`;
+    } else if (meta?.kit_product_id && kitUnits > 0) {
+      reason = `${reasonBase} (комплектующие, ${kitUnits} компл.)`;
+    }
 
     await stockMovementsService.applyChange(productId, {
       delta: -qty,

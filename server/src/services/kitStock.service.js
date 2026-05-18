@@ -1,6 +1,7 @@
 /**
- * Комплекты: движения остатков только по SKU комплекта (как у товара).
- * Собираемость из комплектующих — только для отображения «Доступно» и лимита резерва, без записи в product_warehouse_stock.
+ * Комплекты: поступление/отгрузка целым SKU — только если комплект реально на складе.
+ * Резерв: целые комплекты — на SKU комплекта; сборка из деталей — на комплектующие.
+ * Собираемость из комплектующих — для «Доступно», без записи в product_warehouse_stock комплекта.
  */
 
 import { query } from '../config/database.js';
@@ -553,11 +554,10 @@ export function scheduleMarketplaceSyncForParentKits(componentProductId, opts = 
   });
 }
 
-export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
-  const kitId = Number(kitProductId);
+async function getNetReservedForOrderProduct(orderDbId, productId) {
   const oid = Number(orderDbId);
-  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
-
+  const pid = Number(productId);
+  if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
   const r = await query(
     `SELECT
        COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
@@ -566,12 +566,32 @@ export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
      WHERE product_id = $1
        AND type IN ('reserve', 'unreserve')
        AND (meta->>'order_id')::bigint = $2::bigint`,
-    [kitId, oid]
+    [pid, oid]
   );
   const row = r.rows?.[0];
   const reserved = row?.reserved != null ? Number(row.reserved) : 0;
   const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
   return Math.max(0, reserved - unreserved);
+}
+
+/** Сколько комплектов зарезервировано под заказ (целые на SKU комплекта + из комплектующих). */
+export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
+
+  const onKit = await getNetReservedForOrderProduct(oid, kitId);
+
+  const components = await getKitComponents(kitId);
+  if (components.length === 0) return onKit;
+
+  let minKitsFromComp = Infinity;
+  for (const c of components) {
+    const net = await getNetReservedForOrderProduct(oid, c.component_product_id);
+    minKitsFromComp = Math.min(minKitsFromComp, Math.floor(net / Math.max(1, c.quantity)));
+  }
+  const fromComp = Number.isFinite(minKitsFromComp) ? Math.max(0, minKitsFromComp) : 0;
+  return onKit + fromComp;
 }
 
 /**
@@ -687,7 +707,11 @@ export function allocateKitReservePriority(kitsWanted, breakdown) {
   };
 }
 
-/** Резерв по заказу — только на SKU комплекта (как у обычного товара). */
+/**
+ * Резерв по заказу на комплект:
+ * - целые комплекты (1 SKU) — резерв на product_id комплекта;
+ * - сборка из деталей — резерв на комплектующие по составу.
+ */
 export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabel, meta, applyReserveFn) {
   const kitId = Number(kitProductId);
   const wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
@@ -698,12 +722,38 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   const alloc = allocateKitReservePriority(wanted, breakdown);
   if (alloc.kitsToReserve <= 0) return 0;
 
-  await applyReserveFn(kitId, alloc.kitsToReserve, orderIdLabel, {
-    ...meta,
-    kit_reserve_preallocated: alloc.kitsToReserve,
-    kit_reserve_from_whole: alloc.fromWhole,
-    kit_reserve_from_components: alloc.fromComponents
-  });
+  if (alloc.fromWhole > 0) {
+    await applyReserveFn(kitId, alloc.fromWhole, orderIdLabel, {
+      ...meta,
+      kit_reserve_preallocated: alloc.fromWhole,
+      kit_reserve_from_whole: alloc.fromWhole,
+      kit_reserve_from_components: 0,
+      kit_reserve_scope: 'whole'
+    });
+  }
+
+  if (alloc.fromComponents > 0) {
+    const components = await getKitComponents(kitId);
+    for (const c of components) {
+      const perKit = Math.max(1, c.quantity);
+      const compQty = alloc.fromComponents * perKit;
+      await applyReserveFn(c.component_product_id, compQty, orderIdLabel, {
+        ...meta,
+        kit_product_id: kitId,
+        kit_reserve_from_whole: 0,
+        kit_reserve_from_components: alloc.fromComponents,
+        kit_reserve_scope: 'component',
+        kit_units: alloc.fromComponents
+      });
+    }
+    for (const c of components) {
+      scheduleMarketplaceSyncForParentKits(c.component_product_id, {
+        source: 'kit_order_reserve',
+        organizationId: meta?.organizationId ?? null,
+        warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+      });
+    }
+  }
 
   scheduleWarehouseStockMarketplaceSync(kitId, {
     source: 'kit_order_reserve',
