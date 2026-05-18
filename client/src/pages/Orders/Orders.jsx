@@ -637,12 +637,19 @@ export function Orders() {
           if (!lastStatus?.inProgress) break;
         }
 
+        const ym = lastStatus?.lastSyncResult?.yandex;
         if (lastStatus?.lastSyncError && !silent) {
           setSyncError(String(lastStatus.lastSyncError));
+        } else if (forceImport && ym && Number(ym.success) === 0 && ym.reason && !silent) {
+          setSyncError(`Яндекс.Маркет: ${ym.reason}`);
         } else if (lastStatus?.inProgress && !silent) {
           setSyncError(
-            'Синхронизация на сервере ещё идёт. Обновите список заказов через минуту. Для одного заказа Яндекса: POST /api/orders/yandex/{orderId}/refresh'
+            'Синхронизация на сервере ещё идёт. Обновите список заказов через минуту.'
           );
+        } else if (!silent && forceImport && ym != null) {
+          setSyncInfo({
+            message: `Импорт завершён. Яндекс: ${ym.success ?? 0} строк${ym.reason ? ` (${ym.reason})` : ''}.`
+          });
         }
 
         await reloadOrders({ silent: true });
@@ -2119,13 +2126,24 @@ export function Orders() {
             {!detailModalLoading &&
               detailModalData &&
               ['ozon', 'wildberries', 'wb', 'yandex'].includes(detailModalData.marketplace) && (
-                <OrderDetailContent data={detailModalData} />
+                <OrderDetailContent
+                  data={detailModalData}
+                  orderId={detailModalRow.first.orderId}
+                  onReserveChange={(r) => {
+                    setDetailModalData((d) => (d ? { ...d, reserve: r } : d));
+                    reloadOrders({ silent: true });
+                  }}
+                />
               )}
             {!detailModalLoading &&
               (!detailModalData ||
                 detailModalError ||
                 !['ozon', 'wildberries', 'wb', 'yandex'].includes(detailModalRow.first.marketplace)) && (
-                <OrderSummaryFromList orders={detailModalRow.orders} marketplace={detailModalRow.first.marketplace} />
+                <OrderSummaryFromList
+                  orders={detailModalRow.orders}
+                  marketplace={detailModalRow.first.marketplace}
+                  onReserveChange={() => reloadOrders({ silent: true })}
+                />
               )}
           </div>
         )}

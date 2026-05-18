@@ -29,6 +29,10 @@ export const orderDetailParamsSchema = z.object({
   orderId: z.string().min(1, 'ID заказа обязательно'),
 });
 
+export const orderReserveBodySchema = z.object({
+  action: z.enum(['toggle', 'reserve', 'unreserve']).optional().default('toggle'),
+});
+
 /**
  * Middleware для валидации синхронизации заказов
  */
@@ -82,6 +86,22 @@ export function validateOrderDetailParams(req, res, next) {
       return res.status(400).json({
         success: false,
         message: 'Invalid marketplace or order ID',
+        details: error.errors,
+      });
+    }
+    next(error);
+  }
+}
+
+export function validateOrderReserveBody(req, res, next) {
+  try {
+    req.body = orderReserveBodySchema.parse(req.body || {});
+    next();
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
         details: error.errors,
       });
     }

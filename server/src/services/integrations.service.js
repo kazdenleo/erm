@@ -902,9 +902,10 @@ class IntegrationsService {
    */
   async getAllConfigs({ profileId = null, organizationId = null, onlyActive = false } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
+      const orgScoped = organizationId != null && String(organizationId).trim() !== '';
       const integrations = await this.repository.findAll({
         profileId,
-        organizationId,
+        ...(orgScoped ? { organizationId } : {}),
         ...(onlyActive ? { isActive: true } : {}),
       });
       const marketplaces = {};
@@ -922,6 +923,13 @@ class IntegrationsService {
         return idb >= ida ? b : a;
       };
 
+      if (orgScoped) {
+        // Ключи МП для организации — из marketplace_cabinets (как в разделе «Интеграции»), не только integrations.
+        for (const code of ['ozon', 'wildberries', 'yandex']) {
+          marketplaces[code] = (await this.getMarketplaceConfig(code, { profileId, organizationId })) || {};
+        }
+      }
+
       const mpByCode = new Map();
       const supByCode = new Map();
       for (const integration of integrations) {
@@ -931,9 +939,22 @@ class IntegrationsService {
           supByCode.set(integration.code, pickNewerIntegration(supByCode.get(integration.code), integration));
         }
       }
-      mpByCode.forEach((row, code) => {
-        marketplaces[code] = row.config || {};
-      });
+      if (!orgScoped) {
+        mpByCode.forEach((row, code) => {
+          marketplaces[code] = row.config || {};
+        });
+      } else {
+        for (const code of ['ozon', 'wildberries', 'yandex']) {
+          const fromCab = marketplaces[code];
+          const hasCabCreds =
+            fromCab &&
+            typeof fromCab === 'object' &&
+            (fromCab.api_key || fromCab.apiKey || fromCab.client_id);
+          if (!hasCabCreds && mpByCode.has(code)) {
+            marketplaces[code] = mpByCode.get(code).config || {};
+          }
+        }
+      }
       supByCode.forEach((row, code) => {
         suppliers[code] = row.config || {};
       });

@@ -16,7 +16,12 @@ import warehouseMappingsRoutes from './warehouseMappings.routes.js';
 import suppliersRoutes from './suppliers.routes.js';
 import ordersController from '../controllers/orders.controller.js';
 import ordersRoutes from './orders.routes.js';
-import { validateOrderDetailParams, validateOrderId } from '../validators/orderValidator.js';
+import {
+  validateOrderDetailParams,
+  validateOrderId,
+  validateOrderReserveBody,
+} from '../validators/orderValidator.js';
+import { requireAuth } from '../middleware/auth.js';
 import supplierStocksRoutes from './supplierStocks.routes.js';
 import integrationsRoutes from './integrations.routes.js';
 import { categoriesRoutes } from './categories.routes.js';
@@ -45,7 +50,6 @@ import marketplaceInventoryRoutes from './marketplaceInventory.routes.js';
 import marketplaceStockRoutes from './marketplaceStock.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
-import { requireAuth } from '../middleware/auth.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { marketplaceProductIdentifiersHelp } from '../controllers/helpDocs.controller.js';
 import { isAuthBootstrapRequest } from '../utils/authBootstrapPaths.js';
@@ -198,6 +202,19 @@ router.put(
   requireAuth,
   validateOrderDetailParams,
   wrapAsync(ordersController.markShipped.bind(ordersController))
+);
+router.get(
+  '/orders/:marketplace/:orderId/reserve',
+  requireAuth,
+  validateOrderDetailParams,
+  wrapAsync(ordersController.getOrderReserve.bind(ordersController))
+);
+router.post(
+  '/orders/:marketplace/:orderId/reserve',
+  requireAuth,
+  validateOrderDetailParams,
+  validateOrderReserveBody,
+  wrapAsync(ordersController.setOrderReserve.bind(ordersController))
 );
 router.use('/orders', ordersRoutes);
 router.use('/questions', questionsRoutes);

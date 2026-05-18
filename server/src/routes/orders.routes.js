@@ -12,6 +12,7 @@ import {
   validateSyncOrders,
   validateOrderId,
   validateOrderDetailParams,
+  validateOrderReserveBody,
 } from '../validators/orderValidator.js';
 
 const router = express.Router();
@@ -123,6 +124,21 @@ router.get(
   '/:marketplace/:orderId/detail',
   validateOrderDetailParams,
   wrapAsync(ordersController.getDetail.bind(ordersController))
+);
+
+// Резерв товаров под заказ (состояние)
+router.get(
+  '/:marketplace/:orderId/reserve',
+  validateOrderDetailParams,
+  wrapAsync(ordersController.getOrderReserve.bind(ordersController))
+);
+
+// Поставить / снять резерв (toggle по умолчанию)
+router.post(
+  '/:marketplace/:orderId/reserve',
+  validateOrderDetailParams,
+  validateOrderReserveBody,
+  wrapAsync(ordersController.setOrderReserve.bind(ordersController))
 );
 
 // Страница с этикеткой и автопечатью (для сборки — сразу печатать)

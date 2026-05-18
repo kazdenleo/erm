@@ -219,6 +219,7 @@ class OrdersSyncService {
     const refreshStatuses = options.refreshStatuses === true;
     const force = options.force === true || refreshStatuses;
     const profileId = options.profileId ?? null;
+    const organizationId = options.organizationId ?? null;
     const scheduler = options.scheduler === true;
 
     if (ordersSyncCache.syncInProgress) {
@@ -227,7 +228,7 @@ class OrdersSyncService {
 
     // Важно: запуск в следующем тике, чтобы контроллер успел ответить.
     setTimeout(() => {
-      this.syncFbs({ force, profileId, scheduler, refreshStatuses })
+      this.syncFbs({ force, profileId, organizationId, scheduler, refreshStatuses })
         .catch((e) => {
           ordersSyncCache.lastSyncError = e?.message || String(e);
           logger.error(`[Orders Sync] background sync failed: ${ordersSyncCache.lastSyncError}`);
@@ -249,6 +250,7 @@ class OrdersSyncService {
     const force = options.force === true || refreshStatuses;
     const fromScheduler = options.scheduler === true;
     const profileId = options.profileId ?? null;
+    const organizationId = options.organizationId ?? null;
     const catchUpLimit = refreshStatuses ? 500 : 40;
     const oneMinute = 60 * 1000;
 
@@ -316,7 +318,7 @@ class OrdersSyncService {
     ordersSyncCache.syncInProgress = true;
     ordersSyncCache.lastSyncTime = now;
     ordersSyncCache.lastSyncError = null;
-    const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0}`;
+    const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} org=${organizationId != null && organizationId !== '' ? organizationId : '—'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0}`;
     if (refreshStatuses) {
       logger.info(
         `[Orders Sync] обновление статусов с маркетплейсов (catch-up до ${catchUpLimit} на МП, минутный лимит снят) (${ctx})`
@@ -341,7 +343,11 @@ class OrdersSyncService {
     const OZON_DAYS_BACK = 365;
 
     // Конфиги маркетплейсов из того же источника, что и раздел «Интеграции» (БД или файлы)
-    const { marketplaces } = await integrationsService.getAllConfigs({ profileId, onlyActive: true });
+    const { marketplaces } = await integrationsService.getAllConfigs({
+      profileId,
+      organizationId,
+      onlyActive: true
+    });
     const ozonConfig = marketplaces?.ozon || {};
     const wbConfig = marketplaces?.wildberries || {};
     const ymConfig = marketplaces?.yandex || {};
@@ -417,15 +423,25 @@ class OrdersSyncService {
     let ymReason = null;
     try {
       if (ymApiKey) {
-        const ymResult = await fetchYandexFBSOrders(ymConfig);
+        const ymResult = await fetchYandexFBSOrders(ymConfig, { force });
         const ymOrders = ymResult?.orders ?? [];
         ymReason = ymResult?.reason ?? null;
         results.yandex.success = ymOrders.length;
         results.yandex.orders = ymOrders;
+        results.yandex.reason = ymReason ?? null;
+        if (ymResult?.errors?.length) {
+          results.yandex.errors = ymResult.errors;
+        }
+      } else {
+        ymReason = 'API-ключ Яндекс.Маркета не настроен (Интеграции → Яндекс, активная интеграция)';
+        results.yandex.reason = ymReason;
       }
     } catch (error) {
       console.error('[Orders Sync] Yandex error:', error);
       results.yandex.failed = 1;
+      ymReason = error?.message || String(error);
+      results.yandex.reason = ymReason;
+      ordersSyncCache.lastSyncError = ymReason;
     }
 
     // существующие заказы (из БД или файла — в зависимости от настроек)
@@ -903,7 +919,7 @@ class OrdersSyncService {
   /**
    * Импорт / принудительное обновление заказа Яндекс.Маркета по orderId (GET order по API).
    */
-  async refreshYandexOrder(orderIdRaw, { profileId = null } = {}) {
+  async refreshYandexOrder(orderIdRaw, { profileId = null, organizationId = null } = {}) {
     const storageOrderId = decodeURIComponent(String(orderIdRaw || '').trim());
     const baseId = yandexOrderIdForApi(storageOrderId);
     if (!baseId) {
@@ -912,7 +928,11 @@ class OrdersSyncService {
       throw err;
     }
 
-    const { marketplaces } = await integrationsService.getAllConfigs({ profileId });
+    const { marketplaces } = await integrationsService.getAllConfigs({
+      profileId,
+      organizationId,
+      onlyActive: true
+    });
     const ymConfig = marketplaces?.yandex || {};
     const api_key = normalizeYandexApiKey(ymConfig?.api_key ?? ymConfig?.apiKey);
     if (!api_key) {
@@ -2473,12 +2493,20 @@ function yandexYmdCompare(a, b) {
  * Сырые объекты заказов YM для одного businessId (POST v1/businesses/{id}/orders).
  * Чанки только по календарю YYYY-MM-DD (без смешивания setDate и +30 суток в мс — иначе между окнами возможны пропуски дат).
  */
-async function fetchYandexOrdersRawForBusinessGroup(api_key, businessId, campaignIds, logLabel = '') {
+async function fetchYandexOrdersRawForBusinessGroup(
+  api_key,
+  businessId,
+  campaignIds,
+  logLabel = '',
+  { dateField = 'creation', daysBack = 365 } = {}
+) {
   const toDate = new Date();
-  const DAYS_BACK = 365;
-  const chunkDays = 30;
+  const DAYS_BACK = Math.max(1, Number(daysBack) || 365);
+  const chunkDays = dateField === 'update' ? Math.min(DAYS_BACK, 30) : 30;
   const endYmd = formatYandexOrderFilterDate(toDate);
   const startYmd = yandexYmdAddDays(endYmd, -DAYS_BACK);
+  const dateFromKey = dateField === 'update' ? 'updateDateFrom' : 'creationDateFrom';
+  const dateToKey = dateField === 'update' ? 'updateDateTo' : 'creationDateTo';
 
   const CAMPAIGN_BATCH = 50;
   const campaignBatches = [];
@@ -2487,7 +2515,7 @@ async function fetchYandexOrdersRawForBusinessGroup(api_key, businessId, campaig
   }
 
   logger.info(
-    `[YM Orders] ${logLabel}businessId=${businessId} кампаний=${campaignIds.length} (батчи по ${CAMPAIGN_BATCH}), ~${DAYS_BACK} д., даты фильтра по МСК, окно ${startYmd}..${endYmd}`
+    `[YM Orders] ${logLabel}businessId=${businessId} кампаний=${campaignIds.length} (батчи по ${CAMPAIGN_BATCH}), ~${DAYS_BACK} д. по ${dateField}, МСК ${startYmd}..${endYmd}`
   );
 
   const allOrders = [];
@@ -2497,15 +2525,15 @@ async function fetchYandexOrdersRawForBusinessGroup(api_key, businessId, campaig
   while (yandexYmdCompare(fromYmd, endYmd) <= 0) {
     const chunkEndCandidate = yandexYmdAddDays(fromYmd, chunkDays - 1);
     const lastInChunk = yandexYmdCompare(chunkEndCandidate, endYmd) > 0 ? endYmd : chunkEndCandidate;
-    const creationDateFrom = fromYmd;
-    // API: creationDateTo не включается; последний включаемый день — lastInChunk → передаём следующий день.
-    const creationDateTo = yandexYmdAddDays(lastInChunk, 1);
+    const dateFrom = fromYmd;
+    // API: *DateTo не включается; последний включаемый день — lastInChunk → передаём следующий день.
+    const dateTo = yandexYmdAddDays(lastInChunk, 1);
 
     for (let bi = 0; bi < campaignBatches.length; bi += 1) {
       const campaignIdsPart = campaignBatches[bi];
 
       logger.info(
-        `[YM Orders] business ${businessId}: МСК ${creationDateFrom}..${lastInChunk} вкл. (API creationDateTo=${creationDateTo} exclusive), камп. batch ${bi + 1}/${campaignBatches.length} (${campaignIdsPart.length} id)`
+        `[YM Orders] business ${businessId}: ${dateField} МСК ${dateFrom}..${lastInChunk} вкл. (${dateToKey}=${dateTo}), камп. batch ${bi + 1}/${campaignBatches.length} (${campaignIdsPart.length} id)`
       );
 
       let pageToken = null;
@@ -2518,8 +2546,8 @@ async function fetchYandexOrdersRawForBusinessGroup(api_key, businessId, campaig
         const body = {
           campaignIds: campaignIdsPart,
           dates: {
-            creationDateFrom,
-            creationDateTo
+            [dateFromKey]: dateFrom,
+            [dateToKey]: dateTo
           },
           fake: false
         };
@@ -2560,7 +2588,8 @@ async function fetchYandexOrdersRawForBusinessGroup(api_key, businessId, campaig
  * Требуется businessId (кабинет); при отсутствии в конфиге запрашивается GET v2/campaigns.
  * Несколько businessId (разные кабинеты под одним ключом) обрабатываются отдельными запросами.
  */
-async function fetchYandexFBSOrders(config) {
+async function fetchYandexFBSOrders(config, options = {}) {
+  const force = options.force === true;
   try {
     logger.info('[YM Orders] fetch started');
     const api_key = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
@@ -2584,15 +2613,30 @@ async function fetchYandexFBSOrders(config) {
     }
 
     const allOrders = [];
+    const fetchErrors = [];
     for (let gi = 0; gi < groups.length; gi += 1) {
       const g = groups[gi];
       const prefix = groups.length > 1 ? `группа ${gi + 1}/${groups.length} ` : '';
-      try {
-        const batch = await fetchYandexOrdersRawForBusinessGroup(api_key, g.businessId, g.campaignIds, prefix);
-        allOrders.push(...batch);
-      } catch (e) {
-        logger.warn(`[YM Orders] ${prefix}не загружена: ${e.message}`);
+      const loadGroup = async (dateField, daysBack, labelSuffix) => {
+        try {
+          const batch = await fetchYandexOrdersRawForBusinessGroup(
+            api_key,
+            g.businessId,
+            g.campaignIds,
+            `${prefix}${labelSuffix}`,
+            { dateField, daysBack }
+          );
+          allOrders.push(...batch);
+        } catch (e) {
+          const msg = `${prefix}${labelSuffix}: ${e.message}`;
+          fetchErrors.push(msg);
+          logger.warn(`[YM Orders] ${msg}`);
+        }
+      };
+      if (force) {
+        await loadGroup('update', 45, 'update 45д ');
       }
+      await loadGroup('creation', 365, '');
     }
 
     const uniqueByOrderId = new Map();
@@ -2627,8 +2671,14 @@ async function fetchYandexFBSOrders(config) {
     if (mapped.length > 0) {
       logger.info(`[YM Orders] Загружено заказов: ${mapped.length}`);
     }
-    const reason = mapped.length === 0 ? 'API returned 0 orders (last ~365 days, chunked by 30d)' : undefined;
-    return { orders: mapped, reason };
+    let reason;
+    if (mapped.length === 0) {
+      reason =
+        fetchErrors.length > 0
+          ? fetchErrors.join('; ')
+          : 'API не вернул заказов (проверьте Business ID, Campaign ID и права Api-Key в ЛК Яндекс.Маркета)';
+    }
+    return { orders: mapped, reason, errors: fetchErrors.length ? fetchErrors : undefined };
   } catch (error) {
     logger.error('[YM Orders] Fetch error:', error.message);
     const reason = error.message && /request to .* failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|network/i.test(error.message)

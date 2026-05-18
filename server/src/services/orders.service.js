@@ -2153,10 +2153,8 @@ class OrdersService {
     return data.orders.length - orders.length;
   }
 
-  /**
-   * Строки заказа из локальной БД для карточки заказа (product_id → ссылка на каталог).
-   */
-  async getLocalLinesForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
+  /** Все строки заказа в БД (включая позиции группы). */
+  async _findOrderGroupRows(marketplace, orderId, { profileId = null } = {}) {
     const oid = String(orderId ?? '').trim();
     if (!oid || !marketplace) return [];
 
@@ -2168,27 +2166,8 @@ class OrdersService {
         return m === 'yandex' || m === 'ym' || m === 'yandexmarket';
       }
       if (mpUi === 'ozon') return m === 'ozon';
+      if (mpUi === 'manual') return m === 'manual';
       return m === mpUi;
-    };
-
-    const mapRow = (o) => ({
-      orderLineId: o.orderId ?? o.order_id,
-      productId: o.productId ?? o.product_id ?? null,
-      offerId: o.offerId ?? o.offer_id ?? null,
-      /** В PG для WB nmId приходит в sku (см. rowToCamel orders.repository.pg) */
-      marketplaceSku: o.marketplaceSku ?? o.marketplace_sku ?? o.sku ?? null,
-      productName: o.productName ?? o.product_name ?? null
-    });
-
-    const withResolvedProductIds = async (rawRows) => {
-      const mapped = (rawRows || []).map(mapRow);
-      for (let i = 0; i < mapped.length; i++) {
-        const p = mapped[i].productId;
-        if (p != null && String(p).trim() !== '') continue;
-        const resolved = await this.resolveProductIdForAssemblyLine(rawRows[i]);
-        if (resolved != null) mapped[i].productId = resolved;
-      }
-      return mapped;
     };
 
     if (repositoryFactory.isUsingPostgreSQL()) {
@@ -2199,8 +2178,7 @@ class OrdersService {
       }
       if (!row) return [];
       const gid = row.orderGroupId ?? row.order_group_id;
-      const rows = gid ? await this.repository.findByOrderGroupId(gid, profileId) : [row];
-      return withResolvedProductIds(rows);
+      return gid ? await this.repository.findByOrderGroupId(gid, profileId) : [row];
     }
 
     const all = await this.getAll();
@@ -2211,8 +2189,156 @@ class OrdersService {
       orders.find((o) => String(o.orderId || '').startsWith(`${oid}~`));
     if (!row) return [];
     const gid = row.orderGroupId || row.order_group_id;
-    const rows = gid ? orders.filter((o) => String(o.orderGroupId || '') === String(gid)) : [row];
-    return withResolvedProductIds(rows);
+    return gid ? orders.filter((o) => String(o.orderGroupId || '') === String(gid)) : [row];
+  }
+
+  async _summarizeReserveForRows(rows) {
+    let reservedQty = 0;
+    let needQty = 0;
+    const lines = [];
+    for (const row of rows || []) {
+      const id = orderRowDbId(row);
+      const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
+      const reserved = id ? await this._getReservedQtyForOrder(id) : 0;
+      reservedQty += reserved;
+      needQty += qty;
+      lines.push({
+        orderLineId: row.orderId ?? row.order_id,
+        productId: row.productId ?? row.product_id ?? null,
+        reservedQty: reserved,
+        needQty: qty
+      });
+    }
+    return {
+      hasReserve: reservedQty > 0,
+      reservedQty,
+      needQty,
+      fullyReserved: needQty > 0 && reservedQty >= needQty,
+      lines
+    };
+  }
+
+  async getOrderReserveSummary(marketplace, orderId, { profileId = null } = {}) {
+    const rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    if (!rows.length) {
+      const err = new Error('Заказ не найден в системе');
+      err.statusCode = 404;
+      throw err;
+    }
+    return this._summarizeReserveForRows(rows);
+  }
+
+  /**
+   * Поставить / снять резерв по всем строкам заказа (группа).
+   * @param {'toggle'|'reserve'|'unreserve'} action
+   */
+  async setOrderReserve(marketplace, orderId, { profileId = null, action = 'toggle' } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const err = new Error('Резерв по заказам доступен только при использовании PostgreSQL');
+      err.statusCode = 501;
+      throw err;
+    }
+
+    const rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    if (!rows.length) {
+      const err = new Error('Заказ не найден в системе');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const blockedStatuses = new Set(['shipped', 'cancelled', 'canceled']);
+    for (const row of rows) {
+      const st = String(row.status || '').trim().toLowerCase();
+      if (blockedStatuses.has(st)) {
+        const err = new Error('Нельзя менять резерв для отгруженного или отменённого заказа');
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    const before = await this._summarizeReserveForRows(rows);
+    const act = String(action || 'toggle').toLowerCase();
+    const doUnreserve = act === 'unreserve' || (act === 'toggle' && before.hasReserve);
+
+    if (doUnreserve) {
+      const productIds = new Set();
+      for (const row of rows) {
+        const id = orderRowDbId(row);
+        if (!id) continue;
+        const oid = String(row.orderId ?? row.order_id ?? orderId);
+        const affected = await releaseAllReservesForOrder(id, oid, async (pid, net, orderIdLabel, meta) => {
+          await stockMovementsService.applyChange(pid, {
+            delta: net,
+            type: 'unreserve',
+            reason: `Снятие резерва по заказу ${orderIdLabel} (вручную)`.trim(),
+            meta: { ...meta, manual_unreserve: true }
+          });
+        });
+        for (const pid of affected || []) productIds.add(Number(pid));
+      }
+      for (const pid of productIds) {
+        if (Number.isFinite(pid) && pid > 0) {
+          await this.ensureReservesForProductIfSupplyAvailable(pid).catch(() => {});
+        }
+      }
+    } else {
+      for (const row of rows) {
+        const productId = await this._resolveProductIdForOrderStock(row);
+        if (!productId) {
+          const err = new Error(
+            'Не удалось сопоставить товар заказа с каталогом. Укажите SKU в карточке товара или сопоставление маркетплейса.'
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+        await this._applyReserveForOrderIfAbsent(row);
+      }
+    }
+
+    const after = await this._summarizeReserveForRows(rows);
+    let message;
+    if (doUnreserve) {
+      message = after.hasReserve
+        ? `Резерв частично снят: ${after.reservedQty} из ${after.needQty}`
+        : 'Резерв снят';
+    } else if (after.reservedQty <= before.reservedQty) {
+      message =
+        after.needQty > 0
+          ? `Недостаточно остатка для резерва (сейчас ${after.reservedQty} из ${after.needQty})`
+          : 'Резерв не изменён';
+    } else if (after.fullyReserved) {
+      message = `Резерв установлен: ${after.reservedQty} из ${after.needQty}`;
+    } else {
+      message = `Резерв частично установлен: ${after.reservedQty} из ${after.needQty}`;
+    }
+
+    return {
+      action: doUnreserve ? 'unreserve' : 'reserve',
+      ...after,
+      message
+    };
+  }
+
+  /**
+   * Строки заказа из локальной БД для карточки заказа (product_id → ссылка на каталог).
+   */
+  async getLocalLinesForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
+    const rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    const mapRow = (o) => ({
+      orderLineId: o.orderId ?? o.order_id,
+      productId: o.productId ?? o.product_id ?? null,
+      offerId: o.offerId ?? o.offer_id ?? null,
+      marketplaceSku: o.marketplaceSku ?? o.marketplace_sku ?? o.sku ?? null,
+      productName: o.productName ?? o.product_name ?? null
+    });
+    const mapped = (rows || []).map(mapRow);
+    for (let i = 0; i < mapped.length; i++) {
+      const p = mapped[i].productId;
+      if (p != null && String(p).trim() !== '') continue;
+      const resolved = await this.resolveProductIdForAssemblyLine(rows[i]);
+      if (resolved != null) mapped[i].productId = resolved;
+    }
+    return mapped;
   }
 }
 

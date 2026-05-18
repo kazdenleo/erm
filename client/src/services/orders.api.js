@@ -104,6 +104,27 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Состояние резерва по заказу (все строки группы). */
+  getOrderReserve: async (marketplace, orderId) => {
+    const mp = encodeURIComponent(marketplace);
+    const id = encodeURIComponent(orderId);
+    const response = await api.get(`/orders/${mp}/${id}/reserve`);
+    return response.data?.data ?? response.data;
+  },
+
+  /**
+   * Поставить / снять резерв под заказ.
+   * @param {{ action?: 'toggle'|'reserve'|'unreserve' }} [options]
+   */
+  setOrderReserve: async (marketplace, orderId, options = {}) => {
+    const mp = encodeURIComponent(marketplace);
+    const id = encodeURIComponent(orderId);
+    const response = await api.post(`/orders/${mp}/${id}/reserve`, {
+      action: options.action ?? 'toggle'
+    });
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Отправить выбранные заказы на сборку
    * @param {Array<{ marketplace: string, orderId: string }>} items

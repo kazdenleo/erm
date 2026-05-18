@@ -251,6 +251,9 @@ class OrdersController {
         req.body?.refreshStatuses === 'true';
       const effectiveForce = force || refreshStatuses;
       const profileId = req.user?.profileId ?? null;
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId =
+        orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
 
       // 1) Быстрый ответ из кэша (минутный лимит) — чтобы UI не зависал.
       const status = ordersSyncService.getSyncFbsStatus();
@@ -283,7 +286,8 @@ class OrdersController {
       const start = ordersSyncService.startSyncFbsInBackground({
         force: effectiveForce,
         refreshStatuses,
-        profileId
+        profileId,
+        organizationId
       });
       return res.status(202).json({
         ok: true,
@@ -320,8 +324,12 @@ class OrdersController {
   async refreshYandex(req, res, next) {
     try {
       const { orderId } = req.params;
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId =
+        orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const result = await ordersSyncService.refreshYandexOrder(orderId, {
-        profileId: req.user?.profileId ?? null
+        profileId: req.user?.profileId ?? null,
+        organizationId
       });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
@@ -588,6 +596,38 @@ class OrdersController {
     }
   }
 
+  async getOrderReserve(req, res, next) {
+    try {
+      const { marketplace, orderId } = req.params;
+      const data = await ordersService.getOrderReserveSummary(marketplace, orderId, {
+        profileId: req.user?.profileId ?? null
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      if (error.statusCode === 404) {
+        return res.status(404).json({ ok: false, message: error.message });
+      }
+      next(error);
+    }
+  }
+
+  async setOrderReserve(req, res, next) {
+    try {
+      const { marketplace, orderId } = req.params;
+      const action = req.body?.action ?? 'toggle';
+      const data = await ordersService.setOrderReserve(marketplace, orderId, {
+        profileId: req.user?.profileId ?? null,
+        action
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      if (error.statusCode === 400 || error.statusCode === 404 || error.statusCode === 501) {
+        return res.status(error.statusCode).json({ ok: false, message: error.message });
+      }
+      next(error);
+    }
+  }
+
   async getDetail(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
@@ -618,12 +658,22 @@ class OrdersController {
       } catch {
         localLines = [];
       }
+      let reserve = null;
+      try {
+        reserve = await ordersService.getOrderReserveSummary(marketplace, orderId, {
+          profileId: req.user?.profileId ?? null
+        });
+      } catch {
+        reserve = null;
+      }
       return res.status(200).json({
         ok: true,
         data: {
           ...result,
+          orderId: String(orderId),
           assembly,
           localLines,
+          reserve,
         }
       });
     } catch (error) {

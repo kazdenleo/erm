@@ -11,6 +11,71 @@ import { Button } from '../../components/common/Button/Button';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
 import './OrderDetail.css';
 
+/** Кнопка «Поставить / снять резерв» в карточке заказа */
+export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, onChanged }) {
+  const [reserve, setReserve] = useState(reserveProp ?? null);
+  const [loading, setLoading] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (reserveProp !== undefined) {
+      setReserve(reserveProp ?? null);
+    }
+  }, [reserveProp]);
+
+  const handleToggle = async () => {
+    if (!marketplace || !orderId || loading) return;
+    setLoading(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const result = await ordersApi.setOrderReserve(marketplace, orderId, { action: 'toggle' });
+      setReserve(result);
+      setFeedback(result?.message || null);
+      onChanged?.(result);
+    } catch (e) {
+      setError(e.response?.data?.message || e.message || 'Не удалось изменить резерв');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!marketplace || !orderId) return null;
+
+  const reservedQty = Number(reserve?.reservedQty ?? 0) || 0;
+  const needQty = Number(reserve?.needQty ?? 0) || 0;
+  const hasReserve = reserve?.hasReserve === true || reservedQty > 0;
+  const label = hasReserve ? 'Снять резерв' : 'Поставить резерв';
+  const variant = hasReserve ? 'secondary' : 'primary';
+
+  return (
+    <section className="order-detail-section order-reserve-panel" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+        <div style={{ flex: '1 1 200px' }}>
+          <h3 style={{ margin: '0 0 4px' }}>Резерв на складе</h3>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--muted, #666)' }}>
+            {needQty > 0
+              ? `Зарезервировано: ${reservedQty} из ${needQty}`
+              : reserve == null
+                ? 'Загрузка…'
+                : 'Нет данных о количестве'}
+          </p>
+        </div>
+        <Button variant={variant} size="small" onClick={handleToggle} disabled={loading}>
+          {loading ? '…' : label}
+        </Button>
+      </div>
+      {feedback && (
+        <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--success, #2e7d32)' }}>{feedback}</p>
+      )}
+      {error && (
+        <p className="error" style={{ margin: '8px 0 0', fontSize: 13 }}>{error}</p>
+      )}
+    </section>
+  );
+}
+
 const marketplaceNames = {
   ozon: 'Ozon',
   wildberries: 'Wildberries',
@@ -177,6 +242,13 @@ export function OrderDetail() {
         </h1>
       </div>
 
+      <OrderReservePanel
+        marketplace={marketplace}
+        orderId={orderId}
+        reserve={data?.reserve}
+        onChanged={(r) => setData((d) => (d ? { ...d, reserve: r } : d))}
+      />
+
       {(data?.assembly?.assembledAt ||
         data?.assembly?.assembledByEmail ||
         data?.assembly?.assembledByFullName ||
@@ -219,11 +291,12 @@ export function OrderDetail() {
 }
 
 /** Контент деталей заказа по данным API (для использования в модалке на странице заказов) */
-export function OrderDetailContent({ data }) {
+export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange }) {
   if (!data) return null;
   const detail = data.detail;
   const localLines = data.localLines;
   const assembly = data.assembly;
+  const orderId = orderIdProp ?? data.orderId ?? null;
   const mp = String(data.marketplace || '').toLowerCase();
   const mpNorm =
     mp === 'wb'
@@ -231,6 +304,15 @@ export function OrderDetailContent({ data }) {
       : mp === 'ym' || mp === 'yandexmarket'
         ? 'yandex'
         : mp;
+  const reserveBlock =
+    orderId && data.marketplace ? (
+      <OrderReservePanel
+        marketplace={data.marketplace}
+        orderId={orderId}
+        reserve={data.reserve}
+        onChanged={onReserveChange}
+      />
+    ) : null;
   const assemblyBlock =
     assembly &&
     (assembly.assembledAt ||
@@ -254,6 +336,7 @@ export function OrderDetailContent({ data }) {
   if (mpNorm === 'ozon' && detail)
     return (
       <>
+        {reserveBlock}
         {assemblyBlock}
         <OzonDetail detail={detail} localLines={localLines} />
       </>
@@ -261,6 +344,7 @@ export function OrderDetailContent({ data }) {
   if ((mpNorm === 'wildberries' || mpNorm === 'wb') && detail) {
     return (
       <>
+        {reserveBlock}
         {assemblyBlock}
         {data.fromLocal && (
           <p className="order-detail-local-hint" style={{ marginBottom: 12, fontSize: 13, color: 'var(--muted)' }}>
@@ -274,6 +358,7 @@ export function OrderDetailContent({ data }) {
   if ((mpNorm === 'yandex' || mpNorm === 'ym' || mpNorm === 'yandexmarket') && detail) {
     return (
       <>
+        {reserveBlock}
         {assemblyBlock}
         {data.fromLocal && (
           <p className="order-detail-local-hint" style={{ marginBottom: 12, fontSize: 13, color: 'var(--muted)' }}>
@@ -360,10 +445,27 @@ export function OzonDetail({ detail, localLines }) {
 }
 
 /** Краткая информация о заказе из списка (для ручных заказов, Яндекс или при ошибке API) */
-export function OrderSummaryFromList({ orders, marketplace }) {
+export function OrderSummaryFromList({ orders, marketplace, onReserveChange }) {
   const mpName = marketplaceNames[marketplace] || marketplace;
+  const orderId = orders?.[0]?.orderId ?? orders?.[0]?.order_id ?? null;
+  const reserveFromList =
+    orders?.length > 0
+      ? {
+          reservedQty: orders.reduce((s, o) => s + (Number(o.reservedQty ?? o.reserved_qty) || 0), 0),
+          needQty: orders.reduce((s, o) => s + Math.max(1, Number(o.quantity) || 1), 0),
+          hasReserve: orders.some((o) => (Number(o.reservedQty ?? o.reserved_qty) || 0) > 0)
+        }
+      : null;
   return (
     <div className="order-detail-sections">
+      {orderId && marketplace ? (
+        <OrderReservePanel
+          marketplace={marketplace}
+          orderId={orderId}
+          reserve={reserveFromList}
+          onChanged={onReserveChange}
+        />
+      ) : null}
       <section className="order-detail-section">
         <h3>Данные заказа</h3>
         <dl className="detail-dl">
