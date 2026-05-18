@@ -4,7 +4,8 @@
  */
 
 import axios from 'axios';
-import { getApiSessionContext } from './apiSession.js';
+import { getApiSessionContext, setApiSessionContext } from './apiSession.js';
+import { clearStoredOrganizationId } from '../utils/organizationSessionSync.js';
 
 /** База API для axios, window.open печати и т.п. Экспортируем, чтобы другие клиентские модули не дублировали логику. */
 export function resolveApiBaseUrl() {
@@ -86,9 +87,37 @@ api.interceptors.request.use(
 // Response interceptor
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const status = error.response?.status;
+    const code = error.response?.data?.code;
+
+    if (status === 403 && (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH')) {
+      clearStoredOrganizationId();
+      if (code === 'ACCOUNT_CONTEXT_MISMATCH') {
+        setApiSessionContext({ accountId: null, organizationId: null });
+      }
+      try {
+        window.dispatchEvent(new CustomEvent('erp:organization-context-invalid', { detail: { code } }));
+      } catch {
+        /* ignore */
+      }
+      const cfg = error.config;
+      if (cfg && !cfg._contextMismatchRetry) {
+        cfg._contextMismatchRetry = true;
+        if (cfg.headers) {
+          if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH') {
+            delete cfg.headers['X-Organization-Id'];
+          }
+          if (code === 'ACCOUNT_CONTEXT_MISMATCH') {
+            delete cfg.headers['X-Account-Id'];
+          }
+        }
+        return api.request(cfg);
+      }
+    }
+
     // Обработка ошибок
-    if (error.response?.status === 401) {
+    if (status === 401) {
       localStorage.removeItem('token');
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login';

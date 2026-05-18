@@ -208,6 +208,61 @@ class MarketplaceQuestionsRepositoryPG {
     return row ? rowToApi(row) : null;
   }
 
+  async deleteByIdAndProfile(id, profileId) {
+    const nid = Number(id);
+    if (!Number.isFinite(nid) || nid < 1) return false;
+    const result = await query(
+      'DELETE FROM marketplace_questions WHERE id = $1 AND profile_id = $2',
+      [nid, profileId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Убираем из БД вопросы, которые больше не в списке «без ответа» на МП
+   * (ответили на маркетплейсе или ветка закрыта с нашей стороны).
+   */
+  async deleteUnansweredMissingFromMarketplace(profileId, marketplace, externalIds, { purgeAllIfEmpty = false } = {}) {
+    const mp = String(marketplace || '').trim();
+    if (!['ozon', 'wildberries', 'yandex'].includes(mp)) return { deleted: 0 };
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) return { deleted: 0 };
+
+    const ids = Array.isArray(externalIds)
+      ? externalIds.map((x) => String(x).trim()).filter(Boolean)
+      : [];
+
+    if (ids.length === 0) {
+      if (!purgeAllIfEmpty) return { deleted: 0 };
+      const result = await query(
+        `DELETE FROM marketplace_questions
+         WHERE profile_id = $1 AND marketplace = $2 AND ${SQL_NEEDS_REPLY}`,
+        [pid, mp]
+      );
+      return { deleted: result.rowCount != null ? Number(result.rowCount) : 0 };
+    }
+
+    const result = await query(
+      `DELETE FROM marketplace_questions
+       WHERE profile_id = $1 AND marketplace = $2 AND ${SQL_NEEDS_REPLY}
+         AND NOT (external_id = ANY($3::text[]))`,
+      [pid, mp, ids]
+    );
+    return { deleted: result.rowCount != null ? Number(result.rowCount) : 0 };
+  }
+
+  /** После upsert: удалить строки, у которых по данным ветки ответ уже не требуется. */
+  async deleteNotNeedingReplyByProfile(profileId) {
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) return { deleted: 0 };
+    const result = await query(
+      `DELETE FROM marketplace_questions
+       WHERE profile_id = $1 AND NOT (${SQL_NEEDS_REPLY})`,
+      [pid]
+    );
+    return { deleted: result.rowCount != null ? Number(result.rowCount) : 0 };
+  }
+
   /**
    * @param {string|number} id
    * @param {number} profileId
@@ -412,7 +467,7 @@ class MarketplaceQuestionsRepositoryPG {
   async countQuestionsByMarketplace(profileId) {
     const result = await query(
       `SELECT marketplace, COUNT(*)::int AS c
-       FROM marketplace_questions WHERE profile_id = $1
+       FROM marketplace_questions WHERE profile_id = $1 AND ${SQL_NEEDS_REPLY}
        GROUP BY marketplace`,
       [profileId]
     );

@@ -13,12 +13,6 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import './Questions.css';
 
-const ANSWERED_OPTIONS = [
-  { value: 'all', label: 'Все' },
-  { value: 'new', label: 'Новые' },
-  { value: 'answered', label: 'Отвеченные' },
-];
-
 function bumpQuestionsStats() {
   window.dispatchEvent(new Event('questions-stats-refresh'));
 }
@@ -39,16 +33,6 @@ function truncate(s, n = 200) {
   return `${t.slice(0, n)}…`;
 }
 
-/** Нужен ответ продавца: последнее в ветке — покупатель или ветки ещё нет и нет answerText */
-function threadNeedsSellerReply(q) {
-  const tm = q?.threadMessages;
-  if (Array.isArray(tm) && tm.length > 0) {
-    return String(tm[tm.length - 1]?.role || '').toLowerCase() === 'buyer';
-  }
-  const t = q?.answerText;
-  return t == null || String(t).trim() === '';
-}
-
 const AUTO_SYNC_MS = 10 * 60 * 1000;
 
 export function Questions() {
@@ -60,8 +44,6 @@ export function Questions() {
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
-  const [answeredFilter, setAnsweredFilter] = useState('new');
-  const [filterCounts, setFilterCounts] = useState({ all: 0, new: 0, answered: 0 });
   const [mpCounts, setMpCounts] = useState({ ozon: 0, wildberries: 0, yandex: 0 });
   const [threadModalId, setThreadModalId] = useState(null);
   const [threadDetail, setThreadDetail] = useState(null);
@@ -74,11 +56,9 @@ export function Questions() {
     try {
       const params = {};
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
-      const { counts, countsByMarketplace } = await questionsApi.getStats(params);
-      setFilterCounts(counts);
+      const { countsByMarketplace } = await questionsApi.getStats(params);
       setMpCounts(countsByMarketplace);
     } catch {
-      setFilterCounts({ all: 0, new: 0, answered: 0 });
       setMpCounts({ ozon: 0, wildberries: 0, yandex: 0 });
     }
   }, [marketplaceFilter]);
@@ -89,7 +69,6 @@ export function Questions() {
       setError('');
       const params = {};
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
-      if (answeredFilter !== 'all') params.answered = answeredFilter;
       const data = await questionsApi.getAll(params);
       setItems(Array.isArray(data) ? data : []);
       bumpQuestionsStats();
@@ -100,13 +79,11 @@ export function Questions() {
       setLoading(false);
       loadCounts();
     }
-  }, [marketplaceFilter, answeredFilter, loadCounts]);
+  }, [marketplaceFilter, loadCounts]);
 
   const loadRef = useRef(load);
   loadRef.current = load;
 
-  // Чтобы в заголовке `X-Organization-Id` уходил корректный orgId,
-  // иначе для Ozon/WB/YM может браться не тот API ключ.
   useEffect(() => {
     if (contextOrganizationId) return;
     const first = (organizations || [])[0];
@@ -166,8 +143,14 @@ export function Questions() {
       try {
         const data = await questionsApi.getOne(threadModalId);
         if (!cancelled) {
-          setThreadDetail(data);
-          setThreadDraft('');
+          if (!data) {
+            setThreadError('Вопрос уже закрыт на маркетплейсе (ответ дан) и убран из списка.');
+            setThreadDetail(null);
+            setItems((prev) => prev.filter((q) => String(q.id) !== String(threadModalId)));
+          } else {
+            setThreadDetail(data);
+            setThreadDraft('');
+          }
         }
       } catch (e) {
         if (!cancelled) {
@@ -194,11 +177,11 @@ export function Questions() {
       setThreadError('');
       setError('');
       await questionsApi.answer(threadModalId, text);
-      setThreadDraft('');
-      const data = await questionsApi.getOne(threadModalId);
-      setThreadDetail(data);
-      await load();
+      const id = String(threadModalId);
+      closeThread();
+      setItems((prev) => prev.filter((q) => String(q.id) !== id));
       bumpQuestionsStats();
+      await loadCounts();
     } catch (e) {
       setThreadError(e?.response?.data?.message || e?.message || 'Не удалось отправить ответ');
     } finally {
@@ -206,16 +189,24 @@ export function Questions() {
     }
   };
 
+  const threadNeedsReply =
+    threadDetail &&
+    (() => {
+      const tm = threadDetail.threadMessages;
+      if (Array.isArray(tm) && tm.length > 0) {
+        return String(tm[tm.length - 1]?.role || '').toLowerCase() === 'buyer';
+      }
+      const t = threadDetail.answerText;
+      return t == null || String(t).trim() === '';
+    })();
+
   return (
     <div className="card questions-page">
       <h1 className="title">Вопросы</h1>
       <p className="subtitle">
-        Вопросы о товарах из кабинетов маркетплейсов. Нужны настроенные интеграции: Ozon (Client ID + API Key; список
-        вопросов через API доступен при подписке{' '}
-        <strong>Premium Plus</strong> у Ozon), Wildberries (токен с правами «Вопросы и отзывы»), Яндекс.Маркет (Api-Key
-        с доступом «Общение с покупателями» и Business ID). Синхронизация выполняется при открытии страницы и каждые 10
-        минут. По каждому вопросу строится <strong>ветка переписки</strong> (покупатель / продавец); ответ отправляется
-        из окна ветки на маркетплейс. «Новые» — пока последнее сообщение от покупателя или ответа ещё не было.
+        Показываются только вопросы, на которые ещё нужен ответ продавца. Если ответили на маркетплейсе вручную,
+        вопрос исчезнет после синхронизации. После вашего ответа из приложения вопрос убирается из списка. Если
+        покупатель напишет снова, при открытии карточки подгрузится полная ветка переписки.
       </p>
 
       <div className="questions-toolbar">
@@ -237,46 +228,16 @@ export function Questions() {
               onClick={() => setMarketplaceFilter(mp.code)}
               disabled={loading || syncing}
               title={mp.name}
-              aria-label={`${mp.name}, ${mpCounts[mp.code] ?? 0} вопросов`}
+              aria-label={`${mp.name}, ${mpCounts[mp.code] ?? 0} новых вопросов`}
             >
               <span className={`mp-badge ${mp.badgeClass}`}>{mp.shortLabel}</span>
               <span className="erp-filter-btn__count">{mpCounts[mp.code] ?? 0}</span>
             </button>
           ))}
         </div>
-        <div className="questions-filter-answered-wrap">
-          <div className="questions-filter-answered-heading">
-            <span className="text-muted small questions-filter-answered-title">Новые и отвеченные</span>
-            <span className="text-muted small questions-filter-answered-hint">
-              числа — по выбранному маркетплейсу
-            </span>
-          </div>
-          <div className="erp-filter-row questions-filter-answered-row" role="group" aria-label="Новые или отвеченные">
-            {ANSWERED_OPTIONS.map((o) => {
-              const n =
-                o.value === 'all'
-                  ? filterCounts.all
-                  : o.value === 'new'
-                    ? filterCounts.new
-                    : filterCounts.answered;
-              return (
-                <button
-                  key={o.value}
-                  type="button"
-                  className={`erp-filter-btn${answeredFilter === o.value ? ' erp-filter-btn--active' : ''}`}
-                  onClick={() => setAnsweredFilter(o.value)}
-                  disabled={loading || syncing}
-                >
-                  <span className="erp-filter-btn__label">{o.label}</span>
-                  <span className="erp-filter-btn__count">{n}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
         {syncing && (
           <p className="text-muted small questions-sync-hint" aria-live="polite">
-            Загрузка вопросов из маркетплейсов…
+            Синхронизация с маркетплейсами…
           </p>
         )}
       </div>
@@ -287,8 +248,7 @@ export function Questions() {
         <div className="loading">Загрузка…</div>
       ) : items.length === 0 ? (
         <p className="text-muted questions-empty">
-          Пока нет вопросов в базе. После настройки интеграций они подтянутся при синхронизации (при открытии страницы и
-          каждые 10 минут).
+          Новых вопросов нет. Они появятся после синхронизации, если на маркетплейсе есть неотвеченные обращения.
         </p>
       ) : (
         <div className="table-responsive questions-table-wrap">
@@ -300,8 +260,7 @@ export function Questions() {
                 <th className="questions-col-name">Имя</th>
                 <th className="questions-col-theme">Артикул</th>
                 <th className="questions-col-question">Вопрос</th>
-                <th className="questions-col-status">Статус</th>
-                <th className="questions-col-thread">Ветка</th>
+                <th className="questions-col-thread">Ответ</th>
               </tr>
             </thead>
             <tbody>
@@ -309,7 +268,6 @@ export function Questions() {
                 const mpNorm = normalizeMarketplaceForUI(q.marketplace);
                 const mpMeta = MARKETPLACE_TABLE_BADGES.find((m) => m.code === mpNorm);
                 const mpLabel = mpMeta?.name ?? String(q.marketplace ?? '—');
-                const needs = threadNeedsSellerReply(q);
                 return (
                   <tr key={q.id}>
                     <td className="questions-col-date">{formatDt(q.sourceCreatedAt)}</td>
@@ -331,25 +289,16 @@ export function Questions() {
                     <td className="questions-col-name">{truncate(q.buyerName || '—', 28)}</td>
                     <td className="questions-col-theme">{formatProductTheme(q, 40)}</td>
                     <td className="questions-col-question">{q.body}</td>
-                    <td className="questions-col-status">
-                      {needs ? (
-                        <span className="questions-status-pending">Ждёт ответа</span>
-                      ) : (
-                        <span className="text-muted">В работе</span>
-                      )}
-                    </td>
                     <td className="questions-col-thread">
-                      <div className="questions-thread-cell">
-                        <Button
-                          type="button"
-                          variant={needs ? 'primary' : 'secondary'}
-                          size="small"
-                          onClick={() => openThread(q.id)}
-                          disabled={loading || syncing}
-                        >
-                          Ответить
-                        </Button>
-                      </div>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="small"
+                        onClick={() => openThread(q.id)}
+                        disabled={loading || syncing}
+                      >
+                        Ответить
+                      </Button>
                     </td>
                   </tr>
                 );
@@ -365,7 +314,7 @@ export function Questions() {
         title={threadDetail ? `Ветка · ${formatProductTheme(threadDetail, 48)}` : 'Ветка переписки'}
         size="large"
       >
-        {threadLoading && <div className="loading">Загрузка ветки…</div>}
+        {threadLoading && <div className="loading">Загрузка ветки с маркетплейса…</div>}
         {!threadLoading && threadError && <div className="error">{threadError}</div>}
         {!threadLoading && threadDetail && (
           <div className="questions-thread-modal">
@@ -388,7 +337,7 @@ export function Questions() {
                 </div>
               ))}
             </div>
-            {threadNeedsSellerReply(threadDetail) ? (
+            {threadNeedsReply ? (
               <div className="questions-thread-reply">
                 <label className="label" htmlFor="questions-thread-reply-input">
                   Ваш ответ
@@ -418,8 +367,7 @@ export function Questions() {
               </div>
             ) : (
               <p className="text-muted small questions-thread-done">
-                Последнее сообщение — от продавца. Если покупатель напишет снова, вопрос появится в «Новых» после
-                синхронизации.
+                Последнее сообщение — от продавца. Карточка будет закрыта.
               </p>
             )}
           </div>

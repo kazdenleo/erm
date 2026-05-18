@@ -6,22 +6,52 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { authApi } from '../services/auth.api.js';
 import { setApiSessionContext } from '../services/apiSession.js';
+import {
+  readStoredOrganizationId,
+  resolveOrganizationIdForProfile,
+  writeStoredOrganizationId,
+} from '../utils/organizationSessionSync.js';
 
 const AuthContext = createContext(null);
-
-const STORAGE_ORG_KEY = 'erp_selected_organization_id';
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedOrganizationId, setSelectedOrganizationIdState] = useState(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_ORG_KEY);
-      return raw != null && raw !== '' ? raw : null;
-    } catch {
-      return null;
+  const [selectedOrganizationId, setSelectedOrganizationIdState] = useState(() => readStoredOrganizationId());
+
+  const syncingOrgRef = useRef(false);
+
+  const applyOrganizationId = useCallback((id, { persist = true } = {}) => {
+    const next = id != null && id !== '' ? String(id) : null;
+    setSelectedOrganizationIdState(next);
+    if (persist) {
+      writeStoredOrganizationId(next);
     }
-  });
+  }, []);
+
+  const syncOrganizationForUser = useCallback(
+    async (userData, preferredOrgId = null) => {
+      const rawPid = userData?.profileId ?? userData?.profile_id ?? userData?.profile?.id;
+      const pid =
+        rawPid != null && rawPid !== '' && Number.isFinite(Number(rawPid)) && Number(rawPid) > 0
+          ? Number(rawPid)
+          : null;
+
+      syncingOrgRef.current = true;
+      try {
+        const resolved = await resolveOrganizationIdForProfile(pid, preferredOrgId);
+        applyOrganizationId(resolved);
+        setApiSessionContext({
+          accountId: pid != null ? String(pid) : null,
+          organizationId: resolved,
+        });
+        return resolved;
+      } finally {
+        syncingOrgRef.current = false;
+      }
+    },
+    [applyOrganizationId]
+  );
 
   const loadUser = useCallback(async () => {
     const token = localStorage.getItem('token');
@@ -30,25 +60,21 @@ export function AuthProvider({ children }) {
       setLoading(false);
       return;
     }
-    let orgFromStorage = null;
-    try {
-      const raw = localStorage.getItem(STORAGE_ORG_KEY);
-      orgFromStorage = raw != null && raw !== '' ? raw : null;
-    } catch {
-      /* ignore */
-    }
-    // До /auth/me пользователь ещё не загружен — всё равно передаём выбранную организацию (сервер определит аккаунт)
+    const orgFromStorage = readStoredOrganizationId();
+    // Не отправляем «чужую» организацию до /auth/me — иначе 403 ORGANIZATION_CONTEXT_MISMATCH после смены аккаунта.
     setApiSessionContext({
       accountId: null,
-      organizationId: orgFromStorage,
+      organizationId: null,
     });
     try {
       const res = await authApi.me();
       if (res?.ok && res?.data) {
         setUser(res.data);
+        await syncOrganizationForUser(res.data, orgFromStorage);
       } else {
         setUser(null);
         localStorage.removeItem('token');
+        applyOrganizationId(null);
       }
     } catch (err) {
       // Сбрасываем сессию только при явном «не авторизован»; сетевые сбои и 5xx не должны выкидывать на логин.
@@ -56,15 +82,39 @@ export function AuthProvider({ children }) {
       if (status === 401) {
         setUser(null);
         localStorage.removeItem('token');
+        applyOrganizationId(null);
+      } else if (status === 403) {
+        const code = err?.response?.data?.code;
+        if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH') {
+          applyOrganizationId(null);
+          try {
+            const res = await authApi.me();
+            if (res?.ok && res?.data) {
+              setUser(res.data);
+              await syncOrganizationForUser(res.data, null);
+            }
+          } catch {
+            /* ignore */
+          }
+        }
       }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyOrganizationId, syncOrganizationForUser]);
 
   useEffect(() => {
     loadUser();
   }, [loadUser]);
+
+  useEffect(() => {
+    const onContextInvalid = () => {
+      if (!localStorage.getItem('token') || !user) return;
+      syncOrganizationForUser(user, null);
+    };
+    window.addEventListener('erp:organization-context-invalid', onContextInvalid);
+    return () => window.removeEventListener('erp:organization-context-invalid', onContextInvalid);
+  }, [user, syncOrganizationForUser]);
 
   const skipOrgReloadRef = useRef(true);
   useEffect(() => {
@@ -72,23 +122,17 @@ export function AuthProvider({ children }) {
       skipOrgReloadRef.current = false;
       return;
     }
+    if (syncingOrgRef.current) return;
     if (!localStorage.getItem('token')) return;
     loadUser();
   }, [selectedOrganizationId, loadUser]);
 
-  const setSelectedOrganizationId = useCallback((id) => {
-    const next = id != null && id !== '' ? String(id) : null;
-    setSelectedOrganizationIdState(next);
-    try {
-      if (next == null) {
-        localStorage.removeItem(STORAGE_ORG_KEY);
-      } else {
-        localStorage.setItem(STORAGE_ORG_KEY, next);
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  const setSelectedOrganizationId = useCallback(
+    (id) => {
+      applyOrganizationId(id);
+    },
+    [applyOrganizationId]
+  );
 
   const login = useCallback(async (email, password) => {
     let res;
@@ -106,16 +150,10 @@ export function AuthProvider({ children }) {
       throw new Error(res?.message || 'Ошибка входа');
     }
     localStorage.setItem('token', res.data.token);
-    let orgFromStorage = null;
-    try {
-      const raw = localStorage.getItem(STORAGE_ORG_KEY);
-      orgFromStorage = raw != null && raw !== '' ? raw : null;
-    } catch {
-      /* ignore */
-    }
+    const orgFromStorage = readStoredOrganizationId();
     setApiSessionContext({
       accountId: null,
-      organizationId: orgFromStorage,
+      organizationId: null,
     });
     let mustChangePassword = false;
     try {
@@ -123,28 +161,44 @@ export function AuthProvider({ children }) {
       if (me?.ok && me?.data) {
         setUser(me.data);
         mustChangePassword = !!me.data.mustChangePassword;
+        await syncOrganizationForUser(me.data, orgFromStorage);
       } else {
         setUser(res.data.user);
         mustChangePassword = !!res.data.user?.mustChangePassword;
+        await syncOrganizationForUser(res.data.user, orgFromStorage);
       }
-    } catch {
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 403) {
+        const code = err?.response?.data?.code;
+        if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH') {
+          applyOrganizationId(null);
+          try {
+            const me = await authApi.me();
+            if (me?.ok && me?.data) {
+              setUser(me.data);
+              mustChangePassword = !!me.data.mustChangePassword;
+              await syncOrganizationForUser(me.data, null);
+              return { ...res.data, mustChangePassword };
+            }
+          } catch {
+            /* fall through */
+          }
+        }
+      }
       setUser(res.data.user);
       mustChangePassword = !!res.data.user?.mustChangePassword;
+      await syncOrganizationForUser(res.data.user, null);
     }
     return { ...res.data, mustChangePassword };
-  }, []);
+  }, [applyOrganizationId, syncOrganizationForUser]);
 
   const logout = useCallback(() => {
     localStorage.removeItem('token');
-    try {
-      localStorage.removeItem(STORAGE_ORG_KEY);
-    } catch {
-      /* ignore */
-    }
-    setSelectedOrganizationIdState(null);
+    applyOrganizationId(null);
     setUser(null);
     setApiSessionContext({ accountId: null, organizationId: null });
-  }, []);
+  }, [applyOrganizationId]);
 
   const profileId = useMemo(() => {
     const raw = user?.profileId ?? user?.profile_id ?? user?.profile?.id;
