@@ -9,7 +9,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import { isKitProductId, readKitMarketplaceStockFromDb, readKitStockFromDb } from './kitStock.service.js';
 
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
-async function getReservedQuantityFromMovements(productId) {
+export async function getReservedQuantityFromMovements(productId) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
   try {
@@ -127,4 +127,4 @@ export async function computeAvailableQuantity(productId, opts = {}) {
   };
 }
 
-export default { computeAvailableQuantity };
+export default { computeAvailableQuantity, getReservedQuantityFromMovements };
