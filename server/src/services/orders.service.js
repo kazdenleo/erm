@@ -348,14 +348,17 @@ class OrdersService {
    * Обеспечить резерв по заказу (если заказ существует и в статусе in_procurement).
    * Используется, когда закупка уже создана/переведена в ordered и incoming должен быть "в резерве" под заказы.
    */
-  async ensureReserveForOrderIfInProcurement(marketplace, orderId) {
+  async ensureReserveForOrderIfInProcurement(marketplace, orderId, { profileId = null } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return;
     if (!marketplace || orderId == null) return;
-    const mp = marketplaceToOrdersDb(marketplace);
-    const order = await this.repository.findByMarketplaceAndOrderId(mp, String(orderId));
+    const order = await this.repository.findByMarketplaceAndOrderId(
+      marketplace,
+      String(orderId),
+      profileId
+    );
     if (!order) return;
     if (String(order.status || '').toLowerCase() !== 'in_procurement') return;
-    await this._applyReserveForOrderIfAbsent(order);
+    await this._reapplyReserveForOrderRows([order]);
   }
 
   async _resolveOwnWarehouseIdForOrder(orderRow) {
@@ -984,16 +987,45 @@ class OrdersService {
 
   async getAll(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      return await this.repository.findAll(options);
+      const items = await this.repository.findAll(options);
+      await this.enrichOrdersReserveMetrics(items);
+      return items;
     } else {
       // Старое хранилище
       return await this.repository.findAll();
     }
   }
 
+  /** Для комплектов: reservedQty = целых комплектов (не сумма движений по комплектующим). */
+  async enrichOrdersReserveMetrics(orders) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders)) return orders;
+    for (const o of orders) {
+      try {
+        const orderDbId = orderRowDbId(o);
+        if (!orderDbId) continue;
+        let productId = o.productId ?? o.product_id;
+        if (productId == null || productId === '') {
+          productId = await this._resolveProductIdForOrderStock(o);
+        }
+        const pid = Number(productId);
+        if (!Number.isFinite(pid) || pid < 1) continue;
+        if (await isKitProductId(pid)) {
+          const kitsReserved = await getReservedKitUnitsForOrder(pid, orderDbId);
+          o.reservedQty = kitsReserved;
+          o.reserved_qty = kitsReserved;
+          o.hasReserve = kitsReserved > 0;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return orders;
+  }
+
   async getPage(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       const items = await this.repository.findAll(options);
+      await this.enrichOrdersReserveMetrics(items);
       const total =
         typeof this.repository.countAll === 'function'
           ? await this.repository.countAll(options)

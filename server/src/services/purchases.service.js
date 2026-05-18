@@ -1423,8 +1423,17 @@ class PurchasesService {
       const k = `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
       if (!k.endsWith('|')) uniq.set(k, o);
     }
+    const rowsToReserve = [];
     for (const o of uniq.values()) {
-      await ordersService.ensureReserveForOrderIfInProcurement(o.marketplace, o.orderId);
+      const row = await ordersService.getByMarketplaceAndOrderId(o.marketplace, o.orderId, {
+        profileId: pid
+      });
+      if (row && String(row.status || '').toLowerCase() === 'in_procurement') {
+        rowsToReserve.push(row);
+      }
+    }
+    if (rowsToReserve.length > 0) {
+      await ordersService._reapplyReserveForOrderRows(rowsToReserve);
     }
     return res;
   }

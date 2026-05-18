@@ -698,7 +698,16 @@ export async function computeAssemblableFromComponents(kitProductId, opts = {}) 
     const available = await getComponentAssemblableUnits(c.component_product_id, opts);
     minKits = Math.min(minKits, Math.floor(available / perKit));
   }
-  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+  let fromComp = Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+
+  // Закупка часто кладёт incoming на SKU комплекта, а не на комплектующие.
+  // Если целых комплектов на складе нет — «в пути» по комплекту всё равно можно собрать в резерв через состав.
+  const whole = await readKitStockFromDb(kitId, opts);
+  const kitIncomingAvail = Math.max(0, (whole.incoming || 0) - (whole.reserved || 0));
+  if ((whole.onHand || 0) <= 0 && kitIncomingAvail > 0) {
+    fromComp = Math.max(fromComp, kitIncomingAvail);
+  }
+  return fromComp;
 }
 
 /** Доступно к резерву: целые комплекты (1 SKU) и собираемость из комплектующих. */
