@@ -120,13 +120,29 @@ function assemblyCompositionParts(item, quantityOverride) {
   };
 }
 
-/** Ключ строки состава для счётчика сканов (нельзя только productId — в БД он может не совпадать с id товара по штрихкоду). */
+/** Ключ строки состава для счётчика сканов (комплект: несколько product_id на один orderLineId). */
 function assemblyLineScanKey(item, idx) {
-  if (item.orderLineId != null && String(item.orderLineId).trim() !== '') {
-    return `line:${String(item.orderLineId)}`;
+  const orderLineId = item.orderLineId != null ? String(item.orderLineId).trim() : '';
+  const pid = item.productId ?? item.product_id;
+  if (orderLineId !== '') {
+    if (pid != null && pid !== '') {
+      return `line:${orderLineId}:p:${pid}`;
+    }
+    return `line:${orderLineId}:row:${idx}`;
   }
-  const pid = item.productId ?? item.product_id ?? 'x';
-  return `row:${idx}:p:${pid}`;
+  return `row:${idx}:p:${pid ?? 'x'}`;
+}
+
+function scannedQtyForAssemblyLine(item, idx, scannedQuantities) {
+  const key = assemblyLineScanKey(item, idx);
+  const fromKey = scannedQuantities[key];
+  if (fromKey != null) return fromKey;
+  // Только для одной строки без orderLineId — legacy-счётчик по productId
+  const pid = item.productId ?? item.product_id;
+  if (pid != null && pid !== '') {
+    return scannedQuantities[pid] ?? scannedQuantities[Number(pid)] ?? 0;
+  }
+  return 0;
 }
 
 function orderItemMatchesScannedProduct(item, product, itemsLength = 1) {
@@ -754,14 +770,7 @@ export function Assembly() {
     const result = [];
     currentOrderData.orderItems.forEach((item, idx) => {
       const need = item.quantity ?? 1;
-      const key = assemblyLineScanKey(item, idx);
-      const linePid = Number(item.productId);
-      const pidFallback = Number.isNaN(linePid) ? item.productId : linePid;
-      const scanned =
-        scannedQuantities[key] ??
-        scannedQuantities[pidFallback] ??
-        scannedQuantities[item.productId] ??
-        0;
+      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities);
       const remaining = Math.max(0, need - scanned);
       if (remaining > 0) {
         result.push({ ...item, need, scanned, remaining });
@@ -775,14 +784,7 @@ export function Assembly() {
     if (!currentOrderData?.orderItems?.length) return [];
     return currentOrderData.orderItems.map((item, idx) => {
       const need = item.quantity ?? 1;
-      const key = assemblyLineScanKey(item, idx);
-      const linePid = Number(item.productId);
-      const pidFallback = Number.isNaN(linePid) ? item.productId : linePid;
-      const scanned =
-        scannedQuantities[key] ??
-        scannedQuantities[pidFallback] ??
-        scannedQuantities[item.productId] ??
-        0;
+      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities);
       const remaining = Math.max(0, need - scanned);
       const parts = assemblyCompositionParts({ ...item, quantity: need }, need);
       return {
@@ -796,7 +798,11 @@ export function Assembly() {
 
   const isKitAssembly = useMemo(() => {
     const items = currentOrderData?.orderItems || [];
-    return items.some((i) => i.isKitComponent || i.kitProductId);
+    if (items.some((i) => i.isKitComponent || i.kitProductId)) return true;
+    const lineIds = items
+      .map((i) => (i.orderLineId != null ? String(i.orderLineId).trim() : ''))
+      .filter(Boolean);
+    return lineIds.length > 1 && new Set(lineIds).size < lineIds.length;
   }, [currentOrderData]);
 
   const implicitSingleLineDone = useMemo(() => {
