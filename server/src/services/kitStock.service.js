@@ -753,11 +753,15 @@ export function allocateKitReservePriority(kitsWanted, breakdown) {
 export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabel, meta, applyReserveFn) {
   const kitId = Number(kitProductId);
   const wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
-  const reserveOpts = {
-    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
-  };
-  const breakdown = await computeKitReservableBreakdown(kitId, reserveOpts);
-  const alloc = allocateKitReservePriority(wanted, breakdown);
+  const whRaw = meta?.warehouse_id ?? meta?.warehouseId ?? null;
+  const reserveOpts =
+    whRaw != null && String(whRaw).trim() !== '' ? { warehouseId: whRaw } : { warehouseId: null };
+  let breakdown = await computeKitReservableBreakdown(kitId, reserveOpts);
+  let alloc = allocateKitReservePriority(wanted, breakdown);
+  if (alloc.kitsToReserve <= 0 && reserveOpts.warehouseId != null) {
+    breakdown = await computeKitReservableBreakdown(kitId, { warehouseId: null });
+    alloc = allocateKitReservePriority(wanted, breakdown);
+  }
   if (alloc.kitsToReserve <= 0) return 0;
 
   if (alloc.fromWhole > 0) {

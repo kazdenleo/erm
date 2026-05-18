@@ -806,7 +806,7 @@ class OrdersService {
       const alreadyReservedKits = await getReservedKitUnitsForOrder(productId, id);
       const need = Math.max(0, qty - alreadyReservedKits);
       if (need <= 0) return;
-      const maxKits = await computeMaxKitUnitsReservable(productId, { warehouseId });
+      const maxKits = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId);
       const reserveKits = Math.min(need, maxKits);
       if (reserveKits <= 0) return;
       await applyKitOrderReserve(
@@ -930,7 +930,9 @@ class OrdersService {
     const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
     const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
     const availableSupply = Math.max(0, actual + incoming - reserved);
-    if (availableSupply <= 0) return;
+    const isKit = await isKitProductId(pid);
+    // У комплекта в products.quantity часто 0 — резерв идёт по комплектующим, очередь всё равно обрабатываем.
+    if (!isKit && availableSupply <= 0) return;
 
     const runQueueForProduct = async (forPid) => {
       const fp = Number(forPid);
@@ -946,14 +948,16 @@ class OrdersService {
 
     await runQueueForProduct(pid);
 
-    // Заказы на комплект (product_id = kit) не попадают в выборку по component id — дозаполняем резерв по родительским комплектам.
-    const kitParents = await query(
-      `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
-      [pid]
-    );
-    for (const kr of kitParents.rows || []) {
-      const kid = Number(kr.kit_product_id);
-      await runQueueForProduct(kid);
+    if (!isKit) {
+      // Заказы на комплект (product_id = kit) не попадают в выборку по component id — дозаполняем резерв по родительским комплектам.
+      const kitParents = await query(
+        `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+        [pid]
+      );
+      for (const kr of kitParents.rows || []) {
+        const kid = Number(kr.kit_product_id);
+        await runQueueForProduct(kid);
+      }
     }
   }
 
@@ -1213,13 +1217,70 @@ class OrdersService {
    */
   /** Товар для резерва/отгрузки: комплект, если заказ по SKU комплекта, даже при product_id комплектующей. */
   async _resolveProductIdForOrderStock(orderRow) {
+    if (!orderRow || !repositoryFactory.isUsingPostgreSQL()) {
+      const raw = orderRow?.productId ?? orderRow?.product_id;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    const byOrderSku = await findKitProductIdForMarketplaceOrder(0, orderRow);
+    if (byOrderSku != null && (await isKitProductId(byOrderSku))) {
+      return byOrderSku;
+    }
     let productId = orderRow?.productId ?? orderRow?.product_id;
-    if (!productId) {
+    if (productId == null) {
       productId = await this.resolveProductIdForAssemblyLine(orderRow);
     }
     productId = Number(productId);
-    if (!Number.isFinite(productId) || productId < 1) return null;
-    return findKitProductIdForMarketplaceOrder(productId, orderRow);
+    if (!Number.isFinite(productId) || productId < 1) {
+      return byOrderSku != null ? byOrderSku : null;
+    }
+    const resolved = await findKitProductIdForMarketplaceOrder(productId, orderRow);
+    if (resolved != null && (await isKitProductId(resolved))) {
+      return resolved;
+    }
+    return productId;
+  }
+
+  /** Сколько комплектов можно зарезервировать: сначала по складу заказа, при 0 — по всем складам. */
+  async _computeMaxKitUnitsReservableForOrder(kitProductId, warehouseId) {
+    const kitId = Number(kitProductId);
+    if (!Number.isFinite(kitId) || kitId < 1) return 0;
+    const wh =
+      warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
+    if (wh != null) {
+      const scoped = await computeMaxKitUnitsReservable(kitId, { warehouseId: wh });
+      if (scoped > 0) return scoped;
+    }
+    return computeMaxKitUnitsReservable(kitId, { warehouseId: null });
+  }
+
+  /** Повторная попытка резерва (новый / закупка / после поступления остатка). */
+  async _reapplyReserveForOrderRows(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const touchedKitIds = new Set();
+    for (const row of list) {
+      if (!row) continue;
+      await this._applyReserveForOrderIfAbsent(row).catch(() => {});
+      try {
+        const kitId = await this._resolveProductIdForOrderStock(row);
+        if (kitId != null && (await isKitProductId(kitId))) {
+          const kid = Number(kitId);
+          if (Number.isFinite(kid) && kid > 0 && !touchedKitIds.has(kid)) {
+            touchedKitIds.add(kid);
+            await this.ensureReservesForProductIfSupplyAvailable(kid).catch(() => {});
+            const components = await getKitComponents(kid);
+            for (const c of components) {
+              const cpid = Number(c.component_product_id);
+              if (Number.isFinite(cpid) && cpid > 0) {
+                await this.ensureReservesForProductIfSupplyAvailable(cpid).catch(() => {});
+              }
+            }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   async resolveProductIdForAssemblyLine(orderRow) {
@@ -1488,16 +1549,15 @@ class OrdersService {
           );
         }
         const groupRows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
-        for (const row of groupRows || []) {
-          if (String(row.status || '').toLowerCase() === 'new') {
-            await this._reserveForOrderIfStockAvailable(row).catch(() => {});
-          }
-        }
+        const toReserve = (groupRows || []).filter(
+          (row) => String(row.status || '').toLowerCase() === 'new'
+        );
+        await this._reapplyReserveForOrderRows(toReserve);
         return order;
       }
       await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'new' }, profileId);
       const refreshed = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
-      if (refreshed) await this._reserveForOrderIfStockAvailable(refreshed).catch(() => {});
+      if (refreshed) await this._reapplyReserveForOrderRows([refreshed]);
       return refreshed ?? order;
     }
     const { readData, writeData } = await import('../utils/storage.js');
@@ -1538,10 +1598,7 @@ class OrdersService {
           profileId
         );
       }
-      for (const row of rows) {
-        const full = row?.id != null ? await this.repository.findById(row.id) : null;
-        await this._applyReserveForOrderIfAbsent(full || row);
-      }
+      await this._reapplyReserveForOrderRows(rows);
       return order;
     }
     const { readData, writeData } = await import('../utils/storage.js');
