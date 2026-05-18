@@ -30,7 +30,7 @@ import { resolveMarketplaceListingByErpSku } from './productMarketplaceLink.serv
 import {
   getProductParticipation,
   getProductParticipationBatch,
-  PRODUCT_DELETE_BLOCKED_MESSAGE,
+  buildProductDeleteBlockedMessage,
 } from './productParticipation.service.js';
 
 const MAX_EXPORT_PRODUCTS = 25000;
@@ -879,7 +879,12 @@ class ProductsService {
     
     // Возвращаем товар заново с актуальной себестоимостью и остатками из supplier_stocks
     const productWithCost = createdProduct?.id != null ? await this.repository.findById(createdProduct.id) : null;
-    return productWithCost || createdProduct;
+    const base = productWithCost || createdProduct;
+    if (base?.id != null && repositoryFactory.isUsingPostgreSQL()) {
+      const [withFlags] = await this._attachParticipationFlags([base]);
+      return withFlags || base;
+    }
+    return base;
   }
   
   /**
@@ -1063,6 +1068,9 @@ class ProductsService {
       });
     }
 
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      return await this.getByIdWithDetails(id);
+    }
     return updated;
   }
 
@@ -1076,7 +1084,7 @@ class ProductsService {
 
     const participation = await getProductParticipation(id);
     if (participation.hasParticipation) {
-      const error = new Error(PRODUCT_DELETE_BLOCKED_MESSAGE);
+      const error = new Error(buildProductDeleteBlockedMessage(participation));
       error.statusCode = 409;
       error.details = { reasons: participation.reasons, kinds: participation.kinds };
       throw error;

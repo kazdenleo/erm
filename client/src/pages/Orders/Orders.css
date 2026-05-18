@@ -54,6 +54,10 @@
   background: rgba(13, 110, 253, 0.08);
 }
 
+.orders-row-clickable td:not(.orders-col-checkbox):not(.orders-col-actions) {
+  user-select: text;
+}
+
 .orders-row-clickable {
   cursor: pointer;
 }

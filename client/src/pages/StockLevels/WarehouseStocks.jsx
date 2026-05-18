@@ -15,6 +15,7 @@ import { supplierStocksApi } from '../../services/supplierStocks.api';
 import { productsApi } from '../../services/products.api';
 import { marketplaceStockApi } from '../../services/marketplaceStock.api';
 import { buildStockRowsWithKits, stockTableAvailable, isKitProduct } from '../../utils/kitStockMetrics';
+import { onNavigationClick } from '../../utils/navigationClick.js';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import './StockLevels.css';
@@ -1357,7 +1358,9 @@ export function WarehouseStocks() {
                   <tr
                     key={row.product.sku || row.product.id}
                     className="stock-levels-row-clickable"
-                    onClick={() => setHistoryProduct(row.product)}
+                    onClick={onNavigationClick(() => setHistoryProduct(row.product), {
+                      ignoreClosest: 'input, textarea, select, label, .supplier-stock-cell, [data-no-nav-click]',
+                    })}
                     role="button"
                     tabIndex={0}
                     onKeyDown={(e) => e.key === 'Enter' && setHistoryProduct(row.product)}
@@ -1368,12 +1371,23 @@ export function WarehouseStocks() {
                     <td className="stock-levels-reserved-cell">{row.reserved}</td>
                     <td className="main-warehouse-cell">{row.onHand}</td>
                     <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
-                      <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
+                      {row.suppliersDisplay ? (
+                        <span
+                          className="stock-main-value"
+                          title="Сколько комплектов можно собрать из остатков поставщиков по комплектующим"
+                        >
+                          {row.suppliersDisplay}
+                        </span>
+                      ) : (
+                        <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
+                      )}
                     </td>
                     <td
                       title={
                         isKitProduct(row.product)
-                          ? 'Всего доступно комплектов (из комплектующих + по SKU комплекта); в скобках — целые комплекты на складе (1 SKU).'
+                          ? row.availableDisplay
+                            ? `Доступно ${row.availableDisplay}: всего (собрать из комплектующих + целые на SKU комплекта); в скобках — только целые комплекты 1 SKU.`
+                            : 'Всего доступно комплектов (из комплектующих + по SKU комплекта); в скобках — целые комплекты на складе (1 SKU).'
                           : undefined
                       }
                     >
@@ -1606,10 +1620,10 @@ export function WarehouseStocks() {
                         role="button"
                         tabIndex={0}
                         title="Нажмите, чтобы открыть список заказов из этой записи"
-                        onClick={() => {
+                        onClick={onNavigationClick(() => {
                           setReserveListOverride(pinned);
                           setReserveModalOpen(true);
-                        }}
+                        })}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
                             setReserveListOverride(pinned);

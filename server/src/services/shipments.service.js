@@ -1002,12 +1002,43 @@ async function removeOrdersFromShipment(shipmentId, orderIdsToRemove, { profileI
   return normalizeShipment(ship);
 }
 
+/**
+ * Убрать заказ из всех незакрытых локальных поставок (и с WB-поставки, если привязана).
+ * @returns {Promise<string[]>} id поставок, из которых удалили
+ */
+async function removeOrderFromOpenShipments(marketplace, orderId, { profileId = null, organizationId = null } = {}) {
+  const code = marketplace === 'wb' ? 'wildberries' : String(marketplace || '').toLowerCase();
+  const oid = String(orderId || '').trim();
+  if (!oid || !code) return [];
+
+  const shipments = await getLocalShipments();
+  const removedFrom = [];
+
+  for (const ship of shipments) {
+    if (ship.closed) continue;
+    const m = ship.marketplace === 'wb' ? 'wildberries' : ship.marketplace;
+    if (m !== code) continue;
+    if (!shipmentVisibleForScope(ship, profileId, organizationId)) continue;
+    const ids = (ship.orderIds || []).map(String);
+    if (!ids.includes(oid)) continue;
+    try {
+      await removeOrdersFromShipment(ship.id, [oid], { profileId, organizationId });
+      removedFrom.push(ship.id);
+    } catch (e) {
+      logger.warn(`[Shipments] removeOrderFromOpenShipments ${ship.id} / ${oid}: ${e?.message || e}`);
+    }
+  }
+
+  return removedFrom;
+}
+
 const shipmentsService = {
   getShipments,
   getShipmentById,
   createShipment,
   addOrdersToShipment,
   removeOrdersFromShipment,
+  removeOrderFromOpenShipments,
   getOrCreateOpenShipment,
   findLocalShipmentContainingOrder,
   closeShipment,

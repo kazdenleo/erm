@@ -14,6 +14,7 @@ import { useOrganizations } from '../../hooks/useOrganizations';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
+import { onNavigationClick } from '../../utils/navigationClick.js';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -482,7 +483,7 @@ export function Purchases() {
                 <tr
                   key={p.id}
                   className="stock-levels-row-clickable"
-                  onClick={() => openDetail(p.id)}
+                  onClick={onNavigationClick(() => openDetail(p.id))}
                 >
                   <td>{fmtDt(p.created_at)}</td>
                   <td>№{p.id}</td>
@@ -862,7 +863,11 @@ export function Purchases() {
                   </thead>
                   <tbody>
                     {detail.receipts.map((r) => (
-                      <tr key={r.id} className="stock-levels-row-clickable" onClick={() => openReceipt(r.id)}>
+                      <tr
+                        key={r.id}
+                        className="stock-levels-row-clickable"
+                        onClick={onNavigationClick(() => openReceipt(r.id))}
+                      >
                         <td>{fmtDt(r.created_at)}</td>
                         <td>№{r.id}</td>
                         <td>{r.status}</td>

@@ -409,7 +409,8 @@ export async function enrichKitProductStock(product, opts = {}) {
   product.quantity = metrics.onHand;
   product.incoming_quantity = metrics.incoming;
   product.reserved_quantity = metrics.reserved;
-  product.supplierStockTotal = metrics.suppliers;
+  const supplierKitUnits = await computeKitSupplierUnitsFromComponents(product.id, opts);
+  product.supplierStockTotal = supplierKitUnits;
   product.kit_quantity_derived = false;
   product.kit_stock_persisted = false;
   product.kit_display_stock = metrics;
@@ -460,8 +461,10 @@ export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
   return Math.max(0, reserved - unreserved);
 }
 
-/** Сколько полных комплектов можно собрать из доступных комплектующих (наличие + в пути − резерв). */
-export async function computeAssemblableFromComponents(kitProductId, opts = {}) {
+/**
+ * Сколько полных комплектов можно «собрать» только из остатков поставщиков по комплектующим (min по составу).
+ */
+export async function computeKitSupplierUnitsFromComponents(kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
 
@@ -479,27 +482,52 @@ export async function computeAssemblableFromComponents(kitProductId, opts = {}) 
   let minKits = Infinity;
   for (const c of components) {
     const perKit = Math.max(1, c.quantity);
-    let available = 0;
-    if (wid != null && Number.isFinite(wid) && wid > 0) {
-      const r = await query(
-        `SELECT COALESCE(pws.quantity, 0)::int AS qty,
-                COALESCE(pr.incoming_quantity, 0)::int AS incoming,
-                COALESCE(pr.reserved_quantity, 0)::int AS reserved
-         FROM products pr
-         LEFT JOIN product_warehouse_stock pws
-           ON pws.product_id = pr.id AND pws.warehouse_id = $2
-         WHERE pr.id = $1`,
-        [c.component_product_id, wid]
-      );
-      const row = r.rows[0] || {};
-      available = Math.max(
-        0,
-        (Number(row.qty) || 0) + (Number(row.incoming) || 0) - (Number(row.reserved) || 0)
-      );
-    } else {
-      const supply = await getComponentWarehouseSupply(c.component_product_id);
-      available = supply.availableSupply;
-    }
+    const metrics = await computeAvailableQuantity(c.component_product_id, {
+      warehouseId: wid,
+      profileId: opts.profileId ?? null
+    });
+    const supplierUnits = Math.floor((Number(metrics.suppliers) || 0) / perKit);
+    minKits = Math.min(minKits, supplierUnits);
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
+/** Доступность одного комплектующего для сборки: склад + в пути + поставщики − резерв. */
+async function getComponentAssemblableUnits(componentProductId, opts = {}) {
+  const widRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const wid =
+    widRaw != null && String(widRaw).trim() !== ''
+      ? typeof widRaw === 'string'
+        ? parseInt(widRaw, 10)
+        : Number(widRaw)
+      : null;
+
+  const metrics = await computeAvailableQuantity(componentProductId, {
+    warehouseId: wid,
+    profileId: opts.profileId ?? null
+  });
+  const supply = await getComponentWarehouseSupply(componentProductId);
+  return Math.max(
+    0,
+    (Number(metrics.onHand) || 0) +
+      (Number(supply.incoming) || 0) +
+      (Number(metrics.suppliers) || 0) -
+      (Number(supply.reserved) || 0)
+  );
+}
+
+/** Сколько полных комплектов можно собрать из комплектующих (склад + в пути + поставщики − резерв). */
+export async function computeAssemblableFromComponents(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+
+  const components = await getKitComponents(kitId);
+  if (components.length === 0) return 0;
+
+  let minKits = Infinity;
+  for (const c of components) {
+    const perKit = Math.max(1, c.quantity);
+    const available = await getComponentAssemblableUnits(c.component_product_id, opts);
     minKits = Math.min(minKits, Math.floor(available / perKit));
   }
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
@@ -637,12 +665,7 @@ export async function attachKitDisplayMetrics(products, options = {}) {
         : Number(widRaw)
       : null;
 
-  const kitRows = products.filter(
-    (p) =>
-      isKitProductType(p.product_type) &&
-      Array.isArray(p.kit_components) &&
-      p.kit_components.length > 0
-  );
+  const kitRows = products.filter((p) => isKitProductType(p.product_type));
   if (kitRows.length === 0) return;
 
   for (const p of kitRows) {
@@ -657,15 +680,18 @@ export async function attachKitDisplayMetrics(products, options = {}) {
           ).onHand;
 
     const assemblable = await computeAssemblableFromComponents(kitId, { warehouseId: wid });
+    const supplierKitUnits = await computeKitSupplierUnitsFromComponents(kitId, { warehouseId: wid });
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
     const reserved = Math.max(0, Number(p.reserved_quantity ?? p.reservedQuantity ?? 0) || 0);
-    const suppliers = Math.max(0, Number(p.supplierStockTotal ?? 0) || 0);
-    const wholeAvail = Math.max(0, wholeOnHand + incoming + suppliers - reserved);
+    const ownSuppliers = Math.max(0, Number(p.supplierStockTotal ?? 0) || 0);
+    const wholeAvail = Math.max(0, wholeOnHand + incoming + ownSuppliers - reserved);
     const availableTotal = assemblable + wholeAvail;
 
+    p.supplierStockTotal = supplierKitUnits;
     p.kit_display = {
       whole_on_hand: wholeOnHand,
       assemblable_from_components: assemblable,
+      supplier_kit_units: supplierKitUnits,
       available_total: availableTotal
     };
   }
@@ -697,5 +723,6 @@ export default {
   releaseAllReservesForOrder,
   attachKitDisplayMetrics,
   attachKitWarehouseSplitMetrics,
-  computeAssemblableFromComponents
+  computeAssemblableFromComponents,
+  computeKitSupplierUnitsFromComponents
 };

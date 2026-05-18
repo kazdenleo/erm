@@ -140,7 +140,7 @@ function orderItemMatchesScannedProduct(item, product, itemsLength = 1) {
 }
 
 export function Assembly() {
-  const { openProductCard } = useProductCardModal();
+  const { openProductCardFromClick } = useProductCardModal();
   const [assemblyOrders, setAssemblyOrders] = useState([]);
   const [collectedOrders, setCollectedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1035,7 +1035,7 @@ export function Assembly() {
                         {line.externalId ? `${line.externalId}, ` : ''}
                         <button
                           type="button"
-                          onClick={() => openProductCard(line.productId)}
+                          onClick={(e) => openProductCardFromClick(line.productId, e)}
                           className="assembly-product-link"
                           title="Открыть карточку товара"
                           style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
@@ -1219,7 +1219,7 @@ export function Assembly() {
                               {erpPid ? (
                                 <button
                                   type="button"
-                                  onClick={() => openProductCard(erpPid)}
+                                  onClick={(e) => openProductCardFromClick(erpPid, e)}
                                   className="assembly-product-link"
                                   title="Открыть карточку товара"
                                   style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
@@ -1340,7 +1340,7 @@ export function Assembly() {
                       {erpPidCol ? (
                         <button
                           type="button"
-                          onClick={() => openProductCard(erpPidCol)}
+                          onClick={(e) => openProductCardFromClick(erpPidCol, e)}
                           className="assembly-product-link"
                           title="Открыть карточку товара"
                           style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}

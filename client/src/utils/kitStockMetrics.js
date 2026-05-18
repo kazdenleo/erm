@@ -46,6 +46,79 @@ export function formatKitAvailableDisplay(metrics) {
   return `${total} (${whole})`;
 }
 
+/** В колонке «Поставщики» для комплекта: (N) — сколько комплектов из остатков поставщиков по составу. */
+export function formatKitSupplierDisplay(product, directSupplierTotal = 0) {
+  const raw = product?.kit_display ?? product?.kitDisplay;
+  const fromApi =
+    raw?.supplier_kit_units ??
+    raw?.supplierKitUnits ??
+    product?.supplierStockTotal ??
+    product?.supplier_stock_total;
+  const kitUnits = Math.max(0, Number(fromApi) || 0);
+  const direct = Math.max(0, Number(directSupplierTotal) || 0);
+  if (kitUnits > 0 && direct <= 0) return `(${kitUnits})`;
+  return null;
+}
+
+/** Собираемость из комплектующих по строкам того же списка (если с API не пришёл kit_display). */
+export function computeAssemblableFromLoadedProducts(kitProduct, allProducts) {
+  const comps = kitProduct?.kit_components;
+  if (!Array.isArray(comps) || comps.length === 0) return 0;
+
+  const byId = new Map(
+    (allProducts || []).map((p) => [String(p.id), p])
+  );
+
+  let minKits = Infinity;
+  for (const c of comps) {
+    const cid = c.productId ?? c.component_product_id;
+    if (cid == null || cid === '') {
+      minKits = 0;
+      break;
+    }
+    const comp = byId.get(String(cid));
+    if (!comp) {
+      minKits = 0;
+      break;
+    }
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    const onHand = Number(comp.quantity) || 0;
+    const incoming = Number(comp.incoming_quantity ?? comp.incomingQuantity) || 0;
+    const reserved = Number(comp.reserved_quantity ?? comp.reservedQuantity) || 0;
+    const suppliers = Number(comp.supplierStockTotal ?? comp.supplier_stock_total) || 0;
+    const avail = Math.max(0, onHand + incoming + suppliers - reserved);
+    minKits = Math.min(minKits, Math.floor(avail / perKit));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
+function buildKitDisplayFromProduct(product, baseMetrics, allProducts) {
+  const fromApi = parseKitDisplayMetrics(product);
+  if (fromApi) return fromApi;
+
+  if (
+    !isKitProduct(product) ||
+    !Array.isArray(product.kit_components) ||
+    product.kit_components.length === 0
+  ) {
+    return null;
+  }
+
+  const wholeOnHand = Math.max(0, Number(product.quantity) || 0);
+  const assemblable = computeAssemblableFromLoadedProducts(product, allProducts);
+  const wholeAvailable = stockTableAvailable({
+    onHand: wholeOnHand,
+    incoming: baseMetrics.incoming,
+    reserved: baseMetrics.reserved,
+    suppliers: baseMetrics.suppliers
+  });
+  return {
+    whole_on_hand: wholeOnHand,
+    assemblable_from_components: assemblable,
+    available_total: assemblable + wholeAvailable
+  };
+}
+
 /**
  * @param {object[]} products
  * @param {(product: object) => object} buildBaseMetrics — метрики обычного товара (не комплекта)
@@ -56,8 +129,8 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
       return { product, ...buildBaseMetrics(product) };
     }
 
-    const display = parseKitDisplayMetrics(product);
     const base = buildBaseMetrics(product);
+    const display = buildKitDisplayFromProduct(product, base, products);
 
     if (display) {
       const wholeAvailable = stockTableAvailable({
@@ -67,13 +140,15 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
         suppliers: base.suppliers
       });
       const availableTotal = display.assemblable_from_components + wholeAvailable;
+      const suppliersDisplay = formatKitSupplierDisplay(product, base.suppliers);
       return {
         product,
         onHand: display.whole_on_hand,
         incoming: base.incoming,
         reserved: base.reserved,
-        suppliers: base.suppliers,
+        suppliers: suppliersDisplay ? 0 : base.suppliers,
         supplierDetails: base.supplierDetails,
+        suppliersDisplay,
         available: availableTotal,
         availableDisplay: formatKitAvailableDisplay({
           ...display,

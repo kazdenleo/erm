@@ -345,7 +345,7 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
 export function Prices() {
   const { products, loading, error, loadProducts } = useProducts();
   const { warehouses } = useWarehouses();
-  const { openProductCard } = useProductCardModal();
+  const { openProductCardFromClick } = useProductCardModal();
   const [calculatedPrices, setCalculatedPrices] = useState({});
   const [loadingPrices, setLoadingPrices] = useState({});
   const [calculatorData, setCalculatorData] = useState({});
@@ -1347,7 +1347,7 @@ export function Prices() {
                         {product?.id ? (
                           <button
                             type="button"
-                            onClick={() => openProductCard(product.id)}
+                            onClick={(e) => openProductCardFromClick(product.id, e)}
                             title="Открыть карточку товара"
                             style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
                           >
@@ -1360,7 +1360,7 @@ export function Prices() {
                           {product?.id ? (
                             <button
                               type="button"
-                              onClick={() => openProductCard(product.id)}
+                              onClick={(e) => openProductCardFromClick(product.id, e)}
                               title="Открыть карточку товара"
                               style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer', textAlign: 'left' }}
                             >
@@ -1650,7 +1650,7 @@ export function Prices() {
                           {p.our_product_id != null ? (
                             <button
                               type="button"
-                              onClick={() => openProductCard(p.our_product_id)}
+                              onClick={(e) => openProductCardFromClick(p.our_product_id, e)}
                               title="Открыть карточку товара"
                               style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer', textAlign: 'left' }}
                             >
@@ -1664,7 +1664,7 @@ export function Prices() {
                           {p.our_product_id != null ? (
                             <button
                               type="button"
-                              onClick={() => openProductCard(p.our_product_id)}
+                              onClick={(e) => openProductCardFromClick(p.our_product_id, e)}
                               title="Открыть карточку товара"
                               style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
                             >

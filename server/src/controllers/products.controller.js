@@ -202,6 +202,8 @@ class ProductsController {
         row.storedCalculationDetailsOzon = p.storedCalculationDetailsOzon ?? null;
         row.storedCalculationDetailsWb = p.storedCalculationDetailsWb ?? null;
         row.storedCalculationDetailsYm = p.storedCalculationDetailsYm ?? null;
+        row.kit_display = p.kit_display ?? null;
+        row.kit_components = Array.isArray(p.kit_components) ? p.kit_components : [];
         return row;
       });
       const withPrices = data.filter(p => p.storedMinPriceOzon != null || p.storedMinPriceWb != null || p.storedMinPriceYm != null).length;

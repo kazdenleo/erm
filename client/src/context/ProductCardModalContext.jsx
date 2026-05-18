@@ -5,6 +5,7 @@ import { useBrands } from '../hooks/useBrands';
 import { useOrganizations } from '../hooks/useOrganizations';
 import { useProducts } from '../hooks/useProducts';
 import { productsApi } from '../services/products.api.js';
+import { shouldIgnoreNavigationClick } from '../utils/navigationClick.js';
 
 const ProductCardModalContext = createContext(null);
 
@@ -39,7 +40,18 @@ export function ProductCardModalProvider({ children }) {
     setState({ isOpen: false, product: null, loading: false, error: null });
   }, []);
 
-  const value = useMemo(() => ({ openProductCard, closeProductCard }), [openProductCard, closeProductCard]);
+  const openProductCardFromClick = useCallback(
+    (productId, e) => {
+      if (shouldIgnoreNavigationClick(e)) return;
+      return openProductCard(productId);
+    },
+    [openProductCard]
+  );
+
+  const value = useMemo(
+    () => ({ openProductCard, openProductCardFromClick, closeProductCard }),
+    [openProductCard, openProductCardFromClick, closeProductCard]
+  );
 
   return (
     <ProductCardModalContext.Provider value={value}>

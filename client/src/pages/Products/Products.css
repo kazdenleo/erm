@@ -49,6 +49,10 @@
   cursor: pointer;
 }
 
+.products-table tbody tr.product-row-editable td:not(.products-table-select-cell):not(.product-actions-cell) {
+  user-select: text;
+}
+
 .products-table tbody tr.products-table-row--selected {
   --bs-table-bg-state: rgba(13, 110, 253, 0.14);
   background-color: rgba(13, 110, 253, 0.14) !important;
@@ -127,6 +131,11 @@
 .products-table .product-name {
   font-weight: 500;
   min-width: 200px;
+}
+
+.products-table .product-sku-cell {
+  cursor: text;
+  user-select: text;
 }
 
 .products-table .product-sku {

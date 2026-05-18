@@ -14,6 +14,7 @@ import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
+import { onNavigationClick } from '../../utils/navigationClick.js';
 import './WarehouseOperations.css';
 
 const MODE_TABLE = 'table';
@@ -1914,12 +1915,12 @@ export function WarehouseOperations({
                           <tr
                             key={s.id}
                             className="stock-levels-row-clickable"
-                            onClick={() => {
+                            onClick={onNavigationClick(() => {
                               inventorySessionsApi
                                 .getById(s.id)
                                 .then((data) => setInventoryDetailView(data))
                                 .catch(() => setOpMessage('Не удалось загрузить документ'));
-                            }}
+                            })}
                           >
                             <td>
                               {s.created_at
@@ -2432,12 +2433,12 @@ export function WarehouseOperations({
                     <tr
                       key={r.id}
                       className="stock-levels-row-clickable"
-                      onClick={() => {
+                      onClick={onNavigationClick(() => {
                         receiptsApi.getById(r.id).then(res => {
                           const data = res?.data ?? res;
                           if (data) setReceiptDetail(data);
                         });
-                      }}
+                      })}
                     >
                       <td>{r.created_at ? new Date(r.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
                       <td>{r.receipt_number || `#${r.id}`}</td>

@@ -15,6 +15,7 @@ import { Modal } from '../../components/common/Modal/Modal';
 import { ProductForm } from '../../components/forms/ProductForm/ProductForm';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
+import { shouldIgnoreNavigationClick } from '../../utils/navigationClick.js';
 import './Products.css';
 
 /** Текст подсказки со составом комплекта (title / native tooltip) */
@@ -383,6 +384,19 @@ export function Products() {
       setEditingProduct(product);
       setIsModalOpen(true);
     }
+  };
+
+  /** Открытие карточки по клику по строке — не при выделении текста для копирования. */
+  const handleProductRowClick = (product, e) => {
+    if (
+      shouldIgnoreNavigationClick(e, {
+        ignoreClosest:
+          'input, textarea, select, label, .products-table-select-cell, .product-actions-cell, .product-actions, [data-no-nav-click]',
+      })
+    ) {
+      return;
+    }
+    void handleEdit(product);
   };
 
   const handleProductUpdate = (updatedProduct) => {
@@ -1086,12 +1100,16 @@ export function Products() {
                   const isArchived = Boolean(product.isArchived ?? product.is_archived);
                   const hasParticipation = Boolean(product.hasParticipation);
                   const canDelete = product.canDelete === true;
+                  const participationHint = (product.participationReasons || []).join(', ');
+                  const archiveTitle = participationHint
+                    ? `В архив: ${participationHint}`
+                    : 'В архив (есть документы или операции в ERP)';
                   return (
                     <tr
                       key={product.id}
                       className={`product-row-editable${rowSelected ? ' products-table-row--selected' : ''}${isArchived ? ' products-table-row--archived' : ''}`}
                       title="Открыть карточку товара"
-                      onClick={() => handleEdit(product)}
+                      onClick={(e) => handleProductRowClick(product, e)}
                     >
                       <td
                         className="products-table-select-cell"
@@ -1174,7 +1192,9 @@ export function Products() {
                           })()}
                         </div>
                       </td>
-                      <td>
+                      <td
+                        className="product-sku-cell"
+                      >
                         <div className="product-sku">{product.sku || '—'}</div>
                       </td>
                       <td>
@@ -1241,7 +1261,7 @@ export function Products() {
                                   variant="secondary"
                                   size="small"
                                   onClick={() => handleArchive(product.id)}
-                                  title="В архив (есть история движений и заказов)"
+                                  title={archiveTitle}
                                   className="btn-icon btn-icon-only"
                                 >
                                   📦
@@ -1252,7 +1272,7 @@ export function Products() {
                                   variant="danger"
                                   size="small"
                                   onClick={() => handleDelete(product.id)}
-                                  title="Удалить"
+                                  title="Удалить (нет документов и не является комплектующим)"
                                   className="btn-icon btn-icon-only"
                                 >
                                   🗑️
@@ -1440,6 +1460,28 @@ export function Products() {
             setEditingProduct(null);
           }}
           onProductUpdate={handleProductUpdate}
+          onDeleteProduct={
+            editingProduct?.id
+              ? async (id) => {
+                  await handleDelete(id);
+                  setIsModalOpen(false);
+                  setEditingProduct(null);
+                }
+              : undefined
+          }
+          onArchiveProduct={
+            editingProduct?.id
+              ? async (id) => {
+                  await handleArchive(id);
+                  setIsModalOpen(false);
+                  setEditingProduct(null);
+                }
+              : undefined
+          }
+          canDeleteProduct={editingProduct?.canDelete === true}
+          canArchiveProduct={
+            Boolean(editingProduct?.hasParticipation) && !Boolean(editingProduct?.isArchived)
+          }
         />
       </Modal>
     </div>

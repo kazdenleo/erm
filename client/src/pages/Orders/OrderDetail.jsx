@@ -28,13 +28,13 @@ function formatAssemblyWho(assembly) {
 
 /** Ссылка в каталог ERM по product_id из локальной строки заказа */
 function ProductTitleLink({ productId, children }) {
-  const { openProductCard } = useProductCardModal();
+  const { openProductCardFromClick } = useProductCardModal();
   const raw = productId != null && productId !== '' ? Number(productId) : NaN;
   if (!Number.isInteger(raw) || raw < 1) return <>{children}</>;
   return (
     <button
       type="button"
-      onClick={() => openProductCard(raw)}
+      onClick={(e) => openProductCardFromClick(raw, e)}
       className="order-detail-product-link"
       title="Открыть карточку товара"
       style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}

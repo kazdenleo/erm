@@ -306,10 +306,19 @@ export function ProductForm({
   onSubmit,
   onCancel: _onCancel,
   onProductUpdate,
+  onDeleteProduct,
+  onArchiveProduct,
+  canDeleteProduct = false,
+  canArchiveProduct = false,
 }) {
   const productFormDomId = useId();
   // Локальное состояние для хранения актуальных данных товара
   const [currentProduct, setCurrentProduct] = useState(product);
+  const [participationFlags, setParticipationFlags] = useState({
+    canDelete: canDeleteProduct,
+    canArchive: canArchiveProduct,
+    reasons: product?.participationReasons || [],
+  });
 
   const [formData, setFormData] = useState(() => ({ ...EMPTY_PRODUCT_FORM_DATA }));
   
@@ -427,6 +436,49 @@ export function ProductForm({
       ozonSyncedFromFetchedRef.current = null;
     }
   }, [product]);
+
+  useEffect(() => {
+    const pid = product?.id;
+    if (!pid) {
+      setParticipationFlags({ canDelete: false, canArchive: false, reasons: [] });
+      return;
+    }
+    setParticipationFlags({
+      canDelete: canDeleteProduct,
+      canArchive: canArchiveProduct,
+      reasons: product?.participationReasons || [],
+    });
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await productsApi.getParticipation(pid);
+        const data = res?.data ?? res;
+        if (cancelled || !data) return;
+        const reasons = data.reasons || [];
+        setParticipationFlags({
+          canDelete: data.canDelete === true,
+          canArchive: Boolean(data.hasParticipation) && !Boolean(data.isArchived),
+          reasons,
+        });
+        setCurrentProduct((prev) =>
+          prev && String(prev.id) === String(pid)
+            ? {
+                ...prev,
+                canDelete: data.canDelete === true,
+                hasParticipation: Boolean(data.hasParticipation),
+                participationReasons: reasons,
+                isArchived: Boolean(data.isArchived ?? prev.isArchived),
+              }
+            : prev
+        );
+      } catch {
+        /* список/карточка уже могли передать флаги */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [product?.id, canDeleteProduct, canArchiveProduct, product?.participationReasons]);
 
   // Заполняем форму данными товара при редактировании
   useEffect(() => {
@@ -4003,6 +4055,29 @@ export function ProductForm({
     </form>
       <div className="product-form__footer">
         <div className="product-form__footer-inner">
+          {currentProduct?.id && onDeleteProduct && participationFlags.canDelete ? (
+            <Button
+              type="button"
+              variant="danger"
+              onClick={() => onDeleteProduct(currentProduct.id)}
+            >
+              Удалить
+            </Button>
+          ) : null}
+          {currentProduct?.id && onArchiveProduct && participationFlags.canArchive ? (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => onArchiveProduct(currentProduct.id)}
+              title={
+                participationFlags.reasons.length
+                  ? `Есть: ${participationFlags.reasons.join(', ')}`
+                  : undefined
+              }
+            >
+              Отправить в архив
+            </Button>
+          ) : null}
           <Button type="submit" form={productFormDomId} variant="primary">
             Сохранить
           </Button>

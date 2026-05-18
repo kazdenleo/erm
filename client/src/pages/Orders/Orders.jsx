@@ -20,6 +20,7 @@ import {
   isOrderStatusEligibleForProcurement,
 } from '../../constants/orderStatuses';
 import { OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
+import { onNavigationClick } from '../../utils/navigationClick.js';
 import {
   normalizeMarketplaceForUI,
   orderGroupKey,
@@ -2336,7 +2337,10 @@ export function Orders() {
                 <tr
                   key={row.key + idx}
                   className={`orders-row-clickable ${checked ? 'orders-row-selected' : ''} ${isGroup ? 'orders-row-multi' : ''}`}
-                  onClick={() => setDetailModalRow(row)}
+                  onClick={onNavigationClick(() => setDetailModalRow(row), {
+                    ignoreClosest:
+                      'input, textarea, select, label, .orders-col-checkbox, .orders-col-actions, [data-no-nav-click]',
+                  })}
                   title={groupRowTitle ?? 'Открыть карточку заказа'}
                 >
                   <td className="orders-col-checkbox" onClick={e => e.stopPropagation()}>

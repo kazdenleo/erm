@@ -249,6 +249,10 @@
   margin-bottom: 16px;
 }
 
+.stock-levels-row-clickable td {
+  user-select: text;
+}
+
 .stock-levels-row-clickable {
   cursor: pointer;
 }

@@ -1428,57 +1428,147 @@ class OrdersService {
     return x;
   }
 
+  /** Сколько уже возвращено на склад при отмене (receipt с meta.cancel_restore). */
+  async _getCancelRestoreQtyForOrderProduct(orderDbId, productId) {
+    if (!orderDbId || !productId || !repositoryFactory.isUsingPostgreSQL()) return 0;
+    const r = await query(
+      `SELECT COALESCE(SUM(quantity_change), 0)::int AS restored
+       FROM stock_movements
+       WHERE product_id = $2
+         AND type = 'receipt'
+         AND (meta->>'order_id')::bigint = $1::bigint
+         AND COALESCE(meta->>'cancel_restore', '') = 'true'`,
+      [orderDbId, productId]
+    );
+    return Math.max(0, Number(r.rows?.[0]?.restored) || 0);
+  }
+
   /**
-   * После отмены на стороне МП или локально: статус cancelled и снятие резерва по строкам группы.
+   * Если при сборке уже списали со склада — вернуть остаток при отмене (идемпотентно).
+   */
+  async _restoreShippedStockOnCancel(orderRow, productId, label) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow || !productId) return;
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId) return;
+
+    const shipped = await this._getShippedQtyForOrderProduct(orderDbId, productId);
+    const already = await this._getCancelRestoreQtyForOrderProduct(orderDbId, productId);
+    const toRestore = Math.max(0, shipped - already);
+    if (toRestore <= 0) return;
+
+    const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
+    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    await stockMovementsService.applyChange(productId, {
+      delta: toRestore,
+      type: 'receipt',
+      reason: `Отмена заказа: возврат на склад ${label} ${orderIdStr}`.trim(),
+      meta: {
+        order_id: orderDbId,
+        orderId: orderIdStr,
+        marketplace: label,
+        cancel_restore: true,
+        warehouse_id: warehouseId || null
+      }
+    });
+  }
+
+  /**
+   * Снять остаточный резерв и вернуть списанное при сборке (если было).
+   * @returns {Promise<number[]>} product_id, затронутые движениями
+   */
+  async _releaseStockEffectsForCancelledOrderRow(orderRow, label) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return [];
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId) return [];
+
+    const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
+    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    const touched = new Set();
+
+    const reservedPids = await releaseAllReservesForOrder(
+      orderDbId,
+      orderIdStr,
+      async (pid, net, oidLabel, meta) => {
+        await stockMovementsService.applyChange(pid, {
+          delta: net,
+          type: 'unreserve',
+          reason: `Снятие резерва: отмена заказа ${label} ${oidLabel}`,
+          meta: { ...meta, marketplace: label, warehouse_id: warehouseId || null }
+        });
+        touched.add(Number(pid));
+      }
+    );
+    for (const pid of reservedPids || []) {
+      if (Number.isFinite(pid) && pid > 0) touched.add(pid);
+    }
+
+    const productId = await this._resolveProductIdForOrderStock(orderRow);
+    if (productId) {
+      await this._restoreShippedStockOnCancel(orderRow, productId, label);
+      touched.add(Number(productId));
+    }
+
+    return [...touched];
+  }
+
+  async _removeCancelledOrdersFromOpenShipments(mpForRepo, orderRows, options = {}) {
+    const { profileId = null, organizationId = null } = options;
+    if (!Array.isArray(orderRows) || orderRows.length === 0) return [];
+    const shipmentsService = (await import('./shipments.service.js')).default;
+    const shipmentIds = [];
+    const seen = new Set();
+    for (const row of orderRows) {
+      const oid = String(row.orderId ?? row.order_id ?? '').trim();
+      if (!oid || seen.has(oid)) continue;
+      seen.add(oid);
+      try {
+        const ids = await shipmentsService.removeOrderFromOpenShipments(mpForRepo, oid, {
+          profileId: profileId ?? row.profile_id ?? row.profileId ?? null,
+          organizationId: organizationId ?? row.organization_id ?? row.organizationId ?? null
+        });
+        shipmentIds.push(...ids);
+      } catch (e) {
+        console.warn('[Orders] remove from shipment on cancel:', oid, e?.message || e);
+      }
+    }
+    return [...new Set(shipmentIds)];
+  }
+
+  /**
+   * После отмены: статус cancelled, снятие резерва, возврат списанного при сборке, удаление из открытых поставок.
    * @param {string} mpForRepo — marketplace как в БД (wildberries, ozon, …)
    * @param {string} oid — orderId строки, с которой вызывали отмену
    * @param {string} marketplaceStockLabel — подпись в движении остатков
+   * @param {{ profileId?: number|string|null, organizationId?: number|string|null }} [options]
    */
-  async _finalizeMarketplaceCancellation(mpForRepo, oid, order, marketplaceStockLabel) {
+  async _finalizeMarketplaceCancellation(mpForRepo, oid, order, marketplaceStockLabel, options = {}) {
     const label = marketplaceStockLabel || mpForRepo;
+    const { profileId = null, organizationId = null } = options;
     if (repositoryFactory.isUsingPostgreSQL()) {
       const touchedProducts = new Set();
+      const rows = order.orderGroupId
+        ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
+        : [order];
+
+      await this._removeCancelledOrdersFromOpenShipments(mpForRepo, rows, { profileId, organizationId });
+
       if (order.orderGroupId) {
         await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'cancelled');
-        const group = await this.repository.findByOrderGroupId(order.orderGroupId);
-        if (Array.isArray(group)) {
-          for (const row of group) {
-            const pid = row.productId ?? row.product_id;
-            if (pid) {
-              const q = Math.max(1, parseInt(row.quantity, 10) || 1);
-              const orderRowDbId = row?.id != null ? Number(row.id) : null;
-              const metaOrderId = Number.isFinite(orderRowDbId) ? orderRowDbId : undefined;
-              await stockMovementsService.applyChange(pid, {
-                delta: q,
-                type: 'unreserve',
-                reason: `Снятие резерва: отмена заказа ${label} ${row.orderId ?? row.order_id}`,
-                meta: { order_id: metaOrderId, orderId: row.orderId ?? row.order_id, marketplace: label }
-              });
-              touchedProducts.add(Number(pid));
-            }
-          }
-        }
-        // После снятия резерва: попробуем отдать освобождённый supply другим заказам в «В закупке».
-        for (const p of touchedProducts) {
-          await this.ensureReservesForProductIfSupplyAvailable(p);
-        }
-        return await this.repository.findByMarketplaceAndOrderId(mpForRepo, oid);
+      } else {
+        await this.repository.updateByMarketplaceAndOrderId(mpForRepo, oid, { status: 'cancelled' });
       }
-      await this.repository.updateByMarketplaceAndOrderId(mpForRepo, oid, { status: 'cancelled' });
-      const productId = order.productId ?? order.product_id;
-      const qty = Math.max(1, parseInt(order.quantity, 10) || 1);
-      if (productId) {
-        const orderRowDbId = order?.id != null ? Number(order.id) : null;
-        const metaOrderId = Number.isFinite(orderRowDbId) ? orderRowDbId : undefined;
-        await stockMovementsService.applyChange(productId, {
-          delta: qty,
-          type: 'unreserve',
-          reason: `Снятие резерва: отмена заказа ${label} ${oid}`,
-          meta: { order_id: metaOrderId, orderId: oid, marketplace: label }
-        });
-        await this.ensureReservesForProductIfSupplyAvailable(productId);
+
+      if (Array.isArray(rows)) {
+        for (const row of rows) {
+          const pids = await this._releaseStockEffectsForCancelledOrderRow(row, label);
+          for (const p of pids) touchedProducts.add(p);
+        }
       }
-      return await this.repository.findByMarketplaceAndOrderId(mpForRepo, oid);
+
+      for (const p of touchedProducts) {
+        await this.ensureReservesForProductIfSupplyAvailable(p).catch(() => {});
+      }
+      return await this.repository.findByMarketplaceAndOrderId(mpForRepo, oid, profileId);
     }
 
     const { readData, writeData } = await import('../utils/storage.js');
@@ -1543,7 +1633,10 @@ class OrdersService {
       err.statusCode = 400;
       throw err;
     }
-    return this._finalizeMarketplaceCancellation('manual', oid, order, 'manual');
+    return this._finalizeMarketplaceCancellation('manual', oid, order, 'manual', {
+      profileId: order.profile_id ?? order.profileId ?? null,
+      organizationId: order.organization_id ?? order.organizationId ?? null
+    });
   }
 
   async _cancelOzonOrder(orderId) {
@@ -1625,7 +1718,10 @@ class OrdersService {
       err.statusCode = 502;
       throw err;
     }
-    return this._finalizeMarketplaceCancellation('ozon', oid, order, 'ozon');
+    return this._finalizeMarketplaceCancellation('ozon', oid, order, 'ozon', {
+      profileId: order.profile_id ?? order.profileId ?? null,
+      organizationId: order.organization_id ?? order.organizationId ?? null
+    });
   }
 
   async _cancelYandexOrder(orderId) {
@@ -1689,7 +1785,10 @@ class OrdersService {
         ...(agent && { agent })
       });
       if (response.ok) {
-        return this._finalizeMarketplaceCancellation('yandex', oid, order, 'yandex');
+        return this._finalizeMarketplaceCancellation('yandex', oid, order, 'yandex', {
+          profileId: order.profile_id ?? order.profileId ?? null,
+          organizationId: order.organization_id ?? order.organizationId ?? null
+        });
       }
       const text = await response.text();
       lastErr = { status: response.status, text };
@@ -1766,7 +1865,10 @@ class OrdersService {
       throw err;
     }
 
-    return this._finalizeMarketplaceCancellation(mpForRepo, oid, order, 'wildberries');
+    return this._finalizeMarketplaceCancellation(mpForRepo, oid, order, 'wildberries', {
+      profileId: order.profile_id ?? order.profileId ?? null,
+      organizationId: order.organization_id ?? order.organizationId ?? null
+    });
   }
 
   /**
