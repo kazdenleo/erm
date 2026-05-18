@@ -140,7 +140,29 @@ function scannedQtyForAssemblyLine(item, idx, scannedQuantities, itemsLength = 1
   return 0;
 }
 
-function orderItemMatchesScannedProduct(item, product, itemsLength = 1) {
+/** Скан штрихкода SKU комплекта (не отдельной комплектующей). */
+function isKitSkuScanForOrder(product, orderItems) {
+  if (!product?.id || !orderItems?.length) return false;
+  const scanId = String(product.id);
+  const kitLine = orderItems.find((item) => {
+    const kitPid = item.kitProductId ?? item.kit_product_id;
+    return kitPid != null && String(kitPid) === scanId;
+  });
+  if (!kitLine) return false;
+  const linePid = kitLine.productId ?? kitLine.product_id;
+  if (
+    orderItems.length === 1 &&
+    linePid != null &&
+    String(linePid) === scanId &&
+    !kitLine.isKitComponent
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** Совпадение скана с одной строкой состава (только product_id строки — комплектующая). */
+function orderItemMatchesScannedProduct(item, product) {
   if (!product?.id) return false;
   const target = Number(product.id);
   const raw = item.productId ?? item.product_id;
@@ -149,10 +171,6 @@ function orderItemMatchesScannedProduct(item, product, itemsLength = 1) {
     if (!Number.isNaN(target) && !Number.isNaN(linePid) && linePid === target) return true;
     if (String(raw) === String(product.id)) return true;
   }
-  const kitPid = item.kitProductId ?? item.kit_product_id;
-  // Скан штрихкода SKU комплекта не засчитывается на все комплектующие — только конкретные детали
-  if (kitPid != null && !item.isKitComponent && String(kitPid) === String(product.id)) return true;
-  if (raw == null || raw === '') return itemsLength <= 1;
   return false;
 }
 
@@ -595,9 +613,18 @@ export function Assembly() {
             return next;
           }
 
+          if (isKitSkuScanForOrder(product, items)) {
+            for (let idx = 0; idx < items.length; idx++) {
+              const item = items[idx];
+              const need = item.quantity ?? 1;
+              next[assemblyLineScanKey(item, idx)] = need;
+            }
+            return next;
+          }
+
           const candidates = items
             .map((item, idx) => ({ item, idx }))
-            .filter(({ item }) => orderItemMatchesScannedProduct(item, product, items.length));
+            .filter(({ item }) => orderItemMatchesScannedProduct(item, product));
 
           const bumpLine = (item, idx) => {
             const key = assemblyLineScanKey(item, idx);
