@@ -316,7 +316,7 @@ class ProductsRepositoryPG {
    * Агрегат products.reserved_quantity должен совпадать с журналом (типы reserve / unreserve).
    * Иначе после перезагрузки страницы «Остатки» показывают неверный резерв.
    */
-  async _reconcileReservedQuantityFromMovements(products) {
+  async _reconcileReservedQuantityFromMovements(products, options = {}) {
     if (!Array.isArray(products) || products.length === 0) return;
     const numericIds = [
       ...new Set(
@@ -819,7 +819,7 @@ class ProductsRepositoryPG {
       await this._applyKitDerivedStockFromDb(products, options);
     }
 
-    await this._reconcileReservedQuantityFromMovements(products);
+    await this._reconcileReservedQuantityFromMovements(products, options);
 
     if (products.length > 0) {
       const { attachKitDisplayMetrics } = await import('../services/kitStock.service.js');
