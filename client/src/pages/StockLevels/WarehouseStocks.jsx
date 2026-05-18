@@ -424,12 +424,8 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
 
     const inferredRes =
       prevLineBelow?.res != null && Number.isFinite(sumQc) ? prevLineBelow.res - sumQc : null;
-    // reserved_after в БД иногда 0 при реальном резерве — восстанавливаем из quantity_change
-    if (
-      inferredRes != null &&
-      sumQc < 0 &&
-      (dbRes == null || (dbRes === 0 && inferredRes > 0))
-    ) {
+    // Для группы резервов (несколько заказов) — сумма quantity_change; иначе reserved_after только по первой строке
+    if (inferredRes != null && sumQc < 0) {
       out.res = inferredRes;
     } else if (dbRes != null) {
       out.res = dbRes;

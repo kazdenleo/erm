@@ -650,7 +650,7 @@ export async function computeKitSupplierUnitsFromComponents(kitProductId, opts =
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
-/** Доступность одного комплектующего для сборки: склад + в пути + поставщики − резерв. */
+/** Доступность одного комплектующего для сборки: склад + в пути + поставщики − резерв (из журнала). */
 async function getComponentAssemblableUnits(componentProductId, opts = {}) {
   const widRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
   const wid =
@@ -665,12 +665,14 @@ async function getComponentAssemblableUnits(componentProductId, opts = {}) {
     profileId: opts.profileId ?? null
   });
   const supply = await getComponentWarehouseSupply(componentProductId);
+  const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+  const reserved = await getReservedQuantityFromMovements(componentProductId);
   return Math.max(
     0,
     (Number(metrics.onHand) || 0) +
       (Number(supply.incoming) || 0) +
       (Number(metrics.suppliers) || 0) -
-      (Number(supply.reserved) || 0)
+      reserved
   );
 }
 
