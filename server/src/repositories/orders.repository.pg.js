@@ -1139,7 +1139,31 @@ class OrdersRepositoryPG {
           OR EXISTS (
             SELECT 1 FROM kit_components kc
             WHERE kc.component_product_id = $1
-              AND kc.kit_product_id = o.product_id
+              AND (
+                (o.product_id IS NOT NULL AND kc.kit_product_id = o.product_id)
+                OR o.product_id = kc.component_product_id
+                OR EXISTS (
+                  SELECT 1 FROM product_skus ps
+                  WHERE ps.product_id = kc.kit_product_id
+                    AND ps.marketplace = o.marketplace
+                    AND (
+                      (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
+                      OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
+                      OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
+                          AND ps.marketplace_product_id = o.marketplace_sku::bigint)
+                      OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
+                      OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
+                    )
+                )
+                OR (
+                  o.offer_id IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1 FROM products pk
+                    WHERE pk.id = kc.kit_product_id
+                      AND TRIM(COALESCE(pk.sku, '')) = TRIM(o.offer_id)
+                  )
+                )
+              )
           )
         )
       ORDER BY o.created_at DESC, o.in_process_at DESC

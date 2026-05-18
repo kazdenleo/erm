@@ -1313,8 +1313,22 @@ class OrdersService {
   async findFirstAssembledByProductId(productId) {
     if (productId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findFirstAssembledByProductIdOrSku(productId);
-      return order || null;
+      let order = await this.repository.findFirstAssembledByProductIdOrSku(productId);
+      if (order) return order;
+      const pid = Number(productId);
+      if (Number.isFinite(pid) && pid > 0) {
+        const kitsRes = await query(
+          `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+          [pid]
+        );
+        for (const row of kitsRes.rows || []) {
+          const kitId = row.kit_product_id;
+          if (kitId == null) continue;
+          order = await this.repository.findFirstAssembledByProductIdOrSku(kitId);
+          if (order) return order;
+        }
+      }
+      return null;
     }
     const orders = await this.getAll();
     const found = orders.find(

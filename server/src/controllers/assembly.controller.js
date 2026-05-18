@@ -77,9 +77,17 @@ class AssemblyController {
         order = await ordersService.findFirstAssembledByProductName(product.name);
       }
       if (!order) {
+        const { query: dbQuery } = await import('../config/database.js');
+        const kitHint = await dbQuery(
+          `SELECT 1 FROM kit_components WHERE component_product_id = $1 LIMIT 1`,
+          [Number(product.id)]
+        );
+        const hint = (kitHint.rows?.length ?? 0) > 0
+          ? ' Товар входит в комплект — проверьте, что заказ на сборке оформлен на SKU комплекта и привязан в ERP.'
+          : '';
         return res.status(404).json({
           ok: false,
-          message: 'Заказ на сборке с этим товаром не найден'
+          message: `Заказ на сборке с этим товаром не найден.${hint}`
         });
       }
 

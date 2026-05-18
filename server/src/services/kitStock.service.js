@@ -84,7 +84,12 @@ export async function isKitProductId(productId) {
     `SELECT product_type FROM products WHERE id = $1 LIMIT 1`,
     [pid]
   );
-  return isKitProductType(r.rows[0]?.product_type);
+  if (isKitProductType(r.rows[0]?.product_type)) return true;
+  const kc = await query(
+    `SELECT 1 FROM kit_components WHERE kit_product_id = $1 LIMIT 1`,
+    [pid]
+  );
+  return (kc.rows?.length ?? 0) > 0;
 }
 
 function marketplaceForProductSkus(marketplace) {
@@ -155,7 +160,7 @@ export async function findKitProductIdForMarketplaceOrder(productId, orderRow = 
   if (bySku) return bySku;
 
   const pid = Number(productId);
-  if (!Number.isFinite(pid) || pid < 1) return pid;
+  if (!Number.isFinite(pid) || pid < 1) return bySku ?? null;
   if (await isKitProductId(pid)) return pid;
   const hasComponents = await query(
     `SELECT 1 FROM kit_components WHERE kit_product_id = $1 LIMIT 1`,

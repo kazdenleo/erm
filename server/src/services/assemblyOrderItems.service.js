@@ -67,15 +67,20 @@ export async function buildAssemblyOrderItems(order, ordersService) {
   }
 
   let kitId = null;
-  if (linePid != null) {
-    const n = Number(linePid);
-    if (Number.isFinite(n) && n > 0) {
-      if (await isKitProductId(n)) {
-        kitId = n;
-      } else {
-        kitId = await findKitProductIdForMarketplaceOrder(n, order);
-        if (kitId != null && !(await isKitProductId(kitId))) kitId = null;
-      }
+  const lineNum = linePid != null ? Number(linePid) : NaN;
+  if (Number.isFinite(lineNum) && lineNum > 0) {
+    if (await isKitProductId(lineNum)) {
+      kitId = lineNum;
+    } else {
+      kitId = await findKitProductIdForMarketplaceOrder(lineNum, order);
+    }
+  }
+  if (kitId == null || !(await isKitProductId(kitId))) {
+    const byOrderSku = await findKitProductIdForMarketplaceOrder(0, order);
+    if (byOrderSku != null && (await isKitProductId(byOrderSku))) {
+      kitId = byOrderSku;
+    } else {
+      kitId = null;
     }
   }
 
