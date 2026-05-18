@@ -131,12 +131,17 @@ function assemblyLineScanKey(item, idx) {
 
 function orderItemMatchesScannedProduct(item, product, itemsLength = 1) {
   if (!product?.id) return false;
-  const raw = item.productId ?? item.product_id;
-  if (raw == null || raw === '') return itemsLength <= 1;
   const target = Number(product.id);
-  const linePid = Number(raw);
-  if (!Number.isNaN(target) && !Number.isNaN(linePid)) return linePid === target;
-  return String(raw) === String(product.id);
+  const raw = item.productId ?? item.product_id;
+  if (raw != null && raw !== '') {
+    const linePid = Number(raw);
+    if (!Number.isNaN(target) && !Number.isNaN(linePid) && linePid === target) return true;
+    if (String(raw) === String(product.id)) return true;
+  }
+  const kitPid = item.kitProductId ?? item.kit_product_id;
+  if (kitPid != null && String(kitPid) === String(product.id)) return true;
+  if (raw == null || raw === '') return itemsLength <= 1;
+  return false;
 }
 
 export function Assembly() {

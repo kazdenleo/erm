@@ -42,6 +42,42 @@ const api = axios.create({
   timeout: 90000
 });
 
+function isAuthBootstrapRequest(config) {
+  const path = String(config?.url || '').split('?')[0].replace(/^\/+/, '');
+  return (
+    (config?.method === 'post' && path === 'auth/login') ||
+    (config?.method === 'post' && path === 'auth/register-account') ||
+    (config?.method === 'get' && path === 'auth/me')
+  );
+}
+
+/** Раздел «Склад» — всегда узкий список товаров (защита от старого бандла без stockList). */
+function applyStockLevelsProductsListParams(config) {
+  if (String(config?.method || '').toLowerCase() !== 'get') return;
+  const path = String(config?.url || '').split('?')[0].replace(/^\/+/, '');
+  if (path !== 'products') return;
+  let onStockPage = false;
+  try {
+    onStockPage =
+      typeof window !== 'undefined' &&
+      String(window.location?.pathname || '').includes('/stock-levels');
+  } catch {
+    onStockPage = false;
+  }
+  if (!onStockPage) return;
+
+  const params = { ...(config.params || {}) };
+  if (params.listView === 'full' || params.forExport === 'true' || params.forExport === '1') {
+    return;
+  }
+  if (params.listView !== 'stock') params.listView = 'stock';
+  if (params.stockList == null || params.stockList === '') params.stockList = '1';
+  if (params.limit == null || params.limit === '') params.limit = '50';
+  config.params = params;
+  config.headers = config.headers || {};
+  config.headers['X-ERM-Client-Route'] = 'stock-levels';
+}
+
 // Request interceptor
 api.interceptors.request.use(
   (config) => {
@@ -51,12 +87,14 @@ api.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`;
     }
 
-    const { accountId, organizationId } = getApiSessionContext();
-    if (accountId) {
-      config.headers['X-Account-Id'] = accountId;
-    }
-    if (organizationId) {
-      config.headers['X-Organization-Id'] = organizationId;
+    if (!isAuthBootstrapRequest(config)) {
+      const { accountId, organizationId } = getApiSessionContext();
+      if (accountId) {
+        config.headers['X-Account-Id'] = accountId;
+      }
+      if (organizationId) {
+        config.headers['X-Organization-Id'] = organizationId;
+      }
     }
 
     // FormData + дефолтный Content-Type: application/json ломает multipart (нет boundary) — файл не доходит до multer
@@ -67,7 +105,9 @@ api.interceptors.request.use(
         delete config.headers['Content-Type'];
       }
     }
-    
+
+    applyStockLevelsProductsListParams(config);
+
     // Логируем запросы на обновление складов
     if (config.method === 'put' && config.url && config.url.includes('/warehouses/')) {
       console.log('[API] PUT request to warehouses:', config.url);

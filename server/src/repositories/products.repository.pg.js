@@ -18,6 +18,29 @@ function isKitProductType(raw) {
   return String(raw || '').toLowerCase() === 'kit';
 }
 
+/** Поля для listView=stock — без images, mp_* текстов и прочих тяжёлых колонок. */
+const STOCK_LIST_SELECT = `
+  p.id,
+  p.sku,
+  p.name,
+  p.product_type,
+  p.quantity,
+  p.incoming_quantity,
+  p.reserved_quantity,
+  p.cost,
+  p.brand_id,
+  p.user_category_id,
+  p.organization_id,
+  p.profile_id,
+  p.is_archived,
+  p.created_at,
+  p.updated_at,
+  b.name AS brand_name,
+  uc.name AS category_name,
+  o.name AS organization_name,
+  NULL AS category_marketplace
+`;
+
 /**
  * Сохраняет одну связку product_skus (Ozon допускает только marketplace_product_id; WB/ЯМ — непустой sku).
  */
@@ -316,7 +339,7 @@ class ProductsRepositoryPG {
    * Агрегат products.reserved_quantity должен совпадать с журналом (типы reserve / unreserve).
    * Иначе после перезагрузки страницы «Остатки» показывают неверный резерв.
    */
-  async _reconcileReservedQuantityFromMovements(products, options = {}) {
+  async _reconcileReservedQuantityFromMovements(products, options = {}, kitCtx = null) {
     if (!Array.isArray(products) || products.length === 0) return;
     const numericIds = [
       ...new Set(
@@ -356,9 +379,13 @@ class ProductsRepositoryPG {
     const byPid = new Map((agg.rows || []).map((r) => [String(r.product_id), r.rv]));
     const idsToUpdate = [];
     const rvsToUpdate = [];
-    const { isKitProductType, readKitDisplayReservedQuantity } = await import(
-      '../services/kitStock.service.js'
-    );
+    const { isKitProductType, kitDisplayReservedFromContext, buildKitListStockContext } =
+      await import('../services/kitStock.service.js');
+
+    let ctx = kitCtx;
+    if (!ctx && products.some((p) => isKitProductType(p.product_type))) {
+      ctx = await buildKitListStockContext(products, options);
+    }
 
     for (const p of products) {
       const key = String(p.id);
@@ -366,7 +393,7 @@ class ProductsRepositoryPG {
       if (isKitProductType(p.product_type)) {
         const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
         if (Number.isFinite(nid) && nid > 0) {
-          calc = await readKitDisplayReservedQuantity(nid, options);
+          calc = ctx ? kitDisplayReservedFromContext(nid, ctx) : 0;
         } else {
           calc = 0;
         }
@@ -382,7 +409,7 @@ class ProductsRepositoryPG {
       }
     }
 
-    if (idsToUpdate.length > 0) {
+    if (idsToUpdate.length > 0 && options.persistReservedToDb !== false) {
       try {
         await query(
           `UPDATE products AS p
@@ -442,7 +469,20 @@ class ProductsRepositoryPG {
    * Получить все товары
    */
   async findAll(options = {}) {
-    const { limit, offset, brandId, categoryId, organizationId, search, forExport, profileId, productType, warehouseId } = options;
+    const {
+      limit,
+      offset,
+      brandId,
+      categoryId,
+      organizationId,
+      search,
+      forExport,
+      profileId,
+      productType,
+      warehouseId,
+      listView
+    } = options;
+    const isStockList = listView === 'stock';
 
     const { whereSql, params, paramIndex: startParamIndex } = buildFindAllFilters({
       brandId,
@@ -453,13 +493,18 @@ class ProductsRepositoryPG {
       productType,
     });
 
-    let sql = `
-      SELECT 
+    const selectCols = isStockList
+      ? STOCK_LIST_SELECT
+      : `
         p.*,
         b.name as brand_name,
         uc.name as category_name,
         o.name as organization_name,
         NULL as category_marketplace
+      `;
+    let sql = `
+      SELECT 
+        ${selectCols}
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
@@ -481,7 +526,9 @@ class ProductsRepositoryPG {
     
     const result = await query(sql, params);
     const products = result.rows;
-    console.log(`[Products Repository] Found ${products.length} products in findAll`);
+    if (!isStockList) {
+      console.log(`[Products Repository] Found ${products.length} products in findAll`);
+    }
 
     if (products.length > 0 && warehouseId != null && warehouseId !== '') {
       const wid = typeof warehouseId === 'string' ? parseInt(warehouseId, 10) : Number(warehouseId);
@@ -509,15 +556,12 @@ class ProductsRepositoryPG {
       }
     }
 
-    if (products.length > 0) {
+    if (products.length > 0 && !isStockList) {
       // Преобразуем ID в числа для правильного сравнения в PostgreSQL
       const productIds = products.map(p => {
         const id = p.id;
-        const numericId = typeof id === 'string' ? parseInt(id, 10) : id;
-        console.log(`[Products Repository] Product ID: ${id} (type: ${typeof id}) -> ${numericId} (type: ${typeof numericId})`);
-        return numericId;
+        return typeof id === 'string' ? parseInt(id, 10) : id;
       });
-      console.log(`[Products Repository] Product IDs array: [${productIds.join(', ')}] (types: [${productIds.map(id => typeof id).join(', ')}])`);
       let skusResult;
       try {
         skusResult = await query(
@@ -540,10 +584,6 @@ class ProductsRepositoryPG {
         [productIds]
       );
       
-      // Загружаем остатки и себестоимость из supplier_stocks
-      // Суммируем остатки по всем поставщикам и находим минимальную/среднюю/максимальную цену
-      // Убрали условие stock > 0, чтобы показывать все товары, даже с нулевыми остатками
-      console.log(`[Products Repository] Loading stock data for product IDs: ${productIds.join(', ')}`);
       const stocksResult = await query(
         `SELECT 
           product_id,
@@ -568,21 +608,6 @@ class ProductsRepositoryPG {
         GROUP BY product_id`,
         [productIds]
       );
-      console.log(`[Products Repository] Stock query returned ${stocksResult.rows.length} rows`);
-      if (stocksResult.rows.length > 0) {
-        console.log(`[Products Repository] Stock data sample:`, stocksResult.rows.slice(0, 3));
-      } else {
-        // Проверяем, есть ли вообще данные в supplier_stocks для этих товаров
-        const checkResult = await query(
-          `SELECT product_id, COUNT(*) as count FROM supplier_stocks WHERE product_id = ANY($1) GROUP BY product_id`,
-          [productIds]
-        );
-        console.log(`[Products Repository] Check query: found ${checkResult.rows.length} products with stock data`);
-        if (checkResult.rows.length > 0) {
-          console.log(`[Products Repository] Products with stock data:`, checkResult.rows);
-        }
-      }
-      
       let pricesByProduct = {};
       try {
         let pricesResult;
@@ -624,7 +649,6 @@ class ProductsRepositoryPG {
             pricesByProduct[key].updated_at = row.updated_at;
           }
         });
-        console.log(`[Products Repository] Loaded stored prices for ${Object.keys(pricesByProduct).length} products`);
       } catch (err) {
         console.warn('[Products Repository] product_marketplace_prices not loaded (table may not exist):', err.message);
       }
@@ -657,10 +681,8 @@ class ProductsRepositoryPG {
           avgCost: parseFloat(row.avg_cost) || null,
           maxCost: parseFloat(row.max_cost) || null
         };
-        console.log(`[Products Repository] Stock data for product ${key} (product_id=${productId}, type=${typeof productId}): stock=${stocksByProduct[key].totalStock}, cost=${stocksByProduct[key].minCost}`);
       });
-      console.log(`[Products Repository] Loaded stock data for ${Object.keys(stocksByProduct).length} products`);
-      
+
       products.forEach(product => {
         const skus = skusByProduct[String(product.id)] || {};
         product.sku_ozon = skus.ozon ?? null;
@@ -699,13 +721,9 @@ class ProductsRepositoryPG {
           } else {
             product.cost = null;
           }
-          if (oldCost !== product.cost) {
-            console.log(`[Products Repository] Updated product ${product.id} (${product.name}): cost ${oldCost} -> ${product.cost}`);
-          }
         } else {
           product.supplierStockTotal = 0;
           product.cost = costFromDb;
-          console.log(`[Products Repository] No stock data for product ${product.id} (${product.name})`);
         }
         // Нормализация: фронт всегда получает number | null
         product.cost = product.cost != null && !isNaN(Number(product.cost)) ? Number(product.cost) : null;
@@ -727,7 +745,6 @@ class ProductsRepositoryPG {
         if (stored.updated_at) product.storedMinPriceUpdatedAt = stored.updated_at;
       });
 
-      // Для Excel: атрибуты категории ERP (таблица product_attribute_values), в findAll обычно не подгружались
       if (forExport) {
         try {
           const attrRes = await query(
@@ -756,6 +773,17 @@ class ProductsRepositoryPG {
           }
         } catch (e) {
           console.warn('[Products Repository] product_attribute_values for export:', e.message);
+        }
+      }
+    }
+
+    if (products.length > 0) {
+      if (isStockList) {
+        for (const p of products) {
+          if (p.quantity == null) p.quantity = 0;
+          if (p.user_category_id) p.categoryId = p.user_category_id;
+          if (p.brand_name) p.brand = p.brand_name;
+          p.supplierStockTotal = 0;
         }
       }
 
@@ -815,15 +843,22 @@ class ProductsRepositoryPG {
           if (isKitProductType(p.product_type)) p.kit_components = [];
         }
       }
-
-      await this._applyKitDerivedStockFromDb(products, options);
     }
 
-    await this._reconcileReservedQuantityFromMovements(products, options);
+    const { isKitProductType, buildKitListStockContext, attachKitDisplayMetrics } = await import(
+      '../services/kitStock.service.js'
+    );
+    const hasKits = products.some((p) => isKitProductType(p.product_type));
+    const kitCtx = hasKits ? await buildKitListStockContext(products, options) : null;
 
-    if (products.length > 0) {
-      const { attachKitDisplayMetrics } = await import('../services/kitStock.service.js');
-      await attachKitDisplayMetrics(products, options);
+    await this._reconcileReservedQuantityFromMovements(
+      products,
+      { ...options, persistReservedToDb: !isStockList },
+      kitCtx
+    );
+
+    if (hasKits && kitCtx) {
+      await attachKitDisplayMetrics(products, { ...options, _kitCtx: kitCtx });
     }
     return products;
   }
@@ -1005,16 +1040,19 @@ class ProductsRepositoryPG {
     return product;
   }
 
-  /**
-   * Получить товар по штрихкоду (id товара из таблицы barcodes)
-   */
-  async findByBarcode(barcode) {
-    const trimmed = typeof barcode === 'string' ? barcode.trim() : String(barcode || '');
-    if (!trimmed) return null;
-    const digits = trimmed.replace(/\D/g, '');
-    const hasDigits = digits.length > 0;
-    // В БД штрихкоды могут храниться с пробелами/разделителями или с префиксами.
-    // Для сканера важно найти по "чистым" цифрам.
+  /** Варианты EAN для сканера (12↔13 цифр, ведущий ноль). */
+  _barcodeDigitVariants(digits) {
+    const out = [];
+    const d = String(digits || '').replace(/\D/g, '');
+    if (!d) return out;
+    out.push(d);
+    if (d.length === 12) out.push(`0${d}`);
+    if (d.length === 13 && d.startsWith('0')) out.push(d.slice(1));
+    return [...new Set(out)];
+  }
+
+  async _findProductIdByBarcodeValue(trimmed, digitsOnly) {
+    const hasDigits = digitsOnly.length > 0;
     const result = await query(
       hasDigits
         ? `SELECT product_id
@@ -1026,11 +1064,67 @@ class ProductsRepositoryPG {
            FROM barcodes
            WHERE TRIM(barcode) = TRIM($1)
            LIMIT 1`,
-      hasDigits ? [trimmed, digits] : [trimmed]
+      hasDigits ? [trimmed, digitsOnly] : [trimmed]
     );
-    const row = result.rows[0];
-    if (!row) return null;
-    return await this.findById(row.product_id);
+    return result.rows[0]?.product_id ?? null;
+  }
+
+  /**
+   * Получить товар по штрихкоду (id товара из таблицы barcodes)
+   */
+  async findByBarcode(barcode) {
+    const trimmed = typeof barcode === 'string' ? barcode.trim() : String(barcode || '');
+    if (!trimmed) return null;
+    const digits = trimmed.replace(/\D/g, '');
+    const hasDigits = digits.length > 0;
+
+    const lookupKeys = [trimmed];
+    if (hasDigits) {
+      for (const v of this._barcodeDigitVariants(digits)) {
+        lookupKeys.push(v);
+      }
+    }
+
+    let productId = null;
+    for (const key of lookupKeys) {
+      const d = key.replace(/\D/g, '');
+      productId = await this._findProductIdByBarcodeValue(key, d);
+      if (productId != null) break;
+    }
+
+    if (productId == null) {
+      const skuKeys = [trimmed];
+      if (hasDigits) {
+        for (const v of this._barcodeDigitVariants(digits)) skuKeys.push(v);
+      }
+      for (const key of [...new Set(skuKeys)]) {
+        const bySku = await query(
+          `SELECT id FROM products
+           WHERE TRIM(sku) = TRIM($1)
+             AND COALESCE(is_archived, false) = false
+           LIMIT 1`,
+          [key]
+        );
+        if (bySku.rows[0]?.id != null) {
+          return await this.findById(bySku.rows[0].id);
+        }
+        const d = key.replace(/\D/g, '');
+        if (d.length >= 6) {
+          const bySkuDigits = await query(
+            `SELECT id FROM products
+             WHERE REGEXP_REPLACE(COALESCE(sku, ''), '\\D', '', 'g') = $1
+               AND COALESCE(is_archived, false) = false
+             LIMIT 1`,
+            [d]
+          );
+          if (bySkuDigits.rows[0]?.id != null) {
+            return await this.findById(bySkuDigits.rows[0].id);
+          }
+        }
+      }
+      return null;
+    }
+    return await this.findById(productId);
   }
   
   /**

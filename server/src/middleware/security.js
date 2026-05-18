@@ -59,8 +59,18 @@ export const corsMiddleware = cors({
     'X-Requested-With',
     'X-Account-Id',
     'X-Organization-Id',
+    'X-ERM-Client-Route',
   ],
-  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page', 'X-Products-Exported'],
+  exposedHeaders: [
+    'X-Total-Count',
+    'X-Page',
+    'X-Per-Page',
+    'X-Products-Exported',
+    'X-Products-List-View',
+    'X-Products-Total',
+    'X-Products-Limit',
+    'X-Products-Offset',
+  ],
 });
 
 /**

@@ -6,7 +6,7 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { computeAvailableQuantity } from './sellableQuantity.service.js';
+import { computeAvailableQuantity, getReservedQuantityFromMovements } from './sellableQuantity.service.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
 import logger from '../utils/logger.js';
 
@@ -665,8 +665,11 @@ async function getComponentAssemblableUnits(componentProductId, opts = {}) {
     profileId: opts.profileId ?? null
   });
   const supply = await getComponentWarehouseSupply(componentProductId);
-  const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
-  const reserved = await getReservedQuantityFromMovements(componentProductId);
+  const pid = Number(componentProductId);
+  const reserved =
+    opts.reservedMap instanceof Map
+      ? opts.reservedMap.get(pid) || 0
+      : await getReservedQuantityFromMovements(componentProductId);
   return Math.max(
     0,
     (Number(metrics.onHand) || 0) +
@@ -870,34 +873,253 @@ export async function recalculateAllKitStocks() {
   return n;
 }
 
+function parseWarehouseIdFromOpts(opts = {}) {
+  const widRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  if (widRaw == null || String(widRaw).trim() === '') return null;
+  const wid = typeof widRaw === 'string' ? parseInt(widRaw, 10) : Number(widRaw);
+  return Number.isFinite(wid) && wid > 0 ? wid : null;
+}
+
+async function batchKitIdsWithWholeInbound(kitIds) {
+  const ids = [...new Set(kitIds.filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return new Set();
+  const r = await query(
+    `SELECT DISTINCT product_id
+     FROM stock_movements
+     WHERE product_id = ANY($1::bigint[])
+       AND LOWER(TRIM(type::text)) = ANY($2::text[])
+       AND quantity_change > 0`,
+    [ids, KIT_WHOLE_STOCK_INBOUND_TYPES]
+  );
+  return new Set((r.rows || []).map((row) => Number(row.product_id)));
+}
+
+async function batchWarehouseOnHandMap(productIds, opts = {}) {
+  const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return new Map();
+  const wid = parseWarehouseIdFromOpts(opts);
+  if (wid != null) {
+    const r = await query(
+      `SELECT product_id, COALESCE(quantity, 0)::int AS quantity
+       FROM product_warehouse_stock
+       WHERE product_id = ANY($1::bigint[]) AND warehouse_id = $2`,
+      [ids, wid]
+    );
+    return new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.quantity) || 0]));
+  }
+  const r = await query(
+    `SELECT product_id, COALESCE(SUM(quantity), 0)::int AS quantity
+     FROM product_warehouse_stock
+     WHERE product_id = ANY($1::bigint[])
+     GROUP BY product_id`,
+    [ids]
+  );
+  return new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.quantity) || 0]));
+}
+
+async function batchNetReservedMap(productIds) {
+  const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return new Map();
+  const r = await query(
+    `SELECT product_id,
+       GREATEST(0, COALESCE(SUM(
+         CASE
+           WHEN type = 'reserve' THEN -(quantity_change::numeric)
+           WHEN type = 'unreserve' THEN -(quantity_change::numeric)
+           ELSE 0
+         END
+       ), 0))::int AS rv
+     FROM stock_movements
+     WHERE product_id = ANY($1::bigint[])
+       AND type IN ('reserve', 'unreserve')
+     GROUP BY product_id`,
+    [ids]
+  );
+  return new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0]));
+}
+
+async function batchKitJournalBalanceMap(kitIds) {
+  const ids = [...new Set(kitIds.filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return new Map();
+  const r = await query(
+    `SELECT DISTINCT ON (product_id) product_id, balance_after
+     FROM stock_movements
+     WHERE product_id = ANY($1::bigint[])
+       AND balance_after IS NOT NULL
+       AND LOWER(TRIM(type::text)) = ANY($2::text[])
+     ORDER BY product_id, created_at DESC, id DESC`,
+    [ids, KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES]
+  );
+  return new Map(
+    (r.rows || []).map((row) => [
+      Number(row.product_id),
+      Math.max(0, Number(row.balance_after) || 0)
+    ])
+  );
+}
+
+async function batchIncomingMap(productIds) {
+  const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return new Map();
+  const r = await query(
+    `SELECT id, COALESCE(incoming_quantity, 0)::int AS incoming_quantity
+     FROM products WHERE id = ANY($1::bigint[])`,
+    [ids]
+  );
+  return new Map((r.rows || []).map((row) => [Number(row.id), Number(row.incoming_quantity) || 0]));
+}
+
+async function batchSupplierStockMap(productIds, opts = {}) {
+  const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
+  const map = new Map();
+  if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
+  const repo = repositoryFactory.getSupplierStocksRepository();
+  if (!repo || typeof repo.findBreakdownByProductIds !== 'function') return map;
+  const wid = parseWarehouseIdFromOpts(opts);
+  const rows = await repo.findBreakdownByProductIds(ids, {
+    mainWarehouseId: wid != null ? String(wid) : null,
+    profileId: opts.profileId ?? null
+  });
+  for (const row of rows || []) {
+    const pid = Number(row.product_id);
+    map.set(pid, (map.get(pid) || 0) + (Number(row.stock) || 0));
+  }
+  return map;
+}
+
+export function kitPhysicalOnHandFromContext(kitId, ctx) {
+  if (!ctx?.inboundSet?.has(kitId)) return 0;
+  let onHand = Math.max(0, ctx.kitOnHandRaw.get(kitId) || 0);
+  if (onHand <= 0) return 0;
+  const journal = ctx.kitJournal.get(kitId);
+  if (journal != null) return Math.min(onHand, journal);
+  return onHand;
+}
+
+export function kitDisplayReservedFromContext(kitId, ctx) {
+  if (kitPhysicalOnHandFromContext(kitId, ctx) <= 0) return 0;
+  return ctx.reservedMap.get(kitId) || 0;
+}
+
+function assemblableFromContext(kitId, ctx) {
+  const comps = ctx.componentsByKit.get(kitId) || [];
+  if (comps.length === 0) return 0;
+  let minKits = Infinity;
+  for (const c of comps) {
+    const pid = Number(c.component_product_id ?? c.productId);
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    const avail = Math.max(
+      0,
+      (ctx.compOnHand.get(pid) || 0) +
+        (ctx.compIncoming.get(pid) || 0) +
+        (ctx.supplierMap.get(pid) || 0) -
+        (ctx.reservedMap.get(pid) || 0)
+    );
+    minKits = Math.min(minKits, Math.floor(avail / perKit));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
+function supplierKitUnitsFromContext(kitId, ctx) {
+  const comps = ctx.componentsByKit.get(kitId) || [];
+  if (comps.length === 0) return 0;
+  let minKits = Infinity;
+  for (const c of comps) {
+    const pid = Number(c.component_product_id ?? c.productId);
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    minKits = Math.min(minKits, Math.floor((ctx.supplierMap.get(pid) || 0) / perKit));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
+/** Пакетная предзагрузка остатков комплектов для списка товаров (без N+1). */
+export async function buildKitListStockContext(products, options = {}) {
+  const kitRows = (products || []).filter((p) => isKitProductType(p.product_type));
+  if (kitRows.length === 0) return null;
+
+  const kitIds = kitRows
+    .map((p) => (typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id)))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  const componentsByKit = new Map();
+  const compIdSet = new Set();
+
+  for (const p of kitRows) {
+    const kitId = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+    const fromProduct = Array.isArray(p.kit_components) ? p.kit_components : null;
+    if (fromProduct && fromProduct.length > 0) {
+      const normalized = fromProduct.map((c) => ({
+        component_product_id: Number(c.productId ?? c.component_product_id),
+        quantity: Math.max(1, parseInt(c.quantity, 10) || 1)
+      }));
+      componentsByKit.set(kitId, normalized);
+      for (const c of normalized) compIdSet.add(c.component_product_id);
+    }
+  }
+
+  const missingKitIds = kitIds.filter((id) => !componentsByKit.has(id));
+  if (missingKitIds.length > 0) {
+    const r = await query(
+      `SELECT kit_product_id, component_product_id, quantity
+       FROM kit_components WHERE kit_product_id = ANY($1::bigint[])`,
+      [missingKitIds]
+    );
+    for (const row of r.rows || []) {
+      const kid = Number(row.kit_product_id);
+      const cid = Number(row.component_product_id);
+      if (!componentsByKit.has(kid)) componentsByKit.set(kid, []);
+      componentsByKit.get(kid).push({
+        component_product_id: cid,
+        quantity: Math.max(1, parseInt(row.quantity, 10) || 1)
+      });
+      compIdSet.add(cid);
+    }
+  }
+
+  const compIds = [...compIdSet];
+  const [inboundSet, kitOnHandRaw, kitJournal, reservedMap, compOnHand, compIncoming, supplierMap] =
+    await Promise.all([
+      batchKitIdsWithWholeInbound(kitIds),
+      batchWarehouseOnHandMap(kitIds, options),
+      batchKitJournalBalanceMap(kitIds),
+      batchNetReservedMap([...kitIds, ...compIds]),
+      batchWarehouseOnHandMap(compIds, options),
+      batchIncomingMap(compIds),
+      batchSupplierStockMap(compIds, options)
+    ]);
+
+  return {
+    kitIds,
+    componentsByKit,
+    inboundSet,
+    kitOnHandRaw,
+    kitJournal,
+    reservedMap,
+    compOnHand,
+    compIncoming,
+    supplierMap
+  };
+}
+
 /**
  * Метрики отображения для комплектов в списке остатков.
  * kit_display: whole_on_hand, assemblable_from_components, available_total.
  */
 export async function attachKitDisplayMetrics(products, options = {}) {
   if (!Array.isArray(products) || products.length === 0) return;
-
-  const widRaw = options.warehouseId ?? options.warehouse_id ?? null;
-  const wid =
-    widRaw != null && String(widRaw).trim() !== ''
-      ? typeof widRaw === 'string'
-        ? parseInt(widRaw, 10)
-        : Number(widRaw)
-      : null;
+  const ctx = options._kitCtx ?? (await buildKitListStockContext(products, options));
+  if (!ctx) return;
 
   const kitRows = products.filter((p) => isKitProductType(p.product_type));
-  if (kitRows.length === 0) return;
-
   for (const p of kitRows) {
     const kitId = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
     if (!Number.isFinite(kitId) || kitId < 1) continue;
 
-    const wholeOnHand = await readKitPhysicalOnHandFromDb(kitId, null, { warehouseId: wid });
-
-    const assemblable = await computeAssemblableFromComponents(kitId, { warehouseId: wid });
-    const supplierKitUnits = await computeKitSupplierUnitsFromComponents(kitId, { warehouseId: wid });
+    const wholeOnHand = kitPhysicalOnHandFromContext(kitId, ctx);
+    const assemblable = assemblableFromContext(kitId, ctx);
+    const supplierKitUnits = supplierKitUnitsFromContext(kitId, ctx);
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
-    const reserved = await readKitDisplayReservedQuantity(kitId, { warehouseId: wid });
+    const reserved = kitDisplayReservedFromContext(kitId, ctx);
     const wholeAvail = Math.max(0, wholeOnHand + incoming - reserved);
     const availableTotal = assemblable + wholeAvail;
 
@@ -938,6 +1160,9 @@ export default {
   scheduleMarketplaceSyncForParentKits,
   applyKitOrderReserve,
   releaseAllReservesForOrder,
+  buildKitListStockContext,
+  kitPhysicalOnHandFromContext,
+  kitDisplayReservedFromContext,
   attachKitDisplayMetrics,
   attachKitWarehouseSplitMetrics,
   computeAssemblableFromComponents,

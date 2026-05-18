@@ -30,6 +30,10 @@ export const productsApi = {
     }
     if (options.includeArchived === true) params.includeArchived = '1';
     if (options.archivedOnly === true) params.archivedOnly = '1';
+    if (options.stockList === true) {
+      params.listView = 'stock';
+      params.stockList = '1';
+    }
     const response = await api.get('/products', { params: Object.keys(params).length ? params : undefined });
     return response.data;
   },

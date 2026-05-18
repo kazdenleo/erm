@@ -7,7 +7,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
 import { useNavigate } from 'react-router-dom';
 import { purchasesApi } from '../../services/purchases.api';
+import { productsApi } from '../../services/products.api';
 import { useProducts } from '../../hooks/useProducts';
+import './WarehouseOperations.css';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
@@ -116,6 +118,51 @@ function PurchaseLineReduceControls({
   );
 }
 
+function normalizeProductSearchQuery(value) {
+  return String(value || '').trim();
+}
+
+function matchProductsLocal(products, query) {
+  const q = normalizeProductSearchQuery(query).toLowerCase();
+  if (!q) return [];
+  const list = products || [];
+  const exactSku = list.filter((p) => String(p?.sku || '').trim().toLowerCase() === q);
+  if (exactSku.length) return exactSku.slice(0, 30);
+  const exactBarcode = list.filter((p) =>
+    (Array.isArray(p.barcodes) ? p.barcodes : []).some((b) => String(b || '').trim().toLowerCase() === q)
+  );
+  if (exactBarcode.length) return exactBarcode.slice(0, 30);
+  const scored = list
+    .map((p) => {
+      const sku = String(p?.sku || '').toLowerCase();
+      const name = String(p?.name || '').toLowerCase();
+      const barcodes = (Array.isArray(p.barcodes) ? p.barcodes : [])
+        .map((b) => String(b || '').toLowerCase())
+        .join(' ');
+      const hitSku = sku.includes(q);
+      const hitName = name.includes(q);
+      const hitBarcode = barcodes.includes(q);
+      if (!hitSku && !hitName && !hitBarcode) return null;
+      const score =
+        (hitSku ? 2 : 0) + (hitName ? 1 : 0) + (hitBarcode ? 2 : 0) + (sku.startsWith(q) ? 1 : 0);
+      return { p, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score);
+  return scored.map((x) => x.p).slice(0, 30);
+}
+
+function mergeProductLists(...lists) {
+  const map = new Map();
+  for (const list of lists) {
+    for (const p of list || []) {
+      if (p?.id == null) continue;
+      map.set(String(p.id), p);
+    }
+  }
+  return [...map.values()];
+}
+
 function formatSourceOrders(raw) {
   if (!raw) return '—';
   let list = raw;
@@ -143,7 +190,7 @@ function formatSourceOrders(raw) {
 
 export function Purchases() {
   const navigate = useNavigate();
-  const { products, loadProducts } = useProducts();
+  const { products } = useProducts({ autoLoad: false });
   const { warehouses } = useWarehouses();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
@@ -156,6 +203,9 @@ export function Purchases() {
   const [createOrganizationId, setCreateOrganizationId] = useState('');
   const [createWarehouseId, setCreateWarehouseId] = useState('');
   const [createItems, setCreateItems] = useState([{ productId: '', quantity: 1 }]);
+  const [createProductSearch, setCreateProductSearch] = useState('');
+  const [createSearchResults, setCreateSearchResults] = useState([]);
+  const [createSearchLoading, setCreateSearchLoading] = useState(false);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
@@ -237,7 +287,6 @@ export function Purchases() {
 
   useEffect(() => {
     reload();
-    loadProducts({ limit: 2000 }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const productOptions = useMemo(() => {
@@ -246,6 +295,127 @@ export function Purchases() {
       label: `${p.sku || p.id} — ${p.name || 'Без названия'}`,
     }));
   }, [products]);
+
+  const createFilteredProductOptions = useMemo(() => {
+    const q = normalizeProductSearchQuery(createProductSearch);
+    if (!q) return productOptions;
+    const ids = new Set(
+      (createSearchResults.length ? createSearchResults : matchProductsLocal(products, q)).map((p) =>
+        String(p.id)
+      )
+    );
+    if (ids.size === 0) return productOptions;
+    return productOptions.filter((o) => ids.has(String(o.id)));
+  }, [productOptions, createProductSearch, createSearchResults, products]);
+
+  const closeCreateModal = useCallback(() => {
+    setCreateOpen(false);
+    setCreateProductSearch('');
+    setCreateSearchResults([]);
+    setCreateSearchLoading(false);
+  }, []);
+
+  const addProductToCreateItems = useCallback((product, addQty = 1) => {
+    const id = product?.id;
+    if (id == null || id === '') return;
+    const add = Math.max(1, parseInt(addQty, 10) || 1);
+    const idStr = String(id);
+    setCreateItems((prev) => {
+      const idx = prev.findIndex((x) => String(x.productId) === idStr);
+      if (idx >= 0) {
+        const cur = Number(prev[idx].quantity) || 0;
+        return prev.map((x, i) => (i === idx ? { ...x, productId: idStr, quantity: cur + add } : x));
+      }
+      const emptyIdx = prev.findIndex((x) => !x.productId);
+      if (emptyIdx >= 0) {
+        return prev.map((x, i) => (i === emptyIdx ? { ...x, productId: idStr, quantity: add } : x));
+      }
+      return [...prev, { productId: idStr, quantity: add }];
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!createOpen) return undefined;
+    const q = normalizeProductSearchQuery(createProductSearch);
+    if (!q) {
+      setCreateSearchResults([]);
+      setCreateSearchLoading(false);
+      return undefined;
+    }
+    const local = matchProductsLocal(products, q);
+    if (local.length) setCreateSearchResults(local);
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setCreateSearchLoading(true);
+      try {
+        const res = await productsApi.getAll({ search: q, limit: 40 });
+        const remote = Array.isArray(res?.data) ? res.data : [];
+        if (!cancelled) setCreateSearchResults(mergeProductLists(local, remote));
+      } catch {
+        if (!cancelled) setCreateSearchResults(local);
+      } finally {
+        if (!cancelled) setCreateSearchLoading(false);
+      }
+    }, 320);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [createOpen, createProductSearch, products]);
+
+  const resolveProductForCreate = useCallback(
+    async (raw) => {
+      const v = normalizeProductSearchQuery(raw);
+      if (!v) return null;
+      try {
+        const res = await productsApi.getByBarcode(v);
+        const byBarcode = res?.data ?? res;
+        if (byBarcode?.id) return byBarcode;
+      } catch {
+        /* fallback */
+      }
+      const local = matchProductsLocal(products, v);
+      if (local.length === 1) return local[0];
+      const fromResults = createSearchResults.length ? createSearchResults : local;
+      if (fromResults.length === 1) return fromResults[0];
+      try {
+        const res = await productsApi.getAll({ search: v, limit: 5 });
+        const list = Array.isArray(res?.data) ? res.data : [];
+        if (list.length === 1) return list[0];
+      } catch {
+        /* ignore */
+      }
+      return null;
+    },
+    [products, createSearchResults]
+  );
+
+  const handleCreateSearchSubmit = useCallback(
+    async (e) => {
+      e?.preventDefault?.();
+      const q = normalizeProductSearchQuery(createProductSearch);
+      if (!q) return;
+      setErr(null);
+      const matches =
+        createSearchResults.length > 0 ? createSearchResults : matchProductsLocal(products, q);
+      if (matches.length > 1) return;
+      const product = matches.length === 1 ? matches[0] : await resolveProductForCreate(q);
+      if (!product?.id) {
+        setErr('Товар не найден. Уточните артикул, название или штрихкод.');
+        return;
+      }
+      addProductToCreateItems(product, 1);
+      setCreateProductSearch('');
+      setCreateSearchResults([]);
+    },
+    [
+      createProductSearch,
+      createSearchResults,
+      products,
+      resolveProductForCreate,
+      addProductToCreateItems
+    ]
+  );
 
   const openDetail = async (id) => {
     setDetailLoading(true);
@@ -305,7 +475,7 @@ export function Purchases() {
         warehouseId: Number(createWarehouseId),
         items,
       });
-      setCreateOpen(false);
+      closeCreateModal();
       setCreateSupplierId('');
       setCreateOrganizationId('');
       setCreateWarehouseId('');
@@ -423,11 +593,6 @@ export function Purchases() {
       setLinkBarcodeValue('');
       const pending = purchaseLinkRetryRef.current;
       purchaseLinkRetryRef.current = null;
-      try {
-        await loadProducts({ limit: 2000 });
-      } catch (_) {
-        /* ignore */
-      }
       if (pending?.rid && pending?.barcode) {
         try {
           setScanMsg('Сканирую…');
@@ -443,7 +608,7 @@ export function Purchases() {
       }
       setTimeout(() => scanRef.current?.focus(), 50);
     },
-    [loadProducts]
+    []
   );
 
   return (
@@ -502,7 +667,7 @@ export function Purchases() {
         </div>
       )}
 
-      <Modal isOpen={createOpen} onClose={() => setCreateOpen(false)} title="Новая закупка" size="large">
+      <Modal isOpen={createOpen} onClose={closeCreateModal} title="Новая закупка" size="large">
         <p className="muted">Выберите поставщика, организацию и склад назначения, затем добавьте позиции.</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
           <span className="muted" style={{ fontSize: 13 }}>Поставщик</span>
@@ -541,6 +706,72 @@ export function Purchases() {
               ))}
           </select>
         </div>
+        <div
+          className="warehouse-ops-list-form"
+          style={{ marginBottom: 14, borderTop: '1px solid var(--border, #e8e8e8)', paddingTop: 12 }}
+        >
+          <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
+            Поиск товара по артикулу, названию или штрихкоду
+          </p>
+          <form
+            className="warehouse-ops-list-row warehouse-ops-inventory-search-row"
+            onSubmit={handleCreateSearchSubmit}
+            style={{ marginBottom: 8 }}
+          >
+            <label htmlFor="purchase-create-product-search">Поиск</label>
+            <input
+              id="purchase-create-product-search"
+              type="text"
+              className="warehouse-ops-scan-input"
+              placeholder="Артикул, название или штрихкод"
+              value={createProductSearch}
+              onChange={(e) => setCreateProductSearch(e.target.value)}
+              autoComplete="off"
+            />
+            <Button type="submit" variant="secondary" disabled={!normalizeProductSearchQuery(createProductSearch)}>
+              Добавить
+            </Button>
+          </form>
+          {createSearchLoading && (
+            <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+              Поиск…
+            </p>
+          )}
+          {!createSearchLoading &&
+            normalizeProductSearchQuery(createProductSearch) &&
+            createSearchResults.length > 1 && (
+              <div style={{ marginBottom: 8, maxHeight: 220, overflowY: 'auto', border: '1px solid var(--border, #e8e8e8)', borderRadius: 6 }}>
+                <div className="muted" style={{ fontSize: 12, padding: '6px 10px', borderBottom: '1px solid var(--border, #eee)' }}>
+                  Выберите товар
+                </div>
+                {createSearchResults.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      border: 'none',
+                      borderBottom: '1px solid var(--border, #f0f0f0)',
+                      background: 'transparent',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      addProductToCreateItems(p, 1);
+                      setCreateProductSearch('');
+                      setCreateSearchResults([]);
+                      setErr(null);
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.sku || '—'}</div>
+                    <div style={{ fontSize: 12, opacity: 0.85 }}>{p.name || 'Без названия'}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+        </div>
         {createItems.map((it, idx) => (
           <div key={idx} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
             <select
@@ -552,7 +783,7 @@ export function Purchases() {
               }}
             >
               <option value="">— Выберите товар —</option>
-              {productOptions.map((p) => (
+              {(normalizeProductSearchQuery(createProductSearch) ? createFilteredProductOptions : productOptions).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.label}
                 </option>

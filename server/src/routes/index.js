@@ -48,6 +48,7 @@ import purchasesController from '../controllers/purchases.controller.js';
 import { requireAuth } from '../middleware/auth.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { marketplaceProductIdentifiersHelp } from '../controllers/helpDocs.controller.js';
+import { isAuthBootstrapRequest } from '../utils/authBootstrapPaths.js';
 
 const router = express.Router();
 
@@ -103,6 +104,7 @@ router.use((req, res, next) => {
 router.use(async (req, res, next) => {
   try {
     if (config.auth?.disabled) return next();
+    if (isAuthBootstrapRequest(req)) return next();
     const u = req.user;
     if (!u) return next();
     // Супер-админ без привязки к профилю может работать с любым контекстом.

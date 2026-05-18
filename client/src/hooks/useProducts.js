@@ -56,35 +56,30 @@ export function useProducts(options = {}) {
       }
       if (opts.includeArchived === true) params.includeArchived = true;
       if (opts.archivedOnly === true) params.archivedOnly = true;
+      if (opts.stockList === true) params.stockList = true;
       const response = await productsApi.getAll(params);
+      if (gen !== loadGenerationRef.current) return;
       const list = Array.isArray(response?.data) ? response.data : (response?.data?.data ?? response ?? []);
       const productsList = Array.isArray(list) ? list.filter(Boolean) : [];
-      console.log(`[useProducts] Loaded ${productsList.length} products`);
-      if (productsList.length > 0) {
-        const first = productsList[0];
-        console.log('[useProducts] First product stored prices:', {
-          id: first.id,
-          storedMinPriceOzon: first.storedMinPriceOzon,
-          storedMinPriceWb: first.storedMinPriceWb,
-          storedMinPriceYm: first.storedMinPriceYm
-        });
-      }
       setProducts(productsList);
       setMeta({
         total: response?.meta?.total ?? null,
         limit: response?.meta?.limit ?? params.limit ?? null,
         offset: response?.meta?.offset ?? params.offset ?? 0,
+        supplierBreakdown: Array.isArray(response?.supplierBreakdown) ? response.supplierBreakdown : null,
       });
     } catch (err) {
+      if (gen !== loadGenerationRef.current) return;
       console.error('Error loading products:', err);
       if (!silent) {
         setError(err.message || 'Ошибка загрузки товаров');
       }
     } finally {
+      if (gen !== loadGenerationRef.current) return;
       if (!silent) {
         setLoading(false);
       }
-      if (silent && gen === loadGenerationRef.current) {
+      if (silent) {
         setListRefreshing(false);
       }
     }

@@ -244,12 +244,18 @@ class OrdersController {
         req.query?.force === 'true' ||
         req.body?.force === true ||
         req.body?.force === 'true';
+      const refreshStatuses =
+        req.query?.refreshStatuses === '1' ||
+        req.query?.refreshStatuses === 'true' ||
+        req.body?.refreshStatuses === true ||
+        req.body?.refreshStatuses === 'true';
+      const effectiveForce = force || refreshStatuses;
       const profileId = req.user?.profileId ?? null;
 
       // 1) Быстрый ответ из кэша (минутный лимит) — чтобы UI не зависал.
       const status = ordersSyncService.getSyncFbsStatus();
       const oneMinute = 60 * 1000;
-      if (!force && status.lastSyncTime && Date.now() - status.lastSyncTime < oneMinute && status.lastSyncResult) {
+      if (!effectiveForce && status.lastSyncTime && Date.now() - status.lastSyncTime < oneMinute && status.lastSyncResult) {
         const timeLeft = Math.ceil((oneMinute - (Date.now() - status.lastSyncTime)) / 1000);
         return res.status(200).json({
           ok: true,
@@ -274,12 +280,17 @@ class OrdersController {
       }
 
       // 3) Запускаем синк в фоне (без удержания HTTP‑запроса → нет 504 от nginx).
-      const start = ordersSyncService.startSyncFbsInBackground({ force, profileId });
+      const start = ordersSyncService.startSyncFbsInBackground({
+        force: effectiveForce,
+        refreshStatuses,
+        profileId
+      });
       return res.status(202).json({
         ok: true,
         started: start.started,
         inProgress: true,
-        force: force || undefined,
+        force: effectiveForce || undefined,
+        refreshStatuses: refreshStatuses || undefined,
         message: start.started ? 'Синхронизация запущена' : 'Синхронизация уже выполняется',
         status: ordersSyncService.getSyncFbsStatus()
       });

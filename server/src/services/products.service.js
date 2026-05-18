@@ -150,9 +150,16 @@ class ProductsService {
   }
 
   async getPage(options = {}) {
+    if (options.listView === 'stock') {
+      const [items, total] = await Promise.all([
+        this.repository.findAll(options),
+        this.repository.countAll(options)
+      ]);
+      return { items, total };
+    }
     const items = await this.repository.findAll(options);
-    const withFlags = await this._attachParticipationFlags(items);
     const total = await this.repository.countAll(options);
+    const withFlags = await this._attachParticipationFlags(items);
     return { items: withFlags, total };
   }
 

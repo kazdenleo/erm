@@ -13,7 +13,7 @@ import { ProductCardModalProvider } from '../../../context/ProductCardModalConte
 export function Layout({ children }) {
   const [isSidebarClosed, setIsSidebarClosed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const { user } = useAuth();
+  const { user, profileId, hasOrganizations, loading: authLoading } = useAuth();
 
   // Глобальный звук "Новый заказ": работает на любой странице, пока пользователь авторизован.
   useNewOrdersSound({ enabled: Boolean(user?.id) });
@@ -58,6 +58,16 @@ export function Layout({ children }) {
           <Sidebar />
           <div className="app-main__outer">
             <div className="app-main__inner">
+              {!authLoading && user && profileId != null && hasOrganizations === false && (
+                <div
+                  className="alert alert-warning mx-3 mt-3 mb-0"
+                  role="alert"
+                  style={{ borderRadius: 8 }}
+                >
+                  У вашего аккаунта нет ни одной организации. Обратитесь к администратору аккаунта или создайте
+                  организацию в разделе «Настройки → Организации».
+                </div>
+              )}
               {children}
             </div>
           </div>

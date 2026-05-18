@@ -45,10 +45,19 @@ export const ordersApi = {
   /**
    * Синхронизировать FBS‑заказы со всех маркетплейсов.
    * Таймаут увеличен (90 с): Ozon + WB + Yandex + обновление статусов могут занимать больше 30 с.
-   * @param {{ force?: boolean }} [options] — force: «Импортировать заказы» — всегда полный опрос МП (минутный лимит на бэкенде не применяется)
+   * @param {{ force?: boolean, refreshStatuses?: boolean }} [options]
+   *   force — «Импортировать заказы» (полный опрос МП);
+   *   refreshStatuses — «Обновить статусы» (догрузка статусов залипших «Новый» и др.)
    */
   syncFbs: async (options = {}) => {
-    const response = await api.post('/orders/sync-fbs', { force: options.force === true }, { timeout: 90000 });
+    const response = await api.post(
+      '/orders/sync-fbs',
+      {
+        force: options.force === true,
+        refreshStatuses: options.refreshStatuses === true
+      },
+      { timeout: 90000 }
+    );
     return response.data;
   },
 

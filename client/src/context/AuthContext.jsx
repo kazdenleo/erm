@@ -7,6 +7,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { authApi } from '../services/auth.api.js';
 import { setApiSessionContext } from '../services/apiSession.js';
 import {
+  clearStoredOrganizationId,
   readStoredOrganizationId,
   resolveOrganizationIdForProfile,
   writeStoredOrganizationId,
@@ -17,7 +18,9 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedOrganizationId, setSelectedOrganizationIdState] = useState(() => readStoredOrganizationId());
+  /** Не читаем localStorage в useState — иначе эффект сессии подставит чужой org до /auth/me */
+  const [selectedOrganizationId, setSelectedOrganizationIdState] = useState(null);
+  const [hasOrganizations, setHasOrganizations] = useState(null);
 
   const syncingOrgRef = useRef(false);
 
@@ -37,15 +40,32 @@ export function AuthProvider({ children }) {
           ? Number(rawPid)
           : null;
 
+      if (pid == null) {
+        setHasOrganizations(null);
+        clearStoredOrganizationId();
+        applyOrganizationId(null);
+        setApiSessionContext({ accountId: null, organizationId: null });
+        return null;
+      }
+
       syncingOrgRef.current = true;
       try {
         const resolved = await resolveOrganizationIdForProfile(pid, preferredOrgId);
         applyOrganizationId(resolved);
+        setHasOrganizations(pid != null ? resolved != null : null);
         setApiSessionContext({
           accountId: pid != null ? String(pid) : null,
           organizationId: resolved,
         });
         return resolved;
+      } catch {
+        setHasOrganizations(pid != null ? false : null);
+        applyOrganizationId(null);
+        setApiSessionContext({
+          accountId: pid != null ? String(pid) : null,
+          organizationId: null,
+        });
+        return null;
       } finally {
         syncingOrgRef.current = false;
       }
@@ -61,6 +81,7 @@ export function AuthProvider({ children }) {
       return;
     }
     const orgFromStorage = readStoredOrganizationId();
+    setHasOrganizations(null);
     // Не отправляем «чужую» организацию до /auth/me — иначе 403 ORGANIZATION_CONTEXT_MISMATCH после смены аккаунта.
     setApiSessionContext({
       accountId: null,
@@ -73,6 +94,7 @@ export function AuthProvider({ children }) {
         await syncOrganizationForUser(res.data, orgFromStorage);
       } else {
         setUser(null);
+        setHasOrganizations(null);
         localStorage.removeItem('token');
         applyOrganizationId(null);
       }
@@ -81,6 +103,7 @@ export function AuthProvider({ children }) {
       const status = err?.response?.status;
       if (status === 401) {
         setUser(null);
+        setHasOrganizations(null);
         localStorage.removeItem('token');
         applyOrganizationId(null);
       } else if (status === 403) {
@@ -135,6 +158,9 @@ export function AuthProvider({ children }) {
   );
 
   const login = useCallback(async (email, password) => {
+    clearStoredOrganizationId();
+    applyOrganizationId(null, { persist: false });
+    setHasOrganizations(null);
     let res;
     try {
       res = await authApi.login(String(email || '').trim(), password);
@@ -150,7 +176,6 @@ export function AuthProvider({ children }) {
       throw new Error(res?.message || 'Ошибка входа');
     }
     localStorage.setItem('token', res.data.token);
-    const orgFromStorage = readStoredOrganizationId();
     setApiSessionContext({
       accountId: null,
       organizationId: null,
@@ -161,11 +186,11 @@ export function AuthProvider({ children }) {
       if (me?.ok && me?.data) {
         setUser(me.data);
         mustChangePassword = !!me.data.mustChangePassword;
-        await syncOrganizationForUser(me.data, orgFromStorage);
+        await syncOrganizationForUser(me.data, null);
       } else {
         setUser(res.data.user);
         mustChangePassword = !!res.data.user?.mustChangePassword;
-        await syncOrganizationForUser(res.data.user, orgFromStorage);
+        await syncOrganizationForUser(res.data.user, null);
       }
     } catch (err) {
       const status = err?.response?.status;
@@ -173,6 +198,7 @@ export function AuthProvider({ children }) {
         const code = err?.response?.data?.code;
         if (code === 'ORGANIZATION_CONTEXT_MISMATCH' || code === 'ACCOUNT_CONTEXT_MISMATCH') {
           applyOrganizationId(null);
+          clearStoredOrganizationId();
           try {
             const me = await authApi.me();
             if (me?.ok && me?.data) {
@@ -184,6 +210,9 @@ export function AuthProvider({ children }) {
           } catch {
             /* fall through */
           }
+          throw new Error(
+            'Не удалось восстановить контекст аккаунта. Очистите данные сайта для этого домена и войдите снова.'
+          );
         }
       }
       setUser(res.data.user);
@@ -195,8 +224,10 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(() => {
     localStorage.removeItem('token');
+    clearStoredOrganizationId();
     applyOrganizationId(null);
     setUser(null);
+    setHasOrganizations(null);
     setApiSessionContext({ accountId: null, organizationId: null });
   }, [applyOrganizationId]);
 
@@ -210,11 +241,22 @@ export function AuthProvider({ children }) {
   const accountId = profileId;
 
   useEffect(() => {
+    if (loading || !user) {
+      setApiSessionContext({ accountId: null, organizationId: null });
+      return;
+    }
+    if (syncingOrgRef.current) {
+      setApiSessionContext({
+        accountId: profileId != null ? String(profileId) : null,
+        organizationId: null,
+      });
+      return;
+    }
     setApiSessionContext({
       accountId: profileId != null ? String(profileId) : null,
       organizationId: selectedOrganizationId,
     });
-  }, [profileId, selectedOrganizationId]);
+  }, [loading, user, profileId, selectedOrganizationId]);
 
   const accountRole = useMemo(() => {
     const raw = user?.accountRole ?? user?.account_role ?? null;
@@ -266,6 +308,8 @@ export function AuthProvider({ children }) {
       canUseFeature,
       selectedOrganizationId,
       setSelectedOrganizationId,
+      /** false — у аккаунта нет доступных организаций (после синхронизации) */
+      hasOrganizations,
       refreshUser: loadUser,
     }),
     [
@@ -281,6 +325,7 @@ export function AuthProvider({ children }) {
       canUseFeature,
       selectedOrganizationId,
       setSelectedOrganizationId,
+      hasOrganizations,
       loadUser,
     ]
   );

@@ -6,6 +6,10 @@
 import config from '../config/index.js';
 import productsService from '../services/products.service.js';
 import ordersService from '../services/orders.service.js';
+import {
+  buildAssemblyOrderItems,
+  buildAssemblyOrderItemsFromGroup
+} from '../services/assemblyOrderItems.service.js';
 
 function norm(s) {
   return String(s || '').trim().toLowerCase();
@@ -82,46 +86,51 @@ class AssemblyController {
       let orderItems;
       if (order.orderGroupId) {
         const groupOrders = await ordersService.getByOrderGroupId(order.orderGroupId);
-        orderItems = await Promise.all(
-          (groupOrders || []).map(async o => {
-            let productId = o.productId ?? o.product_id;
-            if (productId == null) {
-              productId = await ordersService.resolveProductIdForAssemblyLine(o);
-            }
-            if (productId == null) {
-              productId = productIdFromScannedProductLine(product, o);
-            }
-            const n = productId != null ? Number(productId) : NaN;
-            const oid = o.orderId ?? o.order_id;
-            return {
-              productId: Number.isNaN(n) ? productId : n,
-              productName: o.productName || o.product_name,
-              quantity: o.quantity ?? 1,
-              offerId: o.offerId ?? o.offer_id ?? null,
-              /** Идентификатор строки заказа в БД (для отображения, напр. 69394478-0087-1) */
-              orderLineId: oid != null ? String(oid) : null
-            };
-          })
-        );
+        orderItems = await buildAssemblyOrderItemsFromGroup(groupOrders, ordersService);
+        if (!orderItems.length) {
+          orderItems = await Promise.all(
+            (groupOrders || []).map(async (o) => {
+              let productId = o.productId ?? o.product_id;
+              if (productId == null) {
+                productId = await ordersService.resolveProductIdForAssemblyLine(o);
+              }
+              if (productId == null) {
+                productId = productIdFromScannedProductLine(product, o);
+              }
+              const n = productId != null ? Number(productId) : NaN;
+              const oid = o.orderId ?? o.order_id;
+              return {
+                productId: Number.isNaN(n) ? productId : n,
+                productName: o.productName || o.product_name,
+                quantity: o.quantity ?? 1,
+                offerId: o.offerId ?? o.offer_id ?? null,
+                orderLineId: oid != null ? String(oid) : null
+              };
+            })
+          );
+        }
       } else {
-        let linePid = order.productId ?? order.product_id;
-        if (linePid == null) {
-          linePid = await ordersService.resolveProductIdForAssemblyLine(order);
-        }
-        if (linePid == null) {
-          linePid = product.id;
-        }
-        const n = linePid != null ? Number(linePid) : NaN;
-        const oidSingle = order.orderId ?? order.order_id;
-        orderItems = [
-          {
-            productId: Number.isNaN(n) ? linePid : n,
-            productName: order.productName || order.product_name,
-            quantity: order.quantity ?? 1,
-            offerId: order.offerId ?? order.offer_id ?? null,
-            orderLineId: oidSingle != null ? String(oidSingle) : null
+        orderItems = await buildAssemblyOrderItems(order, ordersService);
+        if (!orderItems.length) {
+          let linePid = order.productId ?? order.product_id;
+          if (linePid == null) {
+            linePid = await ordersService.resolveProductIdForAssemblyLine(order);
           }
-        ];
+          if (linePid == null) {
+            linePid = product.id;
+          }
+          const n = linePid != null ? Number(linePid) : NaN;
+          const oidSingle = order.orderId ?? order.order_id;
+          orderItems = [
+            {
+              productId: Number.isNaN(n) ? linePid : n,
+              productName: order.productName || order.product_name,
+              quantity: order.quantity ?? 1,
+              offerId: order.offerId ?? order.offer_id ?? null,
+              orderLineId: oidSingle != null ? String(oidSingle) : null
+            }
+          ];
+        }
       }
 
       return res.status(200).json({

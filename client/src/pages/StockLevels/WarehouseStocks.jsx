@@ -25,6 +25,9 @@ import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import './StockLevels.css';
 
+const STOCK_LIST_PAGE_SIZES = [50, 100, 200];
+const STOCK_LIST_PAGE_SIZE_LS = 'stockListPageSize';
+
 const MOVEMENT_TYPE_LABELS = {
   receipt: 'Поступление',
   incoming: 'В пути',
@@ -731,7 +734,14 @@ function SupplierStockCell({ total, details }) {
 }
 
 export function WarehouseStocks() {
-  const { products, loading: productsLoading, error: productsError, loadProducts } = useProducts();
+  const {
+    products,
+    meta,
+    loading: productsLoading,
+    listRefreshing,
+    error: productsError,
+    loadProducts
+  } = useProducts({ autoLoad: false });
   const { warehouses, loading: warehousesLoading, error: warehousesError } = useWarehouses();
   const [stockWarehouseId, setStockWarehouseId] = useState(() => {
     try {
@@ -742,11 +752,32 @@ export function WarehouseStocks() {
   });
   const { organizations = [] } = useOrganizations();
   const { categories = [] } = useCategories();
-  const [filterOrganizationId, setFilterOrganizationId] = useState('');
+  const [filterOrganizationId, setFilterOrganizationId] = useState(() => {
+    try {
+      const raw =
+        typeof localStorage !== 'undefined' ? localStorage.getItem('erp_selected_organization_id') : null;
+      return raw != null && String(raw).trim() !== '' ? String(raw).trim() : '';
+    } catch {
+      return '';
+    }
+  });
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const [filterProductType, setFilterProductType] = useState('');
   const [filterSearch, setFilterSearch] = useState('');
   const [filterSearchDebounced, setFilterSearchDebounced] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STOCK_LIST_PAGE_SIZE_LS) : null;
+      const n = parseInt(raw, 10);
+      return STOCK_LIST_PAGE_SIZES.includes(n) ? n : 50;
+    } catch {
+      return 50;
+    }
+  });
+  const loadListRef = useRef(() => {});
+  const listBootstrappedRef = useRef(false);
+  const skipFilterReloadRef = useRef(true);
   const [historyProduct, setHistoryProduct] = useState(null);
   const [historyList, setHistoryList] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -814,9 +845,60 @@ export function WarehouseStocks() {
     ]
   );
 
+  const loadStockList = useCallback(
+    (partial = {}) => {
+      const page = partial.page !== undefined ? partial.page : currentPage;
+      const limitCandidate = partial.limit !== undefined ? Number(partial.limit) : pageSize;
+      const limit = STOCK_LIST_PAGE_SIZES.includes(limitCandidate) ? limitCandidate : 50;
+      const silent = partial.silent === true;
+      return loadProducts({
+        ...buildListParams(partial),
+        limit,
+        offset: Math.max(0, (page - 1) * limit),
+        stockList: true,
+        silent
+      });
+    },
+    [currentPage, pageSize, buildListParams, loadProducts]
+  );
+
+  loadListRef.current = loadStockList;
+
+  const totalProducts = Number.isFinite(Number(meta?.total)) ? Number(meta.total) : products.length;
+  const totalPages = Math.max(1, Math.ceil(Math.max(0, totalProducts) / Math.max(1, pageSize)));
+  const pageOffset = meta?.offset ?? Math.max(0, currentPage - 1) * pageSize;
+  const pageFrom = totalProducts > 0 ? pageOffset + 1 : 0;
+  const pageTo = totalProducts > 0 ? Math.min(pageOffset + products.length, totalProducts) : 0;
+
+  const goToPage = useCallback(
+    (page) => {
+      const next = Math.min(Math.max(1, page), totalPages);
+      setCurrentPage(next);
+      loadListRef.current({ page: next, silent: true });
+    },
+    [totalPages]
+  );
+
+  const handlePageSizeChange = (e) => {
+    const next = parseInt(e.target.value, 10);
+    if (!STOCK_LIST_PAGE_SIZES.includes(next)) return;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(STOCK_LIST_PAGE_SIZE_LS, String(next));
+      }
+    } catch {
+      /* ignore */
+    }
+    setPageSize(next);
+    setCurrentPage(1);
+    loadListRef.current({ page: 1, limit: next, silent: true });
+  };
+
   const applyFilters = () => {
-    setFilterSearchDebounced(filterSearch.trim());
-    loadProducts(buildListParams({ silent: false }));
+    const search = filterSearch.trim();
+    setFilterSearchDebounced(search);
+    setCurrentPage(1);
+    loadStockList({ search, page: 1, silent: false });
   };
 
   useEffect(() => {
@@ -825,9 +907,33 @@ export function WarehouseStocks() {
   }, [filterSearch]);
 
   useEffect(() => {
-    loadProducts(buildListParams({ silent: true }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- реакция на debounced search и тип товара
+    if (!listBootstrappedRef.current) return;
+    if (skipFilterReloadRef.current) {
+      skipFilterReloadRef.current = false;
+      return;
+    }
+    setCurrentPage(1);
+    loadListRef.current({ page: 1, silent: true });
   }, [filterSearchDebounced, filterProductType]);
+
+  useEffect(() => {
+    listBootstrappedRef.current = true;
+    skipFilterReloadRef.current = true;
+    loadListRef.current({ page: 1, silent: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная загрузка
+  }, []);
+
+  useEffect(() => {
+    const rows = meta?.supplierBreakdown;
+    if (!Array.isArray(rows)) return;
+    setSupplierBreakdownByProductId(buildSupplierBreakdownMap(rows));
+  }, [meta?.supplierBreakdown]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages, pageSize]);
 
   /** ID товаров в текущей таблице (уже с учётом фильтров списка). */
   const refreshMpStockPushStatus = useCallback(async () => {
@@ -880,18 +986,6 @@ export function WarehouseStocks() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (filterOrganizationId) return;
-    try {
-      const raw = localStorage.getItem('erp_selected_organization_id');
-      if (raw != null && String(raw).trim() !== '') {
-        setFilterOrganizationId(String(raw).trim());
-      }
-    } catch {
-      // ignore
-    }
-  }, [filterOrganizationId]);
 
   const tableProductIdsForMpPush = useMemo(() => {
     if (!Array.isArray(products) || products.length === 0) return [];
@@ -1068,7 +1162,7 @@ export function WarehouseStocks() {
         'Синхронизация запущена. Через несколько минут нажмите «Обновить склад» или обновите страницу.';
       window.alert(msg);
       if (!res?.data?.inProgress) {
-        await loadProducts(buildListParams({ silent: true }));
+        await loadStockList({ page: currentPage, silent: true });
       }
     } catch (e) {
       const msg = e.response?.data?.message || e.message || 'Не удалось запустить обновление';
@@ -1081,13 +1175,15 @@ export function WarehouseStocks() {
   const handleOrganizationFilterChange = (e) => {
     const v = e.target.value;
     setFilterOrganizationId(v);
-    loadProducts(buildListParams({ organizationId: v || undefined, silent: true }));
+    setCurrentPage(1);
+    loadStockList({ organizationId: v || undefined, page: 1, silent: true });
   };
 
   const handleCategoryFilterChange = (e) => {
     const v = e.target.value;
     setFilterCategoryId(v);
-    loadProducts(buildListParams({ categoryId: v || undefined, silent: true }));
+    setCurrentPage(1);
+    loadStockList({ categoryId: v || undefined, page: 1, silent: true });
   };
 
   const handleProductTypeFilterChange = (e) => {
@@ -1111,21 +1207,38 @@ export function WarehouseStocks() {
     } catch {
       /* ignore */
     }
-    loadProducts(buildListParams({ warehouseId: v || undefined, silent: true }));
+    setCurrentPage(1);
+    loadStockList({ warehouseId: v || undefined, page: 1, silent: true });
   };
 
-  /** Подгрузка остатков по конкретному складу (инвентаризация без подстановки «первого склада» при «Все склады»). */
+  /** Подгрузка остатков по складу (инвентаризация); синхронизирует фильтр «Склад» в таблице. */
   const reloadProductsWithWarehouse = useCallback(
     (warehouseId) => {
       const w = warehouseId != null && warehouseId !== '' ? String(warehouseId) : '';
-      loadProducts(buildListParams({ warehouseId: w || undefined, silent: true }));
+      const current = String(stockWarehouseId || '');
+      if (w !== current) {
+        setStockWarehouseId(w);
+        try {
+          if (w) localStorage.setItem(STOCK_WAREHOUSE_LS, w);
+          else localStorage.removeItem(STOCK_WAREHOUSE_LS);
+        } catch {
+          /* ignore */
+        }
+        setCurrentPage(1);
+        loadStockList({ warehouseId: w || undefined, page: 1, silent: true });
+        return;
+      }
+      loadStockList({ warehouseId: w || undefined, page: currentPage, silent: true });
     },
-    [loadProducts, buildListParams]
+    [loadStockList, currentPage, stockWarehouseId]
   );
 
   useEffect(() => {
     if (activeTab !== 'table' || !products.length) {
-      setSupplierBreakdownByProductId({});
+      if (!products.length) setSupplierBreakdownByProductId({});
+      return undefined;
+    }
+    if (Array.isArray(meta?.supplierBreakdown)) {
       return undefined;
     }
     let cancelled = false;
@@ -1140,23 +1253,12 @@ export function WarehouseStocks() {
         ? String(stockWarehouseId).trim()
         : null;
 
-    const chunkSize = 80;
-    const chunks = [];
-    for (let i = 0; i < ids.length; i += chunkSize) {
-      chunks.push(ids.slice(i, i + chunkSize));
-    }
-
     (async () => {
       try {
-        const allRows = [];
-        for (const chunk of chunks) {
-          if (cancelled) return;
-          const res = await supplierStocksApi.getBreakdown(chunk, { mainWarehouseId });
-          const rows = res?.data ?? (Array.isArray(res) ? res : []);
-          if (Array.isArray(rows)) allRows.push(...rows);
-        }
+        const res = await supplierStocksApi.getBreakdown(ids, { mainWarehouseId });
+        const rows = res?.data ?? (Array.isArray(res) ? res : []);
         if (cancelled) return;
-        setSupplierBreakdownByProductId(buildSupplierBreakdownMap(allRows));
+        setSupplierBreakdownByProductId(buildSupplierBreakdownMap(Array.isArray(rows) ? rows : []));
       } catch {
         if (!cancelled) setSupplierBreakdownByProductId({});
       }
@@ -1165,7 +1267,7 @@ export function WarehouseStocks() {
     return () => {
       cancelled = true;
     };
-  }, [products, activeTab, stockWarehouseId]);
+  }, [products, activeTab, stockWarehouseId, meta?.supplierBreakdown]);
 
   useEffect(() => {
     if (!historyProduct) {
@@ -1258,7 +1360,72 @@ export function WarehouseStocks() {
     [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]
   );
 
-  if (productsLoading || warehousesLoading) {
+  const renderStockListPager = (placement) => {
+    const idSuffix = placement === 'top' ? 'top' : 'bottom';
+    return (
+      <div
+        className={`stock-levels-list-pager d-flex justify-content-between align-items-center flex-wrap gap-2 ${
+          placement === 'top' ? 'stock-levels-list-pager-top' : 'stock-levels-list-pager-bottom'
+        }`}
+      >
+        <div className="d-flex flex-wrap align-items-center gap-3 text-muted small">
+          <span>
+            {totalProducts > 0 ? (
+              <>
+                Показано <strong>{pageFrom}</strong>–<strong>{pageTo}</strong> из <strong>{totalProducts}</strong>
+              </>
+            ) : (
+              <>Нет позиций</>
+            )}
+          </span>
+          <span>
+            Страница <strong>{currentPage}</strong> из <strong>{totalPages}</strong>
+          </span>
+          <label
+            className="d-inline-flex align-items-center gap-2 mb-0"
+            htmlFor={`stock-list-page-size-${idSuffix}`}
+          >
+            <span>На странице</span>
+            <select
+              id={`stock-list-page-size-${idSuffix}`}
+              className="form-select form-select-sm stock-levels-filter-select"
+              style={{ width: 'auto', minWidth: '4.5rem' }}
+              value={pageSize}
+              onChange={handlePageSizeChange}
+              disabled={listRefreshing}
+            >
+              {STOCK_LIST_PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+          {listRefreshing ? <span className="text-muted">Обновление…</span> : null}
+        </div>
+        <div className="d-flex gap-2">
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={currentPage <= 1 || listRefreshing}
+          >
+            Назад
+          </Button>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={currentPage >= totalPages || listRefreshing}
+          >
+            Вперёд
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
+  if ((productsLoading && products.length === 0) || warehousesLoading) {
     return <div className="loading">Загрузка остатков на складе...</div>;
   }
   if (productsError) {
@@ -1279,7 +1446,7 @@ export function WarehouseStocks() {
         mainWarehouseName={mainWarehouseName}
         inventoryWarehouseId={stockWarehouseId || ''}
         reloadProductsWithWarehouse={reloadProductsWithWarehouse}
-        onRefresh={loadProducts}
+        onRefresh={() => loadStockList({ page: currentPage, silent: true })}
         loading={productsLoading}
         activeTab={activeTab}
         onTabChange={handleWarehouseTabChange}
@@ -1355,7 +1522,11 @@ export function WarehouseStocks() {
               />
             </label>
           </div>
-          <div className="stock-levels-table-wrapper" style={{ marginTop: '16px', width: '100%' }}>
+          {renderStockListPager('top')}
+          <div
+            className={`stock-levels-table-wrapper${listRefreshing ? ' stock-levels-table-wrapper-refreshing' : ''}`}
+            style={{ marginTop: '16px', width: '100%' }}
+          >
             <table className="stock-levels-table table">
               <thead>
                 <tr>
@@ -1413,6 +1584,7 @@ export function WarehouseStocks() {
               </tbody>
             </table>
           </div>
+          {renderStockListPager('bottom')}
 
           <p className="stock-levels-history-hint">Нажмите на строку товара, чтобы открыть историю изменений остатков.</p>
 

@@ -1136,6 +1136,11 @@ class OrdersRepositoryPG {
                   AND TRIM(psku.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
               )
           )
+          OR EXISTS (
+            SELECT 1 FROM kit_components kc
+            WHERE kc.component_product_id = $1
+              AND kc.kit_product_id = o.product_id
+          )
         )
       ORDER BY o.created_at DESC, o.in_process_at DESC
       LIMIT 1

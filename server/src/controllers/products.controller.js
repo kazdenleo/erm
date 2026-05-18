@@ -4,11 +4,52 @@
  */
 
 import productsService from '../services/products.service.js';
+import supplierStocksService from '../services/supplierStocks.service.js';
 import { normalizeProductExportOptions } from '../services/productsExport.service.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+
+const STOCK_LIST_DEFAULT_LIMIT = 50;
+const STOCK_LIST_MAX_LIMIT = 200;
+
+/** Запрос со страницы «Остатки» (старый фронт без listView=stock). */
+function requestFromStockLevelsPage(req) {
+  const clientRoute = String(req.get('x-erm-client-route') || '').trim().toLowerCase();
+  if (clientRoute === 'stock-levels') return true;
+  const ref = String(req.get('referer') || '');
+  if (!ref) return false;
+  try {
+    return new URL(ref).pathname.includes('/stock-levels');
+  } catch {
+    return /\/stock-levels(\/|$|\?)/i.test(ref);
+  }
+}
+
+function wantsFullProductsCatalog(req) {
+  const lv = firstQueryParam(req.query?.listView);
+  return lv === 'full' || req.query?.forExport === 'true' || req.query?.forExport === '1';
+}
+
+function resolveStockListMode(req, options) {
+  if (wantsFullProductsCatalog(req)) {
+    return false;
+  }
+  const stockListParam = firstQueryParam(req.query?.stockList);
+  if (
+    firstQueryParam(req.query?.listView) === 'stock' ||
+    stockListParam === '1' ||
+    stockListParam === 'true'
+  ) {
+    return true;
+  }
+  const wh = firstQueryParam(req.query?.warehouseId);
+  if (wh != null && String(wh).trim() !== '') {
+    return true;
+  }
+  return requestFromStockLevelsPage(req);
+}
 
 /** Латинский fallback для Content-Disposition filename= (кириллица в заголовке ломает Node) */
 function asciiContentDispositionFilename(name, fallback = 'file.xlsx') {
@@ -185,34 +226,68 @@ class ProductsController {
       if (req.query.archivedOnly === 'true' || req.query.archivedOnly === '1') {
         options.archivedOnly = true;
       }
-      const hasPaging = req.query.limit != null || req.query.offset != null;
+      const isStockList = resolveStockListMode(req, options);
+      if (isStockList) {
+        options.listView = 'stock';
+      }
+      let hasPaging = req.query.limit != null || req.query.offset != null;
       if (req.query.limit != null) options.limit = parseInt(req.query.limit, 10);
       if (req.query.offset != null) options.offset = parseInt(req.query.offset, 10);
+      if (isStockList) {
+        if (!Number.isFinite(options.limit) || options.limit <= 0) {
+          options.limit = STOCK_LIST_DEFAULT_LIMIT;
+        } else if (options.limit > STOCK_LIST_MAX_LIMIT) {
+          options.limit = STOCK_LIST_MAX_LIMIT;
+        }
+        if (!Number.isFinite(options.offset) || options.offset < 0) {
+          options.offset = 0;
+        }
+        hasPaging = true;
+      }
       const result = hasPaging
         ? await productsService.getPage(options)
         : { items: await productsService.getAll(options), total: null };
       const products = result.items;
-      // Явно копируем в обычные объекты и гарантированно передаём сохранённые цены (на случай нестандартной сериализации row из pg)
-      const data = products.map(p => {
+      const data = products.map((p) => {
         const row = { ...p };
-        row.storedMinPriceOzon = p.storedMinPriceOzon != null ? Number(p.storedMinPriceOzon) : null;
-        row.storedMinPriceWb = p.storedMinPriceWb != null ? Number(p.storedMinPriceWb) : null;
-        row.storedMinPriceYm = p.storedMinPriceYm != null ? Number(p.storedMinPriceYm) : null;
-        row.storedMinPriceUpdatedAt = p.storedMinPriceUpdatedAt ?? null;
-        row.storedCalculationDetailsOzon = p.storedCalculationDetailsOzon ?? null;
-        row.storedCalculationDetailsWb = p.storedCalculationDetailsWb ?? null;
-        row.storedCalculationDetailsYm = p.storedCalculationDetailsYm ?? null;
+        if (!isStockList) {
+          row.storedMinPriceOzon = p.storedMinPriceOzon != null ? Number(p.storedMinPriceOzon) : null;
+          row.storedMinPriceWb = p.storedMinPriceWb != null ? Number(p.storedMinPriceWb) : null;
+          row.storedMinPriceYm = p.storedMinPriceYm != null ? Number(p.storedMinPriceYm) : null;
+          row.storedMinPriceUpdatedAt = p.storedMinPriceUpdatedAt ?? null;
+          row.storedCalculationDetailsOzon = p.storedCalculationDetailsOzon ?? null;
+          row.storedCalculationDetailsWb = p.storedCalculationDetailsWb ?? null;
+          row.storedCalculationDetailsYm = p.storedCalculationDetailsYm ?? null;
+        }
         row.kit_display = p.kit_display ?? null;
         row.kit_components = Array.isArray(p.kit_components) ? p.kit_components : [];
         return row;
       });
-      const withPrices = data.filter(p => p.storedMinPriceOzon != null || p.storedMinPriceWb != null || p.storedMinPriceYm != null).length;
-      if (data.length > 0 && (withPrices > 0 || data.length <= 10)) {
-        console.log(`[Products Controller] GET /products: ${data.length} products, ${withPrices} with stored min prices`);
+      if (!isStockList) {
+        const withPrices = data.filter(
+          (p) => p.storedMinPriceOzon != null || p.storedMinPriceWb != null || p.storedMinPriceYm != null
+        ).length;
+        if (data.length > 0 && (withPrices > 0 || data.length <= 10)) {
+          console.log(`[Products Controller] GET /products: ${data.length} products, ${withPrices} with stored min prices`);
+        }
+      }
+      let supplierBreakdown;
+      if (isStockList && data.length > 0) {
+        const productIds = data.map((p) => p.id).filter((id) => id != null);
+        supplierBreakdown = await supplierStocksService.getBreakdownByProductIds(productIds, {
+          mainWarehouseId: options.warehouseId ?? null,
+        });
+      }
+      res.setHeader('X-Products-List-View', isStockList ? 'stock' : 'full');
+      if (hasPaging) {
+        res.setHeader('X-Products-Total', String(result.total ?? ''));
+        res.setHeader('X-Products-Limit', String(options.limit ?? ''));
+        res.setHeader('X-Products-Offset', String(options.offset ?? 0));
       }
       return res.status(200).json({
         ok: true,
         data,
+        ...(supplierBreakdown != null ? { supplierBreakdown } : {}),
         ...(hasPaging
           ? {
               meta: {

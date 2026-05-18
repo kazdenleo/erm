@@ -124,6 +124,48 @@ function isTerminalMarketplaceStatus(status) {
   return s === 'cancelled' || s === 'delivered';
 }
 
+function isLogisticsOrTerminalMpStatus(status) {
+  const s = String(status ?? '').toLowerCase();
+  return s === 'in_transit' || s === 'shipped' || s === 'delivered' || s === 'cancelled';
+}
+
+/** Локальные статусы, которые при «Обновить статусы» нужно сверить с МП (часто залипают «Новый»). */
+function isStaleLocalStatusForRefresh(status) {
+  const s = String(status ?? '').toLowerCase();
+  return (
+    s === 'new' ||
+    s === 'unknown' ||
+    s === WB_STATUS_UNKNOWN ||
+    s === WB_STATUS_PENDING ||
+    s === 'wb_assembly'
+  );
+}
+
+function statusCatchUpPriority(status) {
+  const s = String(status ?? '').toLowerCase();
+  if (isStaleLocalStatusForRefresh(s)) return 0;
+  if (s === 'in_assembly' || s === 'assembled') return 1;
+  if (s === 'in_transit' || s === 'shipped') return 2;
+  return 3;
+}
+
+/**
+ * Ручное «Обновить статусы»: локально «Новый», на МП уже отгружен/доставлен — берём статус с маркетплейса.
+ */
+function shouldForceMpStatusOnRefresh(existing, incomingStatus, refreshStatuses) {
+  if (!refreshStatuses || !existing || incomingStatus == null || incomingStatus === '') return false;
+  const localStale = new Set(['new', 'unknown', WB_STATUS_UNKNOWN, WB_STATUS_PENDING]);
+  const mpProgress = new Set([
+    'in_assembly',
+    'assembled',
+    'in_transit',
+    'shipped',
+    'delivered',
+    'cancelled'
+  ]);
+  return localStale.has(String(existing.status ?? '').toLowerCase()) && mpProgress.has(String(incomingStatus).toLowerCase());
+}
+
 /**
  * Правило по требованию: «На сборке» задаётся ТОЛЬКО вручную (кнопкой / сменой статуса в ERM).
  * Поэтому статус от маркетплейса "in_assembly" не должен автоматически переводить заказ из "new".
@@ -172,7 +214,8 @@ class OrdersSyncService {
    * Возвращает started=false, если синк уже выполняется.
    */
   startSyncFbsInBackground(options = {}) {
-    const force = options.force === true;
+    const refreshStatuses = options.refreshStatuses === true;
+    const force = options.force === true || refreshStatuses;
     const profileId = options.profileId ?? null;
     const scheduler = options.scheduler === true;
 
@@ -182,7 +225,7 @@ class OrdersSyncService {
 
     // Важно: запуск в следующем тике, чтобы контроллер успел ответить.
     setTimeout(() => {
-      this.syncFbs({ force, profileId, scheduler })
+      this.syncFbs({ force, profileId, scheduler, refreshStatuses })
         .catch((e) => {
           logger.error(`[Orders Sync] background sync failed: ${e?.message || String(e)}`);
         });
@@ -199,9 +242,11 @@ class OrdersSyncService {
    * @param {{ force?: boolean }} [options] — force: принудительно опросить МП, минутный кэш не отдаём
    */
   async syncFbs(options = {}) {
-    const force = options.force === true;
+    const refreshStatuses = options.refreshStatuses === true;
+    const force = options.force === true || refreshStatuses;
     const fromScheduler = options.scheduler === true;
     const profileId = options.profileId ?? null;
+    const catchUpLimit = refreshStatuses ? 500 : 40;
     const oneMinute = 60 * 1000;
 
     if (fromScheduler && isOrdersFbsBackgroundSyncPaused()) {
@@ -268,7 +313,11 @@ class OrdersSyncService {
     ordersSyncCache.syncInProgress = true;
     ordersSyncCache.lastSyncTime = now;
     const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0}`;
-    if (force) {
+    if (refreshStatuses) {
+      logger.info(
+        `[Orders Sync] обновление статусов с маркетплейсов (catch-up до ${catchUpLimit} на МП, минутный лимит снят) (${ctx})`
+      );
+    } else if (force) {
       logger.info(`[Orders Sync] принудительный импорт заказов (полный опрос маркетплейсов, минутный лимит снят) (${ctx})`);
     }
 
@@ -401,7 +450,8 @@ class OrdersSyncService {
         const extraOzon = await fetchOzonExtraPostingsFromExisting(
           existingOrders,
           results.ozon.orders,
-          ozonConfig
+          ozonConfig,
+          { maxCatchUp: catchUpLimit }
         );
         if (extraOzon.length) {
           newOrders = [...newOrders, ...extraOzon];
@@ -431,7 +481,9 @@ class OrdersSyncService {
       const isWbIncoming = incomingMp === 'wb' || incomingMp === 'wildberries';
 
       let nextStatus = order.status;
-      if (isTerminalMarketplaceStatus(order.status)) {
+      if (shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses)) {
+        nextStatus = String(order.status).toLowerCase();
+      } else if (isTerminalMarketplaceStatus(order.status)) {
         // Терминальные статусы маркетплейса всегда должны побеждать локальные якоря "в закупке".
         // Иначе отменённый заказ может "залипнуть" в in_procurement.
         nextStatus = String(order.status).toLowerCase();
@@ -527,10 +579,14 @@ class OrdersSyncService {
             const prev = order.status;
             const apiSt = statusByWbId.get(String(order.orderId || order.order_id));
             const existingBeforeWbPoll = { status: prev };
-            // Иначе ответ /orders/status (confirm → in_assembly) перезаписывает «Новый» после preventAutoInAssembly в основном merge.
-            let next = preserveLocalInAssemblyAgainstMpAssembled(existingBeforeWbPoll, apiSt);
-            next = preventAutoInAssembly(existingBeforeWbPoll, next);
-            order.status = next;
+            if (shouldForceMpStatusOnRefresh(existingBeforeWbPoll, apiSt, refreshStatuses)) {
+              order.status = String(apiSt).toLowerCase();
+            } else {
+              // Иначе ответ /orders/status (confirm → in_assembly) перезаписывает «Новый» после preventAutoInAssembly в основном merge.
+              let next = preserveLocalInAssemblyAgainstMpAssembled(existingBeforeWbPoll, apiSt);
+              next = preventAutoInAssembly(existingBeforeWbPoll, next);
+              order.status = next;
+            }
           }
         }
         for (const [key, order] of ordersMap.entries()) {
@@ -549,6 +605,42 @@ class OrdersSyncService {
         logger.info(`[Orders Sync] WB: обновлены статусы для ${statuses.length} заказов`);
       } catch (e) {
         logger.warn('[Orders Sync] WB status refresh failed:', e.message);
+      }
+    }
+
+    if (ymApiKey && existingOrders.length > 0) {
+      try {
+        const extraYm = await fetchYandexExtraOrdersFromExisting(
+          existingOrders,
+          results.yandex.orders,
+          ymConfig,
+          { maxCatchUp: catchUpLimit }
+        );
+        if (extraYm.length) {
+          for (const order of extraYm) {
+            const key = `${order.marketplace}:${order.orderId}`;
+            const existing = ordersMap.get(key);
+            let nextStatus = order.status;
+            if (shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses)) {
+              nextStatus = String(order.status).toLowerCase();
+            } else if (isTerminalMarketplaceStatus(order.status)) {
+              nextStatus = String(order.status).toLowerCase();
+            } else if (existing?.status === 'in_procurement') {
+              nextStatus = existing.status;
+            } else if (existing) {
+              nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
+            }
+            nextStatus = preventAutoInAssembly(existing, nextStatus);
+            ordersMap.set(key, {
+              ...(existing || {}),
+              ...order,
+              status: nextStatus,
+              returnedToNewAt: existing?.returnedToNewAt ?? order.returnedToNewAt ?? null
+            });
+          }
+        }
+      } catch (e) {
+        logger.warn('[Orders Sync] Yandex catch-up:', e.message);
       }
     }
 
@@ -1176,14 +1268,15 @@ async function fetchOzonFBSOrders(config, daysBack = 90) {
  * Догоняющий опрос posting/fbs/get для постингов, которые уже есть в БД с нефинальным статусом,
  * но не попали в ответ list за период (часто из‑за фильтра дат/лага списка).
  */
-async function fetchOzonExtraPostingsFromExisting(existingOrders, alreadySyncedOzonRows, ozonConfig) {
+async function fetchOzonExtraPostingsFromExisting(existingOrders, alreadySyncedOzonRows, ozonConfig, options = {}) {
+  const maxCatchUp = Number(options.maxCatchUp) > 0 ? Number(options.maxCatchUp) : 40;
   const seenBases = new Set();
   for (const o of alreadySyncedOzonRows || []) {
     if (String(o.marketplace || '').toLowerCase() !== 'ozon') continue;
     seenBases.add(ozonPostingNumberFromOrderId(o.orderId));
   }
   const terminal = new Set(['delivered', 'cancelled']);
-  const bases = [];
+  const candidates = [];
   const queued = new Set();
   for (const o of existingOrders || []) {
     if (String(o.marketplace || '').toLowerCase() !== 'ozon') continue;
@@ -1192,9 +1285,10 @@ async function fetchOzonExtraPostingsFromExisting(existingOrders, alreadySyncedO
     const base = ozonPostingNumberFromOrderId(o.orderId ?? o.order_id);
     if (!base || seenBases.has(base) || queued.has(base)) continue;
     queued.add(base);
-    bases.push(base);
-    if (bases.length >= 40) break;
+    candidates.push({ base, priority: statusCatchUpPriority(st) });
   }
+  candidates.sort((a, b) => a.priority - b.priority);
+  const bases = candidates.slice(0, maxCatchUp).map((c) => c.base);
   if (!bases.length) return [];
   const extra = [];
   for (const base of bases) {
@@ -1210,6 +1304,51 @@ async function fetchOzonExtraPostingsFromExisting(existingOrders, alreadySyncedO
   }
   if (extra.length) {
     logger.info(`[Ozon catch-up] догружено строк из get: ${extra.length} (уникальных постингов: ${bases.length})`);
+  }
+  return extra;
+}
+
+/**
+ * Догоняющий опрос GET order для заказов YM с нефинальным статусом в БД (не попали в list).
+ */
+async function fetchYandexExtraOrdersFromExisting(existingOrders, alreadySyncedYandexRows, ymConfig, options = {}) {
+  const maxCatchUp = Number(options.maxCatchUp) > 0 ? Number(options.maxCatchUp) : 40;
+  const seenBases = new Set();
+  for (const o of alreadySyncedYandexRows || []) {
+    if (String(o.marketplace || '').toLowerCase() !== 'yandex') continue;
+    const base =
+      yandexOrderIdForApi(o.orderGroupId ?? o.order_group_id ?? o.orderId ?? o.order_id) || null;
+    if (base) seenBases.add(base);
+  }
+  const terminal = new Set(['delivered', 'cancelled']);
+  const candidates = [];
+  const queued = new Set();
+  for (const o of existingOrders || []) {
+    if (String(o.marketplace || '').toLowerCase() !== 'yandex') continue;
+    const st = o.status;
+    if (!st || terminal.has(st)) continue;
+    const base = yandexOrderIdForApi(o.orderGroupId ?? o.order_group_id ?? o.orderId ?? o.order_id);
+    if (!base || seenBases.has(base) || queued.has(base)) continue;
+    queued.add(base);
+    candidates.push({ base, priority: statusCatchUpPriority(st) });
+  }
+  candidates.sort((a, b) => a.priority - b.priority);
+  const bases = candidates.slice(0, maxCatchUp).map((c) => c.base);
+  if (!bases.length) return [];
+  const extra = [];
+  for (const base of bases) {
+    try {
+      const raw = await fetchYandexOrderDetailRaw(ymConfig, base);
+      extra.push(...mapYandexBusinessOrderToInternal(raw));
+    } catch (e) {
+      logger.debug(`[YM catch-up] order ${base}: ${e.message}`);
+    }
+    /* eslint-disable no-await-in-loop */
+    await new Promise((r) => setTimeout(r, 50));
+    /* eslint-enable no-await-in-loop */
+  }
+  if (extra.length) {
+    logger.info(`[YM catch-up] догружено строк: ${extra.length} (уникальных заказов: ${bases.length})`);
   }
   return extra;
 }

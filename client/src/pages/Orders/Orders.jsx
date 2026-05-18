@@ -658,7 +658,7 @@ export function Orders() {
     [reloadOrders]
   );
 
-  const handleSync = () => runSync(false, { force: false });
+  const handleSync = () => runSync(false, { force: true, refreshStatuses: true });
   const handleImportOrders = () => runSync(false, { force: true });
 
   useEffect(() => {

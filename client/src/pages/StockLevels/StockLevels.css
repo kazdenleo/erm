@@ -8,6 +8,24 @@
   margin-bottom: 12px;
 }
 
+.stock-levels-list-pager {
+  margin: 8px 0 12px;
+  padding: 8px 0;
+}
+
+.stock-levels-list-pager-top {
+  margin-bottom: 4px;
+}
+
+.stock-levels-list-pager-bottom {
+  margin-top: 4px;
+}
+
+.stock-levels-table-wrapper-refreshing {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
 .stock-levels-filter-label {
   display: inline-flex;
   align-items: center;
