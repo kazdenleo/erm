@@ -24,6 +24,18 @@ export const KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES = [
   'opening_balance'
 ];
 
+/**
+ * Поступление целых комплектов на склад (1 SKU): приёмка, инвентаризация с плюсом и т.п.
+ * Отгрузка (shipment) не считается — иначе фантомный pws не обнуляется после ошибочного списания.
+ */
+export const KIT_WHOLE_STOCK_INBOUND_TYPES = [
+  'receipt',
+  'inventory',
+  'manual',
+  'transfer',
+  'opening_balance'
+];
+
 /** Типы движений, которые показываем в истории остатков комплекта. */
 export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES;
 
@@ -35,7 +47,7 @@ export function isKitStockHistoryMovementType(type) {
   return isKitPhysicalBalanceMovementType(type);
 }
 
-/** Были ли поступления/списания/инвентаризация по SKU комплекта (не резерв). */
+/** Были ли движения по SKU комплекта (для истории и прочего). */
 export async function kitHasPhysicalBalanceMovements(kitProductId) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return false;
@@ -45,6 +57,21 @@ export async function kitHasPhysicalBalanceMovements(kitProductId) {
        AND LOWER(TRIM(type::text)) = ANY($2::text[])
      LIMIT 1`,
     [kitId, KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES]
+  );
+  return (r.rows?.length ?? 0) > 0;
+}
+
+/** Была ли реальная приёмка/оприходование целых комплектов (1 SKU) на склад. */
+export async function kitHasWholeKitInboundMovements(kitProductId) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return false;
+  const r = await query(
+    `SELECT 1 FROM stock_movements
+     WHERE product_id = $1
+       AND LOWER(TRIM(type::text)) = ANY($2::text[])
+       AND quantity_change > 0
+     LIMIT 1`,
+    [kitId, KIT_WHOLE_STOCK_INBOUND_TYPES]
   );
   return (r.rows?.length ?? 0) > 0;
 }
@@ -428,12 +455,15 @@ export async function readKitStockFromDb(kitProductId, opts = {}) {
 }
 
 /**
- * Наличие комплекта на складе: только product_warehouse_stock по SKU комплекта.
- * Если в БД остались «фантомные» остатки без движений поступления/списания — 0.
+ * Наличие комплекта на складе: только целые комплекты (1 SKU) после приёмки/инвентаризации.
+ * Собираемость из комплектующих сюда не входит. Без inbound-движений — всегда 0.
  */
 export async function readKitPhysicalOnHandFromDb(kitProductId, rawOnHand = null, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
+
+  const hasInbound = await kitHasWholeKitInboundMovements(kitId);
+  if (!hasInbound) return 0;
 
   let onHand = rawOnHand;
   if (onHand == null) {
@@ -442,8 +472,29 @@ export async function readKitPhysicalOnHandFromDb(kitProductId, rawOnHand = null
   onHand = Math.max(0, Number(onHand) || 0);
   if (onHand <= 0) return 0;
 
-  const hasPhysical = await kitHasPhysicalBalanceMovements(kitId);
-  return hasPhysical ? onHand : 0;
+  const fromJournal = await readKitOnHandFromMovementsBalance(kitId);
+  if (fromJournal != null) {
+    return Math.min(onHand, fromJournal);
+  }
+  return onHand;
+}
+
+/** Остаток по журналу (balance_after), без резерва и «в пути». */
+async function readKitOnHandFromMovementsBalance(kitProductId) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return null;
+  const r = await query(
+    `SELECT balance_after
+     FROM stock_movements
+     WHERE product_id = $1
+       AND balance_after IS NOT NULL
+       AND LOWER(TRIM(type::text)) = ANY($2::text[])
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1`,
+    [kitId, KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES]
+  );
+  if (!r.rows?.length) return null;
+  return Math.max(0, Number(r.rows[0].balance_after) || 0);
 }
 
 /** Для отправки на МП: собираемость из комплектующих + доступно по SKU комплекта. */
@@ -713,8 +764,8 @@ export async function zeroPhantomKitWarehouseStock() {
     if (!Number.isFinite(kitId) || kitId < 1) continue;
     const raw = await readKitWarehouseOnHandRaw(kitId, {});
     if (raw <= 0) continue;
-    const hasPhysical = await kitHasPhysicalBalanceMovements(kitId);
-    if (hasPhysical) continue;
+    const hasInbound = await kitHasWholeKitInboundMovements(kitId);
+    if (hasInbound) continue;
     await query(`UPDATE product_warehouse_stock SET quantity = 0 WHERE product_id = $1`, [kitId]);
     await syncProductQuantityFromWarehouseStock(kitId);
     cleared += 1;
@@ -767,6 +818,7 @@ export async function attachKitDisplayMetrics(products, options = {}) {
     const availableTotal = assemblable + wholeAvail;
 
     p.supplierStockTotal = supplierKitUnits;
+    p.quantity = wholeOnHand;
     p.kit_display = {
       whole_on_hand: wholeOnHand,
       assemblable_from_components: assemblable,
@@ -807,6 +859,8 @@ export default {
   computeKitSupplierUnitsFromComponents,
   readKitPhysicalOnHandFromDb,
   kitHasPhysicalBalanceMovements,
+  kitHasWholeKitInboundMovements,
+  KIT_WHOLE_STOCK_INBOUND_TYPES,
   isKitPhysicalBalanceMovementType,
   isKitStockHistoryMovementType,
   KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES,
