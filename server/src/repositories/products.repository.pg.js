@@ -379,7 +379,7 @@ class ProductsRepositoryPG {
     const byPid = new Map((agg.rows || []).map((r) => [String(r.product_id), r.rv]));
     const idsToUpdate = [];
     const rvsToUpdate = [];
-    const { isKitProductType, kitDisplayReservedFromContext, buildKitListStockContext } =
+    const { kitDisplayReservedFromContext, buildKitListStockContext } =
       await import('../services/kitStock.service.js');
 
     let ctx = kitCtx;
@@ -845,7 +845,7 @@ class ProductsRepositoryPG {
       }
     }
 
-    const { isKitProductType, buildKitListStockContext, attachKitDisplayMetrics } = await import(
+    const { buildKitListStockContext, attachKitDisplayMetrics } = await import(
       '../services/kitStock.service.js'
     );
     const hasKits = products.some((p) => isKitProductType(p.product_type));
