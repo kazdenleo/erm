@@ -356,10 +356,21 @@ class ProductsRepositoryPG {
     const byPid = new Map((agg.rows || []).map((r) => [String(r.product_id), r.rv]));
     const idsToUpdate = [];
     const rvsToUpdate = [];
+    const { isKitProductType, readKitDisplayReservedQuantity } = await import(
+      '../services/kitStock.service.js'
+    );
 
     for (const p of products) {
       const key = String(p.id);
-      const calc = byPid.has(key) ? byPid.get(key) : 0;
+      let calc = byPid.has(key) ? byPid.get(key) : 0;
+      if (isKitProductType(p.product_type)) {
+        const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+        if (Number.isFinite(nid) && nid > 0) {
+          calc = await readKitDisplayReservedQuantity(nid, options);
+        } else {
+          calc = 0;
+        }
+      }
       const stored = p.reserved_quantity != null ? Number(p.reserved_quantity) : 0;
       p.reserved_quantity = calc;
       if (stored !== calc) {
