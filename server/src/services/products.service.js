@@ -4,6 +4,7 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { stockListOnHandQuantity } from '../repositories/products.repository.pg.js';
 import { query } from '../config/database.js';
 import pricesService from './prices.service.js';
 import integrationsService from './integrations.service.js';
@@ -27,6 +28,7 @@ import {
   resolveOzonAttributesDictionaryLabels
 } from './productsImport.service.js';
 import { resolveMarketplaceListingByErpSku } from './productMarketplaceLink.service.js';
+import marketplaceProductCardPush from './marketplaceProductCardPush.service.js';
 import {
   getProductParticipation,
   getProductParticipationBatch,
@@ -151,6 +153,14 @@ class ProductsService {
 
   async getPage(options = {}) {
     if (options.listView === 'stock') {
+      const inStockOnly =
+        options.inStockOnly === true ||
+        options.inStockOnly === 'true' ||
+        options.inStockOnly === '1' ||
+        options.inStockOnly === 1;
+      if (inStockOnly) {
+        return this._getStockListInStockPage(options);
+      }
       const [items, total] = await Promise.all([
         this.repository.findAll(options),
         this.repository.countAll(options)
@@ -160,6 +170,44 @@ class ProductsService {
     const items = await this.repository.findAll(options);
     const total = await this.repository.countAll(options);
     const withFlags = await this._attachParticipationFlags(items);
+    return { items: withFlags, total };
+  }
+
+  /**
+   * Список остатков с «только в наличии»: пагинация после фактического onHand (не по SQL LIMIT).
+   */
+  async _getStockListInStockPage(options = {}) {
+    const limit = Math.max(1, Math.min(200, Number(options.limit) || 50));
+    const page = Math.max(1, Number(options.page) || 1);
+    const targetOffset = (page - 1) * limit;
+    const sqlBatch = 200;
+    let sqlOffset = 0;
+    const pageItems = [];
+    let total = 0;
+
+    while (true) {
+      const batch = await this.repository.findAll({
+        ...options,
+        limit: sqlBatch,
+        offset: sqlOffset,
+        inStockOnly: true,
+        deferInStockPostFilter: true,
+      });
+      if (batch.length === 0) break;
+
+      for (const product of batch) {
+        if (stockListOnHandQuantity(product) <= 0) continue;
+        if (total >= targetOffset && pageItems.length < limit) {
+          pageItems.push(product);
+        }
+        total += 1;
+      }
+
+      if (batch.length < sqlBatch) break;
+      sqlOffset += sqlBatch;
+    }
+
+    const withFlags = await this._attachParticipationFlags(pageItems);
     return { items: withFlags, total };
   }
 
@@ -1285,6 +1333,27 @@ class ProductsService {
 
     const updated = await this.update(productId, updates);
     return { product: updated, link: resolved };
+  }
+
+  /**
+   * Отправить данные карточки на маркетплейс(ы).
+   * @param {number|string} productId
+   * @param {'ozon'|'wb'|'ym'|'all'|string} marketplace
+   */
+  async pushProductCardToMarketplace(productId, marketplace, options = {}) {
+    return marketplaceProductCardPush.pushProductCard(productId, marketplace, {
+      profileId: options.profileId ?? null
+    });
+  }
+
+  /**
+   * Массовая отправка карточек на маркетплейсы.
+   * @param {{ productIds: Array<number|string>, marketplaces: string|string[] }} payload
+   */
+  async pushProductCardsBulk(payload, options = {}) {
+    return marketplaceProductCardPush.pushProductCardsBulk(payload, {
+      profileId: options.profileId ?? null
+    });
   }
 }
 

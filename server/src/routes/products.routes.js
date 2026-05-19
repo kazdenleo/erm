@@ -87,6 +87,18 @@ router.get(
   wrapAsync(stockMovementsController.getReservedOrders.bind(stockMovementsController))
 );
 
+router.post(
+  '/:id/stock-reserve-release-all',
+  validateProductId,
+  wrapAsync(stockMovementsController.releaseAllReserves.bind(stockMovementsController))
+);
+
+router.post(
+  '/:id/stock-reserve-release-order',
+  validateProductId,
+  wrapAsync(stockMovementsController.releaseOrderReserve.bind(stockMovementsController))
+);
+
 // Изображения товара (должны быть ДО PUT /:id)
 router.get(
   '/:id/images',
@@ -117,11 +129,21 @@ router.post(
   wrapAsync(productsController.create.bind(productsController))
 );
 
+// Массовая отправка карточек на маркетплейсы (до /:id)
+router.post('/push-card', wrapAsync(productsController.pushCardBulk.bind(productsController)));
+
 // Связать товар с карточкой маркетплейса по артикулу ERP (до PUT /:id)
 router.post(
   '/:id/link-marketplace/:marketplace',
   validateProductId,
   wrapAsync(productsController.linkMarketplace.bind(productsController))
+);
+
+// Отправить данные карточки на маркетплейс (до PUT /:id)
+router.post(
+  '/:id/push-card/:marketplace',
+  validateProductId,
+  wrapAsync(productsController.pushCard.bind(productsController))
 );
 
 router.get(

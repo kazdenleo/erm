@@ -156,6 +156,17 @@ function normalizeListCategoryId(categoryId) {
   return s;
 }
 
+/** Наличие для фильтра «только в наличии» после обогащения строки (склад / комплект). */
+export function stockListOnHandQuantity(product) {
+  if (!product) return 0;
+  const kit = product.kit_display ?? product.kitDisplay;
+  if (kit && typeof kit === 'object') {
+    const whole = Number(kit.whole_on_hand ?? kit.wholeOnHand);
+    if (Number.isFinite(whole) && whole > 0) return whole;
+  }
+  return Math.max(0, Number(product.quantity) || 0);
+}
+
 function buildFindAllFilters(options = {}) {
   const {
     brandId,
@@ -275,17 +286,32 @@ function buildFindAllFilters(options = {}) {
       )`;
       params.push(wid);
     } else {
-      // «Все склады»: наличие = сумма по product_warehouse_stock или products.quantity, если строк склада нет
+      // «Все склады»: как колонка «Наличие» — сумма pws, legacy quantity без pws, рассинхрон pws=0 но products.quantity>0
       whereSql += ` AND (
-        EXISTS (
-          SELECT 1 FROM product_warehouse_stock pws
-          WHERE pws.product_id = p.id AND COALESCE(pws.quantity, 0) > 0
-        )
+        (
+          SELECT COALESCE(SUM(COALESCE(pws.quantity, 0)), 0)
+          FROM product_warehouse_stock pws
+          WHERE pws.product_id = p.id
+        ) > 0
         OR (
           NOT EXISTS (
             SELECT 1 FROM product_warehouse_stock pws0 WHERE pws0.product_id = p.id LIMIT 1
           )
           AND COALESCE(p.quantity, 0) > 0
+        )
+        OR (
+          EXISTS (SELECT 1 FROM product_warehouse_stock pws0 WHERE pws0.product_id = p.id LIMIT 1)
+          AND (
+            SELECT COALESCE(SUM(COALESCE(pws.quantity, 0)), 0)
+            FROM product_warehouse_stock pws
+            WHERE pws.product_id = p.id
+          ) = 0
+          AND COALESCE(p.quantity, 0) > 0
+        )
+        OR EXISTS (
+          SELECT 1 FROM kit_components kc
+          INNER JOIN product_warehouse_stock pws ON pws.product_id = kc.component_product_id
+          WHERE kc.kit_product_id = p.id AND COALESCE(pws.quantity, 0) > 0
         )
       )`;
     }
@@ -370,7 +396,8 @@ class ProductsRepositoryPG {
     if (!Array.isArray(products) || products.length === 0) return;
     const { enrichKitProductStock } = await import('../services/kitStock.service.js');
     const warehouseId = options.warehouseId ?? options.warehouse_id ?? null;
-    const kits = products.filter((p) => isKitProductType(p.product_type));
+    const { isKitCatalogProduct } = await import('../services/kitStock.service.js');
+    const kits = products.filter((p) => isKitCatalogProduct(p));
     await Promise.all(
       kits.map((p) =>
         enrichKitProductStock(p, {
@@ -424,21 +451,27 @@ class ProductsRepositoryPG {
     const byPid = new Map((agg.rows || []).map((r) => [String(r.product_id), r.rv]));
     const idsToUpdate = [];
     const rvsToUpdate = [];
-    const { kitDisplayReservedFromContext, buildKitListStockContext } =
-      await import('../services/kitStock.service.js');
+    const {
+      kitDisplayReservedFromContext,
+      buildKitListStockContext,
+      readKitDisplayReservedQuantity,
+      isKitCatalogProduct
+    } = await import('../services/kitStock.service.js');
 
     let ctx = kitCtx;
-    if (!ctx && products.some((p) => isKitProductType(p.product_type))) {
+    if (!ctx && products.some((p) => isKitCatalogProduct(p))) {
       ctx = await buildKitListStockContext(products, options);
     }
 
     for (const p of products) {
       const key = String(p.id);
       let calc = byPid.has(key) ? byPid.get(key) : 0;
-      if (isKitProductType(p.product_type)) {
+      if (isKitCatalogProduct(p)) {
         const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
         if (Number.isFinite(nid) && nid > 0) {
-          calc = ctx ? kitDisplayReservedFromContext(nid, ctx) : 0;
+          calc = ctx
+            ? kitDisplayReservedFromContext(nid, ctx)
+            : await readKitDisplayReservedQuantity(nid, options);
         } else {
           calc = 0;
         }
@@ -601,6 +634,42 @@ class ProductsRepositoryPG {
             p.quantity_warehouse_id = wid;
           });
         }
+      }
+    }
+
+    if (
+      products.length > 0 &&
+      isStockList &&
+      (warehouseId == null || String(warehouseId).trim() === '')
+    ) {
+      const productIds = products
+        .map((p) => {
+          const id = p.id;
+          return typeof id === 'string' ? parseInt(id, 10) : id;
+        })
+        .filter((n) => Number.isFinite(n));
+      if (productIds.length > 0) {
+        const pwsSumRes = await query(
+          `SELECT product_id, COALESCE(SUM(COALESCE(quantity, 0)), 0)::int AS quantity
+           FROM product_warehouse_stock
+           WHERE product_id = ANY($1::bigint[])
+           GROUP BY product_id`,
+          [productIds]
+        );
+        const sumByProduct = new Map(
+          pwsSumRes.rows.map((r) => [String(r.product_id), Math.max(0, parseInt(r.quantity, 10) || 0)])
+        );
+        products.forEach((p) => {
+          const key = String(p.id);
+          const sum = sumByProduct.has(key) ? sumByProduct.get(key) : null;
+          const legacy = Math.max(0, Number(p.quantity) || 0);
+          if (sum != null) {
+            p.quantity_total_all_warehouses = p.quantity != null ? Number(p.quantity) : 0;
+            p.quantity = sum > 0 ? sum : legacy;
+          } else {
+            p.quantity = legacy;
+          }
+        });
       }
     }
 
@@ -836,10 +905,43 @@ class ProductsRepositoryPG {
       }
 
       // Комплектующие для комплектов в списке (один запрос на страницу)
+      const pageNumericIds = [
+        ...new Set(
+          products
+            .map((p) => {
+              const key = productIdMapKey(p.id);
+              if (!key) return null;
+              const n = parseInt(key, 10);
+              return Number.isFinite(n) && n > 0 ? n : null;
+            })
+            .filter((n) => n != null)
+        ),
+      ];
+      let kitParentKeySet = new Set();
+      if (pageNumericIds.length > 0) {
+        try {
+          const kitParentRes = await query(
+            `SELECT DISTINCT kit_product_id FROM kit_components WHERE kit_product_id = ANY($1::bigint[])`,
+            [pageNumericIds]
+          );
+          kitParentKeySet = new Set(
+            (kitParentRes.rows || [])
+              .map((r) => productIdMapKey(r.kit_product_id))
+              .filter(Boolean)
+          );
+        } catch (err) {
+          if (!String(err?.message || '').includes('kit_components')) throw err;
+        }
+      }
+      for (const p of products) {
+        if (kitParentKeySet.has(productIdMapKey(p.id))) {
+          p.is_kit_catalog = true;
+        }
+      }
       const kitProductIds = [
         ...new Set(
           products
-            .filter((p) => isKitProductType(p.product_type))
+            .filter((p) => isKitProductType(p.product_type) || p.is_kit_catalog === true)
             .map((p) => {
               const key = productIdMapKey(p.id);
               if (!key) return null;
@@ -872,7 +974,7 @@ class ProductsRepositoryPG {
             });
           }
           for (const p of products) {
-            if (isKitProductType(p.product_type)) {
+            if (isKitProductType(p.product_type) || p.is_kit_catalog === true) {
               const key = productIdMapKey(p.id);
               p.kit_components = key ? byKit.get(key) || [] : [];
             }
@@ -880,7 +982,9 @@ class ProductsRepositoryPG {
         } catch (err) {
           if (err.message && err.message.includes('kit_components')) {
             for (const p of products) {
-              if (isKitProductType(p.product_type)) p.kit_components = [];
+              if (isKitProductType(p.product_type) || p.is_kit_catalog === true) {
+                p.kit_components = [];
+              }
             }
           } else {
             throw err;
@@ -888,15 +992,16 @@ class ProductsRepositoryPG {
         }
       } else {
         for (const p of products) {
-          if (isKitProductType(p.product_type)) p.kit_components = [];
+          if (isKitProductType(p.product_type) || p.is_kit_catalog === true) {
+            p.kit_components = [];
+          }
         }
       }
     }
 
-    const { buildKitListStockContext, attachKitDisplayMetrics } = await import(
-      '../services/kitStock.service.js'
-    );
-    const hasKits = products.some((p) => isKitProductType(p.product_type));
+    const { buildKitListStockContext, attachKitDisplayMetrics, isKitCatalogProduct } =
+      await import('../services/kitStock.service.js');
+    const hasKits = products.some((p) => isKitCatalogProduct(p));
     const kitCtx = hasKits ? await buildKitListStockContext(products, options) : null;
 
     await this._reconcileReservedQuantityFromMovements(
@@ -911,8 +1016,10 @@ class ProductsRepositoryPG {
 
     const onlyInStock =
       inStockOnly === true || inStockOnly === 'true' || inStockOnly === '1' || inStockOnly === 1;
-    if (isStockList && onlyInStock) {
-      return products.filter((p) => Math.max(0, Number(p.quantity) || 0) > 0);
+    const deferInStockPostFilter =
+      options.deferInStockPostFilter === true || options.deferInStockPostFilter === 'true';
+    if (isStockList && onlyInStock && !deferInStockPostFilter) {
+      return products.filter((p) => stockListOnHandQuantity(p) > 0);
     }
     return products;
   }
@@ -1053,6 +1160,27 @@ class ProductsRepositoryPG {
       else if (row.marketplace === 'ym') product.sku_ym = row.sku;
     });
     await this._reconcileReservedQuantityFromMovements([product]);
+    const { isKitCatalogProduct, attachKitDisplayMetrics, buildKitListStockContext } =
+      await import('../services/kitStock.service.js');
+    if (isKitCatalogProduct(product)) {
+      try {
+        const kc = await query(
+          `SELECT component_product_id, quantity FROM kit_components WHERE kit_product_id = $1`,
+          [numericId]
+        );
+        product.kit_components = (kc.rows || []).map((r) => ({
+          productId: r.component_product_id,
+          quantity: r.quantity
+        }));
+        product.is_kit_catalog = true;
+      } catch {
+        product.kit_components = product.kit_components || [];
+      }
+      const kitCtx = await buildKitListStockContext([product], {});
+      if (kitCtx) {
+        await attachKitDisplayMetrics([product], { _kitCtx: kitCtx });
+      }
+    }
     return product;
   }
   

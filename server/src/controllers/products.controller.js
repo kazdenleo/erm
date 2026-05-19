@@ -380,6 +380,31 @@ class ProductsController {
     }
   }
 
+  async pushCard(req, res, next) {
+    try {
+      const { id, marketplace } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const result = await productsService.pushProductCardToMarketplace(id, marketplace, { profileId });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async pushCardBulk(req, res, next) {
+    try {
+      const profileId = req.user?.profileId ?? null;
+      const { productIds, marketplaces, marketplace } = req.body || {};
+      const result = await productsService.pushProductCardsBulk(
+        { productIds, marketplaces: marketplaces ?? marketplace },
+        { profileId }
+      );
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getParticipation(req, res, next) {
     try {
       const { id } = req.params;

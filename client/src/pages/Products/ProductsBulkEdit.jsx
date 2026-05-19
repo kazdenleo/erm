@@ -623,6 +623,8 @@ export function ProductsBulkEdit() {
   const [loadError, setLoadError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState(null);
+  const [pushMpLoading, setPushMpLoading] = useState(null);
+  const [pushMpMessage, setPushMpMessage] = useState(null);
 
   const [filterOrganizationId, setFilterOrganizationId] = useState(() => {
     const f = location.state?.filters;
@@ -987,6 +989,28 @@ export function ProductsBulkEdit() {
     }
   };
 
+  const handlePushToMarketplaces = async (marketplaces) => {
+    const productIds = rows.map((r) => r.id).filter(Boolean);
+    if (productIds.length === 0) {
+      setPushMpMessage('Нет товаров в таблице');
+      return;
+    }
+    setPushMpLoading(marketplaces);
+    setPushMpMessage(null);
+    try {
+      const body = await productsApi.pushCardBulk({ productIds, marketplaces });
+      const data = body?.data ?? body;
+      setPushMpMessage(
+        `Отправка: успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}. ` +
+          'Сначала сохраните изменения в ERP, на маркетплейсы уходят данные из базы.'
+      );
+    } catch (e) {
+      setPushMpMessage(e?.response?.data?.message || e?.message || 'Ошибка отправки на маркетплейсы');
+    } finally {
+      setPushMpLoading(null);
+    }
+  };
+
   const subtitle = useMemo(() => {
     const n = rows.length;
     const sel = appliedSelectedIds.length;
@@ -1271,6 +1295,47 @@ export function ProductsBulkEdit() {
                       <span className="text-muted small text-nowrap">атрибуты МП не найдены</span>
                     )}
                   </div>
+                  <div className="d-flex flex-wrap align-items-center gap-2 ms-md-auto">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={!!pushMpLoading || rows.length === 0}
+                      onClick={() => handlePushToMarketplaces('ozon')}
+                    >
+                      {pushMpLoading === 'ozon' ? '…' : 'На Ozon'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={!!pushMpLoading || rows.length === 0}
+                      onClick={() => handlePushToMarketplaces('wb')}
+                    >
+                      {pushMpLoading === 'wb' ? '…' : 'На WB'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={!!pushMpLoading || rows.length === 0}
+                      onClick={() => handlePushToMarketplaces('ym')}
+                    >
+                      {pushMpLoading === 'ym' ? '…' : 'На Я.Маркет'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="small"
+                      disabled={!!pushMpLoading || rows.length === 0}
+                      onClick={() => handlePushToMarketplaces('all')}
+                    >
+                      {pushMpLoading === 'all' ? 'Отправка…' : 'На все МП'}
+                    </Button>
+                  </div>
+                  {pushMpMessage ? (
+                    <div className="text-muted small w-100 mt-1">{pushMpMessage}</div>
+                  ) : null}
                 </div>
               </div>
             </div>

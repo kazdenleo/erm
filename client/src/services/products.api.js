@@ -165,6 +165,25 @@ export const productsApi = {
   },
 
   /**
+   * Отправить данные карточки на маркетплейс (ozon | wb | ym | all).
+   */
+  pushCard: async (productId, marketplace) => {
+    const id = encodeURIComponent(String(productId));
+    const mp = encodeURIComponent(String(marketplace).trim());
+    const response = await api.post(`/products/${id}/push-card/${mp}`);
+    return response.data;
+  },
+
+  /**
+   * Массовая отправка карточек на маркетплейсы.
+   * @param {{ productIds: number[], marketplaces: string|string[] }} payload
+   */
+  pushCardBulk: async (payload) => {
+    const response = await api.post('/products/push-card', payload);
+    return response.data;
+  },
+
+  /**
    * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).
    */
   appendBarcode: async (productId, barcode) => {

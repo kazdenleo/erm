@@ -22,6 +22,19 @@ export const stockMovementsApi = {
     return response.data;
   },
 
+  /** Снять весь резерв по товару (все заказы из модалки). */
+  releaseAllReserves: async (productId) => {
+    const response = await api.post(`/products/${productId}/stock-reserve-release-all`);
+    return response.data;
+  },
+
+  releaseOrderReserve: async (productId, orderDbId) => {
+    const response = await api.post(`/products/${productId}/stock-reserve-release-order`, {
+      orderDbId
+    });
+    return response.data;
+  },
+
   /**
    * Применить изменение остатка и записать движение
    * @param {number|string} productId

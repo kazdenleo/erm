@@ -42,6 +42,26 @@ function marketplaceToOrdersDb(marketplace) {
   return m === 'ozon' ? 'ozon' : m;
 }
 
+/** Статусы, при которых резерв по товарам недопустим (синхронизация МП, отмена, отгрузка). */
+export const ORDER_TERMINAL_NO_RESERVE_STATUSES = new Set([
+  'cancelled',
+  'canceled',
+  'shipped',
+  'delivered',
+  'in_transit'
+]);
+
+export function isOrderTerminalNoReserve(status) {
+  return ORDER_TERMINAL_NO_RESERVE_STATUSES.has(String(status || '').trim().toLowerCase());
+}
+
+function marketplaceFromOrdersDb(dbMarketplace) {
+  const m = String(dbMarketplace || '').toLowerCase();
+  if (m === 'wb') return 'wildberries';
+  if (m === 'ym') return 'yandex';
+  return m === 'ozon' ? 'ozon' : m;
+}
+
 /** Перевод в «В закупке»: не только strict `new` — у WB допускаем pending/unknown до резолва статуса. */
 export function orderEligibleForProcurement(order) {
   if (!order) return false;
@@ -829,6 +849,7 @@ class OrdersService {
   /** Резерв для строки заказа из БД: частичный резерв и дозаполнение до qty при появлении остатка. */
   async _applyReserveForOrderIfAbsent(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
+    if (isOrderTerminalNoReserve(orderRow.status)) return;
     const id = orderRowDbId(orderRow);
     const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
     const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
@@ -890,6 +911,37 @@ class OrdersService {
       warehouse_id: warehouseId,
       partial: reserveNow < need
     });
+  }
+
+  /**
+   * Снять резерв по всем заказам в терминальных статусах (отменён / отгружен / …), где в журнале ещё есть нетто-резерв.
+   */
+  async releaseReservesForTerminalStatusOrders({ profileId = null } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return { released: 0 };
+    const statuses = [...ORDER_TERMINAL_NO_RESERVE_STATUSES];
+    const params = [statuses];
+    let sql = `
+      SELECT o.id, o.marketplace, o.order_id
+      FROM orders o
+      WHERE LOWER(TRIM(COALESCE(o.status, ''))) = ANY($1::text[])`;
+    if (profileId != null && profileId !== '') {
+      const pid = typeof profileId === 'string' ? parseInt(profileId, 10) : Number(profileId);
+      if (Number.isFinite(pid) && pid > 0) {
+        sql += ` AND o.profile_id = $2::bigint`;
+        params.push(pid);
+      }
+    }
+    const r = await query(sql, params);
+    let released = 0;
+    for (const row of r.rows || []) {
+      const orderDbId = typeof row.id === 'bigint' ? Number(row.id) : Number(row.id);
+      if (!Number.isFinite(orderDbId) || orderDbId < 1) continue;
+      if ((await this._getReservedQtyForOrder(orderDbId)) <= 0) continue;
+      const clientMp = marketplaceFromOrdersDb(row.marketplace);
+      await this.releaseReserveIfExistsForOrder(clientMp, row.order_id);
+      released += 1;
+    }
+    return { released };
   }
 
   /**
@@ -1020,25 +1072,29 @@ class OrdersService {
     }
   }
 
-  /** Для комплектов: reservedQty = целых комплектов (не сумма движений по комплектующим). */
+  /**
+   * reservedQty / hasReserve из журнала (как на «Остатках»).
+   * Комплект — целые единицы; обычный товар — нетто по product_id и order_id.
+   */
   async enrichOrdersReserveMetrics(orders) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders)) return orders;
     for (const o of orders) {
       try {
         const orderDbId = orderRowDbId(o);
         if (!orderDbId) continue;
-        let productId = o.productId ?? o.product_id;
-        if (productId == null || productId === '') {
-          productId = await this._resolveProductIdForOrderStock(o);
-        }
+        const productId = await this._resolveProductIdForOrderStock(o);
         const pid = Number(productId);
-        if (!Number.isFinite(pid) || pid < 1) continue;
-        if (await isKitProductId(pid)) {
-          const kitsReserved = await getReservedKitUnitsForOrder(pid, orderDbId);
-          o.reservedQty = kitsReserved;
-          o.reserved_qty = kitsReserved;
-          o.hasReserve = kitsReserved > 0;
+        let reserved = 0;
+        if (Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
+          reserved = await getReservedKitUnitsForOrder(pid, orderDbId);
+        } else if (Number.isFinite(pid) && pid > 0) {
+          reserved = await this._getReservedQtyForOrderProduct(orderDbId, pid);
+        } else {
+          reserved = await this._getReservedQtyForOrder(orderDbId);
         }
+        o.reservedQty = reserved;
+        o.reserved_qty = reserved;
+        o.hasReserve = reserved > 0;
       } catch {
         /* ignore */
       }
@@ -2352,10 +2408,8 @@ class OrdersService {
       throw err;
     }
 
-    const blockedStatuses = new Set(['shipped', 'cancelled', 'canceled']);
     for (const row of rows) {
-      const st = String(row.status || '').trim().toLowerCase();
-      if (blockedStatuses.has(st)) {
+      if (isOrderTerminalNoReserve(row.status)) {
         const err = new Error('Нельзя менять резерв для отгруженного или отменённого заказа');
         err.statusCode = 400;
         throw err;

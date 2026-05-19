@@ -13,7 +13,7 @@ import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { readData, writeData } from '../utils/storage.js';
 import repositoryFactory from '../config/repository-factory.js';
 import integrationsService from './integrations.service.js';
-import ordersService, { orderEligibleForProcurement } from './orders.service.js';
+import ordersService, { orderEligibleForProcurement, isOrderTerminalNoReserve } from './orders.service.js';
 import logger from '../utils/logger.js';
 import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
@@ -707,6 +707,15 @@ class OrdersSyncService {
         throw err;
       }
 
+      try {
+        const { released } = await ordersService.releaseReservesForTerminalStatusOrders({ profileId });
+        if (released > 0) {
+          console.log(`[Orders Sync] Снят резерв по ${released} заказ(ам) в статусе отменён/отгружен`);
+        }
+      } catch (e) {
+        console.warn('[Orders Sync] releaseReservesForTerminalStatusOrders:', e?.message || e);
+      }
+
       // Авто-резерв для новых заказов (и «ожидающих» WB до резолва статуса): product_id или сопоставление по SKU.
       // Идемпотентно: reserve создаётся только если его ещё нет.
       for (const o of allOrders) {
@@ -715,6 +724,7 @@ class OrdersSyncService {
           if (!o.marketplace || o.orderId == null) continue;
           const row = await ordersRepo.findByMarketplaceAndOrderId(o.marketplace, String(o.orderId), profileId);
           if (!row) continue;
+          if (isOrderTerminalNoReserve(row.status)) continue;
           await ordersService._reserveForOrderIfStockAvailable(row);
         } catch {
           // не блокируем синк из-за одного заказа

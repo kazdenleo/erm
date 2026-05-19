@@ -62,6 +62,42 @@ class StockMovementsController {
     }
   }
 
+  /** Снять резерв по одному заказу (модалка остатков, в т.ч. отменён/отгружен). */
+  async releaseOrderReserve(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: { releasedProductLines: 0 } });
+      }
+      const { id } = req.params;
+      const orderDbId = req.body?.orderDbId ?? req.body?.order_db_id;
+      if (orderDbId == null || orderDbId === '') {
+        return res.status(400).json({ ok: false, message: 'orderDbId обязателен' });
+      }
+      const summary = await stockMovementsService.releaseOrderReserveForProduct(id, orderDbId, {
+        profileId: tid
+      });
+      return res.status(200).json({ ok: true, data: summary });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Снять весь резерв по товару (все заказы из модалки остатков). */
+  async releaseAllReserves(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: { releasedOrders: 0, releasedProductLines: 0, ordersChecked: 0 } });
+      }
+      const { id } = req.params;
+      const summary = await stockMovementsService.releaseAllReservesForProduct(id, { profileId: tid });
+      return res.status(200).json({ ok: true, data: summary });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async transfer(req, res, next) {
     try {
       if (!req.user) {

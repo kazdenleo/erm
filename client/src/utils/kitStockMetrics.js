@@ -2,7 +2,7 @@
  * Комплекты в таблице «Остатки на складе»:
  *
  * - Движения (резерв, отгрузка, поступление) — только по SKU комплекта, как у обычного товара.
- * - Наличие / в пути / резерв / поставщики — только по карточке комплекта (1 SKU).
+ * - Наличие / в пути / поставщики — по карточке комплекта (1 SKU); резерв — целые на SKU + из комплектующих.
  * - Доступно — «собрать из комплектующих» + доступно по SKU комплекта; в скобках — целые комплекты на складе.
  *   Пример: 7 (2) — из деталей можно 5, на складе 2 шт. комплектом, всего доступно 7.
  */
@@ -18,7 +18,11 @@ export function stockTableAvailable({ onHand, incoming = 0, reserved = 0, suppli
 }
 
 export function isKitProduct(product) {
-  return String(product?.product_type || '').toLowerCase() === 'kit';
+  if (!product) return false;
+  if (String(product.product_type || '').toLowerCase() === 'kit') return true;
+  if (product.is_kit_catalog === true || product.isKitCatalog === true) return true;
+  const comps = product.kit_components ?? product.kitComponents;
+  return Array.isArray(comps) && comps.length > 0;
 }
 
 /** Типы движений в истории остатков комплекта (только факт по SKU комплекта). */

@@ -806,6 +806,7 @@ export function WarehouseStocks() {
   const [reserveLoading, setReserveLoading] = useState(false);
   const [reserveError, setReserveError] = useState(null);
   const [reserveUnreserveKey, setReserveUnreserveKey] = useState(null);
+  const [reserveBulkReleasing, setReserveBulkReleasing] = useState(false);
   /** Список заказов из сгруппированной строки журнала (без запроса к API). */
   const [reserveListOverride, setReserveListOverride] = useState(null);
   const [supplierBreakdownByProductId, setSupplierBreakdownByProductId] = useState({});
@@ -1414,9 +1415,7 @@ export function WarehouseStocks() {
       setReserveUnreserveKey(key);
       setReserveError(null);
       try {
-        const result = await ordersApi.setOrderReserve(orderRow.marketplace, orderRow.orderId, {
-          action: 'unreserve'
-        });
+        await stockMovementsApi.releaseOrderReserve(reserveModalProduct.id, orderRow.orderDbId);
         await reloadReserveOrdersList();
         loadListRef.current?.({ page: currentPage, silent: true });
         if (historyProduct?.id === reserveModalProduct?.id) {
@@ -1441,6 +1440,36 @@ export function WarehouseStocks() {
     return reserveOrders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
   }, [reserveListOverride, reserveOrders]);
 
+  const handleReleaseAllReservesFromStock = useCallback(async () => {
+    const pid = reserveModalProduct?.id;
+    if (!pid || reserveBulkReleasing) return;
+    if (
+      !window.confirm(
+        `Снять резерв по всем ${reserveOrders.length} заказам в списке (всего ${reserveModalTotalQty} шт.)?`
+      )
+    ) {
+      return;
+    }
+    setReserveBulkReleasing(true);
+    setReserveError(null);
+    try {
+      await stockMovementsApi.releaseAllReserves(pid);
+      await reloadReserveOrdersList();
+      loadListRef.current?.({ page: currentPage, silent: true });
+    } catch (e) {
+      setReserveError(e?.response?.data?.message || e?.message || 'Не удалось снять резерв');
+    } finally {
+      setReserveBulkReleasing(false);
+    }
+  }, [
+    reserveModalProduct?.id,
+    reserveBulkReleasing,
+    reserveOrders.length,
+    reserveModalTotalQty,
+    reloadReserveOrdersList,
+    currentPage
+  ]);
+
   const selectedWarehouse = stockWarehouseId
     ? ownWarehouses.find((w) => String(w.id) === stockWarehouseId)
     : null;
@@ -1448,24 +1477,23 @@ export function WarehouseStocks() {
     ? selectedWarehouse.address || selectedWarehouse.name || 'Склад'
     : 'Все склады (сумма)';
 
-  const rows = useMemo(
-    () =>
-      buildStockRowsWithKits(products, (product) => {
-        const onHand = Number(product.quantity ?? 0) || 0;
-        const incoming = Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0;
-        const reserved = Number(product.reserved_quantity ?? product.reservedQuantity ?? 0) || 0;
-        const allDetails = supplierBreakdownByProductId[String(product.id)] || [];
-        const supplierDetails = enrichSupplierDetailsLabels(
-          allDetails,
-          warehouses,
-          stockWarehouseId || null
-        );
-        const suppliers = supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0);
-        const available = stockTableAvailable({ onHand, incoming, reserved, suppliers });
-        return { onHand, incoming, reserved, suppliers, supplierDetails, available };
-      }),
-    [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]
-  );
+  const rows = useMemo(() => {
+    const built = buildStockRowsWithKits(products, (product) => {
+      const onHand = Number(product.quantity ?? 0) || 0;
+      const incoming = Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0;
+      const reserved = Number(product.reserved_quantity ?? product.reservedQuantity ?? 0) || 0;
+      const allDetails = supplierBreakdownByProductId[String(product.id)] || [];
+      const supplierDetails = enrichSupplierDetailsLabels(
+        allDetails,
+        warehouses,
+        stockWarehouseId || null
+      );
+      const suppliers = supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0);
+      const available = stockTableAvailable({ onHand, incoming, reserved, suppliers });
+      return { onHand, incoming, reserved, suppliers, supplierDetails, available };
+    });
+    return built;
+  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]);
 
   const renderStockListPager = (placement) => {
     const idSuffix = placement === 'top' ? 'top' : 'bottom';
@@ -2075,13 +2103,33 @@ export function WarehouseStocks() {
           <>
             <p className="text-muted small mb-2">
               Сейчас зарезервировано <strong>{reserveModalTotalQty}</strong> шт. по{' '}
-              {reserveOrders.length} зак.
+              {reserveOrders.length} зак. (сумма по журналу; для комплектов совпадает с колонкой
+              «Резерв» — целые комплекты на SKU и сборка из комплектующих).
             </p>
+            {reserveOrders.some((o) => o.staleReserve) && (
+              <p className="text-warning small mb-2" role="status">
+                Заказы «отгружен» / «отменён» не должны держать резерв — при открытии модалки он
+                снимается автоматически. Если строка осталась, нажмите «Снять резерв».
+              </p>
+            )}
             {reserveError && (
               <p className="text-danger small mb-2" role="alert">
                 {reserveError}
               </p>
             )}
+            <div className="mb-3">
+              <Button
+                type="button"
+                variant="secondary"
+                size="small"
+                disabled={reserveBulkReleasing || Boolean(reserveUnreserveKey)}
+                onClick={handleReleaseAllReservesFromStock}
+              >
+                {reserveBulkReleasing
+                  ? 'Снимаем резерв…'
+                  : `Снять весь резерв (${reserveModalTotalQty} шт.)`}
+              </Button>
+            </div>
             <ul className="list-group stock-levels-reserve-orders-list">
               {reserveOrders.map((o) => {
                 const rowKey = `${o.orderDbId}-${o.orderId}`;
@@ -2091,13 +2139,21 @@ export function WarehouseStocks() {
                     key={rowKey}
                     className="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2"
                   >
-                    <Link
-                      to={`/orders/${o.marketplace}/${encodeURIComponent(o.orderId)}`}
-                      className="stock-levels-history-link"
-                      onClick={closeReserveModal}
-                    >
-                      {o.marketplace} · {o.orderId}
-                    </Link>
+                    <div className="d-flex flex-column gap-1">
+                      <Link
+                        to={`/orders/${o.marketplace}/${encodeURIComponent(o.orderId)}`}
+                        className="stock-levels-history-link"
+                        onClick={closeReserveModal}
+                      >
+                        {o.marketplace} · {o.orderId}
+                      </Link>
+                      {o.status ? (
+                        <span className={`small ${o.staleReserve ? 'text-warning' : 'text-muted'}`}>
+                          {o.status}
+                          {o.staleReserve ? ' · залипший резерв' : ''}
+                        </span>
+                      ) : null}
+                    </div>
                     <div className="d-flex align-items-center gap-2 flex-shrink-0">
                       <span className="badge bg-secondary rounded-pill">{o.reservedQty} шт.</span>
                       <Button

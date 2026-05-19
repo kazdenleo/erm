@@ -14,6 +14,15 @@ export function isKitProductType(raw) {
   return String(raw || '').toLowerCase() === 'kit';
 }
 
+/** Комплект в каталоге: product_type=kit, состав в kit_components или флаг с репозитория. */
+export function isKitCatalogProduct(product) {
+  if (!product || typeof product !== 'object') return false;
+  if (isKitProductType(product.product_type ?? product.productType)) return true;
+  if (product.is_kit_catalog === true || product.isKitCatalog === true) return true;
+  const comps = product.kit_components ?? product.kitComponents;
+  return Array.isArray(comps) && comps.length > 0;
+}
+
 /** Движения, меняющие фактическое наличие на складе по SKU комплекта (не резерв и не «в пути»). */
 export const KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES = [
   'receipt',
@@ -548,7 +557,7 @@ export async function computeKitMarketplaceStock(kitProductId, opts = {}) {
 
 /** Подставить в объект комплекта остатки только по SKU комплекта (без пересчёта из комплектующих). */
 export async function enrichKitProductStock(product, opts = {}) {
-  if (!product || !isKitProductType(product.product_type)) return product;
+  if (!product || !isKitCatalogProduct(product)) return product;
   const metrics = await readKitStockFromDb(product.id, opts);
   product.quantity = metrics.onHand;
   product.incoming_quantity = metrics.incoming;
@@ -603,14 +612,66 @@ export async function readKitSkuNetReserved(kitProductId) {
   return Math.max(0, reserved - unreserved);
 }
 
+/** min(floor(reserve_i / qty_in_kit)) с суммированием qty по одному component_product_id. */
+function minKitUnitsFromComponentReserves(components, getReserved) {
+  if (!components?.length) return 0;
+  const qtyPerKitByComp = new Map();
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    qtyPerKitByComp.set(pid, (qtyPerKitByComp.get(pid) || 0) + perKit);
+  }
+  if (qtyPerKitByComp.size === 0) return 0;
+  let minKits = Infinity;
+  for (const [pid, perKit] of qtyPerKitByComp) {
+    const compRes = Math.max(0, Number(getReserved(pid)) || 0);
+    minKits = Math.min(minKits, Math.floor(compRes / perKit));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
 /**
- * Резерв для отображения в таблице остатков: только под целые комплекты (1 SKU) на складе.
- * Резерв комплектующих под заказы на комплект в этой колонке не показываем.
+ * Резерв для колонки «Резерв» в остатках: целые комплекты на SKU + эквивалент из резерва комплектующих
+ * (та же логика, что getReservedKitUnitsForOrder / список заказов, но агрегат по журналу).
  */
+function kitTotalDisplayReservedFromContext(kitId, ctx) {
+  const onKit = Math.max(0, ctx.reservedMap.get(kitId) || 0);
+  const comps = ctx.componentsByKit.get(kitId) || [];
+  if (!comps.length) return onKit;
+  const fromComp = minKitUnitsFromComponentReserves(comps, (pid) => ctx.reservedMap.get(pid));
+  return onKit + fromComp;
+}
+
 export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
-  const wholeOnHand = await readKitPhysicalOnHandFromDb(kitProductId, null, opts);
-  if (wholeOnHand <= 0) return 0;
-  return readKitSkuNetReserved(kitProductId);
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+
+  const onKit = await readKitSkuNetReserved(kitId);
+  const components = await getKitComponents(kitId);
+  if (!components.length) return onKit;
+
+  const compIds = components.map((c) => Number(c.component_product_id)).filter((id) => id > 0);
+  if (!compIds.length) return onKit;
+
+  const r = await query(
+    `SELECT product_id,
+       GREATEST(0, COALESCE(SUM(
+         CASE
+           WHEN type = 'reserve' THEN -(quantity_change::numeric)
+           WHEN type = 'unreserve' THEN -(quantity_change::numeric)
+           ELSE 0
+         END
+       ), 0))::int AS rv
+     FROM stock_movements
+     WHERE product_id = ANY($1::bigint[])
+       AND type IN ('reserve', 'unreserve')
+     GROUP BY product_id`,
+    [compIds]
+  );
+  const compRes = new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0]));
+  const fromComp = minKitUnitsFromComponentReserves(components, (pid) => compRes.get(pid));
+  return onKit + fromComp;
 }
 
 async function getNetReservedForOrderProduct(orderDbId, productId) {
@@ -644,12 +705,15 @@ export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
   const components = await getKitComponents(kitId);
   if (components.length === 0) return onKit;
 
-  let minKitsFromComp = Infinity;
-  for (const c of components) {
-    const net = await getNetReservedForOrderProduct(oid, c.component_product_id);
-    minKitsFromComp = Math.min(minKitsFromComp, Math.floor(net / Math.max(1, c.quantity)));
-  }
-  const fromComp = Number.isFinite(minKitsFromComp) ? Math.max(0, minKitsFromComp) : 0;
+  const fromComp = await (async () => {
+    const nets = new Map();
+    for (const c of components) {
+      const pid = Number(c.component_product_id);
+      if (!Number.isFinite(pid) || pid < 1 || nets.has(pid)) continue;
+      nets.set(pid, await getNetReservedForOrderProduct(oid, pid));
+    }
+    return minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0);
+  })();
   return onKit + fromComp;
 }
 
@@ -1059,8 +1123,7 @@ export function kitPhysicalOnHandFromContext(kitId, ctx) {
 }
 
 export function kitDisplayReservedFromContext(kitId, ctx) {
-  if (kitPhysicalOnHandFromContext(kitId, ctx) <= 0) return 0;
-  return ctx.reservedMap.get(kitId) || 0;
+  return kitTotalDisplayReservedFromContext(kitId, ctx);
 }
 
 function assemblableFromContext(kitId, ctx) {
@@ -1096,7 +1159,7 @@ function supplierKitUnitsFromContext(kitId, ctx) {
 
 /** Пакетная предзагрузка остатков комплектов для списка товаров (без N+1). */
 export async function buildKitListStockContext(products, options = {}) {
-  const kitRows = (products || []).filter((p) => isKitProductType(p.product_type));
+  const kitRows = (products || []).filter((p) => isKitCatalogProduct(p));
   if (kitRows.length === 0) return null;
 
   const kitIds = kitRows
@@ -1172,7 +1235,7 @@ export async function attachKitDisplayMetrics(products, options = {}) {
   const ctx = options._kitCtx ?? (await buildKitListStockContext(products, options));
   if (!ctx) return;
 
-  const kitRows = products.filter((p) => isKitProductType(p.product_type));
+  const kitRows = products.filter((p) => isKitCatalogProduct(p));
   for (const p of kitRows) {
     const kitId = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
     if (!Number.isFinite(kitId) || kitId < 1) continue;
@@ -1202,6 +1265,7 @@ export const attachKitWarehouseSplitMetrics = attachKitDisplayMetrics;
 
 export default {
   isKitProductType,
+  isKitCatalogProduct,
   isKitProductId,
   findKitProductIdForMarketplaceOrder,
   getKitComponents,

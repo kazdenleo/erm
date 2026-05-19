@@ -1464,6 +1464,50 @@ export function ProductForm({
     onProductUpdate?.(updatedProduct);
   };
 
+  const [pushCardLoading, setPushCardLoading] = useState(null);
+  const [pushCardMessage, setPushCardMessage] = useState('');
+  const [pushCardError, setPushCardError] = useState('');
+
+  const formatPushCardResults = (data) => {
+    const payload = data?.data ?? data;
+    const results = Array.isArray(payload?.results) ? payload.results : [];
+    if (results.length === 0) {
+      return payload?.message || (payload?.ok ? 'Отправлено' : '');
+    }
+    return results
+      .map((r) => {
+        const label = r.marketplace === 'ozon' ? 'OZ' : r.marketplace === 'wb' ? 'WB' : r.marketplace === 'ym' ? 'YM' : r.marketplace;
+        return `${label}: ${r.ok ? r.message || 'OK' : r.error || 'ошибка'}`;
+      })
+      .join(' · ');
+  };
+
+  const handlePushCard = async (marketplace) => {
+    if (!currentProduct?.id) {
+      setPushCardError('Сначала сохраните товар в ERP.');
+      return;
+    }
+    setPushCardLoading(marketplace);
+    setPushCardError('');
+    setPushCardMessage('');
+    try {
+      const body = await productsApi.pushCard(currentProduct.id, marketplace);
+      const payload = body?.data ?? body;
+      const text = formatPushCardResults(payload);
+      const allFailed =
+        Array.isArray(payload?.results) && payload.results.length > 0 && payload.results.every((r) => !r.ok);
+      if (allFailed || payload?.ok === false) {
+        setPushCardError(text || 'Не удалось отправить данные на маркетплейс');
+      } else {
+        setPushCardMessage(text || 'Данные отправлены на маркетплейс');
+      }
+    } catch (e) {
+      setPushCardError(e?.response?.data?.message || e?.message || 'Ошибка отправки на маркетплейс');
+    } finally {
+      setPushCardLoading(null);
+    }
+  };
+
   const handleBarcodeChange = (index, value) => {
     setFormData((prev) => {
       const newBarcodes = [...prev.barcodes];
@@ -3023,10 +3067,27 @@ export function ProductForm({
             >
               {ozonSyncLoading ? 'Загрузка…' : 'Обновить данные с Ozon'}
             </Button>
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => handlePushCard('ozon')}
+              disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ozon?.trim()}
+              title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Отправить поля вкладки Ozon в кабинет'}
+            >
+              {pushCardLoading === 'ozon' ? 'Отправка…' : 'Отправить на Ozon'}
+            </Button>
             <span className="text-muted small">
-              Подтянуть атрибуты карточки с Ozon (название, аннотация, бренд и остальные поля категории). Нужен артикул или привязка к карточке.
+              Подтянуть с Ozon или отправить изменения из ERP в кабинет (нужна связь и категория Ozon).
             </span>
           </div>
+          {(pushCardError || pushCardMessage) && activeTab === 'ozon' ? (
+            <div
+              className={`alert py-2 mb-2 ${pushCardError ? 'alert-danger' : 'alert-success'}`}
+              style={{ fontSize: '12px' }}
+            >
+              {pushCardError || pushCardMessage}
+            </div>
+          ) : null}
           {ozonSyncError && (
             <div className="alert alert-danger py-2 mb-2" style={{ fontSize: '12px' }}>
               {ozonSyncError}
@@ -3371,10 +3432,26 @@ export function ProductForm({
             >
               {wbSyncLoading ? 'Загрузка…' : 'Обновить данные с WB'}
             </Button>
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => handlePushCard('wb')}
+              disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_wb?.trim()}
+            >
+              {pushCardLoading === 'wb' ? 'Отправка…' : 'Отправить на WB'}
+            </Button>
             <span className="text-muted small">
-              Подтянуть данные карточки товара с Wildberries по nmId.
+              Подтянуть с WB или отправить изменения из ERP в кабинет.
             </span>
           </div>
+          {(pushCardError || pushCardMessage) && activeTab === 'wb' ? (
+            <div
+              className={`alert py-2 mb-2 ${pushCardError ? 'alert-danger' : 'alert-success'}`}
+              style={{ fontSize: '12px' }}
+            >
+              {pushCardError || pushCardMessage}
+            </div>
+          ) : null}
           {wbSyncError && (
             <div className="alert alert-danger py-2 mb-2" style={{ fontSize: '12px' }}>
               {wbSyncError}
@@ -3788,6 +3865,32 @@ export function ProductForm({
             erpSku={formData.sku}
             onLinked={handleMarketplaceLinked}
           />
+          <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => handlePushCard('ym')}
+              disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ym?.trim()}
+            >
+              {pushCardLoading === 'ym' ? 'Отправка…' : 'Отправить на Яндекс.Маркет'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => handlePushCard('all')}
+              disabled={!!pushCardLoading || !currentProduct?.id}
+            >
+              {pushCardLoading === 'all' ? 'Отправка…' : 'Отправить на все МП'}
+            </Button>
+            </div>
+          {(pushCardError || pushCardMessage) && activeTab === 'ym' ? (
+            <div
+              className={`alert py-2 mb-2 ${pushCardError ? 'alert-danger' : 'alert-success'}`}
+              style={{ fontSize: '12px' }}
+            >
+              {pushCardError || pushCardMessage}
+            </div>
+          ) : null}
 
           <div className="card mt-3 border-secondary">
             <div className="card-header">Название и описание для Яндекс.Маркета</div>
