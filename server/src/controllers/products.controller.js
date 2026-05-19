@@ -220,6 +220,9 @@ class ProductsController {
       if (req.query.warehouseId != null && String(req.query.warehouseId).trim() !== '') {
         options.warehouseId = String(req.query.warehouseId).trim();
       }
+      if (req.query.inStockOnly === 'true' || req.query.inStockOnly === '1') {
+        options.inStockOnly = true;
+      }
       if (req.query.includeArchived === 'true' || req.query.includeArchived === '1') {
         options.includeArchived = true;
       }

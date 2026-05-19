@@ -221,6 +221,35 @@ export async function getKitComponents(kitProductId) {
   }));
 }
 
+/** Сумма quantity в составе комплекта для одного component_product_id (несколько строк — один товар). */
+export function sumKitComponentQtyPerKit(components, componentProductId) {
+  const pid = Number(componentProductId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+  let sum = 0;
+  for (const c of components || []) {
+    if (Number(c.component_product_id) === pid) {
+      sum += Math.max(1, parseInt(c.quantity, 10) || 1);
+    }
+  }
+  return sum;
+}
+
+/**
+ * Сколько зарезервировать/списать по каждому component_product_id для N комплектов.
+ * @returns {Map<number, number>}
+ */
+export function buildKitComponentQtyMap(components, kitOrderQty) {
+  const kits = Math.max(1, parseInt(kitOrderQty, 10) || 1);
+  const map = new Map();
+  for (const c of components || []) {
+    const cid = Number(c.component_product_id);
+    if (!Number.isFinite(cid) || cid < 1) continue;
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    map.set(cid, (map.get(cid) || 0) + kits * perKit);
+  }
+  return map;
+}
+
 async function getComponentWarehouseSupply(componentProductId) {
   const pid = Number(componentProductId);
   const pr = await query(
@@ -786,10 +815,9 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   if (alloc.fromComponents > 0) {
     const components = await getKitComponents(kitId);
     let canReserveFromComponents = components.length > 0;
-    for (const c of components) {
-      const perKit = Math.max(1, c.quantity);
-      const compQty = alloc.fromComponents * perKit;
-      const compAvail = await getComponentAssemblableUnits(c.component_product_id, reserveOpts);
+    const compQtyMapCheck = buildKitComponentQtyMap(components, alloc.fromComponents);
+    for (const [compId, compQty] of compQtyMapCheck) {
+      const compAvail = await getComponentAssemblableUnits(compId, reserveOpts);
       if (compAvail < compQty) {
         canReserveFromComponents = false;
         break;
@@ -806,10 +834,9 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
 
   if (alloc.fromComponents > 0) {
     const components = await getKitComponents(kitId);
-    for (const c of components) {
-      const perKit = Math.max(1, c.quantity);
-      const compQty = alloc.fromComponents * perKit;
-      await applyReserveFn(c.component_product_id, compQty, orderIdLabel, {
+    const compQtyMap = buildKitComponentQtyMap(components, alloc.fromComponents);
+    for (const [compId, compQty] of compQtyMap) {
+      await applyReserveFn(compId, compQty, orderIdLabel, {
         ...meta,
         kit_product_id: kitId,
         kit_reserve_from_whole: 0,
@@ -1178,6 +1205,8 @@ export default {
   isKitProductId,
   findKitProductIdForMarketplaceOrder,
   getKitComponents,
+  sumKitComponentQtyPerKit,
+  buildKitComponentQtyMap,
   computeKitMetricsFromComponents,
   computeKitDisplayStock,
   computeMaxKitUnitsReservable,

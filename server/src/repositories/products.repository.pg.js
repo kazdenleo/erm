@@ -157,8 +157,18 @@ function normalizeListCategoryId(categoryId) {
 }
 
 function buildFindAllFilters(options = {}) {
-  const { brandId, categoryId, organizationId, search, profileId, productType, includeArchived, archivedOnly } =
-    options;
+  const {
+    brandId,
+    categoryId,
+    organizationId,
+    search,
+    profileId,
+    productType,
+    includeArchived,
+    archivedOnly,
+    inStockOnly,
+    warehouseId
+  } = options;
   let whereSql = ' WHERE 1=1';
   const params = [];
   let paramIndex = 1;
@@ -244,6 +254,41 @@ function buildFindAllFilters(options = {}) {
     whereSql += ` AND LOWER(TRIM(COALESCE(p.product_type::text, ''))) = 'kit'`;
   } else if (pt === 'product') {
     whereSql += ` AND (p.product_type IS NULL OR LOWER(TRIM(COALESCE(p.product_type::text, ''))) <> 'kit')`;
+  }
+
+  const onlyInStock =
+    inStockOnly === true || inStockOnly === 'true' || inStockOnly === '1' || inStockOnly === 1;
+  if (onlyInStock) {
+    const whRaw = warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
+    const wid =
+      whRaw != null
+        ? typeof whRaw === 'string'
+          ? parseInt(whRaw, 10)
+          : Number(whRaw)
+        : NaN;
+    if (Number.isFinite(wid) && wid > 0) {
+      whereSql += ` AND EXISTS (
+        SELECT 1 FROM product_warehouse_stock pws
+        WHERE pws.product_id = p.id
+          AND pws.warehouse_id = $${paramIndex++}
+          AND COALESCE(pws.quantity, 0) > 0
+      )`;
+      params.push(wid);
+    } else {
+      // «Все склады»: наличие = сумма по product_warehouse_stock или products.quantity, если строк склада нет
+      whereSql += ` AND (
+        EXISTS (
+          SELECT 1 FROM product_warehouse_stock pws
+          WHERE pws.product_id = p.id AND COALESCE(pws.quantity, 0) > 0
+        )
+        OR (
+          NOT EXISTS (
+            SELECT 1 FROM product_warehouse_stock pws0 WHERE pws0.product_id = p.id LIMIT 1
+          )
+          AND COALESCE(p.quantity, 0) > 0
+        )
+      )`;
+    }
   }
 
   return { whereSql, params, paramIndex };
@@ -480,6 +525,7 @@ class ProductsRepositoryPG {
       profileId,
       productType,
       warehouseId,
+      inStockOnly,
       listView
     } = options;
     const isStockList = listView === 'stock';
@@ -491,6 +537,8 @@ class ProductsRepositoryPG {
       search,
       profileId,
       productType,
+      inStockOnly,
+      warehouseId
     });
 
     const selectCols = isStockList
@@ -859,6 +907,12 @@ class ProductsRepositoryPG {
 
     if (hasKits && kitCtx) {
       await attachKitDisplayMetrics(products, { ...options, _kitCtx: kitCtx });
+    }
+
+    const onlyInStock =
+      inStockOnly === true || inStockOnly === 'true' || inStockOnly === '1' || inStockOnly === 1;
+    if (isStockList && onlyInStock) {
+      return products.filter((p) => Math.max(0, Number(p.quantity) || 0) > 0);
     }
     return products;
   }

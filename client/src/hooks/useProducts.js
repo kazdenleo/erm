@@ -57,6 +57,9 @@ export function useProducts(options = {}) {
       if (opts.includeArchived === true) params.includeArchived = true;
       if (opts.archivedOnly === true) params.archivedOnly = true;
       if (opts.stockList === true) params.stockList = true;
+      if (opts.inStockOnly === true || opts.inStockOnly === '1' || opts.inStockOnly === 1) {
+        params.inStockOnly = '1';
+      }
       const response = await productsApi.getAll(params);
       if (gen !== loadGenerationRef.current) return;
       const list = Array.isArray(response?.data) ? response.data : (response?.data?.data ?? response ?? []);

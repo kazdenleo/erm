@@ -852,9 +852,8 @@ export function Assembly() {
     isOrderFullyCollected &&
     String(currentOrderData?.order?.status ?? '').toLowerCase() !== 'assembled';
 
-  // Автозавершение скан-сборки (не для комплектов — там завершение вручную).
+  // Автозавершение скан-сборки: все позиции (в т.ч. комплектующие) отсканированы → печать этикетки.
   useEffect(() => {
-    if (isKitAssembly) return;
     if (!showScanStickerFinish) return;
     if (!currentOrderData?.order || !currentOrderKey) return;
     if (finishScanSubmitting || printingFlowRef.current) return;
@@ -867,7 +866,7 @@ export function Assembly() {
       void handleFinishScanAssembly();
     }, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- намеренно не добавляем handleFinishScanAssembly (не stable)
-  }, [showScanStickerFinish, currentOrderKey, currentOrderData?.order, finishScanSubmitting, isKitAssembly]);
+  }, [showScanStickerFinish, currentOrderKey, currentOrderData?.order, finishScanSubmitting]);
 
   const handleFinishScanAssembly = async () => {
     if (!currentOrderData?.order || !currentOrderKey || finishScanSubmitting) return;
@@ -1032,8 +1031,8 @@ export function Assembly() {
       <h1 className="title">🔧 Сборка заказов</h1>
       <p className="subtitle">
         Заказы, отправленные на сборку ({assemblyTableGroups.length}). У каждого заказа в таблице — кнопка «Собрать»
-        без сканера: статус «Собран» и печать этикетки. При скан‑сборке после того, как все позиции отсканированы,
-        нажмите «Завершить сборку и напечатать».
+        без сканера: статус «Собран» и печать этикетки. При скан‑сборке (включая комплекты по комплектующим)
+        после последнего штрихкода этикетка печатается автоматически; кнопка «Завершить сборку» — запасной вариант.
       </p>
 
       <div className="assembly-scan-block">
@@ -1104,7 +1103,7 @@ export function Assembly() {
             {showScanStickerFinish && (
               <div className="assembly-sticker-finish">
                 <p className="assembly-ready-text">
-                  Все позиции отсканированы. Завершите сборку — этикетка уйдёт в печать автоматически.
+                  Все позиции отсканированы. Этикетка отправляется в печать автоматически…
                 </p>
                 <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button

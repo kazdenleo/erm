@@ -27,6 +27,7 @@ import './StockLevels.css';
 
 const STOCK_LIST_PAGE_SIZES = [50, 100, 200];
 const STOCK_LIST_PAGE_SIZE_LS = 'stockListPageSize';
+const STOCK_IN_STOCK_ONLY_LS = 'stockListInStockOnly';
 
 const MOVEMENT_TYPE_LABELS = {
   receipt: 'Поступление',
@@ -765,6 +766,13 @@ export function WarehouseStocks() {
   const [filterProductType, setFilterProductType] = useState('');
   const [filterSearch, setFilterSearch] = useState('');
   const [filterSearchDebounced, setFilterSearchDebounced] = useState('');
+  const [filterInStockOnly, setFilterInStockOnly] = useState(() => {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem(STOCK_IN_STOCK_ONLY_LS) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
     try {
@@ -827,13 +835,18 @@ export function WarehouseStocks() {
     (extra = {}) => {
       const search = (extra.search !== undefined ? extra.search : filterSearchDebounced).trim();
       const productType = extra.productType !== undefined ? extra.productType : filterProductType;
+      const { page: _page, silent: _silent, limit: _limit, offset: _offset, inStockOnly: inStockFlag, ...rest } =
+        extra;
+      const wantInStock =
+        inStockFlag === true || (inStockFlag !== false && filterInStockOnly);
       return {
-      ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
-      ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
+        ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
+        ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
         ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
         ...(productType ? { productType } : {}),
         ...(search ? { search } : {}),
-        ...extra
+        ...(wantInStock ? { inStockOnly: true } : {}),
+        ...rest
       };
     },
     [
@@ -841,7 +854,8 @@ export function WarehouseStocks() {
       filterCategoryId,
       stockWarehouseId,
       filterProductType,
-      filterSearchDebounced
+      filterSearchDebounced,
+      filterInStockOnly
     ]
   );
 
@@ -851,15 +865,20 @@ export function WarehouseStocks() {
       const limitCandidate = partial.limit !== undefined ? Number(partial.limit) : pageSize;
       const limit = STOCK_LIST_PAGE_SIZES.includes(limitCandidate) ? limitCandidate : 50;
       const silent = partial.silent === true;
+      const listParams = buildListParams(partial);
+      const wantInStock =
+        partial.inStockOnly === true ||
+        (partial.inStockOnly !== false && filterInStockOnly);
       return loadProducts({
-        ...buildListParams(partial),
+        ...listParams,
+        ...(wantInStock ? { inStockOnly: true } : {}),
         limit,
         offset: Math.max(0, (page - 1) * limit),
         stockList: true,
         silent
       });
     },
-    [currentPage, pageSize, buildListParams, loadProducts]
+    [currentPage, pageSize, buildListParams, loadProducts, filterInStockOnly]
   );
 
   loadListRef.current = loadStockList;
@@ -914,7 +933,7 @@ export function WarehouseStocks() {
     }
     setCurrentPage(1);
     loadListRef.current({ page: 1, silent: true });
-  }, [filterSearchDebounced, filterProductType]);
+  }, [filterSearchDebounced, filterProductType, filterInStockOnly]);
 
   useEffect(() => {
     listBootstrappedRef.current = true;
@@ -1023,8 +1042,9 @@ export function WarehouseStocks() {
       filterParts.push(`тип: ${filterProductType === 'kit' ? 'комплект' : 'товар'}`);
     }
     if (filterSearchDebounced) filterParts.push(`поиск: «${filterSearchDebounced}»`);
+    if (filterInStockOnly) filterParts.push('только в наличии');
     return filterParts.length > 0 ? filterParts.join('; ') : '';
-  }, [filterCategoryId, filterProductType, filterSearchDebounced, categories]);
+  }, [filterCategoryId, filterProductType, filterSearchDebounced, filterInStockOnly, categories]);
 
   const formatMpPushResultDetails = useCallback((data) => {
     const pushed = data?.pushed ?? 0;
@@ -1188,6 +1208,19 @@ export function WarehouseStocks() {
 
   const handleProductTypeFilterChange = (e) => {
     setFilterProductType(e.target.value);
+  };
+
+  const handleInStockOnlyChange = (e) => {
+    const on = e.target.checked;
+    setFilterInStockOnly(on);
+    try {
+      if (on) localStorage.setItem(STOCK_IN_STOCK_ONLY_LS, '1');
+      else localStorage.removeItem(STOCK_IN_STOCK_ONLY_LS);
+    } catch {
+      /* ignore */
+    }
+    setCurrentPage(1);
+    loadStockList({ ...(on ? { inStockOnly: true } : { inStockOnly: false }), page: 1, silent: true });
   };
 
   const ownWarehouses = useMemo(
@@ -1520,6 +1553,23 @@ export function WarehouseStocks() {
                 onChange={(e) => setFilterSearch(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
               />
+            </label>
+            <label className="stock-levels-filter-label stock-levels-filter-toggle">
+              <span>Наличие:</span>
+              <span className="form-check form-switch mb-0 stock-levels-filter-switch">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  role="switch"
+                  id="stock-filter-in-stock-only"
+                  checked={filterInStockOnly}
+                  onChange={handleInStockOnlyChange}
+                  disabled={listRefreshing}
+                />
+                <label className="form-check-label" htmlFor="stock-filter-in-stock-only">
+                  Только в наличии
+                </label>
+              </span>
             </label>
           </div>
           {renderStockListPager('top')}

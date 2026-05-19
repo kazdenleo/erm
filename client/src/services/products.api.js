@@ -34,6 +34,9 @@ export const productsApi = {
       params.listView = 'stock';
       params.stockList = '1';
     }
+    if (options.inStockOnly === true) {
+      params.inStockOnly = '1';
+    }
     const response = await api.get('/products', { params: Object.keys(params).length ? params : undefined });
     return response.data;
   },

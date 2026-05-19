@@ -17,7 +17,9 @@ import {
   releaseAllReservesForOrder,
   findKitProductIdForMarketplaceOrder,
   getKitComponents,
-  readKitPhysicalOnHandFromDb
+  readKitPhysicalOnHandFromDb,
+  sumKitComponentQtyPerKit,
+  buildKitComponentQtyMap
 } from './kitStock.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
@@ -622,9 +624,9 @@ class OrdersService {
 
     if (kitId != null) {
       const components = await getKitComponents(kitId);
-      const row = components.find((c) => Number(c.component_product_id) === pid);
-      if (row) {
-        return orderQty * Math.max(1, parseInt(row.quantity, 10) || 1);
+      const perKitTotal = sumKitComponentQtyPerKit(components, pid);
+      if (perKitTotal > 0) {
+        return orderQty * perKitTotal;
       }
     }
 
@@ -660,8 +662,8 @@ class OrdersService {
     const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, pid);
     const shipQty = Math.max(0, lineQty - alreadyShipped);
 
-    if (net > 0) {
-      const release = shipQty > 0 ? Math.min(shipQty, net) : net;
+    if (net > 0 && shipQty > 0) {
+      const release = Math.min(shipQty, net);
       await stockMovementsService.applyChange(pid, {
         delta: release,
         type: 'unreserve',
@@ -723,9 +725,9 @@ class OrdersService {
     }
 
     const components = await getKitComponents(kitId);
-    for (const c of components) {
-      const compQty = kitQty * Math.max(1, c.quantity);
-      await this._applyAssemblyStockForOrderProduct(orderRow, c.component_product_id, compQty);
+    const compQtyMap = buildKitComponentQtyMap(components, kitQty);
+    for (const [compId, compQty] of compQtyMap) {
+      await this._applyAssemblyStockForOrderProduct(orderRow, compId, compQty);
     }
   }
 
