@@ -19,7 +19,8 @@ import {
   getKitComponents,
   readKitPhysicalOnHandFromDb,
   sumKitComponentQtyPerKit,
-  buildKitComponentQtyMap
+  buildKitComponentQtyMap,
+  getComponentAssemblableUnits
 } from './kitStock.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
@@ -450,21 +451,12 @@ class OrdersService {
         const alloc = allocateKitReservePriority(qtyWanted, breakdown);
         qty = alloc.kitsToReserve;
       }
+    } else if (meta?.kit_product_id) {
+      // Уже проверено в applyKitOrderReserve (собираемость из комплектующих).
+      qty = qtyWanted;
     } else {
-      const pr = await query(
-        `SELECT COALESCE(quantity, 0) AS quantity,
-                COALESCE(incoming_quantity, 0) AS incoming_quantity,
-                COALESCE(reserved_quantity, 0) AS reserved_quantity
-         FROM products
-         WHERE id = $1
-         LIMIT 1`,
-        [productId]
-      );
-      const row = pr.rows?.[0];
-      const actual = row?.quantity != null ? Number(row.quantity) : 0;
-      const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
-      const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
-      availableSupply = Math.max(0, actual + incoming - reserved);
+      const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
+      availableSupply = await getComponentAssemblableUnits(productId, { warehouseId: wh });
       qty = Math.min(qtyWanted, Math.floor(availableSupply));
     }
     if (qty <= 0) return;
@@ -888,20 +880,7 @@ class OrdersService {
     const need = Math.max(0, qty - alreadyReservedForOrder);
     if (need <= 0) return;
 
-    const pr = await query(
-      `SELECT COALESCE(quantity, 0) AS quantity,
-              COALESCE(incoming_quantity, 0) AS incoming_quantity,
-              COALESCE(reserved_quantity, 0) AS reserved_quantity
-       FROM products
-       WHERE id = $1
-       LIMIT 1`,
-      [productId]
-    );
-    const row = pr.rows?.[0];
-    const actual = row?.quantity != null ? Number(row.quantity) : 0;
-    const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
-    const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
-    const availableSupply = Math.max(0, actual + incoming - reserved);
+    const availableSupply = await getComponentAssemblableUnits(productId, { warehouseId });
     const reserveNow = Math.min(need, Math.floor(availableSupply));
     if (reserveNow <= 0) return;
 

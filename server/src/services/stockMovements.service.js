@@ -60,11 +60,18 @@ class StockMovementsService {
     if (newWh < 0) newWh = 0;
 
     const incomingQty = product.incoming_quantity != null ? Number(product.incoming_quantity) : 0;
-    const availableForReserve = Math.max(0, totalBefore + incomingQty - currentReserved);
+    let availableForReserve = Math.max(0, totalBefore + incomingQty - currentReserved);
 
     let newReserved = currentReserved;
     if (type === 'reserve' && safeDelta < 0) {
       const reserveAdd = Math.abs(safeDelta);
+      try {
+        const { getComponentAssemblableUnits } = await import('./kitStock.service.js');
+        const fromSupply = await getComponentAssemblableUnits(idNum, { warehouseId });
+        availableForReserve = Math.max(availableForReserve, fromSupply);
+      } catch {
+        /* fallback: products.quantity + incoming − reserved_quantity */
+      }
       if (reserveAdd > availableForReserve) {
         const err = new Error(
           `Недостаточно остатка для резерва (доступно: ${availableForReserve}, запрошено: ${reserveAdd})`

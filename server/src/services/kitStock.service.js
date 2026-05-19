@@ -748,8 +748,8 @@ export async function computeKitSupplierUnitsFromComponents(kitProductId, opts =
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
-/** Доступность одного комплектующего для сборки: склад + в пути + поставщики − резерв (из журнала). */
-async function getComponentAssemblableUnits(componentProductId, opts = {}) {
+/** Доступность одной позиции для резерва/сборки: склад + в пути + поставщики − резерв (из журнала). */
+export async function getComponentAssemblableUnits(componentProductId, opts = {}) {
   const widRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
   const wid =
     widRaw != null && String(widRaw).trim() !== ''
@@ -1294,6 +1294,7 @@ export default {
   attachKitDisplayMetrics,
   attachKitWarehouseSplitMetrics,
   computeAssemblableFromComponents,
+  getComponentAssemblableUnits,
   computeKitSupplierUnitsFromComponents,
   readKitPhysicalOnHandFromDb,
   readKitSkuNetReserved,
