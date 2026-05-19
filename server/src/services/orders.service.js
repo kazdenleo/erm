@@ -2214,6 +2214,40 @@ class OrdersService {
     return data.orders.length - orders.length;
   }
 
+  /**
+   * Строки для ручного резерва в карточке заказа: только этот order_id (и подстроки),
+   * без соседних заказов с тем же order_group_id.
+   */
+  async _findOrderRowsForReserve(marketplace, orderId, { profileId = null } = {}) {
+    const oid = String(orderId ?? '').trim();
+    if (!oid || !marketplace) return [];
+
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      const rows = await this.repository.findRowsForReserveByOrderKey(marketplace, oid, profileId);
+      if (rows.length > 0) return rows;
+      const one = await this.repository.findByMarketplaceAndOrderId(marketplace, oid, profileId);
+      return one ? [one] : [];
+    }
+
+    const all = await this.getAll();
+    const mpUi = String(marketplace).toLowerCase();
+    const sameMp = (oMp) => {
+      const m = String(oMp || '').toLowerCase();
+      if (mpUi === 'wildberries' || mpUi === 'wb') return m === 'wildberries' || m === 'wb';
+      if (mpUi === 'yandex' || mpUi === 'ym' || mpUi === 'yandexmarket') {
+        return m === 'yandex' || m === 'ym' || m === 'yandexmarket';
+      }
+      if (mpUi === 'ozon') return m === 'ozon';
+      if (mpUi === 'manual') return m === 'manual';
+      return m === mpUi;
+    };
+    return all.filter((o) => {
+      if (!sameMp(o.marketplace)) return false;
+      const oId = String(o.orderId ?? o.order_id ?? '').trim();
+      return oId === oid || oId.startsWith(`${oid}~`) || oId.startsWith(`${oid}:`);
+    });
+  }
+
   /** Все строки заказа в БД (включая позиции группы). */
   async _findOrderGroupRows(marketplace, orderId, { profileId = null } = {}) {
     const oid = String(orderId ?? '').trim();
@@ -2291,7 +2325,7 @@ class OrdersService {
   }
 
   async getOrderReserveSummary(marketplace, orderId, { profileId = null } = {}) {
-    const rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    const rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {
       const err = new Error('Заказ не найден в системе');
       err.statusCode = 404;
@@ -2301,7 +2335,7 @@ class OrdersService {
   }
 
   /**
-   * Поставить / снять резерв по всем строкам заказа (группа).
+   * Поставить / снять резерв по строкам выбранного заказа (не по всему order_group_id).
    * @param {'toggle'|'reserve'|'unreserve'} action
    */
   async setOrderReserve(marketplace, orderId, { profileId = null, action = 'toggle' } = {}) {
@@ -2311,7 +2345,7 @@ class OrdersService {
       throw err;
     }
 
-    const rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    const rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {
       const err = new Error('Заказ не найден в системе');
       err.statusCode = 404;

@@ -40,6 +40,8 @@ const KNOWN_MODES = new Set([
 export function WarehouseOperations({
   products,
   mainWarehouseName,
+  /** Организация с вкладки «Остатки» — подставляется в перемещение */
+  defaultOrganizationId = '',
   /** Выбранный склад на вкладке «Остатки» (подсказка для полей склада) */
   inventoryWarehouseId,
   /** Перезагрузить товары с фильтром по складу (для пересчёта «в системе» при инвентаризации) */
@@ -73,6 +75,7 @@ export function WarehouseOperations({
   const [opLoading, setOpLoading] = useState(false);
   const [opMessage, setOpMessage] = useState(null);
   // Перемещение между складами: список строк { productId, sku, name, quantity }
+  const [transferOrganizationId, setTransferOrganizationId] = useState('');
   const [transferFromWarehouseId, setTransferFromWarehouseId] = useState('');
   const [transferToWarehouseId, setTransferToWarehouseId] = useState('');
   const [transferScanValue, setTransferScanValue] = useState('');
@@ -82,6 +85,14 @@ export function WarehouseOperations({
   const [transferQty, setTransferQty] = useState(1);
   const [transferQuickMode, setTransferQuickMode] = useState(true);
   const [transferList, setTransferList] = useState([]);
+  const transferWarehouses = useMemo(() => {
+    const orgId = String(transferOrganizationId || '').trim();
+    if (!orgId) return [];
+    return ownWarehouses.filter((w) => {
+      const wOrg = w.organizationId ?? w.organization_id;
+      return wOrg != null && String(wOrg) === orgId;
+    });
+  }, [ownWarehouses, transferOrganizationId]);
   const [inventorySessionsList, setInventorySessionsList] = useState([]);
   const [inventorySessionsLoading, setInventorySessionsLoading] = useState(false);
   const [inventoryDetailView, setInventoryDetailView] = useState(null);
@@ -194,6 +205,22 @@ export function WarehouseOperations({
     suggestOnPickRef.current = typeof onPick === 'function' ? onPick : null;
     setSuggestOpen(true);
   }, []);
+  const searchProductsRemote = useCallback(async (query, organizationId) => {
+    const q = normalizeQuery(query);
+    if (!q || q.length < 2) return [];
+    try {
+      const res = await productsApi.getAll({
+        search: q,
+        organizationId: organizationId || undefined,
+        limit: 30
+      });
+      const list = Array.isArray(res?.data) ? res.data : [];
+      return list.filter(Boolean);
+    } catch {
+      return [];
+    }
+  }, []);
+
   const findLocalMatches = useCallback((query) => {
     const q = normalizeQuery(query).toLowerCase();
     if (!q) return [];
@@ -216,45 +243,54 @@ export function WarehouseOperations({
     return scored.map((x) => x.p).slice(0, 30);
   }, [products]);
 
-  const lookupProductByAny = useCallback(async (value, { title = 'Выберите товар', allowLinkBarcode = false } = {}) => {
-    const v = normalizeQuery(value);
-    if (!v) {
-      throw new Error('Введите штрихкод / артикул / название');
-    }
-    // 1) Штрихкод — самый точный (быстро и однозначно).
-    try {
-      const res = await productsApi.getByBarcode(v);
-      const product = res?.data ?? res;
-      if (product && (product.id || product.sku)) return product;
-    } catch (_) {
-      // ignore → fallback
-    }
+  const lookupProductByAny = useCallback(
+    async (
+      value,
+      { title = 'Выберите товар', allowLinkBarcode = false, organizationId = null, useServerSearch = false } = {}
+    ) => {
+      const v = normalizeQuery(value);
+      if (!v) {
+        throw new Error('Введите штрихкод / артикул / название');
+      }
+      // 1) Штрихкод — самый точный (быстро и однозначно).
+      try {
+        const res = await productsApi.getByBarcode(v);
+        const product = res?.data ?? res;
+        if (product && (product.id || product.sku)) return product;
+      } catch (_) {
+        // ignore → fallback
+      }
 
-    // 2) Локальный поиск по SKU/названию (по уже загруженному списку).
-    const matches = findLocalMatches(v);
-    if (matches.length === 1) return matches[0];
-    if (matches.length > 1) {
-      return await new Promise((resolve, reject) => {
-        openProductPick(title, matches, (p) => {
-          closeProductPick();
-          if (!p) reject(new Error('Товар не выбран'));
-          else resolve(p);
+      // 2) Локальный поиск по SKU/названию (по уже загруженному списку).
+      let matches = findLocalMatches(v);
+      if (matches.length === 0 && useServerSearch) {
+        matches = await searchProductsRemote(v, organizationId);
+      }
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) {
+        return await new Promise((resolve, reject) => {
+          openProductPick(title, matches, (p) => {
+            closeProductPick();
+            if (!p) reject(new Error('Товар не выбран'));
+            else resolve(p);
+          });
         });
-      });
-    }
+      }
 
-    // 3) Если ввели штрихкод вручную и товара нет — предложим привязать штрихкод к товару (только там, где это уместно).
-    if (allowLinkBarcode) {
-      return await new Promise((resolve, reject) => {
-        openLinkBarcode(v, (p) => {
-          if (!p) reject(new Error('Товар не выбран'));
-          else resolve(p);
+      // 3) Если ввели штрихкод вручную и товара нет — предложим привязать штрихкод к товару (только там, где это уместно).
+      if (allowLinkBarcode) {
+        return await new Promise((resolve, reject) => {
+          openLinkBarcode(v, (p) => {
+            if (!p) reject(new Error('Товар не выбран'));
+            else resolve(p);
+          });
         });
-      });
-    }
+      }
 
-    throw new Error('Товар не найден');
-  }, [findLocalMatches, openProductPick, closeProductPick, openLinkBarcode]);
+      throw new Error('Товар не найден');
+    },
+    [findLocalMatches, searchProductsRemote, openProductPick, closeProductPick, openLinkBarcode]
+  );
 
   const handleLinkBarcodeLinked = useCallback(
     async (product) => {
@@ -309,26 +345,70 @@ export function WarehouseOperations({
     if (mode === MODE_WRITEOFF) scanInputRef.current?.focus();
     if (mode === MODE_RETURN_SUPPLIER) returnScanInputRef.current?.focus();
     if (mode === MODE_RETURN_CUSTOMER) customerReturnScanInputRef.current?.focus();
+    if (mode === MODE_TRANSFER) transferScanInputRef.current?.focus();
   }, [mode]);
+
+  useEffect(() => {
+    if (mode !== MODE_TRANSFER) return;
+    if (!transferOrganizationId && defaultOrganizationId) {
+      setTransferOrganizationId(String(defaultOrganizationId));
+    }
+  }, [mode, transferOrganizationId, defaultOrganizationId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
     // Подсказка: если пользователь пришёл из таблицы остатков с выбранным складом — используем как склад-источник.
     if (!transferFromWarehouseId && inventoryWarehouseId) {
-      setTransferFromWarehouseId(String(inventoryWarehouseId));
+      const wh = ownWarehouses.find((w) => String(w.id) === String(inventoryWarehouseId));
+      const whOrg = wh?.organizationId ?? wh?.organization_id;
+      if (whOrg != null && String(whOrg) === String(transferOrganizationId || defaultOrganizationId)) {
+        setTransferFromWarehouseId(String(inventoryWarehouseId));
+      }
     }
-  }, [mode, transferFromWarehouseId, inventoryWarehouseId]);
+  }, [
+    mode,
+    transferFromWarehouseId,
+    inventoryWarehouseId,
+    transferOrganizationId,
+    defaultOrganizationId,
+    ownWarehouses
+  ]);
+
+  useEffect(() => {
+    if (mode !== MODE_TRANSFER) return;
+    const allowed = new Set(transferWarehouses.map((w) => String(w.id)));
+    if (transferFromWarehouseId && !allowed.has(String(transferFromWarehouseId))) {
+      setTransferFromWarehouseId('');
+    }
+    if (transferToWarehouseId && !allowed.has(String(transferToWarehouseId))) {
+      setTransferToWarehouseId('');
+    }
+  }, [mode, transferWarehouses, transferFromWarehouseId, transferToWarehouseId]);
+
+  const resolveTransferMatches = useCallback(
+    async (qq) => {
+      const local = findLocalMatches(qq);
+      if (local.length > 0) return local;
+      if (!transferOrganizationId) return [];
+      return searchProductsRemote(qq, transferOrganizationId);
+    },
+    [findLocalMatches, searchProductsRemote, transferOrganizationId]
+  );
 
   const transferCandidates = useMemo(() => {
-    const list = Array.isArray(products) ? products : [];
-    return list
-      .filter((p) => p && p.id != null)
-      .map((p) => ({
-        id: String(p.id),
-        sku: (p.sku || p.article || p.vendorCode || '').toString(),
-        name: (p.name || p.title || '—').toString(),
-      }));
-  }, [products]);
+    const orgId = String(transferOrganizationId || '').trim();
+    const list = (Array.isArray(products) ? products : []).filter((p) => {
+      if (!p?.id) return false;
+      if (!orgId) return false;
+      const pOrg = p.organizationId ?? p.organization_id;
+      return pOrg == null || String(pOrg) === orgId;
+    });
+    return list.map((p) => ({
+      id: String(p.id),
+      sku: (p.sku || p.article || p.vendorCode || '').toString(),
+      name: (p.name || p.title || '—').toString()
+    }));
+  }, [products, transferOrganizationId]);
 
   const addTransferItem = () => {
     const pid = String(transferSelectedProductId || '').trim();
@@ -375,6 +455,10 @@ export function WarehouseOperations({
 
   const submitTransfer = async () => {
     if (opLoading) return;
+    if (!transferOrganizationId) {
+      setOpMessage('Выберите организацию');
+      return;
+    }
     const fromId = String(transferFromWarehouseId || '').trim();
     const toId = String(transferToWarehouseId || '').trim();
     if (!fromId || !toId) {
@@ -423,9 +507,15 @@ export function WarehouseOperations({
       const raw = String(transferScanValue || '').trim();
       if (!raw) return;
       try {
+        if (!transferOrganizationId) {
+          setOpMessage('Сначала выберите организацию');
+          return;
+        }
         const p = await lookupProductByAny(raw, {
           title: 'Выберите товар для перемещения',
-          allowLinkBarcode: true
+          allowLinkBarcode: true,
+          organizationId: transferOrganizationId,
+          useServerSearch: true
         });
         addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
         setTransferScanValue('');
@@ -438,7 +528,15 @@ export function WarehouseOperations({
         window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
       }
     },
-    [opLoading, transferScanValue, lookupProductByAny, addTransferItemFromProduct, transferQty, transferQuickMode]
+    [
+      opLoading,
+      transferScanValue,
+      transferOrganizationId,
+      lookupProductByAny,
+      addTransferItemFromProduct,
+      transferQty,
+      transferQuickMode
+    ]
   );
 
   useEffect(() => {
@@ -2167,9 +2265,39 @@ export function WarehouseOperations({
         <div className="warehouse-ops-panel transfer-panel">
           <h3 className="warehouse-ops-panel-title">Перемещение между складами</h3>
           <p className="warehouse-ops-hint">
-            Операция перемещает свободный остаток товара: со склада-источника списывается количество, на складе-получателе
-            прибавляется. В журнале движений сохраняются две записи (out/in).
+            Перенос свободного остатка между складами одной организации. Поиск товара: штрихкод, артикул или название.
+            В журнале движений — две записи (списание со склада-источника и поступление на склад-получатель).
           </p>
+
+          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
+            <div className="warehouse-ops-receipt-supplier-col">
+              <label>
+                Организация <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                className="form-select"
+                value={transferOrganizationId}
+                onChange={(e) => {
+                  setTransferOrganizationId(e.target.value);
+                  setTransferFromWarehouseId('');
+                  setTransferToWarehouseId('');
+                }}
+              >
+                <option value="">— выберите организацию —</option>
+                {(organizations || []).map((org) => (
+                  <option key={org.id} value={String(org.id)}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {transferOrganizationId && transferWarehouses.length < 2 && (
+            <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
+              Для перемещения нужны минимум два склада, привязанные к выбранной организации. Добавьте склад в настройках.
+            </p>
+          )}
 
           <form onSubmit={submitTransferScan} className="warehouse-ops-scan-form" style={{ marginTop: 10 }}>
             <div style={{ position: 'relative', flex: 1 }}>
@@ -2179,6 +2307,7 @@ export function WarehouseOperations({
                 className="warehouse-ops-scan-input"
                 placeholder="Скан: штрихкод / артикул / название"
                 value={transferScanValue}
+                disabled={!transferOrganizationId}
                 onChange={(e) => {
                   const v = e.target.value;
                   setTransferScanValue(v);
@@ -2187,11 +2316,11 @@ export function WarehouseOperations({
                     if (suggestContext === 'transfer_scan') closeSuggest();
                     return;
                   }
-                  transferScanDebounceRef.current = setTimeout(() => {
+                  transferScanDebounceRef.current = setTimeout(async () => {
                     transferScanDebounceRef.current = null;
                     const qq = String(v || '').trim();
                     if (qq.length < 2) return;
-                    const matches = findLocalMatches(qq);
+                    const matches = await resolveTransferMatches(qq);
                     if (matches.length === 0) {
                       if (suggestContext === 'transfer_scan') closeSuggest();
                       return;
@@ -2209,9 +2338,10 @@ export function WarehouseOperations({
                     if (suggestContext === 'transfer_scan') closeSuggest();
                   }, 120);
                 }}
-                onFocus={() => {
+                onFocus={async () => {
+                  if (!transferOrganizationId) return;
                   if (!transferScanValue.trim() || isLikelyBarcodeScan(transferScanValue)) return;
-                  const matches = findLocalMatches(transferScanValue);
+                  const matches = await resolveTransferMatches(transferScanValue);
                   if (matches.length > 0) {
                     openSuggest('transfer_scan', 'Выберите товар', matches, (p) => {
                       if (!p) return;
@@ -2265,7 +2395,7 @@ export function WarehouseOperations({
                 Быстрый режим (по скану всегда 1 шт)
               </label>
             </div>
-            <Button type="submit" disabled={opLoading || !transferScanValue.trim()}>
+            <Button type="submit" disabled={opLoading || !transferScanValue.trim() || !transferOrganizationId}>
               Добавить по скану
             </Button>
           </form>
@@ -2277,9 +2407,10 @@ export function WarehouseOperations({
                 className="form-select"
                 value={transferFromWarehouseId}
                 onChange={(e) => setTransferFromWarehouseId(e.target.value)}
+                disabled={!transferOrganizationId}
               >
                 <option value="">— выберите —</option>
-                {ownWarehouses.map((w) => (
+                {transferWarehouses.map((w) => (
                   <option key={w.id} value={String(w.id)}>
                     {w.address || w.name || `Склад #${w.id}`}
                   </option>
@@ -2292,9 +2423,10 @@ export function WarehouseOperations({
                 className="form-select"
                 value={transferToWarehouseId}
                 onChange={(e) => setTransferToWarehouseId(e.target.value)}
+                disabled={!transferOrganizationId}
               >
                 <option value="">— выберите —</option>
-                {ownWarehouses.map((w) => (
+                {transferWarehouses.map((w) => (
                   <option key={w.id} value={String(w.id)}>
                     {w.address || w.name || `Склад #${w.id}`}
                   </option>
@@ -2329,7 +2461,11 @@ export function WarehouseOperations({
                 onChange={(e) => setTransferQty(e.target.value)}
               />
             </div>
-            <Button type="button" onClick={addTransferItem} disabled={opLoading || !transferSelectedProductId}>
+            <Button
+              type="button"
+              onClick={addTransferItem}
+              disabled={opLoading || !transferSelectedProductId || !transferOrganizationId}
+            >
               Добавить
             </Button>
           </div>
@@ -2372,8 +2508,14 @@ export function WarehouseOperations({
             </p>
           )}
 
+          {opMessage && mode === MODE_TRANSFER && (
+            <div className="warehouse-ops-msg success" style={{ marginTop: 12 }}>
+              {opMessage}
+            </div>
+          )}
+
           <div className="warehouse-ops-receipt-list-actions" style={{ marginTop: 12 }}>
-            <Button onClick={submitTransfer} disabled={opLoading}>
+            <Button onClick={submitTransfer} disabled={opLoading || !transferOrganizationId}>
               {opLoading ? 'Перемещение…' : 'Выполнить перемещение'}
             </Button>
             <Button

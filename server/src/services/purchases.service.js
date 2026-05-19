@@ -147,6 +147,35 @@ function parseSourceOrdersJson(raw) {
   return [];
 }
 
+/** После приёмки/заказа у поставщика: дозарезервировать заказы «В закупке», если появилось покрытие. */
+async function reapplyInProcurementReservesForPurchase(purchaseId, profileId) {
+  const purId = parseInt(purchaseId, 10);
+  const pid = normalizeProfileId(profileId);
+  if (!purId || Number.isNaN(purId) || pid == null) return;
+  const items = await query(
+    'SELECT source_orders FROM purchase_items WHERE purchase_id = $1',
+    [purId]
+  );
+  const uniq = new Map();
+  for (const row of items.rows || []) {
+    for (const o of parseSourceOrdersJson(row.source_orders)) {
+      if (!o?.marketplace || o?.orderId == null) continue;
+      const k = `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
+      if (!k.endsWith('|')) uniq.set(k, { marketplace: o.marketplace, orderId: String(o.orderId) });
+    }
+  }
+  const rowsToReserve = [];
+  for (const o of uniq.values()) {
+    const row = await ordersService.getByMarketplaceAndOrderId(o.marketplace, o.orderId, { profileId: pid });
+    if (row && String(row.status || '').toLowerCase() === 'in_procurement') {
+      rowsToReserve.push(row);
+    }
+  }
+  if (rowsToReserve.length > 0) {
+    await ordersService._reapplyReserveForOrderRows(rowsToReserve);
+  }
+}
+
 async function mergeSourceOrdersInTx(client, purchaseId, productId, newOrders) {
   const norm = normalizeSourceOrderList(newOrders);
   if (norm.length === 0) return;
@@ -1416,25 +1445,7 @@ class PurchasesService {
 
       return { ok: true, status: 'open', ensuredReserveOrders: ordersToReserve.length };
     });
-    // После транзакции: входящий товар должен быть "в резерве" под заказы из «В закупку».
-    // Резерв идемпотентен (проверяется по meta.order_id).
-    const uniq = new Map();
-    for (const o of ensureReserves || []) {
-      const k = `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
-      if (!k.endsWith('|')) uniq.set(k, o);
-    }
-    const rowsToReserve = [];
-    for (const o of uniq.values()) {
-      const row = await ordersService.getByMarketplaceAndOrderId(o.marketplace, o.orderId, {
-        profileId: pid
-      });
-      if (row && String(row.status || '').toLowerCase() === 'in_procurement') {
-        rowsToReserve.push(row);
-      }
-    }
-    if (rowsToReserve.length > 0) {
-      await ordersService._reapplyReserveForOrderRows(rowsToReserve);
-    }
+    await reapplyInProcurementReservesForPurchase(id, pid).catch(() => {});
     return res;
   }
 
@@ -1661,7 +1672,7 @@ class PurchasesService {
       throw err;
     }
 
-    return transaction(async (client) => {
+    const result = await transaction(async (client) => {
       const r = await client.query(
         `SELECT r.id, r.status, r.purchase_id
          FROM purchase_receipts r
@@ -1749,8 +1760,12 @@ class PurchasesService {
             [productId, dwId, moveQty]
           );
           await client.query(
-            'UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-            [newIncoming, productId]
+            `UPDATE products SET
+               quantity = COALESCE((SELECT SUM(s.quantity)::int FROM product_warehouse_stock s WHERE s.product_id = $1), 0),
+               incoming_quantity = $2,
+               updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [productId, newIncoming]
           );
           await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
             productId,
@@ -1942,6 +1957,8 @@ class PurchasesService {
         completedAt: nowIso(),
       };
     });
+    await reapplyInProcurementReservesForPurchase(result.purchaseId, pid).catch(() => {});
+    return result;
   }
 
   /**
@@ -2193,8 +2210,22 @@ class PurchasesService {
                ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = GREATEST(0, product_warehouse_stock.quantity + $3::int)`,
               [line.productId, receiptWarehouseId, d]
             );
+            await client.query(
+              `UPDATE products SET
+                 quantity = COALESCE((SELECT SUM(s.quantity)::int FROM product_warehouse_stock s WHERE s.product_id = $1), 0),
+                 updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1`,
+              [line.productId]
+            );
           } else {
             await addToDefaultWarehouseStock(client, line.productId, d);
+            await client.query(
+              `UPDATE products SET
+                 quantity = COALESCE((SELECT SUM(s.quantity)::int FROM product_warehouse_stock s WHERE s.product_id = $1), 0),
+                 updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1`,
+              [line.productId]
+            );
           }
           await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
             productId: line.productId,

@@ -13,7 +13,7 @@ import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/S
 const opsByKey = Object.fromEntries((WAREHOUSE_OPERATION_OPS || []).map((t) => [t.op, t]));
 const stockWarehouseChildren = [
   // Порядок в меню «Склад»:
-  // Остатки → Закупка → Приёмка → Возврат поставщику → Возврат от клиентов → Инвентаризация → Списание
+  // Остатки → Закупка → Приёмка → Перемещение → Возврат поставщику → … → Списание
   {
     path: opsByKey.table?.to || '/stock-levels/warehouse',
     label: '📦 Остатки',
@@ -26,6 +26,12 @@ const stockWarehouseChildren = [
     label: '📑 Приёмка',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'receipts_list',
+  },
+  {
+    path: opsByKey.transfer?.to || '/stock-levels/warehouse?op=transfer',
+    label: '↔️ Перемещение',
+    iconClass: 'pe-7s-angle-right',
+    warehouseOp: 'transfer',
   },
   {
     path: opsByKey.return_supplier?.to || '/stock-levels/warehouse?op=return_supplier',

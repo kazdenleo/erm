@@ -253,6 +253,31 @@ class StockMovementsService {
       throw error;
     }
 
+    const whOrg = await query(
+      `SELECT id, organization_id FROM warehouses WHERE id IN ($1, $2)`,
+      [fromId, toId]
+    );
+    const orgByWh = new Map(
+      (whOrg.rows || []).map((row) => [Number(row.id), row.organization_id != null ? Number(row.organization_id) : null])
+    );
+    if (!orgByWh.has(fromId) || !orgByWh.has(toId)) {
+      const error = new Error('Склад не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+    const orgFrom = orgByWh.get(fromId);
+    const orgTo = orgByWh.get(toId);
+    if (orgFrom != null && orgTo != null && orgFrom !== orgTo) {
+      const error = new Error('Перемещение возможно только между складами одной организации');
+      error.statusCode = 400;
+      throw error;
+    }
+    if ((orgFrom == null) !== (orgTo == null)) {
+      const error = new Error('Укажите склады одной организации (оба склада должны быть привязаны к одной организации)');
+      error.statusCode = 400;
+      throw error;
+    }
+
     // Товар + проверка профиля (мультитенант).
     const product = await this.productsRepository.findById(pid);
     if (!product) {
@@ -264,6 +289,18 @@ class StockMovementsService {
     if (profileId != null && profileId !== '' && prodProfileId != null && String(prodProfileId) !== String(profileId)) {
       const error = new Error('Товар не найден');
       error.statusCode = 404;
+      throw error;
+    }
+    const prodOrgId = product.organization_id ?? product.organizationId ?? null;
+    const prodOrgNum = prodOrgId != null && prodOrgId !== '' ? Number(prodOrgId) : null;
+    if (
+      orgFrom != null &&
+      prodOrgNum != null &&
+      Number.isFinite(prodOrgNum) &&
+      prodOrgNum !== orgFrom
+    ) {
+      const error = new Error('Товар не относится к организации выбранных складов');
+      error.statusCode = 400;
       throw error;
     }
 

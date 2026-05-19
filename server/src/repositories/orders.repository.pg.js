@@ -690,6 +690,44 @@ class OrdersRepositoryPG {
   }
 
   /**
+   * Строки одного заказа для ручного резерва: только order_id (и подстроки oid~ / oid:),
+   * без расширения на весь order_group_id (чтобы снятие резерва с одного заказа не затрагивало соседние).
+   */
+  async findRowsForReserveByOrderKey(marketplace, orderId, profileId = null) {
+    const dbMarketplace = normalizeMarketplaceForDb(marketplace);
+    const oid = String(orderId ?? '').trim();
+    if (!oid || !dbMarketplace) return [];
+    const pid = normalizeProfileId(profileId);
+    const likeTilde = `${oid}~%`;
+    const likeColon = `${oid}:%`;
+    const result = await query(
+      `
+      SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+        COALESCE(p.name, o.product_name) AS product_name,
+        o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
+        o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.returned_to_new_at,
+        o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
+        assembler.email AS assembled_by_email,
+        assembler.full_name AS assembled_by_full_name
+      FROM orders o
+      LEFT JOIN products p ON o.product_id = p.id
+      LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
+      WHERE o.marketplace = $1
+        AND (
+          TRIM(o.order_id) = $2
+          OR o.order_id LIKE $3
+          OR o.order_id LIKE $4
+        )
+        ${pid ? 'AND o.profile_id = $5::bigint' : ''}
+      ORDER BY o.id
+    `,
+      pid ? [dbMarketplace, oid, likeTilde, likeColon, pid] : [dbMarketplace, oid, likeTilde, likeColon]
+    );
+    return (result.rows || []).map(rowToCamel);
+  }
+
+  /**
    * Найти все заказы по order_group_id (для группового ручного заказа)
    */
   async findByOrderGroupId(orderGroupId, profileId = null) {

@@ -11,6 +11,7 @@ import { useCategories } from '../../hooks/useCategories';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { stockMovementsApi } from '../../services/stockMovements.api';
+import { ordersApi } from '../../services/orders.api';
 import { supplierStocksApi } from '../../services/supplierStocks.api';
 import { productsApi } from '../../services/products.api';
 import { marketplaceStockApi } from '../../services/marketplaceStock.api';
@@ -398,7 +399,7 @@ function sumMovementsQuantityChange(movements) {
 /**
  * Дополняем снимок для отображения: у резервов в БД часто нет incoming_after/reserved_after;
  * одиночный «Резерв по заказу» — те же правила, что у сгруппированных резервов;
- * при приёмке по закупке при ненулевом резерве «наличие» = 0; пачка отгрузки — «в пути» 0, резерв 0.
+ * пачка отгрузки — «в пути» 0, резерв 0.
  */
 function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
   const out = {
@@ -476,9 +477,7 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
       else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
       if (dbRes != null) out.res = dbRes;
       else if (out.res == null && prevLineBelow?.res != null) out.res = prevLineBelow.res;
-      if (out.res != null && out.res > 0) {
-        out.bal = 0;
-      } else if (dbBal != null) {
+      if (dbBal != null) {
         out.bal = dbBal;
       }
     }
@@ -491,6 +490,10 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
       else if (out.res == null) out.res = 0;
       if (dbBal != null) out.bal = dbBal;
       if (out.inc == null) out.inc = 0;
+    }
+    if (t === 'unreserve') {
+      const dbRes = movementNum(m, 'reserved_after');
+      if (dbRes != null) out.res = dbRes;
     }
   }
 
@@ -588,6 +591,13 @@ function getMovementLink(m) {
     return {
       to: { pathname: '/stock-levels/warehouse', search: '?op=writeoff' },
       state: { openTab: 'writeoff' },
+      label: reasonText
+    };
+  }
+  if (t === 'transfer') {
+    return {
+      to: { pathname: '/stock-levels/warehouse', search: '?op=transfer' },
+      state: { openTab: 'transfer' },
       label: reasonText
     };
   }
@@ -790,8 +800,12 @@ export function WarehouseStocks() {
   const [historyList, setHistoryList] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [reserveModalOpen, setReserveModalOpen] = useState(false);
+  /** Товар, для которого открыта модалка резерва (таблица или история). */
+  const [reserveModalProduct, setReserveModalProduct] = useState(null);
   const [reserveOrders, setReserveOrders] = useState([]);
   const [reserveLoading, setReserveLoading] = useState(false);
+  const [reserveError, setReserveError] = useState(null);
+  const [reserveUnreserveKey, setReserveUnreserveKey] = useState(null);
   /** Список заказов из сгруппированной строки журнала (без запроса к API). */
   const [reserveListOverride, setReserveListOverride] = useState(null);
   const [supplierBreakdownByProductId, setSupplierBreakdownByProductId] = useState({});
@@ -1338,8 +1352,34 @@ export function WarehouseStocks() {
     [displayHistoryRows]
   );
 
+  const openReserveModalForProduct = useCallback((product, { pinnedList = null } = {}) => {
+    if (!product?.id) return;
+    setReserveModalProduct(product);
+    setReserveListOverride(pinnedList);
+    setReserveError(null);
+    setReserveModalOpen(true);
+  }, []);
+
+  const closeReserveModal = useCallback(() => {
+    setReserveModalOpen(false);
+    setReserveListOverride(null);
+    setReserveModalProduct(null);
+    setReserveError(null);
+    setReserveUnreserveKey(null);
+  }, []);
+
+  const reloadReserveOrdersList = useCallback(async () => {
+    const pid = reserveModalProduct?.id;
+    if (!pid) return [];
+    const res = await stockMovementsApi.getReservedOrders(pid);
+    const list = res?.data ?? res ?? [];
+    const arr = Array.isArray(list) ? list : [];
+    setReserveOrders(arr);
+    return arr;
+  }, [reserveModalProduct?.id]);
+
   useEffect(() => {
-    if (!reserveModalOpen || !historyProduct?.id) {
+    if (!reserveModalOpen || !reserveModalProduct?.id) {
       setReserveOrders([]);
       return;
     }
@@ -1350,7 +1390,7 @@ export function WarehouseStocks() {
     let cancelled = false;
     setReserveLoading(true);
     stockMovementsApi
-      .getReservedOrders(historyProduct.id)
+      .getReservedOrders(reserveModalProduct.id)
       .then((res) => {
         if (cancelled) return;
         const list = res?.data ?? res ?? [];
@@ -1365,7 +1405,41 @@ export function WarehouseStocks() {
     return () => {
       cancelled = true;
     };
-  }, [reserveModalOpen, reserveListOverride, historyProduct?.id]);
+  }, [reserveModalOpen, reserveListOverride, reserveModalProduct?.id]);
+
+  const handleUnreserveOrderFromStock = useCallback(
+    async (orderRow) => {
+      if (!orderRow?.marketplace || !orderRow?.orderId) return;
+      const key = `${orderRow.marketplace}|${orderRow.orderId}`;
+      setReserveUnreserveKey(key);
+      setReserveError(null);
+      try {
+        const result = await ordersApi.setOrderReserve(orderRow.marketplace, orderRow.orderId, {
+          action: 'unreserve'
+        });
+        await reloadReserveOrdersList();
+        loadListRef.current?.({ page: currentPage, silent: true });
+        if (historyProduct?.id === reserveModalProduct?.id) {
+          stockMovementsApi.getHistory(historyProduct.id, { limit: 100 }).then((res) => {
+            const list = res?.data ?? res ?? [];
+            setHistoryList(Array.isArray(list) ? list : []);
+          });
+        }
+      } catch (e) {
+        setReserveError(e?.response?.data?.message || e?.message || 'Не удалось снять резерв');
+      } finally {
+        setReserveUnreserveKey(null);
+      }
+    },
+    [reloadReserveOrdersList, currentPage, historyProduct?.id, reserveModalProduct?.id]
+  );
+
+  const reserveModalTotalQty = useMemo(() => {
+    if (reserveListOverride != null) {
+      return reserveListOverride.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
+    }
+    return reserveOrders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
+  }, [reserveListOverride, reserveOrders]);
 
   const selectedWarehouse = stockWarehouseId
     ? ownWarehouses.find((w) => String(w.id) === stockWarehouseId)
@@ -1471,12 +1545,13 @@ export function WarehouseStocks() {
   return (
     <>
       <p className="stock-levels-description">
-        Складской учёт: реальные остатки на вашем складе. Поступление и списание — по скану штрихкода или артикулу; инвентаризация — ввод фактических остатков.
+        Складской учёт: остатки, приёмка, перемещение между складами организации, списание и инвентаризация. Поиск товара — по штрихкоду, артикулу или названию.
       </p>
 
       <WarehouseOperations
         products={products}
         mainWarehouseName={mainWarehouseName}
+        defaultOrganizationId={filterOrganizationId || ''}
         inventoryWarehouseId={stockWarehouseId || ''}
         reloadProductsWithWarehouse={reloadProductsWithWarehouse}
         onRefresh={() => loadStockList({ page: currentPage, silent: true })}
@@ -1595,7 +1670,8 @@ export function WarehouseStocks() {
                     key={row.product.sku || row.product.id}
                     className="stock-levels-row-clickable"
                     onClick={onNavigationClick(() => setHistoryProduct(row.product), {
-                      ignoreClosest: 'input, textarea, select, label, .supplier-stock-cell, [data-no-nav-click]',
+                      ignoreClosest:
+                        'input, textarea, select, label, .supplier-stock-cell, .stock-levels-reserved-btn, [data-no-nav-click]',
                     })}
                     role="button"
                     tabIndex={0}
@@ -1604,7 +1680,20 @@ export function WarehouseStocks() {
                     <td className="sku-cell">{row.product.sku || '—'}</td>
                     <td className="name-cell">{row.product.name || 'Без названия'}</td>
                     <td>{row.incoming}</td>
-                    <td className="stock-levels-reserved-cell">{row.reserved}</td>
+                    <td className="stock-levels-reserved-cell" onClick={(e) => e.stopPropagation()}>
+                      {row.reserved > 0 ? (
+                        <button
+                          type="button"
+                          className="stock-levels-reserved-btn"
+                          onClick={() => openReserveModalForProduct(row.product)}
+                          title="Заказы с резервом и снятие резерва"
+                        >
+                          {row.reserved}
+                        </button>
+                      ) : (
+                        row.reserved
+                      )}
+                    </td>
                     <td className="main-warehouse-cell">{row.onHand}</td>
                     <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
                       {row.suppliersDisplay ? (
@@ -1636,7 +1725,9 @@ export function WarehouseStocks() {
           </div>
           {renderStockListPager('bottom')}
 
-          <p className="stock-levels-history-hint">Нажмите на строку товара, чтобы открыть историю изменений остатков.</p>
+          <p className="stock-levels-history-hint">
+            Нажмите на строку — история остатков; на число в колонке «Резерв» — заказы с резервом и снятие резерва.
+          </p>
 
           {mpStockPushBanner ? (
             <div className="alert alert-info py-2 mt-3" role="status">
@@ -1768,8 +1859,7 @@ export function WarehouseStocks() {
         isOpen={!!historyProduct}
         onClose={() => {
           setHistoryProduct(null);
-          setReserveModalOpen(false);
-          setReserveListOverride(null);
+          closeReserveModal();
         }}
         title={historyProduct ? `История остатков: ${historyProduct.name || historyProduct.sku || '—'}` : 'История остатков'}
         size="large"
@@ -1828,8 +1918,7 @@ export function WarehouseStocks() {
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              setReserveListOverride(null);
-                              setReserveModalOpen(true);
+                              openReserveModalForProduct(historyProduct);
                             }}
                             title="Заказы с резервом этого товара (текущее состояние)"
                           >
@@ -1858,13 +1947,11 @@ export function WarehouseStocks() {
                         tabIndex={0}
                         title="Нажмите, чтобы открыть список заказов из этой записи"
                         onClick={onNavigationClick(() => {
-                          setReserveListOverride(pinned);
-                          setReserveModalOpen(true);
+                          openReserveModalForProduct(historyProduct, { pinnedList: pinned });
                         })}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            setReserveListOverride(pinned);
-                            setReserveModalOpen(true);
+                            openReserveModalForProduct(historyProduct, { pinnedList: pinned });
                           }
                         }}
                       >
@@ -1878,8 +1965,7 @@ export function WarehouseStocks() {
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              setReserveListOverride(null);
-                              setReserveModalOpen(true);
+                              openReserveModalForProduct(historyProduct);
                             }}
                             title="Заказы с резервом этого товара (текущее состояние)"
                           >
@@ -1917,19 +2003,18 @@ export function WarehouseStocks() {
                         <button
                           type="button"
                           className="btn btn-link p-0 align-baseline text-decoration-none stock-levels-history-reserve-btn"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setReserveListOverride(null);
-                            setReserveModalOpen(true);
-                          }}
-                          title="Заказы с резервом этого товара (текущее состояние)"
-                        >
-                          {renderStockHistoryQtyCell(resCell)}
-                        </button>
-                      </td>
-                      <td>{renderStockHistoryQtyCell(balCell)}</td>
-                      <td>{renderStockHistoryQtyCell(availCell)}</td>
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openReserveModalForProduct(historyProduct);
+                            }}
+                            title="Заказы с резервом этого товара (текущее состояние)"
+                          >
+                            {renderStockHistoryQtyCell(resCell)}
+                          </button>
+                        </td>
+                        <td>{renderStockHistoryQtyCell(balCell)}</td>
+                        <td>{renderStockHistoryQtyCell(availCell)}</td>
                     </tr>
                   );
                 })}
@@ -1941,11 +2026,12 @@ export function WarehouseStocks() {
 
       <Modal
         isOpen={reserveModalOpen}
-        onClose={() => {
-          setReserveModalOpen(false);
-          setReserveListOverride(null);
-        }}
-        title="Резерв под заказы"
+        onClose={closeReserveModal}
+        title={
+          reserveModalProduct
+            ? `Резерв: ${reserveModalProduct.name || reserveModalProduct.sku || '—'}`
+            : 'Резерв под заказы'
+        }
         size="medium"
       >
         {reserveListOverride != null ? (
@@ -1953,7 +2039,12 @@ export function WarehouseStocks() {
             <p className="text-muted mb-0">В этой записи журнала не удалось извлечь номера заказов.</p>
           ) : (
             <>
-              <p className="text-muted small mb-2">Заказы из выбранной записи журнала (не текущее состояние склада).</p>
+              <p className="text-muted small mb-2">
+                Заказы из выбранной записи журнала (снимок на момент операции, не текущее состояние).
+              </p>
+              <p className="mb-2">
+                Всего в записи: <strong>{reserveModalTotalQty}</strong> шт.
+              </p>
               <ul className="list-group">
                 {reserveListOverride.map((o, i) => (
                   <li
@@ -1964,14 +2055,13 @@ export function WarehouseStocks() {
                       to={`/orders/${o.marketplace}/${encodeURIComponent(o.orderId)}`}
                       className="stock-levels-history-link"
                       onClick={() => {
-                        setReserveModalOpen(false);
-                        setReserveListOverride(null);
+                        closeReserveModal();
                         setHistoryProduct(null);
                       }}
                     >
                       {o.marketplace} · {o.orderId}
                     </Link>
-                    <span className="badge bg-secondary rounded-pill">{o.reservedQty}</span>
+                    <span className="badge bg-secondary rounded-pill">{o.reservedQty} шт.</span>
                   </li>
                 ))}
               </ul>
@@ -1980,25 +2070,51 @@ export function WarehouseStocks() {
         ) : reserveLoading ? (
           <div className="loading">Загрузка…</div>
         ) : reserveOrders.length === 0 ? (
-          <p className="text-muted mb-0">Нет активного резерва по заказам или резерв не привязан к заказам в журнале.</p>
+          <p className="text-muted mb-0">Нет активного резерва по заказам.</p>
         ) : (
-          <ul className="list-group">
-            {reserveOrders.map((o) => (
-              <li key={`${o.orderDbId}-${o.orderId}`} className="list-group-item d-flex justify-content-between align-items-center">
-                <Link
-                  to={`/orders/${o.marketplace}/${encodeURIComponent(o.orderId)}`}
-                  className="stock-levels-history-link"
-                  onClick={() => {
-                    setReserveModalOpen(false);
-                    setHistoryProduct(null);
-                  }}
-                >
-                  {o.marketplace} · {o.orderId}
-                </Link>
-                <span className="badge bg-secondary rounded-pill">{o.reservedQty}</span>
-              </li>
-            ))}
-          </ul>
+          <>
+            <p className="text-muted small mb-2">
+              Сейчас зарезервировано <strong>{reserveModalTotalQty}</strong> шт. по{' '}
+              {reserveOrders.length} зак.
+            </p>
+            {reserveError && (
+              <p className="text-danger small mb-2" role="alert">
+                {reserveError}
+              </p>
+            )}
+            <ul className="list-group stock-levels-reserve-orders-list">
+              {reserveOrders.map((o) => {
+                const rowKey = `${o.orderDbId}-${o.orderId}`;
+                const busy = reserveUnreserveKey === `${o.marketplace}|${o.orderId}`;
+                return (
+                  <li
+                    key={rowKey}
+                    className="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2"
+                  >
+                    <Link
+                      to={`/orders/${o.marketplace}/${encodeURIComponent(o.orderId)}`}
+                      className="stock-levels-history-link"
+                      onClick={closeReserveModal}
+                    >
+                      {o.marketplace} · {o.orderId}
+                    </Link>
+                    <div className="d-flex align-items-center gap-2 flex-shrink-0">
+                      <span className="badge bg-secondary rounded-pill">{o.reservedQty} шт.</span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="small"
+                        disabled={Boolean(reserveUnreserveKey)}
+                        onClick={() => handleUnreserveOrderFromStock(o)}
+                      >
+                        {busy ? '…' : 'Снять резерв'}
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         )}
       </Modal>
     </>
