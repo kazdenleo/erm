@@ -552,9 +552,14 @@ async function closeShipment(
         orderIds,
         profileId
       );
+      const st = await ordersService.markShipmentOrdersAsShipped(
+        ship.marketplace,
+        orderIds,
+        profileId
+      );
       logger.info(
-        `[Shipments] Закрытие ${shipmentId}: резерв и списание по заказам — собрано ${fin?.processed ?? 0}, ` +
-          `только движения ${fin?.stockOnly ?? 0}, пропущено (отмена) ${fin?.skipped ?? 0}, не найдено в БД ${fin?.notFound ?? 0}`
+        `[Shipments] Закрытие ${shipmentId}: резерв и списание — обработано ${fin?.processed ?? 0}, ` +
+          `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; статус «Отгружен»: ${st?.updated ?? 0}`
       );
     } catch (e) {
       logger.warn('[Shipments] Закрытие поставки: не удалось списать остатки по заказам:', e?.message || e);
@@ -587,7 +592,17 @@ async function reapplyStockForShipment(shipmentId, { profileId = null, organizat
     return { processed: 0, stockOnly: 0 };
   }
   const { default: ordersService } = await import('./orders.service.js');
-  return ordersService.applyAssemblyStockForShipmentOrders(ship.marketplace, orderIds, profileId);
+  const fin = await ordersService.applyAssemblyStockForShipmentOrders(
+    ship.marketplace,
+    orderIds,
+    profileId
+  );
+  const st = await ordersService.markShipmentOrdersAsShipped(
+    ship.marketplace,
+    orderIds,
+    profileId
+  );
+  return { ...fin, statusUpdated: st?.updated ?? 0 };
 }
 
 /** Передать поставку WB в доставку (обязательно перед запросом QR). */

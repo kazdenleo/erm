@@ -6,7 +6,11 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { computeAvailableQuantity, getReservedQuantityFromMovements } from './sellableQuantity.service.js';
+import {
+  computeAvailableQuantity,
+  getReservedQuantityFromMovements,
+  getReservableSupplyUnits
+} from './sellableQuantity.service.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
 import logger from '../utils/logger.js';
 
@@ -753,28 +757,7 @@ export async function computeKitSupplierUnitsFromComponents(kitProductId, opts =
  * Остатки поставщиков не учитываются (только для колонки «Доступно» в остатках).
  */
 export async function getComponentAssemblableUnits(componentProductId, opts = {}) {
-  const widRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
-  const wid =
-    widRaw != null && String(widRaw).trim() !== ''
-      ? typeof widRaw === 'string'
-        ? parseInt(widRaw, 10)
-        : Number(widRaw)
-      : null;
-
-  const metrics = await computeAvailableQuantity(componentProductId, {
-    warehouseId: wid,
-    profileId: opts.profileId ?? null
-  });
-  const supply = await getComponentWarehouseSupply(componentProductId);
-  const pid = Number(componentProductId);
-  const reserved =
-    opts.reservedMap instanceof Map
-      ? opts.reservedMap.get(pid) || 0
-      : await getReservedQuantityFromMovements(componentProductId);
-  return Math.max(
-    0,
-    (Number(metrics.onHand) || 0) + (Number(supply.incoming) || 0) - reserved
-  );
+  return getReservableSupplyUnits(componentProductId, opts);
 }
 
 /** Сколько полных комплектов можно собрать из комплектующих (склад + в пути − резерв). */

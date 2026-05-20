@@ -10,13 +10,24 @@ import ordersService from '../../src/services/orders.service.js';
 
 async function main() {
   const r = await query(
-    `SELECT id, sku,
-            COALESCE(quantity, 0)::int AS quantity,
-            COALESCE(incoming_quantity, 0)::int AS incoming_quantity,
-            COALESCE(reserved_quantity, 0)::int AS reserved_quantity
-     FROM products
-     WHERE COALESCE(reserved_quantity, 0) > COALESCE(quantity, 0) + COALESCE(incoming_quantity, 0)
-     ORDER BY id
+    `SELECT p.id, p.sku
+     FROM products p
+     WHERE (
+       SELECT GREATEST(0, COALESCE(SUM(
+         CASE
+           WHEN sm.type = 'reserve' THEN -(sm.quantity_change::numeric)
+           WHEN sm.type = 'unreserve' THEN -(sm.quantity_change::numeric)
+           ELSE 0
+         END
+       ), 0))::int
+       FROM stock_movements sm
+       WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+     ) > (
+       COALESCE((
+         SELECT SUM(pws.quantity)::int FROM product_warehouse_stock pws WHERE pws.product_id = p.id
+       ), 0) + COALESCE(p.incoming_quantity, 0)
+     )
+     ORDER BY p.id
      LIMIT 5000`
   );
   const rows = r.rows || [];

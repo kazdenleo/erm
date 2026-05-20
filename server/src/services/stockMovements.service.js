@@ -59,18 +59,16 @@ class StockMovementsService {
     let newWh = currentWh + safeDelta;
     if (newWh < 0) newWh = 0;
 
-    const incomingQty = product.incoming_quantity != null ? Number(product.incoming_quantity) : 0;
-    let availableForReserve = Math.max(0, totalBefore + incomingQty - currentReserved);
-
     let newReserved = currentReserved;
     if (type === 'reserve' && safeDelta < 0) {
       const reserveAdd = Math.abs(safeDelta);
+      let availableForReserve = 0;
       try {
-        const { getComponentAssemblableUnits } = await import('./kitStock.service.js');
-        const fromSupply = await getComponentAssemblableUnits(idNum, { warehouseId });
-        availableForReserve = Math.max(availableForReserve, fromSupply);
+        const { getReservableSupplyUnits } = await import('./sellableQuantity.service.js');
+        availableForReserve = await getReservableSupplyUnits(idNum, { warehouseId });
       } catch {
-        /* fallback: products.quantity + incoming − reserved_quantity */
+        const incomingQty = product.incoming_quantity != null ? Number(product.incoming_quantity) : 0;
+        availableForReserve = Math.max(0, totalBefore + incomingQty - currentReserved);
       }
       if (reserveAdd > availableForReserve) {
         const err = new Error(

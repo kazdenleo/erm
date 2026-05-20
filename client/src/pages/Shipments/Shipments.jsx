@@ -263,11 +263,11 @@ export function Shipments() {
                                 size="small"
                                 onClick={() => handleReapplyStock(item)}
                                 disabled={reapplyLoadingId === item.id}
-                                title="Снять зависший резерв и списать по заказам поставки"
+                                title="Повторить списание и перевести «Собран» → «Отгружен»"
                               >
                                 {reapplyLoadingId === item.id
-                                  ? 'Списание…'
-                                  : 'Повторить списание'}
+                                  ? 'Обработка…'
+                                  : 'Повторить отгрузку'}
                               </Button>
                             )}
                             {item.closed && item.qrStickerPath && (

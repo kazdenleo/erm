@@ -301,20 +301,21 @@ class OrdersService {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return { released: 0, ordersTouched: 0 };
 
+    const { computeAvailableQuantity, getReservedQuantityFromMovements } = await import(
+      './sellableQuantity.service.js'
+    );
     const pr = await query(
-      `SELECT COALESCE(quantity, 0)::bigint AS quantity,
-              COALESCE(incoming_quantity, 0)::bigint AS incoming_quantity,
-              COALESCE(reserved_quantity, 0)::bigint AS reserved_quantity
-       FROM products WHERE id = $1`,
+      `SELECT COALESCE(incoming_quantity, 0)::bigint AS incoming_quantity FROM products WHERE id = $1`,
       [pid]
     );
     const row = pr.rows?.[0];
     if (!row) return { released: 0, ordersTouched: 0 };
-    const qty = Number(row.quantity) || 0;
+    const metrics = await computeAvailableQuantity(pid);
+    const onHand = Number(metrics.onHand) || 0;
     const incoming = Number(row.incoming_quantity) || 0;
-    const reserved = Number(row.reserved_quantity) || 0;
-    const supplyCap = qty + incoming;
-    let excess = reserved - supplyCap;
+    const supplyCap = onHand + incoming;
+    const journalReserved = await getReservedQuantityFromMovements(pid);
+    let excess = journalReserved - supplyCap;
     if (excess <= 0) return { released: 0, ordersTouched: 0 };
 
     const ordRes = await query(
@@ -838,6 +839,54 @@ class OrdersService {
     return { processed, stockOnly, skipped, notFound };
   }
 
+  /**
+   * После закрытия поставки: «Собран» → «Отгружен» (без повторного списания остатков).
+   */
+  async markShipmentOrdersAsShipped(marketplace, orderIds, profileId = null) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
+      return { updated: 0, skipped: 0, notFound: 0 };
+    }
+    const mp = String(marketplace).trim();
+    let updated = 0;
+    let skipped = 0;
+    let notFound = 0;
+
+    for (const rawOid of orderIds) {
+      const orderId = String(rawOid).trim();
+      if (!orderId) continue;
+      try {
+        const order = await this._findOrderByMarketplaceAndOrderId(mp, orderId, profileId);
+        if (!order) {
+          notFound += 1;
+          continue;
+        }
+        const status = String(order.status || '').toLowerCase();
+        if (status === 'shipped') {
+          skipped += 1;
+          continue;
+        }
+        if (status !== 'assembled') {
+          skipped += 1;
+          continue;
+        }
+        if (order.orderGroupId) {
+          await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'shipped', profileId);
+        } else {
+          await this.repository.updateByMarketplaceAndOrderId(
+            mp,
+            orderId,
+            { status: 'shipped' },
+            profileId
+          );
+        }
+        updated += 1;
+      } catch (e) {
+        console.warn('[Orders] markShipmentOrdersAsShipped:', orderId, e?.message || e);
+      }
+    }
+    return { updated, skipped, notFound };
+  }
+
   /** Резерв для строки заказа из БД: частичный резерв и дозаполнение до qty при появлении остатка. */
   async _applyReserveForOrderIfAbsent(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
@@ -993,20 +1042,8 @@ class OrdersService {
         .map((id) => Number(id))
         .filter((n) => Number.isFinite(n) && n > 0)
     );
-    const pr = await query(
-      `SELECT COALESCE(quantity, 0) AS quantity,
-              COALESCE(incoming_quantity, 0) AS incoming_quantity,
-              COALESCE(reserved_quantity, 0) AS reserved_quantity
-       FROM products
-       WHERE id = $1
-       LIMIT 1`,
-      [pid]
-    );
-    const row = pr.rows?.[0];
-    const actual = row?.quantity != null ? Number(row.quantity) : 0;
-    const incoming = row?.incoming_quantity != null ? Number(row.incoming_quantity) : 0;
-    const reserved = row?.reserved_quantity != null ? Number(row.reserved_quantity) : 0;
-    const availableSupply = Math.max(0, actual + incoming - reserved);
+    const { getReservableSupplyUnits } = await import('./sellableQuantity.service.js');
+    const availableSupply = await getReservableSupplyUnits(pid);
     const isKit = await isKitProductId(pid);
     // У комплекта в products.quantity часто 0 — резерв идёт по комплектующим, очередь всё равно обрабатываем.
     if (!isKit && availableSupply <= 0) return;

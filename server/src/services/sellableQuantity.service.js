@@ -127,4 +127,37 @@ export async function computeAvailableQuantity(productId, opts = {}) {
   };
 }
 
-export default { computeAvailableQuantity, getReservedQuantityFromMovements };
+/**
+ * Доступно под резерв заказа: наличие на складе (PWS) + «в пути» − резерв из журнала.
+ * Без остатков поставщиков. Единая формула для orders / stockMovements / kitStock.
+ */
+export async function getReservableSupplyUnits(productId, opts = {}) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+
+  const metrics = await computeAvailableQuantity(pid, {
+    warehouseId: opts.warehouseId ?? opts.warehouse_id ?? null,
+    profileId: opts.profileId ?? null
+  });
+  let incoming = 0;
+  try {
+    const r = await query(
+      `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity FROM products WHERE id = $1`,
+      [pid]
+    );
+    incoming = Number(r.rows[0]?.incoming_quantity ?? 0) || 0;
+  } catch {
+    incoming = 0;
+  }
+  const reserved =
+    opts.reservedMap instanceof Map
+      ? opts.reservedMap.get(pid) || 0
+      : await getReservedQuantityFromMovements(pid);
+  return Math.max(0, (Number(metrics.onHand) || 0) + incoming - reserved);
+}
+
+export default {
+  computeAvailableQuantity,
+  getReservedQuantityFromMovements,
+  getReservableSupplyUnits
+};
