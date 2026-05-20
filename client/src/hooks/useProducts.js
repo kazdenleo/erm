@@ -94,11 +94,11 @@ export function useProducts(options = {}) {
       if (loadAbortRef.current === controller) {
         loadAbortRef.current = null;
       }
-      if (gen !== loadGenerationRef.current || controller.signal.aborted) return;
+      // Только актуальный запрос сбрасывает индикаторы (отменённый не оставляет loading=true).
+      if (gen !== loadGenerationRef.current) return;
       if (!silent) {
         setLoading(false);
-      }
-      if (silent) {
+      } else {
         setListRefreshing(false);
       }
     }

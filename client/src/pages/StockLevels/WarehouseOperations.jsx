@@ -2114,7 +2114,7 @@ export function WarehouseOperations({
                       reloadProductsWithWarehouse(initWh);
                     }
                   }}
-                  disabled={loading}
+                  disabled={opLoading}
                 >
                   Новая инвентаризация
                 </Button>
