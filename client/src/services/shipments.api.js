@@ -64,5 +64,10 @@ export const shipmentsApi = {
       `/shipments/${encodeURIComponent(shipmentId)}/reapply-stock`
     );
     return response.data?.data ?? response.data;
-  }
+  },
+
+  syncWb: async (shipmentId) => {
+    const response = await api.post(`/shipments/${encodeURIComponent(shipmentId)}/sync-wb`);
+    return response.data?.data ?? response.data;
+  },
 };

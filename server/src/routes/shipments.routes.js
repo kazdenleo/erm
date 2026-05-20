@@ -18,5 +18,6 @@ router.post('/:id/orders', wrapAsync(shipmentsController.addOrders.bind(shipment
 router.post('/:id/orders/remove', wrapAsync(shipmentsController.removeOrders.bind(shipmentsController)));
 router.post('/:id/close', wrapAsync(shipmentsController.close.bind(shipmentsController)));
 router.post('/:id/reapply-stock', wrapAsync(shipmentsController.reapplyStock.bind(shipmentsController)));
+router.post('/:id/sync-wb', wrapAsync(shipmentsController.syncWb.bind(shipmentsController)));
 
 export default router;

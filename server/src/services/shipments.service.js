@@ -190,16 +190,24 @@ async function getShipments({ profileId, organizationId } = {}) {
   return { marketplaces: MARKETPLACES, list: byMarketplace };
 }
 
+/** ID поставки WB в подписи (без дубля «WB WB-GI-…»). */
+function wbSupplyLabelId(supplyId) {
+  const id = supplyId != null ? String(supplyId).trim() : '';
+  if (!id) return '';
+  if (/^WB[-\s]/i.test(id)) return id;
+  return `WB ${id}`;
+}
+
 /** Отображаемое имя поставки WB: дата + номер supply в ЛК. */
 function formatWbShipmentDisplayName(supplyId, customName = null) {
-  const id = supplyId != null ? String(supplyId).trim() : '';
+  const label = wbSupplyLabelId(supplyId);
   const custom = customName != null ? String(customName).trim() : '';
-  if (custom && id && !custom.includes(id)) {
-    return `${custom} · WB ${id}`;
+  if (custom && label && !custom.includes(label)) {
+    return `${custom} · ${label}`;
   }
   if (custom) return custom;
   const date = new Date().toLocaleDateString('ru-RU');
-  return id ? `Сборка ${date} · WB ${id}` : `Сборка ${date}`;
+  return label ? `Сборка ${date} · ${label}` : `Сборка ${date}`;
 }
 
 function normalizeShipment(s) {
@@ -220,8 +228,160 @@ function normalizeShipment(s) {
     createdAt: s.createdAt,
     shipmentDate: s.shipmentDate,
     qrStickerPath: s.qrStickerPath || null,
-    /** true, если поставка WB заведена только в ERM без API-ключа (без поставки в ЛК) */
+    /** true, если заказы есть только в ERM, на WB в supply не попали */
     localWbOnly: s.localWbOnly === true,
+    wbLastSyncError: s.wbLastSyncError || null,
+  };
+}
+
+/**
+ * Добавить заказы в supply WB. При 409 не бросает — возвращает { ok: false }.
+ * Обновляет ship.externalId / ship.name при создании supply.
+ */
+async function pushOrdersToWildberriesSupply(ship, orderIds, { organizationId = null } = {}) {
+  const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
+  if (!wbConfig?.api_key) {
+    return {
+      ok: false,
+      reason: 'no_api',
+      message: 'Нет API-ключа Wildberries — заказы только в ERM',
+    };
+  }
+
+  const unique = Array.from(new Set((orderIds || []).map((o) => String(o)).filter(Boolean)));
+  let supplyId = ship.externalId ? String(ship.externalId) : null;
+
+  if (!supplyId) {
+    supplyId = await createWBSupply(wbConfig);
+    ship.externalId = supplyId;
+    ship.name = formatWbShipmentDisplayName(supplyId, ship.name);
+    logger.info(`[Shipments WB] Created supply ${supplyId} for shipment ${ship.id}`);
+  }
+
+  if (unique.length === 0) {
+    return { ok: true, supplyId, added: 0, message: 'Нет заказов для добавления' };
+  }
+
+  try {
+    await confirmWBOrdersForAssembly(wbConfig, unique);
+    await addOrdersToWBSupplyBatch(wbConfig, supplyId, unique);
+    return { ok: true, supplyId, added: unique.length };
+  } catch (e) {
+    if (e?.statusCode === 409) {
+      return {
+        ok: false,
+        supplyId,
+        statusCode: 409,
+        message: e.message,
+        failedOrderIds: e.failedOrderIds,
+      };
+    }
+    if (e.message && e.message.includes('404') && supplyId) {
+      logger.warn(`[Shipments WB] Supply ${supplyId} not found, creating new`);
+      const newSupplyId = await createWBSupply(wbConfig);
+      ship.externalId = newSupplyId;
+      ship.name = formatWbShipmentDisplayName(newSupplyId, ship.name);
+      await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, unique);
+      return { ok: true, supplyId: newSupplyId, added: unique.length, recreatedSupply: true };
+    }
+    throw e;
+  }
+}
+
+/** Передать supply в доставку на WB и сохранить QR-этикетку в ship.qrStickerPath. */
+async function applyWbSupplyQrSticker(ship, wbConfig) {
+  if (!ship?.externalId || !wbConfig?.api_key) return false;
+
+  try {
+    await wbDeliverSupply(wbConfig, ship.externalId);
+  } catch (e) {
+    const msg = String(e?.message || '');
+    if (!/already|delivered|complete|409/i.test(msg)) {
+      throw e;
+    }
+    logger.warn(`[Shipments WB] deliver ${ship.externalId}: ${msg.slice(0, 120)}`);
+  }
+
+  let barcodeBase64 = null;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (attempt > 0) await sleep(600);
+    barcodeBase64 = await wbGetSupplyBarcode(wbConfig, ship.externalId, 'png');
+    if (barcodeBase64) break;
+  }
+
+  if (!barcodeBase64) {
+    logger.warn('[Shipments WB] barcode empty after deliver', ship.externalId);
+    return false;
+  }
+
+  if (!fs.existsSync(SHIPMENT_STICKERS_DIR)) {
+    fs.mkdirSync(SHIPMENT_STICKERS_DIR, { recursive: true });
+  }
+  const safeName = `${(ship.id || ship.externalId).replace(/[^a-zA-Z0-9-_]/g, '_')}.png`;
+  fs.writeFileSync(join(SHIPMENT_STICKERS_DIR, safeName), Buffer.from(barcodeBase64, 'base64'));
+  ship.qrStickerPath = `shipment-stickers/${safeName}`;
+  return true;
+}
+
+/**
+ * Синхронизация заказов поставки с WB + (для закрытой) deliver и этикетка.
+ */
+async function syncWildberriesShipmentToMarketplace(
+  shipmentId,
+  { profileId = null, organizationId = null } = {}
+) {
+  const shipments = await getLocalShipments();
+  const ship = shipments.find((s) => s.id === shipmentId);
+  if (!ship) {
+    const err = new Error('Поставка не найдена');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!shipmentVisibleForScope(ship, profileId, organizationId)) {
+    const err = new Error('Поставка не найдена');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (ship.marketplace !== 'wildberries') {
+    const err = new Error('Синхронизация с WB только для поставок Wildberries');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const orderIds = Array.isArray(ship.orderIds) ? ship.orderIds : [];
+  const push = await pushOrdersToWildberriesSupply(ship, orderIds, { organizationId });
+
+  if (!push.ok) {
+    ship.localWbOnly = true;
+    ship.wbLastSyncError = push.message || 'Не удалось добавить заказы в поставку WB';
+    await saveLocalShipments(shipments);
+    const err = new Error(ship.wbLastSyncError);
+    err.statusCode = push.statusCode || 409;
+    err.failedOrderIds = push.failedOrderIds;
+    throw err;
+  }
+
+  ship.localWbOnly = false;
+  delete ship.wbLastSyncError;
+
+  let stickerApplied = false;
+  if (ship.closed && ship.externalId) {
+    const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
+    if (wbConfig?.api_key) {
+      try {
+        stickerApplied = await applyWbSupplyQrSticker(ship, wbConfig);
+      } catch (e) {
+        ship.wbLastSyncError = `Заказы на WB, этикетка: ${e.message}`;
+        logger.warn('[Shipments WB] sticker after sync:', e.message);
+      }
+    }
+  }
+
+  await saveLocalShipments(shipments);
+  return {
+    shipment: normalizeShipment(ship),
+    push,
+    stickerApplied,
   };
 }
 
@@ -539,36 +699,49 @@ async function closeShipment(
   shipToClose.status = 'closed';
   shipToClose.closedAt = new Date().toISOString();
 
-  if (shipToClose.marketplace === 'wildberries' && shipToClose.externalId) {
+  const orderIdsForWb = Array.isArray(shipToClose.orderIds) ? shipToClose.orderIds : [];
+
+  if (shipToClose.marketplace === 'wildberries') {
     try {
-      const wbConfig = await getWildberriesConfigForScope(shipToClose.profileId, { organizationId });
-      if (wbConfig?.api_key) {
-        await wbDeliverSupply(wbConfig, shipToClose.externalId);
-        let barcodeBase64 = null;
-        for (let attempt = 0; attempt < 8; attempt++) {
-          if (attempt > 0) await sleep(600);
-          barcodeBase64 = await wbGetSupplyBarcode(wbConfig, shipToClose.externalId, 'png');
-          if (barcodeBase64) break;
-        }
-        if (barcodeBase64) {
-          if (!fs.existsSync(SHIPMENT_STICKERS_DIR)) fs.mkdirSync(SHIPMENT_STICKERS_DIR, { recursive: true });
-          const safeName = `${(shipToClose.id || shipToClose.externalId).replace(/[^a-zA-Z0-9-_]/g, '_')}.png`;
-          const filePath = join(SHIPMENT_STICKERS_DIR, safeName);
-          fs.writeFileSync(filePath, Buffer.from(barcodeBase64, 'base64'));
-          shipToClose.qrStickerPath = `shipment-stickers/${safeName}`;
-        } else {
-          logger.warn('[Shipments] WB supply barcode empty after deliver (retries exhausted)', shipToClose.externalId);
+      const push =
+        orderIdsForWb.length > 0
+          ? await pushOrdersToWildberriesSupply(shipToClose, orderIdsForWb, { organizationId })
+          : { ok: true, added: 0 };
+
+      if (!push.ok) {
+        shipToClose.localWbOnly = true;
+        shipToClose.wbLastSyncError = push.message || 'Заказы не добавлены в поставку WB';
+        logger.warn(
+          `[Shipments] Закрытие ${shipmentId}: пропуск deliver WB — ${shipToClose.wbLastSyncError}`
+        );
+      } else {
+        shipToClose.localWbOnly = false;
+        delete shipToClose.wbLastSyncError;
+        const wbConfig = await getWildberriesConfigForScope(shipToClose.profileId, { organizationId });
+        if (wbConfig?.api_key && shipToClose.externalId) {
+          try {
+            const stickerOk = await applyWbSupplyQrSticker(shipToClose, wbConfig);
+            if (!stickerOk) {
+              shipToClose.wbLastSyncError =
+                'Поставка передана на WB, но этикетка не получена — нажмите «Синхронизировать с WB»';
+            }
+          } catch (e) {
+            shipToClose.wbLastSyncError = `Этикетка WB: ${e.message}`;
+            logger.warn('[Shipments] WB deliver/barcode:', e.message);
+          }
         }
       }
     } catch (e) {
-      logger.warn('[Shipments] WB deliver/barcode:', e.message);
+      shipToClose.localWbOnly = true;
+      shipToClose.wbLastSyncError = e.message || 'Ошибка синхронизации с WB';
+      logger.warn('[Shipments] WB sync before close:', e.message);
     }
   }
 
   await saveLocalShipments(shipmentsToSave);
 
-  // Остатки — по «Собран»; затем все заказы в поставке (кроме отменённых и уже в логистике МП) → внутренний «Отгружен».
-  const orderIds = Array.isArray(shipToClose.orderIds) ? shipToClose.orderIds : [];
+  // Остатки — по «Собран»; затем все заказы в поставке → внутренний «Отгружен».
+  const orderIds = orderIdsForWb;
   if (orderIds.length > 0 && shipToClose.marketplace) {
     const { default: ordersService } = await import('./orders.service.js');
     let fin = { processed: 0, skipped: 0, notFound: 0 };
@@ -623,6 +796,16 @@ async function reapplyStockForShipment(shipmentId, { profileId = null, organizat
   if (orderIds.length === 0 || !ship.marketplace) {
     return { processed: 0, stockOnly: 0 };
   }
+
+  let wbSync = null;
+  if (ship.marketplace === 'wildberries') {
+    try {
+      wbSync = await syncWildberriesShipmentToMarketplace(shipmentId, { profileId, organizationId });
+    } catch (e) {
+      wbSync = { error: e.message, statusCode: e.statusCode };
+    }
+  }
+
   const { default: ordersService } = await import('./orders.service.js');
   const fin = await ordersService.applyAssemblyStockForShipmentOrders(
     ship.marketplace,
@@ -634,7 +817,12 @@ async function reapplyStockForShipment(shipmentId, { profileId = null, organizat
     orderIds,
     profileId
   );
-  return { ...fin, statusUpdated: st?.updated ?? 0 };
+  return {
+    ...fin,
+    statusUpdated: st?.updated ?? 0,
+    wbSync,
+    shipment: wbSync?.shipment ?? normalizeShipment(ship),
+  };
 }
 
 /** Передать поставку WB в доставку (обязательно перед запросом QR). */
@@ -875,68 +1063,23 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
   }
 
   if (code === 'wildberries') {
-    const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
-    if (wbConfig?.api_key) {
-      // WB: всегда пытаемся назначить заказ в поставку на МП при «На сборку».
-      // Даже если он уже числится в локальной поставке (toAdd пустой), на WB он мог не попасть из‑за
-      // предыдущего сбоя/отсутствия ключа/ошибки сети. Повторная операция должна быть "дожимающей".
-      // Если WB вернёт 409 (уже в другой поставке/статус) — это уйдёт в предупреждение на уровне контроллера.
-      const toSync = uniqueRequested;
-
-      // Для WB этикетки появляются через stickers API только когда сборочное задание в статусе confirm/complete.
-      // Поэтому перед добавлением в поставку переводим заказы в confirm на стороне WB.
-      if (toSync.length > 0) {
-        try {
-          await confirmWBOrdersForAssembly(wbConfig, toSync);
-        } catch (e) {
-          // Новые методы WB могут быть недоступны для части заказов (404) — не блокируем перевод в "На сборке" в ERM.
-          // Дальше всё равно попробуем добавить в поставку: это зачастую и переводит заказы в нужный статус на WB.
-          logger.warn(`[Shipments WB] confirm skipped: ${e?.message || String(e)}`);
-        }
-      }
-      let supplyId = ship.externalId;
-      if (!supplyId) {
-        supplyId = await createWBSupply(wbConfig);
-        ship.externalId = supplyId;
-        ship.name = formatWbShipmentDisplayName(supplyId, ship.name);
-        await saveLocalShipments(shipments);
-        logger.info(`[Shipments WB] Created new supply ${supplyId} for shipment ${ship.id}`);
-      }
-      try {
-        if (toSync.length > 0) {
-          await addOrdersToWBSupplyBatch(wbConfig, supplyId, toSync);
-        }
-      } catch (e) {
-        if (e?.statusCode === 409) {
-          logger.warn(
-            `[Shipments WB] 409 при добавлении в поставку ${supplyId}: ${e.message} — фиксируем локально`
-          );
-          ship.localWbOnly = true;
-          await saveLocalShipments(shipments);
-        } else if (e.message && e.message.includes('404') && supplyId) {
-          logger.warn(`[Shipments WB] Supply ${supplyId} not found (404), creating new supply and retrying`);
-          const newSupplyId = await createWBSupply(wbConfig);
-          ship.externalId = newSupplyId;
-          ship.name = formatWbShipmentDisplayName(newSupplyId, ship.name);
-          await saveLocalShipments(shipments);
-          if (toSync.length > 0) {
-            await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, toSync);
-          }
-        } else {
-          throw e;
-        }
-      }
-
-      // Если мы дошли до этого места без исключения — синк с ЛК WB был выполнен (или попытка была успешной).
-      // Снимаем флаг "только локально", чтобы UI не вводил в заблуждение.
-      if (ship.localWbOnly === true) {
+    const toSync = uniqueRequested;
+    if (toSync.length > 0) {
+      const push = await pushOrdersToWildberriesSupply(ship, toSync, { organizationId });
+      if (push.ok) {
         ship.localWbOnly = false;
-        await saveLocalShipments(shipments);
+        delete ship.wbLastSyncError;
+      } else {
+        ship.localWbOnly = true;
+        ship.wbLastSyncError = push.message || 'Не удалось добавить заказы в поставку WB';
+        ship._lastWbPush = push;
       }
-    } else {
-      logger.warn(
-        '[Shipments] Wildberries: API не настроен — заказы только в локальной поставке, статус в ERM «на сборке»; ЛК WB не обновлён.'
-      );
+    } else if (!ship.externalId) {
+      const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
+      if (!wbConfig?.api_key) {
+        ship.localWbOnly = true;
+        logger.warn('[Shipments] Wildberries: нет API-ключа — поставка только в ERM');
+      }
     }
   }
 
@@ -944,7 +1087,15 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
   uniqueRequested.forEach((o) => existing.add(String(o)));
   ship.orderIds = Array.from(existing);
   await saveLocalShipments(shipments);
-  return normalizeShipment(ship);
+  const out = normalizeShipment(ship);
+  if (ship._lastWbPush && !ship._lastWbPush.ok) {
+    const err = new Error(ship.wbLastSyncError || 'Не удалось добавить заказы в поставку WB');
+    err.statusCode = ship._lastWbPush.statusCode || 409;
+    err.failedOrderIds = ship._lastWbPush.failedOrderIds;
+    err.shipment = out;
+    throw err;
+  }
+  return out;
 }
 
 /**
@@ -1269,6 +1420,7 @@ const shipmentsService = {
   getShipmentClosePreview,
   closeShipment,
   reapplyStockForShipment,
+  syncWildberriesShipmentToMarketplace,
   getQrStickerFilePath,
   getMarketplaces: () => MARKETPLACES
 };

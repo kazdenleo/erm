@@ -141,6 +141,31 @@ class ShipmentsController {
     }
   }
 
+  /** Добавить заказы в supply WB и (для закрытой) получить этикетку. */
+  async syncWb(req, res, next) {
+    try {
+      const sp = shipmentsProfileOpts(req);
+      if (sp.blocked) {
+        return res.status(403).json({ ok: false, message: 'Действие доступно только с привязкой к аккаунту' });
+      }
+      const { id } = req.params;
+      const data = await shipmentsService.syncWildberriesShipmentToMarketplace(id, {
+        profileId: sp.profileId,
+        organizationId: sp.organizationId
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      if (error.statusCode) {
+        return res.status(error.statusCode).json({
+          ok: false,
+          message: error.message,
+          ...(error.failedOrderIds && { failedOrderIds: error.failedOrderIds })
+        });
+      }
+      next(error);
+    }
+  }
+
   /** Повторное списание остатков по заказам уже закрытой поставки. */
   async reapplyStock(req, res, next) {
     try {

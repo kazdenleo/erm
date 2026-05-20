@@ -20,6 +20,7 @@ export function Shipments() {
   const [createError, setCreateError] = useState(null);
   const [closeLoadingId, setCloseLoadingId] = useState(null);
   const [reapplyLoadingId, setReapplyLoadingId] = useState(null);
+  const [syncWbLoadingId, setSyncWbLoadingId] = useState(null);
   const [openShipmentDetail, setOpenShipmentDetail] = useState(null);
   const [openDetailError, setOpenDetailError] = useState(null);
   const [removingOrderId, setRemovingOrderId] = useState(null);
@@ -86,12 +87,39 @@ export function Shipments() {
     }
   };
 
+  const handleSyncWb = async (shipment) => {
+    if (!shipment?.id || shipment.marketplace !== 'wildberries') return;
+    setSyncWbLoadingId(shipment.id);
+    setOpenDetailError(null);
+    try {
+      const data = await shipmentsApi.syncWb(shipment.id);
+      const updated = data?.shipment;
+      if (updated?.qrStickerPath) {
+        window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
+      }
+      await loadShipments();
+      if (openShipmentDetail?.id === shipment.id && updated) {
+        setOpenShipmentDetail(updated);
+      }
+    } catch (e) {
+      setOpenDetailError(
+        e.response?.data?.message || e.message || 'Не удалось синхронизировать поставку с WB'
+      );
+    } finally {
+      setSyncWbLoadingId(null);
+    }
+  };
+
   const handleReapplyStock = async (shipment) => {
     if (!shipment?.id || !isLocalShipment(shipment) || !shipment.closed) return;
     setReapplyLoadingId(shipment.id);
     setOpenDetailError(null);
     try {
-      await shipmentsApi.reapplyStock(shipment.id);
+      const data = await shipmentsApi.reapplyStock(shipment.id);
+      const updated = data?.shipment ?? data?.wbSync?.shipment;
+      if (updated?.qrStickerPath) {
+        window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
+      }
       await loadShipments();
     } catch (e) {
       setOpenDetailError(
@@ -269,6 +297,19 @@ export function Shipments() {
                                 {closeLoadingId === item.id ? 'Закрытие...' : 'Закрыть поставку'}
                               </Button>
                             )}
+                            {item.closed &&
+                              item.marketplace === 'wildberries' &&
+                              (item.localWbOnly || !item.qrStickerPath) && (
+                                <Button
+                                  variant="primary"
+                                  size="small"
+                                  onClick={() => handleSyncWb(item)}
+                                  disabled={syncWbLoadingId === item.id}
+                                  title="Добавить заказы в поставку WB и получить этикетку"
+                                >
+                                  {syncWbLoadingId === item.id ? 'Синхронизация…' : 'Синхронизировать с WB'}
+                                </Button>
+                              )}
                             {item.closed && isLocalShipment(item) && (
                               <Button
                                 variant="secondary"
