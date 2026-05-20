@@ -345,6 +345,8 @@ export function Orders() {
   const [ordersAutoSyncPauseError, setOrdersAutoSyncPauseError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('new');
+  /** Колонка «Поставка» — только на вкладке «Собран» */
+  const showShipmentColumn = statusFilter === 'assembled';
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [statusCounts, setStatusCounts] = useState({ all: 0 });
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
@@ -2329,7 +2331,7 @@ export function Orders() {
                 <th>Количество</th>
                 <th>Цена</th>
                 <th>Статус</th>
-                <th>Поставка</th>
+                {showShipmentColumn ? <th>Поставка</th> : null}
                 <th>Действия</th>
               </tr>
             </thead>
@@ -2519,18 +2521,22 @@ export function Orders() {
                       )}
                     </div>
                   </td>
-                  <td className="orders-col-shipment" title={first.localShipmentName || ''}>
-                    {first.localShipmentName ? (
-                      <span>
-                        {first.localShipmentClosed ? '✓ ' : ''}
-                        {first.localShipmentName}
-                      </span>
-                    ) : first.status === 'assembled' && orderSupportsFbsShipment(first.marketplace) ? (
-                      <span className="text-muted">—</span>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
+                  {showShipmentColumn && first.status === 'assembled' ? (
+                    <td className="orders-col-shipment" title={first.localShipmentName || ''}>
+                      {first.localShipmentName ? (
+                        <span>
+                          {first.localShipmentClosed ? '✓ ' : ''}
+                          {first.localShipmentName}
+                        </span>
+                      ) : orderSupportsFbsShipment(first.marketplace) ? (
+                        <span className="text-muted">—</span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                  ) : showShipmentColumn ? (
+                    <td className="orders-col-shipment">—</td>
+                  ) : null}
                   <td className="orders-col-actions" onClick={e => e.stopPropagation()}>
                     <div className="orders-actions">
                       {groupOrders.some((o) =>
