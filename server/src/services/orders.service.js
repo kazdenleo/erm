@@ -802,7 +802,7 @@ class OrdersService {
     if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
       return { processed: 0, stockOnly: 0, skipped: 0, notFound: 0 };
     }
-    const mp = String(marketplace).trim();
+    const mpForRepo = this._marketplaceToOrdersDb(marketplace);
     let processed = 0;
     let stockOnly = 0;
     let skipped = 0;
@@ -812,7 +812,7 @@ class OrdersService {
       const orderId = String(rawOid).trim();
       if (!orderId) continue;
       try {
-        const order = await this._findOrderByMarketplaceAndOrderId(mp, orderId, profileId);
+        const order = await this._findOrderByMarketplaceAndOrderId(mpForRepo, orderId, profileId);
         if (!order) {
           notFound += 1;
           continue;
