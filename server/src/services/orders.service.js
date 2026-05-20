@@ -433,7 +433,7 @@ class OrdersService {
     await this._applyReserveForOrderComponent(productId, qtyWanted, orderId, meta);
   }
 
-  /** Резерв одной позиции: факт + в пути − уже зарезервировано; у комплекта — + собираемость из комплектующих. */
+  /** Резерв одной позиции: PWS + в пути − резерв (без остатков поставщиков); у комплекта — + собираемость из комплектующих. */
   async _applyReserveForOrderComponent(productId, quantity, orderId, meta = {}) {
     if (!productId || quantity < 1) return;
     const qtyWanted = Math.max(1, parseInt(quantity, 10) || 1);
