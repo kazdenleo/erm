@@ -96,6 +96,20 @@ async function findUnlistedWithStock(client, whId, profileId, listedIds) {
   return res.rows || [];
 }
 
+function parseLineProductId(raw) {
+  const v = raw?.productId ?? raw?.product_id;
+  if (v == null || v === '') return null;
+  const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
+  return Number.isNaN(n) || n < 1 ? null : n;
+}
+
+function parseLineQuantityAfter(raw) {
+  const v = raw?.quantityAfter ?? raw?.quantity_after;
+  if (v == null || v === '') return 0;
+  const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
+  return Number.isNaN(n) || n < 0 ? 0 : n;
+}
+
 async function applyInventoryLine(client, {
   sessionId,
   productId,
@@ -107,17 +121,18 @@ async function applyInventoryLine(client, {
 }) {
   await assertProductAllowedInProfile(client, productId, profileId);
   const before = await getPwsQuantity(client, productId, whId);
-  if (before === quantityAfter) {
-    return { applied: false, productId };
-  }
-
-  await setPwsQuantity(client, productId, whId, quantityAfter);
 
   await client.query(
     `INSERT INTO inventory_session_lines (session_id, product_id, quantity_before, quantity_after)
      VALUES ($1, $2, $3, $4)`,
     [sessionId, productId, before, quantityAfter]
   );
+
+  if (before === quantityAfter) {
+    return { applied: false, productId, counted: true };
+  }
+
+  await setPwsQuantity(client, productId, whId, quantityAfter);
 
   const delta = quantityAfter - before;
   const reason = lineReasonSuffix ? `${reasonBase}: ${lineReasonSuffix}` : reasonBase;
@@ -131,7 +146,7 @@ async function applyInventoryLine(client, {
     profileId: null,
   });
 
-  return { applied: true, productId };
+  return { applied: true, productId, counted: true };
 }
 
 async function runInventoryLines(client, {
@@ -147,9 +162,9 @@ async function runInventoryLines(client, {
   const affectedProductIds = new Set();
 
   for (const raw of linesInput) {
-    const productId = parseInt(raw.productId, 10);
-    const quantityAfter = Math.max(0, parseInt(raw.quantityAfter, 10) || 0);
-    if (!productId || Number.isNaN(productId)) continue;
+    const productId = parseLineProductId(raw);
+    const quantityAfter = parseLineQuantityAfter(raw);
+    if (!productId) continue;
 
     listedIds.add(productId);
     const { applied: lineApplied, productId: pid } = await applyInventoryLine(client, {
@@ -162,11 +177,14 @@ async function runInventoryLines(client, {
     });
     if (lineApplied) {
       applied++;
+    }
+    if (pid) {
       affectedProductIds.add(pid);
     }
   }
 
-  if (zeroUnlisted) {
+  // Без хотя бы одной пересчитанной позиции не обнуляем весь склад (защита от пустого/битого lines).
+  if (zeroUnlisted && listedIds.size > 0) {
     const unlisted = await findUnlistedWithStock(client, whId, profileId, listedIds);
     for (const row of unlisted) {
       const productId = parseInt(row.product_id, 10);
@@ -346,15 +364,30 @@ class InventorySessionsService {
         reasonBase,
       });
 
-      await client.query(`UPDATE inventory_sessions SET lines_count = $1 WHERE id = $2`, [applied, sessionId]);
+      const linesRecorded = await client.query(
+        `SELECT COUNT(*)::int AS c FROM inventory_session_lines WHERE session_id = $1`,
+        [sessionId]
+      );
+      const linesCount = linesRecorded.rows?.[0]?.c ?? 0;
 
-      if (applied === 0) {
+      if (linesCount === 0) {
         await client.query('DELETE FROM inventory_sessions WHERE id = $1', [sessionId]);
         return {
           sessionId: null,
           linesApplied: 0,
           productIds: [],
-          message: 'Нет расхождений с учётом — документ не создан',
+          message: 'Нет пересчитанных позиций — документ не создан',
+        };
+      }
+
+      await client.query(`UPDATE inventory_sessions SET lines_count = $1 WHERE id = $2`, [linesCount, sessionId]);
+
+      if (applied === 0) {
+        return {
+          sessionId,
+          linesApplied: 0,
+          productIds,
+          message: 'Расхождений нет, пересчитанные позиции зафиксированы',
         };
       }
 
@@ -413,14 +446,19 @@ class InventorySessionsService {
         reasonBase,
       });
 
-      await client.query(`UPDATE inventory_sessions SET lines_count = $1 WHERE id = $2`, [applied, sid]);
+      const linesRecorded = await client.query(
+        `SELECT COUNT(*)::int AS c FROM inventory_session_lines WHERE session_id = $1`,
+        [sid]
+      );
+      const linesCount = linesRecorded.rows?.[0]?.c ?? 0;
+      await client.query(`UPDATE inventory_sessions SET lines_count = $1 WHERE id = $2`, [linesCount, sid]);
 
-      if (applied === 0) {
+      if (linesCount === 0) {
         return {
           sessionId: sid,
           linesApplied: 0,
           productIds: [...revertProductIds],
-          message: 'Нет изменений — документ без строк',
+          message: 'Нет пересчитанных позиций в документе',
         };
       }
 

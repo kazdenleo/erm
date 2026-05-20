@@ -1453,11 +1453,21 @@ export function WarehouseOperations({
     }
     setOpLoading(true);
     setOpMessage(null);
+    const lines = [];
+    for (const row of inventoryNewRows) {
+      const productId = Number(row?.product?.id ?? row?.product?.productId);
+      if (!productId || Number.isNaN(productId)) {
+        setOpMessage('Ошибка: в списке есть строка без ID товара — удалите её и добавьте заново');
+        setOpLoading(false);
+        return;
+      }
+      lines.push({
+        productId,
+        quantityAfter: Math.max(0, Number(row.fact) || 0),
+      });
+    }
     const payload = {
-      lines: inventoryNewRows.map((row) => ({
-        productId: row.product.id,
-        quantityAfter: row.fact,
-      })),
+      lines,
       zeroUnlisted: inventoryZeroUnlisted,
     };
     try {
@@ -1469,6 +1479,11 @@ export function WarehouseOperations({
           });
       if (!inventoryEditingSessionId && res?.sessionId == null) {
         setOpMessage(res?.message || 'Изменений не зафиксировано');
+      } else if (res?.linesApplied === 0 && res?.message) {
+        setOpMessage(res.message);
+        onRefresh?.();
+        loadInventorySessions();
+        resetInventoryNewForm();
       } else {
         const sid = res?.sessionId ?? inventoryEditingSessionId;
         setOpMessage(
