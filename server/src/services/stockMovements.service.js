@@ -55,46 +55,23 @@ class StockMovementsService {
     const currentReserved = product.reserved_quantity != null ? Number(product.reserved_quantity) : 0;
     const safeDelta = Number.isNaN(Number(delta)) ? 0 : Number(delta);
 
+    if (type === 'reserve' || type === 'unreserve') {
+      return this._applyReserveUnreserveChange(idNum, {
+        delta: safeDelta,
+        type,
+        reason,
+        meta: metaObj,
+        warehouseId,
+        product,
+        totalBefore
+      });
+    }
+
     const currentWh = await this.productsRepository.getWarehouseFreeStock(idNum, warehouseId);
     let newWh = currentWh + safeDelta;
     if (newWh < 0) newWh = 0;
 
-    let newReserved = currentReserved;
-    if (type === 'reserve' && safeDelta < 0) {
-      const reserveAdd = Math.abs(safeDelta);
-      let availableForReserve = 0;
-      try {
-        const { getReservableSupplyUnits } = await import('./sellableQuantity.service.js');
-        availableForReserve = await getReservableSupplyUnits(idNum, { warehouseId });
-      } catch {
-        const incomingQty = product.incoming_quantity != null ? Number(product.incoming_quantity) : 0;
-        availableForReserve = Math.max(0, totalBefore + incomingQty - currentReserved);
-      }
-      if (reserveAdd > availableForReserve) {
-        const err = new Error(
-          `Недостаточно остатка для резерва (доступно: ${availableForReserve}, запрошено: ${reserveAdd})`
-        );
-        err.statusCode = 400;
-        throw err;
-      }
-      newReserved = currentReserved + reserveAdd;
-    } else if (type === 'unreserve' && safeDelta > 0) {
-      newReserved = Math.max(0, currentReserved - safeDelta);
-    }
-
-    // ВАЖНО: резерв не должен менять фактический остаток.
-    // products.quantity и product_warehouse_stock.quantity считаем "фактом" на складе,
-    // а reserved_quantity — отдельное логическое поле "сколько закреплено под заказы".
-    if (type !== 'reserve' && type !== 'unreserve') {
-      await this.productsRepository.setWarehouseFreeStock(idNum, warehouseId, newWh);
-    }
-
-    if (type === 'reserve' || type === 'unreserve') {
-      await query(
-        'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        [newReserved, idNum]
-      );
-    }
+    await this.productsRepository.setWarehouseFreeStock(idNum, warehouseId, newWh);
 
     const productAfter = await this.productsRepository.findById(idNum);
     const totalAfter = productAfter?.quantity != null ? Number(productAfter.quantity) : 0;
@@ -103,13 +80,8 @@ class StockMovementsService {
     const profId = product.profile_id ?? product.profileId ?? null;
     const incAfter =
       productAfter?.incoming_quantity != null ? Number(productAfter.incoming_quantity) : 0;
-    let resAfter =
+    const resAfter =
       productAfter?.reserved_quantity != null ? Number(productAfter.reserved_quantity) : 0;
-    if (type === 'reserve' && safeDelta < 0) {
-      resAfter = newReserved;
-    } else if (type === 'unreserve' && safeDelta > 0) {
-      resAfter = newReserved;
-    }
 
     const movement = await this.repository.create({
       productId: idNum,
@@ -154,6 +126,123 @@ class StockMovementsService {
       quantityBefore: totalBefore,
       quantityAfter: totalAfter,
       delta: safeDelta,
+      warehouseId,
+      movement
+    };
+  }
+
+  /**
+   * Резерв / снятие резерва: блокировка строки товара, лимит по журналу (не products.reserved_quantity).
+   */
+  async _applyReserveUnreserveChange(productId, { delta, type, reason, meta, warehouseId, product, totalBefore }) {
+    const idNum = productId;
+    const safeDelta = Number(delta) || 0;
+    const metaOut = { ...meta, warehouse_id: warehouseId };
+    const profId = product.profile_id ?? product.profileId ?? null;
+    const orgId = product.organization_id ?? product.organizationId ?? null;
+
+    const client = await getClient();
+    let movement = null;
+    let quantityChange = safeDelta;
+
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [idNum]);
+
+      const { getReservableSupplyUnits, getReservedQuantityFromMovements } = await import(
+        './sellableQuantity.service.js'
+      );
+      const journalBefore = await getReservedQuantityFromMovements(idNum);
+
+      if (type === 'reserve' && safeDelta < 0) {
+        const reserveAdd = Math.abs(safeDelta);
+        const availableForReserve = await getReservableSupplyUnits(idNum, { warehouseId });
+        if (reserveAdd > availableForReserve) {
+          const err = new Error(
+            `Недостаточно остатка для резерва (доступно: ${availableForReserve}, запрошено: ${reserveAdd})`
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+        const journalAfter = journalBefore + reserveAdd;
+        await client.query(
+          'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [journalAfter, idNum]
+        );
+        quantityChange = -reserveAdd;
+      } else if (type === 'unreserve' && safeDelta > 0) {
+        const release = Math.min(safeDelta, journalBefore);
+        if (release <= 0) {
+          await client.query('ROLLBACK');
+          const productAfter = await this.productsRepository.findById(idNum);
+          return {
+            productId: idNum,
+            quantityBefore: totalBefore,
+            quantityAfter: productAfter?.quantity != null ? Number(productAfter.quantity) : totalBefore,
+            delta: 0,
+            warehouseId,
+            movement: null
+          };
+        }
+        const journalAfter = Math.max(0, journalBefore - release);
+        await client.query(
+          'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [journalAfter, idNum]
+        );
+        quantityChange = release;
+      } else {
+        const err = new Error('Некорректная операция резерва');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      movement = await this.repository.insertSnapshotAfterProduct(client, {
+        productId: idNum,
+        type,
+        quantityChange,
+        reason: reason || null,
+        meta: metaOut,
+        warehouseId,
+        profileId: profId
+      });
+
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    try {
+      const { default: ordersService } = await import('./orders.service.js');
+      await ordersService.trimExcessReservesForProduct(idNum, {
+        reason: 'Снятие избыточного резерва (превышен склад + «в пути»)',
+        meta: { from_stock_movement_type: type }
+      });
+    } catch {
+      /* не блокируем */
+    }
+
+    const productAfter = await this.productsRepository.findById(idNum);
+    const totalAfter = productAfter?.quantity != null ? Number(productAfter.quantity) : 0;
+
+    scheduleWarehouseStockMarketplaceSync(idNum, {
+      source: `stock_movement:${type}`,
+      warehouseId,
+      organizationId: orgId
+    });
+    scheduleMarketplaceSyncForParentKits(idNum, {
+      source: `stock_movement:${type}`,
+      warehouseId,
+      organizationId: orgId
+    });
+
+    return {
+      productId: idNum,
+      quantityBefore: totalBefore,
+      quantityAfter: totalAfter,
+      delta: quantityChange,
       warehouseId,
       movement
     };
