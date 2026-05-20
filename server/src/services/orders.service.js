@@ -2347,6 +2347,37 @@ class OrdersService {
    * Строки для ручного резерва в карточке заказа: только этот order_id (и подстроки),
    * без соседних заказов с тем же order_group_id.
    */
+  /**
+   * Строка заказа (orders.id), к которой привязан резерв по productId.
+   * Для YM/Ozon с несколькими товарами в одном order_id нельзя брать rows[0].
+   */
+  async _findOrderRowForReserveProduct(rows, productId) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return null;
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return list[0];
+
+    for (const r of list) {
+      const direct = Number(r.productId ?? r.product_id);
+      if (direct === pid) return r;
+    }
+    for (const r of list) {
+      try {
+        const resolved = await this._resolveProductIdForOrderStock(r);
+        if (Number(resolved) === pid) return r;
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const r of list) {
+      const id = orderRowDbId(r);
+      if (!id) continue;
+      const net = await this._getReservedQtyForOrderProduct(id, pid);
+      if (net > 0) return r;
+    }
+    return list[0];
+  }
+
   async _findOrderRowsForReserve(marketplace, orderId, { profileId = null } = {}) {
     const oid = String(orderId ?? '').trim();
     if (!oid || !marketplace) return [];
@@ -2492,6 +2523,9 @@ class OrdersService {
       for (const le of lineEntries) {
         lines.push({
           orderLineId: row.orderId ?? row.order_id,
+          orderRowDbId: id,
+          productName: row.productName ?? row.product_name ?? null,
+          offerId: row.offerId ?? row.offer_id ?? null,
           ...le
         });
       }
@@ -2574,7 +2608,7 @@ class OrdersService {
       }
     }
 
-    const row = rows[0];
+    const row = await this._findOrderRowForReserveProduct(rows, pid);
     const orderDbId = orderRowDbId(row);
     if (!orderDbId) {
       const err = new Error('Нет id строки заказа в БД');
@@ -2704,11 +2738,12 @@ class OrdersService {
     const doUnreserve = act === 'unreserve' || (act === 'toggle' && before.hasReserve);
 
     if (doUnreserve) {
-      const excludedDbIds = rows.map((r) => orderRowDbId(r)).filter((id) => id != null);
       const productIds = new Set();
+      const seenOrderDbIds = new Set();
       for (const row of rows) {
         const id = orderRowDbId(row);
-        if (!id) continue;
+        if (!id || seenOrderDbIds.has(id)) continue;
+        seenOrderDbIds.add(id);
         const oid = String(row.orderId ?? row.order_id ?? orderId);
         const affected = await releaseAllReservesForOrder(id, oid, async (pid, net, orderIdLabel, meta) => {
           await stockMovementsService.applyChange(pid, {
@@ -2718,7 +2753,7 @@ class OrdersService {
             meta: { ...meta, manual_unreserve: true }
           });
         });
-        for (const pid of affected || []) productIds.add(Number(pid));
+        for (const p of affected || []) productIds.add(Number(p));
       }
       // Не перераспределяем освободившийся остаток на другие заказы сразу после ручного снятия в карточке.
     } else {

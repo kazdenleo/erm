@@ -12,7 +12,8 @@ import { getOrderStatusLabel } from '../../constants/orderStatuses';
 import './OrderDetail.css';
 
 function orderReserveLineKey(line) {
-  return `${line.orderLineId ?? ''}-${line.productId}-${line.lineKind}`;
+  const rowId = line.orderRowDbId ?? line.order_row_db_id ?? '';
+  return `${rowId || (line.orderLineId ?? '')}-${line.productId}-${line.lineKind}`;
 }
 
 function lineReserveBounds(line) {
