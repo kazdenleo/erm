@@ -31,6 +31,9 @@ export const orderDetailParamsSchema = z.object({
 
 export const orderReserveBodySchema = z.object({
   action: z.enum(['toggle', 'reserve', 'unreserve']).optional().default('toggle'),
+  productId: z.union([z.number(), z.string()]).optional().nullable(),
+  product_id: z.union([z.number(), z.string()]).optional().nullable(),
+  quantity: z.union([z.number(), z.string()]).optional().nullable()
 });
 
 /**

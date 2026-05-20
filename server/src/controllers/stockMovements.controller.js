@@ -56,7 +56,8 @@ class StockMovementsController {
       }
       const { id } = req.params;
       const rows = await stockMovementsService.listReservedOrdersForProduct(id, { profileId: tid });
-      return res.status(200).json({ ok: true, data: rows });
+      const summary = await stockMovementsService.getReserveSummaryForProduct(id, { profileId: tid });
+      return res.status(200).json({ ok: true, data: rows, summary });
     } catch (error) {
       next(error);
     }

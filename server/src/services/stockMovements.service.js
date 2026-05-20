@@ -261,14 +261,45 @@ class StockMovementsService {
    * Получить историю движений по товару
    */
   async getHistory(productId, { limit = 100, profileId = null } = {}) {
-    const rows = await this.repository.findByProduct(productId, { limit, profileId });
+    const cap = Math.max(1, Math.min(500, Number(limit) || 100));
+    const rows = await this.repository.findByProduct(productId, { limit: cap, profileId });
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum)) return rows;
 
-    const { isKitProductId, isKitStockHistoryMovementType } = await import('./kitStock.service.js');
+    const { isKitProductId, isKitStockHistoryMovementType, getKitComponents } =
+      await import('./kitStock.service.js');
     if (!(await isKitProductId(idNum))) return rows;
 
-    return rows.filter((m) => isKitStockHistoryMovementType(m?.type));
+    const combined = rows.filter((m) => isKitStockHistoryMovementType(m?.type));
+
+    const comps = await getKitComponents(idNum);
+    for (const c of comps || []) {
+      const cid = Number(c.component_product_id);
+      if (!Number.isFinite(cid) || cid < 1) continue;
+      const compRows = await this.repository.findByProduct(cid, {
+        limit: Math.min(cap, 80),
+        profileId
+      });
+      for (const m of compRows || []) {
+        const t = String(m?.type || '').toLowerCase();
+        if (t !== 'reserve' && t !== 'unreserve') continue;
+        combined.push({
+          ...m,
+          meta: {
+            ...(m.meta && typeof m.meta === 'object' ? m.meta : {}),
+            kit_component_reserve: true,
+            kit_product_id: idNum
+          }
+        });
+      }
+    }
+
+    combined.sort((a, b) => {
+      const ta = new Date(a.created_at || a.createdAt || 0).getTime();
+      const tb = new Date(b.created_at || b.createdAt || 0).getTime();
+      return tb - ta;
+    });
+    return combined.slice(0, cap);
   }
 
   /**
@@ -309,6 +340,7 @@ class StockMovementsService {
          WHERE (${movementScopeSql})
            AND type IN ('reserve', 'unreserve')
            AND (meta->>'order_id') ~ '^[0-9]+$'
+           AND (meta->>'order_id')::bigint > 0
        ),
        sku_net AS (
          SELECT (meta->>'order_id')::bigint AS order_row_id,
@@ -372,6 +404,95 @@ class StockMovementsService {
     return out;
   }
 
+  /**
+   * Сводка резерва для модалки остатков (комплект: колонка = только SKU комплекта).
+   */
+  async getReserveSummaryForProduct(productId, { profileId = null } = {}) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) {
+      return {
+        displayReservedQty: 0,
+        ordersReservedQty: 0,
+        componentJournalReserve: 0,
+        orphanComponentReserve: 0
+      };
+    }
+
+    const orders = await this.listReservedOrdersForProduct(idNum, {
+      profileId,
+      _skipStaleCleanup: true
+    });
+    const ordersReservedQty = orders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
+
+    const { isKitProductId, readKitDisplayReservedQuantity, getKitComponents } =
+      await import('./kitStock.service.js');
+    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+
+    const isKit = await isKitProductId(idNum);
+    const displayReservedQty = isKit
+      ? await readKitDisplayReservedQuantity(idNum)
+      : await getReservedQuantityFromMovements(idNum);
+
+    let componentJournalReserve = 0;
+    if (isKit) {
+      const comps = await getKitComponents(idNum);
+      for (const c of comps || []) {
+        const cid = Number(c.component_product_id);
+        if (!Number.isFinite(cid) || cid < 1) continue;
+        componentJournalReserve += await getReservedQuantityFromMovements(cid);
+      }
+    }
+
+    const orphanComponentReserve =
+      isKit && orders.length === 0 && componentJournalReserve > 0 ? componentJournalReserve : 0;
+
+    return {
+      displayReservedQty,
+      ordersReservedQty,
+      componentJournalReserve,
+      orphanComponentReserve,
+      isKit
+    };
+  }
+
+  /**
+   * Снять нетто-резерв без активных заказов (напр. order_id=0 на комплектующем).
+   */
+  async releaseOrphanNetReserveForProduct(productId, { profileId = null } = {}) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) {
+      const error = new Error('Некорректный ID товара');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const orders = await this.listReservedOrdersForProduct(idNum, {
+      profileId,
+      _skipStaleCleanup: true
+    });
+    if (orders.length > 0) {
+      return { releasedProductLines: 0, skipped: true };
+    }
+
+    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+    const productIds = await this._productIdsForReserveRelease(idNum);
+    let releasedProductLines = 0;
+
+    for (const pid of productIds) {
+      const net = await getReservedQuantityFromMovements(pid);
+      if (net <= 0) continue;
+      await this.applyChange(pid, {
+        delta: net,
+        type: 'unreserve',
+        reason: 'Снятие резерва без активного заказа',
+        meta: { manual_unreserve: true, orphan_cleanup: true, source_product_id: idNum }
+      });
+      releasedProductLines += 1;
+    }
+
+    return { releasedProductLines, skipped: false };
+  }
+
   async _netReservedForOrderProduct(orderDbId, productId) {
     const oid = Number(orderDbId);
     const pid = Number(productId);
@@ -414,13 +535,20 @@ class StockMovementsService {
     }
 
     const list = await this.listReservedOrdersForProduct(idNum, { profileId, _skipStaleCleanup: true });
+    let releasedOrders = 0;
+    let releasedProductLines = 0;
+
     if (!list.length) {
-      return { releasedOrders: 0, releasedProductLines: 0, ordersChecked: 0 };
+      const orphan = await this.releaseOrphanNetReserveForProduct(idNum, { profileId });
+      return {
+        releasedOrders: 0,
+        releasedProductLines: orphan.releasedProductLines || 0,
+        ordersChecked: 0,
+        orphanCleanup: true
+      };
     }
 
     const productIds = await this._productIdsForReserveRelease(idNum);
-    let releasedOrders = 0;
-    let releasedProductLines = 0;
 
     for (const row of list) {
       const orderDbId = row.orderDbId;

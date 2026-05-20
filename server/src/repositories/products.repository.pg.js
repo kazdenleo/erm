@@ -157,12 +157,21 @@ function normalizeListCategoryId(categoryId) {
 }
 
 /**
- * Наличие для фильтра «только в наличии».
- * Обычный товар: склад (колонка «Наличие») или «В пути».
- * Комплект: целые на SKU или собираемость из комплектующих (kit_display).
+ * Наличие для фильтра «только в наличии» (как в таблице остатков).
+ * Склад, «в пути», поставщики; комплект — kit_display или остатки поставщиков по составу.
  */
 export function stockListOnHandQuantity(product) {
   if (!product) return 0;
+  const onHand = Math.max(0, Number(product.quantity) || 0);
+  const incoming = Math.max(
+    0,
+    Number(product.incoming_quantity ?? product.incomingQuantity) || 0
+  );
+  const suppliers = Math.max(
+    0,
+    Number(product.supplierStockTotal ?? product.supplier_stock_total) || 0
+  );
+
   const kit = product.kit_display ?? product.kitDisplay;
   if (kit && typeof kit === 'object') {
     const whole = Math.max(0, Number(kit.whole_on_hand ?? kit.wholeOnHand) || 0);
@@ -170,21 +179,31 @@ export function stockListOnHandQuantity(product) {
       0,
       Number(kit.assemblable_from_components ?? kit.assemblableFromComponents) || 0
     );
+    const supplierKit = Math.max(
+      0,
+      Number(kit.supplier_kit_units ?? kit.supplierKitUnits) || 0
+    );
     if (whole > 0) return whole;
     if (assemblable > 0) return assemblable;
+    if (supplierKit > 0) return supplierKit;
+    if (suppliers > 0) return suppliers;
+    if (onHand > 0) return onHand;
+    if (incoming > 0) return incoming;
     return 0;
   }
+
   const pt = String(product.product_type ?? product.productType ?? '').toLowerCase();
-  if (pt === 'kit' || product.is_kit_catalog === true || product.isKitCatalog === true) {
+  const isKit =
+    pt === 'kit' || product.is_kit_catalog === true || product.isKitCatalog === true;
+  if (isKit) {
+    if (onHand > 0) return onHand;
+    if (incoming > 0) return incoming;
+    if (suppliers > 0) return suppliers;
     return 0;
   }
-  const onHand = Math.max(0, Number(product.quantity) || 0);
-  const incoming = Math.max(
-    0,
-    Number(product.incoming_quantity ?? product.incomingQuantity) || 0
-  );
   if (onHand > 0) return onHand;
   if (incoming > 0) return incoming;
+  if (suppliers > 0) return suppliers;
   return 0;
 }
 
@@ -585,6 +604,9 @@ class ProductsRepositoryPG {
     } = options;
     const isStockList = listView === 'stock';
 
+    // Для listView=stock отбор «в наличии» — только products.service._getStockListInStockPage (обход каталога).
+    const sqlInStockOnly = isStockList ? false : inStockOnly;
+
     const { whereSql, params, paramIndex: startParamIndex } = buildFindAllFilters({
       brandId,
       categoryId,
@@ -592,7 +614,7 @@ class ProductsRepositoryPG {
       search,
       profileId,
       productType,
-      inStockOnly,
+      inStockOnly: sqlInStockOnly,
       warehouseId
     });
 
@@ -1036,18 +1058,15 @@ class ProductsRepositoryPG {
       await attachKitDisplayMetrics(products, { ...options, _kitCtx: kitCtx });
     }
 
-    const onlyInStock =
-      inStockOnly === true || inStockOnly === 'true' || inStockOnly === '1' || inStockOnly === 1;
-    const deferInStockPostFilter =
-      options.deferInStockPostFilter === true || options.deferInStockPostFilter === 'true';
-    if (isStockList && onlyInStock && !deferInStockPostFilter) {
-      return products.filter((p) => stockListOnHandQuantity(p) > 0);
-    }
     return products;
   }
 
   async countAll(options = {}) {
-    const { whereSql, params } = buildFindAllFilters(options);
+    const isStockList = options.listView === 'stock';
+    const { whereSql, params } = buildFindAllFilters({
+      ...options,
+      inStockOnly: isStockList ? false : options.inStockOnly
+    });
     const result = await query(
       `SELECT COUNT(*)::int AS total
        FROM products p

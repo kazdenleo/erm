@@ -15,6 +15,7 @@ export function useProducts(options = {}) {
   const [listRefreshing, setListRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const loadGenerationRef = useRef(0);
+  const loadAbortRef = useRef(null);
 
   useEffect(() => {
     if (autoLoad) {
@@ -27,6 +28,11 @@ export function useProducts(options = {}) {
   const loadProducts = async (options = {}) => {
     const opts = typeof options === 'object' && options !== null ? options : { organizationId: options };
     const silent = opts.silent === true;
+    if (loadAbortRef.current) {
+      loadAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     const gen = ++loadGenerationRef.current;
     try {
       if (!silent) {
@@ -59,12 +65,15 @@ export function useProducts(options = {}) {
       }
       if (opts.includeArchived === true) params.includeArchived = true;
       if (opts.archivedOnly === true) params.archivedOnly = true;
-      if (opts.stockList === true) params.stockList = true;
+      if (opts.stockList === true) {
+        params.stockList = true;
+        params.listView = 'stock';
+      }
       if (opts.inStockOnly === true || opts.inStockOnly === '1' || opts.inStockOnly === 1) {
         params.inStockOnly = '1';
       }
-      const response = await productsApi.getAll(params);
-      if (gen !== loadGenerationRef.current) return;
+      const response = await productsApi.getAll(params, { signal: controller.signal });
+      if (gen !== loadGenerationRef.current || controller.signal.aborted) return;
       const list = Array.isArray(response?.data) ? response.data : (response?.data?.data ?? response ?? []);
       const productsList = Array.isArray(list) ? list.filter(Boolean) : [];
       setProducts(productsList);
@@ -75,13 +84,17 @@ export function useProducts(options = {}) {
         supplierBreakdown: Array.isArray(response?.supplierBreakdown) ? response.supplierBreakdown : null,
       });
     } catch (err) {
-      if (gen !== loadGenerationRef.current) return;
+      if (gen !== loadGenerationRef.current || controller.signal.aborted) return;
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
       console.error('Error loading products:', err);
       if (!silent) {
         setError(err.message || 'Ошибка загрузки товаров');
       }
     } finally {
-      if (gen !== loadGenerationRef.current) return;
+      if (loadAbortRef.current === controller) {
+        loadAbortRef.current = null;
+      }
+      if (gen !== loadGenerationRef.current || controller.signal.aborted) return;
       if (!silent) {
         setLoading(false);
       }

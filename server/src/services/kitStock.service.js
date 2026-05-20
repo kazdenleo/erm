@@ -51,8 +51,13 @@ export const KIT_WHOLE_STOCK_INBOUND_TYPES = [
   'opening_balance'
 ];
 
-/** Типы движений, которые показываем в истории остатков комплекта. */
-export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES;
+/** Типы движений в истории остатков комплекта (SKU + резерв/«в пути»). */
+export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = [
+  ...KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES,
+  'reserve',
+  'unreserve',
+  'incoming'
+];
 
 export function isKitPhysicalBalanceMovementType(type) {
   return KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES.includes(String(type || '').toLowerCase());
@@ -626,40 +631,15 @@ function minKitUnitsFromComponentReserves(components, getReserved) {
 }
 
 /**
- * Резерв для колонки «Резерв» в остатках: целые комплекты на SKU + эквивалент из резерва комплектующих
- * (та же логика, что getReservedKitUnitsForOrder / список заказов, но агрегат по журналу).
+ * Резерв для колонки «Резерв» комплекта в остатках — только журнал по SKU комплекта (1 номенклатура).
+ * Резерв на комплектующих учитывается в «Доступно» (собираемость), список заказов — getReservedKitUnitsForOrder.
  */
 function kitTotalDisplayReservedFromContext(kitId, ctx) {
-  const onKit = Math.max(0, ctx.reservedMap.get(kitId) || 0);
-  const comps = ctx.componentsByKit.get(kitId) || [];
-  if (!comps.length) return onKit;
-  const fromComp = minKitUnitsFromComponentReserves(comps, (pid) => ctx.reservedMap.get(pid));
-  return onKit + fromComp;
+  return Math.max(0, ctx.reservedMap.get(kitId) || 0);
 }
 
-export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
-  const kitId = Number(kitProductId);
-  if (!Number.isFinite(kitId) || kitId < 1) return 0;
-
-  const onKit = await readKitSkuNetReserved(kitId);
-  const components = await getKitComponents(kitId);
-  if (!components.length) return onKit;
-
-  const compIds = components.map((c) => Number(c.component_product_id)).filter((id) => id > 0);
-  if (!compIds.length) return onKit;
-
-  const r = await query(
-    `SELECT product_id,
-       ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-     FROM stock_movements
-     WHERE product_id = ANY($1::bigint[])
-       AND type IN ('reserve', 'unreserve')
-     GROUP BY product_id`,
-    [compIds]
-  );
-  const compRes = new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0]));
-  const fromComp = minKitUnitsFromComponentReserves(components, (pid) => compRes.get(pid));
-  return onKit + fromComp;
+export async function readKitDisplayReservedQuantity(kitProductId, _opts = {}) {
+  return readKitSkuNetReserved(kitProductId);
 }
 
 export async function getNetReservedForOrderProduct(orderDbId, productId) {

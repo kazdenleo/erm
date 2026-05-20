@@ -2570,7 +2570,15 @@ class OrdersService {
       let toAdd = Math.max(0, target - already);
       const available = await getComponentAssemblableUnits(pid, { warehouseId });
       toAdd = Math.min(toAdd, Math.floor(available));
-      if (toAdd > 0) {
+      if (toAdd <= 0) {
+        if (qtyWanted != null && qtyWanted > 0) {
+          const err = new Error(
+            `Недостаточно остатка для резерва (доступно: ${Math.floor(available)}, запрошено: ${qtyWanted})`
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+      } else {
         const meta = {
           order_id: orderDbId,
           orderId: orderIdStr,

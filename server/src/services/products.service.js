@@ -151,21 +151,29 @@ class ProductsService {
     return this._attachParticipationFlags(items);
   }
 
+  _isStockListInStockOnly(options = {}) {
+    return (
+      options.inStockOnly === true ||
+      options.inStockOnly === 'true' ||
+      options.inStockOnly === '1' ||
+      options.inStockOnly === 1
+    );
+  }
+
   async getPage(options = {}) {
     if (options.listView === 'stock') {
-      const inStockOnly =
-        options.inStockOnly === true ||
-        options.inStockOnly === 'true' ||
+      if (
+        this._isStockListInStockOnly(options) ||
         options.inStockOnly === '1' ||
-        options.inStockOnly === 1;
-      if (inStockOnly) {
-        return this._getStockListInStockPage(options);
+        String(options.inStockOnly || '').toLowerCase() === 'true'
+      ) {
+        return this._getStockListInStockPage({ ...options, inStockOnly: true });
       }
       const [items, total] = await Promise.all([
-        this.repository.findAll(options),
+        this.repository.findAll({ ...options, listView: 'stock' }),
         this.repository.countAll(options)
       ]);
-      return { items, total };
+      return { items: await this._attachParticipationFlags(items), total };
     }
     const items = await this.repository.findAll(options);
     const total = await this.repository.countAll(options);
@@ -174,7 +182,9 @@ class ProductsService {
   }
 
   /**
-   * Список остатков с «только в наличии»: пагинация после фактического onHand (не по SQL LIMIT).
+   * Список остатков с «только в наличии»: обход всего каталога с SQL-фильтрами
+   * (категория, поиск, тип, организация, склад), затем отбор по stockListOnHandQuantity
+   * и пагинация — не по LIMIT текущей «страницы» SQL.
    */
   async _getStockListInStockPage(options = {}) {
     const limit = Math.max(1, Math.min(200, Number(options.limit) || 50));
@@ -189,9 +199,18 @@ class ProductsService {
     const pageItems = [];
     let total = 0;
 
+    const {
+      page: _page,
+      limit: _limit,
+      offset: _offset,
+      inStockOnly: _inStockOnly,
+      ...scanFilters
+    } = options;
+
     while (true) {
       const batch = await this.repository.findAll({
-        ...options,
+        ...scanFilters,
+        listView: 'stock',
         limit: sqlBatch,
         offset: sqlOffset,
         inStockOnly: false,

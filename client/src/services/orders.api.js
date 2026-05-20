@@ -114,7 +114,7 @@ export const ordersApi = {
 
   /**
    * Поставить / снять резерв под заказ.
-   * @param {{ action?: 'toggle'|'reserve'|'unreserve' }} [options]
+   * @param {{ action?: 'toggle'|'reserve'|'unreserve', productId?: number|string, quantity?: number }} [options]
    */
   setOrderReserve: async (marketplace, orderId, options = {}) => {
     const mp = encodeURIComponent(marketplace);

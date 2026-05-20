@@ -10,7 +10,7 @@ export const productsApi = {
    * Получить все товары
    * @param {object} [options] - options.cacheBust = true добавляет _t=timestamp чтобы не брать кэш (актуальные сохранённые цены)
    */
-  getAll: async (options = {}) => {
+  getAll: async (options = {}, axiosConfig = {}) => {
     const params = { ...(options.cacheBust ? { _t: Date.now() } : {}) };
     if (options.organizationId != null && options.organizationId !== '') params.organizationId = options.organizationId;
     if (options.brandId != null && options.brandId !== '') params.brandId = String(options.brandId);
@@ -33,14 +33,21 @@ export const productsApi = {
     }
     if (options.includeArchived === true) params.includeArchived = '1';
     if (options.archivedOnly === true) params.archivedOnly = '1';
-    if (options.stockList === true) {
+    if (options.stockList === true || options.stockList === '1' || options.stockList === 1) {
       params.listView = 'stock';
       params.stockList = '1';
     }
-    if (options.inStockOnly === true) {
+    if (
+      options.inStockOnly === true ||
+      options.inStockOnly === '1' ||
+      options.inStockOnly === 1
+    ) {
       params.inStockOnly = '1';
     }
-    const response = await api.get('/products', { params: Object.keys(params).length ? params : undefined });
+    const response = await api.get('/products', {
+      params: Object.keys(params).length ? params : undefined,
+      ...axiosConfig
+    });
     return response.data;
   },
 

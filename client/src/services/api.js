@@ -73,6 +73,15 @@ function applyStockLevelsProductsListParams(config) {
   if (params.listView !== 'stock') params.listView = 'stock';
   if (params.stockList == null || params.stockList === '') params.stockList = '1';
   if (params.limit == null || params.limit === '') params.limit = '50';
+  if (params.inStockOnly == null || params.inStockOnly === '') {
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage.getItem('stockListInStockOnly') === '1') {
+        params.inStockOnly = '1';
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   config.params = params;
   config.headers = config.headers || {};
   config.headers['X-ERM-Client-Route'] = 'stock-levels';

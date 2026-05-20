@@ -21,7 +21,6 @@ import {
   isKitProduct,
   isKitStockHistoryMovement
 } from '../../utils/kitStockMetrics';
-import { stockListRowHasStock } from '../../utils/stockListMetrics';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
@@ -796,7 +795,6 @@ export function WarehouseStocks() {
   });
   const loadListRef = useRef(() => {});
   const listBootstrappedRef = useRef(false);
-  const skipFilterReloadRef = useRef(true);
   const [historyProduct, setHistoryProduct] = useState(null);
   const [historyList, setHistoryList] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -804,6 +802,7 @@ export function WarehouseStocks() {
   /** Товар, для которого открыта модалка резерва (таблица или история). */
   const [reserveModalProduct, setReserveModalProduct] = useState(null);
   const [reserveOrders, setReserveOrders] = useState([]);
+  const [reserveSummary, setReserveSummary] = useState(null);
   const [reserveLoading, setReserveLoading] = useState(false);
   const [reserveError, setReserveError] = useState(null);
   const [reserveUnreserveKey, setReserveUnreserveKey] = useState(null);
@@ -861,8 +860,8 @@ export function WarehouseStocks() {
         ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
         ...(productType ? { productType } : {}),
         ...(search ? { search } : {}),
-        ...(wantInStock ? { inStockOnly: true } : {}),
-        ...rest
+        ...rest,
+        ...(wantInStock ? { inStockOnly: true } : {})
       };
     },
     [
@@ -943,21 +942,25 @@ export function WarehouseStocks() {
   }, [filterSearch]);
 
   useEffect(() => {
-    if (!listBootstrappedRef.current) return;
-    if (skipFilterReloadRef.current) {
-      skipFilterReloadRef.current = false;
-      return;
+    const isFirstLoad = !listBootstrappedRef.current;
+    if (isFirstLoad) {
+      listBootstrappedRef.current = true;
+    } else {
+      setCurrentPage(1);
     }
-    setCurrentPage(1);
-    loadListRef.current({ inStockOnly: filterInStockOnly, page: 1, silent: true });
-  }, [filterSearchDebounced, filterProductType, filterInStockOnly]);
-
-  useEffect(() => {
-    listBootstrappedRef.current = true;
-    skipFilterReloadRef.current = true;
-    loadListRef.current({ page: 1, silent: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная загрузка
-  }, []);
+    loadListRef.current({
+      page: 1,
+      inStockOnly: filterInStockOnly,
+      silent: !isFirstLoad
+    });
+  }, [
+    filterSearchDebounced,
+    filterProductType,
+    filterInStockOnly,
+    filterCategoryId,
+    filterOrganizationId,
+    stockWarehouseId
+  ]);
 
   useEffect(() => {
     const rows = meta?.supplierBreakdown;
@@ -1210,21 +1213,18 @@ export function WarehouseStocks() {
   };
 
   const handleOrganizationFilterChange = (e) => {
-    const v = e.target.value;
-    setFilterOrganizationId(v);
+    setFilterOrganizationId(e.target.value);
     setCurrentPage(1);
-    loadStockList({ organizationId: v || undefined, page: 1, silent: true });
   };
 
   const handleCategoryFilterChange = (e) => {
-    const v = e.target.value;
-    setFilterCategoryId(v);
+    setFilterCategoryId(e.target.value);
     setCurrentPage(1);
-    loadStockList({ categoryId: v || undefined, page: 1, silent: true });
   };
 
   const handleProductTypeFilterChange = (e) => {
     setFilterProductType(e.target.value);
+    setCurrentPage(1);
   };
 
   const handleInStockOnlyChange = (e) => {
@@ -1237,6 +1237,7 @@ export function WarehouseStocks() {
       /* ignore */
     }
     setCurrentPage(1);
+    // Сразу грузим с новым флагом: иначе ответ начальной загрузки без inStockOnly может перезаписать список.
     loadStockList({ inStockOnly: on, page: 1, silent: false });
   };
 
@@ -1258,7 +1259,6 @@ export function WarehouseStocks() {
       /* ignore */
     }
     setCurrentPage(1);
-    loadStockList({ warehouseId: v || undefined, page: 1, silent: true });
   };
 
   /** Подгрузка остатков по складу (инвентаризация); синхронизирует фильтр «Склад» в таблице. */
@@ -1275,7 +1275,6 @@ export function WarehouseStocks() {
           /* ignore */
         }
         setCurrentPage(1);
-        loadStockList({ warehouseId: w || undefined, page: 1, silent: true });
         return;
       }
       loadStockList({ warehouseId: w || undefined, page: currentPage, silent: true });
@@ -1367,6 +1366,7 @@ export function WarehouseStocks() {
     setReserveModalOpen(false);
     setReserveListOverride(null);
     setReserveModalProduct(null);
+    setReserveSummary(null);
     setReserveError(null);
     setReserveUnreserveKey(null);
   }, []);
@@ -1378,12 +1378,14 @@ export function WarehouseStocks() {
     const list = res?.data ?? res ?? [];
     const arr = Array.isArray(list) ? list : [];
     setReserveOrders(arr);
+    setReserveSummary(res?.summary ?? null);
     return arr;
   }, [reserveModalProduct?.id]);
 
   useEffect(() => {
     if (!reserveModalOpen || !reserveModalProduct?.id) {
       setReserveOrders([]);
+      setReserveSummary(null);
       return;
     }
     if (reserveListOverride != null) {
@@ -1398,9 +1400,13 @@ export function WarehouseStocks() {
         if (cancelled) return;
         const list = res?.data ?? res ?? [];
         setReserveOrders(Array.isArray(list) ? list : []);
+        setReserveSummary(res?.summary ?? null);
       })
       .catch(() => {
-        if (!cancelled) setReserveOrders([]);
+        if (!cancelled) {
+          setReserveOrders([]);
+          setReserveSummary(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setReserveLoading(false);
@@ -1445,11 +1451,13 @@ export function WarehouseStocks() {
   const handleReleaseAllReservesFromStock = useCallback(async () => {
     const pid = reserveModalProduct?.id;
     if (!pid || reserveBulkReleasing) return;
-    if (
-      !window.confirm(
-        `Снять резерв по всем ${reserveOrders.length} заказам в списке (всего ${reserveModalTotalQty} шт.)?`
-      )
-    ) {
+    const orphanQty =
+      reserveSummary?.orphanComponentReserve || reserveSummary?.componentJournalReserve || 0;
+    const confirmMsg =
+      reserveOrders.length > 0
+        ? `Снять резерв по всем ${reserveOrders.length} заказам в списке (всего ${reserveModalTotalQty} шт.)?`
+        : `Снять резерв без заказа (${orphanQty || 'весь'} шт. в журнале комплектующих)?`;
+    if (!window.confirm(confirmMsg)) {
       return;
     }
     setReserveBulkReleasing(true);
@@ -1468,6 +1476,7 @@ export function WarehouseStocks() {
     reserveBulkReleasing,
     reserveOrders.length,
     reserveModalTotalQty,
+    reserveSummary,
     reloadReserveOrdersList,
     currentPage
   ]);
@@ -1494,9 +1503,9 @@ export function WarehouseStocks() {
       const available = stockTableAvailable({ onHand, incoming, reserved, suppliers });
       return { onHand, incoming, reserved, suppliers, supplierDetails, available };
     });
-    if (!filterInStockOnly) return built;
-    return built.filter((row) => stockListRowHasStock(row));
-  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId, filterInStockOnly]);
+    // Все фильтры (категория, поиск, тип, «только в наличии») — на сервере по всему каталогу, не по строкам страницы.
+    return built;
+  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]);
 
   const renderStockListPager = (placement) => {
     const idSuffix = placement === 'top' ? 'top' : 'bottom';
@@ -2101,13 +2110,38 @@ export function WarehouseStocks() {
         ) : reserveLoading ? (
           <div className="loading">Загрузка…</div>
         ) : reserveOrders.length === 0 ? (
-          <p className="text-muted mb-0">Нет активного резерва по заказам.</p>
+          <>
+            <p className="text-muted mb-2">Нет активного резерва по заказам.</p>
+            {(reserveSummary?.orphanComponentReserve > 0 ||
+              Number(reserveSummary?.componentJournalReserve) > 0) && (
+              <div className="alert alert-warning small mb-3" role="status">
+                В журнале комплектующих остался резерв{' '}
+                <strong>{reserveSummary.orphanComponentReserve || reserveSummary.componentJournalReserve}</strong>{' '}
+                шт. без привязки к заказу (колонка «Резерв» для комплекта — только по SKU комплекта).
+                {reserveError && (
+                  <p className="text-danger mb-0 mt-2" role="alert">
+                    {reserveError}
+                  </p>
+                )}
+                <div className="mt-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="small"
+                    disabled={reserveBulkReleasing}
+                    onClick={handleReleaseAllReservesFromStock}
+                  >
+                    {reserveBulkReleasing ? 'Снимаем…' : 'Снять резерв с комплектующих'}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <>
             <p className="text-muted small mb-2">
               Сейчас зарезервировано <strong>{reserveModalTotalQty}</strong> шт. по{' '}
-              {reserveOrders.length} зак. (сумма по журналу; для комплектов совпадает с колонкой
-              «Резерв» — целые комплекты на SKU и сборка из комплектующих).
+              {reserveOrders.length} зак. (для комплектов в колонке «Резерв» — только SKU комплекта).
             </p>
             {reserveOrders.some((o) => o.staleReserve) && (
               <p className="text-warning small mb-2" role="status">

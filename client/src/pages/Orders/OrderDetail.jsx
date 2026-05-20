@@ -11,11 +11,28 @@ import { Button } from '../../components/common/Button/Button';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
 import './OrderDetail.css';
 
-/** Резерв на складе: весь заказ и отдельные товары / комплектующие */
+function orderReserveLineKey(line) {
+  return `${line.orderLineId ?? ''}-${line.productId}-${line.lineKind}`;
+}
+
+function lineReserveBounds(line) {
+  const reserved = Math.max(0, Number(line.reservedQty) || 0);
+  const need = Math.max(0, Number(line.needQty) || 0);
+  return { reserved, need, remaining: Math.max(0, need - reserved) };
+}
+
+function clampLineQty(raw, min, max) {
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
+
+/** Резерв на складе: весь заказ и отдельные товары / комплектующие (с частичным количеством) */
 export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, onChanged }) {
   const [reserve, setReserve] = useState(reserveProp ?? null);
   const [loading, setLoading] = useState(false);
   const [lineLoadingKey, setLineLoadingKey] = useState(null);
+  const [lineQty, setLineQty] = useState({});
   const [feedback, setFeedback] = useState(null);
   const [error, setError] = useState(null);
 
@@ -24,6 +41,47 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
       setReserve(reserveProp ?? null);
     }
   }, [reserveProp]);
+
+  useEffect(() => {
+    if (!marketplace || !orderId) return;
+    const propLines = Array.isArray(reserveProp?.lines) ? reserveProp.lines : [];
+    if (propLines.length > 0) return;
+    let cancelled = false;
+    ordersApi
+      .getOrderReserve(marketplace, orderId)
+      .then((r) => {
+        if (!cancelled) setReserve(r ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [marketplace, orderId, reserveProp]);
+
+  const detailLines = Array.isArray(reserve?.lines)
+    ? reserve.lines.filter(
+        (l) =>
+          l?.productId != null &&
+          (l.lineKind === 'component' || l.lineKind === 'kit_whole' || l.lineKind === 'product')
+      )
+    : [];
+
+  useEffect(() => {
+    const next = {};
+    for (const line of detailLines) {
+      const key = orderReserveLineKey(line);
+      const { reserved, remaining } = lineReserveBounds(line);
+      const prev = lineQty[key];
+      if (reserved > 0) {
+        const max = reserved;
+        next[key] = prev != null ? clampLineQty(prev, 1, max) : 1;
+      } else if (remaining > 0) {
+        const max = remaining;
+        next[key] = prev != null ? clampLineQty(prev, 1, max) : Math.min(1, max);
+      }
+    }
+    setLineQty(next);
+  }, [reserve, detailLines.length]);
 
   const applyResult = (result) => {
     setReserve(result);
@@ -46,18 +104,28 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
     }
   };
 
-  const handleToggleLine = async (line) => {
+  const handleLineAction = async (line, action, qtyOverride = null) => {
     const pid = line?.productId;
     if (!marketplace || !orderId || !pid || lineLoadingKey) return;
-    const key = String(pid);
+    const key = orderReserveLineKey(line);
+    const { reserved, remaining } = lineReserveBounds(line);
+    const act = String(action || '').toLowerCase();
+    const isUnreserve = act === 'unreserve';
+    const max = isUnreserve ? reserved : remaining;
+    if (max <= 0) return;
+    const qty =
+      qtyOverride != null
+        ? clampLineQty(qtyOverride, 1, max)
+        : clampLineQty(lineQty[key], 1, max);
+
     setLineLoadingKey(key);
     setError(null);
     setFeedback(null);
     try {
-      const hasLineReserve = (Number(line.reservedQty) || 0) > 0;
       const result = await ordersApi.setOrderReserve(marketplace, orderId, {
-        action: hasLineReserve ? 'unreserve' : 'reserve',
-        productId: pid
+        action: isUnreserve ? 'unreserve' : 'reserve',
+        productId: pid,
+        quantity: qty
       });
       applyResult(result);
     } catch (e) {
@@ -74,9 +142,6 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
   const hasReserve = reserve?.hasReserve === true || reservedQty > 0;
   const label = hasReserve ? 'Снять весь резерв' : 'Поставить резерв на заказ';
   const variant = hasReserve ? 'secondary' : 'primary';
-  const detailLines = Array.isArray(reserve?.lines)
-    ? reserve.lines.filter((l) => l?.productId != null && (l.lineKind === 'component' || l.lineKind === 'kit_whole' || l.lineKind === 'product'))
-    : [];
 
   return (
     <section className="order-detail-section order-reserve-panel" style={{ marginBottom: 16 }}>
@@ -91,7 +156,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 : 'Нет данных о количестве'}
           </p>
           <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>
-            Можно снять или поставить резерв по отдельным товарам и комплектующим ниже.
+            По каждой позиции укажите количество и нажмите «Снять» или «В резерв» (не обязательно всё сразу).
           </p>
         </div>
         <Button variant={variant} size="small" onClick={handleToggleAll} disabled={loading}>
@@ -102,36 +167,65 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
         <ul style={{ margin: '12px 0 0', padding: 0, listStyle: 'none', fontSize: 13 }}>
           {detailLines.map((line) => {
             const pid = line.productId;
-            const r = Number(line.reservedQty) || 0;
-            const n = Number(line.needQty) || 0;
+            const key = orderReserveLineKey(line);
+            const { reserved: r, need: n, remaining } = lineReserveBounds(line);
             const lineHas = r > 0;
+            const maxQty = lineHas ? r : remaining;
             const title =
               line.label ||
               (line.lineKind === 'component' ? `Комплектующая #${pid}` : `Товар #${pid}`);
+            const qtyVal = lineQty[key] ?? (lineHas ? 1 : Math.min(1, maxQty || 1));
             return (
               <li
-                key={`${line.orderLineId}-${pid}-${line.lineKind}`}
-                style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  alignItems: 'center',
-                  gap: 8,
-                  marginTop: 8,
-                  paddingTop: 8,
-                  borderTop: '1px solid var(--border, #eee)'
-                }}
+                key={key}
+                className="order-reserve-line"
               >
-                <span style={{ flex: '1 1 160px' }}>
+                <span className="order-reserve-line__title">
                   {title}: <strong>{r}</strong> из {n}
                 </span>
-                <Button
-                  variant={lineHas ? 'secondary' : 'primary'}
-                  size="small"
-                  disabled={loading || lineLoadingKey === String(pid)}
-                  onClick={() => handleToggleLine(line)}
-                >
-                  {lineLoadingKey === String(pid) ? '…' : lineHas ? 'Снять' : 'В резерв'}
-                </Button>
+                <div className="order-reserve-line__actions">
+                  <label className="order-reserve-line__qty">
+                    <span className="visually-hidden">Количество</span>
+                    <input
+                      type="number"
+                      className="form-control form-control-sm"
+                      min={1}
+                      max={maxQty > 0 ? maxQty : 1}
+                      value={maxQty > 0 ? qtyVal : 0}
+                      disabled={loading || lineLoadingKey === key || maxQty <= 0}
+                      onChange={(e) =>
+                        setLineQty((prev) => ({
+                          ...prev,
+                          [key]: clampLineQty(e.target.value, 1, Math.max(1, maxQty))
+                        }))
+                      }
+                    />
+                    <span className="order-reserve-line__qty-suffix">шт.</span>
+                  </label>
+                  <Button
+                    variant={lineHas ? 'secondary' : 'primary'}
+                    size="small"
+                    disabled={loading || lineLoadingKey === key || maxQty <= 0}
+                    onClick={() =>
+                      handleLineAction(line, lineHas ? 'unreserve' : 'reserve')
+                    }
+                  >
+                    {lineLoadingKey === key ? '…' : lineHas ? 'Снять' : 'В резерв'}
+                  </Button>
+                  {maxQty > 1 ? (
+                    <button
+                      type="button"
+                      className="order-reserve-line__max-btn"
+                      disabled={loading || lineLoadingKey === key}
+                      onClick={() => {
+                        setLineQty((prev) => ({ ...prev, [key]: maxQty }));
+                        handleLineAction(line, lineHas ? 'unreserve' : 'reserve', maxQty);
+                      }}
+                    >
+                      {lineHas ? 'Снять всё' : 'Макс.'}
+                    </button>
+                  ) : null}
+                </div>
               </li>
             );
           })}
