@@ -551,6 +551,7 @@ async function closeShipment(
 
   await saveLocalShipments(shipmentsToSave);
 
+  // Остатки — по «Собран»; затем все заказы в поставке (кроме отменённых и уже в логистике МП) → внутренний «Отгружен».
   const orderIds = Array.isArray(shipToClose.orderIds) ? shipToClose.orderIds : [];
   if (orderIds.length > 0 && shipToClose.marketplace) {
     try {
@@ -567,7 +568,8 @@ async function closeShipment(
       );
       logger.info(
         `[Shipments] Закрытие ${shipmentId}: резерв и списание — обработано ${fin?.processed ?? 0}, ` +
-          `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; статус «Отгружен»: ${st?.updated ?? 0}`
+          `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; ` +
+          `внутренний «Отгружен»: ${st?.updated ?? 0}, пропущено ${st?.skipped ?? 0}`
       );
     } catch (e) {
       logger.warn('[Shipments] Закрытие поставки: не удалось списать остатки по заказам:', e?.message || e);

@@ -20,6 +20,11 @@ export const inventorySessionsApi = {
     return response.data?.data ?? response.data;
   },
 
+  update: async (id, payload) => {
+    const response = await api.put(`/inventory-sessions/${id}`, payload);
+    return response.data?.data ?? response.data;
+  },
+
   delete: async (id) => {
     const response = await api.delete(`/inventory-sessions/${id}`);
     return response.data?.data ?? response.data;

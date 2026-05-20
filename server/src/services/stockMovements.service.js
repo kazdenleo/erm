@@ -17,6 +17,44 @@ class StockMovementsService {
   }
 
   /**
+   * Склад для списания/отгрузки: предпочтительный → где есть остаток → последний резерв → склад по умолчанию.
+   */
+  async resolveWarehouseIdForProductStock(productId, preferredWarehouseId = null) {
+    const idNum = Number(productId);
+    if (!Number.isFinite(idNum) || idNum < 1) {
+      return this.productsRepository.resolveOwnWarehouseId(preferredWarehouseId);
+    }
+    const pref = await this.productsRepository.resolveOwnWarehouseId(preferredWarehouseId);
+    if (pref) {
+      const onPref = await this.productsRepository.getWarehouseFreeStock(idNum, pref);
+      if (onPref > 0) return pref;
+    }
+    const withStock = await query(
+      `SELECT warehouse_id FROM product_warehouse_stock
+       WHERE product_id = $1 AND COALESCE(quantity, 0) > 0
+       ORDER BY quantity DESC, warehouse_id ASC
+       LIMIT 1`,
+      [idNum]
+    );
+    if (withStock.rows?.[0]?.warehouse_id != null) {
+      return Number(withStock.rows[0].warehouse_id);
+    }
+    const fromReserve = await query(
+      `SELECT warehouse_id FROM stock_movements
+       WHERE product_id = $1
+         AND warehouse_id IS NOT NULL
+         AND type IN ('reserve', 'unreserve', 'shipment')
+       ORDER BY id DESC
+       LIMIT 1`,
+      [idNum]
+    );
+    if (fromReserve.rows?.[0]?.warehouse_id != null) {
+      return Number(fromReserve.rows[0].warehouse_id);
+    }
+    return pref || (await this.productsRepository.resolveOwnWarehouseId(null));
+  }
+
+  /**
    * Применить изменение остатка к товару и записать движение.
    * Остаток изменяется по выбранному складу (meta.warehouse_id / meta.warehouseId или склад по умолчанию);
    * products.quantity — сумма свободных остатков по всем складам.
@@ -73,6 +111,9 @@ class StockMovementsService {
     if (newWh < 0) newWh = 0;
 
     await this.productsRepository.setWarehouseFreeStock(idNum, warehouseId, newWh);
+
+    const { syncProductQuantityFromWarehouseStock } = await import('./kitStock.service.js');
+    await syncProductQuantityFromWarehouseStock(idNum);
 
     const productAfter = await this.productsRepository.findById(idNum);
     const totalAfter = productAfter?.quantity != null ? Number(productAfter.quantity) : 0;

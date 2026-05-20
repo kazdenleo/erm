@@ -74,6 +74,13 @@ router.get(
   wrapAsync(productsController.getById.bind(productsController))
 );
 
+// Остаток товара на конкретном складе (инвентаризация, списание)
+router.get(
+  '/:id/warehouse-stock',
+  validateProductId,
+  wrapAsync(stockMovementsController.getWarehouseStock.bind(stockMovementsController))
+);
+
 // Получить историю движений остатков товара
 router.get(
   '/:id/stock-movements',

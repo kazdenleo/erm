@@ -105,6 +105,7 @@ export function WarehouseOperations({
   /** Обязательный склад приёмки (поступление / возвраты) */
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
   const [returnWarehouseId, setReturnWarehouseId] = useState('');
+  const [writeoffWarehouseId, setWriteoffWarehouseId] = useState('');
   const [customerReturnWarehouseId, setCustomerReturnWarehouseId] = useState('');
   // Список для поступления: { productId, sku, name, quantity, cost }
   const [receiptList, setReceiptList] = useState([]);
@@ -314,6 +315,10 @@ export function WarehouseOperations({
   const inventoryNewScanInputRef = useRef(null);
   /** Склад, по которому ведётся новая инвентаризация (обязателен до сохранения) */
   const [inventorySessionWarehouseId, setInventorySessionWarehouseId] = useState('');
+  /** Обнулить остаток по позициям на складе, не попавшим в список пересчёта */
+  const [inventoryZeroUnlisted, setInventoryZeroUnlisted] = useState(true);
+  /** Редактирование существующего документа (id) */
+  const [inventoryEditingSessionId, setInventoryEditingSessionId] = useState(null);
 
   const loadReceiptsList = useCallback(() => {
     setReceiptsLoading(true);
@@ -373,6 +378,13 @@ export function WarehouseOperations({
     defaultOrganizationId,
     ownWarehouses
   ]);
+
+  useEffect(() => {
+    if (mode !== MODE_WRITEOFF) return;
+    if (!writeoffWarehouseId && inventoryWarehouseId) {
+      setWriteoffWarehouseId(String(inventoryWarehouseId));
+    }
+  }, [mode, writeoffWarehouseId, inventoryWarehouseId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
@@ -827,14 +839,26 @@ export function WarehouseOperations({
 
   const handleWriteOff = async () => {
     if (!foundProduct) return;
+    if (!writeoffWarehouseId) {
+      setOpMessage('Выберите склад списания');
+      return;
+    }
     const sub = Math.max(1, parseInt(qtyInput, 10) || 1);
     setOpLoading(true);
     setOpMessage(null);
     try {
+      const whStock = await stockMovementsApi.getWarehouseStock(foundProduct.id, writeoffWarehouseId);
+      const onWh = Math.max(0, Number(whStock?.quantity) || 0);
+      if (sub > onWh) {
+        setOpMessage(`На складе только ${onWh} шт.`);
+        setOpLoading(false);
+        return;
+      }
       await stockMovementsApi.applyChange(foundProduct.id, {
         delta: -sub,
         type: 'writeoff',
-        reason: 'Списание со склада'
+        reason: 'Списание со склада',
+        meta: { warehouse_id: Number(writeoffWarehouseId) }
       });
       setOpMessage(`Списано ${sub} шт.`);
       onRefresh?.();
@@ -1231,10 +1255,31 @@ export function WarehouseOperations({
     return { plus, minus, net: plus - minus };
   }, [inventoryDetailView]);
 
-  const addOneToInventoryNewRow = (product) => {
+  const warehouseQtyForProduct = async (product, warehouseId) => {
+    if (!product?.id) return 0;
+    const wid = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId) : '';
+    if (!wid) return product.quantity ?? 0;
+    const fromList = products.find((p) => String(p.id) === String(product.id));
+    if (
+      fromList &&
+      inventoryWarehouseId &&
+      String(inventoryWarehouseId) === wid &&
+      fromList.quantity != null
+    ) {
+      return Number(fromList.quantity) || 0;
+    }
+    try {
+      const data = await stockMovementsApi.getWarehouseStock(product.id, wid);
+      return Math.max(0, Number(data?.quantity) || 0);
+    } catch {
+      return product.quantity ?? 0;
+    }
+  };
+
+  const addOneToInventoryNewRow = async (product) => {
     if (!product?.id) return;
     product = resolveProductForInventory(product);
-    const current = product.quantity ?? 0;
+    const current = await warehouseQtyForProduct(product, inventorySessionWarehouseId);
     setInventoryNewRows((prev) => {
       const idx = prev.findIndex((r) => r.product.id === product.id);
       if (idx === -1) {
@@ -1258,13 +1303,16 @@ export function WarehouseOperations({
     }
     setLookupError(null);
     try {
+      if (typeof reloadProductsWithWarehouse === 'function') {
+        await reloadProductsWithWarehouse(inventorySessionWarehouseId);
+      }
       const product = await lookupProductByAny(v, {
         title: 'Выберите товар для инвентаризации',
         // В инвентаризации скан часто первым делом — новый штрихкод.
         // Если товара нет, предложим сразу привязать штрихкод к товару.
         allowLinkBarcode: isLikelyBarcodeScan(v)
       });
-      addOneToInventoryNewRow(product);
+      await addOneToInventoryNewRow(product);
       setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
       setInventoryNewScanValue('');
@@ -1313,7 +1361,7 @@ export function WarehouseOperations({
     lookupByBarcodeOrSkuThenInventoryNewOne(v);
   };
 
-  const handleInventoryNewAddFromSelect = () => {
+  const handleInventoryNewAddFromSelect = async () => {
     if (!inventorySessionWarehouseId) {
       setOpMessage('Выберите склад инвентаризации');
       return;
@@ -1328,7 +1376,7 @@ export function WarehouseOperations({
       setOpMessage('Товар не найден');
       return;
     }
-    addOneToInventoryNewRow(product);
+    await addOneToInventoryNewRow(product);
     setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
     inventoryNewScanInputRef.current?.focus();
   };
@@ -1345,6 +1393,55 @@ export function WarehouseOperations({
     setInventoryNewRows((prev) => prev.filter((r) => r.product.id !== productId));
   };
 
+  const resetInventoryNewForm = () => {
+    setInventoryNewSession(false);
+    setInventoryNewRows([]);
+    setInventorySessionWarehouseId('');
+    setInventoryEditingSessionId(null);
+    setInventoryZeroUnlisted(true);
+    setLookupError(null);
+  };
+
+  const startInventoryEdit = async () => {
+    const session = inventoryDetailView?.session;
+    const lines = inventoryDetailView?.lines;
+    if (!session?.id || !session?.warehouse_id) {
+      setOpMessage('Не удалось открыть редактирование: у документа не указан склад');
+      return;
+    }
+    const whId = String(session.warehouse_id);
+    setOpLoading(true);
+    try {
+      const rows = [];
+      for (const line of lines || []) {
+        const product = {
+          id: line.product_id,
+          sku: line.product_sku,
+          name: line.product_name,
+          cost: line.product_cost ?? line.productCost,
+        };
+        if (!product.id) continue;
+        const current = await warehouseQtyForProduct(product, whId);
+        rows.push({
+          product,
+          current,
+          fact: Math.max(0, Number(line.quantity_after ?? 0)),
+        });
+      }
+      setInventoryEditingSessionId(session.id);
+      setInventorySessionWarehouseId(whId);
+      setInventoryZeroUnlisted(true);
+      setInventoryNewRows(rows);
+      setInventoryNewSession(true);
+      setInventoryDetailView(null);
+      setOpMessage(`Редактирование инвентаризации №${session.id}. Измените список и сохраните.`);
+    } catch (e) {
+      setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось открыть'));
+    } finally {
+      setOpLoading(false);
+    }
+  };
+
   const applyInventoryNew = async () => {
     if (!inventorySessionWarehouseId) {
       setOpMessage('Выберите склад инвентаризации');
@@ -1354,32 +1451,34 @@ export function WarehouseOperations({
       setOpMessage('Список пересчёта пуст');
       return;
     }
-    const toUpdate = inventoryNewRows.filter((row) => row.fact !== row.current);
-    if (toUpdate.length === 0) {
-      setOpMessage('Факт совпадает с количеством в системе по всем строкам — сохранять нечего');
-      return;
-    }
     setOpLoading(true);
     setOpMessage(null);
+    const payload = {
+      lines: inventoryNewRows.map((row) => ({
+        productId: row.product.id,
+        quantityAfter: row.fact,
+      })),
+      zeroUnlisted: inventoryZeroUnlisted,
+    };
     try {
-      const res = await inventorySessionsApi.apply({
-        warehouseId: Number(inventorySessionWarehouseId),
-        lines: toUpdate.map((row) => ({
-          productId: row.product.id,
-          quantityAfter: row.fact,
-        })),
-      });
-      if (res?.sessionId == null) {
+      const res = inventoryEditingSessionId
+        ? await inventorySessionsApi.update(inventoryEditingSessionId, payload)
+        : await inventorySessionsApi.apply({
+            ...payload,
+            warehouseId: Number(inventorySessionWarehouseId),
+          });
+      if (!inventoryEditingSessionId && res?.sessionId == null) {
         setOpMessage(res?.message || 'Изменений не зафиксировано');
       } else {
+        const sid = res?.sessionId ?? inventoryEditingSessionId;
         setOpMessage(
-          `Инвентаризация №${res.sessionId} сохранена. Обновлено позиций: ${res.linesApplied ?? 0}`
+          inventoryEditingSessionId
+            ? `Инвентаризация №${sid} обновлена. Позиций в документе: ${res.linesApplied ?? 0}`
+            : `Инвентаризация №${sid} сохранена. Обновлено позиций: ${res.linesApplied ?? 0}`
         );
         onRefresh?.();
         loadInventorySessions();
-        setInventoryNewSession(false);
-        setInventoryNewRows([]);
-        setInventorySessionWarehouseId('');
+        resetInventoryNewForm();
       }
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось сохранить'));
@@ -1453,6 +1552,26 @@ export function WarehouseOperations({
         <div className="warehouse-ops-panel writeoff-panel">
           <h3 className="warehouse-ops-panel-title">Списание товара</h3>
           <p className="warehouse-ops-hint">Отсканируйте штрихкод или введите артикул, затем укажите количество к списанию.</p>
+          <label className="warehouse-ops-field-label" style={{ display: 'block', marginBottom: 12 }}>
+            Склад списания <span className="warehouse-ops-required-star">*</span>
+            <select
+              className="warehouse-ops-select"
+              value={writeoffWarehouseId}
+              onChange={(e) => {
+                setWriteoffWarehouseId(e.target.value);
+                setFoundProduct(null);
+                setOpMessage(null);
+              }}
+              style={{ display: 'block', marginTop: 6, minWidth: 280 }}
+            >
+              <option value="">— выберите склад —</option>
+              {ownWarehouses.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.address || w.name || `Склад #${w.id}`}
+                </option>
+              ))}
+            </select>
+          </label>
           <form onSubmit={handleScanSubmit} className="warehouse-ops-scan-form">
             <div style={{ position: 'relative', flex: 1 }}>
               <input
@@ -2053,23 +2172,18 @@ export function WarehouseOperations({
             <>
               <div className="warehouse-ops-inventory-header-row">
                 <div>
-                  <h3 className="warehouse-ops-panel-title">Новая инвентаризация</h3>
+                  <h3 className="warehouse-ops-panel-title">
+                    {inventoryEditingSessionId
+                      ? `Редактирование инвентаризации №${inventoryEditingSessionId}`
+                      : 'Новая инвентаризация'}
+                  </h3>
                   <p className="warehouse-ops-hint">
                     Каждое сканирование штрихкода — плюс 1 шт к фактическому количеству по этой позиции. Либо найдите товар по артикулу/названию и нажмите «Добавить 1 шт».
-                    Сохраняются только строки из списка, где факт отличается от количества в системе.
-                    Колонки «Излишек» и «Недостача» в ₽ считаются по себестоимости из карточки товара (остаток на складе берётся как в таблице выше); без себестоимости суммы не показываются.
+                    В документ попадают все позиции из списка пересчёта; при включённой опции ниже остаток обнуляется по товарам на складе, которые не попали в список.
+                    Колонки «Излишек» и «Недостача» в ₽ считаются по себестоимости из карточки товара; без себестоимости суммы не показываются.
                   </p>
                 </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => {
-                    setInventoryNewSession(false);
-                    setInventoryNewRows([]);
-                    setInventorySessionWarehouseId('');
-                    setLookupError(null);
-                  }}
-                >
+                <Button type="button" variant="secondary" onClick={resetInventoryNewForm}>
                   К списку инвентаризаций
                 </Button>
               </div>
@@ -2082,6 +2196,7 @@ export function WarehouseOperations({
                   value={inventorySessionWarehouseId}
                   onChange={handleInventorySessionWarehouseChange}
                   className="warehouse-ops-select"
+                  disabled={!!inventoryEditingSessionId}
                 >
                   <option value="">— Выберите склад —</option>
                   {ownWarehouses.map((w) => (
@@ -2091,8 +2206,19 @@ export function WarehouseOperations({
                   ))}
                 </select>
               </div>
+              <label className="warehouse-ops-checkbox-row" style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={inventoryZeroUnlisted}
+                  onChange={(e) => setInventoryZeroUnlisted(e.target.checked)}
+                />
+                <span>
+                  Обнулить остаток по товарам на складе, не попавшим в список пересчёта (списание непересчитанных)
+                </span>
+              </label>
               <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
-                «В системе» и суммы пересчёта считаются по выбранному складу; при смене склада список строк очищается.
+                «В системе» и суммы пересчёта считаются по выбранному складу
+                {inventoryEditingSessionId ? '' : '; при смене склада список строк очищается'}.
               </p>
 
               <p className="warehouse-ops-hint">Скан:</p>
@@ -2248,7 +2374,11 @@ export function WarehouseOperations({
                   </div>
                   <div className="warehouse-ops-receipt-list-actions">
                     <Button onClick={applyInventoryNew} disabled={opLoading}>
-                      {opLoading ? 'Сохранение…' : 'Применить инвентаризацию'}
+                      {opLoading
+                        ? 'Сохранение…'
+                        : inventoryEditingSessionId
+                          ? 'Сохранить изменения'
+                          : 'Применить инвентаризацию'}
                     </Button>
                     <Button type="button" variant="secondary" onClick={clearInventoryNewRows} disabled={opLoading}>
                       Очистить список
@@ -2785,7 +2915,10 @@ export function WarehouseOperations({
               Удаление отменяет эффект документа: к текущим остаткам добавляется обратная поправка (было
               минус стало по каждой строке), в журнал пишется запись, затем документ удаляется.
             </p>
-            <div className="warehouse-ops-receipt-detail-actions" style={{ marginTop: 12 }}>
+            <div className="warehouse-ops-receipt-detail-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button variant="secondary" onClick={startInventoryEdit} disabled={opLoading || inventoryDeleteLoading}>
+                Редактировать
+              </Button>
               <Button
                 variant="danger"
                 onClick={async () => {

@@ -289,6 +289,11 @@ router.get(
   requireAuth,
   wrapAsync(inventorySessionsController.getById.bind(inventorySessionsController))
 );
+router.put(
+  '/inventory-sessions/:id',
+  requireAuth,
+  wrapAsync(inventorySessionsController.update.bind(inventorySessionsController))
+);
 router.delete(
   '/inventory-sessions/:id',
   requireAuth,

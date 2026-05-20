@@ -9,6 +9,13 @@ export const stockMovementsApi = {
   /**
    * Получить историю движений по товару
    */
+  getWarehouseStock: async (productId, warehouseId) => {
+    const response = await api.get(`/products/${productId}/warehouse-stock`, {
+      params: { warehouseId }
+    });
+    return response.data?.data ?? response.data;
+  },
+
   getHistory: async (productId, { limit } = {}) => {
     const params = {};
     if (limit) params.limit = limit;

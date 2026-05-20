@@ -52,6 +52,164 @@ async function requireInventoryWarehouseId(client, warehouseId) {
   return wid;
 }
 
+async function getPwsQuantity(client, productId, whId) {
+  const pwsRow = await client.query(
+    `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE`,
+    [productId, whId]
+  );
+  return pwsRow.rows?.[0] ? Number(pwsRow.rows[0].quantity) : 0;
+}
+
+async function setPwsQuantity(client, productId, whId, quantity) {
+  await client.query(
+    `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
+    [productId, whId, quantity]
+  );
+}
+
+/** Позиции с остатком на складе, не попавшие в пересчёт. */
+async function findUnlistedWithStock(client, whId, profileId, listedIds) {
+  const pid = normalizeProfileId(profileId);
+  const ids = [...listedIds].filter((id) => id != null && !Number.isNaN(Number(id)));
+  if (ids.length === 0) {
+    const res = await client.query(
+      `SELECT pws.product_id, pws.quantity
+       FROM product_warehouse_stock pws
+       INNER JOIN products p ON p.id = pws.product_id
+       WHERE pws.warehouse_id = $1 AND pws.quantity > 0
+         AND ($2::bigint IS NULL OR p.profile_id = $2::bigint)`,
+      [whId, pid]
+    );
+    return res.rows || [];
+  }
+  const res = await client.query(
+    `SELECT pws.product_id, pws.quantity
+     FROM product_warehouse_stock pws
+     INNER JOIN products p ON p.id = pws.product_id
+     WHERE pws.warehouse_id = $1 AND pws.quantity > 0
+       AND ($2::bigint IS NULL OR p.profile_id = $2::bigint)
+       AND NOT (pws.product_id = ANY($3::bigint[]))`,
+    [whId, pid, ids]
+  );
+  return res.rows || [];
+}
+
+async function applyInventoryLine(client, {
+  sessionId,
+  productId,
+  quantityAfter,
+  whId,
+  profileId,
+  reasonBase,
+  lineReasonSuffix = null,
+}) {
+  await assertProductAllowedInProfile(client, productId, profileId);
+  const before = await getPwsQuantity(client, productId, whId);
+  if (before === quantityAfter) {
+    return { applied: false, productId };
+  }
+
+  await setPwsQuantity(client, productId, whId, quantityAfter);
+
+  await client.query(
+    `INSERT INTO inventory_session_lines (session_id, product_id, quantity_before, quantity_after)
+     VALUES ($1, $2, $3, $4)`,
+    [sessionId, productId, before, quantityAfter]
+  );
+
+  const delta = quantityAfter - before;
+  const reason = lineReasonSuffix ? `${reasonBase}: ${lineReasonSuffix}` : reasonBase;
+  await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+    productId,
+    type: 'inventory',
+    quantityChange: delta,
+    reason,
+    meta: { inventory_session_id: sessionId, warehouse_id: whId },
+    warehouseId: whId,
+    profileId: null,
+  });
+
+  return { applied: true, productId };
+}
+
+async function runInventoryLines(client, {
+  sessionId,
+  whId,
+  profileId,
+  linesInput,
+  zeroUnlisted,
+  reasonBase,
+}) {
+  const listedIds = new Set();
+  let applied = 0;
+  const affectedProductIds = new Set();
+
+  for (const raw of linesInput) {
+    const productId = parseInt(raw.productId, 10);
+    const quantityAfter = Math.max(0, parseInt(raw.quantityAfter, 10) || 0);
+    if (!productId || Number.isNaN(productId)) continue;
+
+    listedIds.add(productId);
+    const { applied: lineApplied, productId: pid } = await applyInventoryLine(client, {
+      sessionId,
+      productId,
+      quantityAfter,
+      whId,
+      profileId,
+      reasonBase,
+    });
+    if (lineApplied) {
+      applied++;
+      affectedProductIds.add(pid);
+    }
+  }
+
+  if (zeroUnlisted) {
+    const unlisted = await findUnlistedWithStock(client, whId, profileId, listedIds);
+    for (const row of unlisted) {
+      const productId = parseInt(row.product_id, 10);
+      if (!productId || Number.isNaN(productId)) continue;
+      const { applied: lineApplied, productId: pid } = await applyInventoryLine(client, {
+        sessionId,
+        productId,
+        quantityAfter: 0,
+        whId,
+        profileId,
+        reasonBase,
+        lineReasonSuffix: 'не пересчитан — списание до 0',
+      });
+      if (lineApplied) {
+        applied++;
+        affectedProductIds.add(pid);
+      }
+    }
+  }
+
+  return { applied, productIds: [...affectedProductIds] };
+}
+
+async function afterInventoryTouch(sessionId, productIds) {
+  if (!sessionId || !Array.isArray(productIds) || productIds.length === 0) return;
+  try {
+    const { default: ordersService } = await import('./orders.service.js');
+    const { recalculateKitsForComponent, syncProductQuantityFromWarehouseStock } =
+      await import('./kitStock.service.js');
+    for (const pid of productIds) {
+      await syncProductQuantityFromWarehouseStock(pid);
+      await ordersService.trimExcessReservesForProduct(pid, {
+        reason: `После инвентаризации №${sessionId}`,
+        meta: { inventory_session_id: sessionId },
+      });
+      await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
+      await recalculateKitsForComponent(pid, {});
+    }
+  } catch {
+    // ignore
+  }
+}
+
 class InventorySessionsService {
   async list({ profileId, limit = 200 } = {}) {
     const lim = Math.min(Math.max(1, parseInt(limit, 10) || 200), 500);
@@ -149,9 +307,15 @@ class InventorySessionsService {
 
   /**
    * @param {Array<{ productId: number|string, quantityAfter: number }>} linesInput
-   * @param {{ userId: number|null, profileId: number|string|null, note?: string, warehouseId?: number|string|null }} ctx
+   * @param {{ userId: number|null, profileId: number|string|null, note?: string, warehouseId?: number|string|null, zeroUnlisted?: boolean }} ctx
    */
-  async apply(linesInput, { userId = null, profileId = null, note = null, warehouseId = null } = {}) {
+  async apply(linesInput, {
+    userId = null,
+    profileId = null,
+    note = null,
+    warehouseId = null,
+    zeroUnlisted = true,
+  } = {}) {
     if (!Array.isArray(linesInput) || linesInput.length === 0) {
       const err = new Error('Передайте непустой массив lines');
       err.statusCode = 400;
@@ -159,6 +323,7 @@ class InventorySessionsService {
     }
     const uid = userId != null ? parseInt(userId, 10) : null;
     const pid = normalizeProfileId(profileId);
+    const zeroUnlistedFlag = zeroUnlisted !== false;
 
     const result = await transaction(async (client) => {
       const whId = await requireInventoryWarehouseId(client, warehouseId);
@@ -170,77 +335,104 @@ class InventorySessionsService {
         [uid && !Number.isNaN(uid) ? uid : null, pid, note || null, whId]
       );
       const sessionId = ins.rows[0].id;
-      let applied = 0;
       const reasonBase = `Инвентаризация №${sessionId}`;
-      const affectedProductIds = new Set();
 
-      for (const raw of linesInput) {
-        const productId = parseInt(raw.productId, 10);
-        const quantityAfter = Math.max(0, parseInt(raw.quantityAfter, 10) || 0);
-        if (!productId || Number.isNaN(productId)) continue;
-
-        await assertProductAllowedInProfile(client, productId, pid);
-
-        const pwsRow = await client.query(
-          `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE`,
-          [productId, whId]
-        );
-        const before = pwsRow.rows?.[0] ? Number(pwsRow.rows[0].quantity) : 0;
-        if (before === quantityAfter) continue;
-
-        await client.query(
-          `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
-          [productId, whId, quantityAfter]
-        );
-
-        await client.query(
-          `INSERT INTO inventory_session_lines (session_id, product_id, quantity_before, quantity_after)
-           VALUES ($1, $2, $3, $4)`,
-          [sessionId, productId, before, quantityAfter]
-        );
-
-        const delta = quantityAfter - before;
-        await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
-          productId,
-          type: 'inventory',
-          quantityChange: delta,
-          reason: reasonBase,
-          meta: { inventory_session_id: sessionId, warehouse_id: whId },
-          warehouseId: whId,
-          profileId: null,
-        });
-        applied++;
-        affectedProductIds.add(productId);
-      }
+      const { applied, productIds } = await runInventoryLines(client, {
+        sessionId,
+        whId,
+        profileId: pid,
+        linesInput,
+        zeroUnlisted: zeroUnlistedFlag,
+        reasonBase,
+      });
 
       await client.query(`UPDATE inventory_sessions SET lines_count = $1 WHERE id = $2`, [applied, sessionId]);
 
       if (applied === 0) {
         await client.query('DELETE FROM inventory_sessions WHERE id = $1', [sessionId]);
-        return { sessionId: null, linesApplied: 0, productIds: [], message: 'Нет расхождений с учётом — документ не создан' };
+        return {
+          sessionId: null,
+          linesApplied: 0,
+          productIds: [],
+          message: 'Нет расхождений с учётом — документ не создан',
+        };
       }
 
-      return { sessionId, linesApplied: applied, productIds: [...affectedProductIds] };
+      return { sessionId, linesApplied: applied, productIds };
     });
 
-    if (result?.sessionId && Array.isArray(result.productIds) && result.productIds.length > 0) {
-      try {
-        const { default: ordersService } = await import('./orders.service.js');
-        const { recalculateKitsForComponent } = await import('./kitStock.service.js');
-        const sid = result.sessionId;
-        for (const pid of result.productIds) {
-          await ordersService.trimExcessReservesForProduct(pid, {
-            reason: `После инвентаризации №${sid}`,
-            meta: { inventory_session_id: sid }
-          });
-          await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
-          await recalculateKitsForComponent(pid, {});
+    if (result?.sessionId && result.productIds?.length) {
+      await afterInventoryTouch(result.sessionId, result.productIds);
+    }
+
+    return result;
+  }
+
+  /**
+   * Редактирование сохранённой инвентаризации: откат старых строк, применение нового списка.
+   */
+  async updateSession(sessionId, linesInput, { profileId = null, zeroUnlisted = true } = {}) {
+    if (!Array.isArray(linesInput) || linesInput.length === 0) {
+      const err = new Error('Передайте непустой массив lines');
+      err.statusCode = 400;
+      throw err;
+    }
+    const { session, lines: oldLines } = await this.getById(sessionId, { profileId });
+    const sid = session.id;
+    const whId = session.warehouse_id;
+    if (!whId) {
+      const err = new Error('У документа не указан склад');
+      err.statusCode = 400;
+      throw err;
+    }
+    const pid = normalizeProfileId(profileId);
+    const zeroUnlistedFlag = zeroUnlisted !== false;
+
+    const revertProductIds = new Set();
+    const result = await transaction(async (client) => {
+      for (const line of oldLines || []) {
+        const productId = parseInt(line.product_id, 10);
+        if (!productId || Number.isNaN(productId)) continue;
+        if (pid != null) {
+          await assertProductAllowedInProfile(client, productId, pid);
         }
-      } catch {
-        // ignore
+        const qb = line.quantity_before != null ? Number(line.quantity_before) : 0;
+        await setPwsQuantity(client, productId, whId, qb);
+        revertProductIds.add(productId);
       }
+
+      await client.query('DELETE FROM inventory_session_lines WHERE session_id = $1', [sid]);
+
+      const reasonBase = `Инвентаризация №${sid}`;
+      const { applied, productIds } = await runInventoryLines(client, {
+        sessionId: sid,
+        whId,
+        profileId: pid,
+        linesInput,
+        zeroUnlisted: zeroUnlistedFlag,
+        reasonBase,
+      });
+
+      await client.query(`UPDATE inventory_sessions SET lines_count = $1 WHERE id = $2`, [applied, sid]);
+
+      if (applied === 0) {
+        return {
+          sessionId: sid,
+          linesApplied: 0,
+          productIds: [...revertProductIds],
+          message: 'Нет изменений — документ без строк',
+        };
+      }
+
+      return {
+        sessionId: sid,
+        linesApplied: applied,
+        productIds: [...new Set([...revertProductIds, ...productIds])],
+      };
+    });
+
+    if (result?.sessionId && result.productIds?.length) {
+      await afterInventoryTouch(result.sessionId, result.productIds);
     }
 
     return result;
@@ -298,7 +490,9 @@ class InventorySessionsService {
     if (del?.productIds?.length) {
       try {
         const { default: ordersService } = await import('./orders.service.js');
+        const { syncProductQuantityFromWarehouseStock } = await import('./kitStock.service.js');
         for (const pid of del.productIds) {
+          await syncProductQuantityFromWarehouseStock(pid);
           await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
         }
       } catch {

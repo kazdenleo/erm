@@ -43,13 +43,39 @@ class InventorySessionsController {
       const lines = req.body?.lines;
       const note = req.body?.note != null ? String(req.body.note).trim().slice(0, 2000) : null;
       const warehouseId = req.body?.warehouseId ?? req.body?.warehouse_id ?? null;
+      const zeroUnlistedRaw = req.body?.zeroUnlisted ?? req.body?.zero_unlisted;
+      const zeroUnlisted = zeroUnlistedRaw !== false;
       const userId = req.user?.id ?? null;
       const profileId = req.user?.profileId ?? null;
       const result = await inventorySessionsService.apply(lines, {
         userId,
         profileId,
         note: note || null,
-        warehouseId
+        warehouseId,
+        zeroUnlisted,
+      });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async update(req, res, next) {
+    try {
+      const { id } = req.params;
+      if (String(id) === 'apply') {
+        return res.status(404).json({ ok: false, message: 'Инвентаризация не найдена' });
+      }
+      const lines = req.body?.lines;
+      const zeroUnlistedRaw = req.body?.zeroUnlisted ?? req.body?.zero_unlisted;
+      const zeroUnlisted = zeroUnlistedRaw !== false;
+      const profileId = req.user?.profileId ?? null;
+      const result = await inventorySessionsService.updateSession(id, lines, {
+        profileId,
+        zeroUnlisted,
       });
       return res.status(200).json({ ok: true, data: result });
     } catch (e) {

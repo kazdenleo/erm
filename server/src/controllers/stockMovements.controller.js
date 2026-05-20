@@ -32,6 +32,28 @@ class StockMovementsController {
     }
   }
 
+  async getWarehouseStock(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: { quantity: 0 } });
+      }
+      const { id } = req.params;
+      const warehouseId = req.query.warehouseId ?? req.query.warehouse_id;
+      if (warehouseId == null || String(warehouseId).trim() === '') {
+        return res.status(400).json({ ok: false, message: 'warehouseId обязателен' });
+      }
+      const whId = await stockMovementsService.productsRepository.resolveOwnWarehouseId(warehouseId);
+      if (!whId) {
+        return res.status(400).json({ ok: false, message: 'Склад не найден' });
+      }
+      const quantity = await stockMovementsService.productsRepository.getWarehouseFreeStock(id, whId);
+      return res.status(200).json({ ok: true, data: { warehouseId: whId, quantity } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getHistory(req, res, next) {
     try {
       const tid = tenantListProfileId(req);

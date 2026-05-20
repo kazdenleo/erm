@@ -455,6 +455,13 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
   }
 
   if (item.kind === 'outboundGroup') {
+    const head = item.movements[0];
+    const dbInc = movementNum(head, 'incoming_after');
+    const dbRes = movementNum(head, 'reserved_after');
+    const dbBal = movementNum(head, 'balance_after');
+    if (dbInc != null) out.inc = dbInc;
+    if (dbRes != null) out.res = dbRes;
+    if (dbBal != null) out.bal = dbBal;
     if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
     if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
     if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
@@ -1588,20 +1595,6 @@ export function WarehouseStocks() {
         Складской учёт: остатки, приёмка, перемещение между складами организации, списание и инвентаризация. Поиск товара — по штрихкоду, артикулу или названию.
       </p>
 
-      <WarehouseOperations
-        products={products}
-        mainWarehouseName={mainWarehouseName}
-        defaultOrganizationId={filterOrganizationId || ''}
-        inventoryWarehouseId={stockWarehouseId || ''}
-        reloadProductsWithWarehouse={reloadProductsWithWarehouse}
-        onRefresh={() => loadStockList({ page: currentPage, silent: true })}
-        loading={productsLoading}
-        activeTab={activeTab}
-        onTabChange={handleWarehouseTabChange}
-        openReceiptId={location.state?.openReceiptId}
-        hideTabs
-      />
-
       {activeTab === 'table' && (
         <>
           <div className="stock-levels-filters">
@@ -1894,6 +1887,20 @@ export function WarehouseStocks() {
           ) : null}
         </>
       )}
+
+      <WarehouseOperations
+        products={products}
+        mainWarehouseName={mainWarehouseName}
+        defaultOrganizationId={filterOrganizationId || ''}
+        inventoryWarehouseId={stockWarehouseId || ''}
+        reloadProductsWithWarehouse={reloadProductsWithWarehouse}
+        onRefresh={() => loadStockList({ page: currentPage, silent: true })}
+        loading={productsLoading}
+        activeTab={activeTab}
+        onTabChange={handleWarehouseTabChange}
+        openReceiptId={location.state?.openReceiptId}
+        hideTabs
+      />
 
       <Modal
         isOpen={!!historyProduct}

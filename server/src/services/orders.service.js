@@ -607,7 +607,12 @@ class OrdersService {
   async _assemblyMetaForOrderRow(orderRow) {
     const orderDbId = orderRowDbId(orderRow);
     const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
-    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    const preferredWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    const productId = await this._resolveProductIdForOrderStock(orderRow);
+    const warehouseId =
+      productId != null
+        ? await stockMovementsService.resolveWarehouseIdForProductStock(productId, preferredWh)
+        : preferredWh;
     return {
       order_id: orderDbId,
       orderId: orderIdStr,
@@ -840,13 +845,22 @@ class OrdersService {
   }
 
   /**
-   * После закрытия поставки: «Собран» → «Отгружен» (без повторного списания остатков).
+   * После закрытия поставки FBS: внутренний статус «Отгружен» для заказов, оставшихся в orderIds.
+   * Дальше синк маркетплейса переводит в in_transit / delivered (не откатываем shipped → assembled).
+   * Не трогаем: отменённые, уже «Отгружен», уже «В доставке»/«Доставлен» с МП.
    */
   async markShipmentOrdersAsShipped(marketplace, orderIds, profileId = null) {
     if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
       return { updated: 0, skipped: 0, notFound: 0 };
     }
     const mp = String(marketplace).trim();
+    const skipStatuses = new Set([
+      'cancelled',
+      'canceled',
+      'shipped',
+      'in_transit',
+      'delivered'
+    ]);
     let updated = 0;
     let skipped = 0;
     let notFound = 0;
@@ -861,11 +875,7 @@ class OrdersService {
           continue;
         }
         const status = String(order.status || '').toLowerCase();
-        if (status === 'shipped') {
-          skipped += 1;
-          continue;
-        }
-        if (status !== 'assembled') {
+        if (skipStatuses.has(status)) {
           skipped += 1;
           continue;
         }
