@@ -119,9 +119,10 @@ export const ordersApi = {
   setOrderReserve: async (marketplace, orderId, options = {}) => {
     const mp = encodeURIComponent(marketplace);
     const id = encodeURIComponent(orderId);
-    const response = await api.post(`/orders/${mp}/${id}/reserve`, {
-      action: options.action ?? 'toggle'
-    });
+    const body = { action: options.action ?? 'toggle' };
+    if (options.productId != null) body.productId = options.productId;
+    if (options.quantity != null) body.quantity = options.quantity;
+    const response = await api.post(`/orders/${mp}/${id}/reserve`, body);
     return response.data?.data ?? response.data;
   },
 

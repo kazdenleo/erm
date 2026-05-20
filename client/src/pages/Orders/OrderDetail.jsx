@@ -11,10 +11,11 @@ import { Button } from '../../components/common/Button/Button';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
 import './OrderDetail.css';
 
-/** Кнопка «Поставить / снять резерв» в карточке заказа */
+/** Резерв на складе: весь заказ и отдельные товары / комплектующие */
 export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, onChanged }) {
   const [reserve, setReserve] = useState(reserveProp ?? null);
   const [loading, setLoading] = useState(false);
+  const [lineLoadingKey, setLineLoadingKey] = useState(null);
   const [feedback, setFeedback] = useState(null);
   const [error, setError] = useState(null);
 
@@ -24,20 +25,45 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
     }
   }, [reserveProp]);
 
-  const handleToggle = async () => {
+  const applyResult = (result) => {
+    setReserve(result);
+    setFeedback(result?.message || null);
+    onChanged?.(result);
+  };
+
+  const handleToggleAll = async () => {
     if (!marketplace || !orderId || loading) return;
     setLoading(true);
     setError(null);
     setFeedback(null);
     try {
       const result = await ordersApi.setOrderReserve(marketplace, orderId, { action: 'toggle' });
-      setReserve(result);
-      setFeedback(result?.message || null);
-      onChanged?.(result);
+      applyResult(result);
     } catch (e) {
       setError(e.response?.data?.message || e.message || 'Не удалось изменить резерв');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleToggleLine = async (line) => {
+    const pid = line?.productId;
+    if (!marketplace || !orderId || !pid || lineLoadingKey) return;
+    const key = String(pid);
+    setLineLoadingKey(key);
+    setError(null);
+    setFeedback(null);
+    try {
+      const hasLineReserve = (Number(line.reservedQty) || 0) > 0;
+      const result = await ordersApi.setOrderReserve(marketplace, orderId, {
+        action: hasLineReserve ? 'unreserve' : 'reserve',
+        productId: pid
+      });
+      applyResult(result);
+    } catch (e) {
+      setError(e.response?.data?.message || e.message || 'Не удалось изменить резерв по позиции');
+    } finally {
+      setLineLoadingKey(null);
     }
   };
 
@@ -46,8 +72,11 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
   const reservedQty = Number(reserve?.reservedQty ?? 0) || 0;
   const needQty = Number(reserve?.needQty ?? 0) || 0;
   const hasReserve = reserve?.hasReserve === true || reservedQty > 0;
-  const label = hasReserve ? 'Снять резерв' : 'Поставить резерв';
+  const label = hasReserve ? 'Снять весь резерв' : 'Поставить резерв на заказ';
   const variant = hasReserve ? 'secondary' : 'primary';
+  const detailLines = Array.isArray(reserve?.lines)
+    ? reserve.lines.filter((l) => l?.productId != null && (l.lineKind === 'component' || l.lineKind === 'kit_whole' || l.lineKind === 'product'))
+    : [];
 
   return (
     <section className="order-detail-section order-reserve-panel" style={{ marginBottom: 16 }}>
@@ -56,16 +85,58 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
           <h3 style={{ margin: '0 0 4px' }}>Резерв на складе</h3>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--muted, #666)' }}>
             {needQty > 0
-              ? `Зарезервировано: ${reservedQty} из ${needQty}`
+              ? `Зарезервировано по заказу: ${reservedQty} из ${needQty}`
               : reserve == null
                 ? 'Загрузка…'
                 : 'Нет данных о количестве'}
           </p>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>
+            Можно снять или поставить резерв по отдельным товарам и комплектующим ниже.
+          </p>
         </div>
-        <Button variant={variant} size="small" onClick={handleToggle} disabled={loading}>
+        <Button variant={variant} size="small" onClick={handleToggleAll} disabled={loading}>
           {loading ? '…' : label}
         </Button>
       </div>
+      {detailLines.length > 0 && (
+        <ul style={{ margin: '12px 0 0', padding: 0, listStyle: 'none', fontSize: 13 }}>
+          {detailLines.map((line) => {
+            const pid = line.productId;
+            const r = Number(line.reservedQty) || 0;
+            const n = Number(line.needQty) || 0;
+            const lineHas = r > 0;
+            const title =
+              line.label ||
+              (line.lineKind === 'component' ? `Комплектующая #${pid}` : `Товар #${pid}`);
+            return (
+              <li
+                key={`${line.orderLineId}-${pid}-${line.lineKind}`}
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  gap: 8,
+                  marginTop: 8,
+                  paddingTop: 8,
+                  borderTop: '1px solid var(--border, #eee)'
+                }}
+              >
+                <span style={{ flex: '1 1 160px' }}>
+                  {title}: <strong>{r}</strong> из {n}
+                </span>
+                <Button
+                  variant={lineHas ? 'secondary' : 'primary'}
+                  size="small"
+                  disabled={loading || lineLoadingKey === String(pid)}
+                  onClick={() => handleToggleLine(line)}
+                >
+                  {lineLoadingKey === String(pid) ? '…' : lineHas ? 'Снять' : 'В резерв'}
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {feedback && (
         <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--success, #2e7d32)' }}>{feedback}</p>
       )}

@@ -615,9 +615,13 @@ class OrdersController {
     try {
       const { marketplace, orderId } = req.params;
       const action = req.body?.action ?? 'toggle';
+      const productId = req.body?.productId ?? req.body?.product_id ?? null;
+      const quantity = req.body?.quantity ?? null;
       const data = await ordersService.setOrderReserve(marketplace, orderId, {
         profileId: req.user?.profileId ?? null,
-        action
+        action,
+        productId,
+        quantity
       });
       return res.status(200).json({ ok: true, data });
     } catch (error) {

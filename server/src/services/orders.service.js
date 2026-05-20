@@ -2367,25 +2367,75 @@ class OrdersService {
       const id = orderRowDbId(row);
       const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
       let reserved = 0;
-      if (id) {
-        const productId = await this._resolveProductIdForOrderStock(row).catch(() => null);
-        const pid = Number(productId);
-        if (Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
-          reserved = await getReservedKitUnitsForOrder(pid, id);
-        } else if (Number.isFinite(pid) && pid > 0) {
-          reserved = await this._getReservedQtyForOrderProduct(id, pid);
-        } else {
-          reserved = await this._getReservedQtyForOrder(id);
+      const productId = id ? await this._resolveProductIdForOrderStock(row).catch(() => null) : null;
+      const pid = Number(productId);
+      const lineEntries = [];
+
+      if (id && Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
+        reserved = await getReservedKitUnitsForOrder(pid, id);
+        const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
+        if (onKitRes > 0) {
+          lineEntries.push({
+            productId: pid,
+            reservedQty: onKitRes,
+            needQty: qty,
+            lineKind: 'kit_whole',
+            label: 'Комплект (целым SKU)'
+          });
         }
+        const components = await getKitComponents(pid);
+        for (const c of components) {
+          const compId = Number(c.component_product_id);
+          if (!Number.isFinite(compId) || compId < 1) continue;
+          const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+          const compRes = await this._getReservedQtyForOrderProduct(id, compId);
+          if (compRes <= 0 && onKitRes > 0) continue;
+          lineEntries.push({
+            productId: compId,
+            reservedQty: compRes,
+            needQty: qty * perKit,
+            lineKind: 'component',
+            kitProductId: pid,
+            label: null
+          });
+        }
+        if (lineEntries.length === 0 && reserved > 0) {
+          lineEntries.push({
+            productId: pid,
+            reservedQty: reserved,
+            needQty: qty,
+            lineKind: 'kit',
+            label: 'Комплект'
+          });
+        }
+      } else if (id && Number.isFinite(pid) && pid > 0) {
+        reserved = await this._getReservedQtyForOrderProduct(id, pid);
+        lineEntries.push({
+          productId: pid,
+          reservedQty: reserved,
+          needQty: qty,
+          lineKind: 'product',
+          label: null
+        });
+      } else if (id) {
+        reserved = await this._getReservedQtyForOrder(id);
+        lineEntries.push({
+          productId: row.productId ?? row.product_id ?? null,
+          reservedQty: reserved,
+          needQty: qty,
+          lineKind: 'unknown',
+          label: null
+        });
       }
+
       reservedQty += reserved;
       needQty += qty;
-      lines.push({
-        orderLineId: row.orderId ?? row.order_id,
-        productId: row.productId ?? row.product_id ?? null,
-        reservedQty: reserved,
-        needQty: qty
-      });
+      for (const le of lineEntries) {
+        lines.push({
+          orderLineId: row.orderId ?? row.order_id,
+          ...le
+        });
+      }
     }
     return {
       hasReserve: reservedQty > 0,
@@ -2394,6 +2444,30 @@ class OrdersService {
       fullyReserved: needQty > 0 && reservedQty >= needQty,
       lines
     };
+  }
+
+  _reserveToggleMessage(before, after, doUnreserve) {
+    if (doUnreserve) {
+      const removed = Math.max(0, (before?.reservedQty ?? 0) - (after?.reservedQty ?? 0));
+      if (!after?.hasReserve) {
+        return removed > 0
+          ? `Резерв снят (${removed} из ${before?.needQty ?? after?.needQty ?? 0})`
+          : 'Резерв снят';
+      }
+      if (removed > 0) {
+        return `Снято ${removed} из ${before?.needQty ?? 0}, в резерве осталось ${after.reservedQty} из ${after.needQty}`;
+      }
+      return 'Резерв не снят — обновите страницу или проверьте историю остатков';
+    }
+    if ((after?.reservedQty ?? 0) <= (before?.reservedQty ?? 0)) {
+      return after?.needQty > 0
+        ? `Недостаточно остатка для резерва (сейчас ${after.reservedQty} из ${after.needQty})`
+        : 'Резерв не изменён';
+    }
+    if (after.fullyReserved) {
+      return `Резерв установлен: ${after.reservedQty} из ${after.needQty}`;
+    }
+    return `Резерв частично установлен: ${after.reservedQty} из ${after.needQty}`;
   }
 
   async getOrderReserveSummary(marketplace, orderId, { profileId = null } = {}) {
@@ -2407,10 +2481,133 @@ class OrdersService {
   }
 
   /**
+   * Резерв / снятие резерва по одному товару (или комплектующей) в заказе.
+   * @param {number|null} [quantity] — сколько единиц; null = максимум доступный / весь нетто-резерв
+   */
+  async setOrderReserveForProduct(
+    marketplace,
+    orderId,
+    { profileId = null, productId, action = 'toggle', quantity = null } = {}
+  ) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const err = new Error('Резерв по заказам доступен только при использовании PostgreSQL');
+      err.statusCode = 501;
+      throw err;
+    }
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      const err = new Error('Укажите productId товара или комплектующей');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
+    if (!rows.length) {
+      const err = new Error('Заказ не найден в системе');
+      err.statusCode = 404;
+      throw err;
+    }
+    for (const row of rows) {
+      if (isOrderTerminalNoReserve(row.status)) {
+        const err = new Error('Нельзя менять резерв для отгруженного или отменённого заказа');
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    const row = rows[0];
+    const orderDbId = orderRowDbId(row);
+    if (!orderDbId) {
+      const err = new Error('Нет id строки заказа в БД');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const before = await this._summarizeReserveForRows(rows);
+    const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
+    const act = String(action || 'toggle').toLowerCase();
+    const doUnreserve = act === 'unreserve' || (act === 'toggle' && net > 0);
+    const orderIdStr = String(row.orderId ?? row.order_id ?? orderId);
+    const warehouseId = await this._resolveOwnWarehouseIdForOrder(row);
+
+    if (doUnreserve) {
+      const release =
+        quantity != null
+          ? Math.min(Math.max(0, parseInt(quantity, 10) || 0), net)
+          : net;
+      if (release > 0) {
+        await stockMovementsService.applyChange(pid, {
+          delta: release,
+          type: 'unreserve',
+          reason: `Снятие резерва по заказу ${orderIdStr} (вручную, позиция)`.trim(),
+          meta: {
+            order_id: orderDbId,
+            orderId: orderIdStr,
+            warehouse_id: warehouseId,
+            manual_unreserve: true,
+            partial_line: true
+          }
+        });
+      }
+    } else {
+      const qtyWanted =
+        quantity != null ? Math.max(1, parseInt(quantity, 10) || 1) : null;
+      const already = net;
+      const orderQty = Math.max(1, parseInt(row.quantity, 10) || 1);
+      let target = qtyWanted;
+      if (target == null) {
+        if (await isKitProductId(pid)) {
+          target = orderQty;
+        } else {
+          const kitId = await this._resolveProductIdForOrderStock(row);
+          const perNeed = await this._resolveShipmentQtyForOrderProduct(row, pid);
+          target = Math.max(1, perNeed - already);
+        }
+      }
+      let toAdd = Math.max(0, target - already);
+      const available = await getComponentAssemblableUnits(pid, { warehouseId });
+      toAdd = Math.min(toAdd, Math.floor(available));
+      if (toAdd > 0) {
+        const meta = {
+          order_id: orderDbId,
+          orderId: orderIdStr,
+          warehouse_id: warehouseId,
+          partial_line: true
+        };
+        const kitId = await this._resolveProductIdForOrderStock(row);
+        if (
+          kitId != null &&
+          (await isKitProductId(kitId)) &&
+          pid !== Number(kitId)
+        ) {
+          meta.kit_product_id = Number(kitId);
+        }
+        await this._applyReserveForOrderComponent(pid, toAdd, orderIdStr, meta);
+      }
+    }
+
+    const after = await this._summarizeReserveForRows(rows);
+    return {
+      action: doUnreserve ? 'unreserve' : 'reserve',
+      productId: pid,
+      ...after,
+      message: this._reserveToggleMessage(before, after, doUnreserve)
+    };
+  }
+
+  /**
    * Поставить / снять резерв по строкам выбранного заказа (не по всему order_group_id).
    * @param {'toggle'|'reserve'|'unreserve'} action
    */
-  async setOrderReserve(marketplace, orderId, { profileId = null, action = 'toggle' } = {}) {
+  async setOrderReserve(marketplace, orderId, { profileId = null, action = 'toggle', productId = null, quantity = null } = {}) {
+    if (productId != null && String(productId).trim() !== '') {
+      return this.setOrderReserveForProduct(marketplace, orderId, {
+        profileId,
+        productId,
+        action,
+        quantity
+      });
+    }
     if (!repositoryFactory.isUsingPostgreSQL()) {
       const err = new Error('Резерв по заказам доступен только при использовании PostgreSQL');
       err.statusCode = 501;
@@ -2453,14 +2650,7 @@ class OrdersService {
         });
         for (const pid of affected || []) productIds.add(Number(pid));
       }
-      // Не перераспределяем освободившийся остаток сразу на те же заказы (иначе «двойной» резерв при повторной постановке).
-      for (const pid of productIds) {
-        if (Number.isFinite(pid) && pid > 0) {
-          await this.ensureReservesForProductIfSupplyAvailable(pid, {
-            excludeOrderDbIds: excludedDbIds
-          }).catch(() => {});
-        }
-      }
+      // Не перераспределяем освободившийся остаток на другие заказы сразу после ручного снятия в карточке.
     } else {
       for (const row of rows) {
         const productId = await this._resolveProductIdForOrderStock(row);
@@ -2481,26 +2671,10 @@ class OrdersService {
     }
 
     const after = await this._summarizeReserveForRows(rows);
-    let message;
-    if (doUnreserve) {
-      message = after.hasReserve
-        ? `Резерв частично снят: ${after.reservedQty} из ${after.needQty}`
-        : 'Резерв снят';
-    } else if (after.reservedQty <= before.reservedQty) {
-      message =
-        after.needQty > 0
-          ? `Недостаточно остатка для резерва (сейчас ${after.reservedQty} из ${after.needQty})`
-          : 'Резерв не изменён';
-    } else if (after.fullyReserved) {
-      message = `Резерв установлен: ${after.reservedQty} из ${after.needQty}`;
-    } else {
-      message = `Резерв частично установлен: ${after.reservedQty} из ${after.needQty}`;
-    }
-
     return {
       action: doUnreserve ? 'unreserve' : 'reserve',
       ...after,
-      message
+      message: this._reserveToggleMessage(before, after, doUnreserve)
     };
   }
 

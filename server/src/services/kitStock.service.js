@@ -920,17 +920,17 @@ export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unrese
   const r = await query(
     `SELECT product_id,
             GREATEST(0,
-              COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
-                                WHEN type = 'unreserve' THEN quantity_change
-                                ELSE 0 END), 0)
+              COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0) -
+              COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)
             )::int AS net_reserved
      FROM stock_movements
      WHERE (meta->>'order_id')::bigint = $1::bigint
        AND type IN ('reserve', 'unreserve')
      GROUP BY product_id
-     HAVING COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
-                               WHEN type = 'unreserve' THEN quantity_change
-                               ELSE 0 END), 0) > 0`,
+     HAVING GREATEST(0,
+       COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0) -
+       COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)
+     ) > 0`,
     [oid]
   );
 
