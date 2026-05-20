@@ -947,7 +947,7 @@ export function WarehouseStocks() {
       return;
     }
     setCurrentPage(1);
-    loadListRef.current({ page: 1, silent: true });
+    loadListRef.current({ inStockOnly: filterInStockOnly, page: 1, silent: true });
   }, [filterSearchDebounced, filterProductType, filterInStockOnly]);
 
   useEffect(() => {
@@ -1235,7 +1235,7 @@ export function WarehouseStocks() {
       /* ignore */
     }
     setCurrentPage(1);
-    loadStockList({ ...(on ? { inStockOnly: true } : { inStockOnly: false }), page: 1, silent: true });
+    loadStockList({ inStockOnly: on, page: 1, silent: false });
   };
 
   const ownWarehouses = useMemo(
@@ -1686,8 +1686,8 @@ export function WarehouseStocks() {
                   <th>Артикул</th>
                   <th>Товар</th>
                   <th>В пути</th>
-                  <th>Резерв</th>
                   <th>Наличие</th>
+                  <th>Резерв</th>
                   <th>Поставщики</th>
                   <th>Доступно</th>
                 </tr>
@@ -1708,6 +1708,7 @@ export function WarehouseStocks() {
                     <td className="sku-cell">{row.product.sku || '—'}</td>
                     <td className="name-cell">{row.product.name || 'Без названия'}</td>
                     <td>{row.incoming}</td>
+                    <td className="main-warehouse-cell">{row.onHand}</td>
                     <td className="stock-levels-reserved-cell" onClick={(e) => e.stopPropagation()}>
                       {row.reserved > 0 ? (
                         <button
@@ -1722,7 +1723,6 @@ export function WarehouseStocks() {
                         row.reserved
                       )}
                     </td>
-                    <td className="main-warehouse-cell">{row.onHand}</td>
                     <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
                       {row.suppliersDisplay ? (
                         <span
@@ -1912,8 +1912,8 @@ export function WarehouseStocks() {
                   <th>Дата и время</th>
                   <th>Причина</th>
                   <th>В пути</th>
-                  <th>Резерв</th>
                   <th className="stock-levels-history-col-onhand">Наличие</th>
+                  <th>Резерв</th>
                   <th>Доступно</th>
                 </tr>
               </thead>
@@ -1939,6 +1939,7 @@ export function WarehouseStocks() {
                         <td>{formatDateTime(createdAt)}</td>
                         <td>{reasonText}</td>
                         <td>{renderStockHistoryQtyCell(incCell)}</td>
+                        <td>{renderStockHistoryQtyCell(balCell)}</td>
                         <td>
                           <button
                             type="button"
@@ -1953,7 +1954,6 @@ export function WarehouseStocks() {
                             {renderStockHistoryQtyCell(resCell)}
                           </button>
                         </td>
-                        <td>{renderStockHistoryQtyCell(balCell)}</td>
                         <td>{renderStockHistoryQtyCell(availCell)}</td>
                       </tr>
                     );
@@ -1986,6 +1986,7 @@ export function WarehouseStocks() {
                         <td>{formatDateTime(createdAt)}</td>
                         <td>{reasonText}</td>
                         <td>{renderStockHistoryQtyCell(incCell)}</td>
+                        <td>{renderStockHistoryQtyCell(balCell)}</td>
                         <td>
                           <button
                             type="button"
@@ -2000,7 +2001,6 @@ export function WarehouseStocks() {
                             {renderStockHistoryQtyCell(resCell)}
                           </button>
                         </td>
-                        <td>{renderStockHistoryQtyCell(balCell)}</td>
                         <td>{renderStockHistoryQtyCell(availCell)}</td>
                       </tr>
                     );
@@ -2027,6 +2027,7 @@ export function WarehouseStocks() {
                         )}
                       </td>
                       <td>{renderStockHistoryQtyCell(incCell)}</td>
+                      <td>{renderStockHistoryQtyCell(balCell)}</td>
                       <td>
                         <button
                           type="button"
@@ -2041,7 +2042,6 @@ export function WarehouseStocks() {
                             {renderStockHistoryQtyCell(resCell)}
                           </button>
                         </td>
-                        <td>{renderStockHistoryQtyCell(balCell)}</td>
                         <td>{renderStockHistoryQtyCell(availCell)}</td>
                     </tr>
                   );

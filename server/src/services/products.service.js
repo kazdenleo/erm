@@ -190,7 +190,7 @@ class ProductsService {
         ...options,
         limit: sqlBatch,
         offset: sqlOffset,
-        inStockOnly: true,
+        inStockOnly: false,
         deferInStockPostFilter: true,
       });
       if (batch.length === 0) break;

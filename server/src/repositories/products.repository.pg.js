@@ -448,7 +448,7 @@ class ProductsRepositoryPG {
       return;
     }
 
-    const byPid = new Map((agg.rows || []).map((r) => [String(r.product_id), r.rv]));
+    const byPid = new Map((agg.rows || []).map((r) => [String(r.product_id), Number(r.rv) || 0]));
     const idsToUpdate = [];
     const rvsToUpdate = [];
     const {
@@ -465,9 +465,9 @@ class ProductsRepositoryPG {
 
     for (const p of products) {
       const key = String(p.id);
+      const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
       let calc = byPid.has(key) ? byPid.get(key) : 0;
       if (isKitCatalogProduct(p)) {
-        const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
         if (Number.isFinite(nid) && nid > 0) {
           calc = ctx
             ? kitDisplayReservedFromContext(nid, ctx)
@@ -1006,7 +1006,7 @@ class ProductsRepositoryPG {
 
     await this._reconcileReservedQuantityFromMovements(
       products,
-      { ...options, persistReservedToDb: !isStockList },
+      { ...options, persistReservedToDb: true },
       kitCtx
     );
 
