@@ -885,7 +885,13 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
           await addOrdersToWBSupplyBatch(wbConfig, supplyId, toSync);
         }
       } catch (e) {
-        if (e.message && e.message.includes('404') && supplyId) {
+        if (e?.statusCode === 409) {
+          logger.warn(
+            `[Shipments WB] 409 при добавлении в поставку ${supplyId}: ${e.message} — фиксируем локально`
+          );
+          ship.localWbOnly = true;
+          await saveLocalShipments(shipments);
+        } else if (e.message && e.message.includes('404') && supplyId) {
           logger.warn(`[Shipments WB] Supply ${supplyId} not found (404), creating new supply and retrying`);
           const newSupplyId = await createWBSupply(wbConfig);
           ship.externalId = newSupplyId;
@@ -923,6 +929,30 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
  * Найти локальную поставку, в которой уже есть orderId (чтобы не пытаться добавлять повторно).
  * @returns {Promise<object|null>} normalizeShipment(row) или null
  */
+/**
+ * Индекс orderId → локальная поставка (для списка заказов).
+ * @returns {Map<string, { shipmentId: string, shipmentName: string, shipmentClosed: boolean }>}
+ */
+async function getOrderShipmentIndex({ profileId = null, organizationId = null } = {}) {
+  const shipments = await getLocalShipments();
+  const index = new Map();
+  for (const s of shipments) {
+    if (!shipmentVisibleForScope(s, profileId, organizationId)) continue;
+    const mp = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
+    const shipmentName = s.name || s.externalId || `Поставка ${s.id}`;
+    for (const rawOid of s.orderIds || []) {
+      const oid = String(rawOid).trim();
+      if (!oid) continue;
+      index.set(`${mp}|${oid}`, {
+        shipmentId: s.id,
+        shipmentName,
+        shipmentClosed: !!s.closed,
+      });
+    }
+  }
+  return index;
+}
+
 async function findLocalShipmentContainingOrder(marketplace, orderId, { profileId = null, organizationId = null } = {}) {
   const code = marketplace === 'wb' ? 'wildberries' : marketplace;
   const oid = String(orderId || '').trim();
@@ -1209,6 +1239,7 @@ const shipmentsService = {
   removeOrdersFromShipment,
   removeOrderFromOpenShipments,
   getOrCreateOpenShipment,
+  getOrderShipmentIndex,
   findLocalShipmentContainingOrder,
   getShipmentClosePreview,
   closeShipment,

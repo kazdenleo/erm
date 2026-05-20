@@ -1589,15 +1589,27 @@ class OrdersService {
    */
   async sendToAssembly(orderIds, profileId = null) {
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
-      return { sent: 0, updated: 0 };
+      return { sent: 0, updated: 0, statusPreserved: 0 };
     }
+    const preserveStatuses = new Set(['assembled', 'shipped', 'in_transit', 'delivered', 'cancelled']);
     let updated = 0;
+    let statusPreserved = 0;
     const touchedProductIds = new Set();
     if (repositoryFactory.isUsingPostgreSQL()) {
       for (const { marketplace, orderId } of orderIds) {
         if (!marketplace || orderId == null) continue;
+        const mpForRepo = this._marketplaceToOrdersDb(marketplace);
+        const existing = await this.repository.findByMarketplaceAndOrderId(
+          mpForRepo,
+          String(orderId),
+          profileId
+        );
+        if (existing && preserveStatuses.has(String(existing.status || ''))) {
+          statusPreserved++;
+          continue;
+        }
         const row = await this.repository.updateByMarketplaceAndOrderId(
-          marketplace,
+          mpForRepo,
           String(orderId),
           { status: 'in_assembly' },
           profileId
@@ -1633,7 +1645,7 @@ class OrdersService {
       }
       if (changed) await writeData('orders', { ...data, orders, lastSync: new Date().toISOString() });
     }
-    return { sent: orderIds.length, updated };
+    return { sent: orderIds.length, updated, statusPreserved };
   }
 
   /**

@@ -168,11 +168,23 @@ function orderCanShowCancel(marketplace, status) {
   return ['new', 'in_procurement', 'in_assembly', 'assembled', 'wb_assembly'].includes(status);
 }
 
+function orderSupportsFbsShipment(marketplace) {
+  const mp = normalizeMarketplaceForUI(marketplace);
+  return ['wildberries', 'ozon', 'yandex'].includes(mp);
+}
+
+function orderCanAddToOpenShipment(first) {
+  if (!first || first.status !== 'assembled') return false;
+  if (first.localShipmentId || first.localShipmentName) return false;
+  return orderSupportsFbsShipment(first.marketplace);
+}
+
 function orderRowHasAnyAction(first) {
   if (first.status === 'new') return true;
   if (orderCanShowCancel(first.marketplace, first.status)) return true;
   if (first.status === 'in_procurement') return true;
   if (first.status === 'in_assembly' || first.status === 'assembled') return true;
+  if (orderCanAddToOpenShipment(first)) return true;
   if (first.marketplace === 'manual') return true;
   return false;
 }
@@ -977,7 +989,14 @@ export function Orders() {
       setRefreshError(null);
       const result = await ordersApi.sendToAssembly(items);
       const updated = result?.updated ?? items.length;
-      let msg = `На сборку отправлено заказов: ${items.length}${result?.updated != null ? ` (обновлено: ${updated})` : ''}.`;
+      const preserved = result?.statusPreserved ?? 0;
+      const allPreserved = preserved >= items.length && updated === 0;
+      let msg = allPreserved
+        ? `Заказ(ы) добавлены в поставку (${items.length}), статус «Собран» сохранён.`
+        : `На сборку отправлено заказов: ${items.length}${result?.updated != null ? ` (обновлено: ${updated})` : ''}.`;
+      if (preserved > 0 && !allPreserved) {
+        msg += ` Статус «Собран» сохранён у ${preserved} заказ(ов).`;
+      }
       if (result?.shipments?.length) {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
@@ -2310,6 +2329,7 @@ export function Orders() {
                 <th>Количество</th>
                 <th>Цена</th>
                 <th>Статус</th>
+                <th>Поставка</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -2499,6 +2519,18 @@ export function Orders() {
                       )}
                     </div>
                   </td>
+                  <td className="orders-col-shipment" title={first.localShipmentName || ''}>
+                    {first.localShipmentName ? (
+                      <span>
+                        {first.localShipmentClosed ? '✓ ' : ''}
+                        {first.localShipmentName}
+                      </span>
+                    ) : first.status === 'assembled' && orderSupportsFbsShipment(first.marketplace) ? (
+                      <span className="text-muted">—</span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td className="orders-col-actions" onClick={e => e.stopPropagation()}>
                     <div className="orders-actions">
                       {groupOrders.some((o) =>
@@ -2594,6 +2626,23 @@ export function Orders() {
                             <span className="orders-action-icon__busy" aria-hidden>…</span>
                           ) : (
                             <i className="pe-7s-back" aria-hidden />
+                          )}
+                        </Button>
+                      )}
+                      {orderCanAddToOpenShipment(first) && (
+                        <Button
+                          variant="primary"
+                          size="small"
+                          className="orders-action-icon"
+                          onClick={() => handleSendOneToAssembly(row)}
+                          disabled={sendToAssemblyRowKey === row.key}
+                          title="Добавить в открытую поставку FBS (статус «Собран» не меняется)"
+                          aria-label="В поставку"
+                        >
+                          {sendToAssemblyRowKey === row.key ? (
+                            <span className="orders-action-icon__busy" aria-hidden>…</span>
+                          ) : (
+                            <i className="pe-7s-box2" aria-hidden />
                           )}
                         </Button>
                       )}

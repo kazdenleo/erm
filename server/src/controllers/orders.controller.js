@@ -52,10 +52,28 @@ class OrdersController {
       const result = hasPaging
         ? await ordersService.getPage(options)
         : { items: await ordersService.getAll(options), total: null };
-      const itemsWithLabel = (result.items || []).map((o) => ({
-        ...o,
-        hasLabel: ordersLabelsService.hasLabelCached(o),
-      }));
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId =
+        orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const shipmentIndex = await shipmentsService.getOrderShipmentIndex({
+        profileId: tid,
+        organizationId,
+      });
+      const itemsWithLabel = (result.items || []).map((o) => {
+        const mpDb = o.marketplace === 'wb' ? 'wildberries' : o.marketplace;
+        const ship = shipmentIndex.get(`${mpDb}|${String(o.orderId ?? '')}`);
+        return {
+          ...o,
+          hasLabel: ordersLabelsService.hasLabelCached(o),
+          ...(ship
+            ? {
+                localShipmentId: ship.shipmentId,
+                localShipmentName: ship.shipmentName,
+                localShipmentClosed: ship.shipmentClosed,
+              }
+            : {}),
+        };
+      });
       // Не кэшируем: список заказов часто меняется после синхронизации.
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({
@@ -474,7 +492,12 @@ class OrdersController {
 
       return res.status(200).json({
         ok: true,
-        data: { ...result, shipments: shipmentsUsed, warnings }
+        data: {
+          ...result,
+          shipments: shipmentsUsed,
+          warnings,
+          statusPreserved: result?.statusPreserved ?? 0,
+        },
       });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
