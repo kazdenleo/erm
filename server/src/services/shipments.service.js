@@ -507,33 +507,41 @@ async function closeShipment(
         profileId,
         organizationId
       });
-      ship = (await getLocalShipments()).find((s) => s.id === shipmentId) || ship;
     }
   }
 
-  ship.closed = true;
-  ship.status = 'closed';
-  ship.closedAt = new Date().toISOString();
+  // removeOrdersFromShipment пишет свежий список в файл; начальный shipments устаревает.
+  const shipmentsToSave = await getLocalShipments();
+  const shipToClose = shipmentsToSave.find((s) => s.id === shipmentId);
+  if (!shipToClose) {
+    const err = new Error('Поставка не найдена');
+    err.statusCode = 404;
+    throw err;
+  }
 
-  if (ship.marketplace === 'wildberries' && ship.externalId) {
+  shipToClose.closed = true;
+  shipToClose.status = 'closed';
+  shipToClose.closedAt = new Date().toISOString();
+
+  if (shipToClose.marketplace === 'wildberries' && shipToClose.externalId) {
     try {
-      const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
+      const wbConfig = await getWildberriesConfigForScope(shipToClose.profileId, { organizationId });
       if (wbConfig?.api_key) {
-        await wbDeliverSupply(wbConfig, ship.externalId);
+        await wbDeliverSupply(wbConfig, shipToClose.externalId);
         let barcodeBase64 = null;
         for (let attempt = 0; attempt < 8; attempt++) {
           if (attempt > 0) await sleep(600);
-          barcodeBase64 = await wbGetSupplyBarcode(wbConfig, ship.externalId, 'png');
+          barcodeBase64 = await wbGetSupplyBarcode(wbConfig, shipToClose.externalId, 'png');
           if (barcodeBase64) break;
         }
         if (barcodeBase64) {
           if (!fs.existsSync(SHIPMENT_STICKERS_DIR)) fs.mkdirSync(SHIPMENT_STICKERS_DIR, { recursive: true });
-          const safeName = `${(ship.id || ship.externalId).replace(/[^a-zA-Z0-9-_]/g, '_')}.png`;
+          const safeName = `${(shipToClose.id || shipToClose.externalId).replace(/[^a-zA-Z0-9-_]/g, '_')}.png`;
           const filePath = join(SHIPMENT_STICKERS_DIR, safeName);
           fs.writeFileSync(filePath, Buffer.from(barcodeBase64, 'base64'));
-          ship.qrStickerPath = `shipment-stickers/${safeName}`;
+          shipToClose.qrStickerPath = `shipment-stickers/${safeName}`;
         } else {
-          logger.warn('[Shipments] WB supply barcode empty after deliver (retries exhausted)', ship.externalId);
+          logger.warn('[Shipments] WB supply barcode empty after deliver (retries exhausted)', shipToClose.externalId);
         }
       }
     } catch (e) {
@@ -541,19 +549,19 @@ async function closeShipment(
     }
   }
 
-  await saveLocalShipments(shipments);
+  await saveLocalShipments(shipmentsToSave);
 
-  const orderIds = Array.isArray(ship.orderIds) ? ship.orderIds : [];
-  if (orderIds.length > 0 && ship.marketplace) {
+  const orderIds = Array.isArray(shipToClose.orderIds) ? shipToClose.orderIds : [];
+  if (orderIds.length > 0 && shipToClose.marketplace) {
     try {
       const { default: ordersService } = await import('./orders.service.js');
       const fin = await ordersService.applyAssemblyStockForShipmentOrders(
-        ship.marketplace,
+        shipToClose.marketplace,
         orderIds,
         profileId
       );
       const st = await ordersService.markShipmentOrdersAsShipped(
-        ship.marketplace,
+        shipToClose.marketplace,
         orderIds,
         profileId
       );
@@ -568,7 +576,7 @@ async function closeShipment(
     logger.warn(`[Shipments] Закрытие ${shipmentId}: в поставке нет orderIds — движения остатков не созданы`);
   }
 
-  return normalizeShipment(ship);
+  return normalizeShipment(shipToClose);
 }
 
 /**

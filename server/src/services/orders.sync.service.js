@@ -130,6 +130,41 @@ function isLogisticsOrTerminalMpStatus(status) {
   return s === 'in_transit' || s === 'shipped' || s === 'delivered' || s === 'cancelled';
 }
 
+/** Приоритет локального статуса: не откатывать «Отгружен» на «Собран», пока WB отдаёт complete/confirm. */
+const LOCAL_STATUS_PRIORITY = {
+  new: 0,
+  unknown: 0,
+  wb_status_unknown: 0,
+  wb_assembly: 1,
+  in_assembly: 2,
+  in_procurement: 3,
+  assembled: 4,
+  shipped: 5,
+  in_transit: 6,
+  delivered: 7,
+  cancelled: 99
+};
+
+function localStatusPriority(status) {
+  const s = String(status ?? '').toLowerCase();
+  return Object.prototype.hasOwnProperty.call(LOCAL_STATUS_PRIORITY, s)
+    ? LOCAL_STATUS_PRIORITY[s]
+    : 0;
+}
+
+/**
+ * Локально уже «Отгружен»/«В доставке» после закрытия поставки — ответ WB assembled не откатывает.
+ */
+function preserveLocalLogisticsStatus(existing, incomingStatus) {
+  if (!existing || incomingStatus == null || incomingStatus === '') return incomingStatus;
+  const existingS = String(existing.status ?? '').toLowerCase();
+  const incomingS = String(incomingStatus).toLowerCase();
+  if (incomingS === 'cancelled') return 'cancelled';
+  if (localStatusPriority(existingS) < LOCAL_STATUS_PRIORITY.shipped) return incomingStatus;
+  if (localStatusPriority(incomingS) >= localStatusPriority(existingS)) return incomingS;
+  return existingS;
+}
+
 /** Локальные статусы, которые при «Обновить статусы» нужно сверить с МП (часто залипают «Новый»). */
 function isStaleLocalStatusForRefresh(status) {
   const s = String(status ?? '').toLowerCase();
@@ -561,6 +596,9 @@ class OrdersSyncService {
 
       // Не переводим автоматически в "На сборке" из данных маркетплейса.
       nextStatus = preventAutoInAssembly(existing, nextStatus);
+      if (existing) {
+        nextStatus = preserveLocalLogisticsStatus(existing, nextStatus);
+      }
 
       const mergedReturnedToNewAt = existing?.returnedToNewAt ?? order.returnedToNewAt ?? null;
 
@@ -573,6 +611,16 @@ class OrdersSyncService {
     });
 
     const preWbPreserve = new Map();
+    const preWbLocalAnchor = new Map();
+    for (const order of existingOrders) {
+      const oid = order.orderId ?? order.order_id;
+      const mp = (order.marketplace || '').toLowerCase();
+      const key = `${mp === 'wb' ? 'wildberries' : mp}:${oid}`;
+      const st = String(order.status ?? '').toLowerCase();
+      if (st === 'in_procurement' || st === 'assembled' || st === 'shipped' || st === 'in_transit') {
+        preWbLocalAnchor.set(key, st);
+      }
+    }
     for (const [key, order] of ordersMap.entries()) {
       const mp = String(order.marketplace || '').toLowerCase();
       if (mp !== 'wb' && mp !== 'wildberries') continue;
@@ -598,13 +646,15 @@ class OrdersSyncService {
           if ((order.marketplace === 'wildberries' || order.marketplace === 'wb') && statusByWbId.has(String(order.orderId || order.order_id))) {
             const prev = order.status;
             const apiSt = statusByWbId.get(String(order.orderId || order.order_id));
-            const existingBeforeWbPoll = { status: prev };
+            const anchorSt = preWbLocalAnchor.get(key) ?? prev;
+            const existingBeforeWbPoll = { status: anchorSt };
             if (shouldForceMpStatusOnRefresh(existingBeforeWbPoll, apiSt, refreshStatuses)) {
               order.status = String(apiSt).toLowerCase();
             } else {
               // Иначе ответ /orders/status (confirm → in_assembly) перезаписывает «Новый» после preventAutoInAssembly в основном merge.
               let next = preserveLocalInAssemblyAgainstMpAssembled(existingBeforeWbPoll, apiSt);
               next = preventAutoInAssembly(existingBeforeWbPoll, next);
+              next = preserveLocalLogisticsStatus(existingBeforeWbPoll, next);
               order.status = next;
             }
           }
@@ -621,6 +671,11 @@ class OrdersSyncService {
           } else if (want === 'assembled' && (api === 'new' || api === 'in_assembly')) {
             order.status = 'assembled';
           }
+        }
+        for (const [key, anchor] of preWbLocalAnchor) {
+          const order = ordersMap.get(key);
+          if (!order) continue;
+          order.status = preserveLocalLogisticsStatus({ status: anchor }, order.status);
         }
         logger.info(`[Orders Sync] WB: обновлены статусы для ${statuses.length} заказов`);
       } catch (e) {

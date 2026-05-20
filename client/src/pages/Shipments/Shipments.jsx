@@ -127,6 +127,7 @@ export function Shipments() {
       if (hasNotAssembled || hasCancelled) {
         setCloseNotAssembledAction(hasNotAssembled ? '' : 'remove');
         setCloseCancelledAction(hasCancelled ? '' : 'keep');
+        setOpenDetailError(null);
         setCloseConfirm({ shipment, preview });
         return;
       }
@@ -136,6 +137,7 @@ export function Shipments() {
       if (e.response?.status === 409 && details?.code === 'SHIPMENT_CLOSE_CONFIRM_REQUIRED') {
         setCloseNotAssembledAction('');
         setCloseCancelledAction('');
+        setOpenDetailError(null);
         setCloseConfirm({
           shipment,
           preview: {
@@ -170,7 +172,17 @@ export function Shipments() {
       if (hasCancelled) options.cancelled = closeCancelledAction;
       await finishCloseShipment(shipment, options);
     } catch (e) {
-      setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка закрытия');
+      const msg = e.response?.data?.message || e.message || 'Ошибка закрытия';
+      setOpenDetailError(msg);
+      if (e.response?.status === 409 && e.response?.data?.details?.code === 'SHIPMENT_CLOSE_CONFIRM_REQUIRED') {
+        setCloseConfirm({
+          shipment,
+          preview: {
+            notAssembled: e.response.data.details.notAssembled || preview?.notAssembled || [],
+            cancelled: e.response.data.details.cancelled || preview?.cancelled || []
+          }
+        });
+      }
     } finally {
       setCloseLoadingId(null);
     }
@@ -422,6 +434,10 @@ export function Shipments() {
               </section>
             )}
 
+            {openDetailError && (
+              <div className="error" style={{ marginTop: 12 }}>{openDetailError}</div>
+            )}
+
             <div className="shipments-modal-actions" style={{ marginTop: 16 }}>
               <Button
                 variant="secondary"
@@ -429,6 +445,7 @@ export function Shipments() {
                   setCloseConfirm(null);
                   setCloseNotAssembledAction('');
                   setCloseCancelledAction('');
+                  setOpenDetailError(null);
                 }}
                 disabled={!!closeLoadingId}
               >
