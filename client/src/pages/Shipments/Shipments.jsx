@@ -68,6 +68,13 @@ export function Shipments() {
     return shipment.id && String(shipment.id).startsWith('ship-');
   };
 
+  const showWbSyncButton = (item) => {
+    if (!item?.closed || item.marketplace !== 'wildberries') return false;
+    const count = item.productsCount ?? item.orderIds?.length ?? 0;
+    if (count <= 0) return false;
+    return !!(item.localWbOnly || !item.qrStickerPath || item.wbLastSyncError);
+  };
+
   const openShipmentDetailModal = (shipment) => {
     setOpenDetailError(null);
     setOpenShipmentDetail(shipment);
@@ -297,15 +304,17 @@ export function Shipments() {
                                 {closeLoadingId === item.id ? 'Закрытие...' : 'Закрыть поставку'}
                               </Button>
                             )}
-                            {item.closed &&
-                              item.marketplace === 'wildberries' &&
-                              (item.localWbOnly || !item.qrStickerPath) && (
+                            {showWbSyncButton(item) && (
                                 <Button
                                   variant="primary"
                                   size="small"
                                   onClick={() => handleSyncWb(item)}
                                   disabled={syncWbLoadingId === item.id}
-                                  title="Добавить заказы в поставку WB и получить этикетку"
+                                  title={
+                                    item.wbLastSyncError
+                                      ? item.wbLastSyncError
+                                      : 'Добавить заказы в поставку WB и получить этикетку'
+                                  }
                                 >
                                   {syncWbLoadingId === item.id ? 'Синхронизация…' : 'Синхронизировать с WB'}
                                 </Button>

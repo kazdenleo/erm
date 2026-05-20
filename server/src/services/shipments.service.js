@@ -210,12 +210,44 @@ function formatWbShipmentDisplayName(supplyId, customName = null) {
   return label ? `Сборка ${date} · ${label}` : `Сборка ${date}`;
 }
 
+/** Имя для POST /api/v3/supplies (1–128 символов, WB API). */
+function buildWbSupplyApiName({ supplyId = null, customName = null, shipmentDate = null } = {}) {
+  let name = formatWbShipmentDisplayName(supplyId, customName);
+  if (!String(name || '').trim()) {
+    const date =
+      shipmentDate && !Number.isNaN(new Date(shipmentDate).getTime())
+        ? new Date(shipmentDate).toLocaleDateString('ru-RU')
+        : new Date().toLocaleDateString('ru-RU');
+    const label = wbSupplyLabelId(supplyId);
+    name = label ? `Сборка ${date} · ${label}` : `Сборка ${date}`;
+  }
+  name = String(name).trim();
+  if (name.length < 6) {
+    const tail = supplyId ? String(supplyId).replace(/\s+/g, '') : Date.now().toString(36).slice(-6);
+    name = `${name} ${tail}`.trim();
+  }
+  if (name.length > 128) name = name.slice(0, 128);
+  return name;
+}
+
 function normalizeShipment(s) {
   const closed = s.closed === true;
-  const displayName =
-    s.marketplace === 'wildberries' || s.marketplace === 'wb'
-      ? formatWbShipmentDisplayName(s.externalId, s.name)
-      : s.name || s.id;
+  const isWb = s.marketplace === 'wildberries' || s.marketplace === 'wb';
+  const orderIds = s.orderIds || [];
+  const hasOrders = orderIds.length > 0;
+  const noQr = !s.qrStickerPath;
+  let localWbOnly = s.localWbOnly === true;
+  if (
+    isWb &&
+    closed &&
+    hasOrders &&
+    noQr &&
+    s.localWbOnly !== true &&
+    s.localWbOnly !== false
+  ) {
+    localWbOnly = true;
+  }
+  const displayName = isWb ? formatWbShipmentDisplayName(s.externalId, s.name) : s.name || s.id;
   return {
     id: s.id,
     marketplace: s.marketplace,
@@ -223,13 +255,13 @@ function normalizeShipment(s) {
     status: closed ? 'closed' : (s.status || 'draft'),
     closed,
     externalId: s.externalId,
-    orderIds: s.orderIds || [],
-    productsCount: (s.orderIds || []).length,
+    orderIds,
+    productsCount: orderIds.length,
     createdAt: s.createdAt,
     shipmentDate: s.shipmentDate,
     qrStickerPath: s.qrStickerPath || null,
     /** true, если заказы есть только в ERM, на WB в supply не попали */
-    localWbOnly: s.localWbOnly === true,
+    localWbOnly,
     wbLastSyncError: s.wbLastSyncError || null,
   };
 }
@@ -252,7 +284,11 @@ async function pushOrdersToWildberriesSupply(ship, orderIds, { organizationId = 
   let supplyId = ship.externalId ? String(ship.externalId) : null;
 
   if (!supplyId) {
-    supplyId = await createWBSupply(wbConfig);
+    const apiName = buildWbSupplyApiName({
+      customName: ship.name,
+      shipmentDate: ship.createdAt || ship.shipmentDate || ship.closedAt,
+    });
+    supplyId = await createWBSupply(wbConfig, { name: apiName });
     ship.externalId = supplyId;
     ship.name = formatWbShipmentDisplayName(supplyId, ship.name);
     logger.info(`[Shipments WB] Created supply ${supplyId} for shipment ${ship.id}`);
@@ -278,7 +314,11 @@ async function pushOrdersToWildberriesSupply(ship, orderIds, { organizationId = 
     }
     if (e.message && e.message.includes('404') && supplyId) {
       logger.warn(`[Shipments WB] Supply ${supplyId} not found, creating new`);
-      const newSupplyId = await createWBSupply(wbConfig);
+      const apiName = buildWbSupplyApiName({
+        customName: ship.name,
+        shipmentDate: ship.createdAt || ship.shipmentDate || ship.closedAt,
+      });
+      const newSupplyId = await createWBSupply(wbConfig, { name: apiName });
       ship.externalId = newSupplyId;
       ship.name = formatWbShipmentDisplayName(newSupplyId, ship.name);
       await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, unique);
@@ -441,7 +481,11 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
   if (code === 'wildberries') {
     const wbConfig = await getWildberriesConfigForScope(profileId, { organizationId });
     if (wbConfig?.api_key) {
-      const supplyId = await createWBSupply(wbConfig);
+      const apiName = buildWbSupplyApiName({
+        customName: name,
+        shipmentDate: now,
+      });
+      const supplyId = await createWBSupply(wbConfig, { name: apiName });
       const local = {
         id,
         marketplace: code,
@@ -857,10 +901,11 @@ async function wbGetSupplyBarcode(config, supplyId, type = 'png') {
   return data?.file || null;
 }
 
-async function createWBSupply(config) {
+async function createWBSupply(config, { name: supplyName } = {}) {
   const { api_key } = config;
   const agent = getFetchProxyAgent();
   const url = 'https://marketplace-api.wildberries.ru/api/v3/supplies';
+  const apiName = buildWbSupplyApiName({ customName: supplyName });
   let response;
   for (let attempt = 0; attempt < 4; attempt++) {
     response = await fetch(url, {
@@ -870,7 +915,7 @@ async function createWBSupply(config) {
         'Content-Type': 'application/json',
         Accept: 'application/json'
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ name: apiName }),
       ...(agent && { agent })
     });
     if (response.ok) break;
