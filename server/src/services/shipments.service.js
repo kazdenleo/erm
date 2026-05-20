@@ -190,12 +190,28 @@ async function getShipments({ profileId, organizationId } = {}) {
   return { marketplaces: MARKETPLACES, list: byMarketplace };
 }
 
+/** Отображаемое имя поставки WB: дата + номер supply в ЛК. */
+function formatWbShipmentDisplayName(supplyId, customName = null) {
+  const id = supplyId != null ? String(supplyId).trim() : '';
+  const custom = customName != null ? String(customName).trim() : '';
+  if (custom && id && !custom.includes(id)) {
+    return `${custom} · WB ${id}`;
+  }
+  if (custom) return custom;
+  const date = new Date().toLocaleDateString('ru-RU');
+  return id ? `Сборка ${date} · WB ${id}` : `Сборка ${date}`;
+}
+
 function normalizeShipment(s) {
   const closed = s.closed === true;
+  const displayName =
+    s.marketplace === 'wildberries' || s.marketplace === 'wb'
+      ? formatWbShipmentDisplayName(s.externalId, s.name)
+      : s.name || s.id;
   return {
     id: s.id,
     marketplace: s.marketplace,
-    name: s.name || s.id,
+    name: displayName,
     status: closed ? 'closed' : (s.status || 'draft'),
     closed,
     externalId: s.externalId,
@@ -269,7 +285,7 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
       const local = {
         id,
         marketplace: code,
-        name: name || supplyId,
+        name: formatWbShipmentDisplayName(supplyId, name),
         status: 'active',
         closed: false,
         externalId: supplyId,
@@ -340,7 +356,7 @@ async function getOrCreateOpenShipment(marketplace, { profileId = null, organiza
   if (open) return normalizeShipment(open);
   return createShipment({
     marketplace: code,
-    name: `Сборка ${new Date().toLocaleDateString('ru-RU')}`,
+    name: formatWbShipmentDisplayName(null, `Сборка ${new Date().toLocaleDateString('ru-RU')}`),
     profileId,
     organizationId
   });
@@ -554,26 +570,32 @@ async function closeShipment(
   // Остатки — по «Собран»; затем все заказы в поставке (кроме отменённых и уже в логистике МП) → внутренний «Отгружен».
   const orderIds = Array.isArray(shipToClose.orderIds) ? shipToClose.orderIds : [];
   if (orderIds.length > 0 && shipToClose.marketplace) {
+    const { default: ordersService } = await import('./orders.service.js');
+    let fin = { processed: 0, skipped: 0, notFound: 0 };
     try {
-      const { default: ordersService } = await import('./orders.service.js');
-      const fin = await ordersService.applyAssemblyStockForShipmentOrders(
+      fin = await ordersService.applyAssemblyStockForShipmentOrders(
         shipToClose.marketplace,
         orderIds,
         profileId
-      );
-      const st = await ordersService.markShipmentOrdersAsShipped(
-        shipToClose.marketplace,
-        orderIds,
-        profileId
-      );
-      logger.info(
-        `[Shipments] Закрытие ${shipmentId}: резерв и списание — обработано ${fin?.processed ?? 0}, ` +
-          `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; ` +
-          `внутренний «Отгружен»: ${st?.updated ?? 0}, пропущено ${st?.skipped ?? 0}`
       );
     } catch (e) {
-      logger.warn('[Shipments] Закрытие поставки: не удалось списать остатки по заказам:', e?.message || e);
+      logger.warn('[Shipments] Закрытие поставки: списание остатков:', e?.message || e);
     }
+    let st = { updated: 0, skipped: 0, notFound: 0 };
+    try {
+      st = await ordersService.markShipmentOrdersAsShipped(
+        shipToClose.marketplace,
+        orderIds,
+        profileId
+      );
+    } catch (e) {
+      logger.warn('[Shipments] Закрытие поставки: статус «Отгружен»:', e?.message || e);
+    }
+    logger.info(
+      `[Shipments] Закрытие ${shipmentId}: резерв и списание — обработано ${fin?.processed ?? 0}, ` +
+        `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; ` +
+        `внутренний «Отгружен»: ${st?.updated ?? 0}, пропущено ${st?.skipped ?? 0}, не найдено ${st?.notFound ?? 0}`
+    );
   } else if (orderIds.length === 0) {
     logger.warn(`[Shipments] Закрытие ${shipmentId}: в поставке нет orderIds — движения остатков не созданы`);
   }
@@ -876,7 +898,7 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
       if (!supplyId) {
         supplyId = await createWBSupply(wbConfig);
         ship.externalId = supplyId;
-        ship.name = ship.name || supplyId;
+        ship.name = formatWbShipmentDisplayName(supplyId, ship.name);
         await saveLocalShipments(shipments);
         logger.info(`[Shipments WB] Created new supply ${supplyId} for shipment ${ship.id}`);
       }
@@ -895,7 +917,7 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
           logger.warn(`[Shipments WB] Supply ${supplyId} not found (404), creating new supply and retrying`);
           const newSupplyId = await createWBSupply(wbConfig);
           ship.externalId = newSupplyId;
-          ship.name = ship.name || newSupplyId;
+          ship.name = formatWbShipmentDisplayName(newSupplyId, ship.name);
           await saveLocalShipments(shipments);
           if (toSync.length > 0) {
             await addOrdersToWBSupplyBatch(wbConfig, newSupplyId, toSync);
@@ -939,7 +961,10 @@ async function getOrderShipmentIndex({ profileId = null, organizationId = null }
   for (const s of shipments) {
     if (!shipmentVisibleForScope(s, profileId, organizationId)) continue;
     const mp = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
-    const shipmentName = s.name || s.externalId || `Поставка ${s.id}`;
+    const shipmentName =
+      s.marketplace === 'wildberries' || s.marketplace === 'wb'
+        ? formatWbShipmentDisplayName(s.externalId, s.name)
+        : s.name || s.externalId || `Поставка ${s.id}`;
     for (const rawOid of s.orderIds || []) {
       const oid = String(rawOid).trim();
       if (!oid) continue;

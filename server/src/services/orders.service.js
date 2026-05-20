@@ -853,7 +853,7 @@ class OrdersService {
     if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
       return { updated: 0, skipped: 0, notFound: 0 };
     }
-    const mp = String(marketplace).trim();
+    const mpForRepo = this._marketplaceToOrdersDb(marketplace);
     const skipStatuses = new Set([
       'cancelled',
       'canceled',
@@ -869,7 +869,7 @@ class OrdersService {
       const orderId = String(rawOid).trim();
       if (!orderId) continue;
       try {
-        const order = await this._findOrderByMarketplaceAndOrderId(mp, orderId, profileId);
+        const order = await this._findOrderByMarketplaceAndOrderId(mpForRepo, orderId, profileId);
         if (!order) {
           notFound += 1;
           continue;
@@ -883,7 +883,7 @@ class OrdersService {
           await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'shipped', profileId);
         } else {
           await this.repository.updateByMarketplaceAndOrderId(
-            mp,
+            mpForRepo,
             orderId,
             { status: 'shipped' },
             profileId

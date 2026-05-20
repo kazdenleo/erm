@@ -546,9 +546,16 @@ class OrdersSyncService {
         nextStatus = existing.status;
       } else if (incomingMatchesProcurementAnchors(order, procurementAnchors)) {
         nextStatus = 'in_procurement';
-      } else if (existing && isWbExisting && isWbIncoming && existing.status === 'assembled') {
+      } else if (
+        existing &&
+        isWbExisting &&
+        isWbIncoming &&
+        (existing.status === 'assembled' || existing.status === 'shipped')
+      ) {
         const inc = order.status;
-        if (
+        if (existing.status === 'shipped') {
+          nextStatus = preserveLocalLogisticsStatus(existing, inc);
+        } else if (
           inc == null ||
           inc === 'new' ||
           inc === 'in_assembly' ||
@@ -617,14 +624,23 @@ class OrdersSyncService {
       const mp = (order.marketplace || '').toLowerCase();
       const key = `${mp === 'wb' ? 'wildberries' : mp}:${oid}`;
       const st = String(order.status ?? '').toLowerCase();
-      if (st === 'in_procurement' || st === 'assembled' || st === 'shipped' || st === 'in_transit') {
+      if (
+        st === 'in_procurement' ||
+        st === 'assembled' ||
+        st === 'shipped' ||
+        st === 'in_transit'
+      ) {
         preWbLocalAnchor.set(key, st);
       }
     }
     for (const [key, order] of ordersMap.entries()) {
       const mp = String(order.marketplace || '').toLowerCase();
       if (mp !== 'wb' && mp !== 'wildberries') continue;
-      if (order.status === 'in_procurement' || order.status === 'assembled') {
+      if (
+        order.status === 'in_procurement' ||
+        order.status === 'assembled' ||
+        order.status === 'shipped'
+      ) {
         preWbPreserve.set(key, order.status);
       }
     }
@@ -670,6 +686,11 @@ class OrdersSyncService {
             order.status = 'in_procurement';
           } else if (want === 'assembled' && (api === 'new' || api === 'in_assembly')) {
             order.status = 'assembled';
+          } else if (
+            want === 'shipped' &&
+            (api === 'assembled' || api === 'in_assembly' || api === 'new' || api === 'wb_assembly')
+          ) {
+            order.status = 'shipped';
           }
         }
         for (const [key, anchor] of preWbLocalAnchor) {
