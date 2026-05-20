@@ -152,7 +152,13 @@ class StockMovementsService {
       const { getReservableSupplyUnits, getReservedQuantityFromMovements } = await import(
         './sellableQuantity.service.js'
       );
-      const journalBefore = await getReservedQuantityFromMovements(idNum);
+      const journalBeforeGlobal = await getReservedQuantityFromMovements(idNum);
+      const orderDbIdRaw = metaOut.order_id ?? metaOut.orderId ?? null;
+      let netForOrder = null;
+      if (orderDbIdRaw != null && String(orderDbIdRaw).trim() !== '') {
+        const { getNetReservedForOrderProduct } = await import('./kitStock.service.js');
+        netForOrder = await getNetReservedForOrderProduct(orderDbIdRaw, idNum);
+      }
 
       if (type === 'reserve' && safeDelta < 0) {
         const reserveAdd = Math.abs(safeDelta);
@@ -164,27 +170,29 @@ class StockMovementsService {
           err.statusCode = 400;
           throw err;
         }
-        const journalAfter = journalBefore + reserveAdd;
+        const journalAfter = journalBeforeGlobal + reserveAdd;
         await client.query(
           'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           [journalAfter, idNum]
         );
         quantityChange = -reserveAdd;
       } else if (type === 'unreserve' && safeDelta > 0) {
-        const release = Math.min(safeDelta, journalBefore);
+        const cap =
+          netForOrder != null && Number.isFinite(netForOrder)
+            ? Math.max(0, Math.floor(netForOrder))
+            : journalBeforeGlobal;
+        const release = Math.min(safeDelta, cap);
         if (release <= 0) {
           await client.query('ROLLBACK');
-          const productAfter = await this.productsRepository.findById(idNum);
-          return {
-            productId: idNum,
-            quantityBefore: totalBefore,
-            quantityAfter: productAfter?.quantity != null ? Number(productAfter.quantity) : totalBefore,
-            delta: 0,
-            warehouseId,
-            movement: null
-          };
+          const err = new Error(
+            netForOrder != null && netForOrder <= 0
+              ? 'По этому заказу резерв в журнале уже снят (обновите страницу)'
+              : 'Нет резерва для снятия по товару'
+          );
+          err.statusCode = 400;
+          throw err;
         }
-        const journalAfter = Math.max(0, journalBefore - release);
+        const journalAfter = Math.max(0, journalBeforeGlobal - release);
         await client.query(
           'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           [journalAfter, idNum]

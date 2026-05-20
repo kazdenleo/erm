@@ -2535,20 +2535,23 @@ class OrdersService {
         quantity != null
           ? Math.min(Math.max(0, parseInt(quantity, 10) || 0), net)
           : net;
-      if (release > 0) {
-        await stockMovementsService.applyChange(pid, {
-          delta: release,
-          type: 'unreserve',
-          reason: `Снятие резерва по заказу ${orderIdStr} (вручную, позиция)`.trim(),
-          meta: {
-            order_id: orderDbId,
-            orderId: orderIdStr,
-            warehouse_id: warehouseId,
-            manual_unreserve: true,
-            partial_line: true
-          }
-        });
+      if (release <= 0) {
+        const err = new Error('По этой позиции нет резерва для снятия');
+        err.statusCode = 400;
+        throw err;
       }
+      await stockMovementsService.applyChange(pid, {
+        delta: release,
+        type: 'unreserve',
+        reason: `Снятие резерва по заказу ${orderIdStr} (вручную, позиция)`.trim(),
+        meta: {
+          order_id: orderDbId,
+          orderId: orderIdStr,
+          warehouse_id: warehouseId,
+          manual_unreserve: true,
+          partial_line: true
+        }
+      });
     } else {
       const qtyWanted =
         quantity != null ? Math.max(1, parseInt(quantity, 10) || 1) : null;

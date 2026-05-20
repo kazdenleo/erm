@@ -678,7 +678,7 @@ export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
   return onKit + fromComp;
 }
 
-async function getNetReservedForOrderProduct(orderDbId, productId) {
+export async function getNetReservedForOrderProduct(orderDbId, productId) {
   const oid = Number(orderDbId);
   const pid = Number(productId);
   if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
