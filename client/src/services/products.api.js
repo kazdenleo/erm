@@ -25,6 +25,9 @@ export const productsApi = {
     if (options.limit != null && options.limit !== '') {
       params.limit = String(options.limit);
     }
+    if (options.page != null && options.page !== '') {
+      params.page = String(options.page);
+    }
     if (options.offset != null && options.offset !== '') {
       params.offset = String(options.offset);
     }

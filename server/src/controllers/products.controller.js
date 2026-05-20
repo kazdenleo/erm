@@ -235,6 +235,7 @@ class ProductsController {
       }
       let hasPaging = req.query.limit != null || req.query.offset != null;
       if (req.query.limit != null) options.limit = parseInt(req.query.limit, 10);
+      if (req.query.page != null) options.page = parseInt(req.query.page, 10);
       if (req.query.offset != null) options.offset = parseInt(req.query.offset, 10);
       if (isStockList) {
         if (!Number.isFinite(options.limit) || options.limit <= 0) {

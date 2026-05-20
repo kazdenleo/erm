@@ -887,6 +887,7 @@ export function WarehouseStocks() {
       return loadProducts({
         ...listParams,
         ...(wantInStock ? { inStockOnly: true } : {}),
+        page,
         limit,
         offset: Math.max(0, (page - 1) * limit),
         stockList: true,
@@ -1492,8 +1493,9 @@ export function WarehouseStocks() {
       const available = stockTableAvailable({ onHand, incoming, reserved, suppliers });
       return { onHand, incoming, reserved, suppliers, supplierDetails, available };
     });
-    return built;
-  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]);
+    if (!filterInStockOnly) return built;
+    return built.filter((row) => (Number(row.onHand) || 0) > 0);
+  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId, filterInStockOnly]);
 
   const renderStockListPager = (placement) => {
     const idSuffix = placement === 'top' ? 'top' : 'bottom';

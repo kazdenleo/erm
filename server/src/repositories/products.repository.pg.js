@@ -156,13 +156,17 @@ function normalizeListCategoryId(categoryId) {
   return s;
 }
 
-/** Наличие для фильтра «только в наличии» после обогащения строки (склад / комплект). */
+/** Наличие для фильтра «только в наличии» — то же, что колонка «Наличие» в таблице. */
 export function stockListOnHandQuantity(product) {
   if (!product) return 0;
   const kit = product.kit_display ?? product.kitDisplay;
   if (kit && typeof kit === 'object') {
     const whole = Number(kit.whole_on_hand ?? kit.wholeOnHand);
-    if (Number.isFinite(whole) && whole > 0) return whole;
+    return Number.isFinite(whole) ? Math.max(0, whole) : 0;
+  }
+  const pt = String(product.product_type ?? product.productType ?? '').toLowerCase();
+  if (pt === 'kit' || product.is_kit_catalog === true || product.isKitCatalog === true) {
+    return 0;
   }
   return Math.max(0, Number(product.quantity) || 0);
 }

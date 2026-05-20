@@ -178,7 +178,11 @@ class ProductsService {
    */
   async _getStockListInStockPage(options = {}) {
     const limit = Math.max(1, Math.min(200, Number(options.limit) || 50));
-    const page = Math.max(1, Number(options.page) || 1);
+    let page = Math.max(1, Number(options.page) || 0);
+    if (!Number.isFinite(page) || page < 1) {
+      const off = Math.max(0, Number(options.offset) || 0);
+      page = Math.floor(off / limit) + 1;
+    }
     const targetOffset = (page - 1) * limit;
     const sqlBatch = 200;
     let sqlOffset = 0;

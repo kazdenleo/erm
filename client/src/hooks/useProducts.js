@@ -51,6 +51,9 @@ export function useProducts(options = {}) {
       if (opts.limit != null && opts.limit !== '') {
         params.limit = Number(opts.limit);
       }
+      if (opts.page != null && opts.page !== '') {
+        params.page = Number(opts.page);
+      }
       if (opts.offset != null && opts.offset !== '') {
         params.offset = Number(opts.offset);
       }
