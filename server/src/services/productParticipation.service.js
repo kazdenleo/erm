@@ -10,6 +10,7 @@
  */
 
 import { query } from '../config/database.js';
+import { NET_RESERVED_SUM_EXPR_SQL } from './sellableQuantity.service.js';
 
 /** @typedef {{ key: string, label: string }} ParticipationCheck */
 
@@ -71,13 +72,7 @@ const PARTICIPATION_UNION_SQL = `
   WHERE EXISTS (
     SELECT 1
     FROM (
-      SELECT GREATEST(0, COALESCE(SUM(
-        CASE
-          WHEN type = 'reserve' THEN -(quantity_change::numeric)
-          WHEN type = 'unreserve' THEN -(quantity_change::numeric)
-          ELSE 0
-        END
-      ), 0))::int AS net
+      SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net
       FROM stock_movements
       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')
     ) r
@@ -158,13 +153,7 @@ export async function getProductParticipationBatch(productIds) {
     UNION ALL
     SELECT product_id, 'reserved' AS kind FROM (
       SELECT product_id,
-        GREATEST(0, COALESCE(SUM(
-          CASE
-            WHEN type = 'reserve' THEN -(quantity_change::numeric)
-            WHEN type = 'unreserve' THEN -(quantity_change::numeric)
-            ELSE 0
-          END
-        ), 0))::int AS net
+        ${NET_RESERVED_SUM_EXPR_SQL}::int AS net
       FROM stock_movements
       WHERE product_id = ANY($1::bigint[]) AND type IN ('reserve', 'unreserve')
       GROUP BY product_id
@@ -212,4 +201,4 @@ export function buildProductDeleteBlockedMessage(participation = {}) {
   }
   return PRODUCT_DELETE_BLOCKED_MESSAGE;
 }
-
+

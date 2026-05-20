@@ -9,7 +9,8 @@ import repositoryFactory from '../config/repository-factory.js';
 import {
   computeAvailableQuantity,
   getReservedQuantityFromMovements,
-  getReservableSupplyUnits
+  getReservableSupplyUnits,
+  NET_RESERVED_SUM_EXPR_SQL
 } from './sellableQuantity.service.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
 import logger from '../utils/logger.js';
@@ -292,13 +293,7 @@ export async function computeKitReservedFromComponents(kitProductId) {
   let minKits = Infinity;
   for (const c of components) {
     const r = await query(
-      `SELECT GREATEST(0, COALESCE(SUM(
-          CASE
-            WHEN type = 'reserve' THEN -(quantity_change::numeric)
-            WHEN type = 'unreserve' THEN -(quantity_change::numeric)
-            ELSE 0
-          END
-        ), 0))::int AS rv
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
        WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
       [c.component_product_id]
@@ -602,18 +597,13 @@ export async function readKitSkuNetReserved(kitProductId) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
   const r = await query(
-    `SELECT
-       COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
-       COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)::int AS unreserved
+    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
      FROM stock_movements
      WHERE product_id = $1
        AND type IN ('reserve', 'unreserve')`,
     [kitId]
   );
-  const row = r.rows?.[0];
-  const reserved = row?.reserved != null ? Number(row.reserved) : 0;
-  const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
-  return Math.max(0, reserved - unreserved);
+  return Number(r.rows?.[0]?.rv ?? 0) || 0;
 }
 
 /** min(floor(reserve_i / qty_in_kit)) с суммированием qty по одному component_product_id. */
@@ -660,13 +650,7 @@ export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
 
   const r = await query(
     `SELECT product_id,
-       GREATEST(0, COALESCE(SUM(
-         CASE
-           WHEN type = 'reserve' THEN -(quantity_change::numeric)
-           WHEN type = 'unreserve' THEN -(quantity_change::numeric)
-           ELSE 0
-         END
-       ), 0))::int AS rv
+       ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
      FROM stock_movements
      WHERE product_id = ANY($1::bigint[])
        AND type IN ('reserve', 'unreserve')
@@ -683,19 +667,14 @@ export async function getNetReservedForOrderProduct(orderDbId, productId) {
   const pid = Number(productId);
   if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
   const r = await query(
-    `SELECT
-       COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
-       COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)::int AS unreserved
+    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
      FROM stock_movements
      WHERE product_id = $1
        AND type IN ('reserve', 'unreserve')
        AND (meta->>'order_id')::bigint = $2::bigint`,
     [pid, oid]
   );
-  const row = r.rows?.[0];
-  const reserved = row?.reserved != null ? Number(row.reserved) : 0;
-  const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
-  return Math.max(0, reserved - unreserved);
+  return Number(r.rows?.[0]?.rv ?? 0) || 0;
 }
 
 /** Сколько комплектов зарезервировано под заказ (целые на SKU комплекта + из комплектующих). */
@@ -919,18 +898,12 @@ export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unrese
 
   const r = await query(
     `SELECT product_id,
-            GREATEST(0,
-              COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0) -
-              COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)
-            )::int AS net_reserved
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_reserved
      FROM stock_movements
      WHERE (meta->>'order_id')::bigint = $1::bigint
        AND type IN ('reserve', 'unreserve')
      GROUP BY product_id
-     HAVING GREATEST(0,
-       COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0) -
-       COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)
-     ) > 0`,
+     HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
     [oid]
   );
 
@@ -1031,13 +1004,7 @@ async function batchNetReservedMap(productIds) {
   if (!ids.length) return new Map();
   const r = await query(
     `SELECT product_id,
-       GREATEST(0, COALESCE(SUM(
-         CASE
-           WHEN type = 'reserve' THEN -(quantity_change::numeric)
-           WHEN type = 'unreserve' THEN -(quantity_change::numeric)
-           ELSE 0
-         END
-       ), 0))::int AS rv
+       ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
      FROM stock_movements
      WHERE product_id = ANY($1::bigint[])
        AND type IN ('reserve', 'unreserve')

@@ -156,19 +156,36 @@ function normalizeListCategoryId(categoryId) {
   return s;
 }
 
-/** Наличие для фильтра «только в наличии» — то же, что колонка «Наличие» в таблице. */
+/**
+ * Наличие для фильтра «только в наличии».
+ * Обычный товар: склад (колонка «Наличие») или «В пути».
+ * Комплект: целые на SKU или собираемость из комплектующих (kit_display).
+ */
 export function stockListOnHandQuantity(product) {
   if (!product) return 0;
   const kit = product.kit_display ?? product.kitDisplay;
   if (kit && typeof kit === 'object') {
-    const whole = Number(kit.whole_on_hand ?? kit.wholeOnHand);
-    return Number.isFinite(whole) ? Math.max(0, whole) : 0;
+    const whole = Math.max(0, Number(kit.whole_on_hand ?? kit.wholeOnHand) || 0);
+    const assemblable = Math.max(
+      0,
+      Number(kit.assemblable_from_components ?? kit.assemblableFromComponents) || 0
+    );
+    if (whole > 0) return whole;
+    if (assemblable > 0) return assemblable;
+    return 0;
   }
   const pt = String(product.product_type ?? product.productType ?? '').toLowerCase();
   if (pt === 'kit' || product.is_kit_catalog === true || product.isKitCatalog === true) {
     return 0;
   }
-  return Math.max(0, Number(product.quantity) || 0);
+  const onHand = Math.max(0, Number(product.quantity) || 0);
+  const incoming = Math.max(
+    0,
+    Number(product.incoming_quantity ?? product.incomingQuantity) || 0
+  );
+  if (onHand > 0) return onHand;
+  if (incoming > 0) return incoming;
+  return 0;
 }
 
 function buildFindAllFilters(options = {}) {
@@ -317,6 +334,7 @@ function buildFindAllFilters(options = {}) {
           INNER JOIN product_warehouse_stock pws ON pws.product_id = kc.component_product_id
           WHERE kc.kit_product_id = p.id AND COALESCE(pws.quantity, 0) > 0
         )
+        OR COALESCE(p.incoming_quantity, 0) > 0
       )`;
     }
   }
@@ -432,15 +450,10 @@ class ProductsRepositoryPG {
 
     let agg;
     try {
+      const { NET_RESERVED_SUM_EXPR_SQL } = await import('../services/sellableQuantity.service.js');
       agg = await query(
         `SELECT product_id,
-          GREATEST(0, COALESCE(SUM(
-            CASE
-              WHEN type = 'reserve' THEN -(quantity_change::numeric)
-              WHEN type = 'unreserve' THEN -(quantity_change::numeric)
-              ELSE 0
-            END
-          ), 0))::int AS rv
+          ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
          FROM stock_movements
          WHERE product_id = ANY($1::bigint[])
            AND type IN ('reserve', 'unreserve')
@@ -452,7 +465,12 @@ class ProductsRepositoryPG {
       return;
     }
 
-    const byPid = new Map((agg.rows || []).map((r) => [String(r.product_id), Number(r.rv) || 0]));
+    const byPid = new Map();
+    for (const r of agg.rows || []) {
+      const key = productIdMapKey(r.product_id);
+      if (!key) continue;
+      byPid.set(key, Number(r.rv) || 0);
+    }
     const idsToUpdate = [];
     const rvsToUpdate = [];
     const {
@@ -468,9 +486,9 @@ class ProductsRepositoryPG {
     }
 
     for (const p of products) {
-      const key = String(p.id);
+      const key = productIdMapKey(p.id);
       const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
-      let calc = byPid.has(key) ? byPid.get(key) : 0;
+      let calc = key && byPid.has(key) ? byPid.get(key) : 0;
       if (isKitCatalogProduct(p)) {
         if (Number.isFinite(nid) && nid > 0) {
           calc = ctx

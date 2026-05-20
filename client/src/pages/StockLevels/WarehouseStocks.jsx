@@ -21,6 +21,7 @@ import {
   isKitProduct,
   isKitStockHistoryMovement
 } from '../../utils/kitStockMetrics';
+import { stockListRowHasStock } from '../../utils/stockListMetrics';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
@@ -1494,7 +1495,7 @@ export function WarehouseStocks() {
       return { onHand, incoming, reserved, suppliers, supplierDetails, available };
     });
     if (!filterInStockOnly) return built;
-    return built.filter((row) => (Number(row.onHand) || 0) > 0);
+    return built.filter((row) => stockListRowHasStock(row));
   }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId, filterInStockOnly]);
 
   const renderStockListPager = (placement) => {

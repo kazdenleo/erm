@@ -8,6 +8,7 @@ import { getClient } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
 import { scheduleMarketplaceSyncForParentKits } from './kitStock.service.js';
+import { NET_RESERVED_SUM_EXPR_SQL } from './sellableQuantity.service.js';
 
 class StockMovementsService {
   constructor() {
@@ -311,13 +312,7 @@ class StockMovementsService {
        ),
        sku_net AS (
          SELECT (meta->>'order_id')::bigint AS order_row_id,
-           GREATEST(0, COALESCE(SUM(
-             CASE
-               WHEN type = 'reserve' THEN -(quantity_change::numeric)
-               WHEN type = 'unreserve' THEN -(quantity_change::numeric)
-               ELSE 0
-             END
-           ), 0))::int AS sku_net_qty
+           ${NET_RESERVED_SUM_EXPR_SQL}::int AS sku_net_qty
          FROM stock_movements
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
@@ -382,19 +377,14 @@ class StockMovementsService {
     const pid = Number(productId);
     if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
     const r = await query(
-      `SELECT
-         COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
-         COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)::int AS unreserved
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
        WHERE product_id = $1
          AND type IN ('reserve', 'unreserve')
          AND (meta->>'order_id')::bigint = $2::bigint`,
       [pid, oid]
     );
-    const row = r.rows?.[0];
-    const reserved = row?.reserved != null ? Number(row.reserved) : 0;
-    const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
-    return Math.max(0, reserved - unreserved);
+    return Number(r.rows?.[0]?.rv ?? 0) || 0;
   }
 
   async _productIdsForReserveRelease(productId) {

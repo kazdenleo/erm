@@ -8,19 +8,35 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { isKitProductId, readKitMarketplaceStockFromDb, readKitStockFromDb } from './kitStock.service.js';
 
+/**
+ * Вклад одной строки журнала в нетто-резерв.
+ * Поддерживает оба знака quantity_change: новые reserve (−) / unreserve (+) и legacy reserve (+).
+ */
+export const NET_RESERVED_MOVEMENT_ROW_CASE_SQL = `
+          CASE
+            WHEN type = 'reserve' THEN
+              CASE
+                WHEN quantity_change < 0 THEN -(quantity_change::numeric)
+                ELSE (quantity_change::numeric)
+              END
+            WHEN type = 'unreserve' THEN
+              CASE
+                WHEN quantity_change > 0 THEN -(quantity_change::numeric)
+                ELSE (quantity_change::numeric)
+              END
+            ELSE 0
+          END`;
+
+/** GREATEST(0, SUM(...)) для агрегата по product_id. */
+export const NET_RESERVED_SUM_EXPR_SQL = `GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))`;
+
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
 export async function getReservedQuantityFromMovements(productId) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
   try {
     const r = await query(
-      `SELECT GREATEST(0, COALESCE(SUM(
-          CASE
-            WHEN type = 'reserve' THEN -(quantity_change::numeric)
-            WHEN type = 'unreserve' THEN -(quantity_change::numeric)
-            ELSE 0
-          END
-        ), 0))::int AS rv
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
        WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
       [pid]
@@ -159,5 +175,7 @@ export async function getReservableSupplyUnits(productId, opts = {}) {
 export default {
   computeAvailableQuantity,
   getReservedQuantityFromMovements,
-  getReservableSupplyUnits
+  getReservableSupplyUnits,
+  NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
+  NET_RESERVED_SUM_EXPR_SQL
 };
