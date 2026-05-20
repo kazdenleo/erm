@@ -951,6 +951,41 @@ class OrdersService {
     });
   }
 
+  /** Подпись позиции заказа для UI резерва (название · артикул). */
+  async _orderLineDisplayLabel(row) {
+    if (!row) return null;
+    const name = String(row.productName ?? row.product_name ?? '').trim();
+    const offer = String(row.offerId ?? row.offer_id ?? '').trim();
+    const mpSku = row.marketplaceSku ?? row.marketplace_sku;
+    const extra =
+      mpSku != null && String(mpSku).trim() !== '' && String(mpSku).trim() !== offer
+        ? String(mpSku).trim()
+        : '';
+    const article = offer || extra;
+    if (name && article) return `${name} · ${article}`;
+    if (name) return name;
+    if (article) return article;
+    const pid = Number(row.productId ?? row.product_id);
+    if (!Number.isFinite(pid) || pid < 1) return null;
+    return this._productDisplayLabelById(pid);
+  }
+
+  async _productDisplayLabelById(productId) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return null;
+    try {
+      const repo = repositoryFactory.getProductsRepository();
+      const pr = repo && typeof repo.findById === 'function' ? await repo.findById(pid) : null;
+      if (!pr) return null;
+      const pn = String(pr.name ?? '').trim();
+      const ps = String(pr.sku ?? '').trim();
+      if (pn && ps) return `${pn} · ${ps}`;
+      return pn || ps || null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Снять резерв по всем заказам в терминальных статусах (отменён / отгружен / …), где в журнале ещё есть нетто-резерв.
    */
@@ -2392,6 +2427,7 @@ class OrdersService {
       const productId = id ? await this._resolveProductIdForOrderStock(row).catch(() => null) : null;
       const pid = Number(productId);
       const lineEntries = [];
+      const orderLineLabel = await this._orderLineDisplayLabel(row);
 
       if (id && Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
         reserved = await getReservedKitUnitsForOrder(pid, id);
@@ -2402,7 +2438,7 @@ class OrdersService {
             reservedQty: onKitRes,
             needQty: qty,
             lineKind: 'kit_whole',
-            label: 'Комплект (целым SKU)'
+            label: orderLineLabel || 'Комплект (целым SKU)'
           });
         }
         const components = await getKitComponents(pid);
@@ -2412,13 +2448,14 @@ class OrdersService {
           const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
           const compRes = await this._getReservedQtyForOrderProduct(id, compId);
           if (compRes <= 0 && onKitRes > 0) continue;
+          const compLabel = (await this._productDisplayLabelById(compId)) || 'Комплектующая';
           lineEntries.push({
             productId: compId,
             reservedQty: compRes,
             needQty: qty * perKit,
             lineKind: 'component',
             kitProductId: pid,
-            label: null
+            label: compLabel
           });
         }
         if (lineEntries.length === 0 && reserved > 0) {
@@ -2427,7 +2464,7 @@ class OrdersService {
             reservedQty: reserved,
             needQty: qty,
             lineKind: 'kit',
-            label: 'Комплект'
+            label: orderLineLabel || 'Комплект'
           });
         }
       } else if (id && Number.isFinite(pid) && pid > 0) {
@@ -2437,7 +2474,7 @@ class OrdersService {
           reservedQty: reserved,
           needQty: qty,
           lineKind: 'product',
-          label: null
+          label: orderLineLabel || (await this._productDisplayLabelById(pid))
         });
       } else if (id) {
         reserved = await this._getReservedQtyForOrder(id);
@@ -2446,7 +2483,7 @@ class OrdersService {
           reservedQty: reserved,
           needQty: qty,
           lineKind: 'unknown',
-          label: null
+          label: orderLineLabel
         });
       }
 
@@ -2595,7 +2632,7 @@ class OrdersService {
       if (toAdd <= 0) {
         if (qtyWanted != null && qtyWanted > 0) {
           const err = new Error(
-            `Недостаточно остатка для резерва (доступно: ${Math.floor(available)}, запрошено: ${qtyWanted})`
+            `Недостаточно остатка для резерва (доступно без поставщиков: ${Math.floor(available)}, запрошено: ${qtyWanted})`
           );
           err.statusCode = 400;
           throw err;

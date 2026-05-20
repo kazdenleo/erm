@@ -144,38 +144,102 @@ export async function computeAvailableQuantity(productId, opts = {}) {
 }
 
 /**
- * Доступно под резерв заказа: наличие на складе (PWS) + «в пути» − резерв из журнала.
- * Без остатков поставщиков. Единая формула для orders / stockMovements / kitStock.
+ * «Доступно» без поставщиков — как в таблице остатков: (наличие + в пути + поставщики − резерв) − поставщики.
  */
-export async function getReservableSupplyUnits(productId, opts = {}) {
+export function computeOwnWarehouseAvailable({ onHand = 0, incoming = 0, reserved = 0 } = {}) {
+  return Math.max(
+    0,
+    Math.floor((Number(onHand) || 0) + (Number(incoming) || 0) - (Number(reserved) || 0))
+  );
+}
+
+/** Резерв из журнала в рамках открытой транзакции (для проверки перед записью движения). */
+export async function getReservedQuantityFromMovementsWithClient(client, productId) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+  const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
+  try {
+    const r = await run(
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+      [pid]
+    );
+    return Number(r.rows[0]?.rv ?? 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Доступно под резерв в транзакции: PWS + «в пути» − резерв (без поставщиков).
+ */
+export async function getReservableSupplyUnitsWithClient(client, productId, opts = {}) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
 
-  const metrics = await computeAvailableQuantity(pid, {
-    warehouseId: opts.warehouseId ?? opts.warehouse_id ?? null,
-    profileId: opts.profileId ?? null
-  });
+  const warehouseId =
+    opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
+      ? typeof opts.warehouseId === 'string'
+        ? parseInt(opts.warehouseId, 10)
+        : Number(opts.warehouseId)
+      : null;
+
+  const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
+
+  let onHand = 0;
+  if (warehouseId != null && Number.isFinite(warehouseId) && warehouseId > 0) {
+    const r = await run(
+      `SELECT COALESCE(quantity, 0)::int AS quantity
+       FROM product_warehouse_stock
+       WHERE product_id = $1 AND warehouse_id = $2`,
+      [pid, warehouseId]
+    );
+    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
+  } else {
+    const r = await run(
+      `SELECT COALESCE(SUM(quantity), 0)::int AS quantity
+       FROM product_warehouse_stock
+       WHERE product_id = $1`,
+      [pid]
+    );
+    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
+  }
+
   let incoming = 0;
   try {
-    const r = await query(
+    const pr = await run(
       `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity FROM products WHERE id = $1`,
       [pid]
     );
-    incoming = Number(r.rows[0]?.incoming_quantity ?? 0) || 0;
+    incoming = Number(pr.rows[0]?.incoming_quantity ?? 0) || 0;
   } catch {
     incoming = 0;
   }
+
   const reserved =
     opts.reservedMap instanceof Map
       ? opts.reservedMap.get(pid) || 0
-      : await getReservedQuantityFromMovements(pid);
-  return Math.max(0, (Number(metrics.onHand) || 0) + incoming - reserved);
+      : await getReservedQuantityFromMovementsWithClient(client, pid);
+
+  return computeOwnWarehouseAvailable({ onHand, incoming, reserved });
+}
+
+/**
+ * Доступно под резерв заказа: наличие на складе (PWS) + «в пути» − резерв из журнала.
+ * Без остатков поставщиков (= «Доступно» в таблице остатков минус поставщики).
+ */
+export async function getReservableSupplyUnits(productId, opts = {}) {
+  return getReservableSupplyUnitsWithClient(null, productId, opts);
 }
 
 export default {
   computeAvailableQuantity,
+  computeOwnWarehouseAvailable,
   getReservedQuantityFromMovements,
+  getReservedQuantityFromMovementsWithClient,
   getReservableSupplyUnits,
+  getReservableSupplyUnitsWithClient,
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL
 };

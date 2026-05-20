@@ -2390,9 +2390,17 @@ export function Orders() {
                 // Раньше показывали "✓ Есть на складе" по hasReserve, но это вводило в заблуждение:
                 // резерв может быть за счёт incoming (в пути) или быть частичным.
                 // Для "Новый" показываем только прогресс резерва X/Y.
-                const reservedQty = Number(first.reservedQty ?? first.reserved_qty ?? 0) || 0;
-                const needQty = Number(first.quantity) || 1;
-                const reserveProgressBadge = (first.status === 'in_procurement' || first.status === 'new') && reservedQty > 0;
+                const reservedQty = isGroup
+                  ? groupOrders.reduce(
+                      (s, o) => s + (Number(o.reservedQty ?? o.reserved_qty) || 0),
+                      0
+                    )
+                  : Number(first.reservedQty ?? first.reserved_qty ?? 0) || 0;
+                const needQty = isGroup
+                  ? groupOrders.reduce((s, o) => s + Math.max(1, Number(o.quantity) || 1), 0)
+                  : Number(first.quantity) || 1;
+                const reserveProgressBadge =
+                  (first.status === 'in_procurement' || first.status === 'new') && reservedQty > 0;
                 const groupStatusLabelsMixed =
                   isGroup &&
                   groupOrders &&

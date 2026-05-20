@@ -191,10 +191,11 @@ class StockMovementsService {
       await client.query('BEGIN');
       await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [idNum]);
 
-      const { getReservableSupplyUnits, getReservedQuantityFromMovements } = await import(
-        './sellableQuantity.service.js'
-      );
-      const journalBeforeGlobal = await getReservedQuantityFromMovements(idNum);
+      const {
+        getReservableSupplyUnitsWithClient,
+        getReservedQuantityFromMovementsWithClient
+      } = await import('./sellableQuantity.service.js');
+      const journalBeforeGlobal = await getReservedQuantityFromMovementsWithClient(client, idNum);
       const orderDbIdRaw = metaOut.order_id ?? metaOut.orderId ?? null;
       let netForOrder = null;
       if (orderDbIdRaw != null && String(orderDbIdRaw).trim() !== '') {
@@ -204,10 +205,12 @@ class StockMovementsService {
 
       if (type === 'reserve' && safeDelta < 0) {
         const reserveAdd = Math.abs(safeDelta);
-        const availableForReserve = await getReservableSupplyUnits(idNum, { warehouseId });
+        const availableForReserve = await getReservableSupplyUnitsWithClient(client, idNum, {
+          warehouseId
+        });
         if (reserveAdd > availableForReserve) {
           const err = new Error(
-            `Недостаточно остатка для резерва (доступно: ${availableForReserve}, запрошено: ${reserveAdd})`
+            `Недостаточно остатка для резерва (доступно без поставщиков: ${availableForReserve}, запрошено: ${reserveAdd})`
           );
           err.statusCode = 400;
           throw err;

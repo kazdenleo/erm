@@ -173,6 +173,11 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             const maxQty = lineHas ? r : remaining;
             const title =
               line.label ||
+              line.productName ||
+              line.product_name ||
+              (line.offerId || line.offer_id
+                ? `Арт. ${line.offerId || line.offer_id}`
+                : null) ||
               (line.lineKind === 'component' ? `Комплектующая #${pid}` : `Товар #${pid}`);
             const qtyVal = lineQty[key] ?? (lineHas ? 1 : Math.min(1, maxQty || 1));
             return (
@@ -618,7 +623,9 @@ export function OrderSummaryFromList({ orders, marketplace, onReserveChange }) {
       ? {
           reservedQty: orders.reduce((s, o) => s + (Number(o.reservedQty ?? o.reserved_qty) || 0), 0),
           needQty: orders.reduce((s, o) => s + Math.max(1, Number(o.quantity) || 1), 0),
-          hasReserve: orders.some((o) => (Number(o.reservedQty ?? o.reserved_qty) || 0) > 0)
+          hasReserve: orders.some((o) => (Number(o.reservedQty ?? o.reserved_qty) || 0) > 0),
+          /** Без lines — панель подтянет детализацию с API; сводка X/Y уже по всем строкам заказа */
+          lines: []
         }
       : null;
   return (
