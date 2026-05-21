@@ -704,6 +704,7 @@ class OrdersRepositoryPG {
     const pid = normalizeProfileId(profileId);
     const likeTilde = `${oid}~%`;
     const likeColon = `${oid}:%`;
+    const likeManualSuffix = dbMarketplace === 'manual' ? `${oid}-%` : null;
     const result = await query(
       `
       SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
@@ -720,13 +721,21 @@ class OrdersRepositoryPG {
       WHERE o.marketplace = $1
         AND (
           TRIM(o.order_id) = $2
+          OR o.order_group_id = $2
           OR o.order_id LIKE $3
           OR o.order_id LIKE $4
+          ${likeManualSuffix ? 'OR o.order_id LIKE $6' : ''}
         )
         ${pid ? 'AND o.profile_id = $5::bigint' : ''}
       ORDER BY o.id
     `,
-      pid ? [dbMarketplace, oid, likeTilde, likeColon, pid] : [dbMarketplace, oid, likeTilde, likeColon]
+      pid
+        ? likeManualSuffix
+          ? [dbMarketplace, oid, likeTilde, likeColon, pid, likeManualSuffix]
+          : [dbMarketplace, oid, likeTilde, likeColon, pid]
+        : likeManualSuffix
+          ? [dbMarketplace, oid, likeTilde, likeColon, likeManualSuffix]
+          : [dbMarketplace, oid, likeTilde, likeColon]
     );
     return (result.rows || []).map(rowToCamel);
   }

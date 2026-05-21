@@ -27,6 +27,7 @@ import {
   singleOrderListGroupKey,
   marketplaceOrderIdForApi
 } from '../../utils/orderListGroupKey';
+import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import './Orders.css';
 import './OrderDetail.css';
 
@@ -1144,8 +1145,8 @@ export function Orders() {
           'in_procurement',
           'in_assembly',
           'assembled',
-          'in_transit',
           'shipped',
+          'in_transit',
           'delivered',
           'cancelled',
           ...orders.map((o) => o.status).filter((s) => s && s !== 'processing'),
@@ -2347,7 +2348,8 @@ export function Orders() {
                 </th>
                 <th>Количество</th>
                 <th>Цена</th>
-                <th>Статус</th>
+                <th>Резерв</th>
+                <th>Стикер</th>
                 {showShipmentColumn ? <th>Поставка</th> : null}
                 <th>Действия</th>
               </tr>
@@ -2416,12 +2418,28 @@ export function Orders() {
                 const needQty = isGroup
                   ? groupOrders.reduce((s, o) => s + Math.max(1, Number(o.quantity) || 1), 0)
                   : Number(first.quantity) || 1;
-                const reserveProgressBadge =
-                  (first.status === 'in_procurement' || first.status === 'new') && reservedQty > 0;
-                const groupStatusLabelsMixed =
-                  isGroup &&
-                  groupOrders &&
-                  new Set(groupOrders.map((o) => String(o.status ?? ''))).size > 1;
+                const showReserveCell = reservedQty > 0;
+                const stickerDisplay = (() => {
+                  if (isGroup) {
+                    const asmLines = groupOrders.filter((o) => isAssemblyLikeStatus(o.status));
+                    if (!asmLines.length) return '—';
+                    const mp = normalizeMarketplaceForUI(first.marketplace);
+                    if (mp === 'wildberries') {
+                      return orderStickerCellValue(first, { groupOrders: asmLines });
+                    }
+                    const ids = [
+                      ...new Set(
+                        asmLines
+                          .map((o) =>
+                            String(o.orderGroupId ?? o.order_group_id ?? o.orderId ?? '').trim()
+                          )
+                          .filter(Boolean)
+                      ),
+                    ];
+                    return ids.length ? ids.join(', ') : '—';
+                  }
+                  return orderStickerCellValue(first);
+                })();
                 return (
                 <tr
                   key={row.key + idx}
@@ -2514,37 +2532,29 @@ export function Orders() {
                     )}
                   </td>
                   <td>{priceDisplay}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      {groupStatusLabelsMixed ? (
-                        <div className="orders-stacked-lines">
-                          {groupOrders.map((o) => (
-                            <div key={orderKey(o)} className="orders-stacked-line">
-                              {getOrderStatusLabel(o.status)}
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <span>{getOrderStatusLabel(first.status)}</span>
-                      )}
-                      {reserveProgressBadge && (
-                        <span
-                          className="badge"
-                          style={{
-                            border: '1px solid rgba(0,0,0,0.12)',
-                            background: 'rgba(0,0,0,0.04)',
-                            color: 'var(--text)',
-                            padding: '2px 8px',
-                            borderRadius: 999,
-                            fontSize: 12,
-                            fontWeight: 600,
-                          }}
-                          title={`Резерв под заказ: ${reservedQty} из ${needQty}`}
-                        >
-                          Резерв: {reservedQty}/{needQty}
-                        </span>
-                      )}
-                    </div>
+                  <td className="orders-col-reserve">
+                    {showReserveCell ? (
+                      <span
+                        className="badge"
+                        style={{
+                          border: '1px solid rgba(0,0,0,0.12)',
+                          background: 'rgba(0,0,0,0.04)',
+                          color: 'var(--text)',
+                          padding: '2px 8px',
+                          borderRadius: 999,
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                        title={`Резерв под заказ: ${reservedQty} из ${needQty}`}
+                      >
+                        {reservedQty}/{needQty}
+                      </span>
+                    ) : (
+                      <span className="text-muted">—</span>
+                    )}
+                  </td>
+                  <td className="orders-col-sticker" title={stickerDisplay !== '—' ? stickerDisplay : ''}>
+                    {stickerDisplay}
                   </td>
                   {showShipmentColumn && first.status === 'assembled' ? (
                     <td className="orders-col-shipment" title={first.localShipmentName || ''}>
@@ -2564,7 +2574,7 @@ export function Orders() {
                   ) : null}
                   <td className="orders-col-actions" onClick={e => e.stopPropagation()}>
                     <div className="orders-actions">
-                      {reserveProgressBadge && reservedQty > 0 && (
+                      {showReserveCell && reservedQty > 0 && (
                         <Button
                           variant="secondary"
                           size="small"
@@ -2706,8 +2716,8 @@ export function Orders() {
                             className="orders-action-icon"
                             onClick={() => handleMarkShipped(first.marketplace, first.orderId, row.key)}
                             disabled={markShippedLoadingKey === row.key || deleteLoadingKey === row.key || returnToNewLoadingKey === row.key}
-                            title="Поставить статус «Отгружен» (для тестирования)"
-                            aria-label="Отгружен"
+                            title={`Поставить статус «${getOrderStatusLabel('shipped')}» (для тестирования)`}
+                            aria-label={getOrderStatusLabel('shipped')}
                           >
                             {markShippedLoadingKey === row.key ? (
                               <span className="orders-action-icon__busy" aria-hidden>…</span>

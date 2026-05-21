@@ -13,6 +13,7 @@ import { ordersApi, assemblyApi } from '../../services/orders.api';
 import api from '../../services/api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getStoredLabelSize } from '../Settings/Labels';
+import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import './Assembly.css';
 
 function resolveApiBaseUrl() {
@@ -1065,6 +1066,15 @@ export function Assembly() {
                 ? ` · ${curAssemblyMp.name}`
                 : ` · ${currentOrderData.order.marketplace}`}
             </h3>
+            {isAssemblyLikeStatus(currentOrderData.order.status) ? (
+              <p className="assembly-current-sticker text-muted small mb-2">
+                {normMarketplace(currentOrderData.order.marketplace) === 'wildberries'
+                  ? 'Стикер'
+                  : 'Номер заказа'}
+                :{' '}
+                <strong>{orderStickerCellValue(currentOrderData.order)}</strong>
+              </p>
+            ) : null}
             <div className="assembly-composition">
               <span className="assembly-composition-label">Состав заказа:</span>
               <ul className="assembly-composition-list">
@@ -1132,9 +1142,13 @@ export function Assembly() {
               <div className="assembly-ready">
                 <p className="assembly-ready-text">
                   Заказ собран
-                  {currentOrderData.order.assemblyStickerNumber ? (
+                  {orderStickerCellValue(currentOrderData.order) !== '—' ? (
                     <>
-                      . Стикер: <strong>{currentOrderData.order.assemblyStickerNumber}</strong>
+                      .{' '}
+                      {normMarketplace(currentOrderData.order.marketplace) === 'wildberries'
+                        ? 'Стикер'
+                        : 'Заказ'}
+                      : <strong>{orderStickerCellValue(currentOrderData.order)}</strong>
                     </>
                   ) : null}
                   {' '}
@@ -1220,8 +1234,7 @@ export function Assembly() {
                   rows.length === 1
                     ? primary.quantity ?? '—'
                     : rows.map((r) => r.quantity ?? 1).join(' + ');
-                const sticker =
-                  primary.assemblyStickerNumber ?? primary.assembly_sticker_number ?? '—';
+                const sticker = orderStickerCellValue(primary, { groupOrders: rows });
                 return (
                   <tr key={groupKey}>
                     <td>{mp}</td>
@@ -1362,8 +1375,7 @@ export function Assembly() {
                   : '—';
                 const who =
                   [o.assembledByFullName, o.assembledByEmail].filter(Boolean).join(' · ') || '—';
-                const sticker =
-                  o.assemblyStickerNumber ?? o.assembly_sticker_number ?? '—';
+                const sticker = orderStickerCellValue(o);
                 const erpPidCol = assemblyLineProductId(o);
                 return (
                   <tr key={rowKey}>

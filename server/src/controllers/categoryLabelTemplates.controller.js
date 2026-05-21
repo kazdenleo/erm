@@ -20,6 +20,10 @@ function normalizeElements(body) {
     heightMm: el.heightMm != null ? Number(el.heightMm) : undefined,
     showText: el.showText !== false,
     showName: el.showName !== false,
+    showTitle: el.showTitle !== false,
+    showQuantity: el.showQuantity !== false,
+    showSku: el.showSku !== false,
+    titleFontSize: el.titleFontSize != null ? Number(el.titleFontSize) : undefined,
     attributeId: el.attributeId != null ? Number(el.attributeId) : undefined,
     fieldKey: el.fieldKey != null ? String(el.fieldKey) : undefined,
   }));

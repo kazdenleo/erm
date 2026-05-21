@@ -30,6 +30,9 @@ export const NET_RESERVED_MOVEMENT_ROW_CASE_SQL = `
 /** GREATEST(0, SUM(...)) для агрегата по product_id. */
 export const NET_RESERVED_SUM_EXPR_SQL = `GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))`;
 
+/** Сырой нетто-резерв без GREATEST(0, …) — для жёсткой проверки лимита резерва. */
+export const RAW_RESERVED_SUM_EXPR_SQL = `COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)`;
+
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
 export async function getReservedQuantityFromMovements(productId) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
@@ -171,40 +174,43 @@ export async function getReservedQuantityFromMovementsWithClient(client, product
   }
 }
 
-/**
- * Доступно под резерв в транзакции: PWS + «в пути» − резерв (без поставщиков).
- */
-export async function getReservableSupplyUnitsWithClient(client, productId, opts = {}) {
+/** Сырой нетто-резерв из журнала (без GREATEST) в рамках транзакции. */
+export async function getRawReservedQuantityFromMovementsWithClient(client, productId) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
+  const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
+  try {
+    const r = await run(
+      `SELECT ${RAW_RESERVED_SUM_EXPR_SQL}::numeric AS rv
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+      [pid]
+    );
+    return Math.max(0, Math.floor(Number(r.rows[0]?.rv ?? 0) || 0));
+  } catch {
+    return 0;
+  }
+}
 
-  const warehouseId =
-    opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
-      ? typeof opts.warehouseId === 'string'
-        ? parseInt(opts.warehouseId, 10)
-        : Number(opts.warehouseId)
-      : null;
+/**
+ * Снимок поставки товара: наличие (сумма по всем складам), «в пути», резерв, доступно, потолок резерва.
+ * incoming_quantity и резерв в журнале — на уровне product_id, не склада.
+ */
+export async function getProductSupplySnapshotWithClient(client, productId, opts = {}) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) {
+    return { onHand: 0, incoming: 0, reserved: 0, reservedRaw: 0, available: 0, supplyCap: 0 };
+  }
 
   const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
 
-  let onHand = 0;
-  if (warehouseId != null && Number.isFinite(warehouseId) && warehouseId > 0) {
-    const r = await run(
-      `SELECT COALESCE(quantity, 0)::int AS quantity
-       FROM product_warehouse_stock
-       WHERE product_id = $1 AND warehouse_id = $2`,
-      [pid, warehouseId]
-    );
-    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
-  } else {
-    const r = await run(
-      `SELECT COALESCE(SUM(quantity), 0)::int AS quantity
-       FROM product_warehouse_stock
-       WHERE product_id = $1`,
-      [pid]
-    );
-    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
-  }
+  const onHandR = await run(
+    `SELECT COALESCE(SUM(quantity), 0)::int AS quantity
+     FROM product_warehouse_stock
+     WHERE product_id = $1`,
+    [pid]
+  );
+  const onHand = Number(onHandR.rows[0]?.quantity ?? 0) || 0;
 
   let incoming = 0;
   try {
@@ -221,8 +227,24 @@ export async function getReservableSupplyUnitsWithClient(client, productId, opts
     opts.reservedMap instanceof Map
       ? opts.reservedMap.get(pid) || 0
       : await getReservedQuantityFromMovementsWithClient(client, pid);
+  const reservedRaw =
+    opts.reservedMap instanceof Map
+      ? reserved
+      : await getRawReservedQuantityFromMovementsWithClient(client, pid);
 
-  return computeOwnWarehouseAvailable({ onHand, incoming, reserved });
+  const supplyCap = onHand + incoming;
+  const available = computeOwnWarehouseAvailable({ onHand, incoming, reserved });
+
+  return { onHand, incoming, reserved, reservedRaw, available, supplyCap };
+}
+
+/**
+ * Доступно под резерв в транзакции: SUM(PWS) + «в пути» − резерв (без поставщиков).
+ * warehouseId в opts не влияет на расчёт — резерв и incoming глобальны по товару.
+ */
+export async function getReservableSupplyUnitsWithClient(client, productId, opts = {}) {
+  const snap = await getProductSupplySnapshotWithClient(client, productId, opts);
+  return snap.available;
 }
 
 /**
@@ -238,8 +260,11 @@ export default {
   computeOwnWarehouseAvailable,
   getReservedQuantityFromMovements,
   getReservedQuantityFromMovementsWithClient,
+  getRawReservedQuantityFromMovementsWithClient,
+  getProductSupplySnapshotWithClient,
   getReservableSupplyUnits,
   getReservableSupplyUnitsWithClient,
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
-  NET_RESERVED_SUM_EXPR_SQL
+  NET_RESERVED_SUM_EXPR_SQL,
+  RAW_RESERVED_SUM_EXPR_SQL
 };

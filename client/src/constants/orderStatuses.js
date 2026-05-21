@@ -9,8 +9,8 @@ export const orderStatusLabels = {
   in_assembly: 'На сборке',
   in_procurement: 'В закупке',
   assembled: 'Собран',
-  in_transit: 'В доставке',
-  shipped: 'Отгружен',
+  in_transit: 'Отгружен',
+  shipped: 'В доставке',
   delivered: 'Доставлен',
   cancelled: 'Отменён'
 };

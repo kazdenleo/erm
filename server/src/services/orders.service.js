@@ -37,7 +37,7 @@ function marketplaceForProductSkus(marketplace) {
   return m === 'ozon' ? 'ozon' : m;
 }
 
-/** Базовый order_id для поиска строк резерва (YM: «57310148866:offer» → «57310148866»). */
+/** Базовый ключ заказа для поиска всех строк резерва в БД. */
 function orderIdKeyForReserveLookup(marketplace, orderId) {
   let oid = String(orderId ?? '').trim();
   if (!oid) return oid;
@@ -45,6 +45,11 @@ function orderIdKeyForReserveLookup(marketplace, orderId) {
   if (mp === 'yandex' || mp === 'ym' || mp === 'yandexmarket') {
     const i = oid.indexOf(':');
     if (i >= 0) oid = oid.slice(0, i);
+  } else if (mp === 'ozon') {
+    const t = oid.indexOf('~');
+    if (t > 0) oid = oid.slice(0, t);
+  } else if (mp === 'manual' && /^manual-\d+-[a-z0-9]+-\d+$/i.test(oid)) {
+    oid = oid.replace(/-\d+$/i, '');
   }
   return oid;
 }
@@ -464,9 +469,6 @@ class OrdersService {
         const alloc = allocateKitReservePriority(qtyWanted, breakdown);
         qty = alloc.kitsToReserve;
       }
-    } else if (meta?.kit_product_id) {
-      // Уже проверено в applyKitOrderReserve (собираемость из комплектующих).
-      qty = qtyWanted;
     } else {
       const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
       availableSupply = await getComponentAssemblableUnits(productId, { warehouseId: wh });
@@ -925,7 +927,11 @@ class OrdersService {
     if (!id) return;
     const productId = await this._resolveProductIdForOrderStock(orderRow);
     if (!productId) return;
-    const warehouseId = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    const preferredWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
+      productId,
+      preferredWh
+    );
 
     // Частичный резерв:
     // - резервируем только то, что уже есть (факт + ожидается - уже зарезервировано)
@@ -1182,9 +1188,11 @@ class OrdersService {
         } else {
           reserved = await this._getReservedQtyForOrder(orderDbId);
         }
-        o.reservedQty = reserved;
-        o.reserved_qty = reserved;
-        o.hasReserve = reserved > 0;
+        const sqlReserved = Math.max(0, Number(o.reserved_qty ?? o.reservedQty) || 0);
+        const net = Math.max(sqlReserved, reserved);
+        o.reservedQty = net;
+        o.reserved_qty = net;
+        o.hasReserve = net > 0;
       } catch {
         /* ignore */
       }
@@ -2419,15 +2427,46 @@ class OrdersService {
     return list[0];
   }
 
+  /** Все строки orders.id одного заказа (группа, несколько offerId, ручной заказ). */
+  async _mergeOrderRowsForReserve(initialRows, { profileId = null } = {}) {
+    const map = new Map();
+    const queue = [];
+    const add = (r) => {
+      const id = orderRowDbId(r);
+      if (id == null) return;
+      const k = String(id);
+      if (!map.has(k)) {
+        map.set(k, r);
+        queue.push(r);
+      }
+    };
+    for (const r of initialRows || []) add(r);
+    const seenGid = new Set();
+    while (queue.length) {
+      const r = queue.shift();
+      const gid = String(r.orderGroupId ?? r.order_group_id ?? '').trim();
+      if (!gid || seenGid.has(gid)) continue;
+      seenGid.add(gid);
+      const more = await this.repository.findByOrderGroupId(gid, profileId);
+      for (const m of more || []) add(m);
+    }
+    return [...map.values()].sort((a, b) => Number(a.id) - Number(b.id));
+  }
+
   async _findOrderRowsForReserve(marketplace, orderId, { profileId = null } = {}) {
     const oid = orderIdKeyForReserveLookup(marketplace, orderId);
     if (!oid || !marketplace) return [];
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const rows = await this.repository.findRowsForReserveByOrderKey(marketplace, oid, profileId);
-      if (rows.length > 0) return rows;
-      const one = await this.repository.findByMarketplaceAndOrderId(marketplace, oid, profileId);
-      return one ? [one] : [];
+      let rows = await this.repository.findRowsForReserveByOrderKey(marketplace, oid, profileId);
+      if (!rows.length) {
+        rows = await this.repository.findByOrderGroupId(oid, profileId);
+      }
+      if (!rows.length) {
+        const one = await this.repository.findByMarketplaceAndOrderId(marketplace, oid, profileId);
+        if (one) rows = [one];
+      }
+      return this._mergeOrderRowsForReserve(rows, { profileId });
     }
 
     const all = await this.getAll();
@@ -2559,6 +2598,16 @@ class OrdersService {
         });
       }
 
+      if (lineEntries.length === 0) {
+        lineEntries.push({
+          productId: Number.isFinite(pid) && pid > 0 ? pid : null,
+          reservedQty: reserved,
+          needQty: qty,
+          lineKind: Number.isFinite(pid) && pid > 0 ? 'product' : 'unknown',
+          label: orderLineLabel || row.productName || row.product_name || 'Позиция заказа'
+        });
+      }
+
       reservedQty += reserved;
       needQty += qty;
       for (const le of lineEntries) {
@@ -2663,7 +2712,8 @@ class OrdersService {
     const act = String(action || 'toggle').toLowerCase();
     const doUnreserve = act === 'unreserve' || (act === 'toggle' && net > 0);
     const orderIdStr = String(row.orderId ?? row.order_id ?? orderId);
-    const warehouseId = await this._resolveOwnWarehouseIdForOrder(row);
+    const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
+    const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(pid, preferredWh);
 
     if (doUnreserve) {
       const release =

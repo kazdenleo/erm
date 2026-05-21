@@ -12,6 +12,11 @@ import {
   getProductFieldDisplayValue,
   labelProductFieldLabel,
 } from '../constants/labelProductFields.js';
+import {
+  formatKitComponentLines,
+  getKitComponentsFromProduct,
+} from '../constants/labelKitComponents.js';
+import { getKitComponents, isKitProductId } from './kitStock.service.js';
 
 const SIZE_PRESETS = {
   '58x40': { widthMm: 58, heightMm: 40 },
@@ -189,6 +194,56 @@ async function loadAttributeNames(attributeIds) {
   return map;
 }
 
+async function loadKitComponentsWithDetails(kitProductId) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return [];
+  const rows = await getKitComponents(kitId);
+  if (!rows.length) return [];
+
+  const ids = [...new Set(rows.map((r) => Number(r.component_product_id)).filter((id) => id >= 1))];
+  if (!ids.length) return rows.map((r) => ({
+    productId: r.component_product_id,
+    component_product_id: r.component_product_id,
+    quantity: r.quantity,
+  }));
+
+  const result = await query(
+    `SELECT id, sku, name FROM products WHERE id = ANY($1::bigint[])`,
+    [ids]
+  );
+  const byId = new Map();
+  for (const row of result.rows || []) {
+    byId.set(Number(row.id), { sku: row.sku, name: row.name });
+  }
+
+  return rows.map((r) => {
+    const cid = Number(r.component_product_id);
+    const p = byId.get(cid);
+    return {
+      productId: cid,
+      component_product_id: cid,
+      quantity: r.quantity,
+      component_sku: p?.sku ?? null,
+      product_name: p?.name ?? null,
+    };
+  });
+}
+
+/** Подгружает состав комплекта, если в шаблоне есть блок «комплектующие». */
+async function enrichProductForLabel(product, template) {
+  const elements = template?.elements || [];
+  const needsKit = elements.some((el) => el?.type === 'kit_components' && el.enabled !== false);
+  if (!needsKit || !product) return product;
+
+  if (getKitComponentsFromProduct(product).length > 0) return product;
+
+  const id = Number(product.id);
+  if (!Number.isFinite(id) || !(await isKitProductId(id))) return product;
+
+  const kit_components = await loadKitComponentsWithDetails(id);
+  return { ...product, product_type: product.product_type || 'kit', kit_components };
+}
+
 async function generateBarcodePng(text) {
   const code = String(text || '').replace(/\D/g, '');
   if (!code) return null;
@@ -221,11 +276,26 @@ async function pngToPdfBuffer(pngBuffer, widthMm, heightMm) {
   const doc = await PDFDocument.create();
   const image = await doc.embedPng(pngBuffer);
   const page = doc.addPage([widthPt, heightPt]);
-  const scaled = image.scaleToFit(widthPt, heightPt);
-  const x = (widthPt - scaled.width) / 2;
-  const y = (heightPt - scaled.height) / 2;
-  page.drawImage(image, { x, y, width: scaled.width, height: scaled.height });
+  page.drawImage(image, { x: 0, y: 0, width: widthPt, height: heightPt });
   return Buffer.from(await doc.save());
+}
+
+async function duplicateLabelPdf(pdfBuffer, copies) {
+  const count = Math.min(99, Math.max(1, parseInt(copies, 10) || 1));
+  if (count <= 1) return pdfBuffer;
+
+  const src = await PDFDocument.load(pdfBuffer);
+  const out = await PDFDocument.create();
+  const indices = src.getPageIndices();
+
+  for (let c = 0; c < count; c += 1) {
+    const pages = await out.copyPages(src, indices);
+    for (const page of pages) {
+      out.addPage(page);
+    }
+  }
+
+  return Buffer.from(await out.save());
 }
 
 async function buildLabelSvg({ template, product, attributeNames, categoryAttributeIds = null, mmToPx = MM_TO_PX }) {
@@ -307,7 +377,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
       }
       y += hPx;
       if (el.showText !== false) {
-        y += 2;
+        y += Math.max(2, Math.round(lineGapPx * 0.25));
         y = appendWrappedTextSvg(blocks, {
           text: barcodeValue,
           x: padL,
@@ -357,6 +427,44 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
         lineGapPx,
       });
       y += blockGap;
+    } else if (el.type === 'kit_components') {
+      const lines = formatKitComponentLines(product, el);
+      if (!lines.length) continue;
+
+      const fs = Number(el.fontSize) || 8;
+      const titleFs = Number(el.titleFontSize) || fs;
+      const weight = el.bold ? 'bold' : 'normal';
+
+      if (el.showTitle !== false && y < maxContentY) {
+        y = appendWrappedTextSvg(blocks, {
+          text: 'Состав:',
+          x: padL,
+          y,
+          fontSize: titleFs,
+          fontWeight: 'bold',
+          fill: '#000',
+          maxWidthPx: innerW,
+          maxY: maxContentY,
+          lineGapPx,
+        });
+        y += blockGap;
+      }
+
+      for (const line of lines) {
+        if (y >= maxContentY) break;
+        y = appendWrappedTextSvg(blocks, {
+          text: line,
+          x: padL,
+          y,
+          fontSize: fs,
+          fontWeight: weight,
+          fill: '#222',
+          maxWidthPx: innerW,
+          maxY: maxContentY,
+          lineGapPx,
+        });
+      }
+      y += blockGap;
     }
   }
 
@@ -394,6 +502,9 @@ function buildSampleProduct(elements, attributeNames, categoryAttributeIds = [])
     country_of_origin: 'Россия',
     barcodes: ['4601234567890'],
   };
+  const hasKitBlock = (elements || []).some(
+    (el) => el?.type === 'kit_components' && el.enabled !== false
+  );
   for (const el of elements || []) {
     if (el.type === 'attribute' && el.attributeId != null && el.enabled !== false) {
       const aid = String(el.attributeId);
@@ -402,13 +513,21 @@ function buildSampleProduct(elements, attributeNames, categoryAttributeIds = [])
       attribute_values[aid] = `Пример: ${an}`;
     }
   }
-  return {
-    name: 'Пример названия товара',
-    sku: 'ART-001',
+  const sample = {
+    name: 'Пример длинного названия товара для проверки переноса строк на этикетке',
+    sku: 'ART-KIT-001',
     barcodes: ['4601234567890'],
     attribute_values,
     ...sampleFields,
   };
+  if (hasKitBlock) {
+    sample.product_type = 'kit';
+    sample.kit_components = [
+      { productId: 9001, quantity: 2, component_sku: 'PART-L', product_name: 'Комплектующая левая' },
+      { productId: 9002, quantity: 2, component_sku: 'PART-R', product_name: 'Комплектующая правая' },
+    ];
+  }
+  return sample;
 }
 
 function templateFromPayload(body, categoryId) {
@@ -435,19 +554,20 @@ async function renderWithTemplate(template, product, format = 'png', { previewSc
     .filter((id) => Number.isFinite(id));
   const attributeNames = await loadAttributeNames(attrIds);
   const mmToPx = resolveMmToPx(previewScale);
+  const productForLabel = await enrichProductForLabel(product, template);
   const { svg, widthMm, heightMm } = await buildLabelSvg({
     template,
-    product,
+    product: productForLabel,
     attributeNames,
     categoryAttributeIds,
     mmToPx,
   });
   const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
   if (format === 'pdf') {
-    const pdf = await pngToPdfBuffer(pngBuffer, widthMm, heightMm);
-    return { buffer: pdf, contentType: 'application/pdf', widthMm, heightMm };
+    let pdf = await pngToPdfBuffer(pngBuffer, widthMm, heightMm);
+    return { buffer: pdf, contentType: 'application/pdf', widthMm, heightMm, pngBuffer };
   }
-  return { buffer: pngBuffer, contentType: 'image/png', widthMm, heightMm };
+  return { buffer: pngBuffer, contentType: 'image/png', widthMm, heightMm, pngBuffer };
 }
 
 export const productLabelsService = {
@@ -475,7 +595,7 @@ export const productLabelsService = {
     return template;
   },
 
-  async renderProductLabel(productId, { profileId = null, format = 'png' } = {}) {
+  async renderProductLabel(productId, { profileId = null, format = 'png', copies = 1 } = {}) {
     const product = await productsService.getByIdWithDetails(productId);
     if (!product) {
       const err = new Error('Товар не найден');
@@ -490,7 +610,14 @@ export const productLabelsService = {
       throw err;
     }
 
-    return renderWithTemplate(template, product, format);
+    const copyCount = Math.min(99, Math.max(1, parseInt(copies, 10) || 1));
+    const rendered = await renderWithTemplate(template, product, format === 'pdf' ? 'pdf' : 'png');
+
+    if (format === 'pdf' && copyCount > 1) {
+      rendered.buffer = await duplicateLabelPdf(rendered.buffer, copyCount);
+    }
+
+    return rendered;
   },
 
   async renderPreview(templatePayload, { categoryId, productId = null, previewScale = 4 } = {}) {

@@ -61,11 +61,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
   }, [marketplace, orderId, reserveProp]);
 
   const detailLines = Array.isArray(reserve?.lines)
-    ? reserve.lines.filter(
-        (l) =>
-          l?.productId != null &&
-          (l.lineKind === 'component' || l.lineKind === 'kit_whole' || l.lineKind === 'product')
-      )
+    ? reserve.lines.filter((l) => Math.max(0, Number(l.needQty) || 0) > 0)
     : [];
 
   useEffect(() => {
@@ -171,6 +167,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
         <ul style={{ margin: '12px 0 0', padding: 0, listStyle: 'none', fontSize: 13 }}>
           {detailLines.map((line) => {
             const pid = line.productId;
+            const canReserve = pid != null && Number(pid) > 0;
             const key = orderReserveLineKey(line);
             const { reserved: r, need: n, remaining } = lineReserveBounds(line);
             const lineHas = r > 0;
@@ -182,7 +179,11 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
               (line.offerId || line.offer_id
                 ? `Арт. ${line.offerId || line.offer_id}`
                 : null) ||
-              (line.lineKind === 'component' ? `Комплектующая #${pid}` : `Товар #${pid}`);
+              (line.lineKind === 'component'
+                ? `Комплектующая${pid ? ` #${pid}` : ''}`
+                : pid
+                  ? `Товар #${pid}`
+                  : 'Позиция без привязки к товару');
             const qtyVal = lineQty[key] ?? (lineHas ? 1 : Math.min(1, maxQty || 1));
             return (
               <li
@@ -191,6 +192,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
               >
                 <span className="order-reserve-line__title">
                   {title}: <strong>{r}</strong> из {n}
+                  {!canReserve ? (
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}> — привяжите товар в каталоге</span>
+                  ) : null}
                 </span>
                 <div className="order-reserve-line__actions">
                   <label className="order-reserve-line__qty">
@@ -201,7 +205,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                       min={1}
                       max={maxQty > 0 ? maxQty : 1}
                       value={maxQty > 0 ? qtyVal : 0}
-                      disabled={loading || lineLoadingKey === key || maxQty <= 0}
+                      disabled={loading || lineLoadingKey === key || maxQty <= 0 || !canReserve}
                       onChange={(e) =>
                         setLineQty((prev) => ({
                           ...prev,
@@ -214,7 +218,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                   <Button
                     variant={lineHas ? 'secondary' : 'primary'}
                     size="small"
-                    disabled={loading || lineLoadingKey === key || maxQty <= 0}
+                    disabled={loading || lineLoadingKey === key || maxQty <= 0 || !canReserve}
                     onClick={() =>
                       handleLineAction(line, lineHas ? 'unreserve' : 'reserve')
                     }
@@ -464,6 +468,34 @@ export function OrderDetail() {
   );
 }
 
+/** Все позиции заказа из локальной БД (для многотоварных заказов YM/Ozon/WB). */
+function LocalOrderLinesSection({ localLines }) {
+  const lines = Array.isArray(localLines) ? localLines : [];
+  if (!lines.length) return null;
+  return (
+    <section className="order-detail-section">
+      <h3>Товары в системе{lines.length > 1 ? ` (${lines.length})` : ''}</h3>
+      <ul className="order-detail-products">
+        {lines.map((line, i) => {
+          const pid = line.productId ?? line.product_id;
+          const name = line.productName || line.product_name || line.offerId || '—';
+          const art = line.offerId ?? line.marketplaceSku ?? '—';
+          return (
+            <li key={line.orderLineId ?? line.order_line_id ?? i}>
+              <ProductTitleLink productId={pid}>
+                <strong>{name}</strong>
+              </ProductTitleLink>
+              <br />
+              Артикул: {art}
+              {line.quantity != null ? `, кол-во: ${line.quantity}` : ''}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 /** Контент деталей заказа по данным API (для использования в модалке на странице заказов) */
 export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange }) {
   if (!data) return null;
@@ -508,11 +540,14 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
         </dl>
       </section>
     ) : null;
+  const localLinesBlock =
+    localLines?.length > 0 ? <LocalOrderLinesSection localLines={localLines} /> : null;
   if (mpNorm === 'ozon' && detail)
     return (
       <>
         {reserveBlock}
         {assemblyBlock}
+        {localLinesBlock}
         <OzonDetail detail={detail} localLines={localLines} />
       </>
     );
@@ -521,6 +556,7 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
       <>
         {reserveBlock}
         {assemblyBlock}
+        {localLinesBlock}
         {data.fromLocal && (
           <p className="order-detail-local-hint" style={{ marginBottom: 12, fontSize: 13, color: 'var(--muted)' }}>
             Детали с маркетплейса доступны только для заказов в статусе «Новый». Показаны сохранённые данные.
@@ -535,6 +571,7 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
       <>
         {reserveBlock}
         {assemblyBlock}
+        {localLinesBlock}
         {data.fromLocal && (
           <p className="order-detail-local-hint" style={{ marginBottom: 12, fontSize: 13, color: 'var(--muted)' }}>
             Заказ не найден в API маркетплейса. Показаны сохранённые в системе данные.

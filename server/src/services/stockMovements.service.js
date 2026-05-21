@@ -190,9 +190,11 @@ class StockMovementsService {
     try {
       await client.query('BEGIN');
       await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [idNum]);
+      // Сериализация резерва по product_id (incoming и журнал — глобальные).
+      await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [idNum]);
 
       const {
-        getReservableSupplyUnitsWithClient,
+        getProductSupplySnapshotWithClient,
         getReservedQuantityFromMovementsWithClient
       } = await import('./sellableQuantity.service.js');
       const journalBeforeGlobal = await getReservedQuantityFromMovementsWithClient(client, idNum);
@@ -205,12 +207,12 @@ class StockMovementsService {
 
       if (type === 'reserve' && safeDelta < 0) {
         const reserveAdd = Math.abs(safeDelta);
-        const availableForReserve = await getReservableSupplyUnitsWithClient(client, idNum, {
-          warehouseId
-        });
-        if (reserveAdd > availableForReserve) {
+        const supply = await getProductSupplySnapshotWithClient(client, idNum);
+        if (supply.reservedRaw + reserveAdd > supply.supplyCap) {
           const err = new Error(
-            `Недостаточно остатка для резерва (доступно без поставщиков: ${availableForReserve}, запрошено: ${reserveAdd})`
+            `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
+              `уже зарезервировано ${supply.reservedRaw}, запрошено ${reserveAdd} ` +
+              `(доступно без поставщиков: ${supply.available})`
           );
           err.statusCode = 400;
           throw err;
@@ -267,18 +269,8 @@ class StockMovementsService {
       client.release();
     }
 
-    // После снятия резерва не вызываем trimExcess — иначе снимается резерв у других заказов на этот же SKU.
-    if (type === 'reserve') {
-      try {
-        const { default: ordersService } = await import('./orders.service.js');
-        await ordersService.trimExcessReservesForProduct(idNum, {
-          reason: 'Снятие избыточного резерва (превышен склад + «в пути»)',
-          meta: { from_stock_movement_type: type }
-        });
-      } catch {
-        /* не блокируем */
-      }
-    }
+    // После reserve не вызываем trimExcessReservesForProduct: перерезерв нужно отклонять,
+    // а не снимать резерв у других заказов (trim остаётся только на приёмку/отгрузку и т.п.).
 
     const productAfter = await this.productsRepository.findById(idNum);
     const totalAfter = productAfter?.quantity != null ? Number(productAfter.quantity) : 0;

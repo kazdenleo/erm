@@ -16,6 +16,7 @@ const ELEMENT_TYPES = [
   { type: 'name', label: 'Название товара' },
   { type: 'sku', label: 'SKU (артикул)' },
   { type: 'barcode', label: 'Штрихкод' },
+  { type: 'kit_components', label: 'Комплектующие (только комплект)' },
   { type: 'attribute', label: 'Атрибут карточки' },
 ];
 
@@ -309,6 +310,21 @@ export function LabelConstructor() {
     });
   };
 
+  const addKitComponentsElement = () => {
+    if (hasElementType(form.elements, 'kit_components')) return;
+    appendElement({
+      id: 'kit_components',
+      type: 'kit_components',
+      enabled: true,
+      fontSize: 8,
+      titleFontSize: 8,
+      showTitle: true,
+      showQuantity: true,
+      showSku: true,
+      showName: true,
+    });
+  };
+
   const addProductFieldElement = () => {
     const first = LABEL_PRODUCT_FIELDS[0];
     if (!first) return;
@@ -492,7 +508,9 @@ export function LabelConstructor() {
                 ))}
               </div>
               <p className="label-constructor-hint" style={{ marginTop: 8 }}>
-                «Между строками» — расстояние между строками внутри блока и между полями на этикетке.
+                «Между строками» — интервал внутри перенесённого текста (название, атрибуты) и отступ между
+                полями (название, SKU, штрихкод). Для проверки переноса выберите товар с длинным названием
+                или увеличьте шрифт названия.
               </p>
             </fieldset>
 
@@ -549,6 +567,7 @@ export function LabelConstructor() {
                       </label>
                       {el.type === 'name' ||
                       el.type === 'sku' ||
+                      el.type === 'kit_components' ||
                       el.type === 'attribute' ||
                       el.type === 'product_field' ? (
                         <label className="label-constructor-mini">
@@ -600,6 +619,42 @@ export function LabelConstructor() {
                               />
                             </label>
                           ) : null}
+                        </>
+                      ) : null}
+                      {el.type === 'kit_components' ? (
+                        <>
+                          <label className="label-constructor-mini">
+                            <input
+                              type="checkbox"
+                              checked={el.showTitle !== false}
+                              onChange={(e) => updateElement(idx, { showTitle: e.target.checked })}
+                            />
+                            Заголовок «Состав:»
+                          </label>
+                          <label className="label-constructor-mini">
+                            <input
+                              type="checkbox"
+                              checked={el.showQuantity !== false}
+                              onChange={(e) => updateElement(idx, { showQuantity: e.target.checked })}
+                            />
+                            Количество
+                          </label>
+                          <label className="label-constructor-mini">
+                            <input
+                              type="checkbox"
+                              checked={el.showSku !== false}
+                              onChange={(e) => updateElement(idx, { showSku: e.target.checked })}
+                            />
+                            SKU
+                          </label>
+                          <label className="label-constructor-mini">
+                            <input
+                              type="checkbox"
+                              checked={el.showName !== false}
+                              onChange={(e) => updateElement(idx, { showName: e.target.checked })}
+                            />
+                            Название
+                          </label>
                         </>
                       ) : null}
                       {el.type === 'attribute' ? (
@@ -680,6 +735,16 @@ export function LabelConstructor() {
                     + Штрихкод
                   </button>
                 ) : null}
+                {!hasElementType(form.elements, 'kit_components') ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={addKitComponentsElement}
+                    title="Печатается только для товаров типа «Комплект» с указанным составом"
+                  >
+                    + Комплектующие
+                  </button>
+                ) : null}
                 {availableAttributes.length > 0 ? (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={addAttributeElement}>
                     + Добавить атрибут
@@ -698,8 +763,9 @@ export function LabelConstructor() {
                 </button>
               </div>
               <p className="text-muted small mt-2 mb-0">
-                Поля карточки: габариты, бренд, категория и др. Не выводятся описание, фото, % выкупа, себестоимость,
-                доп. расходы и мин. чистая прибыль.
+                Поля карточки: габариты, бренд, категория и др. Блок «Комплектующие» выводится только у комплектов с
+                составом в карточке товара. Не выводятся описание, фото, % выкупа, себестоимость, доп. расходы и мин.
+                чистая прибыль.
               </p>
             </fieldset>
 
@@ -755,8 +821,8 @@ export function LabelConstructor() {
               ) : null}
             </div>
             <p className="label-constructor-hint">
-              Предпросмотр увеличен для наглядности. На этикетке — только атрибуты категории с заполненным
-              значением в карточке товара.
+              Предпросмотр увеличен для наглядности. Атрибуты — только с заполненным значением. Для блока комплектующих
+              выберите комплект в списке или смотрите пример с тестовым составом.
             </p>
           </aside>
           </div>

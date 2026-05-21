@@ -62,18 +62,35 @@ export function marketplaceOrderIdForApi(ordersOrId, marketplace) {
   }
   const list = Array.isArray(ordersOrId) ? ordersOrId : null;
   if (list?.length) {
+    const mp = normalizeMarketplaceForUI(marketplace ?? list[0]?.marketplace);
+    const gid = list
+      .map((o) => o?.orderGroupId ?? o?.order_group_id)
+      .find((g) => g != null && String(g).trim() !== '');
+    if (mp === 'manual' && gid) return String(gid).trim();
+    if (mp === 'ozon' && gid) {
+      const g = String(gid).trim();
+      const t = g.indexOf('~');
+      return t > 0 ? g.slice(0, t) : g;
+    }
     for (const o of list) {
-      const id = marketplaceOrderIdForApi(o?.orderId ?? o?.order_id, marketplace ?? o?.marketplace);
+      const id = marketplaceOrderIdForApi(o?.orderId ?? o?.order_id, mp);
       if (id) return id;
     }
     return '';
   }
   const mp = normalizeMarketplaceForUI(marketplace);
-  const oid = String(ordersOrId ?? '').trim();
+  let oid = String(ordersOrId ?? '').trim();
   if (!oid) return oid;
   if (mp === 'yandex') {
     const i = oid.indexOf(':');
     if (i >= 0) return oid.slice(0, i);
+  }
+  if (mp === 'ozon') {
+    const t = oid.indexOf('~');
+    if (t > 0) oid = oid.slice(0, t);
+  }
+  if (mp === 'manual' && /^manual-\d+-[a-z0-9]+-\d+$/i.test(oid)) {
+    oid = oid.replace(/-\d+$/i, '');
   }
   return oid;
 }

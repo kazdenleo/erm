@@ -32,16 +32,25 @@ export function useProductLabelPrint(printHelperUrl = '') {
   const [printing, setPrinting] = useState(false);
 
   const printProductLabel = useCallback(
-    async (productId) => {
+    async (productId, options = {}) => {
       const id = productId != null ? String(productId).trim() : '';
-      if (!id) return;
+      if (!id) return false;
+
+      const copiesRaw = Number(options.copies);
+      const copies =
+        Number.isFinite(copiesRaw) && copiesRaw >= 1
+          ? Math.min(99, Math.floor(copiesRaw))
+          : 1;
 
       setPrinting(true);
       setError(null);
 
-      const labelPrintPageUrl = `/print/product-label/${encodeURIComponent(id)}`;
+      const copiesQuery = copies > 1 ? `?copies=${copies}` : '';
+      const labelPrintPageUrl = `/print/product-label/${encodeURIComponent(id)}${copiesQuery}`;
       const labelFilePath = `/products/${encodeURIComponent(id)}/label`;
-      const labelFileUrl = `${resolveApiBaseUrl()}${labelFilePath}?format=png`;
+      const labelQuery = new URLSearchParams({ format: 'pdf' });
+      if (copies > 1) labelQuery.set('copies', String(copies));
+      const labelFileUrl = `${resolveApiBaseUrl()}${labelFilePath}?${labelQuery.toString()}`;
 
       let printWindow = null;
       const labelFileUrlAbs = (() => {
@@ -66,9 +75,10 @@ export function useProductLabelPrint(printHelperUrl = '') {
 
       try {
         await api.get(labelFilePath, {
+          params: { format: 'pdf', copies },
           responseType: 'blob',
           timeout: PRINT_HELPER_FETCH_MS,
-          headers: { Accept: 'image/png' },
+          headers: { Accept: 'application/pdf' },
         });
       } catch (e) {
         const status = e?.response?.status || 0;
@@ -86,7 +96,7 @@ export function useProductLabelPrint(printHelperUrl = '') {
         } catch {
           /* ignore */
         }
-        return;
+        return false;
       }
 
       if (!willUseHelper) {
@@ -94,39 +104,43 @@ export function useProductLabelPrint(printHelperUrl = '') {
           if (printWindow && !printWindow.closed) {
             printWindow.location.href = labelPrintPageUrl;
             setPrinting(false);
-            return;
+            return true;
           }
         } catch {
           /* ignore */
         }
         openPrintFallbackPage(labelPrintPageUrl);
         setPrinting(false);
-        return;
+        return true;
       }
 
       const labelSize = getStoredLabelSize();
+      let helperFailed = false;
       const helperUrl = `${base}/print?orderId=product-${encodeURIComponent(id)}&labelUrl=${encodeURIComponent(labelFileUrlAbs)}&labelSize=${encodeURIComponent(labelSize)}`;
-
       const ac = new AbortController();
       const t = setTimeout(() => ac.abort(), PRINT_HELPER_FETCH_MS);
       try {
         const r = await fetch(helperUrl, { method: 'GET', mode: 'cors', signal: ac.signal });
-        if (r.ok) {
-          setPrinting(false);
-          return;
+        if (!r.ok) {
+          throw new Error((await r.json().catch(() => ({})))?.message || 'Принтер не ответил');
         }
-        throw new Error((await r.json().catch(() => ({})))?.message || 'Принтер не ответил');
       } catch {
+        helperFailed = true;
+      } finally {
+        clearTimeout(t);
+      }
+
+      if (helperFailed) {
         try {
           if (printWindow && !printWindow.closed) printWindow.close();
         } catch {
           /* ignore */
         }
         openPrintFallbackPage(labelPrintPageUrl);
-      } finally {
-        clearTimeout(t);
-        setPrinting(false);
       }
+
+      setPrinting(false);
+      return !helperFailed;
     },
     [printHelperUrl]
   );

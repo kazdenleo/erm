@@ -13,9 +13,12 @@ import { productsApi } from '../../services/products.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { ProductForm } from '../../components/forms/ProductForm/ProductForm';
+import { ProductLabelPrintModal } from '../../components/products/ProductLabelPrintModal.jsx';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
 import { shouldIgnoreNavigationClick } from '../../utils/navigationClick.js';
+import { useProductLabelPrint } from '../../hooks/useProductLabelPrint.js';
+import { resolveApiBaseUrl } from '../../services/api.js';
 import './Products.css';
 
 /** Текст подсказки со составом комплекта (title / native tooltip) */
@@ -98,6 +101,14 @@ export function Products() {
   const { organizations } = useOrganizations();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+  const [printHelperUrl, setPrintHelperUrl] = useState('');
+  const [labelPrintProduct, setLabelPrintProduct] = useState(null);
+  const {
+    printProductLabel,
+    printing: labelPrinting,
+    error: labelPrintError,
+    setError: setLabelPrintError,
+  } = useProductLabelPrint(printHelperUrl);
   const [isRefreshingStocks, setIsRefreshingStocks] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -151,6 +162,39 @@ export function Products() {
     window.addEventListener('products-nav-click', onNav);
     return () => window.removeEventListener('products-nav-click', onNav);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${resolveApiBaseUrl().replace(/\/$/, '')}/config`)
+      .then((r) => r.json())
+      .then((body) => {
+        if (!cancelled) setPrintHelperUrl((body?.data?.printHelperUrl ?? '').trim());
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openLabelPrintModal = (product) => {
+    setLabelPrintError(null);
+    setLabelPrintProduct(product);
+  };
+
+  const closeLabelPrintModal = () => {
+    if (labelPrinting) return;
+    setLabelPrintProduct(null);
+    setLabelPrintError(null);
+  };
+
+  const handleLabelPrintConfirm = async (copies) => {
+    if (!labelPrintProduct?.id) return;
+    const ok = await printProductLabel(labelPrintProduct.id, { copies });
+    if (ok) {
+      setLabelPrintProduct(null);
+      setLabelPrintError(null);
+    }
+  };
 
   const allVisibleSelected =
     visibleProducts.length > 0 && visibleProducts.every((p) => selectedProductIds.has(String(p.id)));
@@ -1235,6 +1279,20 @@ export function Products() {
                       </td>
                       <td className="product-actions-cell" onClick={(e) => e.stopPropagation()}>
                         <div className="product-actions">
+                          <Button
+                            variant="secondary"
+                            size="small"
+                            onClick={() => openLabelPrintModal(product)}
+                            title={
+                              product.user_category_id || product.userCategoryId || product.categoryId
+                                ? 'Печать этикетки'
+                                : 'Укажите категорию товара для печати этикетки'
+                            }
+                            className="btn-icon btn-icon-only"
+                            aria-label="Печать этикетки"
+                          >
+                            🏷️
+                          </Button>
                           <Button 
                             variant="secondary" 
                             size="small"
@@ -1484,6 +1542,15 @@ export function Products() {
           }
         />
       </Modal>
+
+      <ProductLabelPrintModal
+        isOpen={Boolean(labelPrintProduct)}
+        product={labelPrintProduct}
+        onClose={closeLabelPrintModal}
+        onPrint={handleLabelPrintConfirm}
+        printing={labelPrinting}
+        error={labelPrintError}
+      />
     </div>
   );
 }
