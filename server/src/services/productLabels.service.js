@@ -59,6 +59,9 @@ function escapeXml(s) {
 /** Приблизительная ширина символа для Arial (мм → px уже в fontSize). */
 function estimateCharWidth(fontSize, char) {
   const code = char.charCodeAt(0);
+  if (char === '(' || char === ')') return fontSize * 0.34;
+  if (code >= 65 && code <= 90) return fontSize * 0.62;
+  if (code >= 97 && code <= 122) return fontSize * 0.5;
   if (code > 127 || code === 45 || code === 47) return fontSize * 0.58;
   if (code >= 48 && code <= 57) return fontSize * 0.52;
   return fontSize * 0.48;
@@ -67,22 +70,36 @@ function estimateCharWidth(fontSize, char) {
 function measureTextWidth(text, fontSize, bold = false) {
   let w = 0;
   for (const ch of String(text)) w += estimateCharWidth(fontSize, ch);
-  return w * (bold ? 1.08 : 1);
+  return w * (bold ? 1.12 : 1.02);
 }
+
+/** Слова и фрагменты в скобках — отдельные единицы переноса (чтобы «(БМВ 5)» не рвалось). */
+function tokenizeWrapUnits(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  const units = [];
+  const re = /\([^)]*\)|\S+/gu;
+  let m;
+  while ((m = re.exec(raw)) !== null) units.push(m[0]);
+  return units;
+}
+
+const MAX_WORD_LEN_WITHOUT_CHAR_BREAK = 14;
 
 function wrapTextLines(text, maxWidthPx, fontSize, bold = false) {
   const raw = String(text || '').trim();
   if (!raw) return [];
-  if (measureTextWidth(raw, fontSize, bold) <= maxWidthPx) return [raw];
+  const limit = Math.max(1, Math.floor(maxWidthPx * 0.97));
+  if (measureTextWidth(raw, fontSize, bold) <= limit) return [raw];
 
   const lines = [];
-  const words = raw.split(/\s+/).filter(Boolean);
+  const words = tokenizeWrapUnits(raw);
 
   const pushBrokenWord = (word) => {
     let chunk = '';
     for (const ch of word) {
       const next = chunk + ch;
-      if (chunk && measureTextWidth(next, fontSize, bold) > maxWidthPx) {
+      if (chunk && measureTextWidth(next, fontSize, bold) > limit) {
         lines.push(chunk);
         chunk = ch;
       } else {
@@ -95,12 +112,15 @@ function wrapTextLines(text, maxWidthPx, fontSize, bold = false) {
   let current = '';
   for (const word of words) {
     const candidate = current ? `${current} ${word}` : word;
-    if (measureTextWidth(candidate, fontSize, bold) <= maxWidthPx) {
+    if (measureTextWidth(candidate, fontSize, bold) <= limit) {
       current = candidate;
       continue;
     }
     if (current) lines.push(current);
-    if (measureTextWidth(word, fontSize, bold) > maxWidthPx) {
+    const wordTooWide = measureTextWidth(word, fontSize, bold) > limit;
+    const allowCharBreak =
+      wordTooWide && word.length > MAX_WORD_LEN_WITHOUT_CHAR_BREAK;
+    if (allowCharBreak) {
       pushBrokenWord(word);
       current = '';
     } else {
@@ -108,7 +128,7 @@ function wrapTextLines(text, maxWidthPx, fontSize, bold = false) {
     }
   }
   if (current) lines.push(current);
-  return lines.length ? lines : [raw.slice(0, Math.max(1, Math.floor(maxWidthPx / (fontSize * 0.55))))];
+  return lines.length ? lines : [raw.slice(0, Math.max(1, Math.floor(limit / (fontSize * 0.55))))];
 }
 
 function resolveLineGapPx(template, mmToPx) {
