@@ -819,6 +819,7 @@ export function WarehouseStocks() {
   const listBootstrappedRef = useRef(false);
   const [historyProduct, setHistoryProduct] = useState(null);
   const [historyList, setHistoryList] = useState([]);
+  const [historyNetReserved, setHistoryNetReserved] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [reserveModalOpen, setReserveModalOpen] = useState(false);
   /** Товар, для которого открыта модалка резерва (таблица или история). */
@@ -1343,6 +1344,7 @@ export function WarehouseStocks() {
   useEffect(() => {
     if (!historyProduct) {
       setHistoryList([]);
+      setHistoryNetReserved(null);
       return;
     }
     let cancelled = false;
@@ -1350,17 +1352,30 @@ export function WarehouseStocks() {
     stockMovementsApi.getHistory(historyProduct.id, { limit: 100 })
       .then(res => {
         if (cancelled) return;
-        const list = res?.data ?? res ?? [];
+        const list = res?.data ?? (Array.isArray(res) ? res : []);
         setHistoryList(Array.isArray(list) ? list : []);
+        const net =
+          res?.netReserved != null
+            ? Number(res.netReserved)
+            : res?.net_reserved != null
+              ? Number(res.net_reserved)
+              : null;
+        setHistoryNetReserved(Number.isFinite(net) ? net : null);
+        if (Number.isFinite(net)) {
+          loadListRef.current?.({ page: currentPage, silent: true });
+        }
       })
       .catch(() => {
-        if (!cancelled) setHistoryList([]);
+        if (!cancelled) {
+          setHistoryList([]);
+          setHistoryNetReserved(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setHistoryLoading(false);
       });
     return () => { cancelled = true; };
-  }, [historyProduct]);
+  }, [historyProduct, currentPage]);
 
   const displayHistoryRows = useMemo(() => {
     const visible = historyList.filter(
@@ -1514,7 +1529,14 @@ export function WarehouseStocks() {
     const built = buildStockRowsWithKits(products, (product) => {
       const onHand = Number(product.quantity ?? 0) || 0;
       const incoming = Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0;
-      const reserved = Number(product.reserved_quantity ?? product.reservedQuantity ?? 0) || 0;
+      const reserved =
+        Number(
+          product.net_reserved_quantity ??
+            product.netReservedQuantity ??
+            product.reserved_quantity ??
+            product.reservedQuantity ??
+            0
+        ) || 0;
       const allDetails = supplierBreakdownByProductId[String(product.id)] || [];
       const supplierDetails = enrichSupplierDetailsLabels(
         allDetails,
@@ -1931,6 +1953,15 @@ export function WarehouseStocks() {
         ) : historyList.length === 0 ? (
           <p className="stock-levels-history-empty">Нет записей об изменениях остатков.</p>
         ) : (
+          <>
+            {historyNetReserved != null && (
+              <p className="stock-levels-history-net-reserved text-muted small" style={{ marginBottom: 8 }}>
+                Сейчас в резерве по журналу: <strong>{historyNetReserved}</strong>
+                {historyNetReserved !== (Number(historyProduct?.reserved_quantity ?? historyProduct?.reservedQuantity) || 0)
+                  ? ' (таблица остатков обновлена)'
+                  : ''}
+              </p>
+            )}
           <div className="stock-levels-history-table-wrap">
             <table className="stock-levels-table table stock-levels-history-table">
               <colgroup>

@@ -504,27 +504,33 @@ class ProductsRepositoryPG {
       ctx = await buildKitListStockContext(products, options);
     }
 
+    const { getReservedQuantityFromMovements } = await import('../services/sellableQuantity.service.js');
+    const skipKitCatalog = options.skipKitCatalog === true;
+
     for (const p of products) {
       const key = productIdMapKey(p.id);
       const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
-      let calc = key && byPid.has(key) ? byPid.get(key) : 0;
+      if (skipKitCatalog && isKitCatalogProduct(p)) continue;
+
+      let calc = 0;
       if (isKitCatalogProduct(p)) {
         if (Number.isFinite(nid) && nid > 0) {
           calc = ctx
             ? kitDisplayReservedFromContext(nid, ctx)
             : await readKitDisplayReservedQuantity(nid, options);
-        } else {
-          calc = 0;
         }
+      } else if (Number.isFinite(nid) && nid > 0) {
+        calc = key && byPid.has(key) ? byPid.get(key) : await getReservedQuantityFromMovements(nid);
       }
+
       const stored = p.reserved_quantity != null ? Number(p.reserved_quantity) : 0;
       p.reserved_quantity = calc;
-      if (stored !== calc) {
-        const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
-        if (Number.isFinite(nid) && nid > 0) {
-          idsToUpdate.push(nid);
-          rvsToUpdate.push(calc);
-        }
+      p.net_reserved_quantity = calc;
+      p.reservedQuantity = calc;
+      p.netReservedQuantity = calc;
+      if (stored !== calc && Number.isFinite(nid) && nid > 0) {
+        idsToUpdate.push(nid);
+        rvsToUpdate.push(calc);
       }
     }
 
@@ -1048,15 +1054,15 @@ class ProductsRepositoryPG {
     const hasKits = products.some((p) => isKitCatalogProduct(p));
     const kitCtx = hasKits ? await buildKitListStockContext(products, options) : null;
 
-    await this._reconcileReservedQuantityFromMovements(
-      products,
-      { ...options, persistReservedToDb: true },
-      kitCtx
-    );
-
     if (hasKits && kitCtx) {
       await attachKitDisplayMetrics(products, { ...options, _kitCtx: kitCtx });
     }
+
+    await this._reconcileReservedQuantityFromMovements(
+      products,
+      { ...options, persistReservedToDb: true, skipKitCatalog: hasKits && !!kitCtx },
+      kitCtx
+    );
 
     return products;
   }
