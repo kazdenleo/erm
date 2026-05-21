@@ -279,7 +279,7 @@ function appendWrappedTextSvg(blocks, {
 
   const fontFamily =
     textAnchor === 'middle'
-      ? 'Consolas, "Courier New", monospace'
+      ? "Consolas, 'Courier New', monospace"
       : 'Arial, sans-serif';
   blocks.push(
     `<text x="${xAttr}" y="${firstBaseline}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fill}"${anchorAttr}>${tspans.join('')}</text>`
