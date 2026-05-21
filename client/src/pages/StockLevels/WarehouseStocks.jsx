@@ -2114,6 +2114,7 @@ export function WarehouseStocks() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Modal>
 
