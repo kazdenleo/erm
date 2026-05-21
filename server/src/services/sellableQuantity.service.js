@@ -7,31 +7,13 @@
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { isKitProductId, readKitMarketplaceStockFromDb, readKitStockFromDb } from './kitStock.service.js';
+import {
+  NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
+  NET_RESERVED_SUM_EXPR_SQL,
+  RAW_RESERVED_SUM_EXPR_SQL,
+} from '../constants/netReservedStockSql.js';
 
-/**
- * Вклад одной строки журнала в нетто-резерв.
- * Поддерживает оба знака quantity_change: новые reserve (−) / unreserve (+) и legacy reserve (+).
- */
-export const NET_RESERVED_MOVEMENT_ROW_CASE_SQL = `
-          CASE
-            WHEN type = 'reserve' THEN
-              CASE
-                WHEN quantity_change < 0 THEN -(quantity_change::numeric)
-                ELSE (quantity_change::numeric)
-              END
-            WHEN type = 'unreserve' THEN
-              CASE
-                WHEN quantity_change > 0 THEN -(quantity_change::numeric)
-                ELSE (quantity_change::numeric)
-              END
-            ELSE 0
-          END`;
-
-/** GREATEST(0, SUM(...)) для агрегата по product_id. */
-export const NET_RESERVED_SUM_EXPR_SQL = `GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))`;
-
-/** Сырой нетто-резерв без GREATEST(0, …) — для жёсткой проверки лимита резерва. */
-export const RAW_RESERVED_SUM_EXPR_SQL = `COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)`;
+export { NET_RESERVED_MOVEMENT_ROW_CASE_SQL, NET_RESERVED_SUM_EXPR_SQL, RAW_RESERVED_SUM_EXPR_SQL };
 
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
 export async function getReservedQuantityFromMovements(productId) {

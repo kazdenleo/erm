@@ -6,11 +6,11 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import { NET_RESERVED_SUM_EXPR_SQL } from '../constants/netReservedStockSql.js';
 import {
   computeAvailableQuantity,
   getReservedQuantityFromMovements,
   getReservableSupplyUnits,
-  NET_RESERVED_SUM_EXPR_SQL
 } from './sellableQuantity.service.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
 import logger from '../utils/logger.js';

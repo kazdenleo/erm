@@ -4,7 +4,7 @@
  */
 
 import { query } from '../config/database.js';
-import { NET_RESERVED_SUM_EXPR_SQL } from '../services/sellableQuantity.service.js';
+import { NET_RESERVED_SUM_EXPR_SQL } from '../constants/netReservedStockSql.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
