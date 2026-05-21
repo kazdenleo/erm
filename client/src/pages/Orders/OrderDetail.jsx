@@ -672,14 +672,17 @@ export function OzonDetail({ detail, localLines }) {
 export function OrderSummaryFromList({ orders, marketplace, onReserveChange }) {
   const mpName = marketplaceNames[marketplace] || marketplace;
   const orderId = marketplaceOrderIdForApi(orders, marketplace);
+  const lineNeed = (o) => Math.max(1, Number(o.needQty ?? o.need_qty ?? o.quantity) || 1);
   const reserveFromList =
     orders?.length > 0
       ? {
           reservedQty: orders.reduce((s, o) => s + (Number(o.reservedQty ?? o.reserved_qty) || 0), 0),
-          needQty: orders.reduce((s, o) => s + Math.max(1, Number(o.quantity) || 1), 0),
+          needQty: orders.reduce((s, o) => s + lineNeed(o), 0),
           hasReserve: orders.some((o) => (Number(o.reservedQty ?? o.reserved_qty) || 0) > 0),
-          /** Без lines — панель подтянет детализацию с API; сводка X/Y уже по всем строкам заказа */
-          lines: []
+          lines: orders.flatMap((o) => {
+            const rl = o.reserveLines ?? o.reserve_lines;
+            return Array.isArray(rl) ? rl : [];
+          })
         }
       : null;
   return (

@@ -36,6 +36,33 @@ function orderKey(o) {
   return `${mp}|${o.orderId ?? ''}`;
 }
 
+/** Подсказка к бейджу резерва: итого и по каждой позиции / комплектующей. */
+function formatOrderReserveBadgeTitle({ reservedQty, needQty, orders, isGroup }) {
+  const fully =
+    needQty > 0 && reservedQty >= needQty
+      ? ' (полностью)'
+      : '';
+  const head = `Зарезервировано ${reservedQty} из ${needQty}${fully}`;
+  const pool = isGroup ? orders || [] : orders?.length ? [orders[0]] : [];
+  const lines = [];
+  for (const o of pool) {
+    const rl = o.reserveLines ?? o.reserve_lines;
+    if (Array.isArray(rl)) lines.push(...rl);
+  }
+  if (!lines.length) {
+    return `${head}\nТовары и комплектующие по заказу`;
+  }
+  const detail = lines
+    .map((l) => {
+      const label = String(l.label || l.productName || 'Позиция').trim();
+      const r = Number(l.reservedQty) || 0;
+      const n = Number(l.needQty) || 0;
+      return `${label}: ${r}/${n}`;
+    })
+    .join('\n');
+  return `${head}\n${detail}`;
+}
+
 /** Сообщение «на сборку», если поставка WB заведена только в ERM без ключа API */
 function appendLocalWbOnlyAssemblyHint(msg, shipments) {
   if (!Array.isArray(shipments) || !shipments.some((s) => s.localWbOnly)) return msg;
@@ -2415,9 +2442,11 @@ export function Orders() {
                       0
                     )
                   : Number(first.reservedQty ?? first.reserved_qty ?? 0) || 0;
+                const lineNeed = (o) =>
+                  Math.max(1, Number(o.needQty ?? o.need_qty ?? o.quantity) || 1);
                 const needQty = isGroup
-                  ? groupOrders.reduce((s, o) => s + Math.max(1, Number(o.quantity) || 1), 0)
-                  : Number(first.quantity) || 1;
+                  ? groupOrders.reduce((s, o) => s + lineNeed(o), 0)
+                  : lineNeed(first);
                 const showReserveCell = reservedQty > 0;
                 const stickerDisplay = (() => {
                   if (isGroup) {
@@ -2545,7 +2574,12 @@ export function Orders() {
                           fontSize: 12,
                           fontWeight: 600,
                         }}
-                        title={`Резерв под заказ: ${reservedQty} из ${needQty}`}
+                        title={formatOrderReserveBadgeTitle({
+                          reservedQty,
+                          needQty,
+                          orders: groupOrders,
+                          isGroup,
+                        })}
                       >
                         {reservedQty}/{needQty}
                       </span>

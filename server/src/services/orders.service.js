@@ -1172,8 +1172,8 @@ class OrdersService {
   }
 
   /**
-   * reservedQty / hasReserve из журнала (как на «Остатках»).
-   * Комплект — целые единицы; обычный товар — нетто по product_id и order_id.
+   * reservedQty / needQty для списка заказов: сумма по SKU и комплектующим (не SQL по order_id).
+   * reserveLines — разбивка для подсказки «артикул: зарезервировано/нужно».
    */
   async enrichOrdersReserveMetrics(orders) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders)) return orders;
@@ -1181,21 +1181,14 @@ class OrdersService {
       try {
         const orderDbId = orderRowDbId(o);
         if (!orderDbId) continue;
-        const productId = await this._resolveProductIdForOrderStock(o);
-        const pid = Number(productId);
-        let reserved = 0;
-        if (Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
-          reserved = await getReservedKitUnitsForOrder(pid, orderDbId);
-        } else if (Number.isFinite(pid) && pid > 0) {
-          reserved = await this._getReservedQtyForOrderProduct(orderDbId, pid);
-        } else {
-          reserved = await this._getReservedQtyForOrder(orderDbId);
-        }
-        const sqlReserved = Math.max(0, Number(o.reserved_qty ?? o.reservedQty) || 0);
-        const net = Math.max(sqlReserved, reserved);
-        o.reservedQty = net;
-        o.reserved_qty = net;
-        o.hasReserve = net > 0;
+        const sum = await this._summarizeReserveForRows([o]);
+        o.reservedQty = sum.reservedQty;
+        o.reserved_qty = sum.reservedQty;
+        o.needQty = sum.needQty;
+        o.need_qty = sum.needQty;
+        o.hasReserve = sum.hasReserve;
+        o.fullyReserved = sum.fullyReserved;
+        o.reserveLines = sum.lines;
       } catch {
         /* ignore */
       }
