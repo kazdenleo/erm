@@ -137,6 +137,102 @@ function resolveLineGapPx(template, mmToPx) {
   return Math.round(lineGapMm * mmToPx);
 }
 
+function textBlockHeight(lineCount, fontSize, lineGapPx) {
+  if (lineCount <= 0) return 0;
+  const lineStep = fontSize + Math.max(0, lineGapPx);
+  return fontSize + (lineCount - 1) * lineStep;
+}
+
+function trimLineWithEllipsis(line, maxWidthPx, fontSize, bold) {
+  const ell = '…';
+  const raw = String(line || '');
+  if (measureTextWidth(`${raw}${ell}`, fontSize, bold) <= maxWidthPx) return `${raw}${ell}`;
+  let s = raw;
+  while (s.length > 0 && measureTextWidth(`${s}${ell}`, fontSize, bold) > maxWidthPx) {
+    s = s.slice(0, -1);
+  }
+  return `${s}${ell}`;
+}
+
+function maxTextLinesForHeight(y, maxY, fontSize, lineGapPx) {
+  const lineStep = fontSize + Math.max(0, lineGapPx);
+  if (maxY <= y + fontSize) return 0;
+  return Math.max(1, Math.floor((maxY - y - fontSize) / lineStep) + 1);
+}
+
+/**
+ * Минимальная высота блока (px) для планирования раскладки этикетки.
+ */
+function estimateElementMinHeight(el, ctx) {
+  const { mmToPx, lineGapPx, blockGap, innerW, barcodeValue, product, attrValues, attributeNames, catAttrSet } =
+    ctx;
+  const gap = blockGap;
+
+  if (el.type === 'barcode') {
+    if (!barcodeValue) return 0;
+    const hMm = Number(el.heightMm) || 12;
+    const hPx = Math.round(hMm * mmToPx);
+    const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, 14);
+    const textUnderH = el.showText !== false ? digitFs + 4 : 0;
+    return hPx + (textUnderH ? 2 + textUnderH : 0) + gap;
+  }
+
+  if (el.type === 'sku') {
+    const sku = String(product?.sku || '').trim();
+    if (!sku) return 0;
+    const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
+    return textBlockHeight(1, fs, lineGapPx) + gap;
+  }
+
+  if (el.type === 'attribute' && el.attributeId != null) {
+    const aid = String(el.attributeId);
+    if (catAttrSet && !catAttrSet.has(aid)) return 0;
+    const val = attrValues[aid] ?? attrValues[Number(aid)];
+    if (val == null || String(val).trim() === '') return 0;
+    const fs = resolveFontSizePx(el.fontSize, mmToPx);
+    const attrName = attributeNames[aid] || attributeNames[Number(aid)] || '';
+    const label = el.showName !== false && attrName ? `${attrName}: ` : '';
+    const lines = wrapTextLines(label + String(val), innerW, fs, false);
+    return textBlockHeight(lines.length, fs, lineGapPx) + gap;
+  }
+
+  if (el.type === 'product_field' && el.fieldKey) {
+    const val = getProductFieldDisplayValue(product, el.fieldKey);
+    if (!val) return 0;
+    const fs = resolveFontSizePx(el.fontSize, mmToPx);
+    const fieldLabel = labelProductFieldLabel(el.fieldKey);
+    const prefix = el.showName !== false && fieldLabel ? `${fieldLabel}: ` : '';
+    const lines = wrapTextLines(prefix + val, innerW, fs, false);
+    return textBlockHeight(lines.length, fs, lineGapPx) + gap;
+  }
+
+  if (el.type === 'kit_components') {
+    const lines = formatKitComponentLines(product, el);
+    if (!lines.length) return 0;
+    const fs = resolveFontSizePx(el.fontSize, mmToPx);
+    const titleFs = resolveFontSizePx(el.titleFontSize ?? fs, mmToPx, 20);
+    let h = 0;
+    if (el.showTitle !== false) {
+      h += textBlockHeight(1, titleFs, lineGapPx) + gap;
+    }
+    for (const line of lines) {
+      const wrapped = wrapTextLines(line, innerW, fs, Boolean(el.bold));
+      h += textBlockHeight(wrapped.length, fs, lineGapPx);
+    }
+    return h + gap;
+  }
+
+  return 0;
+}
+
+function reserveHeightBelow(elements, startIdx, ctx) {
+  let total = 0;
+  for (let i = startIdx + 1; i < elements.length; i += 1) {
+    total += estimateElementMinHeight(elements[i], ctx);
+  }
+  return total;
+}
+
 /**
  * Многострочный текст в SVG (tspan); не выходит за maxY.
  * @returns {number} y после блока (до отступа между полями)
@@ -153,8 +249,9 @@ function appendWrappedTextSvg(blocks, {
   lineGapPx = 0,
   textAnchor = 'start',
 }) {
-  const lines = wrapTextLines(text, maxWidthPx, fontSize, fontWeight === 'bold');
-  if (!lines.length) return y;
+  const bold = fontWeight === 'bold';
+  const allLines = wrapTextLines(text, maxWidthPx, fontSize, bold);
+  if (!allLines.length) return y;
 
   const lineStep = fontSize + Math.max(0, lineGapPx);
   const xAttr = textAnchor === 'middle' ? x + maxWidthPx / 2 : x;
@@ -162,6 +259,12 @@ function appendWrappedTextSvg(blocks, {
   const firstBaseline = y + fontSize;
 
   if (firstBaseline > maxY) return y;
+
+  const maxLines = maxTextLinesForHeight(y, maxY, fontSize, lineGapPx);
+  let lines = allLines.slice(0, maxLines);
+  if (allLines.length > lines.length && lines.length > 0) {
+    lines = [...lines.slice(0, -1), trimLineWithEllipsis(lines[lines.length - 1], maxWidthPx, fontSize, bold)];
+  }
 
   let lineCount = 0;
   const tspans = [];
@@ -348,11 +451,27 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
   const lineGapPx = resolveLineGapPx(template, mmToPx);
   const blockGap = lineGapPx;
 
+  const layoutCtx = {
+    mmToPx,
+    lineGapPx,
+    blockGap,
+    innerW,
+    barcodeValue,
+    product,
+    attrValues,
+    attributeNames,
+    catAttrSet,
+  };
+
   const blocks = [];
   let y = padT;
 
-  for (const el of elements) {
+  for (let elIndex = 0; elIndex < elements.length; elIndex += 1) {
+    const el = elements[elIndex];
     if (y >= maxContentY) break;
+
+    const reservedBelow = reserveHeightBelow(elements, elIndex, layoutCtx);
+    const slotMaxY = maxContentY - reservedBelow;
 
     if (el.type === 'name') {
       const fs = resolveFontSizePx(el.fontSize, mmToPx);
@@ -366,14 +485,14 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
         fontWeight: weight,
         fill: '#000',
         maxWidthPx: innerW,
-        maxY: maxContentY,
+        maxY: Math.max(y + fs, slotMaxY),
         lineGapPx,
       });
       y += blockGap;
     } else if (el.type === 'sku') {
       const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
       const sku = String(product.sku || '').trim();
-      if (sku && y < maxContentY) {
+      if (sku && y < slotMaxY) {
         y = appendWrappedTextSvg(blocks, {
           text: `SKU: ${sku}`,
           x: padL,
@@ -381,18 +500,22 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
           fontSize: fs,
           fill: '#333',
           maxWidthPx: innerW,
-          maxY: maxContentY,
+          maxY: slotMaxY,
           lineGapPx,
         });
         y += blockGap;
       }
     } else if (el.type === 'barcode' && barcodeValue) {
       const hMm = Number(el.heightMm) || 12;
-      const hPx = Math.round(hMm * mmToPx);
+      let hPx = Math.round(hMm * mmToPx);
       const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, 14);
       const textUnderH = el.showText !== false ? digitFs + 4 : 0;
-      const blockH = hPx + (textUnderH ? 2 + textUnderH : 0) + blockGap;
-      if (y + blockH > maxContentY) break;
+      const textGap = textUnderH ? 2 + textUnderH : 0;
+      const minBarcodePx = Math.round(8 * mmToPx);
+      const available = slotMaxY - y - textGap - blockGap;
+      if (available < minBarcodePx) continue;
+
+      hPx = Math.min(hPx, Math.max(minBarcodePx, Math.floor(available)));
 
       const barcodePng = await generateBarcodePng(barcodeValue);
       if (barcodePng) {
@@ -412,7 +535,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
           fontSize: digitFs,
           fill: '#000',
           maxWidthPx: innerW,
-          maxY: maxContentY,
+          maxY: slotMaxY,
           lineGapPx,
           textAnchor: 'middle',
         });
@@ -433,7 +556,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
         fontSize: fs,
         fill: '#222',
         maxWidthPx: innerW,
-        maxY: maxContentY,
+        maxY: slotMaxY,
         lineGapPx,
       });
       y += blockGap;
@@ -450,7 +573,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
         fontSize: fs,
         fill: '#222',
         maxWidthPx: innerW,
-        maxY: maxContentY,
+        maxY: slotMaxY,
         lineGapPx,
       });
       y += blockGap;
@@ -462,7 +585,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
       const titleFs = resolveFontSizePx(el.titleFontSize ?? fs, mmToPx, 20);
       const weight = el.bold ? 'bold' : 'normal';
 
-      if (el.showTitle !== false && y < maxContentY) {
+      if (el.showTitle !== false && y < slotMaxY) {
         y = appendWrappedTextSvg(blocks, {
           text: 'Состав:',
           x: padL,
@@ -471,14 +594,14 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
           fontWeight: 'bold',
           fill: '#000',
           maxWidthPx: innerW,
-          maxY: maxContentY,
+          maxY: slotMaxY,
           lineGapPx,
         });
         y += blockGap;
       }
 
       for (const line of lines) {
-        if (y >= maxContentY) break;
+        if (y >= slotMaxY) break;
         y = appendWrappedTextSvg(blocks, {
           text: line,
           x: padL,
@@ -487,7 +610,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
           fontWeight: weight,
           fill: '#222',
           maxWidthPx: innerW,
-          maxY: maxContentY,
+          maxY: slotMaxY,
           lineGapPx,
         });
       }
