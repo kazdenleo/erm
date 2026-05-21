@@ -4,6 +4,7 @@
  */
 
 import { query } from '../config/database.js';
+import { NET_RESERVED_SUM_EXPR_SQL } from '../services/sellableQuantity.service.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -71,7 +72,14 @@ class StockMovementsRepositoryPG {
       SELECT $1::bigint, $2::varchar(32), $3::int,
              COALESCE(p.quantity, 0)::int,
              COALESCE(p.incoming_quantity, 0)::int,
-             COALESCE(p.reserved_quantity, 0)::int,
+             CASE
+               WHEN $2::varchar IN ('reserve', 'unreserve') THEN COALESCE(p.reserved_quantity, 0)::int
+               ELSE COALESCE((
+                 SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+                 FROM stock_movements sm
+                 WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+               ), COALESCE(p.reserved_quantity, 0), 0)::int
+             END,
              $4, $5::jsonb, $6,
              COALESCE($7::bigint, p.profile_id)
       FROM products p
@@ -80,7 +88,22 @@ class StockMovementsRepositoryPG {
     `;
     const params = [productId, type, quantityChange, reason, metaJson, wh, profOverride];
     const result = await run(sql, params);
-    return result.rows[0] || null;
+    const movement = result.rows[0] || null;
+    const typeNorm = type != null ? String(type).trim().toLowerCase() : '';
+    if (movement && typeNorm !== 'reserve' && typeNorm !== 'unreserve') {
+      await run(
+        `UPDATE products p
+         SET reserved_quantity = COALESCE((
+           SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+           FROM stock_movements sm
+           WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+         ), 0),
+         updated_at = CURRENT_TIMESTAMP
+         WHERE p.id = $1::bigint`,
+        [productId]
+      );
+    }
+    return movement;
   }
 
   /**

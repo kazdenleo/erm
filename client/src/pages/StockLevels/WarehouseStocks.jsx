@@ -477,15 +477,30 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
       if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
     }
     if (t === 'receipt' && /при[её]мка\s+по\s+закупке/i.test(reason)) {
+      const moveQty = Math.max(0, Number(m.quantity_change) || 0);
       const dbInc = movementNum(m, 'incoming_after');
       const dbRes = movementNum(m, 'reserved_after');
       const dbBal = movementNum(m, 'balance_after');
       if (dbInc != null) out.inc = dbInc;
-      else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
-      if (dbRes != null) out.res = dbRes;
-      else if (out.res == null && prevLineBelow?.res != null) out.res = prevLineBelow.res;
+      else if (prevLineBelow?.inc != null && moveQty > 0) {
+        out.inc = Math.max(0, Number(prevLineBelow.inc) - moveQty);
+      } else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
+      const prevRes =
+        prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))
+          ? Number(prevLineBelow.res)
+          : null;
+      // При приёмке резерв не снимается — только перенос из «в пути» в наличие (старые снимки могли писать reserved_after=0).
+      if (prevRes != null && prevRes > 0) {
+        out.res = dbRes != null && dbRes >= prevRes ? dbRes : prevRes;
+      } else if (dbRes != null) {
+        out.res = dbRes;
+      } else if (prevRes != null) {
+        out.res = prevRes;
+      }
       if (dbBal != null) {
         out.bal = dbBal;
+      } else if (prevLineBelow?.bal != null && moveQty > 0) {
+        out.bal = Number(prevLineBelow.bal) + moveQty;
       }
     }
     if (t === 'inventory') {
