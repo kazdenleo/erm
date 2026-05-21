@@ -23,7 +23,10 @@ import {
   buildKitComponentQtyMap,
   getComponentAssemblableUnits
 } from './kitStock.service.js';
-import { NET_RESERVED_SUM_EXPR_SQL } from './sellableQuantity.service.js';
+import {
+  NET_RESERVED_SUM_EXPR_SQL,
+  getProductSupplySnapshotWithClient
+} from './sellableQuantity.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
@@ -1512,7 +1515,8 @@ class OrdersService {
       const components = await getKitComponents(kitId);
       const comp = components.find((c) => Number(c.component_product_id) === pid);
       const perKit = comp ? Math.max(1, parseInt(comp.quantity, 10) || 1) : 1;
-      const compAvail = await getComponentAssemblableUnits(pid);
+      const snap = await getProductSupplySnapshotWithClient(null, pid);
+      const compAvail = snap.available;
       const maxKits = await this._computeMaxKitUnitsReservableForOrder(kitId, warehouseId);
       return Math.max(Math.floor(compAvail), Math.floor(maxKits) * perKit);
     }
@@ -1521,7 +1525,8 @@ class OrdersService {
       return Math.floor(await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId));
     }
 
-    return Math.floor(await getComponentAssemblableUnits(pid));
+    const snap = await getProductSupplySnapshotWithClient(null, pid);
+    return Math.floor(snap.available);
   }
 
   /** Повторная попытка резерва (новый / закупка / после поступления остатка). */
@@ -2492,6 +2497,120 @@ class OrdersService {
     return [...map.values()].sort((a, b) => Number(a.id) - Number(b.id));
   }
 
+  /** Все строки orders для резерва: по ключу заказа + order_group_id + слияние дубликатов. */
+  async _collectOrderRowsForReserve(marketplace, orderId, { profileId = null } = {}) {
+    const oid = orderIdKeyForReserveLookup(marketplace, orderId);
+    if (!oid || !marketplace) return [];
+
+    let rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
+    if (!repositoryFactory.isUsingPostgreSQL()) return rows;
+
+    const map = new Map();
+    const add = (r) => {
+      const id = orderRowDbId(r);
+      if (id != null) map.set(String(id), r);
+    };
+    for (const r of rows) add(r);
+
+    const gids = new Set();
+    for (const r of rows) {
+      const gid = String(r.orderGroupId ?? r.order_group_id ?? '').trim();
+      if (gid) gids.add(gid);
+    }
+    if (!gids.size && oid) gids.add(oid);
+
+    for (const gid of gids) {
+      const groupRows = await this.repository.findByOrderGroupId(gid, profileId);
+      for (const gr of groupRows || []) add(gr);
+    }
+
+    const byKey = await this.repository.findRowsForReserveByOrderKey(marketplace, oid, profileId);
+    for (const r of byKey || []) add(r);
+
+    return [...map.values()].sort((a, b) => Number(a.id) - Number(b.id));
+  }
+
+  /** Позиции из detail API (YM items, Ozon products, WB — одна строка). */
+  _extractDetailLineItems(detail, marketplace) {
+    if (!detail || typeof detail !== 'object') return [];
+    const mp = String(marketplace || '').toLowerCase();
+    if (mp === 'yandex' || mp === 'ym' || mp === 'yandexmarket') {
+      const items = Array.isArray(detail.items) ? detail.items : [];
+      return items.map((it) => ({
+        offerId: it?.offerId ?? it?.offer_id ?? '',
+        name: it?.offerName ?? it?.offer_name ?? it?.name ?? '',
+        count: it?.count ?? it?.quantity ?? 1
+      }));
+    }
+    if (mp === 'ozon') {
+      const products = Array.isArray(detail.products) ? detail.products : [];
+      return products.map((p) => ({
+        offerId: p?.offer_id ?? p?.offerId ?? '',
+        name: p?.name ?? '',
+        count: p?.quantity ?? 1
+      }));
+    }
+    if (mp === 'wildberries' || mp === 'wb') {
+      return [
+        {
+          offerId: detail.article ?? detail.offerId ?? '',
+          name: detail.productName ?? detail.product_name ?? '',
+          count: detail.quantity ?? 1
+        }
+      ];
+    }
+    return [];
+  }
+
+  /** Дополнить резерв позициями из API МП, если в БД ещё одна строка (типично YM до повторного синка). */
+  async _augmentReserveFromDetailItems(summary, marketplace, orderId, rows, { profileId = null } = {}) {
+    if (!rows?.length) return summary;
+    let detailItems = [];
+    try {
+      const { default: ordersSyncService } = await import('./orders.sync.service.js');
+      const pack = await ordersSyncService.getOrderDetail(marketplace, orderId, { profileId });
+      detailItems = this._extractDetailLineItems(pack?.detail, marketplace);
+    } catch {
+      return summary;
+    }
+    if (detailItems.length <= 1) return summary;
+
+    const rowsByOffer = new Map();
+    for (const r of rows) {
+      const off = String(r.offerId ?? r.offer_id ?? '').trim().toLowerCase();
+      if (off) rowsByOffer.set(off, r);
+    }
+
+    const extraRows = [...rows];
+    const baseOid = orderIdKeyForReserveLookup(marketplace, orderId);
+    const gid =
+      String(rows[0]?.orderGroupId ?? rows[0]?.order_group_id ?? '').trim() || baseOid;
+
+    for (const it of detailItems) {
+      const offer = String(it.offerId ?? '').trim();
+      if (!offer) continue;
+      const key = offer.toLowerCase();
+      if (rowsByOffer.has(key)) continue;
+      extraRows.push({
+        marketplace,
+        orderId: `${baseOid}:${offer}`,
+        order_group_id: gid,
+        orderGroupId: gid,
+        offer_id: offer,
+        offerId: offer,
+        product_name: it.name || offer,
+        productName: it.name || offer,
+        quantity: Math.max(1, parseInt(it.count, 10) || 1),
+        product_id: null,
+        productId: null
+      });
+      rowsByOffer.set(key, extraRows[extraRows.length - 1]);
+    }
+
+    if (extraRows.length <= rows.length) return summary;
+    return this._summarizeReserveForRows(extraRows);
+  }
+
   async _findOrderRowsForReserve(marketplace, orderId, { profileId = null } = {}) {
     const oid = orderIdKeyForReserveLookup(marketplace, orderId);
     if (!oid || !marketplace) return [];
@@ -2714,13 +2833,17 @@ class OrdersService {
   }
 
   async getOrderReserveSummary(marketplace, orderId, { profileId = null } = {}) {
-    const rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
+    const rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {
       const err = new Error('Заказ не найден в системе');
       err.statusCode = 404;
       throw err;
     }
-    return this._summarizeReserveForRows(rows);
+    let summary = await this._summarizeReserveForRows(rows);
+    summary = await this._augmentReserveFromDetailItems(summary, marketplace, orderId, rows, {
+      profileId
+    });
+    return summary;
   }
 
   /**
@@ -2744,7 +2867,7 @@ class OrdersService {
       throw err;
     }
 
-    const rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
+    const rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {
       const err = new Error('Заказ не найден в системе');
       err.statusCode = 404;
@@ -2825,8 +2948,10 @@ class OrdersService {
       toAdd = Math.min(toAdd, available);
       if (toAdd <= 0) {
         if (qtyWanted != null && qtyWanted > 0) {
+          const snap = await getProductSupplySnapshotWithClient(null, pid);
           const err = new Error(
-            `Недостаточно остатка для резерва (доступно без поставщиков: ${available}, запрошено: ${qtyWanted})`
+            `Недостаточно остатка для резерва (доступно без поставщиков: ${available}, запрошено: ${qtyWanted}; ` +
+              `на складе ${snap.onHand}, в пути ${snap.incoming}, в резерве ${snap.reserved})`
           );
           err.statusCode = 400;
           throw err;
@@ -2879,7 +3004,7 @@ class OrdersService {
       throw err;
     }
 
-    const rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
+    const rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {
       const err = new Error('Заказ не найден в системе');
       err.statusCode = 404;
@@ -2947,7 +3072,7 @@ class OrdersService {
    * Строки заказа из локальной БД для карточки заказа (product_id → ссылка на каталог).
    */
   async getLocalLinesForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
-    let rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
+    let rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {
       rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
     }

@@ -1213,7 +1213,7 @@ class OrdersSyncService {
         if (e.statusCode !== 404) throw e;
         const localOrder = await getLocalOrderByMarketplaceAndOrderId('yandex', orderId, profileId);
         if (!localOrder) throw e;
-        const detail = buildYandexDetailFromLocalOrder(localOrder);
+        const detail = await buildYandexDetailFromLocalOrder(localOrder, profileId);
         return { marketplace: 'yandex', detail, fromLocal: true };
       }
     }
@@ -2199,11 +2199,21 @@ function buildOzonDetailFromLocalOrder(order, postingNumberHint) {
 }
 
 /** Собрать объект в формате WB detail из локального заказа (для карточки при 404 от API) */
-/** Карточка заказа YM из локальной строки (если GET заказа с МП вернул 404) */
-function buildYandexDetailFromLocalOrder(order) {
+/** Карточка заказа YM из локальных строк (все позиции order_group_id). */
+async function buildYandexDetailFromLocalOrder(order, profileId = null) {
   const oid = order.orderId ?? order.order_id ?? '';
   const baseId = yandexOrderIdForApi(oid);
   const gid = order.orderGroupId ?? order.order_group_id ?? baseId;
+  let itemRows = [order];
+  if (repositoryFactory.isUsingPostgreSQL() && gid) {
+    try {
+      const repo = repositoryFactory.getOrdersRepository();
+      const group = await repo.findByOrderGroupId(String(gid), profileId);
+      if (group?.length) itemRows = group;
+    } catch {
+      /* одна строка */
+    }
+  }
   return {
     id: gid ? Number(gid) || gid : null,
     orderId: gid || baseId,
@@ -2211,14 +2221,12 @@ function buildYandexDetailFromLocalOrder(order) {
     substatus: null,
     creationDate: order.createdAt ?? order.created_at ?? null,
     updatedAt: order.inProcessAt ?? order.in_process_at ?? null,
-    items: [
-      {
-        offerId: order.offerId ?? order.offer_id ?? '',
-        offerName: order.productName ?? order.product_name ?? '—',
-        count: order.quantity != null ? Number(order.quantity) : 1,
-        price: order.price != null ? Number(order.price) : 0
-      }
-    ],
+    items: itemRows.map((r) => ({
+      offerId: r.offerId ?? r.offer_id ?? '',
+      offerName: r.productName ?? r.product_name ?? '—',
+      count: r.quantity != null ? Number(r.quantity) : 1,
+      price: r.price != null ? Number(r.price) : 0
+    })),
     delivery: (order.deliveryAddress || order.delivery_address)
       ? { _localAddress: order.deliveryAddress ?? order.delivery_address }
       : null,

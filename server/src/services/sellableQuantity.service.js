@@ -220,8 +220,8 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
   } catch {
     productQty = 0;
   }
-  // Как в таблице «Остатки на складе»: при pws=0 берём products.quantity (legacy / рассинхрон).
-  const onHand = pwsOnHand > 0 ? pwsOnHand : productQty;
+  // Как в таблице «Остатки на складе»: max(сумма PWS, products.quantity) — при рассинхроне pws=0.
+  const onHand = Math.max(pwsOnHand, productQty);
 
   let incoming = 0;
   try {
