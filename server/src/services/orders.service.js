@@ -2497,7 +2497,9 @@ class OrdersService {
     if (!oid || !marketplace) return [];
 
     if (repositoryFactory.isUsingPostgreSQL()) {
-      let rows = await this.repository.findRowsForReserveByOrderKey(marketplace, oid, profileId);
+      const byKey = await this.repository.findRowsForReserveByOrderKey(marketplace, oid, profileId);
+      const byGroup = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+      let rows = [...byKey, ...byGroup];
       if (!rows.length) {
         rows = await this.repository.findByOrderGroupId(oid, profileId);
       }
@@ -2567,14 +2569,15 @@ class OrdersService {
   }
 
   async _summarizeReserveForRows(rows) {
-    let reservedQty = 0;
-    let needQty = 0;
     const lines = [];
     for (const row of rows || []) {
       const id = orderRowDbId(row);
       const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
       let reserved = 0;
-      const productId = id ? await this._resolveProductIdForOrderStock(row).catch(() => null) : null;
+      let productId = id ? await this._resolveProductIdForOrderStock(row).catch(() => null) : null;
+      if (!productId && id) {
+        productId = await this.resolveProductIdForAssemblyLine(row).catch(() => null);
+      }
       const pid = Number(productId);
       const lineEntries = [];
       const orderLineLabel = await this._orderLineDisplayLabel(row);
@@ -2665,8 +2668,6 @@ class OrdersService {
         });
       }
 
-      reservedQty += reserved;
-      needQty += qty;
       for (const le of lineEntries) {
         lines.push({
           orderLineId: row.orderId ?? row.order_id,
@@ -2677,6 +2678,8 @@ class OrdersService {
         });
       }
     }
+    const needQty = lines.reduce((s, l) => s + (Number(l.needQty) || 0), 0);
+    const reservedQty = lines.reduce((s, l) => s + (Number(l.reservedQty) || 0), 0);
     return {
       hasReserve: reservedQty > 0,
       reservedQty,

@@ -205,12 +205,23 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
   const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
 
   const onHandR = await run(
-    `SELECT COALESCE(SUM(quantity), 0)::int AS quantity
+    `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty
      FROM product_warehouse_stock
      WHERE product_id = $1`,
     [pid]
   );
-  const onHand = Number(onHandR.rows[0]?.quantity ?? 0) || 0;
+  const pwsOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
+  let productQty = 0;
+  try {
+    const pq = await run(`SELECT COALESCE(quantity, 0)::int AS quantity FROM products WHERE id = $1`, [
+      pid
+    ]);
+    productQty = Number(pq.rows[0]?.quantity ?? 0) || 0;
+  } catch {
+    productQty = 0;
+  }
+  // Как в таблице «Остатки на складе»: при pws=0 берём products.quantity (legacy / рассинхрон).
+  const onHand = pwsOnHand > 0 ? pwsOnHand : productQty;
 
   let incoming = 0;
   try {
