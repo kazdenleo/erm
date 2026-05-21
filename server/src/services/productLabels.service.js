@@ -408,16 +408,12 @@ function pickBarcodeScale(bcid, text, targetWidthPx) {
   return Math.max(2, Math.min(6, scale));
 }
 
-async function generateBarcodePng(text, { widthPx, barAreaHeightPx, mmToPx }) {
+async function generateBarcodePng(text, { widthPx, barHeightMm }) {
   const spec = resolveBarcodeSpec(text);
   if (!spec) return null;
 
   const targetW = Math.max(80, Number(widthPx) || 200);
-  const mm = Math.max(MM_TO_PX, Number(mmToPx) || MM_TO_PX);
-  const barMm = Math.min(
-    14,
-    Math.max(8, ((Number(barAreaHeightPx) || 96) / mm) * 0.92)
-  );
+  const barMm = Math.min(40, Math.max(4, Number(barHeightMm) || 12));
 
   let scale = pickBarcodeScale(spec.bcid, spec.text, targetW);
 
@@ -429,7 +425,7 @@ async function generateBarcodePng(text, { widthPx, barAreaHeightPx, mmToPx }) {
         scale,
         height: barMm,
         paddingwidth: 12,
-        paddingheight: 4,
+        paddingheight: 2,
         includetext: false,
         inkspread: 0,
       });
@@ -444,7 +440,7 @@ async function generateBarcodePng(text, { widthPx, barAreaHeightPx, mmToPx }) {
       scale,
       height: barMm,
       paddingwidth: 12,
-      paddingheight: 4,
+      paddingheight: 2,
       includetext: false,
       inkspread: 0,
     });
@@ -453,7 +449,7 @@ async function generateBarcodePng(text, { widthPx, barAreaHeightPx, mmToPx }) {
   }
 }
 
-/** Вписать штрихкод в область без сглаживания (nearest), по центру на белом фоне. */
+/** Вписать штрихкод в область: заполняем высоту слота (heightMm), ширину не растягиваем сверх генерации. */
 async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const slotW = Math.max(10, Math.round(innerW));
   const slotH = Math.max(10, Math.round(hPx));
@@ -461,11 +457,17 @@ async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const meta = await img.metadata();
   if (!meta.width || !meta.height) return null;
 
-  const maxW = slotW - 6;
-  const maxH = slotH - 6;
-  const ratio = Math.min(1, maxW / meta.width, maxH / meta.height);
-  const w = Math.max(1, Math.round(meta.width * ratio));
-  const h = Math.max(1, Math.round(meta.height * ratio));
+  const maxW = slotW - 4;
+  const maxH = slotH - 4;
+
+  let h = maxH;
+  let w = Math.round(meta.width * (h / meta.height));
+  if (w > maxW) {
+    w = maxW;
+    h = Math.round(meta.height * (w / meta.width));
+  }
+  w = Math.max(1, w);
+  h = Math.max(1, h);
 
   const resized = await img.resize({ width: w, height: h, kernel: sharp.kernel.nearest }).png().toBuffer();
   const left = Math.max(0, Math.round((slotW - w) / 2));
@@ -599,11 +601,11 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
       if (available < minBarcodePx) continue;
 
       hPx = Math.min(hPx, Math.max(minBarcodePx, Math.floor(available)));
+      const barHeightMm = hPx / mmToPx;
 
       const barcodePng = await generateBarcodePng(barcodeValue, {
         widthPx: innerW,
-        barAreaHeightPx: hPx,
-        mmToPx,
+        barHeightMm,
       });
       if (barcodePng) {
         const fitted = await fitBarcodePngToSlot(barcodePng, innerW, hPx);
