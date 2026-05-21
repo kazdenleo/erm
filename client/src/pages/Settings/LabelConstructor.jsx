@@ -24,7 +24,7 @@ function defaultElements() {
   return [
     { id: 'name', type: 'name', enabled: true, fontSize: 11, bold: true },
     { id: 'sku', type: 'sku', enabled: true, fontSize: 9 },
-    { id: 'barcode', type: 'barcode', enabled: true, heightMm: 12, showText: true, textFontSize: 8 },
+    { id: 'barcode', type: 'barcode', enabled: true, heightMm: 14, showText: true, textFontSize: 8 },
   ];
 }
 
@@ -337,7 +337,7 @@ export function LabelConstructor() {
       id: 'barcode',
       type: 'barcode',
       enabled: true,
-      heightMm: 12,
+      heightMm: 14,
       showText: true,
       textFontSize: 8,
     });

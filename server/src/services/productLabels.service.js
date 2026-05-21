@@ -306,7 +306,7 @@ export function defaultLabelElements() {
   return [
     { id: 'name', type: 'name', enabled: true, fontSize: 11, bold: true },
     { id: 'sku', type: 'sku', enabled: true, fontSize: 9 },
-    { id: 'barcode', type: 'barcode', enabled: true, heightMm: 12, showText: true, textFontSize: 8 },
+    { id: 'barcode', type: 'barcode', enabled: true, heightMm: 14, showText: true, textFontSize: 8 },
   ];
 }
 
@@ -399,13 +399,13 @@ function estimateBarcodeModules(bcid, text) {
 }
 
 /**
- * Целочисленный scale + quiet zone — как в типовых этикеточных программах (чёткие полосы, поля по краям).
+ * Целочисленный scale: штрихкод ~90–94% ширины этикетки (как в этикеточных программах).
  */
 function pickBarcodeScale(bcid, text, targetWidthPx) {
-  const quietModules = 12;
+  const quietModules = 10;
   const modules = estimateBarcodeModules(bcid, text);
-  const scale = Math.floor((targetWidthPx - 8) / (modules + 2 * quietModules));
-  return Math.max(2, Math.min(6, scale));
+  const scale = Math.floor((targetWidthPx * 0.94) / (modules + 2 * quietModules));
+  return Math.max(2, Math.min(8, scale));
 }
 
 async function generateBarcodePng(text, { widthPx, barHeightMm }) {
@@ -424,14 +424,14 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
         text: spec.text,
         scale,
         height: barMm,
-        paddingwidth: 12,
+        paddingwidth: 10,
         paddingheight: 2,
         includetext: false,
         inkspread: 0,
       });
       const meta = await sharp(buf).metadata();
       if (!meta.width) return buf;
-      if (meta.width >= targetW * 0.72 || scale >= 6) return buf;
+      if (meta.width >= targetW * 0.9 || scale >= 8) return buf;
       scale += 1;
     }
     return await bwipjs.toBuffer({
@@ -439,7 +439,7 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
       text: spec.text,
       scale,
       height: barMm,
-      paddingwidth: 12,
+      paddingwidth: 10,
       paddingheight: 2,
       includetext: false,
       inkspread: 0,
@@ -449,7 +449,7 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
   }
 }
 
-/** Вписать штрихкод в область: заполняем высоту слота (heightMm), ширину не растягиваем сверх генерации. */
+/** Вписать в слот: сначала по ширине (~100% innerW), затем ограничить высотой heightMm. */
 async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const slotW = Math.max(10, Math.round(innerW));
   const slotH = Math.max(10, Math.round(hPx));
@@ -457,14 +457,14 @@ async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
   const meta = await img.metadata();
   if (!meta.width || !meta.height) return null;
 
-  const maxW = slotW - 4;
-  const maxH = slotH - 4;
+  const maxW = slotW - 2;
+  const maxH = slotH - 2;
 
-  let h = maxH;
-  let w = Math.round(meta.width * (h / meta.height));
-  if (w > maxW) {
-    w = maxW;
-    h = Math.round(meta.height * (w / meta.width));
+  let w = maxW;
+  let h = Math.round(meta.height * (w / meta.width));
+  if (h > maxH) {
+    h = maxH;
+    w = Math.round(meta.width * (h / meta.height));
   }
   w = Math.max(1, w);
   h = Math.max(1, h);
