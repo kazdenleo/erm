@@ -794,14 +794,33 @@ class OrdersSyncService {
 
       // Авто-резерв для новых заказов (и «ожидающих» WB до резолва статуса): product_id или сопоставление по SKU.
       // Идемпотентно: reserve создаётся только если его ещё нет.
+      const reserveKeysDone = new Set();
       for (const o of allOrders) {
         try {
           if (!o || !orderEligibleForProcurement(o)) continue;
           if (!o.marketplace || o.orderId == null) continue;
-          const row = await ordersRepo.findByMarketplaceAndOrderId(o.marketplace, String(o.orderId), profileId);
-          if (!row) continue;
-          if (isOrderTerminalNoReserve(row.status)) continue;
-          await ordersService._reserveForOrderIfStockAvailable(row);
+          const rk = `${String(o.marketplace).toLowerCase()}|${String(o.orderId)}`;
+          if (reserveKeysDone.has(rk)) continue;
+          reserveKeysDone.add(rk);
+          const rows =
+            typeof ordersService._findOrderRowsForReserve === 'function'
+              ? await ordersService._findOrderRowsForReserve(o.marketplace, String(o.orderId), {
+                  profileId
+                })
+              : [];
+          const list = rows.length
+            ? rows
+            : [
+                await ordersRepo.findByMarketplaceAndOrderId(
+                  o.marketplace,
+                  String(o.orderId),
+                  profileId
+                )
+              ].filter(Boolean);
+          for (const row of list) {
+            if (!row || isOrderTerminalNoReserve(row.status)) continue;
+            await ordersService._reserveForOrderIfStockAvailable(row);
+          }
         } catch {
           // не блокируем синк из-за одного заказа
         }

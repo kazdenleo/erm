@@ -323,14 +323,12 @@ class OrdersService {
     const ordRes = await query(
       `WITH nets AS (
          SELECT (sm.meta->>'order_id')::bigint AS oid,
-           GREATEST(0,
-             COALESCE(SUM(CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change ELSE 0 END), 0) -
-             COALESCE(SUM(CASE WHEN sm.type = 'unreserve' THEN sm.quantity_change ELSE 0 END), 0)
-           )::int AS net_r
+           ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_r
          FROM stock_movements sm
          WHERE sm.product_id = $1
-           AND (sm.type = 'reserve' OR sm.type = 'unreserve')
+           AND sm.type IN ('reserve', 'unreserve')
            AND sm.meta ? 'order_id'
+           AND (sm.meta->>'order_id') ~ '^[0-9]+$'
          GROUP BY (sm.meta->>'order_id')::bigint
        )
        SELECT o.id AS order_row_id, o.order_id, o.marketplace, n.net_r
@@ -535,11 +533,10 @@ class OrdersService {
   }
 
   /**
-   * Снять все резервы по строкам заказа (meta.order_id + запасной поиск по reason/товару).
+   * Снять резервы только по указанным строкам заказа (orders.id в meta движений).
    */
   async _releaseReservesForOrderRows(rows, orderIdLabel, unreserveFn) {
     const affectedAll = [];
-    const seenPid = new Set();
     const seenOrderDbId = new Set();
 
     for (const row of rows || []) {
@@ -547,47 +544,14 @@ class OrdersService {
       if (!orderDbId || seenOrderDbId.has(orderDbId)) continue;
       seenOrderDbId.add(orderDbId);
       const oid = String(row.orderId ?? row.order_id ?? orderIdLabel);
-
-      let affected = await releaseAllReservesForOrder(orderDbId, oid, unreserveFn);
-
-      if (!affected.length) {
-        const pid = await this._resolveProductIdForOrderStock(row).catch(() => null);
-        const pnum = Number(pid);
-        if (Number.isFinite(pnum) && pnum > 0) {
-          let net = await getNetReservedForOrderProduct(orderDbId, pnum);
-          if (net <= 0) {
-            const reasonLike = `%${oid}%`;
-            const r2 = await query(
-              `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-               FROM stock_movements
-               WHERE product_id = $1
-                 AND type IN ('reserve', 'unreserve')
-                 AND reason ILIKE $2`,
-              [pnum, reasonLike]
-            );
-            net = Number(r2.rows?.[0]?.rv ?? 0) || 0;
-          }
-          if (net > 0) {
-            await unreserveFn(pnum, net, oid, {
-              order_id: orderDbId,
-              orderId: oid,
-              manual_unreserve: true
-            });
-            affected = [pnum];
-          }
-        }
-      }
-
+      const affected = await releaseAllReservesForOrder(orderDbId, oid, unreserveFn);
       for (const p of affected || []) {
         const n = Number(p);
-        if (Number.isFinite(n) && n > 0 && !seenPid.has(n)) {
-          seenPid.add(n);
-          affectedAll.push(n);
-        }
+        if (Number.isFinite(n) && n > 0) affectedAll.push(n);
       }
     }
 
-    return affectedAll;
+    return [...new Set(affectedAll)];
   }
 
   /** Уже списано по заказу и товару (для идемпотентности отгрузки). */
@@ -985,6 +949,9 @@ class OrdersService {
     const reserveNow = Math.min(need, Math.floor(availableSupply));
     if (reserveNow <= 0) return;
 
+    const availableRecheck = await getComponentAssemblableUnits(productId, { warehouseId });
+    if (Math.floor(availableRecheck) < reserveNow) return;
+
     await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
       order_id: id,
       orderId: orderIdStr,
@@ -1145,7 +1112,15 @@ class OrdersService {
       for (const o of q) {
         const oid = orderRowDbId(o);
         if (oid && exclude.has(oid)) continue;
-        await this._applyReserveForOrderIfAbsent(o).catch(() => {});
+        if (!isKit) {
+          const avail = await getReservableSupplyUnits(fp);
+          if (avail <= 0) break;
+        }
+        try {
+          await this._applyReserveForOrderIfAbsent(o);
+        } catch (e) {
+          if (e?.statusCode === 400) continue;
+        }
       }
     };
 
@@ -1495,9 +1470,21 @@ class OrdersService {
     const list = Array.isArray(rows) ? rows : [];
     const excludeIds = list.map((r) => orderRowDbId(r)).filter((id) => id != null);
     const touchedKitIds = new Set();
+    const { getReservableSupplyUnits } = await import('./sellableQuantity.service.js');
     for (const row of list) {
       if (!row) continue;
-      await this._applyReserveForOrderIfAbsent(row).catch(() => {});
+      try {
+        const pid = await this._resolveProductIdForOrderStock(row);
+        const pnum = Number(pid);
+        if (Number.isFinite(pnum) && pnum > 0 && !(await isKitProductId(pnum))) {
+          if ((await getReservableSupplyUnits(pnum)) <= 0) continue;
+        }
+        await this._applyReserveForOrderIfAbsent(row);
+      } catch (e) {
+        if (e?.statusCode !== 400) {
+          /* ignore */
+        }
+      }
       try {
         const kitId = await this._resolveProductIdForOrderStock(row);
         if (kitId != null && (await isKitProductId(kitId))) {
@@ -2658,7 +2645,8 @@ class OrdersService {
       throw err;
     }
 
-    const before = await this._summarizeReserveForRows(rows);
+    const scopeRows = rows.filter((r) => orderRowDbId(r) === orderDbId);
+    const before = await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]);
     const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
     const act = String(action || 'toggle').toLowerCase();
     const doUnreserve = act === 'unreserve' || (act === 'toggle' && net > 0);
@@ -2732,7 +2720,7 @@ class OrdersService {
       }
     }
 
-    const after = await this._summarizeReserveForRows(rows);
+    const after = await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]);
     return {
       action: doUnreserve ? 'unreserve' : 'reserve',
       productId: pid,

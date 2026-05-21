@@ -267,14 +267,17 @@ class StockMovementsService {
       client.release();
     }
 
-    try {
-      const { default: ordersService } = await import('./orders.service.js');
-      await ordersService.trimExcessReservesForProduct(idNum, {
-        reason: 'Снятие избыточного резерва (превышен склад + «в пути»)',
-        meta: { from_stock_movement_type: type }
-      });
-    } catch {
-      /* не блокируем */
+    // После снятия резерва не вызываем trimExcess — иначе снимается резерв у других заказов на этот же SKU.
+    if (type === 'reserve') {
+      try {
+        const { default: ordersService } = await import('./orders.service.js');
+        await ordersService.trimExcessReservesForProduct(idNum, {
+          reason: 'Снятие избыточного резерва (превышен склад + «в пути»)',
+          meta: { from_stock_movement_type: type }
+        });
+      } catch {
+        /* не блокируем */
+      }
     }
 
     const productAfter = await this.productsRepository.findById(idNum);
