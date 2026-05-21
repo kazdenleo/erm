@@ -96,7 +96,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
     setError(null);
     setFeedback(null);
     try {
-      const result = await ordersApi.setOrderReserve(marketplace, orderId, { action: 'toggle' });
+      const result = await ordersApi.setOrderReserve(marketplace, orderId, {
+        action: hasReserve ? 'unreserve' : 'reserve'
+      });
       applyResult(result);
     } catch (e) {
       setError(e.response?.data?.message || e.message || 'Не удалось изменить резерв');

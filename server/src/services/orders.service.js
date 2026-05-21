@@ -17,11 +17,13 @@ import {
   releaseAllReservesForOrder,
   findKitProductIdForMarketplaceOrder,
   getKitComponents,
+  getNetReservedForOrderProduct,
   readKitPhysicalOnHandFromDb,
   sumKitComponentQtyPerKit,
   buildKitComponentQtyMap,
   getComponentAssemblableUnits
 } from './kitStock.service.js';
+import { NET_RESERVED_SUM_EXPR_SQL } from './sellableQuantity.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
@@ -495,57 +497,97 @@ class OrdersService {
     });
   }
 
-  /** Есть ли движение резерва, привязанное к строке заказа (orders.id) в meta.order_id */
+  /** Есть ли нетто-резерв по строке заказа (orders.id) в журнале. */
   async _hasDbReserveForOrder(orderDbId) {
     if (!orderDbId || !repositoryFactory.isUsingPostgreSQL()) return false;
+    const oid = Number(orderDbId);
+    if (!Number.isFinite(oid) || oid < 1) return false;
     const r = await query(
-      `SELECT 1 FROM stock_movements
-       WHERE type = 'reserve' AND quantity_change < 0
-         AND (meta->>'order_id')::bigint = $1::bigint
-       LIMIT 1`,
-      [orderDbId]
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE type IN ('reserve', 'unreserve')
+         AND (meta->>'order_id') ~ '^[0-9]+$'
+         AND (meta->>'order_id')::bigint = $1::bigint`,
+      [oid]
     );
-    return !!r.rows?.length;
+    return (Number(r.rows?.[0]?.rv ?? 0) || 0) > 0;
   }
 
-  /** Сколько уже зарезервировано под строку заказа (orders.id) по движениям reserve/unreserve. */
+  /** Нетто-резерв под заказ (orders.id) — та же формула, что в kitStock / sellableQuantity. */
   async _getReservedQtyForOrder(orderDbId) {
     if (!orderDbId || !repositoryFactory.isUsingPostgreSQL()) return 0;
+    const oid = Number(orderDbId);
+    if (!Number.isFinite(oid) || oid < 1) return 0;
     const r = await query(
-      `SELECT
-         COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
-         COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)::int AS unreserved
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
-       WHERE (type = 'reserve' OR type = 'unreserve')
+       WHERE type IN ('reserve', 'unreserve')
+         AND (meta->>'order_id') ~ '^[0-9]+$'
          AND (meta->>'order_id')::bigint = $1::bigint`,
-      [orderDbId]
+      [oid]
     );
-    const row = r.rows?.[0];
-    const reserved = row?.reserved != null ? Number(row.reserved) : 0;
-    const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
-    return Math.max(0, reserved - unreserved);
+    return Number(r.rows?.[0]?.rv ?? 0) || 0;
   }
 
-  /** Нетто-резерв под заказ по конкретному товару (для комплектующих). */
+  /** Нетто-резерв под заказ по товару (orders.id + product_id). */
   async _getReservedQtyForOrderProduct(orderDbId, productId) {
-    if (!orderDbId || !productId || !repositoryFactory.isUsingPostgreSQL()) return 0;
-    const oid = Number(orderDbId);
-    const pid = Number(productId);
-    if (!Number.isFinite(oid) || !Number.isFinite(pid)) return 0;
-    const r = await query(
-      `SELECT
-         COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change ELSE 0 END), 0)::int AS reserved,
-         COALESCE(SUM(CASE WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0)::int AS unreserved
-       FROM stock_movements
-       WHERE product_id = $2
-         AND (type = 'reserve' OR type = 'unreserve')
-         AND (meta->>'order_id')::bigint = $1::bigint`,
-      [oid, pid]
-    );
-    const row = r.rows?.[0];
-    const reserved = row?.reserved != null ? Number(row.reserved) : 0;
-    const unreserved = row?.unreserved != null ? Number(row.unreserved) : 0;
-    return Math.max(0, reserved - unreserved);
+    return getNetReservedForOrderProduct(orderDbId, productId);
+  }
+
+  /**
+   * Снять все резервы по строкам заказа (meta.order_id + запасной поиск по reason/товару).
+   */
+  async _releaseReservesForOrderRows(rows, orderIdLabel, unreserveFn) {
+    const affectedAll = [];
+    const seenPid = new Set();
+    const seenOrderDbId = new Set();
+
+    for (const row of rows || []) {
+      const orderDbId = orderRowDbId(row);
+      if (!orderDbId || seenOrderDbId.has(orderDbId)) continue;
+      seenOrderDbId.add(orderDbId);
+      const oid = String(row.orderId ?? row.order_id ?? orderIdLabel);
+
+      let affected = await releaseAllReservesForOrder(orderDbId, oid, unreserveFn);
+
+      if (!affected.length) {
+        const pid = await this._resolveProductIdForOrderStock(row).catch(() => null);
+        const pnum = Number(pid);
+        if (Number.isFinite(pnum) && pnum > 0) {
+          let net = await getNetReservedForOrderProduct(orderDbId, pnum);
+          if (net <= 0) {
+            const reasonLike = `%${oid}%`;
+            const r2 = await query(
+              `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+               FROM stock_movements
+               WHERE product_id = $1
+                 AND type IN ('reserve', 'unreserve')
+                 AND reason ILIKE $2`,
+              [pnum, reasonLike]
+            );
+            net = Number(r2.rows?.[0]?.rv ?? 0) || 0;
+          }
+          if (net > 0) {
+            await unreserveFn(pnum, net, oid, {
+              order_id: orderDbId,
+              orderId: oid,
+              manual_unreserve: true
+            });
+            affected = [pnum];
+          }
+        }
+      }
+
+      for (const p of affected || []) {
+        const n = Number(p);
+        if (Number.isFinite(n) && n > 0 && !seenPid.has(n)) {
+          seenPid.add(n);
+          affectedAll.push(n);
+        }
+      }
+    }
+
+    return affectedAll;
   }
 
   /** Уже списано по заказу и товару (для идемпотентности отгрузки). */
@@ -2738,22 +2780,21 @@ class OrdersService {
     const doUnreserve = act === 'unreserve' || (act === 'toggle' && before.hasReserve);
 
     if (doUnreserve) {
-      const productIds = new Set();
-      const seenOrderDbIds = new Set();
-      for (const row of rows) {
-        const id = orderRowDbId(row);
-        if (!id || seenOrderDbIds.has(id)) continue;
-        seenOrderDbIds.add(id);
-        const oid = String(row.orderId ?? row.order_id ?? orderId);
-        const affected = await releaseAllReservesForOrder(id, oid, async (pid, net, orderIdLabel, meta) => {
-          await stockMovementsService.applyChange(pid, {
-            delta: net,
-            type: 'unreserve',
-            reason: `Снятие резерва по заказу ${orderIdLabel} (вручную)`.trim(),
-            meta: { ...meta, manual_unreserve: true }
-          });
+      const oidLabel = String(rows[0]?.orderId ?? rows[0]?.order_id ?? orderId);
+      const affected = await this._releaseReservesForOrderRows(rows, oidLabel, async (pid, net, orderIdLabel, meta) => {
+        await stockMovementsService.applyChange(pid, {
+          delta: net,
+          type: 'unreserve',
+          reason: `Снятие резерва по заказу ${orderIdLabel} (вручную)`.trim(),
+          meta: { ...meta, manual_unreserve: true }
         });
-        for (const p of affected || []) productIds.add(Number(p));
+      });
+      if (!affected.length && before.hasReserve) {
+        const err = new Error(
+          'Резерв в журнале не найден по id заказа. Обновите страницу или снимите резерв в «История остатков» товара.'
+        );
+        err.statusCode = 400;
+        throw err;
       }
       // Не перераспределяем освободившийся остаток на другие заказы сразу после ручного снятия в карточке.
     } else {
