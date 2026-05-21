@@ -277,8 +277,12 @@ function appendWrappedTextSvg(blocks, {
   }
   if (!lineCount) return y;
 
+  const fontFamily =
+    textAnchor === 'middle'
+      ? 'Consolas, "Courier New", monospace'
+      : 'Arial, sans-serif';
   blocks.push(
-    `<text x="${xAttr}" y="${firstBaseline}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fill}"${anchorAttr}>${tspans.join('')}</text>`
+    `<text x="${xAttr}" y="${firstBaseline}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fill}"${anchorAttr}>${tspans.join('')}</text>`
   );
 
   return y + fontSize + (lineCount - 1) * lineStep;
@@ -374,26 +378,105 @@ async function enrichProductForLabel(product, template) {
   return { ...product, product_type: product.product_type || 'kit', kit_components };
 }
 
-async function generateBarcodePng(text) {
-  const code = String(text || '').replace(/\D/g, '');
+/** Тип штрихкода и нормализованный текст (EAN-13 — 13 цифр). */
+function resolveBarcodeSpec(raw) {
+  const code = String(raw || '').replace(/\D/g, '');
   if (!code) return null;
-  let bcid = 'code128';
-  let barcodeText = code;
   if (code.length === 12 || code.length === 13) {
-    bcid = 'ean13';
-    barcodeText = code.length === 12 ? `0${code}` : code.slice(0, 13);
+    return {
+      bcid: 'ean13',
+      text: code.length === 12 ? `0${code}` : code.slice(0, 13),
+    };
   }
+  return { bcid: 'code128', text: code };
+}
+
+/** Ширина символа в модулях (для подбора целочисленного scale). */
+function estimateBarcodeModules(bcid, text) {
+  if (bcid === 'ean13') return 95;
+  const len = String(text || '').length;
+  return 35 + 11 * Math.max(1, len);
+}
+
+/**
+ * Целочисленный scale + quiet zone — как в типовых этикеточных программах (чёткие полосы, поля по краям).
+ */
+function pickBarcodeScale(bcid, text, targetWidthPx) {
+  const quietModules = 12;
+  const modules = estimateBarcodeModules(bcid, text);
+  const scale = Math.floor((targetWidthPx - 8) / (modules + 2 * quietModules));
+  return Math.max(2, Math.min(6, scale));
+}
+
+async function generateBarcodePng(text, { widthPx, barAreaHeightPx, mmToPx }) {
+  const spec = resolveBarcodeSpec(text);
+  if (!spec) return null;
+
+  const targetW = Math.max(80, Number(widthPx) || 200);
+  const mm = Math.max(MM_TO_PX, Number(mmToPx) || MM_TO_PX);
+  const barMm = Math.min(
+    14,
+    Math.max(8, ((Number(barAreaHeightPx) || 96) / mm) * 0.92)
+  );
+
+  let scale = pickBarcodeScale(spec.bcid, spec.text, targetW);
+
   try {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const buf = await bwipjs.toBuffer({
+        bcid: spec.bcid,
+        text: spec.text,
+        scale,
+        height: barMm,
+        paddingwidth: 12,
+        paddingheight: 4,
+        includetext: false,
+        inkspread: 0,
+      });
+      const meta = await sharp(buf).metadata();
+      if (!meta.width) return buf;
+      if (meta.width >= targetW * 0.72 || scale >= 6) return buf;
+      scale += 1;
+    }
     return await bwipjs.toBuffer({
-      bcid,
-      text: barcodeText,
-      scale: 2,
-      height: 8,
+      bcid: spec.bcid,
+      text: spec.text,
+      scale,
+      height: barMm,
+      paddingwidth: 12,
+      paddingheight: 4,
       includetext: false,
+      inkspread: 0,
     });
   } catch {
     return null;
   }
+}
+
+/** Вписать штрихкод в область без сглаживания (nearest), по центру на белом фоне. */
+async function fitBarcodePngToSlot(pngBuffer, innerW, hPx) {
+  const slotW = Math.max(10, Math.round(innerW));
+  const slotH = Math.max(10, Math.round(hPx));
+  const img = sharp(pngBuffer);
+  const meta = await img.metadata();
+  if (!meta.width || !meta.height) return null;
+
+  const maxW = slotW - 6;
+  const maxH = slotH - 6;
+  const ratio = Math.min(1, maxW / meta.width, maxH / meta.height);
+  const w = Math.max(1, Math.round(meta.width * ratio));
+  const h = Math.max(1, Math.round(meta.height * ratio));
+
+  const resized = await img.resize({ width: w, height: h, kernel: sharp.kernel.nearest }).png().toBuffer();
+  const left = Math.max(0, Math.round((slotW - w) / 2));
+  const top = Math.max(0, Math.round((slotH - h) / 2));
+
+  return sharp({
+    create: { width: slotW, height: slotH, channels: 3, background: { r: 255, g: 255, b: 255 } },
+  })
+    .composite([{ input: resized, left, top }])
+    .png()
+    .toBuffer();
 }
 
 function mmToPt(mm) {
@@ -517,13 +600,19 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
 
       hPx = Math.min(hPx, Math.max(minBarcodePx, Math.floor(available)));
 
-      const barcodePng = await generateBarcodePng(barcodeValue);
+      const barcodePng = await generateBarcodePng(barcodeValue, {
+        widthPx: innerW,
+        barAreaHeightPx: hPx,
+        mmToPx,
+      });
       if (barcodePng) {
-        const resized = await sharp(barcodePng).resize({ width: innerW, height: hPx, fit: 'contain' }).png().toBuffer();
-        const b64 = resized.toString('base64');
-        blocks.push(
-          `<image x="${padL}" y="${y}" width="${innerW}" height="${hPx}" href="data:image/png;base64,${b64}" />`
-        );
+        const fitted = await fitBarcodePngToSlot(barcodePng, innerW, hPx);
+        if (fitted) {
+          const b64 = fitted.toString('base64');
+          blocks.push(
+            `<image x="${padL}" y="${y}" width="${innerW}" height="${hPx}" href="data:image/png;base64,${b64}" />`
+          );
+        }
       }
       y += hPx;
       if (el.showText !== false) {
