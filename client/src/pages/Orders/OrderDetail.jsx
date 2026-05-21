@@ -20,7 +20,13 @@ function orderReserveLineKey(line) {
 function lineReserveBounds(line) {
   const reserved = Math.max(0, Number(line.reservedQty) || 0);
   const need = Math.max(0, Number(line.needQty) || 0);
-  return { reserved, need, remaining: Math.max(0, need - reserved) };
+  const remaining = Math.max(0, need - reserved);
+  const available =
+    line.availableQty != null && !Number.isNaN(Number(line.availableQty))
+      ? Math.max(0, Number(line.availableQty))
+      : remaining;
+  const maxReserve = Math.min(remaining, available);
+  return { reserved, need, remaining, available, maxReserve };
 }
 
 function clampLineQty(raw, min, max) {
@@ -68,13 +74,13 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
     const next = {};
     for (const line of detailLines) {
       const key = orderReserveLineKey(line);
-      const { reserved, remaining } = lineReserveBounds(line);
+      const { reserved, maxReserve } = lineReserveBounds(line);
       const prev = lineQty[key];
       if (reserved > 0) {
         const max = reserved;
         next[key] = prev != null ? clampLineQty(prev, 1, max) : 1;
-      } else if (remaining > 0) {
-        const max = remaining;
+      } else if (maxReserve > 0) {
+        const max = maxReserve;
         next[key] = prev != null ? clampLineQty(prev, 1, max) : Math.min(1, max);
       }
     }
@@ -108,10 +114,10 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
     const pid = line?.productId;
     if (!marketplace || !orderId || !pid || lineLoadingKey) return;
     const key = orderReserveLineKey(line);
-    const { reserved, remaining } = lineReserveBounds(line);
+    const { reserved, maxReserve } = lineReserveBounds(line);
     const act = String(action || '').toLowerCase();
     const isUnreserve = act === 'unreserve';
-    const max = isUnreserve ? reserved : remaining;
+    const max = isUnreserve ? reserved : maxReserve;
     if (max <= 0) return;
     const qty =
       qtyOverride != null
@@ -169,9 +175,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             const pid = line.productId;
             const canReserve = pid != null && Number(pid) > 0;
             const key = orderReserveLineKey(line);
-            const { reserved: r, need: n, remaining } = lineReserveBounds(line);
+            const { reserved: r, need: n, remaining, available, maxReserve } = lineReserveBounds(line);
             const lineHas = r > 0;
-            const maxQty = lineHas ? r : remaining;
+            const maxQty = lineHas ? r : maxReserve;
             const title =
               line.label ||
               line.productName ||
@@ -192,6 +198,12 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
               >
                 <span className="order-reserve-line__title">
                   {title}: <strong>{r}</strong> из {n}
+                  {!lineHas && remaining > 0 ? (
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+                      {' '}
+                      (доступно к резерву: {available})
+                    </span>
+                  ) : null}
                   {!canReserve ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}> — привяжите товар в каталоге</span>
                   ) : null}

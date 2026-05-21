@@ -458,7 +458,9 @@ class OrdersService {
 
     let availableSupply;
     let qty;
-    if (await isKitProductId(productId)) {
+    const reserveAsKitComponent =
+      meta?.kit_product_id != null && Number(meta.kit_product_id) > 0;
+    if (await isKitProductId(productId) && !reserveAsKitComponent) {
       const pre = meta?.kit_reserve_preallocated;
       if (pre != null && Number(pre) > 0) {
         qty = Math.min(qtyWanted, Math.floor(Number(pre)));
@@ -471,7 +473,15 @@ class OrdersService {
       }
     } else {
       const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
-      availableSupply = await getComponentAssemblableUnits(productId, { warehouseId: wh });
+      const kitParentId = reserveAsKitComponent ? Number(meta.kit_product_id) : null;
+      if (kitParentId > 0) {
+        availableSupply = await this._getAvailableUnitsForOrderReserveLine(productId, null, {
+          warehouseId: wh,
+          kitProductId: kitParentId
+        });
+      } else {
+        availableSupply = await getComponentAssemblableUnits(productId, { warehouseId: wh });
+      }
       qty = Math.min(qtyWanted, Math.floor(availableSupply));
     }
     if (qty <= 0) return;
@@ -1483,6 +1493,35 @@ class OrdersService {
       if (scoped > 0) return scoped;
     }
     return computeMaxKitUnitsReservable(kitId, { warehouseId: null });
+  }
+
+  /**
+   * Сколько единиц можно зарезервировать по позиции (комплектующая / комплект / обычный товар).
+   * Для комплектующей заказа-комплекта — supply SKU и собираемость родительского комплекта.
+   */
+  async _getAvailableUnitsForOrderReserveLine(productId, orderRow, { warehouseId = null, kitProductId = null } = {}) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return 0;
+
+    const kitId =
+      kitProductId != null && Number.isFinite(Number(kitProductId))
+        ? Number(kitProductId)
+        : null;
+
+    if (kitId != null && kitId > 0 && pid !== kitId && (await isKitProductId(kitId))) {
+      const components = await getKitComponents(kitId);
+      const comp = components.find((c) => Number(c.component_product_id) === pid);
+      const perKit = comp ? Math.max(1, parseInt(comp.quantity, 10) || 1) : 1;
+      const compAvail = await getComponentAssemblableUnits(pid);
+      const maxKits = await this._computeMaxKitUnitsReservableForOrder(kitId, warehouseId);
+      return Math.max(Math.floor(compAvail), Math.floor(maxKits) * perKit);
+    }
+
+    if (await isKitProductId(pid)) {
+      return Math.floor(await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId));
+    }
+
+    return Math.floor(await getComponentAssemblableUnits(pid));
   }
 
   /** Повторная попытка резерва (новый / закупка / после поступления остатка). */
@@ -2542,12 +2581,20 @@ class OrdersService {
 
       if (id && Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
         reserved = await getReservedKitUnitsForOrder(pid, id);
+        const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
+        const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
+          pid,
+          preferredWh
+        );
         const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
         if (onKitRes > 0) {
           lineEntries.push({
             productId: pid,
             reservedQty: onKitRes,
             needQty: qty,
+            availableQty: await this._getAvailableUnitsForOrderReserveLine(pid, row, {
+              warehouseId
+            }),
             lineKind: 'kit_whole',
             label: orderLineLabel || 'Комплект (целым SKU)'
           });
@@ -2564,6 +2611,10 @@ class OrdersService {
             productId: compId,
             reservedQty: compRes,
             needQty: qty * perKit,
+            availableQty: await this._getAvailableUnitsForOrderReserveLine(compId, row, {
+              warehouseId,
+              kitProductId: pid
+            }),
             lineKind: 'component',
             kitProductId: pid,
             label: compLabel
@@ -2580,10 +2631,16 @@ class OrdersService {
         }
       } else if (id && Number.isFinite(pid) && pid > 0) {
         reserved = await this._getReservedQtyForOrderProduct(id, pid);
+        const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
+        const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
+          pid,
+          preferredWh
+        );
         lineEntries.push({
           productId: pid,
           reservedQty: reserved,
           needQty: qty,
+          availableQty: await this._getAvailableUnitsForOrderReserveLine(pid, row, { warehouseId }),
           lineKind: 'product',
           label: orderLineLabel || (await this._productDisplayLabelById(pid))
         });
@@ -2753,12 +2810,20 @@ class OrdersService {
         }
       }
       let toAdd = Math.max(0, target - already);
-      const available = await getComponentAssemblableUnits(pid, { warehouseId });
-      toAdd = Math.min(toAdd, Math.floor(available));
+      const kitId = await this._resolveProductIdForOrderStock(row);
+      const kitProductId =
+        kitId != null && (await isKitProductId(kitId)) && pid !== Number(kitId)
+          ? Number(kitId)
+          : null;
+      const available = await this._getAvailableUnitsForOrderReserveLine(pid, row, {
+        warehouseId,
+        kitProductId
+      });
+      toAdd = Math.min(toAdd, available);
       if (toAdd <= 0) {
         if (qtyWanted != null && qtyWanted > 0) {
           const err = new Error(
-            `Недостаточно остатка для резерва (доступно без поставщиков: ${Math.floor(available)}, запрошено: ${qtyWanted})`
+            `Недостаточно остатка для резерва (доступно без поставщиков: ${available}, запрошено: ${qtyWanted})`
           );
           err.statusCode = 400;
           throw err;
@@ -2770,13 +2835,14 @@ class OrdersService {
           warehouse_id: warehouseId,
           partial_line: true
         };
-        const kitId = await this._resolveProductIdForOrderStock(row);
-        if (
-          kitId != null &&
-          (await isKitProductId(kitId)) &&
-          pid !== Number(kitId)
-        ) {
-          meta.kit_product_id = Number(kitId);
+        if (kitProductId != null) {
+          meta.kit_product_id = kitProductId;
+          const components = await getKitComponents(kitProductId);
+          const comp = components.find((c) => Number(c.component_product_id) === pid);
+          const perKit = comp ? Math.max(1, parseInt(comp.quantity, 10) || 1) : 1;
+          if (toAdd >= perKit) {
+            meta.kit_units = Math.floor(toAdd / perKit) || 1;
+          }
         }
         await this._applyReserveForOrderComponent(pid, toAdd, orderIdStr, meta);
       }
