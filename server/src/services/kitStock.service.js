@@ -631,15 +631,37 @@ function minKitUnitsFromComponentReserves(components, getReserved) {
 }
 
 /**
- * Резерв для колонки «Резерв» комплекта в остатках — только журнал по SKU комплекта (1 номенклатура).
- * Резерв на комплектующих учитывается в «Доступно» (собираемость), список заказов — getReservedKitUnitsForOrder.
+ * Резерв в колонке «Резерв» для комплекта: журнал по SKU комплекта; если там 0 — сумма резерва по комплектующим
+ * (как в истории остатков комплекта, куда подмешиваются reserve/unreserve комплектующих).
  */
 function kitTotalDisplayReservedFromContext(kitId, ctx) {
-  return Math.max(0, ctx.reservedMap.get(kitId) || 0);
+  const onSku = Math.max(0, ctx.reservedMap.get(kitId) || 0);
+  if (onSku > 0) return onSku;
+  const comps = ctx.componentsByKit?.get(kitId) || [];
+  let compSum = 0;
+  for (const c of comps) {
+    const pid = Number(c.component_product_id ?? c.productId);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    compSum += Math.max(0, ctx.reservedMap.get(pid) || 0);
+  }
+  return compSum;
 }
 
 export async function readKitDisplayReservedQuantity(kitProductId, _opts = {}) {
-  return readKitSkuNetReserved(kitProductId);
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+  const onSku = await readKitSkuNetReserved(kitId);
+  if (onSku > 0) return onSku;
+  const components = await getKitComponents(kitId);
+  if (!components?.length) return 0;
+  const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+  let compSum = 0;
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    compSum += await getReservedQuantityFromMovements(pid);
+  }
+  return compSum;
 }
 
 export async function getNetReservedForOrderProduct(orderDbId, productId) {
