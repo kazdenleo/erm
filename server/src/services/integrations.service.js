@@ -12,10 +12,17 @@ import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
 
 class IntegrationsService {
-  constructor() {
-    this.repository = repositoryFactory.getIntegrationsRepository();
-    this.usePostgreSQL = repositoryFactory.isUsingPostgreSQL();
-    this.cacheRepository = this.usePostgreSQL ? repositoryFactory.getCacheEntriesRepository() : null;
+  /** Ленивая инициализация — иначе цикл stockMovements/kitStock → integrations при загрузке repository-factory. */
+  get repository() {
+    return repositoryFactory.getIntegrationsRepository();
+  }
+
+  get usePostgreSQL() {
+    return repositoryFactory.isUsingPostgreSQL();
+  }
+
+  get cacheRepository() {
+    return this.usePostgreSQL ? repositoryFactory.getCacheEntriesRepository() : null;
   }
   
   async _getOldRepository() {

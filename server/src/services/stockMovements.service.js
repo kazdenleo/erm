@@ -6,9 +6,18 @@
 import { query } from '../config/database.js';
 import { getClient } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
-import { scheduleMarketplaceSyncForParentKits } from './kitStock.service.js';
-import { NET_RESERVED_SUM_EXPR_SQL } from './sellableQuantity.service.js';
+import { NET_RESERVED_SUM_EXPR_SQL } from '../constants/netReservedStockSql.js';
+
+function scheduleStockMovementMarketplaceSync(productId, opts) {
+  const idNum = Number(productId);
+  if (!Number.isFinite(idNum) || idNum < 1) return;
+  import('./marketplaceWarehouseStockSync.service.js')
+    .then(({ scheduleWarehouseStockMarketplaceSync }) => scheduleWarehouseStockMarketplaceSync(idNum, opts))
+    .catch(() => {});
+  import('./kitStock.service.js')
+    .then(({ scheduleMarketplaceSyncForParentKits }) => scheduleMarketplaceSyncForParentKits(idNum, opts))
+    .catch(() => {});
+}
 
 class StockMovementsService {
   constructor() {
@@ -152,12 +161,7 @@ class StockMovementsService {
 
     // Резерв/снятие резерва меняет «доступно к продаже» на МП — отправляем обновлённый остаток.
     const orgId = product.organization_id ?? product.organizationId ?? null;
-    scheduleWarehouseStockMarketplaceSync(idNum, {
-      source: `stock_movement:${type}`,
-      warehouseId,
-      organizationId: orgId
-    });
-    scheduleMarketplaceSyncForParentKits(idNum, {
+    scheduleStockMovementMarketplaceSync(idNum, {
       source: `stock_movement:${type}`,
       warehouseId,
       organizationId: orgId
@@ -275,12 +279,7 @@ class StockMovementsService {
     const productAfter = await this.productsRepository.findById(idNum);
     const totalAfter = productAfter?.quantity != null ? Number(productAfter.quantity) : 0;
 
-    scheduleWarehouseStockMarketplaceSync(idNum, {
-      source: `stock_movement:${type}`,
-      warehouseId,
-      organizationId: orgId
-    });
-    scheduleMarketplaceSyncForParentKits(idNum, {
+    scheduleStockMovementMarketplaceSync(idNum, {
       source: `stock_movement:${type}`,
       warehouseId,
       organizationId: orgId
