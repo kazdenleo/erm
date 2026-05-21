@@ -87,15 +87,17 @@ router.get(
   wrapAsync(shipmentsController.getQrStickerPublic.bind(shipmentsController))
 );
 
-// Публичные: этикетки товаров — Print Helper и страница печати без Bearer
+// Публичные: этикетки товаров — Print Helper без Bearer; optionalAuth подставляет req.user при токене в браузере
 router.get(
   '/products/:id/label',
   validateProductId,
+  optionalAuth,
   wrapAsync(productLabelsController.getLabel.bind(productLabelsController))
 );
 router.get(
   '/products/:id/label/print',
   validateProductId,
+  optionalAuth,
   wrapAsync(productLabelsController.getLabelPrint.bind(productLabelsController))
 );
 

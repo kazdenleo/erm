@@ -14,8 +14,18 @@ function normalizeElements(body) {
     id: el.id || `${el.type}-${idx}`,
     type: el.type,
     enabled: el.enabled !== false,
-    fontSize: el.fontSize != null ? Number(el.fontSize) : undefined,
-    textFontSize: el.textFontSize != null ? Number(el.textFontSize) : undefined,
+    fontSize:
+      el.fontSize != null
+        ? Math.min(24, Math.max(6, Number(el.fontSize)))
+        : undefined,
+    textFontSize:
+      el.textFontSize != null
+        ? Math.min(14, Math.max(6, Number(el.textFontSize)))
+        : undefined,
+    titleFontSize:
+      el.titleFontSize != null
+        ? Math.min(20, Math.max(6, Number(el.titleFontSize)))
+        : undefined,
     bold: el.bold === true,
     heightMm: el.heightMm != null ? Number(el.heightMm) : undefined,
     showText: el.showText !== false,

@@ -17,7 +17,11 @@ import { ProductLabelPrintModal } from '../../components/products/ProductLabelPr
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
 import { shouldIgnoreNavigationClick } from '../../utils/navigationClick.js';
-import { useProductLabelPrint } from '../../hooks/useProductLabelPrint.js';
+import {
+  canUsePrintHelper,
+  openProductLabelPrintTab,
+  useProductLabelPrint,
+} from '../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../services/api.js';
 import './Products.css';
 
@@ -188,11 +192,23 @@ export function Products() {
   };
 
   const handleLabelPrintConfirm = async (copies) => {
-    if (!labelPrintProduct?.id) return;
-    const ok = await printProductLabel(labelPrintProduct.id, { copies });
-    if (ok) {
-      setLabelPrintProduct(null);
-      setLabelPrintError(null);
+    const product = labelPrintProduct;
+    if (!product?.id) return;
+
+    setLabelPrintProduct(null);
+    setLabelPrintError(null);
+
+    if (!canUsePrintHelper(printHelperUrl)) {
+      if (!openProductLabelPrintTab(product.id, copies)) {
+        setLabelPrintError('Не удалось открыть вкладку печати. Разрешите всплывающие окна для сайта.');
+        setLabelPrintProduct(product);
+      }
+      return;
+    }
+
+    const ok = await printProductLabel(product.id, { copies });
+    if (!ok) {
+      setLabelPrintProduct(product);
     }
   };
 

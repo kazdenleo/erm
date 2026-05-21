@@ -13,7 +13,11 @@ import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
 import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
-import { useProductLabelPrint } from '../../../hooks/useProductLabelPrint.js';
+import {
+  canUsePrintHelper,
+  openProductLabelPrintTab,
+  useProductLabelPrint,
+} from '../../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../../services/api.js';
 import './ProductForm.css';
 
@@ -4210,7 +4214,13 @@ export function ProductForm({
                   ? 'Укажите категорию товара для печати этикетки'
                   : 'Печать стикера по шаблону категории'
               }
-              onClick={() => printProductLabel(currentProduct.id)}
+              onClick={() => {
+                if (!canUsePrintHelper(printHelperUrl)) {
+                  openProductLabelPrintTab(currentProduct.id);
+                  return;
+                }
+                printProductLabel(currentProduct.id);
+              }}
             >
               {labelPrinting ? 'Печать…' : 'Печать стикера'}
             </Button>

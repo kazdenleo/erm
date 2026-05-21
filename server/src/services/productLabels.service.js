@@ -31,6 +31,13 @@ function resolveMmToPx(previewScale) {
   return MM_TO_PX * Math.min(6, Math.max(2, s));
 }
 
+/** fontSize в шаблоне — для этикетки 58×40 при 8px/мм; масштабируется с previewScale. */
+function resolveFontSizePx(fontSize, mmToPx, maxPt = 24) {
+  const raw = Number(fontSize);
+  const base = Math.min(maxPt, Math.max(6, Number.isFinite(raw) ? raw : 11));
+  return Math.round(base * (mmToPx / MM_TO_PX));
+}
+
 async function loadCategoryAttributeIds(userCategoryId) {
   if (userCategoryId == null || userCategoryId === '') return [];
   const result = await query(
@@ -328,7 +335,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
     if (y >= maxContentY) break;
 
     if (el.type === 'name') {
-      const fs = Number(el.fontSize) || 11;
+      const fs = resolveFontSizePx(el.fontSize, mmToPx);
       const name = String(product.name || product.mp_ozon_name || '').trim() || '—';
       const weight = el.bold ? 'bold' : 'normal';
       y = appendWrappedTextSvg(blocks, {
@@ -344,7 +351,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
       });
       y += blockGap;
     } else if (el.type === 'sku') {
-      const fs = Number(el.fontSize) || 9;
+      const fs = resolveFontSizePx(el.fontSize, mmToPx, 20);
       const sku = String(product.sku || '').trim();
       if (sku && y < maxContentY) {
         y = appendWrappedTextSvg(blocks, {
@@ -362,7 +369,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
     } else if (el.type === 'barcode' && barcodeValue) {
       const hMm = Number(el.heightMm) || 12;
       const hPx = Math.round(hMm * mmToPx);
-      const digitFs = Number(el.textFontSize ?? el.fontSize) || 8;
+      const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, 14);
       const textUnderH = el.showText !== false ? digitFs + 4 : 0;
       const blockH = hPx + (textUnderH ? 2 + textUnderH : 0) + blockGap;
       if (y + blockH > maxContentY) break;
@@ -396,7 +403,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
       if (catAttrSet && !catAttrSet.has(aid)) continue;
       const val = attrValues[aid] ?? attrValues[Number(aid)];
       if (val == null || String(val).trim() === '') continue;
-      const fs = Number(el.fontSize) || 8;
+      const fs = resolveFontSizePx(el.fontSize, mmToPx);
       const attrName = attributeNames[aid] || attributeNames[Number(aid)] || '';
       const label = el.showName !== false && attrName ? `${attrName}: ` : '';
       y = appendWrappedTextSvg(blocks, {
@@ -413,7 +420,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
     } else if (el.type === 'product_field' && el.fieldKey) {
       const val = getProductFieldDisplayValue(product, el.fieldKey);
       if (!val) continue;
-      const fs = Number(el.fontSize) || 8;
+      const fs = resolveFontSizePx(el.fontSize, mmToPx);
       const fieldLabel = labelProductFieldLabel(el.fieldKey);
       const prefix = el.showName !== false && fieldLabel ? `${fieldLabel}: ` : '';
       y = appendWrappedTextSvg(blocks, {
@@ -431,8 +438,8 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
       const lines = formatKitComponentLines(product, el);
       if (!lines.length) continue;
 
-      const fs = Number(el.fontSize) || 8;
-      const titleFs = Number(el.titleFontSize) || fs;
+      const fs = resolveFontSizePx(el.fontSize, mmToPx);
+      const titleFs = resolveFontSizePx(el.titleFontSize ?? fs, mmToPx, 20);
       const weight = el.bold ? 'bold' : 'normal';
 
       if (el.showTitle !== false && y < maxContentY) {
@@ -579,7 +586,14 @@ export const productLabelsService = {
   async getTemplateForProduct(product, profileId = null) {
     const categoryId = product.user_category_id ?? product.userCategoryId ?? product.categoryId;
     if (!categoryId) return null;
-    let template = await categoryLabelTemplatesRepository.findByCategoryId(categoryId, profileId);
+    let tid = profileId;
+    if (typeof tid === 'symbol' || tid == null || tid === '') {
+      tid = product.profile_id ?? product.profileId ?? null;
+    }
+    let template = await categoryLabelTemplatesRepository.findByCategoryId(categoryId, tid);
+    if (!template && tid != null) {
+      template = await categoryLabelTemplatesRepository.findByCategoryId(categoryId, null);
+    }
     if (!template) {
       template = {
         user_category_id: categoryId,

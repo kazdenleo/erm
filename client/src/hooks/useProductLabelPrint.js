@@ -1,5 +1,6 @@
 /**
- * Печать этикетки товара: Print Helper или страница /print/product-label/:id
+ * Печать этикетки: Print Helper (автоматически) или одна соседняя вкладка /print/product-label/:id.
+ * Без about:blank — вкладка открывается сразу на странице печати (по клику пользователя).
  */
 
 import { useCallback, useState } from 'react';
@@ -8,23 +9,56 @@ import { getStoredLabelSize } from '../pages/Settings/Labels.jsx';
 
 const PRINT_HELPER_FETCH_MS = 25000;
 
-function openPrintFallbackPage(url) {
-  try {
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;border:0';
-    iframe.src = url;
-    document.body.appendChild(iframe);
-    setTimeout(() => {
+async function errorMessageFromLabelRequest(err) {
+  const status = err?.response?.status || 0;
+  const data = err?.response?.data;
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    try {
+      const text = await data.text();
       try {
-        iframe.contentWindow?.print();
+        const j = text ? JSON.parse(text) : null;
+        const msg = j?.message || j?.error || '';
+        if (msg) return String(msg);
       } catch {
-        window.open(url, '_blank', 'noopener,noreferrer');
+        if (text?.trim()) return text.trim();
       }
-      setTimeout(() => iframe.remove(), 60000);
-    }, 1500);
-  } catch {
-    window.open(url, '_blank', 'noopener,noreferrer');
+    } catch {
+      /* ignore */
+    }
   }
+  if (data?.message) return String(data.message);
+  if (status === 400) return 'У товара нет категории или шаблона этикетки.';
+  if (status === 404) return 'Товар не найден.';
+  if (status >= 500) return 'Ошибка сервера при формировании этикетки. Перезапустите API и повторите.';
+  return err?.message || 'Не удалось сформировать этикетку.';
+}
+
+export function canUsePrintHelper(printHelperUrl = '') {
+  if (typeof window === 'undefined' || !window.isSecureContext) return false;
+  return Boolean(String(printHelperUrl || '').trim());
+}
+
+export function buildProductLabelPrintPageUrl(productId, copies = 1) {
+  const id = productId != null ? String(productId).trim() : '';
+  const n = Number(copies);
+  const count = Number.isFinite(n) && n >= 1 ? Math.min(99, Math.floor(n)) : 1;
+  const copiesQuery = count > 1 ? `?copies=${count}` : '';
+  return `/print/product-label/${encodeURIComponent(id)}${copiesQuery}`;
+}
+
+/** Открыть одну соседнюю вкладку со страницей печати (вызывать синхронно по клику). */
+export function openProductLabelPrintTab(productId, copies = 1) {
+  const url = buildProductLabelPrintPageUrl(productId, copies);
+  try {
+    const w = window.open(url, '_blank', 'noopener,noreferrer');
+    if (w) {
+      w.focus?.();
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
 }
 
 export function useProductLabelPrint(printHelperUrl = '') {
@@ -42,17 +76,43 @@ export function useProductLabelPrint(printHelperUrl = '') {
           ? Math.min(99, Math.floor(copiesRaw))
           : 1;
 
+      if (!canUsePrintHelper(printHelperUrl)) {
+        setError('Print Helper не настроен. Используйте openProductLabelPrintTab по клику.');
+        return false;
+      }
+
       setPrinting(true);
       setError(null);
 
-      const copiesQuery = copies > 1 ? `?copies=${copies}` : '';
-      const labelPrintPageUrl = `/print/product-label/${encodeURIComponent(id)}${copiesQuery}`;
+      const labelPrintPageUrl = buildProductLabelPrintPageUrl(id, copies);
       const labelFilePath = `/products/${encodeURIComponent(id)}/label`;
       const labelQuery = new URLSearchParams({ format: 'pdf' });
       if (copies > 1) labelQuery.set('copies', String(copies));
       const labelFileUrl = `${resolveApiBaseUrl()}${labelFilePath}?${labelQuery.toString()}`;
+      const labelPngUrl = `${resolveApiBaseUrl()}${labelFilePath}?format=png`;
+      const base = String(printHelperUrl || '').trim().replace(/\/$/, '');
 
-      let printWindow = null;
+      try {
+        await api.get(labelFilePath, {
+          params: { format: 'png' },
+          responseType: 'blob',
+          timeout: PRINT_HELPER_FETCH_MS,
+          headers: { Accept: 'image/png' },
+        });
+      } catch (e) {
+        setError(await errorMessageFromLabelRequest(e));
+        setPrinting(false);
+        return false;
+      }
+
+      const labelSize = getStoredLabelSize();
+      const labelPngUrlAbs = (() => {
+        try {
+          return new URL(labelPngUrl, window.location.origin).toString();
+        } catch {
+          return labelPngUrl;
+        }
+      })();
       const labelFileUrlAbs = (() => {
         try {
           return new URL(labelFileUrl, window.location.origin).toString();
@@ -60,87 +120,32 @@ export function useProductLabelPrint(printHelperUrl = '') {
           return labelFileUrl;
         }
       })();
+      const helperLabelUrl = copies > 1 ? labelFileUrlAbs : labelPngUrlAbs;
+      const helperUrl = `${base}/print?orderId=product-${encodeURIComponent(id)}&labelUrl=${encodeURIComponent(helperLabelUrl)}&labelSize=${encodeURIComponent(labelSize)}`;
 
-      const canUseLocalHelper = typeof window !== 'undefined' ? Boolean(window.isSecureContext) : false;
-      const base = canUseLocalHelper ? (printHelperUrl || '').trim().replace(/\/$/, '') : '';
-      const willUseHelper = Boolean(base);
-
-      if (!willUseHelper) {
-        try {
-          printWindow = window.open('about:blank', '_blank', 'noopener,noreferrer');
-        } catch {
-          printWindow = null;
-        }
-      }
-
-      try {
-        await api.get(labelFilePath, {
-          params: { format: 'pdf', copies },
-          responseType: 'blob',
-          timeout: PRINT_HELPER_FETCH_MS,
-          headers: { Accept: 'application/pdf' },
-        });
-      } catch (e) {
-        const status = e?.response?.status || 0;
-        const msg =
-          e?.response?.data?.message ||
-          (status === 400
-            ? 'У товара нет категории или шаблона этикетки.'
-            : status === 404
-              ? 'Товар не найден.'
-              : 'Не удалось сформировать этикетку.');
-        setError(String(msg));
-        setPrinting(false);
-        try {
-          if (printWindow && !printWindow.closed) printWindow.close();
-        } catch {
-          /* ignore */
-        }
-        return false;
-      }
-
-      if (!willUseHelper) {
-        try {
-          if (printWindow && !printWindow.closed) {
-            printWindow.location.href = labelPrintPageUrl;
-            setPrinting(false);
-            return true;
-          }
-        } catch {
-          /* ignore */
-        }
-        openPrintFallbackPage(labelPrintPageUrl);
-        setPrinting(false);
-        return true;
-      }
-
-      const labelSize = getStoredLabelSize();
-      let helperFailed = false;
-      const helperUrl = `${base}/print?orderId=product-${encodeURIComponent(id)}&labelUrl=${encodeURIComponent(labelFileUrlAbs)}&labelSize=${encodeURIComponent(labelSize)}`;
+      let helperOk = false;
       const ac = new AbortController();
       const t = setTimeout(() => ac.abort(), PRINT_HELPER_FETCH_MS);
       try {
         const r = await fetch(helperUrl, { method: 'GET', mode: 'cors', signal: ac.signal });
-        if (!r.ok) {
-          throw new Error((await r.json().catch(() => ({})))?.message || 'Принтер не ответил');
-        }
+        helperOk = r.ok;
       } catch {
-        helperFailed = true;
+        helperOk = false;
       } finally {
         clearTimeout(t);
       }
 
-      if (helperFailed) {
-        try {
-          if (printWindow && !printWindow.closed) printWindow.close();
-        } catch {
-          /* ignore */
-        }
-        openPrintFallbackPage(labelPrintPageUrl);
+      setPrinting(false);
+
+      if (helperOk) {
+        return true;
       }
 
-      setPrinting(false);
-      return !helperFailed;
+      if (!openProductLabelPrintTab(id, copies)) {
+        setError('Print Helper не ответил. Разрешите всплывающие окна для печати в браузере.');
+        return false;
+      }
+      return true;
     },
     [printHelperUrl]
   );

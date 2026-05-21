@@ -38,7 +38,7 @@ function normalizeTemplate(data) {
     margin_bottom_mm: Number(d.margin_bottom_mm ?? d.marginBottomMm ?? 2),
     margin_left_mm: Number(d.margin_left_mm ?? d.marginLeftMm ?? 2),
     line_gap_mm: Number(d.line_gap_mm ?? d.lineGapMm ?? 1),
-    elements: hasElementsList ? d.elements : defaultElements(),
+    elements: hasElementsList ? clampElementsForSave(d.elements) : defaultElements(),
   };
 }
 
@@ -51,6 +51,39 @@ function parseMmValue(v, fallback) {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+function clampFontSize(v, fallback, max = 24) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(6, n));
+}
+
+function clampElementsForSave(elements) {
+  return (elements || []).map((el) => {
+    const next = { ...el };
+    if (el.type === 'barcode') {
+      if (next.textFontSize != null) {
+        next.textFontSize = clampFontSize(next.textFontSize, 8, 14);
+      }
+      return next;
+    }
+    if (
+      el.type === 'name' ||
+      el.type === 'sku' ||
+      el.type === 'attribute' ||
+      el.type === 'product_field' ||
+      el.type === 'kit_components'
+    ) {
+      if (next.fontSize != null) {
+        next.fontSize = clampFontSize(next.fontSize, el.type === 'name' ? 11 : 9);
+      }
+      if (next.titleFontSize != null) {
+        next.titleFontSize = clampFontSize(next.titleFontSize, 8, 20);
+      }
+    }
+    return next;
+  });
+}
+
 /** Явный payload для API — чтобы line_gap_mm и отступы всегда уходили на сервер */
 function buildTemplatePayload(form) {
   return {
@@ -60,7 +93,7 @@ function buildTemplatePayload(form) {
     margin_bottom_mm: parseMmValue(form.margin_bottom_mm, 2),
     margin_left_mm: parseMmValue(form.margin_left_mm, 2),
     line_gap_mm: parseMmValue(form.line_gap_mm, 1),
-    elements: form.elements || [],
+    elements: clampElementsForSave(form.elements),
   };
 }
 

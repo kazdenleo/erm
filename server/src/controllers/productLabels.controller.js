@@ -3,6 +3,13 @@
  */
 
 import productLabelsService from '../services/productLabels.service.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+
+function resolveProfileIdForLabel(req) {
+  const tid = tenantListProfileId(req);
+  if (tid === TENANT_LIST_EMPTY || tid == null) return null;
+  return tid;
+}
 
 function parseCopiesQuery(raw) {
   const n = parseInt(String(raw ?? ''), 10);
@@ -16,7 +23,11 @@ class ProductLabelsController {
       const productId = req.params.id ?? req.params.productId;
       const format = String(req.query?.format || 'png').toLowerCase() === 'pdf' ? 'pdf' : 'png';
       const copies = parseCopiesQuery(req.query?.copies);
-      const result = await productLabelsService.renderProductLabel(productId, { format, copies });
+      const result = await productLabelsService.renderProductLabel(productId, {
+        format,
+        copies,
+        profileId: resolveProfileIdForLabel(req),
+      });
       res.setHeader('Content-Type', result.contentType);
       res.setHeader('Cache-Control', 'no-store');
       if (result.widthMm != null) {
