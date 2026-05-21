@@ -37,6 +37,18 @@ function marketplaceForProductSkus(marketplace) {
   return m === 'ozon' ? 'ozon' : m;
 }
 
+/** Базовый order_id для поиска строк резерва (YM: «57310148866:offer» → «57310148866»). */
+function orderIdKeyForReserveLookup(marketplace, orderId) {
+  let oid = String(orderId ?? '').trim();
+  if (!oid) return oid;
+  const mp = String(marketplace || '').toLowerCase();
+  if (mp === 'yandex' || mp === 'ym' || mp === 'yandexmarket') {
+    const i = oid.indexOf(':');
+    if (i >= 0) oid = oid.slice(0, i);
+  }
+  return oid;
+}
+
 function marketplaceToOrdersDb(marketplace) {
   const m = String(marketplace || '').toLowerCase();
   if (m === 'wildberries' || m === 'wb') return 'wb';
@@ -2408,7 +2420,7 @@ class OrdersService {
   }
 
   async _findOrderRowsForReserve(marketplace, orderId, { profileId = null } = {}) {
-    const oid = String(orderId ?? '').trim();
+    const oid = orderIdKeyForReserveLookup(marketplace, orderId);
     if (!oid || !marketplace) return [];
 
     if (repositoryFactory.isUsingPostgreSQL()) {
@@ -2816,7 +2828,10 @@ class OrdersService {
    * Строки заказа из локальной БД для карточки заказа (product_id → ссылка на каталог).
    */
   async getLocalLinesForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
-    const rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    let rows = await this._findOrderRowsForReserve(marketplace, orderId, { profileId });
+    if (!rows.length) {
+      rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    }
     const mapRow = (o) => ({
       orderLineId: o.orderId ?? o.order_id,
       productId: o.productId ?? o.product_id ?? null,

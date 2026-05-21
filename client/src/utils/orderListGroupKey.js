@@ -51,6 +51,34 @@ export function singleOrderListGroupKey(o) {
 }
 
 /**
+ * ID заказа для API (детали, резерв): у Яндекса в БД позиции — «номер:offerId», в запрос нужен базовый номер.
+ */
+export function marketplaceOrderIdForApi(ordersOrId, marketplace) {
+  if (ordersOrId != null && typeof ordersOrId === 'object' && !Array.isArray(ordersOrId)) {
+    return marketplaceOrderIdForApi(
+      ordersOrId.orderId ?? ordersOrId.order_id,
+      marketplace ?? ordersOrId.marketplace
+    );
+  }
+  const list = Array.isArray(ordersOrId) ? ordersOrId : null;
+  if (list?.length) {
+    for (const o of list) {
+      const id = marketplaceOrderIdForApi(o?.orderId ?? o?.order_id, marketplace ?? o?.marketplace);
+      if (id) return id;
+    }
+    return '';
+  }
+  const mp = normalizeMarketplaceForUI(marketplace);
+  const oid = String(ordersOrId ?? '').trim();
+  if (!oid) return oid;
+  if (mp === 'yandex') {
+    const i = oid.indexOf(':');
+    if (i >= 0) return oid.slice(0, i);
+  }
+  return oid;
+}
+
+/**
  * Сколько заказов (групп списка) в заданных статусах: одна строка таблицы «Заказы» = один счётчик.
  */
 export function countOrderGroupsWithStatuses(orders, statuses) {

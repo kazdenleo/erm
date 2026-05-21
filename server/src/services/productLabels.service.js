@@ -1,0 +1,555 @@
+/**
+ * Генерация этикеток товаров по шаблону категории
+ */
+
+import bwipjs from 'bwip-js';
+import sharp from 'sharp';
+import { PDFDocument } from 'pdf-lib';
+import { query } from '../config/database.js';
+import { categoryLabelTemplatesRepository } from '../repositories/categoryLabelTemplates.repository.pg.js';
+import productsService from './products.service.js';
+import {
+  getProductFieldDisplayValue,
+  labelProductFieldLabel,
+} from '../constants/labelProductFields.js';
+
+const SIZE_PRESETS = {
+  '58x40': { widthMm: 58, heightMm: 40 },
+  '75x120': { widthMm: 75, heightMm: 120 },
+};
+
+const MM_TO_PX = 8;
+
+function resolveMmToPx(previewScale) {
+  const s = Number(previewScale);
+  if (!Number.isFinite(s) || s <= 1) return MM_TO_PX;
+  return MM_TO_PX * Math.min(6, Math.max(2, s));
+}
+
+async function loadCategoryAttributeIds(userCategoryId) {
+  if (userCategoryId == null || userCategoryId === '') return [];
+  const result = await query(
+    'SELECT attribute_id FROM category_attributes WHERE user_category_id = $1::bigint',
+    [userCategoryId]
+  );
+  return (result.rows || []).map((r) => String(r.attribute_id));
+}
+
+function escapeXml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/** Приблизительная ширина символа для Arial (мм → px уже в fontSize). */
+function estimateCharWidth(fontSize, char) {
+  const code = char.charCodeAt(0);
+  if (code > 127 || code === 45 || code === 47) return fontSize * 0.58;
+  if (code >= 48 && code <= 57) return fontSize * 0.52;
+  return fontSize * 0.48;
+}
+
+function measureTextWidth(text, fontSize, bold = false) {
+  let w = 0;
+  for (const ch of String(text)) w += estimateCharWidth(fontSize, ch);
+  return w * (bold ? 1.08 : 1);
+}
+
+function wrapTextLines(text, maxWidthPx, fontSize, bold = false) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  if (measureTextWidth(raw, fontSize, bold) <= maxWidthPx) return [raw];
+
+  const lines = [];
+  const words = raw.split(/\s+/).filter(Boolean);
+
+  const pushBrokenWord = (word) => {
+    let chunk = '';
+    for (const ch of word) {
+      const next = chunk + ch;
+      if (chunk && measureTextWidth(next, fontSize, bold) > maxWidthPx) {
+        lines.push(chunk);
+        chunk = ch;
+      } else {
+        chunk = next;
+      }
+    }
+    if (chunk) lines.push(chunk);
+  };
+
+  let current = '';
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (measureTextWidth(candidate, fontSize, bold) <= maxWidthPx) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines.push(current);
+    if (measureTextWidth(word, fontSize, bold) > maxWidthPx) {
+      pushBrokenWord(word);
+      current = '';
+    } else {
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [raw.slice(0, Math.max(1, Math.floor(maxWidthPx / (fontSize * 0.55))))];
+}
+
+function resolveLineGapPx(template, mmToPx) {
+  const lineGapMm = Number(template?.line_gap_mm ?? template?.lineGapMm);
+  if (!Number.isFinite(lineGapMm) || lineGapMm < 0) return Math.round(1 * mmToPx);
+  return Math.round(lineGapMm * mmToPx);
+}
+
+/**
+ * Многострочный текст в SVG (tspan); не выходит за maxY.
+ * @returns {number} y после блока (до отступа между полями)
+ */
+function appendWrappedTextSvg(blocks, {
+  text,
+  x,
+  y,
+  fontSize,
+  fontWeight = 'normal',
+  fill = '#000',
+  maxWidthPx,
+  maxY,
+  lineGapPx = 0,
+  textAnchor = 'start',
+}) {
+  const lines = wrapTextLines(text, maxWidthPx, fontSize, fontWeight === 'bold');
+  if (!lines.length) return y;
+
+  const lineStep = fontSize + Math.max(0, lineGapPx);
+  const xAttr = textAnchor === 'middle' ? x + maxWidthPx / 2 : x;
+  const anchorAttr = textAnchor !== 'start' ? ` text-anchor="${textAnchor}"` : '';
+  const firstBaseline = y + fontSize;
+
+  if (firstBaseline > maxY) return y;
+
+  let lineCount = 0;
+  const tspans = [];
+  for (let i = 0; i < lines.length; i++) {
+    const baseline = firstBaseline + i * lineStep;
+    if (baseline > maxY) break;
+    const dy = i === 0 ? 0 : lineStep;
+    tspans.push(`<tspan x="${xAttr}" dy="${dy}">${escapeXml(lines[i])}</tspan>`);
+    lineCount++;
+  }
+  if (!lineCount) return y;
+
+  blocks.push(
+    `<text x="${xAttr}" y="${firstBaseline}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fill}"${anchorAttr}>${tspans.join('')}</text>`
+  );
+
+  return y + fontSize + (lineCount - 1) * lineStep;
+}
+
+function parseSize(template) {
+  const preset = SIZE_PRESETS[template?.size_preset || template?.sizePreset] || SIZE_PRESETS['58x40'];
+  const w = template?.width_mm ?? template?.widthMm ?? preset.widthMm;
+  const h = template?.height_mm ?? template?.heightMm ?? preset.heightMm;
+  return {
+    widthMm: Number(w) || preset.widthMm,
+    heightMm: Number(h) || preset.heightMm,
+    marginTopMm: Number(template?.margin_top_mm ?? template?.marginTopMm ?? 2),
+    marginRightMm: Number(template?.margin_right_mm ?? template?.marginRightMm ?? 2),
+    marginBottomMm: Number(template?.margin_bottom_mm ?? template?.marginBottomMm ?? 2),
+    marginLeftMm: Number(template?.margin_left_mm ?? template?.marginLeftMm ?? 2),
+  };
+}
+
+export function defaultLabelElements() {
+  return [
+    { id: 'name', type: 'name', enabled: true, fontSize: 11, bold: true },
+    { id: 'sku', type: 'sku', enabled: true, fontSize: 9 },
+    { id: 'barcode', type: 'barcode', enabled: true, heightMm: 12, showText: true, textFontSize: 8 },
+  ];
+}
+
+function normalizeElements(elements) {
+  const list = Array.isArray(elements) && elements.length ? elements : defaultLabelElements();
+  return list.filter((el) => el && el.enabled !== false);
+}
+
+async function loadAttributeNames(attributeIds) {
+  if (!attributeIds.length) return {};
+  const result = await query(
+    `SELECT id, name FROM product_attributes WHERE id = ANY($1::bigint[])`,
+    [attributeIds]
+  );
+  const map = {};
+  for (const row of result.rows || []) {
+    map[row.id] = row.name;
+  }
+  return map;
+}
+
+async function generateBarcodePng(text) {
+  const code = String(text || '').replace(/\D/g, '');
+  if (!code) return null;
+  let bcid = 'code128';
+  let barcodeText = code;
+  if (code.length === 12 || code.length === 13) {
+    bcid = 'ean13';
+    barcodeText = code.length === 12 ? `0${code}` : code.slice(0, 13);
+  }
+  try {
+    return await bwipjs.toBuffer({
+      bcid,
+      text: barcodeText,
+      scale: 2,
+      height: 8,
+      includetext: false,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function mmToPt(mm) {
+  return (mm / 25.4) * 72;
+}
+
+async function pngToPdfBuffer(pngBuffer, widthMm, heightMm) {
+  const widthPt = mmToPt(widthMm);
+  const heightPt = mmToPt(heightMm);
+  const doc = await PDFDocument.create();
+  const image = await doc.embedPng(pngBuffer);
+  const page = doc.addPage([widthPt, heightPt]);
+  const scaled = image.scaleToFit(widthPt, heightPt);
+  const x = (widthPt - scaled.width) / 2;
+  const y = (heightPt - scaled.height) / 2;
+  page.drawImage(image, { x, y, width: scaled.width, height: scaled.height });
+  return Buffer.from(await doc.save());
+}
+
+async function buildLabelSvg({ template, product, attributeNames, categoryAttributeIds = null, mmToPx = MM_TO_PX }) {
+  const { widthMm, heightMm, marginTopMm, marginRightMm, marginBottomMm, marginLeftMm } = parseSize(template);
+  const widthPx = Math.round(widthMm * mmToPx);
+  const heightPx = Math.round(heightMm * mmToPx);
+  const padL = Math.round(marginLeftMm * mmToPx);
+  const padR = Math.round(marginRightMm * mmToPx);
+  const padT = Math.round(marginTopMm * mmToPx);
+  const padB = Math.round(marginBottomMm * mmToPx);
+  const maxContentY = heightPx - padB;
+  const catAttrSet =
+    categoryAttributeIds && categoryAttributeIds.length
+      ? new Set(categoryAttributeIds.map(String))
+      : null;
+  const innerW = Math.max(10, widthPx - padL - padR);
+  const elements = normalizeElements(template.elements);
+  const attrValues = product.attribute_values || product.attributeValues || {};
+  const barcodeValue = Array.isArray(product.barcodes) && product.barcodes.length
+    ? String(product.barcodes[0]).trim()
+    : '';
+
+  const lineGapPx = resolveLineGapPx(template, mmToPx);
+  const blockGap = lineGapPx;
+
+  const blocks = [];
+  let y = padT;
+
+  for (const el of elements) {
+    if (y >= maxContentY) break;
+
+    if (el.type === 'name') {
+      const fs = Number(el.fontSize) || 11;
+      const name = String(product.name || product.mp_ozon_name || '').trim() || '—';
+      const weight = el.bold ? 'bold' : 'normal';
+      y = appendWrappedTextSvg(blocks, {
+        text: name,
+        x: padL,
+        y,
+        fontSize: fs,
+        fontWeight: weight,
+        fill: '#000',
+        maxWidthPx: innerW,
+        maxY: maxContentY,
+        lineGapPx,
+      });
+      y += blockGap;
+    } else if (el.type === 'sku') {
+      const fs = Number(el.fontSize) || 9;
+      const sku = String(product.sku || '').trim();
+      if (sku && y < maxContentY) {
+        y = appendWrappedTextSvg(blocks, {
+          text: `SKU: ${sku}`,
+          x: padL,
+          y,
+          fontSize: fs,
+          fill: '#333',
+          maxWidthPx: innerW,
+          maxY: maxContentY,
+          lineGapPx,
+        });
+        y += blockGap;
+      }
+    } else if (el.type === 'barcode' && barcodeValue) {
+      const hMm = Number(el.heightMm) || 12;
+      const hPx = Math.round(hMm * mmToPx);
+      const digitFs = Number(el.textFontSize ?? el.fontSize) || 8;
+      const textUnderH = el.showText !== false ? digitFs + 4 : 0;
+      const blockH = hPx + (textUnderH ? 2 + textUnderH : 0) + blockGap;
+      if (y + blockH > maxContentY) break;
+
+      const barcodePng = await generateBarcodePng(barcodeValue);
+      if (barcodePng) {
+        const resized = await sharp(barcodePng).resize({ width: innerW, height: hPx, fit: 'contain' }).png().toBuffer();
+        const b64 = resized.toString('base64');
+        blocks.push(
+          `<image x="${padL}" y="${y}" width="${innerW}" height="${hPx}" href="data:image/png;base64,${b64}" />`
+        );
+      }
+      y += hPx;
+      if (el.showText !== false) {
+        y += 2;
+        y = appendWrappedTextSvg(blocks, {
+          text: barcodeValue,
+          x: padL,
+          y,
+          fontSize: digitFs,
+          fill: '#000',
+          maxWidthPx: innerW,
+          maxY: maxContentY,
+          lineGapPx,
+          textAnchor: 'middle',
+        });
+      }
+      y += blockGap;
+    } else if (el.type === 'attribute' && el.attributeId != null) {
+      const aid = String(el.attributeId);
+      if (catAttrSet && !catAttrSet.has(aid)) continue;
+      const val = attrValues[aid] ?? attrValues[Number(aid)];
+      if (val == null || String(val).trim() === '') continue;
+      const fs = Number(el.fontSize) || 8;
+      const attrName = attributeNames[aid] || attributeNames[Number(aid)] || '';
+      const label = el.showName !== false && attrName ? `${attrName}: ` : '';
+      y = appendWrappedTextSvg(blocks, {
+        text: label + String(val),
+        x: padL,
+        y,
+        fontSize: fs,
+        fill: '#222',
+        maxWidthPx: innerW,
+        maxY: maxContentY,
+        lineGapPx,
+      });
+      y += blockGap;
+    } else if (el.type === 'product_field' && el.fieldKey) {
+      const val = getProductFieldDisplayValue(product, el.fieldKey);
+      if (!val) continue;
+      const fs = Number(el.fontSize) || 8;
+      const fieldLabel = labelProductFieldLabel(el.fieldKey);
+      const prefix = el.showName !== false && fieldLabel ? `${fieldLabel}: ` : '';
+      y = appendWrappedTextSvg(blocks, {
+        text: prefix + val,
+        x: padL,
+        y,
+        fontSize: fs,
+        fill: '#222',
+        maxWidthPx: innerW,
+        maxY: maxContentY,
+        lineGapPx,
+      });
+      y += blockGap;
+    }
+  }
+
+  const clipId = 'label-content-clip';
+  return {
+    svg: `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${widthPx}" height="${heightPx}" viewBox="0 0 ${widthPx} ${heightPx}">
+  <defs>
+    <clipPath id="${clipId}">
+      <rect x="${padL}" y="${padT}" width="${innerW}" height="${Math.max(0, maxContentY - padT)}" />
+    </clipPath>
+  </defs>
+  <rect width="100%" height="100%" fill="white"/>
+  <g clip-path="url(#${clipId})">
+  ${blocks.join('\n  ')}
+  </g>
+</svg>`,
+    widthMm,
+    heightMm,
+  };
+}
+
+function buildSampleProduct(elements, attributeNames, categoryAttributeIds = []) {
+  const catSet = new Set((categoryAttributeIds || []).map(String));
+  const attribute_values = {};
+  const sampleFields = {
+    brand: 'Пример бренда',
+    length: '150',
+    width: '100',
+    height: '50',
+    weight: '250',
+    product_type: 'product',
+    category_name: 'Пример категории',
+    organization_name: 'Пример организации',
+    country_of_origin: 'Россия',
+    barcodes: ['4601234567890'],
+  };
+  for (const el of elements || []) {
+    if (el.type === 'attribute' && el.attributeId != null && el.enabled !== false) {
+      const aid = String(el.attributeId);
+      if (catSet.size > 0 && !catSet.has(aid)) continue;
+      const an = attributeNames[aid] || attributeNames[Number(el.attributeId)] || 'атрибут';
+      attribute_values[aid] = `Пример: ${an}`;
+    }
+  }
+  return {
+    name: 'Пример названия товара',
+    sku: 'ART-001',
+    barcodes: ['4601234567890'],
+    attribute_values,
+    ...sampleFields,
+  };
+}
+
+function templateFromPayload(body, categoryId) {
+  return {
+    user_category_id: categoryId,
+    size_preset: body.size_preset || body.sizePreset || '58x40',
+    width_mm: body.width_mm ?? body.widthMm ?? null,
+    height_mm: body.height_mm ?? body.heightMm ?? null,
+    margin_top_mm: Number(body.margin_top_mm ?? body.marginTopMm ?? 2),
+    margin_right_mm: Number(body.margin_right_mm ?? body.marginRightMm ?? 2),
+    margin_bottom_mm: Number(body.margin_bottom_mm ?? body.marginBottomMm ?? 2),
+    margin_left_mm: Number(body.margin_left_mm ?? body.marginLeftMm ?? 2),
+    line_gap_mm: Number(body.line_gap_mm ?? body.lineGapMm ?? 1),
+    elements: Array.isArray(body.elements) && body.elements.length ? body.elements : defaultLabelElements(),
+  };
+}
+
+async function renderWithTemplate(template, product, format = 'png', { previewScale = null } = {}) {
+  const categoryId = template.user_category_id ?? template.userCategoryId;
+  const categoryAttributeIds = await loadCategoryAttributeIds(categoryId);
+  const attrIds = (template.elements || [])
+    .filter((el) => el.type === 'attribute' && el.attributeId != null)
+    .map((el) => Number(el.attributeId))
+    .filter((id) => Number.isFinite(id));
+  const attributeNames = await loadAttributeNames(attrIds);
+  const mmToPx = resolveMmToPx(previewScale);
+  const { svg, widthMm, heightMm } = await buildLabelSvg({
+    template,
+    product,
+    attributeNames,
+    categoryAttributeIds,
+    mmToPx,
+  });
+  const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
+  if (format === 'pdf') {
+    const pdf = await pngToPdfBuffer(pngBuffer, widthMm, heightMm);
+    return { buffer: pdf, contentType: 'application/pdf', widthMm, heightMm };
+  }
+  return { buffer: pngBuffer, contentType: 'image/png', widthMm, heightMm };
+}
+
+export const productLabelsService = {
+  SIZE_PRESETS,
+  defaultElements: defaultLabelElements,
+  templateFromPayload,
+  buildSampleProduct,
+
+  async getTemplateForProduct(product, profileId = null) {
+    const categoryId = product.user_category_id ?? product.userCategoryId ?? product.categoryId;
+    if (!categoryId) return null;
+    let template = await categoryLabelTemplatesRepository.findByCategoryId(categoryId, profileId);
+    if (!template) {
+      template = {
+        user_category_id: categoryId,
+        size_preset: '58x40',
+        margin_top_mm: 2,
+        margin_right_mm: 2,
+        margin_bottom_mm: 2,
+        margin_left_mm: 2,
+        line_gap_mm: 1,
+        elements: defaultLabelElements(),
+      };
+    }
+    return template;
+  },
+
+  async renderProductLabel(productId, { profileId = null, format = 'png' } = {}) {
+    const product = await productsService.getByIdWithDetails(productId);
+    if (!product) {
+      const err = new Error('Товар не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const template = await this.getTemplateForProduct(product, profileId);
+    if (!template) {
+      const err = new Error('У товара не указана категория. Назначьте категорию для печати этикетки.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    return renderWithTemplate(template, product, format);
+  },
+
+  async renderPreview(templatePayload, { categoryId, productId = null, previewScale = 4 } = {}) {
+    const template = templateFromPayload(templatePayload, categoryId);
+    let product;
+
+    if (productId != null && String(productId).trim() !== '') {
+      product = await productsService.getByIdWithDetails(productId);
+      if (!product) {
+        const err = new Error('Товар не найден');
+        err.statusCode = 404;
+        throw err;
+      }
+      const prodCat = product.user_category_id ?? product.userCategoryId ?? product.categoryId;
+      if (prodCat != null && categoryId != null && String(prodCat) !== String(categoryId)) {
+        const err = new Error('Товар относится к другой категории');
+        err.statusCode = 400;
+        throw err;
+      }
+    } else {
+      const categoryAttributeIds = await loadCategoryAttributeIds(categoryId);
+      const attrIds = categoryAttributeIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+      const attributeNames = await loadAttributeNames(attrIds);
+      product = buildSampleProduct(template.elements, attributeNames, categoryAttributeIds);
+    }
+
+    return renderWithTemplate(template, product, 'png', { previewScale });
+  },
+
+  buildPrintHtml(productId) {
+    return `<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="utf-8"/>
+<title>Этикетка товара</title>
+<style>
+  @page { margin: 0; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; }
+  img { max-width: 100%; height: auto; display: block; }
+  .err { font-family: system-ui, sans-serif; padding: 24px; color: #b00; }
+</style>
+</head>
+<body>
+<img id="label" alt="Этикетка" />
+<script>
+(function() {
+  var img = document.getElementById('label');
+  var url = '/api/products/${encodeURIComponent(String(productId))}/label?format=png';
+  img.onload = function() {
+    setTimeout(function() { try { window.print(); } catch(e) {} }, 300);
+  };
+  img.onerror = function() {
+    document.body.innerHTML = '<p class="err">Не удалось загрузить этикетку</p>';
+  };
+  img.src = url;
+})();
+</script>
+</body></html>`;
+  },
+};
+
+export default productLabelsService;

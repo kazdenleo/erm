@@ -24,7 +24,8 @@ import { onNavigationClick } from '../../utils/navigationClick.js';
 import {
   normalizeMarketplaceForUI,
   orderGroupKey,
-  singleOrderListGroupKey
+  singleOrderListGroupKey,
+  marketplaceOrderIdForApi
 } from '../../utils/orderListGroupKey';
 import './Orders.css';
 import './OrderDetail.css';
@@ -374,6 +375,7 @@ export function Orders() {
   }, [contextOrganizationId, organizations, setSelectedOrganizationId]);
   const [deleteLoadingKey, setDeleteLoadingKey] = useState(null);
   const [returnToNewLoadingKey, setReturnToNewLoadingKey] = useState(null);
+  const [releaseReserveLoadingKey, setReleaseReserveLoadingKey] = useState(null);
   const [cancelOrderLoadingKey, setCancelOrderLoadingKey] = useState(null);
   const [procurementLoadingKey, setProcurementLoadingKey] = useState(null);
   /** Сброс нативного select «Статус в системе» после применения */
@@ -585,9 +587,9 @@ export function Orders() {
       setDetailModalError(null);
       return;
     }
-    const { first } = detailModalRow;
+    const { first, orders: modalOrders } = detailModalRow;
     const marketplace = first.marketplace;
-    const orderId = first.orderId;
+    const orderId = marketplaceOrderIdForApi(modalOrders ?? [first], marketplace);
     const supportsDetailApi =
       marketplace === 'ozon' ||
       marketplace === 'wildberries' ||
@@ -799,6 +801,21 @@ export function Orders() {
       setRefreshError(e.response?.data?.message || e.message || 'Не удалось вернуть заказ в статус «Новый»');
     } finally {
       setReturnToNewLoadingKey(null);
+    }
+  };
+
+  const handleReleaseReserve = async (marketplace, orderId, rowKey) => {
+    if (!window.confirm('Снять весь резерв по этому заказу?')) return;
+    try {
+      setReleaseReserveLoadingKey(rowKey);
+      setRefreshError(null);
+      await ordersApi.setOrderReserve(marketplace, orderId, { action: 'unreserve' });
+      await reloadOrders({ silent: true });
+    } catch (e) {
+      console.error('Ошибка снятия резерва:', e);
+      setRefreshError(e.response?.data?.message || e.message || 'Не удалось снять резерв');
+    } finally {
+      setReleaseReserveLoadingKey(null);
     }
   };
 
@@ -2133,7 +2150,7 @@ export function Orders() {
       <Modal
         isOpen={!!detailModalRow}
         onClose={() => setDetailModalRow(null)}
-        title={detailModalRow ? `Заказ ${detailModalRow.first.orderId} (${allMarketplaces.find(m => m.code === detailModalRow.first.marketplace)?.name ?? detailModalRow.first.marketplace})` : 'Заказ'}
+        title={detailModalRow ? `Заказ ${marketplaceOrderIdForApi(detailModalRow.orders ?? [detailModalRow.first], detailModalRow.first.marketplace)} (${allMarketplaces.find(m => m.code === detailModalRow.first.marketplace)?.name ?? detailModalRow.first.marketplace})` : 'Заказ'}
         size="large"
       >
         {detailModalRow && (
@@ -2149,7 +2166,7 @@ export function Orders() {
               ['ozon', 'wildberries', 'wb', 'yandex'].includes(detailModalData.marketplace) && (
                 <OrderDetailContent
                   data={detailModalData}
-                  orderId={detailModalRow.first.orderId}
+                  orderId={marketplaceOrderIdForApi(detailModalRow.orders ?? [detailModalRow.first], detailModalRow.first.marketplace)}
                   onReserveChange={(r) => {
                     setDetailModalData((d) => (d ? { ...d, reserve: r } : d));
                     reloadOrders({ silent: true });
@@ -2547,6 +2564,27 @@ export function Orders() {
                   ) : null}
                   <td className="orders-col-actions" onClick={e => e.stopPropagation()}>
                     <div className="orders-actions">
+                      {reserveProgressBadge && reservedQty > 0 && (
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          className="orders-action-icon"
+                          onClick={() => handleReleaseReserve(first.marketplace, first.orderId, row.key)}
+                          disabled={
+                            releaseReserveLoadingKey === row.key ||
+                            procurementLoadingKey === row.key ||
+                            cancelOrderLoadingKey === row.key
+                          }
+                          title="Снять весь резерв по заказу"
+                          aria-label="Снять резерв"
+                        >
+                          {releaseReserveLoadingKey === row.key ? (
+                            <span className="orders-action-icon__busy" aria-hidden>…</span>
+                          ) : (
+                            <i className="pe-7s-unlock" aria-hidden />
+                          )}
+                        </Button>
+                      )}
                       {groupOrders.some((o) =>
                         isOrderStatusEligibleForProcurement(o.marketplace, o.status)
                       ) && (

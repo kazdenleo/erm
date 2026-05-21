@@ -695,7 +695,11 @@ class OrdersRepositoryPG {
    */
   async findRowsForReserveByOrderKey(marketplace, orderId, profileId = null) {
     const dbMarketplace = normalizeMarketplaceForDb(marketplace);
-    const oid = String(orderId ?? '').trim();
+    let oid = String(orderId ?? '').trim();
+    if (dbMarketplace === 'ym') {
+      const colon = oid.indexOf(':');
+      if (colon >= 0) oid = oid.slice(0, colon);
+    }
     if (!oid || !dbMarketplace) return [];
     const pid = normalizeProfileId(profileId);
     const likeTilde = `${oid}~%`;

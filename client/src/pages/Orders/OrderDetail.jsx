@@ -9,6 +9,7 @@ import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
 import { ordersApi } from '../../services/orders.api';
 import { Button } from '../../components/common/Button/Button';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
+import { marketplaceOrderIdForApi } from '../../utils/orderListGroupKey';
 import './OrderDetail.css';
 
 function orderReserveLineKey(line) {
@@ -469,7 +470,8 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
   const detail = data.detail;
   const localLines = data.localLines;
   const assembly = data.assembly;
-  const orderId = orderIdProp ?? data.orderId ?? null;
+  const orderIdRaw = orderIdProp ?? data.orderId ?? null;
+  const orderId = marketplaceOrderIdForApi(orderIdRaw, data.marketplace);
   const mp = String(data.marketplace || '').toLowerCase();
   const mpNorm =
     mp === 'wb'
@@ -620,7 +622,7 @@ export function OzonDetail({ detail, localLines }) {
 /** Краткая информация о заказе из списка (для ручных заказов, Яндекс или при ошибке API) */
 export function OrderSummaryFromList({ orders, marketplace, onReserveChange }) {
   const mpName = marketplaceNames[marketplace] || marketplace;
-  const orderId = orders?.[0]?.orderId ?? orders?.[0]?.order_id ?? null;
+  const orderId = marketplaceOrderIdForApi(orders, marketplace);
   const reserveFromList =
     orders?.length > 0
       ? {

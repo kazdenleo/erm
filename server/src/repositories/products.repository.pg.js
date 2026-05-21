@@ -1094,10 +1094,12 @@ class ProductsRepositoryPG {
       SELECT 
         p.*,
         b.name as brand_name,
-        uc.name as category_name
+        uc.name as category_name,
+        o.name as organization_name
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
+      LEFT JOIN organizations o ON p.organization_id = o.id
       WHERE p.id = $1
     `, [numericId]);
     

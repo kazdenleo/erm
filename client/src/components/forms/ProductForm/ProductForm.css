@@ -1,4 +1,11 @@
 /* ProductForm now uses ArchitectUI/Bootstrap classes. */
+
+.product-form__label-print-error {
+  flex: 1 1 100%;
+  font-size: 13px;
+  color: #b91c1c;
+  margin-top: 4px;
+}
 .product-form {
   max-width: 980px;
   /* место под фиксированную/абсолютную панель «Сохранить» */

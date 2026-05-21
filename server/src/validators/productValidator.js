@@ -192,7 +192,9 @@ export function validateUpdateProduct(req, res, next) {
  */
 export function validateProductId(req, res, next) {
   try {
-    productIdSchema.parse({ id: req.params.id });
+    const rawId = req.params.id ?? req.params.productId;
+    productIdSchema.parse({ id: rawId });
+    if (rawId != null && req.params.id == null) req.params.id = rawId;
     next();
   } catch (error) {
     if (error instanceof z.ZodError) {

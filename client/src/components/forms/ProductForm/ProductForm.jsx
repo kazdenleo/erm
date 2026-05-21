@@ -13,6 +13,8 @@ import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
 import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
+import { useProductLabelPrint } from '../../../hooks/useProductLabelPrint.js';
+import { resolveApiBaseUrl } from '../../../services/api.js';
 import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
@@ -312,6 +314,23 @@ export function ProductForm({
   canArchiveProduct = false,
 }) {
   const productFormDomId = useId();
+  const [printHelperUrl, setPrintHelperUrl] = useState('');
+  const { printProductLabel, printing: labelPrinting, error: labelPrintError } =
+    useProductLabelPrint(printHelperUrl);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${resolveApiBaseUrl().replace(/\/$/, '')}/config`)
+      .then((r) => r.json())
+      .then((body) => {
+        if (!cancelled) setPrintHelperUrl((body?.data?.printHelperUrl ?? '').trim());
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Локальное состояние для хранения актуальных данных товара
   const [currentProduct, setCurrentProduct] = useState(product);
   const [participationFlags, setParticipationFlags] = useState({
@@ -4181,9 +4200,29 @@ export function ProductForm({
               Отправить в архив
             </Button>
           ) : null}
+          {currentProduct?.id ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={labelPrinting || !formData.categoryId}
+              title={
+                !formData.categoryId
+                  ? 'Укажите категорию товара для печати этикетки'
+                  : 'Печать стикера по шаблону категории'
+              }
+              onClick={() => printProductLabel(currentProduct.id)}
+            >
+              {labelPrinting ? 'Печать…' : 'Печать стикера'}
+            </Button>
+          ) : null}
           <Button type="submit" form={productFormDomId} variant="primary">
             Сохранить
           </Button>
+          {labelPrintError ? (
+            <span className="product-form__label-print-error" role="alert">
+              {labelPrintError}
+            </span>
+          ) : null}
         </div>
       </div>
     </>

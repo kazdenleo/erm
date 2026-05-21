@@ -46,6 +46,9 @@ import * as platformMarketplaceNotificationsController from '../controllers/plat
 import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
 import downloadsRoutes from './downloads.routes.js';
+import categoryLabelTemplatesRoutes from './categoryLabelTemplates.routes.js';
+import productLabelsController from '../controllers/productLabels.controller.js';
+import { validateProductId } from '../validators/productValidator.js';
 import marketplaceInventoryRoutes from './marketplaceInventory.routes.js';
 import marketplaceStockRoutes from './marketplaceStock.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
@@ -82,6 +85,18 @@ router.get(
 router.get(
   '/shipments/:id/qr-sticker',
   wrapAsync(shipmentsController.getQrStickerPublic.bind(shipmentsController))
+);
+
+// Публичные: этикетки товаров — Print Helper и страница печати без Bearer
+router.get(
+  '/products/:id/label',
+  validateProductId,
+  wrapAsync(productLabelsController.getLabel.bind(productLabelsController))
+);
+router.get(
+  '/products/:id/label/print',
+  validateProductId,
+  wrapAsync(productLabelsController.getLabelPrint.bind(productLabelsController))
 );
 
 // Опциональная авторизация для всех /api (устанавливает req.user при наличии токена)
@@ -234,6 +249,9 @@ router.use('/product/prices', pricesRoutes);
 
 // User Categories API (пользовательские категории)
 router.use('/user-categories', userCategoriesRoutes);
+
+// Шаблоны этикеток по категориям
+router.use('/category-label-templates', categoryLabelTemplatesRoutes);
 
 // Category Mappings API (сопоставление категорий с маркетплейсами)
 router.use('/category-mappings', categoryMappingsRoutes);

@@ -4,6 +4,7 @@
 
 import React, { useState, useEffect } from 'react';
 import api from '../../services/api';
+import { LabelConstructor } from './LabelConstructor.jsx';
 import './Labels.css';
 
 const STORAGE_KEY = 'erm_label_size';
@@ -23,6 +24,7 @@ export function getStoredLabelSize() {
 }
 
 export function Labels() {
+  const [tab, setTab] = useState('general');
   const [size, setSize] = useState(getStoredLabelSize);
   const [downloadLoading, setDownloadLoading] = useState(false);
   const [downloadError, setDownloadError] = useState('');
@@ -68,7 +70,28 @@ export function Labels() {
   return (
     <div className="settings-page card settings-labels">
       <h1 className="title">Этикетки</h1>
-      <p className="subtitle">Размер этикетки для тихой печати (Print Helper).</p>
+      <nav className="settings-labels-tabs" aria-label="Разделы настроек этикеток">
+        <button
+          type="button"
+          className={tab === 'general' ? 'active' : ''}
+          onClick={() => setTab('general')}
+        >
+          Печать
+        </button>
+        <button
+          type="button"
+          className={tab === 'constructor' ? 'active' : ''}
+          onClick={() => setTab('constructor')}
+        >
+          Конструктор по категориям
+        </button>
+      </nav>
+
+      {tab === 'constructor' ? (
+        <LabelConstructor />
+      ) : (
+        <>
+      <p className="subtitle">Размер этикетки по умолчанию для тихой печати (Print Helper).</p>
       <div className="form-group settings-labels-select">
         <label htmlFor="label-size">Размер этикетки</label>
         <select
@@ -101,6 +124,8 @@ export function Labels() {
           </p>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }
