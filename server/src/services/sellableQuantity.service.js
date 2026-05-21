@@ -103,12 +103,15 @@ export async function computeAvailableQuantity(productId, opts = {}) {
     onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
   } else {
     const r = await query(
-      `SELECT COALESCE(SUM(quantity), 0)::int AS quantity
+      `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty,
+              (SELECT COALESCE(quantity, 0)::int FROM products WHERE id = $1) AS product_qty
        FROM product_warehouse_stock
        WHERE product_id = $1`,
       [pid]
     );
-    onHand = Number(r.rows[0]?.quantity ?? 0) || 0;
+    const pwsOnHand = Number(r.rows[0]?.pws_qty ?? 0) || 0;
+    const productQty = Number(r.rows[0]?.product_qty ?? 0) || 0;
+    onHand = Math.max(pwsOnHand, productQty);
   }
 
   let suppliers = 0;

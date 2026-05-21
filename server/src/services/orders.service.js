@@ -323,20 +323,10 @@ class OrdersService {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return { released: 0, ordersTouched: 0 };
 
-    const { computeAvailableQuantity, getReservedQuantityFromMovements } = await import(
-      './sellableQuantity.service.js'
-    );
-    const pr = await query(
-      `SELECT COALESCE(incoming_quantity, 0)::bigint AS incoming_quantity FROM products WHERE id = $1`,
-      [pid]
-    );
-    const row = pr.rows?.[0];
-    if (!row) return { released: 0, ordersTouched: 0 };
-    const metrics = await computeAvailableQuantity(pid);
-    const onHand = Number(metrics.onHand) || 0;
-    const incoming = Number(row.incoming_quantity) || 0;
-    const supplyCap = onHand + incoming;
-    const journalReserved = await getReservedQuantityFromMovements(pid);
+    const { getProductSupplySnapshotWithClient } = await import('./sellableQuantity.service.js');
+    const snap = await getProductSupplySnapshotWithClient(null, pid);
+    const supplyCap = snap.supplyCap;
+    const journalReserved = snap.reserved;
     let excess = journalReserved - supplyCap;
     if (excess <= 0) return { released: 0, ordersTouched: 0 };
 
