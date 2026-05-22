@@ -315,14 +315,19 @@ class StockMovementsService {
       return { movements: [], netReserved: 0 };
     }
 
-    const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
-    const netReserved = await syncProductReservedQuantityFromJournal(idNum);
-
     const rows = await this.repository.findByProduct(productId, { limit: cap, profileId });
 
-    const { isKitProductId, isKitStockHistoryMovementType, getKitComponents } =
+    const { isKitProductId, isKitStockHistoryMovementType, getKitComponents, readKitDisplayReservedQuantity } =
       await import('./kitStock.service.js');
-    if (!(await isKitProductId(idNum))) {
+    const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+    const isKit = await isKitProductId(idNum);
+
+    let netReserved;
+    if (isKit) {
+      netReserved = await readKitDisplayReservedQuantity(idNum);
+      await syncProductReservedQuantityFromJournal(idNum, { reserved: netReserved });
+    } else {
+      netReserved = await syncProductReservedQuantityFromJournal(idNum);
       return { movements: rows, netReserved };
     }
 

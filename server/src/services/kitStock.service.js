@@ -64,7 +64,7 @@ export function isKitPhysicalBalanceMovementType(type) {
 }
 
 export function isKitStockHistoryMovementType(type) {
-  return isKitPhysicalBalanceMovementType(type);
+  return KIT_STOCK_HISTORY_MOVEMENT_TYPES.includes(String(type || '').toLowerCase());
 }
 
 /** Были ли движения по SKU комплекта (для истории и прочего). */
@@ -1203,6 +1203,9 @@ export async function attachKitDisplayMetrics(products, options = {}) {
     p.supplierStockTotal = supplierKitUnits;
     p.quantity = wholeOnHand;
     p.reserved_quantity = reserved;
+    p.net_reserved_quantity = reserved;
+    p.reservedQuantity = reserved;
+    p.netReservedQuantity = reserved;
     p.kit_display = {
       whole_on_hand: wholeOnHand,
       assemblable_from_components: assemblable,

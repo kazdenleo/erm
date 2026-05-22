@@ -25,7 +25,7 @@ export function isKitProduct(product) {
   return Array.isArray(comps) && comps.length > 0;
 }
 
-/** Типы движений в истории остатков комплекта (только факт по SKU комплекта). */
+/** Типы движений в истории остатков комплекта (SKU + резерв / «в пути»). */
 export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = [
   'receipt',
   'shipment',
@@ -33,7 +33,10 @@ export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = [
   'inventory',
   'manual',
   'transfer',
-  'opening_balance'
+  'opening_balance',
+  'reserve',
+  'unreserve',
+  'incoming'
 ];
 
 export function isKitStockHistoryMovementType(type) {
@@ -43,6 +46,7 @@ export function isKitStockHistoryMovementType(type) {
 export function isKitStockHistoryMovement(movement, product) {
   if (!isKitProduct(product)) return true;
   const t = movement?.type ?? movement?.movement_type ?? movement?.movementType;
+  if (movement?.meta?.kit_component_reserve === true) return true;
   return isKitStockHistoryMovementType(t);
 }
 

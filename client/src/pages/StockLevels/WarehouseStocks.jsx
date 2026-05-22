@@ -523,7 +523,7 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
 }
 
 /** Снимки строк истории с enrich; индекс 0 — самая новая строка, prev для строки i = enriched[i+1]. */
-function buildHistoryDisplaySnapshots(displayRows) {
+function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null) {
   if (!Array.isArray(displayRows) || displayRows.length === 0) return [];
   const n = displayRows.length;
   const enriched = new Array(n);
@@ -532,6 +532,13 @@ function buildHistoryDisplaySnapshots(displayRows) {
     const raw = snapshotAfterDisplayItem(item);
     const prevLineBelow = i + 1 < n ? enriched[i + 1] : null;
     enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow);
+  }
+  const net =
+    currentNetReserved != null && Number.isFinite(Number(currentNetReserved))
+      ? Math.max(0, Math.floor(Number(currentNetReserved)))
+      : null;
+  if (net != null && enriched[0]) {
+    enriched[0].res = net;
   }
   return enriched;
 }
@@ -1387,8 +1394,8 @@ export function WarehouseStocks() {
   }, [historyList, historyProduct]);
 
   const historyDisplaySnapshots = useMemo(
-    () => buildHistoryDisplaySnapshots(displayHistoryRows),
-    [displayHistoryRows]
+    () => buildHistoryDisplaySnapshots(displayHistoryRows, historyNetReserved),
+    [displayHistoryRows, historyNetReserved]
   );
 
   const openReserveModalForProduct = useCallback((product, { pinnedList = null } = {}) => {
@@ -1529,14 +1536,13 @@ export function WarehouseStocks() {
     const built = buildStockRowsWithKits(products, (product) => {
       const onHand = Number(product.quantity ?? 0) || 0;
       const incoming = Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0;
-      const reserved =
-        Number(
-          product.net_reserved_quantity ??
-            product.netReservedQuantity ??
-            product.reserved_quantity ??
-            product.reservedQuantity ??
-            0
-        ) || 0;
+      const reservedRaw =
+        product.net_reserved_quantity ??
+        product.netReservedQuantity ??
+        product.reserved_quantity ??
+        product.reservedQuantity ??
+        0;
+      const reserved = Math.max(0, Number(reservedRaw) || 0);
       const allDetails = supplierBreakdownByProductId[String(product.id)] || [];
       const supplierDetails = enrichSupplierDetailsLabels(
         allDetails,
