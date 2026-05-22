@@ -306,7 +306,7 @@ export function defaultLabelElements() {
   return [
     { id: 'name', type: 'name', enabled: true, fontSize: 11, bold: true },
     { id: 'sku', type: 'sku', enabled: true, fontSize: 9 },
-    { id: 'barcode', type: 'barcode', enabled: true, heightMm: 14, showText: true, textFontSize: 8 },
+    { id: 'barcode', type: 'barcode', enabled: true, widthMm: 54, heightMm: 14, showText: true, textFontSize: 8 },
   ];
 }
 
@@ -401,6 +401,19 @@ function estimateBarcodeModules(bcid, text) {
 /**
  * Целочисленный scale: штрихкод ~90–94% ширины этикетки (как в этикеточных программах).
  */
+/** Ширина и смещение области штрихкода (px); widthMm — из конструктора, иначе на всю ширину. */
+function resolveBarcodeSlot(el, innerW, mmToPx) {
+  const wMm = Number(el.widthMm);
+  const widthPx =
+    Number.isFinite(wMm) && wMm > 0
+      ? Math.min(innerW, Math.round(Math.min(120, Math.max(15, wMm)) * mmToPx))
+      : innerW;
+  return {
+    widthPx,
+    offsetX: Math.max(0, Math.round((innerW - widthPx) / 2)),
+  };
+}
+
 function pickBarcodeScale(bcid, text, targetWidthPx) {
   const quietModules = 10;
   const modules = estimateBarcodeModules(bcid, text);
@@ -593,6 +606,8 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
     } else if (el.type === 'barcode' && barcodeValue) {
       const hMm = Number(el.heightMm) || 12;
       let hPx = Math.round(hMm * mmToPx);
+      const { widthPx: barWidthPx, offsetX: barOffsetX } = resolveBarcodeSlot(el, innerW, mmToPx);
+      const barX = padL + barOffsetX;
       const digitFs = resolveFontSizePx(el.textFontSize ?? el.fontSize, mmToPx, 14);
       const textUnderH = el.showText !== false ? digitFs + 4 : 0;
       const textGap = textUnderH ? 2 + textUnderH : 0;
@@ -604,15 +619,15 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
       const barHeightMm = hPx / mmToPx;
 
       const barcodePng = await generateBarcodePng(barcodeValue, {
-        widthPx: innerW,
+        widthPx: barWidthPx,
         barHeightMm,
       });
       if (barcodePng) {
-        const fitted = await fitBarcodePngToSlot(barcodePng, innerW, hPx);
+        const fitted = await fitBarcodePngToSlot(barcodePng, barWidthPx, hPx);
         if (fitted) {
           const b64 = fitted.toString('base64');
           blocks.push(
-            `<image x="${padL}" y="${y}" width="${innerW}" height="${hPx}" href="data:image/png;base64,${b64}" />`
+            `<image x="${barX}" y="${y}" width="${barWidthPx}" height="${hPx}" href="data:image/png;base64,${b64}" />`
           );
         }
       }
@@ -621,11 +636,11 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
         y += Math.max(2, Math.round(lineGapPx * 0.25));
         y = appendWrappedTextSvg(blocks, {
           text: barcodeValue,
-          x: padL,
+          x: barX,
           y,
           fontSize: digitFs,
           fill: '#000',
-          maxWidthPx: innerW,
+          maxWidthPx: barWidthPx,
           maxY: slotMaxY,
           lineGapPx,
           textAnchor: 'middle',

@@ -28,6 +28,7 @@ function normalizeElements(body) {
         : undefined,
     bold: el.bold === true,
     heightMm: el.heightMm != null ? Number(el.heightMm) : undefined,
+    widthMm: el.widthMm != null ? Number(el.widthMm) : undefined,
     showText: el.showText !== false,
     showName: el.showName !== false,
     showTitle: el.showTitle !== false,

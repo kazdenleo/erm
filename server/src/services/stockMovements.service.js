@@ -199,9 +199,9 @@ class StockMovementsService {
 
       const {
         getProductSupplySnapshotWithClient,
-        getReservedQuantityFromMovementsWithClient
+        getRawReservedQuantityFromMovementsWithClient
       } = await import('./sellableQuantity.service.js');
-      const journalBeforeGlobal = await getReservedQuantityFromMovementsWithClient(client, idNum);
+      const journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
       const orderDbIdRaw = metaOut.order_id ?? metaOut.orderId ?? null;
       let netForOrder = null;
       if (orderDbIdRaw != null && String(orderDbIdRaw).trim() !== '') {
@@ -212,16 +212,19 @@ class StockMovementsService {
       if (type === 'reserve' && safeDelta < 0) {
         const reserveAdd = Math.abs(safeDelta);
         const supply = await getProductSupplySnapshotWithClient(client, idNum);
-        if (supply.reservedRaw + reserveAdd > supply.supplyCap) {
+        if (
+          journalBeforeRaw + reserveAdd > supply.supplyCap ||
+          supply.available < reserveAdd
+        ) {
           const err = new Error(
             `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
-              `уже зарезервировано ${supply.reservedRaw}, запрошено ${reserveAdd} ` +
+              `уже зарезервировано ${journalBeforeRaw}, запрошено ${reserveAdd} ` +
               `(доступно без поставщиков: ${supply.available})`
           );
           err.statusCode = 400;
           throw err;
         }
-        const journalAfter = journalBeforeGlobal + reserveAdd;
+        const journalAfter = journalBeforeRaw + reserveAdd;
         await client.query(
           'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           [journalAfter, idNum]
@@ -231,7 +234,7 @@ class StockMovementsService {
         const cap =
           netForOrder != null && Number.isFinite(netForOrder)
             ? Math.max(0, Math.floor(netForOrder))
-            : journalBeforeGlobal;
+            : journalBeforeRaw;
         const release = Math.min(safeDelta, cap);
         if (release <= 0) {
           await client.query('ROLLBACK');
@@ -243,7 +246,7 @@ class StockMovementsService {
           err.statusCode = 400;
           throw err;
         }
-        const journalAfter = Math.max(0, journalBeforeGlobal - release);
+        const journalAfter = Math.max(0, journalBeforeRaw - release);
         await client.query(
           'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           [journalAfter, idNum]
@@ -273,6 +276,13 @@ class StockMovementsService {
       client.release();
     }
 
+    try {
+      const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+      await syncProductReservedQuantityFromJournal(idNum);
+    } catch {
+      /* ignore */
+    }
+
     // После reserve не вызываем trimExcessReservesForProduct: перерезерв нужно отклонять,
     // а не снимать резерв у других заказов (trim остаётся только на приёмку/отгрузку и т.п.).
 
@@ -296,17 +306,25 @@ class StockMovementsService {
   }
 
   /**
-   * Получить историю движений по товару
+   * Получить историю движений по товару; синхронизирует products.reserved_quantity с журналом.
    */
   async getHistory(productId, { limit = 100, profileId = null } = {}) {
     const cap = Math.max(1, Math.min(500, Number(limit) || 100));
-    const rows = await this.repository.findByProduct(productId, { limit: cap, profileId });
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
-    if (!idNum || Number.isNaN(idNum)) return rows;
+    if (!idNum || Number.isNaN(idNum)) {
+      return { movements: [], netReserved: 0 };
+    }
+
+    const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+    const netReserved = await syncProductReservedQuantityFromJournal(idNum);
+
+    const rows = await this.repository.findByProduct(productId, { limit: cap, profileId });
 
     const { isKitProductId, isKitStockHistoryMovementType, getKitComponents } =
       await import('./kitStock.service.js');
-    if (!(await isKitProductId(idNum))) return rows;
+    if (!(await isKitProductId(idNum))) {
+      return { movements: rows, netReserved };
+    }
 
     const combined = rows.filter((m) => isKitStockHistoryMovementType(m?.type));
 
@@ -337,7 +355,7 @@ class StockMovementsService {
       const tb = new Date(b.created_at || b.createdAt || 0).getTime();
       return tb - ta;
     });
-    return combined.slice(0, cap);
+    return { movements: combined.slice(0, cap), netReserved };
   }
 
   /**

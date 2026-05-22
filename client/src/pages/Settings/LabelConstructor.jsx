@@ -20,11 +20,32 @@ const ELEMENT_TYPES = [
   { type: 'attribute', label: 'Атрибут карточки' },
 ];
 
-function defaultElements() {
+const LABEL_PRESET_MM = {
+  '58x40': { widthMm: 58, heightMm: 40 },
+  '75x120': { widthMm: 75, heightMm: 120 },
+};
+
+function innerLabelWidthMm(form) {
+  const preset = LABEL_PRESET_MM[form?.size_preset] || LABEL_PRESET_MM['58x40'];
+  const left = Number(form?.margin_left_mm ?? 2);
+  const right = Number(form?.margin_right_mm ?? 2);
+  return Math.max(20, preset.widthMm - left - right);
+}
+
+function defaultElements(form) {
+  const innerW = innerLabelWidthMm(form);
   return [
     { id: 'name', type: 'name', enabled: true, fontSize: 11, bold: true },
     { id: 'sku', type: 'sku', enabled: true, fontSize: 9 },
-    { id: 'barcode', type: 'barcode', enabled: true, heightMm: 14, showText: true, textFontSize: 8 },
+    {
+      id: 'barcode',
+      type: 'barcode',
+      enabled: true,
+      widthMm: innerW,
+      heightMm: 14,
+      showText: true,
+      textFontSize: 8,
+    },
   ];
 }
 
@@ -38,7 +59,7 @@ function normalizeTemplate(data) {
     margin_bottom_mm: Number(d.margin_bottom_mm ?? d.marginBottomMm ?? 2),
     margin_left_mm: Number(d.margin_left_mm ?? d.marginLeftMm ?? 2),
     line_gap_mm: Number(d.line_gap_mm ?? d.lineGapMm ?? 1),
-    elements: hasElementsList ? clampElementsForSave(d.elements) : defaultElements(),
+    elements: hasElementsList ? clampElementsForSave(d.elements) : defaultElements(d),
   };
 }
 
@@ -63,6 +84,12 @@ function clampElementsForSave(elements) {
     if (el.type === 'barcode') {
       if (next.textFontSize != null) {
         next.textFontSize = clampFontSize(next.textFontSize, 8, 14);
+      }
+      if (next.widthMm != null) {
+        next.widthMm = Math.min(120, Math.max(15, Number(next.widthMm) || 15));
+      }
+      if (next.heightMm != null) {
+        next.heightMm = Math.min(40, Math.max(6, Number(next.heightMm) || 12));
       }
       return next;
     }
@@ -337,6 +364,7 @@ export function LabelConstructor() {
       id: 'barcode',
       type: 'barcode',
       enabled: true,
+      widthMm: innerLabelWidthMm(form),
       heightMm: 14,
       showText: true,
       textFontSize: 8,
@@ -619,14 +647,31 @@ export function LabelConstructor() {
                       {el.type === 'barcode' ? (
                         <>
                           <label className="label-constructor-mini">
+                            Ширина кода (мм)
+                            <input
+                              type="number"
+                              min={15}
+                              max={120}
+                              value={el.widthMm ?? innerLabelWidthMm(form)}
+                              onChange={(e) =>
+                                updateElement(idx, {
+                                  widthMm: Math.min(
+                                    120,
+                                    Math.max(15, Number(e.target.value) || innerLabelWidthMm(form))
+                                  ),
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="label-constructor-mini">
                             Высота кода (мм)
                             <input
                               type="number"
                               min={6}
                               max={40}
-                              value={el.heightMm ?? 12}
+                              value={el.heightMm ?? 14}
                               onChange={(e) =>
-                                updateElement(idx, { heightMm: Number(e.target.value) || 12 })
+                                updateElement(idx, { heightMm: Number(e.target.value) || 14 })
                               }
                             />
                           </label>

@@ -73,7 +73,20 @@ class StockMovementsRepositoryPG {
              COALESCE(p.quantity, 0)::int,
              COALESCE(p.incoming_quantity, 0)::int,
              CASE
-               WHEN $2::varchar IN ('reserve', 'unreserve') THEN COALESCE(p.reserved_quantity, 0)::int
+               WHEN $2::varchar IN ('reserve', 'unreserve') THEN GREATEST(0, (
+                 COALESCE((
+                   SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+                   FROM stock_movements sm
+                   WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+                 ), 0)
+                 + CASE
+                   WHEN $2::varchar = 'reserve' AND $3::int < 0 THEN (-$3::int)
+                   WHEN $2::varchar = 'reserve' AND $3::int > 0 THEN $3::int
+                   WHEN $2::varchar = 'unreserve' AND $3::int > 0 THEN (-$3::int)
+                   WHEN $2::varchar = 'unreserve' AND $3::int < 0 THEN $3::int
+                   ELSE 0
+                 END
+               ))::int
                ELSE COALESCE((
                  SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
                  FROM stock_movements sm

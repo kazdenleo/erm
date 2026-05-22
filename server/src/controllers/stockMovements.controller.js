@@ -63,7 +63,10 @@ class StockMovementsController {
       const { id } = req.params;
       const limit = req.query.limit ? Number(req.query.limit) : 100;
       const history = await stockMovementsService.getHistory(id, { limit, profileId: tid });
-      return res.status(200).json({ ok: true, data: history });
+      const movements = Array.isArray(history) ? history : history?.movements ?? [];
+      const netReserved =
+        history?.netReserved != null ? Number(history.netReserved) : null;
+      return res.status(200).json({ ok: true, data: movements, netReserved });
     } catch (error) {
       next(error);
     }

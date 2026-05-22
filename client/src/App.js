@@ -27,6 +27,8 @@ import { PrintProductLabel } from './pages/PrintProductLabel/PrintProductLabel.j
 import { StockLevelsLayout } from './pages/StockLevels/StockLevelsLayout';
 import { WarehouseStocks } from './pages/StockLevels/WarehouseStocks';
 import { Purchases } from './pages/StockLevels/Purchases';
+import { FboSupplies } from './pages/FboSupplies/FboSupplies';
+import { FboSupplyDetail } from './pages/FboSupplies/FboSupplyDetail';
 import { Integrations } from './pages/Integrations/Integrations';
 import { Notifications } from './pages/Notifications/Notifications';
 import { Categories } from './pages/Categories/Categories';
@@ -99,6 +101,8 @@ function App() {
           <Route path="/reviews" element={<ProtectedRoute><Layout><Reviews /></Layout></ProtectedRoute>} />
           <Route path="/orders/:marketplace/:orderId" element={<ProtectedRoute><Layout><OrderDetail /></Layout></ProtectedRoute>} />
           <Route path="/shipments" element={<ProtectedRoute><Layout><Shipments /></Layout></ProtectedRoute>} />
+          <Route path="/fbo-supplies" element={<ProtectedRoute><Layout><FboSupplies /></Layout></ProtectedRoute>} />
+          <Route path="/fbo-supplies/:id" element={<ProtectedRoute><Layout><FboSupplyDetail /></Layout></ProtectedRoute>} />
           <Route path="/assembly" element={<ProtectedRoute><Layout><Assembly /></Layout></ProtectedRoute>} />
           <Route path="/print/label/:orderId" element={<ProtectedRoute><PrintLabel /></ProtectedRoute>} />
           <Route path="/print/product-label/:productId" element={<ProtectedRoute><PrintProductLabel /></ProtectedRoute>} />

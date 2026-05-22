@@ -37,6 +37,7 @@ import assemblyRoutes from './assembly.routes.js';
 import productAttributesRoutes from './product_attributes.routes.js';
 import warehouseReceiptsRoutes from './warehouseReceipts.routes.js';
 import purchasesRoutes from './purchases.routes.js';
+import fboSuppliesRoutes from './fboSupplies.routes.js';
 import organizationsRoutes from './organizations.routes.js';
 import marketplaceCabinetsRoutes from './marketplace_cabinets.routes.js';
 import certificatesRoutes from './certificates.routes.js';
@@ -292,6 +293,9 @@ router.delete(
 );
 // Закупки (ожидание) и приёмки по закупкам — остальные методы
 router.use('/purchases', purchasesRoutes);
+
+// Поставки FBO на склады маркетплейсов
+router.use('/fbo-supplies', fboSuppliesRoutes);
 
 // Инвентаризация — явные маршруты (вложенный Router у части окружений не матчил POST /apply)
 router.get(

@@ -15,6 +15,39 @@ import {
 
 export { NET_RESERVED_MOVEMENT_ROW_CASE_SQL, NET_RESERVED_SUM_EXPR_SQL, RAW_RESERVED_SUM_EXPR_SQL };
 
+/**
+ * Привести products.reserved_quantity к журналу (или к правилу отображения комплекта).
+ * Вызывается при загрузке истории и списка остатков, если колонка «устарела».
+ */
+export async function syncProductReservedQuantityFromJournal(productId, opts = {}) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+
+  let rv =
+    opts.reserved != null && Number.isFinite(Number(opts.reserved))
+      ? Math.max(0, Math.floor(Number(opts.reserved)))
+      : null;
+
+  if (rv == null) {
+    const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
+    if (await isKitProductId(pid)) {
+      rv = await readKitDisplayReservedQuantity(pid, opts);
+    } else {
+      rv = await getReservedQuantityFromMovements(pid);
+    }
+  }
+
+  try {
+    await query(
+      `UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [rv, pid]
+    );
+  } catch {
+    /* ignore */
+  }
+  return rv;
+}
+
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
 export async function getReservedQuantityFromMovements(productId) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
@@ -254,6 +287,7 @@ export async function getReservableSupplyUnits(productId, opts = {}) {
 export default {
   computeAvailableQuantity,
   computeOwnWarehouseAvailable,
+  syncProductReservedQuantityFromJournal,
   getReservedQuantityFromMovements,
   getReservedQuantityFromMovementsWithClient,
   getRawReservedQuantityFromMovementsWithClient,

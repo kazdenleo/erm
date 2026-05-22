@@ -504,6 +504,11 @@ class OrdersService {
       reason = `${reasonBase} (комплектующие, ${kitUnits} компл.)`;
     }
 
+    const { getProductSupplySnapshotWithClient } = await import('./sellableQuantity.service.js');
+    const snapBeforeReserve = await getProductSupplySnapshotWithClient(null, productId);
+    qty = Math.min(qty, Math.floor(snapBeforeReserve.available));
+    if (qty <= 0) return;
+
     await stockMovementsService.applyChange(productId, {
       delta: -qty,
       type: 'reserve',
@@ -1514,7 +1519,11 @@ class OrdersService {
 
   /** Повторная попытка резерва (новый / закупка / после поступления остатка). */
   async _reapplyReserveForOrderRows(rows) {
-    const list = Array.isArray(rows) ? rows : [];
+    const list = [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+      const qa = Math.max(1, parseInt(a?.quantity ?? a?.qty ?? 1, 10) || 1);
+      const qb = Math.max(1, parseInt(b?.quantity ?? b?.qty ?? 1, 10) || 1);
+      return qb - qa;
+    });
     const excludeIds = list.map((r) => orderRowDbId(r)).filter((id) => id != null);
     const touchedKitIds = new Set();
     const { getReservableSupplyUnits } = await import('./sellableQuantity.service.js');
