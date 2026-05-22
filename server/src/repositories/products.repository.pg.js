@@ -157,54 +157,18 @@ function normalizeListCategoryId(categoryId) {
 }
 
 /**
- * Наличие для фильтра «только в наличии» (как в таблице остатков).
- * Склад, «в пути», поставщики; комплект — kit_display или остатки поставщиков по составу.
+ * Наличие для фильтра «только в наличии» — только колонка «Наличие» в таблице остатков
+ * (склад / целые комплекты 1 SKU), без «в пути» и без остатков поставщиков.
  */
 export function stockListOnHandQuantity(product) {
   if (!product) return 0;
-  const onHand = Math.max(0, Number(product.quantity) || 0);
-  const incoming = Math.max(
-    0,
-    Number(product.incoming_quantity ?? product.incomingQuantity) || 0
-  );
-  const suppliers = Math.max(
-    0,
-    Number(product.supplierStockTotal ?? product.supplier_stock_total) || 0
-  );
 
   const kit = product.kit_display ?? product.kitDisplay;
   if (kit && typeof kit === 'object') {
-    const whole = Math.max(0, Number(kit.whole_on_hand ?? kit.wholeOnHand) || 0);
-    const assemblable = Math.max(
-      0,
-      Number(kit.assemblable_from_components ?? kit.assemblableFromComponents) || 0
-    );
-    const supplierKit = Math.max(
-      0,
-      Number(kit.supplier_kit_units ?? kit.supplierKitUnits) || 0
-    );
-    if (whole > 0) return whole;
-    if (assemblable > 0) return assemblable;
-    if (supplierKit > 0) return supplierKit;
-    if (suppliers > 0) return suppliers;
-    if (onHand > 0) return onHand;
-    if (incoming > 0) return incoming;
-    return 0;
+    return Math.max(0, Number(kit.whole_on_hand ?? kit.wholeOnHand) || 0);
   }
 
-  const pt = String(product.product_type ?? product.productType ?? '').toLowerCase();
-  const isKit =
-    pt === 'kit' || product.is_kit_catalog === true || product.isKitCatalog === true;
-  if (isKit) {
-    if (onHand > 0) return onHand;
-    if (incoming > 0) return incoming;
-    if (suppliers > 0) return suppliers;
-    return 0;
-  }
-  if (onHand > 0) return onHand;
-  if (incoming > 0) return incoming;
-  if (suppliers > 0) return suppliers;
-  return 0;
+  return Math.max(0, Number(product.quantity) || 0);
 }
 
 function buildFindAllFilters(options = {}) {
@@ -353,7 +317,6 @@ function buildFindAllFilters(options = {}) {
           INNER JOIN product_warehouse_stock pws ON pws.product_id = kc.component_product_id
           WHERE kc.kit_product_id = p.id AND COALESCE(pws.quantity, 0) > 0
         )
-        OR COALESCE(p.incoming_quantity, 0) > 0
       )`;
     }
   }
