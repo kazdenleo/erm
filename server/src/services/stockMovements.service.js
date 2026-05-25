@@ -201,7 +201,6 @@ class StockMovementsService {
         getProductSupplySnapshotWithClient,
         getRawReservedQuantityFromMovementsWithClient
       } = await import('./sellableQuantity.service.js');
-      const journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
       const orderDbIdRaw = metaOut.order_id ?? metaOut.orderId ?? null;
       let netForOrder = null;
       if (orderDbIdRaw != null && String(orderDbIdRaw).trim() !== '') {
@@ -212,14 +211,13 @@ class StockMovementsService {
       if (type === 'reserve' && safeDelta < 0) {
         const reserveAdd = Math.abs(safeDelta);
         const supply = await getProductSupplySnapshotWithClient(client, idNum);
-        if (
-          journalBeforeRaw + reserveAdd > supply.supplyCap ||
-          supply.available < reserveAdd
-        ) {
+        const journalBeforeRaw = supply.reservedRaw;
+        const availableForReserve = Math.max(0, supply.available);
+        if (reserveAdd > availableForReserve) {
           const err = new Error(
             `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
               `уже зарезервировано ${journalBeforeRaw}, запрошено ${reserveAdd} ` +
-              `(доступно без поставщиков: ${supply.available})`
+              `(доступно без поставщиков: ${availableForReserve})`
           );
           err.statusCode = 400;
           throw err;
@@ -231,6 +229,7 @@ class StockMovementsService {
         );
         quantityChange = -reserveAdd;
       } else if (type === 'unreserve' && safeDelta > 0) {
+        const journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
         const cap =
           netForOrder != null && Number.isFinite(netForOrder)
             ? Math.max(0, Math.floor(netForOrder))
@@ -328,6 +327,10 @@ class StockMovementsService {
       await syncProductReservedQuantityFromJournal(idNum, { reserved: netReserved });
     } else {
       netReserved = await syncProductReservedQuantityFromJournal(idNum);
+      if (netReserved <= 0) {
+        const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+        netReserved = await getReservedQuantityFromMovements(idNum);
+      }
       return { movements: rows, netReserved };
     }
 
@@ -857,6 +860,9 @@ class StockMovementsService {
       const movementIn = await insertMovement({ delta: q, warehouseId: toId, direction: 'in' });
 
       await client.query('COMMIT');
+
+      const { syncProductQuantityFromWarehouseStock } = await import('./kitStock.service.js');
+      await syncProductQuantityFromWarehouseStock(pid);
 
       return {
         ok: true,

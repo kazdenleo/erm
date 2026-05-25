@@ -349,7 +349,7 @@ export async function computeKitDisplayStock(kitProductId, opts = {}) {
   return computeKitMetricsFromComponents(kitProductId, opts);
 }
 
-async function syncProductQuantityFromWarehouseStock(productId) {
+export async function syncProductQuantityFromWarehouseStock(productId) {
   const pid = Number(productId);
   const r = await query(
     `SELECT COALESCE(SUM(quantity), 0)::int AS total
@@ -647,21 +647,37 @@ function kitTotalDisplayReservedFromContext(kitId, ctx) {
   return compSum;
 }
 
+/** Сумма нетто-резерва по всем комплектующим комплекта (отдельно по каждому product_id). */
+export async function sumKitComponentsNetReserved(kitProductId) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+  try {
+    const r = await query(
+      `SELECT COALESCE(SUM(sub.rv), 0)::int AS total
+       FROM (
+         SELECT sm.product_id,
+           ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+         FROM stock_movements sm
+         WHERE sm.product_id IN (
+           SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
+         )
+           AND sm.type IN ('reserve', 'unreserve')
+         GROUP BY sm.product_id
+       ) sub`,
+      [kitId]
+    );
+    return Number(r.rows?.[0]?.total ?? 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function readKitDisplayReservedQuantity(kitProductId, _opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
   const onSku = await readKitSkuNetReserved(kitId);
   if (onSku > 0) return onSku;
-  const components = await getKitComponents(kitId);
-  if (!components?.length) return 0;
-  const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
-  let compSum = 0;
-  for (const c of components) {
-    const pid = Number(c.component_product_id);
-    if (!Number.isFinite(pid) || pid < 1) continue;
-    compSum += await getReservedQuantityFromMovements(pid);
-  }
-  return compSum;
+  return sumKitComponentsNetReserved(kitId);
 }
 
 export async function getNetReservedForOrderProduct(orderDbId, productId) {
@@ -766,9 +782,10 @@ export async function computeKitReservableBreakdown(kitProductId, opts = {}) {
   }
   const fromComponents = await computeAssemblableFromComponents(kitId, opts);
   const whole = await readKitStockFromDb(kitId, opts);
+  const onSkuReserved = await readKitSkuNetReserved(kitId);
   const wholeAvail = Math.max(
     0,
-    (whole.onHand || 0) + (whole.incoming || 0) - (whole.reserved || 0)
+    (whole.onHand || 0) + (whole.incoming || 0) - onSkuReserved
   );
   const allocCap = allocateKitReservePriority(9999, {
     wholeAvail,
@@ -1194,11 +1211,15 @@ export async function attachKitDisplayMetrics(products, options = {}) {
 
     const wholeOnHand = kitPhysicalOnHandFromContext(kitId, ctx);
     const assemblable = assemblableFromContext(kitId, ctx);
-    const supplierKitUnits = supplierKitUnitsFromContext(kitId, ctx);
+    const supplierSyncOn = options.supplierSyncEnabled !== false;
+    const supplierKitUnits = supplierSyncOn ? supplierKitUnitsFromContext(kitId, ctx) : 0;
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
-    const reserved = kitDisplayReservedFromContext(kitId, ctx);
+    let reserved = kitDisplayReservedFromContext(kitId, ctx);
+    if (reserved <= 0) {
+      reserved = await readKitDisplayReservedQuantity(kitId, options);
+    }
     const wholeAvail = Math.max(0, wholeOnHand + incoming - reserved);
-    const availableTotal = assemblable + wholeAvail;
+    const availableTotal = assemblable + wholeAvail + supplierKitUnits;
 
     p.supplierStockTotal = supplierKitUnits;
     p.quantity = wholeOnHand;
@@ -1228,6 +1249,7 @@ export default {
   buildKitComponentQtyMap,
   computeKitMetricsFromComponents,
   computeKitDisplayStock,
+  syncProductQuantityFromWarehouseStock,
   computeMaxKitUnitsReservable,
   computeKitReservableBreakdown,
   allocateKitReservePriority,
@@ -1254,6 +1276,7 @@ export default {
   readKitPhysicalOnHandFromDb,
   readKitSkuNetReserved,
   readKitDisplayReservedQuantity,
+  sumKitComponentsNetReserved,
   kitHasPhysicalBalanceMovements,
   kitHasWholeKitInboundMovements,
   KIT_WHOLE_STOCK_INBOUND_TYPES,

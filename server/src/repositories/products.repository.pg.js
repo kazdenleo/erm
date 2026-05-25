@@ -1018,7 +1018,18 @@ class ProductsRepositoryPG {
     const kitCtx = hasKits ? await buildKitListStockContext(products, options) : null;
 
     if (hasKits && kitCtx) {
-      await attachKitDisplayMetrics(products, { ...options, _kitCtx: kitCtx });
+      let supplierSyncOn = options.supplierSyncEnabled !== false;
+      if (options.supplierSyncEnabled === undefined && options.profileId != null && options.profileId !== '') {
+        const { isProfileSupplierSyncEnabled } = await import('../utils/profileSupplierSync.js');
+        const profRepo = (await import('../config/repository-factory.js')).default.getProfilesRepository();
+        const prof = await profRepo.findById(options.profileId);
+        supplierSyncOn = isProfileSupplierSyncEnabled(prof);
+      }
+      await attachKitDisplayMetrics(products, {
+        ...options,
+        _kitCtx: kitCtx,
+        supplierSyncEnabled: supplierSyncOn,
+      });
     }
 
     await this._reconcileReservedQuantityFromMovements(
@@ -1026,6 +1037,21 @@ class ProductsRepositoryPG {
       { ...options, persistReservedToDb: true, skipKitCatalog: hasKits && !!kitCtx },
       kitCtx
     );
+
+    if (hasKits) {
+      const { readKitDisplayReservedQuantity, isKitCatalogProduct: isKitCat } =
+        await import('../services/kitStock.service.js');
+      for (const p of products) {
+        if (!isKitCat(p)) continue;
+        const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+        if (!Number.isFinite(nid) || nid < 1) continue;
+        const rv = await readKitDisplayReservedQuantity(nid, options);
+        p.reserved_quantity = rv;
+        p.net_reserved_quantity = rv;
+        p.reservedQuantity = rv;
+        p.netReservedQuantity = rv;
+      }
+    }
 
     return products;
   }

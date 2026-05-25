@@ -793,8 +793,9 @@ class OrdersSyncService {
       }
 
       // Авто-резерв для новых заказов (и «ожидающих» WB до резолва статуса): product_id или сопоставление по SKU.
-      // Идемпотентно: reserve создаётся только если его ещё нет.
+      // Идемпотентно: reserve создаётся только если его ещё нет. Сначала крупные заказы — меньше частичных резервов.
       const reserveKeysDone = new Set();
+      const rowsToAutoReserve = [];
       for (const o of allOrders) {
         try {
           if (!o || !orderEligibleForProcurement(o)) continue;
@@ -819,11 +820,14 @@ class OrdersSyncService {
               ].filter(Boolean);
           for (const row of list) {
             if (!row || isOrderTerminalNoReserve(row.status)) continue;
-            await ordersService._reserveForOrderIfStockAvailable(row);
+            rowsToAutoReserve.push(row);
           }
         } catch {
           // не блокируем синк из-за одного заказа
         }
+      }
+      if (rowsToAutoReserve.length > 0) {
+        await ordersService._reapplyReserveForOrderRows(rowsToAutoReserve);
       }
     } else {
       await writeData('orders', {

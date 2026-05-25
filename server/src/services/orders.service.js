@@ -941,6 +941,15 @@ class OrdersService {
       preferredWh
     );
 
+    const { getProductSupplySnapshotWithClient } = await import('./sellableQuantity.service.js');
+    if (!(await isKitProductId(productId))) {
+      const snapGate = await getProductSupplySnapshotWithClient(null, productId);
+      if (Math.floor(snapGate.available) <= 0) return;
+    } else {
+      const maxKitsGate = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId);
+      if (maxKitsGate <= 0) return;
+    }
+
     // Частичный резерв:
     // - резервируем только то, что уже есть (факт + ожидается - уже зарезервировано)
     // - если пришла часть товара, резервируем эту часть, даже если до количества заказа не хватает
@@ -951,19 +960,24 @@ class OrdersService {
       const maxKits = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId);
       const reserveKits = Math.min(need, maxKits);
       if (reserveKits <= 0) return;
-      await applyKitOrderReserve(
-        productId,
-        reserveKits,
-        orderIdStr || String(id),
-        {
-          order_id: id,
-          orderId: orderIdStr,
-          warehouse_id: warehouseId,
-          partial: reserveKits < need
-        },
-        (compId, compQty, oid, m) =>
-          this._applyReserveForOrderComponent(compId, compQty, oid, m)
-      );
+      try {
+        await applyKitOrderReserve(
+          productId,
+          reserveKits,
+          orderIdStr || String(id),
+          {
+            order_id: id,
+            orderId: orderIdStr,
+            warehouse_id: warehouseId,
+            partial: reserveKits < need
+          },
+          (compId, compQty, oid, m) =>
+            this._applyReserveForOrderComponent(compId, compQty, oid, m)
+        );
+      } catch (e) {
+        if (e?.statusCode === 400) return;
+        throw e;
+      }
       return;
     }
 
@@ -978,12 +992,20 @@ class OrdersService {
     const availableRecheck = await getComponentAssemblableUnits(productId, { warehouseId });
     if (Math.floor(availableRecheck) < reserveNow) return;
 
-    await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
-      order_id: id,
-      orderId: orderIdStr,
-      warehouse_id: warehouseId,
-      partial: reserveNow < need
-    });
+    const snapFinal = await getProductSupplySnapshotWithClient(null, productId);
+    if (Math.floor(snapFinal.available) < reserveNow) return;
+
+    try {
+      await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
+        order_id: id,
+        orderId: orderIdStr,
+        warehouse_id: warehouseId,
+        partial: reserveNow < need
+      });
+    } catch (e) {
+      if (e?.statusCode === 400) return;
+      throw e;
+    }
   }
 
   /** Подпись позиции заказа для UI резерва (название · артикул). */
@@ -1123,10 +1145,14 @@ class OrdersService {
         .filter((n) => Number.isFinite(n) && n > 0)
     );
     const { getReservableSupplyUnits } = await import('./sellableQuantity.service.js');
-    const availableSupply = await getReservableSupplyUnits(pid);
     const isKit = await isKitProductId(pid);
-    // У комплекта в products.quantity часто 0 — резерв идёт по комплектующим, очередь всё равно обрабатываем.
-    if (!isKit && availableSupply <= 0) return;
+    if (!isKit) {
+      const availableSupply = await getReservableSupplyUnits(pid);
+      if (availableSupply <= 0) return;
+    } else {
+      const maxKits = await computeMaxKitUnitsReservable(pid);
+      if (maxKits <= 0) return;
+    }
 
     const runQueueForProduct = async (forPid) => {
       const fp = Number(forPid);
@@ -1138,7 +1164,10 @@ class OrdersService {
       for (const o of q) {
         const oid = orderRowDbId(o);
         if (oid && exclude.has(oid)) continue;
-        if (!isKit) {
+        if (isKit) {
+          const maxK = await computeMaxKitUnitsReservable(fp);
+          if (maxK <= 0) break;
+        } else {
           const avail = await getReservableSupplyUnits(fp);
           if (avail <= 0) break;
         }
@@ -1532,8 +1561,15 @@ class OrdersService {
       try {
         const pid = await this._resolveProductIdForOrderStock(row);
         const pnum = Number(pid);
-        if (Number.isFinite(pnum) && pnum > 0 && !(await isKitProductId(pnum))) {
-          if ((await getReservableSupplyUnits(pnum)) <= 0) continue;
+        if (Number.isFinite(pnum) && pnum > 0) {
+          if (await isKitProductId(pnum)) {
+            const wh = await this._resolveOwnWarehouseIdForOrder(row);
+            const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(pnum, wh);
+            const maxKits = await this._computeMaxKitUnitsReservableForOrder(pnum, warehouseId);
+            if (maxKits <= 0) continue;
+          } else if ((await getReservableSupplyUnits(pnum)) <= 0) {
+            continue;
+          }
         }
         await this._applyReserveForOrderIfAbsent(row);
       } catch (e) {
