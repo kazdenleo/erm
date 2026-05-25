@@ -203,10 +203,7 @@ function extractOrderIdFromReserveMovement(m) {
   const meta = parseMovementMeta(m);
   const fromMeta = meta.orderId != null && String(meta.orderId).trim() !== '' ? String(meta.orderId).trim() : '';
   if (fromMeta) return fromMeta;
-  const reason = String(m.reason || '').trim();
-  let r = /^Резерв по заказу\s+(.+)$/i.exec(reason);
-  if (r) return r[1].trim();
-  r = /^Снятие резерва по заказу\s+(.+?)(?:\s*\(|$)/i.exec(reason);
+  const r = /^Резерв по заказу\s+(.+)$/i.exec(String(m.reason || '').trim());
   return r ? r[1].trim() : '';
 }
 
@@ -224,9 +221,7 @@ function reserveOrdersFromMovements(movements) {
     const meta = parseMovementMeta(m);
     const orderId = extractOrderIdFromReserveMovement(m);
     if (!orderId) continue;
-    const qc = Number(m.quantity_change) || 0;
-    const t = movementTypeLower(m);
-    const qty = t === 'unreserve' ? Math.max(0, qc) : Math.max(0, -qc);
+    const qty = Math.max(0, -Number(m.quantity_change) || 0);
     out.push({
       orderDbId: meta.order_id != null ? Number(meta.order_id) : null,
       marketplace: marketplacePathFromMeta(meta),

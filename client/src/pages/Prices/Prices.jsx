@@ -3,17 +3,25 @@
  * Страница управления ценами товаров на маркетплейсах
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useProducts } from '../../hooks/useProducts';
+import { useCategories } from '../../hooks/useCategories';
+import { useBrands } from '../../hooks/useBrands';
+import { useOrganizations } from '../../hooks/useOrganizations';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { pricesApi } from '../../services/prices.api.js';
+import { productsApi } from '../../services/products.api.js';
 import { categoryMappingsApi } from '../../services/categoryMappings.api.js';
 import { integrationsApi } from '../../services/integrations.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import './Prices.css';
+import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
+
+const PRICES_LIST_PAGE_SIZES = [50, 100, 200];
+const FILTER_CATEGORY_NONE = '__no_category__';
 
 // Нормализация ответа API: сервер возвращает { ok, data: result }, axios даёт response.data = этот объект
 function getPriceResult(r) {
@@ -343,9 +351,32 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
 }
 
 export function Prices() {
-  const { products, loading, error, loadProducts } = useProducts();
+  const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
+  const { categories } = useCategories();
+  const { brands } = useBrands();
+  const { organizations } = useOrganizations();
   const { warehouses } = useWarehouses();
   const { openProductCardFromClick } = useProductCardModal();
+  const [filterOrganizationId, setFilterOrganizationId] = useState('');
+  const [filterBrandId, setFilterBrandId] = useState('');
+  const [filterCategoryId, setFilterCategoryId] = useState('');
+  const [filterProductType, setFilterProductType] = useState('');
+  const [filterArchiveMode, setFilterArchiveMode] = useState('');
+  const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
+  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [listSearch, setListSearch] = useState('');
+  const listSearchDebounceRef = useRef(null);
+  const loadListRef = useRef(() => {});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('pricesListPageSize') : null;
+      const n = parseInt(raw, 10);
+      return PRICES_LIST_PAGE_SIZES.includes(n) ? n : 50;
+    } catch {
+      return 50;
+    }
+  });
   const [calculatedPrices, setCalculatedPrices] = useState({});
   const [loadingPrices, setLoadingPrices] = useState({});
   const [calculatorData, setCalculatorData] = useState({});
@@ -389,6 +420,238 @@ export function Prices() {
   // Получаем wbWarehouseName из основного склада (type = 'warehouse' с указанным wbWarehouseName)
   const mainWarehouse = warehouses.find(w => w.type === 'warehouse' && w.wbWarehouseName);
   const wbWarehouseName = mainWarehouse?.wbWarehouseName || null;
+
+  const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
+
+  const loadList = (partial = {}) => {
+    const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
+    const brand = partial.brandId !== undefined ? partial.brandId : filterBrandId;
+    const cat = partial.categoryId !== undefined ? partial.categoryId : filterCategoryId;
+    const pt = partial.productType !== undefined ? partial.productType : filterProductType;
+    const archiveMode =
+      partial.archiveMode !== undefined ? partial.archiveMode : filterArchiveMode;
+    const searchRaw = partial.search !== undefined ? partial.search : listSearch;
+    const page = partial.page !== undefined ? partial.page : currentPage;
+    const search = typeof searchRaw === 'string' ? searchRaw.trim() : '';
+    const ptTrim = typeof pt === 'string' ? pt.trim() : '';
+    const limitCandidate = partial.limit !== undefined ? Number(partial.limit) : pageSize;
+    const limit = PRICES_LIST_PAGE_SIZES.includes(limitCandidate) ? limitCandidate : 50;
+    return loadProducts({
+      organizationId: org || undefined,
+      brandId: brand || undefined,
+      categoryId: cat || undefined,
+      productType: ptTrim || undefined,
+      search: search || undefined,
+      includeArchived: archiveMode === 'include' || archiveMode === 'only',
+      archivedOnly: archiveMode === 'only',
+      limit,
+      offset: Math.max(0, (page - 1) * limit),
+      silent: true,
+    });
+  };
+
+  loadListRef.current = loadList;
+
+  const activeFiltersCount =
+    (filterOrganizationId ? 1 : 0) +
+    (filterBrandId ? 1 : 0) +
+    (filterCategoryId ? 1 : 0) +
+    (filterProductType ? 1 : 0) +
+    (filterArchiveMode ? 1 : 0);
+  const totalProducts = Number.isFinite(Number(meta?.total)) ? Number(meta.total) : visibleProducts.length;
+  const totalPages = Math.max(1, Math.ceil(Math.max(0, totalProducts) / Math.max(1, pageSize)));
+
+  const clearListFilters = () => {
+    setCurrentPage(1);
+    setFilterOrganizationId('');
+    setFilterBrandId('');
+    setFilterCategoryId('');
+    setFilterProductType('');
+    setFilterArchiveMode('');
+    loadList({ organizationId: '', brandId: '', categoryId: '', productType: '', archiveMode: '', page: 1 });
+  };
+
+  const handleListSearchChange = (e) => {
+    const v = e.target.value;
+    setListSearch(v);
+    if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
+    listSearchDebounceRef.current = setTimeout(() => {
+      setCurrentPage(1);
+      loadListRef.current({ search: v, page: 1 });
+    }, 400);
+  };
+
+  const handleFilterOrganizationChange = (e) => {
+    const v = e.target.value;
+    setCurrentPage(1);
+    setFilterOrganizationId(v);
+    loadList({ organizationId: v, page: 1 });
+  };
+
+  const handleFilterCategoryChange = (e) => {
+    const v = e.target.value;
+    setCurrentPage(1);
+    setFilterCategoryId(v);
+    loadList({ categoryId: v, page: 1 });
+  };
+
+  const handleFilterProductTypeChange = (e) => {
+    const v = e.target.value;
+    setCurrentPage(1);
+    setFilterProductType(v);
+    loadList({ productType: v, page: 1 });
+  };
+
+  const handleFilterArchiveModeChange = (e) => {
+    const v = e.target.value;
+    setCurrentPage(1);
+    setFilterArchiveMode(v);
+    loadList({ archiveMode: v, page: 1 });
+  };
+
+  const handleFilterBrandChange = (e) => {
+    const v = e.target.value;
+    setCurrentPage(1);
+    setFilterBrandId(v);
+    loadList({ brandId: v, page: 1 });
+  };
+
+  const handlePageSizeChange = (e) => {
+    const next = parseInt(e.target.value, 10);
+    if (!PRICES_LIST_PAGE_SIZES.includes(next)) return;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem('pricesListPageSize', String(next));
+    } catch {
+      /* ignore */
+    }
+    setPageSize(next);
+    setCurrentPage(1);
+    loadListRef.current({ page: 1, limit: next });
+  };
+
+  const goToPage = (page) => {
+    const next = Math.min(Math.max(1, page), totalPages);
+    setCurrentPage(next);
+    loadListRef.current({ page: next });
+  };
+
+  const showNoneCategoryOption = useMemo(
+    () =>
+      showUncategorizedCategoryOption === true ||
+      (filterCategoryId === FILTER_CATEGORY_NONE && showUncategorizedCategoryOption !== false),
+    [showUncategorizedCategoryOption, filterCategoryId]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const delay = typeof listSearch === 'string' && listSearch.trim() !== '' ? 400 : 0;
+    const t = setTimeout(async () => {
+      try {
+        const searchTrim = typeof listSearch === 'string' ? listSearch.trim() : '';
+        const ptTrim = typeof filterProductType === 'string' ? filterProductType.trim() : '';
+        const res = await productsApi.getAll({
+          cacheBust: true,
+          organizationId: filterOrganizationId || undefined,
+          brandId: filterBrandId || undefined,
+          categoryId: FILTER_CATEGORY_NONE,
+          productType: ptTrim || undefined,
+          search: searchTrim || undefined,
+          limit: 1,
+          offset: 0,
+        });
+        if (cancelled) return;
+        const list = Array.isArray(res?.data) ? res.data : [];
+        const total = Number(res?.meta?.total);
+        const has = list.length > 0 || (Number.isFinite(total) && total > 0);
+        setShowUncategorizedCategoryOption(has);
+      } catch {
+        if (!cancelled) setShowUncategorizedCategoryOption(false);
+      }
+    }, delay);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [filterOrganizationId, filterBrandId, filterProductType, listSearch]);
+
+  useEffect(() => {
+    if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
+      setFilterCategoryId('');
+      setCurrentPage(1);
+      loadListRef.current({ categoryId: '', page: 1 });
+    }
+  }, [showUncategorizedCategoryOption, filterCategoryId]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages, pageSize]);
+
+  useEffect(() => {
+    loadList({ page: currentPage, silent: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная загрузка
+  }, []);
+
+  const renderPricesListPager = (placement) => {
+    const idSuffix = placement === 'top' ? 'top' : 'bottom';
+    return (
+      <div
+        className={`d-flex justify-content-between align-items-center px-3 py-2 flex-wrap gap-2 ${
+          placement === 'top' ? 'border-bottom' : 'border-top'
+        }`}
+      >
+        <div className="d-flex flex-wrap align-items-center gap-3 text-muted small">
+          <span>
+            Страница <strong>{currentPage}</strong> из <strong>{totalPages}</strong>
+            {' · '}
+            Показано <strong>{visibleProducts.length}</strong> из <strong>{totalProducts}</strong>
+          </span>
+          <label className="d-inline-flex align-items-center gap-2 mb-0" htmlFor={`prices-list-page-size-${idSuffix}`}>
+            <span>На странице</span>
+            <select
+              id={`prices-list-page-size-${idSuffix}`}
+              className="form-select form-select-sm"
+              style={{ width: 'auto', minWidth: '4.5rem' }}
+              value={pageSize}
+              onChange={handlePageSizeChange}
+              disabled={listRefreshing}
+            >
+              {PRICES_LIST_PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="d-flex gap-2">
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={currentPage <= 1 || listRefreshing}
+          >
+            Назад
+          </Button>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={currentPage >= totalPages || listRefreshing}
+          >
+            Вперёд
+          </Button>
+        </div>
+      </div>
+    );
+  };
 
   // Загрузка настроек интеграции Wildberries (эквайринг, услуги Джем) — один раз при монтировании
   useEffect(() => {
@@ -635,304 +898,7 @@ export function Prices() {
     setCalculatedPrices(prev => ({ ...prev, ...fromStored }));
   }, [products]);
 
-  /** Полный расчёт минимальных цен по API для всех товаров. Возвращает массив { productId, ozon?, wb?, ym? } для сохранения в БД. */
-  const runFullPriceCalculation = async () => {
-    if (products.length === 0) return [];
-    const pricesListForSave = [];
-    const calculatePricesForProducts = async () => {
-      const newCalculatedPrices = {};
-      const newLoadingPrices = {};
-
-      for (const product of products) {
-        if (!product) continue;
-        // База для расчёта минимальной цены = себестоимость + доп.расходы.
-        // Если себестоимость не указана, используем цену товара/базовую цену и всё равно добавляем доп.расходы.
-        const costBaseNum = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
-        const additionalExpensesNum = Number(product.additionalExpenses ?? product.additional_expenses ?? 0) || 0;
-        const basePriceNum = costBaseNum + additionalExpensesNum;
-        if (basePriceNum <= 0) {
-          continue;
-        }
-
-        const productKey = String(product.id ?? product.sku ?? '');
-        if (!productKey) continue;
-
-        newLoadingPrices[productKey] = true;
-
-        try {
-          let categoryMappings = [];
-          if (product.id) {
-            try {
-              console.log(`[Prices] Loading category mappings for product ${product.id} (${product.sku || product.name || 'N/A'})`);
-              console.log(`[Prices] Product ID type: ${typeof product.id}, value: ${product.id}`);
-              const mappingsResponse = await categoryMappingsApi.getByProduct(product.id);
-              console.log(`[Prices] Raw mappings response:`, mappingsResponse);
-              console.log(`[Prices] Response status: ${mappingsResponse?.status || 'N/A'}, has data: ${!!mappingsResponse?.data}`);
-              
-              // Обрабатываем разные форматы ответа API
-              let data = null;
-              
-              // axios оборачивает ответ в data, поэтому сначала проверяем mappingsResponse.data
-              if (mappingsResponse?.data !== undefined) {
-                data = mappingsResponse.data;
-              } else {
-                data = mappingsResponse;
-              }
-              
-              console.log(`[Prices] Extracted data:`, {
-                dataType: typeof data,
-                isArray: Array.isArray(data),
-                hasOk: !!data?.ok,
-                hasData: !!data?.data,
-                dataIsArray: Array.isArray(data?.data),
-                keys: data && typeof data === 'object' ? Object.keys(data) : []
-              });
-              
-              // Извлекаем массив маппингов
-              if (Array.isArray(data)) {
-                // Прямой массив
-                categoryMappings = data;
-                console.log(`[Prices] Using direct array, length: ${data.length}`);
-              } else if (data?.ok && Array.isArray(data.data)) {
-                // Формат { ok: true, data: [...] }
-                categoryMappings = data.data;
-                console.log(`[Prices] Using data.data array, length: ${data.data.length}`);
-              } else if (data?.data && Array.isArray(data.data)) {
-                // Формат { data: [...] }
-                categoryMappings = data.data;
-                console.log(`[Prices] Using nested data.data array, length: ${data.data.length}`);
-              } else if (data && typeof data === 'object') {
-                // Если это объект с массивом внутри, ищем первый массив
-                const foundArray = Object.values(data).find(v => Array.isArray(v));
-                categoryMappings = foundArray || [];
-                console.log(`[Prices] Using found array from object values, length: ${categoryMappings.length}`);
-              } else {
-                categoryMappings = [];
-                console.warn(`[Prices] ⚠ Could not extract array from response, using empty array`);
-              }
-              
-              if (categoryMappings.length === 0) {
-                console.warn(`[Prices] ⚠ No category mappings found for product ${product.id} (${product.sku || 'N/A'})`);
-                console.warn(`[Prices] Response structure:`, {
-                  hasData: !!mappingsResponse?.data,
-                  dataType: typeof mappingsResponse?.data,
-                  dataIsArray: Array.isArray(mappingsResponse?.data),
-                  fullResponse: mappingsResponse
-                });
-              } else {
-                console.log(`[Prices] ✓ Loaded ${categoryMappings.length} category mappings for product ${product.id}:`, categoryMappings);
-              }
-            } catch (err) {
-              console.error(`[Prices] ✗ Error getting category mappings for product ${product.id}:`, err);
-              console.error(`[Prices] Error details:`, {
-                status: err.response?.status,
-                statusText: err.response?.statusText,
-                message: err.message,
-                data: err.response?.data,
-                url: err.config?.url
-              });
-              // Не прерываем расчет цен, если маппинги не загрузились
-            }
-          } else {
-            console.warn(`[Prices] ⚠ Product ${product.sku || 'N/A'} has no ID, cannot load category mappings`);
-          }
-
-          const prices = {};
-          const calculatorDataForProduct = {};
-
-          const skuOzon = product.sku_ozon || product.ozon_sku || (product.product_skus && product.product_skus.ozon);
-          const skuWb = product.sku_wb || product.wb_sku || (product.product_skus && product.product_skus.wb);
-          // Для YM: SKU маркета или артикул товара — калькулятор работает по параметрам, не по артикулу
-          const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym) || product.sku;
-
-          // Расчет цены для Ozon
-          if (skuOzon) {
-            try {
-              const rawOzon = await pricesApi.getOzonPrice(skuOzon);
-              const ozonResult = getPriceResult(rawOzon);
-              
-              if (ozonResult?.found && ozonResult?.calculator) {
-                const calculator = ozonResult.calculator;
-                calculatorDataForProduct.ozon = calculator;
-                if (ozonResult.error || ozonResult.missingData) {
-                  const errorMsg = ozonResult.error || `Недостаточно данных: ${(ozonResult.missingData || []).join(', ')}`;
-                  setPriceErrors(prev => ({ ...prev, [productKey]: { ...prev[productKey], ozon: errorMsg } }));
-                  prices.ozon = null;
-                } else {
-                  const minProfit = (product.minPrice != null && product.minPrice !== '' && !isNaN(Number(product.minPrice)))
-                    ? Number(product.minPrice) : null;
-                  prices.ozon = minProfit != null ? calculateMinPrice(basePriceNum, calculator, 'ozon', minProfit, product) : null;
-                }
-              } else if (ozonResult?.error) {
-                prices.ozon = null;
-              } else {
-                prices.ozon = null;
-              }
-            } catch (err) {
-              console.error(`[Prices] Error calculating Ozon price for ${skuOzon}:`, err);
-              prices.ozon = null;
-              const msg = err.response?.data?.message || err.message || 'Ошибка запроса к API';
-              setPriceErrors(prev => ({ ...prev, [productKey]: { ...prev[productKey], ozon: msg } }));
-            }
-          }
-
-          // Расчет цены для WB
-          if (skuWb) {
-            try {
-              const mapping = categoryMappings.find(m => m.marketplace === 'wb' || m.marketplace === 'wildberries');
-              let categoryId = mapping?.category_id ?? null;
-              
-              // Fallback: если маппинг не найден, пробуем использовать category_id из товара
-              // (для WB category_id должен быть subjectID из wb_commissions)
-              if (!categoryId && product.category_id) {
-                console.log(`[Prices] No WB mapping found, trying product.category_id as fallback: ${product.category_id}`);
-                categoryId = product.category_id;
-              }
-              
-              console.log(`[Prices] WB price calculation for ${skuWb}:`, {
-                productId: product.id,
-                productSku: product.sku,
-                skuWb: skuWb,
-                hasMapping: !!mapping,
-                categoryId: categoryId,
-                productCategoryId: product.category_id,
-                allMappings: categoryMappings
-              });
-              
-              if (!categoryId && !product.user_category_id) {
-                console.warn(`[Prices] ⚠ WARNING: No category_id and no user_category_id for WB product ${skuWb}`);
-                setPriceErrors(prev => ({
-                  ...prev,
-                  [productKey]: {
-                    ...prev[productKey],
-                    wb: `Категория не указана для товара ${product.sku || product.name || skuWb}. Пожалуйста, настройте маппинг категории WB для этого товара в разделе "Категории".`
-                  }
-                }));
-              }
-              
-              const rawWb = await pricesApi.getWBPrice(
-                skuWb,
-                categoryId,
-                wbWarehouseName,
-                !categoryId && product.user_category_id ? product.user_category_id : null
-              );
-              const wbResult = getPriceResult(rawWb);
-              
-              if (wbResult?.found && wbResult?.calculator) {
-                const calculator = wbResult.calculator;
-                calculatorDataForProduct.wb = calculator;
-                const minProfit = (product.minPrice != null && product.minPrice !== '' && !isNaN(Number(product.minPrice)))
-                  ? Number(product.minPrice) : null;
-                prices.wb = minProfit != null ? calculateMinPrice(basePriceNum, calculator, 'wb', minProfit, product, wbAcquiringPercent, wbGemServicesPercent) : null;
-                
-                // Очищаем ошибку при успешном расчёте (в т.ч. когда WB-категория взята из user_category.marketplace_mappings)
-                setPriceErrors(prev => {
-                  const newErrors = { ...prev };
-                  if (newErrors[productKey]?.wb) {
-                    delete newErrors[productKey].wb;
-                    if (Object.keys(newErrors[productKey]).length === 0) {
-                      delete newErrors[productKey];
-                    }
-                  }
-                  return newErrors;
-                });
-              } else if (wbResult?.error) {
-                prices.wb = null;
-                calculatorDataForProduct.wb = { error: wbResult.error };
-                // Обновляем ошибку, если сервер вернул более конкретную ошибку
-                setPriceErrors(prev => ({
-                  ...prev,
-                  [productKey]: {
-                    ...prev[productKey],
-                    wb: wbResult.error
-                  }
-                }));
-              } else {
-                prices.wb = null;
-              }
-            } catch (err) {
-              console.error(`[Prices] Error calculating WB price for ${skuWb}:`, err);
-              prices.wb = null;
-              const msg = err.response?.data?.message || err.response?.data?.error || err.message || 'Ошибка запроса к API WB';
-              setPriceErrors(prev => ({ ...prev, [productKey]: { ...prev[productKey], wb: msg } }));
-              calculatorDataForProduct.wb = { error: msg };
-            }
-          }
-
-          // Расчет цены для YM
-          if (skuYm) {
-            try {
-              const ymMapping = categoryMappings.find(m => m.marketplace === 'ym' || m.marketplace === 'yandex');
-              const ymCategoryId = ymMapping?.category_id ?? null;
-              const rawYm = await pricesApi.getYMPrice(
-                skuYm,
-                ymCategoryId,
-                !ymCategoryId && product.user_category_id ? product.user_category_id : null
-              );
-              const ymResult = getPriceResult(rawYm);
-              if (ymResult?.found && ymResult?.calculator) {
-                const calculator = ymResult.calculator;
-                calculatorDataForProduct.ym = calculator;
-                const minProfit = (product.minPrice != null && product.minPrice !== '' && !isNaN(Number(product.minPrice)))
-                  ? Number(product.minPrice) : null;
-                prices.ym = minProfit != null ? calculateMinPrice(basePriceNum, calculator, 'ym', minProfit, product) : null;
-              } else if (ymResult?.error) {
-                prices.ym = null;
-                calculatorDataForProduct.ym = { error: ymResult.error };
-                setPriceErrors(prev => ({
-                  ...prev,
-                  [productKey]: { ...prev[productKey], ym: ymResult.error }
-                }));
-              } else {
-                prices.ym = null;
-              }
-            } catch (err) {
-              console.error(`[Prices] Error calculating YM price for ${skuYm}:`, err);
-              prices.ym = null;
-              const msg = err.response?.data?.message || err.message || 'Ошибка запроса к API';
-              setPriceErrors(prev => ({ ...prev, [productKey]: { ...prev[productKey], ym: msg } }));
-            }
-          }
-
-          // Только фактический расчёт по API; ориентировочных цен больше нет
-          const estimated = { ozon: false, wb: false, ym: false };
-
-          if (Object.keys(prices).length > 0) {
-            newCalculatedPrices[productKey] = { ...prices, _estimated: estimated };
-            setCalculatorData(prev => ({
-              ...prev,
-              [productKey]: calculatorDataForProduct
-            }));
-            const productId = product.id ?? product.sku;
-            if (productId != null) {
-              const hasDetails = (obj) => obj && typeof obj === 'object' && !obj.error && (obj.commissions != null || obj.logistics_cost != null);
-              pricesListForSave.push({
-                productId,
-                ozon: prices.ozon ?? undefined,
-                wb: prices.wb ?? undefined,
-                ym: prices.ym ?? undefined,
-                ozonDetails: hasDetails(calculatorDataForProduct.ozon) ? calculatorDataForProduct.ozon : undefined,
-                wbDetails: hasDetails(calculatorDataForProduct.wb) ? calculatorDataForProduct.wb : undefined,
-                ymDetails: hasDetails(calculatorDataForProduct.ym) ? calculatorDataForProduct.ym : undefined
-              });
-            }
-          }
-        } catch (err) {
-          console.error(`[Prices] Error calculating prices for product ${productKey}:`, err);
-        } finally {
-          delete newLoadingPrices[productKey];
-        }
-      }
-
-      console.log(`[Prices] Calculation complete. Calculated prices for ${Object.keys(newCalculatedPrices).length} products`);
-      setCalculatedPrices(newCalculatedPrices);
-      setLoadingPrices({});
-      return pricesListForSave;
-    };
-    return await calculatePricesForProducts();
-  };
-
-  /** Пересчитать минимальные цены только для одного товара — тот же поток, что и «Пересчитать и сохранить все»: расчёт по API и saveBulk. */
+  /** Пересчитать минимальные цены только для одного товара — расчёт по API и saveBulk. */
   const handleRecalcOne = async (productId) => {
     if (!productId) return;
     const product = products.find((p) => String(p?.id) === String(productId));
@@ -1065,7 +1031,7 @@ export function Prices() {
       setCalculatedPrices((prev) => ({ ...prev, [productKey]: { ...prices, _estimated: { ozon: false, wb: false, ym: false } } }));
       setCalculatorData((prev) => ({ ...prev, [productKey]: calculatorDataForProduct }));
 
-      await loadProducts();
+      await loadListRef.current();
       setRecalcAllMessage('Цены для товара пересчитаны и сохранены.');
       setTimeout(() => setRecalcAllMessage(null), 3000);
     } catch (err) {
@@ -1076,27 +1042,23 @@ export function Prices() {
     }
   };
 
-  /** Пересчитать цены по API для всех товаров, сохранить в БД и обновить список. */
+  /** Пересчитать минимальные цены для всех товаров на сервере (фон), без сотен запросов из браузера. */
   const handleRecalcAndSave = async () => {
     try {
       setRecalcAllLoading(true);
       setRecalcAllMessage(null);
-      setCalculatedPrices({});
-      setLoadingPrices({});
-      const pricesList = await runFullPriceCalculation();
-      if (pricesList.length > 0) {
-        await pricesApi.saveBulk(pricesList);
-        await loadProducts();
-        setRecalcAllMessage(`Сохранено минимальных цен для ${pricesList.length} товаров.`);
-      } else {
-        setRecalcAllMessage('Нет рассчитанных цен для сохранения. Проверьте себестоимость и маппинги категорий.');
-      }
-      setTimeout(() => setRecalcAllMessage(null), 10000);
+      const res = await pricesApi.recalculateAll();
+      const msg =
+        res?.message ||
+        res?.data?.message ||
+        'Пересчёт минимальных цен запущен в фоне. Обновите страницу через несколько минут.';
+      setRecalcAllMessage(msg);
+      setTimeout(() => setRecalcAllMessage(null), 15000);
     } catch (err) {
       console.error('[Prices] recalc and save failed:', err);
       const status = err.response?.status;
       const msg = status === 404
-        ? 'Эндпоинт сохранения цен не найден (404). Перезапустите сервер (backend) и попробуйте снова.'
+        ? 'Эндпоинт пересчёта не найден (404). Перезапустите сервер (backend) и попробуйте снова.'
         : (err.response?.data?.message || err.message);
       setRecalcAllMessage('Ошибка: ' + msg);
     } finally {
@@ -1104,11 +1066,11 @@ export function Prices() {
     }
   };
 
-  if (loading) {
+  if (loading && products.length === 0) {
     return <div className="loading">Загрузка цен...</div>;
   }
 
-  if (error) {
+  if (error && products.length === 0) {
     return <div className="error">Ошибка: {error}</div>;
   }
 
@@ -1287,25 +1249,180 @@ export function Prices() {
 
       {activeSection === 'prices' && (
       <>
+      <div className="main-card mb-3 card">
+        <div className="card-body p-0">
+          <div className="products-list-toolbar">
+            <div className="d-flex flex-wrap align-items-end gap-2 gap-md-3">
+              <div className="flex-grow-1" style={{ minWidth: 200, maxWidth: 480 }}>
+                <label className="text-muted small mb-1 d-block" htmlFor="prices-list-search">
+                  Поиск по списку
+                </label>
+                <input
+                  id="prices-list-search"
+                  type="search"
+                  className="form-control form-control-sm products-list-search-input"
+                  placeholder="Название, артикул, штрихкод…"
+                  value={listSearch}
+                  onChange={handleListSearchChange}
+                  autoComplete="off"
+                  aria-label="Поиск по названию, артикулу или штрихкоду"
+                  aria-busy={listRefreshing}
+                />
+              </div>
+              <div className="d-flex align-items-end gap-2 ms-md-auto flex-wrap">
+                <span
+                  className={`products-list-refresh-hint small ${listRefreshing ? 'is-visible' : ''}`}
+                  aria-live="polite"
+                >
+                  Обновление списка…
+                </span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="small"
+                  className="btn-shadow"
+                  onClick={() => setFiltersOpen((o) => !o)}
+                  aria-expanded={filtersOpen}
+                  title="Организация, бренд, категория, тип товара"
+                >
+                  {filtersOpen ? '▼ Фильтры' : '▶ Фильтры'}
+                  {activeFiltersCount > 0 ? (
+                    <span className="badge bg-primary ms-1 rounded-pill">{activeFiltersCount}</span>
+                  ) : null}
+                </Button>
+              </div>
+            </div>
+            {filtersOpen ? (
+              <div className="products-filters-panel">
+                <div className="row g-2 g-md-3 align-items-end">
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <label className="text-muted small mb-1 d-block" htmlFor="prices-filter-org">
+                      Организация
+                    </label>
+                    <select
+                      id="prices-filter-org"
+                      className="form-select form-select-sm"
+                      value={filterOrganizationId}
+                      onChange={handleFilterOrganizationChange}
+                    >
+                      <option value="">Все организации</option>
+                      {organizations.map((org) => (
+                        <option key={org.id} value={org.id}>
+                          {org.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <label className="text-muted small mb-1 d-block" htmlFor="prices-filter-brand">
+                      Бренд
+                    </label>
+                    <select
+                      id="prices-filter-brand"
+                      className="form-select form-select-sm"
+                      value={filterBrandId}
+                      onChange={handleFilterBrandChange}
+                    >
+                      <option value="">Все бренды</option>
+                      {[...brands]
+                        .filter((b) => b && b.name)
+                        .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'))
+                        .map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <label className="text-muted small mb-1 d-block" htmlFor="prices-filter-cat">
+                      Категория
+                    </label>
+                    <select
+                      id="prices-filter-cat"
+                      className="form-select form-select-sm"
+                      value={filterCategoryId}
+                      onChange={handleFilterCategoryChange}
+                    >
+                      <option value="">Все категории</option>
+                      {showNoneCategoryOption ? (
+                        <option value={FILTER_CATEGORY_NONE}>Без категории</option>
+                      ) : null}
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <label className="text-muted small mb-1 d-block" htmlFor="prices-filter-type">
+                      Тип товара
+                    </label>
+                    <select
+                      id="prices-filter-type"
+                      className="form-select form-select-sm"
+                      value={filterProductType}
+                      onChange={handleFilterProductTypeChange}
+                    >
+                      <option value="">Все типы</option>
+                      <option value="product">Товар</option>
+                      <option value="kit">Комплект</option>
+                    </select>
+                  </div>
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <label className="text-muted small mb-1 d-block" htmlFor="prices-filter-archive">
+                      Архив
+                    </label>
+                    <select
+                      id="prices-filter-archive"
+                      className="form-select form-select-sm"
+                      value={filterArchiveMode}
+                      onChange={handleFilterArchiveModeChange}
+                    >
+                      <option value="">Скрыть архивные</option>
+                      <option value="include">Включая архивные</option>
+                      <option value="only">Только архивные</option>
+                    </select>
+                  </div>
+                </div>
+                {activeFiltersCount > 0 ? (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      className="btn btn-link btn-sm p-0 text-decoration-none"
+                      onClick={clearListFilters}
+                    >
+                      Сбросить фильтры
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
       <div style={{marginBottom: '20px', padding: '10px', background: 'rgba(255,255,255,0.05)', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)'}}>
         <p style={{margin: 0, color: 'var(--muted)', fontSize: '14px'}}>
           💡 <strong>Подсказка:</strong> Наведите курсор на цену товара в таблице ниже, чтобы увидеть подробную информацию о товаре.
         </p>
       </div>
-      {products.length > 0 && !products.some(p => (p.storedMinPriceOzon ?? p.stored_min_price_ozon) != null || (p.storedMinPriceWb ?? p.stored_min_price_wb) != null || (p.storedMinPriceYm ?? p.stored_min_price_ym) != null) && (
+      {totalProducts > 0 && !products.some(p => (p.storedMinPriceOzon ?? p.stored_min_price_ozon) != null || (p.storedMinPriceWb ?? p.stored_min_price_wb) != null || (p.storedMinPriceYm ?? p.stored_min_price_ym) != null) && (
         <div style={{marginBottom: '16px', padding: '12px 16px', background: 'rgba(251, 191, 36, 0.12)', borderRadius: '8px', border: '1px solid rgba(251, 191, 36, 0.35)', color: '#d97706', fontSize: '14px'}}>
           📊 <strong>Сохранённые цены не загружены.</strong> Нажмите «Пересчитать все минимальные цены» ниже — после завершения обновите страницу, и цены будут отображаться при каждом обновлении.
         </div>
       )}
 
       <div style={{marginTop: '20px', width: '100%'}}>
-        {products.length === 0 ? (
+        {totalProducts === 0 && !listRefreshing ? (
           <div className="empty-state">
             <p>Нет товаров для отображения</p>
-            <p style={{fontSize: '13px', marginTop: '8px'}}>Добавьте товары в разделе "Товары"</p>
+            <p style={{fontSize: '13px', marginTop: '8px'}}>Добавьте товары в разделе «Товары» или измените фильтры</p>
           </div>
         ) : (
-          <div className="prices-table-container">
+          <div className={`prices-table-container card ${listRefreshing ? 'opacity-75' : ''}`}>
+            {renderPricesListPager('top')}
             <table className="prices-table table">
               <thead>
                 <tr>
@@ -1319,7 +1436,7 @@ export function Prices() {
                 </tr>
               </thead>
               <tbody>
-                {products.filter(Boolean).map(product => {
+                {visibleProducts.map(product => {
                   // basePrice используется для расчета минимальной цены (себестоимость товара)
                   // Берем себестоимость из product.cost (или price/base_price), и добавляем доп.расходы (additionalExpenses)
                   const costBaseNum = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
@@ -1528,13 +1645,14 @@ export function Prices() {
                 })}
               </tbody>
             </table>
+            {renderPricesListPager('bottom')}
           </div>
         )}
       </div>
 
       <div className="actions" style={{marginTop: '16px', display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center'}}>
-        <Button variant="primary" onClick={handleRecalcAndSave} disabled={recalcAllLoading}>
-          {recalcAllLoading ? '⏳ Пересчёт и сохранение...' : '📊 Пересчитать и сохранить все минимальные цены'}
+        <Button variant="primary" onClick={handleRecalcAndSave} disabled={recalcAllLoading || listRefreshing}>
+          {recalcAllLoading ? '⏳ Запуск пересчёта...' : '📊 Пересчитать и сохранить все минимальные цены'}
         </Button>
         <div style={{marginTop: '8px', fontSize: '12px', color: 'var(--muted)', width: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px'}}>
           {recalcAllMessage && (
