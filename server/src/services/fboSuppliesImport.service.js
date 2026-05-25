@@ -254,7 +254,7 @@ function ymApiKeyHeader(apiKey) {
   return raw;
 }
 
-async function wbFbwRequest(path, { apiKey, method = 'GET', body = null } = {}) {
+async function wbFbwRequest(path, { apiKey, method = 'GET', body = null, timeoutMs = 45000 } = {}) {
   const auth = wbAuthHeader(apiKey);
   if (!auth) {
     const err = new Error('Не настроен API-ключ Wildberries (категория «Поставки»)');
@@ -263,13 +263,26 @@ async function wbFbwRequest(path, { apiKey, method = 'GET', body = null } = {}) 
   }
   const agent = getFetchProxyAgent();
   const url = path.startsWith('http') ? path : `${WB_SUPPLIES_API}${path.startsWith('/') ? path : `/${path}`}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const opts = {
     method,
     headers: { Authorization: auth, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    signal: controller.signal,
     ...(agent && { agent }),
     ...(body ? { body: JSON.stringify(body) } : {}),
   };
-  const response = await fetch(url, opts);
+  let response;
+  try {
+    response = await fetch(url, opts);
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error('Таймаут запроса к Wildberries FBW API. Проверьте сеть или уменьшите период.');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     const err = new Error(`Wildberries FBW API ${response.status}${text ? `: ${text.substring(0, 200)}` : ''}`);
@@ -341,12 +354,27 @@ function buildWbSuppliesListBody(daysBack) {
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const fromStr = toDateOnly(from);
   const tillStr = toDateOnly(till);
+  // Один тип даты: несколько filters в dates часто дают пустой список (логика AND на стороне WB).
   return {
-    dates: [
-      { from: fromStr, till: tillStr, type: 'createDate' },
-      { from: fromStr, till: tillStr, type: 'supplyDate' },
-    ],
+    dates: [{ from: fromStr, till: tillStr, type: 'createDate' }],
   };
+}
+
+/** Параллельная обработка с ограничением (чтобы не зависать на N последовательных запросах к WB). */
+async function mapWithConcurrency(items, concurrency, fn) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return [];
+  const limit = Math.max(1, Math.min(20, Number(concurrency) || 5));
+  const out = new Array(list.length);
+  let next = 0;
+  async function worker() {
+    while (next < list.length) {
+      const i = next++;
+      out[i] = await fn(list[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, list.length) }, () => worker()));
+  return out;
 }
 
 function parseWbSuppliesListResponse(data) {
@@ -640,19 +668,26 @@ class FboSuppliesImportService {
       throw err;
     }
 
-    const rows = parseWbSuppliesListResponse(listData);
-    const candidates = [];
+    let rows = parseWbSuppliesListResponse(listData);
+    if (!rows.length) {
+      const fallbackData = await wbFbwRequest('/api/v1/supplies', {
+        apiKey,
+        method: 'POST',
+        body: {},
+      });
+      rows = parseWbSuppliesListResponse(fallbackData);
+    }
 
-    for (const row of rows) {
+    const built = await mapWithConcurrency(rows, 6, async (row) => {
       const externalNumber = wbExternalShipmentNumber(row);
       const goodsApiId = wbSupplyGoodsApiId(row);
-      if (!externalNumber || !goodsApiId) continue;
+      if (!externalNumber || !goodsApiId) return null;
 
       let items = [];
       try {
         const goodsData = await wbFbwRequest(
           `/api/v1/supplies/${encodeURIComponent(goodsApiId)}/goods`,
-          { apiKey, method: 'GET' }
+          { apiKey, method: 'GET', timeoutMs: 30000 }
         );
         const list = parseWbGoodsResponse(goodsData);
         for (const g of list) {
@@ -692,7 +727,7 @@ class FboSuppliesImportService {
         row.warehouseAddress ??
         (row.warehouseID != null ? `Склад WB #${row.warehouseID}` : null);
 
-      candidates.push({
+      return {
         importKey: `wb:${externalNumber}`,
         marketplace: 'wb',
         name:
@@ -717,8 +752,10 @@ class FboSuppliesImportService {
         items,
         itemCount: items.length,
         alreadyImported: false,
-      });
-    }
+      };
+    });
+
+    const candidates = built.filter(Boolean);
 
     const existing = await fboSuppliesService.findExistingExternalNumbers(
       candidates.map((c) => ({ marketplace: c.marketplace, externalShipmentNumber: c.externalShipmentNumber })),

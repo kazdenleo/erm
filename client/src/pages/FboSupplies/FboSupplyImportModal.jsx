@@ -70,15 +70,30 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
   const loadFromApi = async () => {
     setLoading(true);
     setErr(null);
+    setCandidates([]);
+    setSelected(new Set());
     try {
       const data = await fboSuppliesApi.previewApiImport({
         marketplace,
         organizationId,
-        daysBack,
+        daysBack: Number(daysBack) || 90,
       });
       const list = Array.isArray(data) ? data : [];
       setCandidates(list);
       setSelected(new Set(list.filter((c) => !c.alreadyImported).map((c) => c.importKey)));
+      if (!list.length) {
+        const mpLabel =
+          marketplace === 'wb'
+            ? 'Wildberries'
+            : marketplace === 'ym'
+              ? 'Яндекс Маркет'
+              : 'Ozon';
+        setErr(
+          `За выбранный период ${mpLabel} не вернул поставок. Проверьте ключ в «Интеграции»${
+            marketplace === 'wb' ? ' (токен категории «Поставки» FBW)' : ''
+          } и период в днях.`
+        );
+      }
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось получить поставки');
     } finally {
@@ -160,11 +175,15 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                 min={7}
                 max={365}
                 value={daysBack}
-                onChange={(e) => setDaysBack(e.target.value)}
+                onChange={(e) => setDaysBack(Number(e.target.value) || 90)}
               />
             </div>
-            <Button variant="primary" onClick={loadFromApi} disabled={loading}>
-              {loading ? 'Загрузка…' : 'Получить список'}
+            <Button type="button" variant="primary" onClick={() => loadFromApi()} disabled={loading}>
+              {loading
+                ? marketplace === 'wb'
+                  ? 'Загрузка с WB…'
+                  : 'Загрузка…'
+                : 'Получить список'}
             </Button>
           </div>
         )}
