@@ -947,7 +947,7 @@ class IntegrationsService {
         ...(onlyActive ? { isActive: true } : {}),
       });
       const marketplaces = {};
-      const suppliers = {};
+      let suppliers = {};
 
       /** При нескольких строках с одним code (разные organization_id) импорт заказов брал «последнюю» в произвольном порядке — ловили чужой кабинет. Берём запись с большим updated_at, иначе с большим id. */
       const pickNewerIntegration = (a, b) => {
