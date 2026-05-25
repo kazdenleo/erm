@@ -267,6 +267,18 @@ class StockMovementsService {
         profileId: profId
       });
 
+      if (type === 'reserve') {
+        const snapAfter = await getProductSupplySnapshotWithClient(client, idNum);
+        if (snapAfter.reservedRaw > snapAfter.supplyCap) {
+          const err = new Error(
+            `Резерв превышает наличие и «в пути»: зарезервировано ${snapAfter.reservedRaw}, ` +
+              `доступно к резерву ${snapAfter.supplyCap} (на складе ${snapAfter.onHand}, в пути ${snapAfter.incoming})`
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
