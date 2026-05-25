@@ -2761,13 +2761,16 @@ class OrdersService {
             productId: compId,
             reservedQty: compRes,
             needQty: qty * perKit,
+            perKitQty: perKit,
+            reservedKitUnits: Math.floor(compRes / perKit),
+            needKitUnits: qty,
             availableQty: await this._getAvailableUnitsForOrderReserveLine(compId, row, {
               warehouseId,
               kitProductId: pid
             }),
             lineKind: 'component',
             kitProductId: pid,
-            label: compLabel
+            label: `${compLabel} (×${perKit} в комплекте)`
           });
         }
         if (lineEntries.length === 0 && reserved > 0) {

@@ -17,9 +17,29 @@ function orderReserveLineKey(line) {
   return `${rowId || (line.orderLineId ?? '')}-${line.productId}-${line.lineKind}`;
 }
 
+function lineReserveDisplayUnits(line) {
+  const perKit = Math.max(1, Number(line.perKitQty ?? line.per_kit_qty) || 1);
+  if (line.lineKind === 'component' && perKit > 1) {
+    const reserved = Math.max(0, Number(line.reservedQty) || 0);
+    const need =
+      line.needKitUnits != null
+        ? Math.max(0, Number(line.needKitUnits) || 0)
+        : Math.max(0, Math.floor((Number(line.needQty) || 0) / perKit));
+    return {
+      reserved: Math.floor(reserved / perKit),
+      need,
+      pieceHint: `${reserved} шт`,
+    };
+  }
+  return {
+    reserved: Math.max(0, Number(line.reservedQty) || 0),
+    need: Math.max(0, Number(line.needQty) || 0),
+    pieceHint: null,
+  };
+}
+
 function lineReserveBounds(line) {
-  const reserved = Math.max(0, Number(line.reservedQty) || 0);
-  const need = Math.max(0, Number(line.needQty) || 0);
+  const { reserved, need } = lineReserveDisplayUnits(line);
   const remaining = Math.max(0, need - reserved);
   const available =
     line.availableQty != null && !Number.isNaN(Number(line.availableQty))
@@ -176,6 +196,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             const canReserve = pid != null && Number(pid) > 0;
             const key = orderReserveLineKey(line);
             const { reserved: r, need: n, remaining, available, maxReserve } = lineReserveBounds(line);
+            const pieceHint = lineReserveDisplayUnits(line).pieceHint;
             const lineHas = r > 0;
             const maxQty = lineHas ? r : maxReserve;
             const title =
@@ -198,6 +219,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
               >
                 <span className="order-reserve-line__title">
                   {title}: <strong>{r}</strong> из {n}
+                  {pieceHint ? (
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}> ({pieceHint})</span>
+                  ) : null}
                   {!lineHas && remaining > 0 ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                       {' '}
