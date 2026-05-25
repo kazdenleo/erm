@@ -85,3 +85,242 @@
   color: #b45309;
   font-size: 12px;
 }
+
+.fbo-items-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.fbo-items-toolbar .muted-hint {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.fbo-detail-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.fbo-detail-tab {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.fbo-detail-tab:hover {
+  color: #0f172a;
+}
+
+.fbo-detail-tab.active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+  font-weight: 600;
+}
+
+.fbo-packing-scan-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fbo-packing-scan-row .form-control {
+  flex: 1;
+  min-width: 200px;
+}
+
+.fbo-packing-hint {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
+.fbo-packing-active {
+  margin-top: 12px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+
+.fbo-packing-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 16px 0 10px;
+}
+
+.fbo-cargo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fbo-cargo-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.fbo-cargo-card--active {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1px #2563eb33;
+}
+
+.fbo-cargo-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 6px;
+}
+
+.fbo-cargo-card__select {
+  padding: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.fbo-cargo-card__select:hover {
+  color: #2563eb;
+}
+
+.fbo-cargo-card__items {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.fbo-packed-cell {
+  border: none;
+  background: transparent;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.fbo-packed-ok {
+  color: #15803d;
+  background: #f0fdf4;
+}
+
+.fbo-packed-short {
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.fbo-packed-over {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.fbo-packed-none {
+  color: #64748b;
+}
+
+.fbo-item-row--complete {
+  opacity: 0.72;
+}
+
+.fbo-item-row--complete td {
+  background: #f8fafc;
+}
+
+.fbo-cargo-line-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.fbo-cargo-line-meta__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #64748b;
+  min-width: 120px;
+}
+
+.fbo-cargo-line-meta__field input {
+  max-width: 160px;
+}
+
+.fbo-cargo-card__items > li {
+  margin-bottom: 8px;
+}
+
+.fbo-purchase-calc-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.fbo-purchase-calc-table {
+  font-size: 13px;
+  min-width: 900px;
+}
+
+.fbo-purchase-calc-table .fbo-pc-sticky-col {
+  position: sticky;
+  left: 0;
+  background: #fff;
+  z-index: 1;
+  min-width: 160px;
+  max-width: 220px;
+}
+
+.fbo-purchase-calc-table .fbo-pc-supply-col {
+  min-width: 72px;
+  max-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fbo-purchase-calc-tfoot th {
+  background: #f1f5f9;
+}
+
+.fbo-pc-supply-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+.fbo-pc-qty-input {
+  width: 56px;
+  max-width: 100%;
+  margin: 0;
+  text-align: center;
+  padding: 2px 4px;
+  font-size: 13px;
+}
+
+.fbo-pc-replace-search-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+}
+
+.fbo-pc-qty-saving {
+  opacity: 0.6;
+  pointer-events: none;
+}

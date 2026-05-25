@@ -23,7 +23,8 @@ export function WarehouseForm({
     organizationId: '',
     supplierId: '',
     mainWarehouseId: '',
-    wbWarehouseName: ''
+    wbWarehouseName: '',
+    isFboStock: false,
   });
   
   const [errors, setErrors] = useState({});
@@ -248,7 +249,8 @@ export function WarehouseForm({
         organizationId: warehouse.organizationId != null ? String(warehouse.organizationId) : (warehouse.organization_id != null ? String(warehouse.organization_id) : ''),
         supplierId: warehouse.supplierId ? String(warehouse.supplierId) : '',
         mainWarehouseId: warehouse.mainWarehouseId ? String(warehouse.mainWarehouseId) : '',
-        wbWarehouseName: warehouse.wbWarehouseName || ''
+        wbWarehouseName: warehouse.wbWarehouseName || '',
+        isFboStock: warehouse.isFboStock === true,
       });
       setOzonWarehouseName('');
       setWbWarehouseToBind('');
@@ -262,7 +264,8 @@ export function WarehouseForm({
         organizationId: '',
         supplierId: '',
         mainWarehouseId: '',
-        wbWarehouseName: ''
+        wbWarehouseName: '',
+        isFboStock: false,
       });
       setOzonWarehouseName('');
       setWbWarehouseToBind('');
@@ -421,7 +424,8 @@ export function WarehouseForm({
           ? formData.wbWarehouseName && formData.wbWarehouseName.trim() !== ''
             ? formData.wbWarehouseName.trim()
             : null
-          : null
+          : null,
+      isFboStock: formData.type === 'warehouse' ? !!formData.isFboStock : false,
     };
 
     setMappingBusy(true);
@@ -495,6 +499,22 @@ export function WarehouseForm({
         ) : null}
       </div>
       </div>
+
+      {formData.type === 'warehouse' && (
+        <div className="col-12 mt-2">
+          <label className="form-check">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              checked={!!formData.isFboStock}
+              onChange={(e) => handleChange('isFboStock', e.target.checked)}
+            />
+            <span className="form-check-label">
+              Склад FBO — для расчёта закупки по поставкам (остатки «наличие» в расчёте)
+            </span>
+          </label>
+        </div>
+      )}
 
       {formData.type === 'warehouse' && !integrationOrganizationId && (
         <div className="alert alert-info py-2 mt-3">

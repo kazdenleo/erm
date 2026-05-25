@@ -32,6 +32,9 @@ export function FboSupplies() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
   const [importMode, setImportMode] = useState(null);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [calcLoading, setCalcLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -56,27 +59,61 @@ export function FboSupplies() {
         <h2 style={{ margin: 0, flex: 1 }}>Поставки FBO</h2>
         <Button
           variant="secondary"
+          disabled={templateLoading}
           onClick={async () => {
+            setTemplateLoading(true);
+            setErr(null);
             try {
-              const blob = await fboSuppliesApi.downloadImportTemplate();
+              const { buffer, filename } = await fboSuppliesApi.downloadImportTemplate();
+              const blob = new Blob([buffer], {
+                type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              });
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');
               a.href = url;
-              a.download = `fbo_supplies_template_${new Date().toISOString().slice(0, 10)}.xlsx`;
+              a.download =
+                filename?.includes('artikul') ? filename : `fbo_postavka_artikul_kolichestvo_${new Date().toISOString().slice(0, 10)}.xlsx`;
+              document.body.appendChild(a);
               a.click();
+              a.remove();
               URL.revokeObjectURL(url);
             } catch (e) {
-              setErr(e.response?.data?.message || e.message || 'Не удалось скачать шаблон');
+              let msg = e.response?.data?.message || e.message || 'Не удалось скачать шаблон';
+              if (e.response?.data instanceof ArrayBuffer) {
+                try {
+                  const txt = new TextDecoder().decode(e.response.data);
+                  const j = JSON.parse(txt);
+                  msg = j.message || j.error || msg;
+                } catch {
+                  /* ignore */
+                }
+              }
+              setErr(msg);
+            } finally {
+              setTemplateLoading(false);
             }
           }}
         >
-          Шаблон Excel
+          {templateLoading ? 'Скачивание…' : 'Шаблон Excel'}
         </Button>
         <Button variant="secondary" onClick={() => setImportMode('excel')}>
           Загрузить Excel
         </Button>
         <Button variant="primary" onClick={() => setImportMode('api')}>
           Загрузить с маркетплейса
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={!selectedIds.size || calcLoading}
+          onClick={() => {
+            setCalcLoading(true);
+            navigate('/fbo-supplies/purchase-calc', {
+              state: { supplyIds: [...selectedIds] },
+            });
+            setCalcLoading(false);
+          }}
+        >
+          {calcLoading ? '…' : `Рассчитать закупку${selectedIds.size ? ` (${selectedIds.size})` : ''}`}
         </Button>
       </div>
 
@@ -89,6 +126,20 @@ export function FboSupplies() {
           <table className="table table-sm table-hover">
             <thead>
               <tr>
+                <th style={{ width: 36 }}>
+                  <input
+                    type="checkbox"
+                    checked={list.length > 0 && list.every((r) => selectedIds.has(String(r.id)))}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedIds(new Set(list.map((r) => String(r.id))));
+                      } else {
+                        setSelectedIds(new Set());
+                      }
+                    }}
+                    title="Выбрать все"
+                  />
+                </th>
                 <th>№</th>
                 <th>Номер отгрузки</th>
                 <th>Маркетплейс</th>
@@ -104,17 +155,34 @@ export function FboSupplies() {
             <tbody>
               {!list.length && (
                 <tr>
-                  <td colSpan={10} className="text-center muted">
+                  <td colSpan={11} className="text-center muted">
                     Нет поставок. Загрузите из Excel или с маркетплейса.
                   </td>
                 </tr>
               )}
-              {list.map((row) => (
+              {list.map((row) => {
+                const sid = String(row.id);
+                const checked = selectedIds.has(sid);
+                return (
                 <tr
                   key={row.id}
                   style={{ cursor: 'pointer' }}
                   onClick={() => navigate(`/fbo-supplies/${row.id}`)}
                 >
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(sid)) next.delete(sid);
+                          else next.add(sid);
+                          return next;
+                        });
+                      }}
+                    />
+                  </td>
                   <td>{row.id}</td>
                   <td>{row.externalShipmentNumber}</td>
                   <td>{getMarketplaceLabel(row.marketplace)}</td>
@@ -128,7 +196,8 @@ export function FboSupplies() {
                   </td>
                   <td>{fmtDt(row.createdAt)}</td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
         </div>
@@ -138,7 +207,13 @@ export function FboSupplies() {
         open={!!importMode}
         mode={importMode}
         onClose={() => setImportMode(null)}
-        onImported={() => load()}
+        onImported={(result) => {
+          load();
+          const created = result?.created;
+          if (importMode === 'excel' && created?.length === 1 && created[0]?.id) {
+            navigate(`/fbo-supplies/${created[0].id}`);
+          }
+        }}
       />
     </div>
   );

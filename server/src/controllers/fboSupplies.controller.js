@@ -2,10 +2,18 @@
  * FBO Supplies Controller
  */
 
+import { readFileSync, existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import fboSuppliesService from '../services/fboSupplies.service.js';
 import fboSuppliesImportService from '../services/fboSuppliesImport.service.js';
 import fboSuppliesExportService from '../services/fboSuppliesExport.service.js';
+import fboSuppliesPackingService from '../services/fboSuppliesPacking.service.js';
+import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FBO_TEMPLATE_XLSX = join(__dirname, '../../templates/fbo_import_artikul_kolichestvo.xlsx');
 
 function setAttachmentXlsx(res, filename) {
   const encoded = encodeURIComponent(filename).replace(/['()]/g, escape);
@@ -106,10 +114,18 @@ class FboSuppliesController {
 
   async downloadImportTemplateExcel(req, res, next) {
     try {
-      const buffer = await fboSuppliesExportService.buildImportTemplateBuffer();
+      let buffer;
+      if (existsSync(FBO_TEMPLATE_XLSX)) {
+        buffer = readFileSync(FBO_TEMPLATE_XLSX);
+      } else {
+        buffer = await fboSuppliesExportService.buildImportTemplateBuffer();
+      }
       const date = new Date().toISOString().slice(0, 10);
-      const filename = `fbo_supplies_import_template_${date}.xlsx`;
+      const filename = `fbo_postavka_artikul_kolichestvo_${date}.xlsx`;
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('X-Fbo-Template-Version', 'sku-quantity-v2');
       setAttachmentXlsx(res, filename);
       res.send(buffer);
     } catch (e) {
@@ -147,6 +163,170 @@ class FboSuppliesController {
     } catch (e) {
       if (e.statusCode === 400) {
         return res.status(400).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async purchaseCalculation(req, res, next) {
+    try {
+      const profileId = req.user?.profileId ?? null;
+      const supplyIds = req.body?.supplyIds ?? req.body?.ids ?? [];
+      const data = await fboSuppliesPurchaseCalcService.calculate(supplyIds, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async addSupplyItem(req, res, next) {
+    try {
+      const { id: supplyId } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const data = await fboSuppliesService.addSupplyItem(supplyId, req.body, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async updateSupplyItem(req, res, next) {
+    try {
+      const { id: supplyId, itemId } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const body = req.body || {};
+      let data;
+      if (body.productId != null) {
+        data = await fboSuppliesService.replaceSupplyItemProduct(supplyId, itemId, body, {
+          profileId,
+        });
+      } else {
+        data = await fboSuppliesService.updateSupplyItemQuantity(
+          supplyId,
+          itemId,
+          body.quantity,
+          { profileId }
+        );
+      }
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async getPacking(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const data = await fboSuppliesPackingService.getPackingState(id, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 404) {
+        return res.status(404).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async packingScan(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { barcode, activeCargoUnitId } = req.body || {};
+      const data = await fboSuppliesPackingService.scan(
+        id,
+        { barcode, activeCargoUnitId },
+        { profileId }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async downloadPackingExcel(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { buffer, marketplace } = await fboSuppliesExportService.buildPackingExportBuffer(id, {
+        profileId,
+      });
+      const date = new Date().toISOString().slice(0, 10);
+      const mpLabel = marketplace === 'wb' ? 'wb' : 'ozon';
+      const filename = `fbo_gruzomesta_${id}_${mpLabel}_${date}.xlsx`;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      setAttachmentXlsx(res, filename);
+      res.send(buffer);
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async packingUpdateContent(req, res, next) {
+    try {
+      const { id, contentId } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { placementZone, expiresAt } = req.body || {};
+      const data = await fboSuppliesPackingService.updateCargoContent(
+        id,
+        contentId,
+        { placementZone, expiresAt },
+        { profileId }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async packingScanRemove(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { barcode, activeCargoUnitId } = req.body || {};
+      const data = await fboSuppliesPackingService.scanRemove(
+        id,
+        { barcode, activeCargoUnitId },
+        { profileId }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async deleteCargoUnit(req, res, next) {
+    try {
+      const { id, cargoUnitId } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const data = await fboSuppliesPackingService.deleteCargoUnit(id, cargoUnitId, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 404) {
+        return res.status(404).json({ ok: false, message: e.message });
       }
       next(e);
     }

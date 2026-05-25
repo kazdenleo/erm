@@ -24,11 +24,13 @@ import { Shipments } from './pages/Shipments/Shipments';
 import { Assembly } from './pages/Assembly/Assembly';
 import { PrintLabel } from './pages/PrintLabel/PrintLabel.jsx';
 import { PrintProductLabel } from './pages/PrintProductLabel/PrintProductLabel.jsx';
+import { PrintProductLabelsBatch } from './pages/PrintProductLabel/PrintProductLabelsBatch.jsx';
 import { StockLevelsLayout } from './pages/StockLevels/StockLevelsLayout';
 import { WarehouseStocks } from './pages/StockLevels/WarehouseStocks';
 import { Purchases } from './pages/StockLevels/Purchases';
 import { FboSupplies } from './pages/FboSupplies/FboSupplies';
 import { FboSupplyDetail } from './pages/FboSupplies/FboSupplyDetail';
+import { FboPurchaseCalculation } from './pages/FboSupplies/FboPurchaseCalculation';
 import { Integrations } from './pages/Integrations/Integrations';
 import { Notifications } from './pages/Notifications/Notifications';
 import { Categories } from './pages/Categories/Categories';
@@ -102,10 +104,12 @@ function App() {
           <Route path="/orders/:marketplace/:orderId" element={<ProtectedRoute><Layout><OrderDetail /></Layout></ProtectedRoute>} />
           <Route path="/shipments" element={<ProtectedRoute><Layout><Shipments /></Layout></ProtectedRoute>} />
           <Route path="/fbo-supplies" element={<ProtectedRoute><Layout><FboSupplies /></Layout></ProtectedRoute>} />
+          <Route path="/fbo-supplies/purchase-calc" element={<ProtectedRoute><Layout><FboPurchaseCalculation /></Layout></ProtectedRoute>} />
           <Route path="/fbo-supplies/:id" element={<ProtectedRoute><Layout><FboSupplyDetail /></Layout></ProtectedRoute>} />
           <Route path="/assembly" element={<ProtectedRoute><Layout><Assembly /></Layout></ProtectedRoute>} />
           <Route path="/print/label/:orderId" element={<ProtectedRoute><PrintLabel /></ProtectedRoute>} />
           <Route path="/print/product-label/:productId" element={<ProtectedRoute><PrintProductLabel /></ProtectedRoute>} />
+          <Route path="/print/product-labels-batch" element={<ProtectedRoute><PrintProductLabelsBatch /></ProtectedRoute>} />
           <Route path="/categories" element={<ProtectedRoute><Layout><Categories /></Layout></ProtectedRoute>} />
           <Route path="/brands" element={<ProtectedRoute><Layout><Brands /></Layout></ProtectedRoute>} />
           <Route path="/prices" element={<ProtectedRoute><Layout><Prices /></Layout></ProtectedRoute>} />

@@ -12,8 +12,13 @@ import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-h
 const WB_SUPPLIES_API = 'https://supplies-api.wildberries.ru';
 const YM_API = 'https://api.partner.market.yandex.ru';
 
-const SUPPLIES_SHEET = 'Поставки';
 const ITEMS_SHEET = 'Товары';
+
+function generateDraftExternalNumber() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `NEW-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${Date.now().toString(36).slice(-6).toUpperCase()}`;
+}
 
 function normalizeCellValue(cell) {
   if (!cell) return '';
@@ -49,7 +54,12 @@ function findKeyRow(worksheet) {
     const vals = [];
     row.eachCell({ includeEmpty: false }, (c) => vals.push(normalizeCellValue(c).toLowerCase()));
     const joined = vals.join('|');
-    if (joined.includes('номер_отгрузки') || joined.includes('external_shipment_number')) {
+    if (
+      joined.includes('номер_отгрузки') ||
+      joined.includes('external_shipment_number') ||
+      joined.includes('артикул') ||
+      joined.includes('количество')
+    ) {
       return row;
     }
   }
@@ -66,8 +76,8 @@ async function resolveProductId({ sku, barcode, profileId }) {
        FROM products p
        WHERE ($1::bigint IS NULL OR p.profile_id = $1)
          AND EXISTS (
-           SELECT 1 FROM unnest(COALESCE(p.barcodes, ARRAY[]::text[])) AS bc
-           WHERE TRIM(bc) = $2
+           SELECT 1 FROM barcodes bc
+           WHERE bc.product_id = p.id AND TRIM(bc.barcode) = $2
          )
        LIMIT 1`,
       [pid, b]
@@ -232,84 +242,63 @@ function parseDateOnly(v) {
 }
 
 class FboSuppliesImportService {
+  /**
+   * Excel: только артикул и количество → одна новая поставка (черновик).
+   */
   async parseExcelBuffer(buffer, { profileId } = {}) {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buffer);
-    const suppliesWs = wb.getWorksheet(SUPPLIES_SHEET) || wb.worksheets[0];
-    const itemsWs = wb.getWorksheet(ITEMS_SHEET) || wb.worksheets[1];
-    if (!suppliesWs) {
-      const err = new Error('Лист «Поставки» не найден в файле Excel');
+    const ws = wb.getWorksheet(ITEMS_SHEET) || wb.worksheets[0];
+    if (!ws) {
+      const err = new Error('Файл Excel пуст');
       err.statusCode = 400;
       throw err;
     }
 
-    const suppliesKeyRow = findKeyRow(suppliesWs);
-    const supplies = [];
-    const startRow = suppliesKeyRow.number + 1;
-    for (let r = startRow; r <= (suppliesWs.rowCount || 0); r++) {
-      const raw = rowToObject(suppliesWs, r, suppliesKeyRow);
-      const externalNumber =
-        raw.external_shipment_number ||
-        raw.номер_отгрузки ||
-        raw.внешний_номер ||
-        raw.shipment_number;
-      if (!externalNumber) continue;
-      const orgId = await resolveOrganizationId({
-        organizationName: raw.organization || raw.организация || raw.organization_name,
-        organizationId: raw.organization_id || raw.организация_id,
-        profileId,
+    const keyRow = findKeyRow(ws);
+    const items = [];
+    for (let r = keyRow.number + 1; r <= (ws.rowCount || 0); r++) {
+      const raw = rowToObject(ws, r, keyRow);
+      const sku = String(raw.sku || raw.артикул || '').trim();
+      const qty = parseInt(raw.quantity || raw.количество || '0', 10);
+      if (!sku || !qty || qty <= 0) continue;
+      const productId = await resolveProductId({ sku, barcode: null, profileId });
+      items.push({
+        productId,
+        quantity: qty,
+        sku,
+        barcode: null,
+        name: null,
+        unresolved: productId == null,
       });
-      supplies.push({
-        importKey: `excel:${externalNumber}`,
-        marketplace: normalizeMarketplaceImport(raw.marketplace || raw.маркетплейс),
-        name: raw.name || raw.название || null,
-        readyAt: parseDateOnly(raw.ready_at || raw.дата_готовности || raw.дата_отгрузки),
-        marketplaceWarehouseName: raw.marketplace_warehouse || raw.склад_маркетплейса || raw.склад || null,
-        externalShipmentNumber: String(externalNumber),
-        deductionWarehouseId: raw.deduction_warehouse_id || raw.склад_списания_id || null,
-        organizationId: orgId,
-        deductStock: ['1', 'true', 'да', 'yes'].includes(String(raw.deduct_stock || raw.списать_остатки || '').toLowerCase()),
-        items: [],
+    }
+
+    if (!items.length) {
+      const err = new Error('В файле нет строк с артикулом и количеством');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const externalShipmentNumber = generateDraftExternalNumber();
+    return [
+      {
+        importKey: `excel:${externalShipmentNumber}`,
+        isNewDraft: true,
+        marketplace: 'ozon',
+        name: 'Новая поставка',
+        readyAt: null,
+        marketplaceWarehouseName: null,
+        externalShipmentNumber,
+        deductionWarehouseId: null,
+        organizationId: null,
+        deductStock: false,
+        status: 'new',
+        source: 'excel',
+        items,
+        itemCount: items.length,
         alreadyImported: false,
-      });
-    }
-
-    const byNumber = new Map(supplies.map((s) => [s.externalShipmentNumber, s]));
-
-    if (itemsWs) {
-      const itemsKeyRow = findKeyRow(itemsWs);
-      for (let r = itemsKeyRow.number + 1; r <= (itemsWs.rowCount || 0); r++) {
-        const raw = rowToObject(itemsWs, r, itemsKeyRow);
-        const ext =
-          raw.external_shipment_number || raw.номер_отгрузки || raw.внешний_номер || raw.shipment_number;
-        const qty = parseInt(raw.quantity || raw.количество || '0', 10);
-        if (!ext || !qty || qty <= 0) continue;
-        const supply = byNumber.get(String(ext));
-        if (!supply) continue;
-        const sku = raw.sku || raw.артикул || null;
-        const barcode = raw.barcode || raw.штрихкод || raw.штрих_код || null;
-        const productId = await resolveProductId({ sku, barcode, profileId });
-        supply.items.push({
-          productId,
-          quantity: qty,
-          sku,
-          barcode,
-          name: raw.name || raw.название || null,
-          unresolved: productId == null,
-        });
-      }
-    }
-
-    const existing = await fboSuppliesService.findExistingExternalNumbers(
-      supplies.map((s) => ({ marketplace: s.marketplace, externalShipmentNumber: s.externalShipmentNumber })),
-      { profileId }
-    );
-    for (const s of supplies) {
-      const key = `${s.marketplace}:${s.externalShipmentNumber}`;
-      s.alreadyImported = existing.has(key);
-    }
-
-    return supplies.filter((s) => s.items.length > 0 || s.externalShipmentNumber);
+      },
+    ];
   }
 
   async fetchOzonPreview({ profileId, organizationId, daysBack = 90 } = {}) {

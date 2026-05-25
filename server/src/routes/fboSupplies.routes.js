@@ -15,6 +15,10 @@ router.use(requireAuth);
 
 router.get('/', wrapAsync(fboSuppliesController.list.bind(fboSuppliesController)));
 router.post('/', wrapAsync(fboSuppliesController.create.bind(fboSuppliesController)));
+router.post(
+  '/purchase-calculation',
+  wrapAsync(fboSuppliesController.purchaseCalculation.bind(fboSuppliesController))
+);
 
 router.get(
   '/import/template/excel',
@@ -32,6 +36,31 @@ router.post(
 router.post(
   '/import/confirm',
   wrapAsync(fboSuppliesController.confirmImport.bind(fboSuppliesController))
+);
+
+router.get(
+  '/:id/packing/export/excel',
+  wrapAsync(fboSuppliesController.downloadPackingExcel.bind(fboSuppliesController))
+);
+router.get('/:id/packing', wrapAsync(fboSuppliesController.getPacking.bind(fboSuppliesController)));
+router.patch(
+  '/:id/packing/contents/:contentId',
+  wrapAsync(fboSuppliesController.packingUpdateContent.bind(fboSuppliesController))
+);
+router.post('/:id/packing/scan', wrapAsync(fboSuppliesController.packingScan.bind(fboSuppliesController)));
+router.post(
+  '/:id/packing/scan-remove',
+  wrapAsync(fboSuppliesController.packingScanRemove.bind(fboSuppliesController))
+);
+router.delete(
+  '/:id/packing/cargo-units/:cargoUnitId',
+  wrapAsync(fboSuppliesController.deleteCargoUnit.bind(fboSuppliesController))
+);
+
+router.post('/:id/items', wrapAsync(fboSuppliesController.addSupplyItem.bind(fboSuppliesController)));
+router.patch(
+  '/:id/items/:itemId',
+  wrapAsync(fboSuppliesController.updateSupplyItem.bind(fboSuppliesController))
 );
 
 router.get('/:id', wrapAsync(fboSuppliesController.getById.bind(fboSuppliesController)));

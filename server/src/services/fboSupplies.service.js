@@ -62,13 +62,14 @@ function mapItemRow(row) {
     name: row.name,
     productName: row.product_name ?? null,
     productImage: row.product_image ?? null,
+    productCategoryId: row.product_category_id ?? null,
   };
 }
 
 const SUPPLY_SELECT = `
   SELECT s.*,
          o.name AS organization_name,
-         w.name AS deduction_warehouse_name,
+         COALESCE(NULLIF(TRIM(w.address), ''), 'Склад #' || w.id::text) AS deduction_warehouse_name,
          (SELECT COUNT(*)::int FROM fbo_supply_items i WHERE i.fbo_supply_id = s.id) AS item_count
   FROM fbo_supplies s
   LEFT JOIN organizations o ON o.id = s.organization_id
@@ -245,7 +246,7 @@ class FboSuppliesService {
     }
     const supply = mapSupplyRow(r.rows[0]);
     const itemsR = await query(
-      `SELECT i.*, p.name AS product_name,
+      `SELECT i.*, p.name AS product_name, p.user_category_id AS product_category_id,
               (SELECT elem->>'url' FROM jsonb_array_elements(COALESCE(p.images, '[]'::jsonb)) AS elem LIMIT 1) AS product_image
        FROM fbo_supply_items i
        LEFT JOIN products p ON p.id = i.product_id
@@ -273,7 +274,7 @@ class FboSuppliesService {
       throw err;
     }
 
-    return transaction(async (client) => {
+    const supplyId = await transaction(async (client) => {
       const dup = await client.query(
         `SELECT id FROM fbo_supplies
          WHERE ($1::bigint IS NULL OR profile_id = $1) AND marketplace = $2 AND external_shipment_number = $3`,
@@ -313,7 +314,7 @@ class FboSuppliesService {
           payload.note ?? null,
         ]
       );
-      const supplyId = ins.rows[0].id;
+      const newId = ins.rows[0].id;
       for (const it of items) {
         const qty = parseInt(it.quantity, 10);
         if (!qty || qty <= 0) continue;
@@ -322,7 +323,7 @@ class FboSuppliesService {
             fbo_supply_id, product_id, quantity, barcode, sku, mp_offer_id, mp_product_id, name
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
           [
-            supplyId,
+            newId,
             it.productId ?? null,
             qty,
             it.barcode ?? null,
@@ -333,16 +334,19 @@ class FboSuppliesService {
           ]
         );
       }
-      const created = await this.getById(supplyId, { profileId: pid });
-      if (created.status === 'shipped' && created.deductStock) {
-        try {
-          await this.applyStockDeductionIfNeeded(supplyId, { profileId: pid });
-        } catch (e) {
-          console.warn('[FboSupplies] create→shipped stock:', e?.message || e);
-        }
+      return newId;
+    });
+
+    const created = await this.getById(supplyId, { profileId: pid });
+    if (created.status === 'shipped' && created.deductStock) {
+      try {
+        await this.applyStockDeductionIfNeeded(supplyId, { profileId: pid });
+      } catch (e) {
+        console.warn('[FboSupplies] create→shipped stock:', e?.message || e);
       }
       return this.getById(supplyId, { profileId: pid });
-    });
+    }
+    return created;
   }
 
   async update(id, payload, { profileId } = {}) {
@@ -355,6 +359,27 @@ class FboSuppliesService {
       params.push(val);
       fields.push(`${col} = $${params.length}`);
     };
+    if (payload.marketplace !== undefined) setField('marketplace', normalizeMarketplace(payload.marketplace));
+    if (payload.externalShipmentNumber !== undefined) {
+      const ext = String(payload.externalShipmentNumber).trim();
+      if (!ext) {
+        const err = new Error('Укажите номер отгрузки');
+        err.statusCode = 400;
+        throw err;
+      }
+      const dup = await query(
+        `SELECT id FROM fbo_supplies
+         WHERE ($1::bigint IS NULL OR profile_id = $1) AND marketplace = $2
+           AND external_shipment_number = $3 AND id <> $4`,
+        [pid, normalizeMarketplace(payload.marketplace ?? existing.marketplace), ext, id]
+      );
+      if (dup.rows?.length) {
+        const err = new Error('Поставка с таким номером отгрузки уже есть');
+        err.statusCode = 409;
+        throw err;
+      }
+      setField('external_shipment_number', ext);
+    }
     if (payload.name !== undefined) setField('name', payload.name);
     if (payload.readyAt !== undefined) setField('ready_at', payload.readyAt);
     if (payload.marketplaceWarehouseName !== undefined) {
@@ -413,6 +438,174 @@ class FboSuppliesService {
       throw err;
     }
     return this.update(id, { status: next }, { profileId });
+  }
+
+  async _assertSupplyAccess(supplyId, { profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const sid = parseInt(supplyId, 10);
+    const r = await query(
+      `SELECT id FROM fbo_supplies WHERE id = $1 AND ($2::bigint IS NULL OR profile_id = $2)`,
+      [sid, pid]
+    );
+    if (!r.rows?.length) {
+      const err = new Error('Поставка FBO не найдена');
+      err.statusCode = 404;
+      throw err;
+    }
+    return sid;
+  }
+
+  async _loadProductForSupplyLine(productId, { profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const pnum = parseInt(productId, 10);
+    if (!Number.isFinite(pnum) || pnum < 1) {
+      const err = new Error('Укажите товар');
+      err.statusCode = 400;
+      throw err;
+    }
+    const r = await query(
+      `SELECT id, name, sku FROM products WHERE id = $1 AND ($2::bigint IS NULL OR profile_id = $2)`,
+      [pnum, pid]
+    );
+    if (!r.rows?.length) {
+      const err = new Error('Товар не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+    const row = r.rows[0];
+    let barcode = null;
+    try {
+      const bc = await query(
+        `SELECT barcode FROM barcodes WHERE product_id = $1 ORDER BY id LIMIT 1`,
+        [pnum]
+      );
+      barcode = bc.rows?.[0]?.barcode ?? null;
+    } catch {
+      /* optional */
+    }
+    return {
+      id: Number(row.id),
+      name: row.name,
+      sku: row.sku,
+      barcode,
+    };
+  }
+
+  async addSupplyItem(supplyId, payload, { profileId } = {}) {
+    const sid = await this._assertSupplyAccess(supplyId, { profileId });
+    const prod = await this._loadProductForSupplyLine(payload.productId, { profileId });
+    const qty = parseInt(payload.quantity, 10);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      const err = new Error('Укажите количество больше 0');
+      err.statusCode = 400;
+      throw err;
+    }
+    const ins = await query(
+      `INSERT INTO fbo_supply_items (
+        fbo_supply_id, product_id, quantity, barcode, sku, name
+      ) VALUES ($1,$2,$3,$4,$5,$6)
+      RETURNING id, fbo_supply_id, product_id, quantity`,
+      [sid, prod.id, qty, prod.barcode, prod.sku, prod.name]
+    );
+    const row = ins.rows[0];
+    return {
+      id: row.id,
+      supplyId: row.fbo_supply_id,
+      productId: row.product_id,
+      quantity: row.quantity,
+    };
+  }
+
+  async replaceSupplyItemProduct(supplyId, itemId, payload, { profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const sid = await this._assertSupplyAccess(supplyId, { profileId });
+    const iid = parseInt(itemId, 10);
+    const prod = await this._loadProductForSupplyLine(payload.productId, { profileId });
+    const qty = parseInt(payload.quantity, 10);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      const err = new Error('Укажите количество больше 0');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const belongs = await query(
+      `SELECT si.id FROM fbo_supply_items si WHERE si.id = $1 AND si.fbo_supply_id = $2`,
+      [iid, sid]
+    );
+    if (!belongs.rows?.length) {
+      const err = new Error('Строка поставки не найдена');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const packed = await query(
+      `SELECT 1 FROM fbo_supply_cargo_contents WHERE fbo_supply_item_id = $1 LIMIT 1`,
+      [iid]
+    );
+    if (packed.rows?.length) {
+      const err = new Error('Товар уже упакован в грузоместо — замените в карточке поставки');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const r = await query(
+      `UPDATE fbo_supply_items
+       SET product_id = $1, sku = $2, name = $3, barcode = $4, quantity = $5, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $6
+       RETURNING id, fbo_supply_id, product_id, quantity`,
+      [prod.id, prod.sku, prod.name, prod.barcode, qty, iid]
+    );
+    return {
+      id: r.rows[0].id,
+      supplyId: r.rows[0].fbo_supply_id,
+      productId: r.rows[0].product_id,
+      quantity: r.rows[0].quantity,
+      replaced: true,
+    };
+  }
+
+  async updateSupplyItemQuantity(supplyId, itemId, quantity, { profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const sid = parseInt(supplyId, 10);
+    const iid = parseInt(itemId, 10);
+    const qty = parseInt(quantity, 10);
+    if (!Number.isFinite(qty) || qty < 0) {
+      const err = new Error('Укажите неотрицательное количество');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const belongs = await query(
+      `SELECT si.id
+       FROM fbo_supply_items si
+       INNER JOIN fbo_supplies s ON s.id = si.fbo_supply_id
+       WHERE si.id = $1 AND si.fbo_supply_id = $2
+         AND ($3::bigint IS NULL OR s.profile_id = $3)`,
+      [iid, sid, pid]
+    );
+    if (!belongs.rows?.length) {
+      const err = new Error('Строка поставки не найдена');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (qty === 0) {
+      await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [iid]);
+      return { id: iid, quantity: 0, deleted: true };
+    }
+
+    const r = await query(
+      `UPDATE fbo_supply_items SET quantity = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
+       RETURNING id, fbo_supply_id, quantity`,
+      [qty, iid]
+    );
+    return {
+      id: r.rows[0].id,
+      supplyId: r.rows[0].fbo_supply_id,
+      quantity: r.rows[0].quantity,
+      deleted: false,
+    };
   }
 
   async delete(id, { profileId } = {}) {

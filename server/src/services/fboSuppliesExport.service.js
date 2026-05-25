@@ -1,74 +1,118 @@
 /**
- * Шаблон Excel для импорта поставок FBO.
+ * Шаблон Excel для импорта поставок FBO и выгрузка состава по грузоместам.
  */
 
 import ExcelJS from 'exceljs';
+import fboSuppliesPackingService from './fboSuppliesPacking.service.js';
 
-const SUPPLIES_HEADERS = [
-  ['Маркетплейс', 'Название', 'Дата готовности', 'Склад маркетплейса', 'Номер отгрузки', 'Склад списания (ID)', 'Организация', 'Списать остатки'],
-  ['marketplace', 'name', 'ready_at', 'marketplace_warehouse', 'external_shipment_number', 'deduction_warehouse_id', 'organization', 'deduct_stock'],
+const SHEET_NAME = 'Товары';
+
+const HEADERS = [
+  ['Артикул', 'Количество'],
+  ['sku', 'quantity'],
 ];
 
-const ITEMS_HEADERS = [
-  ['Номер отгрузки', 'Артикул', 'Штрихкод', 'Количество', 'Название'],
-  ['external_shipment_number', 'sku', 'barcode', 'quantity', 'name'],
+const EXAMPLES = [
+  ['ART-001', 10],
+  ['ART-002', 5],
 ];
 
-const EXAMPLE_SUPPLIES = [
-  ['ozon', 'новая Москва', '2026-06-01', 'МО Пушкино 1 РЦ', '2000033134343', '', 'ИП Пример', 'нет'],
-  ['wb', 'Поставка WB', '2026-06-05', 'Коледино', 'WB-GI-123456', '1', 'ИП Пример', 'да'],
-];
-
-const EXAMPLE_ITEMS = [
-  ['2000033134343', 'ART-001', '4600000000001', 10, 'Товар пример 1'],
-  ['2000033134343', 'ART-002', '', 5, 'Товар пример 2'],
-  ['WB-GI-123456', 'ART-001', '4600000000001', 3, ''],
-];
-
-function fillSheet(ws, headerRows, examples) {
-  headerRows.forEach((row, i) => {
-    ws.getRow(i + 1).values = row;
-    ws.getRow(i + 1).font = i === 0 ? { bold: true } : { italic: true, color: { argb: 'FF666666' } };
+function writeRow(ws, rowIndex, values, font) {
+  const row = ws.getRow(rowIndex);
+  values.forEach((val, colIndex) => {
+    row.getCell(colIndex + 1).value = val;
   });
-  examples.forEach((row, i) => {
-    ws.getRow(headerRows.length + 1 + i).values = row;
-  });
-  ws.columns.forEach((col, idx) => {
-    const maxLen = Math.max(
-      12,
-      ...headerRows.map((r) => String(r[idx] || '').length),
-      ...examples.map((r) => String(r[idx] || '').length)
-    );
-    col.width = Math.min(44, maxLen + 2);
-  });
+  if (font) row.font = font;
 }
 
+function formatExpiryYmd(value) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    return value.slice(0, 10);
+  }
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+function normalizeMp(marketplace) {
+  const m = String(marketplace || 'ozon').toLowerCase();
+  if (m === 'wb' || m === 'wildberries') return 'wb';
+  return 'ozon';
+}
+
+const OZON_PACKING_HEADERS = [
+  'Артикул товара',
+  'Кол-во товаров',
+  'Зона размещения',
+  'ШК ГМ',
+  'Срок годности ДО',
+];
+
+const WB_PACKING_HEADERS = [
+  'Баркод товара',
+  'Кол-во товаров',
+  'ШК короба',
+  'Срок годности',
+];
+
 class FboSuppliesExportService {
-  async buildImportTemplateBuffer() {
+  async buildPackingExportBuffer(supplyId, { profileId } = {}) {
+    const { marketplace, rows } = await fboSuppliesPackingService.getPackingExportRows(supplyId, {
+      profileId,
+    });
+    if (!rows.length) {
+      const err = new Error('Нет упакованных товаров в грузоместах для выгрузки');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const mp = normalizeMp(marketplace);
+    const headers = mp === 'wb' ? WB_PACKING_HEADERS : OZON_PACKING_HEADERS;
+
     const wb = new ExcelJS.Workbook();
     wb.creator = 'ERM';
-    const suppliesWs = wb.addWorksheet('Поставки');
-    const itemsWs = wb.addWorksheet('Товары');
-    const hintWs = wb.addWorksheet('Подсказки');
+    const ws = wb.addWorksheet('Состав по грузоместам');
 
-    fillSheet(suppliesWs, SUPPLIES_HEADERS, EXAMPLE_SUPPLIES);
-    fillSheet(itemsWs, ITEMS_HEADERS, EXAMPLE_ITEMS);
+    writeRow(ws, 1, headers, { bold: true });
 
-    hintWs.getColumn(1).width = 90;
-    const hints = [
-      'Маркетплейс: ozon, wb (Wildberries), ym (Яндекс Маркет)',
-      'Дата готовности: ГГГГ-ММ-ДД или ДД.ММ.ГГГГ',
-      'Номер отгрузки — уникальный идентификатор поставки на МП (связывает листы)',
-      'Склад списания — ID склада из раздела «Склады» (тип warehouse)',
-      'Списать остатки: да/нет — фактическое списание при статусе «Отгружен»',
-      'Товары: артикул или штрихкод должны совпадать с карточкой в ERM',
-    ];
-    hints.forEach((t, i) => {
-      hintWs.getCell(i + 1, 1).value = t;
+    rows.forEach((row, i) => {
+      const expiry = formatExpiryYmd(row.expiresAt);
+      const values =
+        mp === 'wb'
+          ? [row.productBarcode || '', row.quantity, row.cargoBarcode || '', expiry]
+          : [row.article || '', row.quantity, row.placementZone || '', row.cargoBarcode || '', expiry];
+      writeRow(ws, i + 2, values);
+    });
+
+    headers.forEach((_, colIndex) => {
+      ws.getColumn(colIndex + 1).width = colIndex === 0 ? 22 : 16;
     });
 
     const buffer = await wb.xlsx.writeBuffer();
-    return Buffer.from(buffer);
+    return {
+      buffer: Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer),
+      marketplace: mp,
+    };
+  }
+
+  async buildImportTemplateBuffer() {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'ERM';
+    const ws = wb.addWorksheet(SHEET_NAME);
+
+    HEADERS.forEach((row, i) => {
+      writeRow(ws, i + 1, row, i === 0 ? { bold: true } : { italic: true, color: { argb: 'FF666666' } });
+    });
+    EXAMPLES.forEach((row, i) => {
+      writeRow(ws, HEADERS.length + 1 + i, row);
+    });
+
+    ws.getColumn(1).width = 24;
+    ws.getColumn(2).width = 14;
+
+    const buffer = await wb.xlsx.writeBuffer();
+    return Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
   }
 }
 

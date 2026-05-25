@@ -8,6 +8,93 @@ import api, { resolveApiBaseUrl } from '../services/api';
 import { getStoredLabelSize } from '../pages/Settings/Labels.jsx';
 
 const PRINT_HELPER_FETCH_MS = 25000;
+export const PRODUCT_LABELS_BATCH_STORAGE_KEY = 'erm:product-labels-batch';
+const BATCH_PAYLOAD_TTL_MS = 10 * 60 * 1000;
+
+function normalizeBatchItem(raw) {
+  const productId = raw?.productId != null ? String(raw.productId).trim() : '';
+  if (!productId) return null;
+  const copiesRaw = Number(raw.copies);
+  const copies =
+    Number.isFinite(copiesRaw) && copiesRaw >= 1
+      ? Math.min(99, Math.floor(copiesRaw))
+      : 1;
+  const title = raw.title != null ? String(raw.title).trim() : '';
+  return { productId, copies, title: title || undefined };
+}
+
+function batchStorageGet() {
+  try {
+    return localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Сохранить очередь печати (localStorage — общий для всех вкладок одного origin). */
+export function stashProductLabelsBatch(items = []) {
+  const normalized = (items || []).map(normalizeBatchItem).filter(Boolean);
+  if (!normalized.length) return false;
+  const storage = batchStorageGet();
+  if (!storage) return false;
+  try {
+    const payload = JSON.stringify({ ts: Date.now(), items: normalized });
+    storage.setItem(PRODUCT_LABELS_BATCH_STORAGE_KEY, payload);
+    // sessionStorage не виден в новой вкладке — убираем устаревшие данные
+    try {
+      sessionStorage.removeItem(PRODUCT_LABELS_BATCH_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readProductLabelsBatchPayload() {
+  const storages = [batchStorageGet(), (() => {
+    try {
+      return sessionStorage;
+    } catch {
+      return null;
+    }
+  })()].filter(Boolean);
+
+  for (const storage of storages) {
+    try {
+      const raw = storage.getItem(PRODUCT_LABELS_BATCH_STORAGE_KEY);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const ts = Number(parsed?.ts);
+      if (!Number.isFinite(ts) || Date.now() - ts > BATCH_PAYLOAD_TTL_MS) {
+        storage.removeItem(PRODUCT_LABELS_BATCH_STORAGE_KEY);
+        continue;
+      }
+      const items = (parsed?.items || []).map(normalizeBatchItem).filter(Boolean);
+      if (items.length) return { items };
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+/** Одна вкладка — все выбранные этикетки (по количеству в каждой строке). */
+export function openProductLabelsBatchPrintTab(items = []) {
+  if (!stashProductLabelsBatch(items)) return false;
+  const url = '/print/product-labels-batch';
+  try {
+    const w = window.open(url, '_blank', 'noopener,noreferrer');
+    if (w) {
+      w.focus?.();
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
 
 async function errorMessageFromLabelRequest(err) {
   const status = err?.response?.status || 0;

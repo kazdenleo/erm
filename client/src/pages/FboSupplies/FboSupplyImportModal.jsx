@@ -100,9 +100,12 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId, onIm
   };
 
   const handleConfirm = async () => {
-    const toImport = candidates.filter((c) => selected.has(c.importKey));
+    const toImport =
+      mode === 'excel' && candidates[0]?.isNewDraft
+        ? candidates
+        : candidates.filter((c) => selected.has(c.importKey));
     if (!toImport.length) {
-      setErr('Выберите хотя бы одну поставку');
+      setErr(mode === 'excel' ? 'Нет данных для создания поставки' : 'Выберите хотя бы одну поставку');
       return;
     }
     setConfirming(true);
@@ -122,7 +125,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId, onIm
   return (
     <Modal
       isOpen={open}
-      title={mode === 'excel' ? 'Загрузка поставок из Excel' : 'Загрузка поставок с маркетплейса'}
+      title={mode === 'excel' ? 'Новая поставка из Excel' : 'Загрузка поставок с маркетплейса'}
       onClose={handleClose}
       size="large"
     >
@@ -162,9 +165,8 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId, onIm
         {mode === 'excel' && (
           <div style={{ marginBottom: 12 }}>
             <p className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
-              Файл .xlsx с листами «Поставки» и «Товары». Колонки: маркетплейс, название, дата готовности,
-              склад маркетплейса, номер отгрузки, склад списания, организация; в товарах — номер отгрузки,
-              артикул, штрихкод, количество.
+              В файле только <strong>артикул</strong> и <strong>количество</strong> (шаблон — кнопка «Шаблон Excel»).
+              Будет создана новая поставка; маркетплейс, склад и номер отгрузки заполните в карточке.
             </p>
             <input
               type="file"
@@ -185,7 +187,49 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId, onIm
           </div>
         )}
 
-        {candidates.length > 0 && (
+        {candidates.length > 0 && mode === 'excel' && candidates[0]?.isNewDraft && (
+          <>
+            <p style={{ fontSize: 14, marginBottom: 8 }}>
+              Будет создана поставка «{candidates[0].name}» — {(candidates[0].items || []).length} поз.
+            </p>
+            <div className="fbo-import-table-wrap">
+              <table className="fbo-import-table">
+                <thead>
+                  <tr>
+                    <th>Артикул</th>
+                    <th>Количество</th>
+                    <th>В ERM</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(candidates[0].items || []).map((it, idx) => (
+                    <tr key={idx}>
+                      <td>{it.sku || '—'}</td>
+                      <td>{it.quantity}</td>
+                      <td>
+                        {it.unresolved ? (
+                          <span className="fbo-import-warn">не найден</span>
+                        ) : (
+                          <span className="badge bg-light text-dark">OK</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <Button variant="secondary" onClick={handleClose}>
+                Отмена
+              </Button>
+              <Button variant="primary" onClick={handleConfirm} disabled={confirming}>
+                {confirming ? 'Создание…' : 'Создать поставку'}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {candidates.length > 0 && mode === 'api' && (
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <label style={{ fontSize: 13 }}>

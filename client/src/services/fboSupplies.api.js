@@ -5,6 +5,13 @@
 import api from './api';
 
 export const fboSuppliesApi = {
+  purchaseCalculation: async (supplyIds) => {
+    const response = await api.post('/fbo-supplies/purchase-calculation', {
+      supplyIds,
+    });
+    return response.data?.data ?? response.data;
+  },
+
   list: async (params = {}) => {
     const response = await api.get('/fbo-supplies', { params });
     return response.data?.data ?? response.data;
@@ -25,6 +32,29 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  updateSupplyItem: async (supplyId, itemId, quantity) => {
+    const response = await api.patch(`/fbo-supplies/${supplyId}/items/${itemId}`, {
+      quantity,
+    });
+    return response.data?.data ?? response.data;
+  },
+
+  replaceSupplyItem: async (supplyId, itemId, { productId, quantity }) => {
+    const response = await api.patch(`/fbo-supplies/${supplyId}/items/${itemId}`, {
+      productId,
+      quantity,
+    });
+    return response.data?.data ?? response.data;
+  },
+
+  addSupplyItem: async (supplyId, { productId, quantity }) => {
+    const response = await api.post(`/fbo-supplies/${supplyId}/items`, {
+      productId,
+      quantity,
+    });
+    return response.data?.data ?? response.data;
+  },
+
   advanceStatus: async (id) => {
     const response = await api.post(`/fbo-supplies/${id}/advance-status`, {});
     return response.data?.data ?? response.data;
@@ -37,9 +67,25 @@ export const fboSuppliesApi = {
 
   downloadImportTemplate: async () => {
     const response = await api.get('/fbo-supplies/import/template/excel', {
-      responseType: 'blob',
+      params: { _: Date.now() },
+      responseType: 'arraybuffer',
     });
-    return response.data;
+    const cd = String(
+      response.headers?.['content-disposition'] ?? response.headers?.['Content-Disposition'] ?? ''
+    );
+    let filename = 'fbo_supplies_import_template.xlsx';
+    const utf8m = cd.match(/filename\*\s*=\s*UTF-8''([^;\s]+)/i);
+    if (utf8m) {
+      try {
+        filename = decodeURIComponent(utf8m[1].trim());
+      } catch {
+        filename = utf8m[1].trim();
+      }
+    } else {
+      const quoted = cd.match(/filename\s*=\s*"([^"]+)"/i);
+      if (quoted) filename = quoted[1];
+    }
+    return { buffer: response.data, filename };
   },
 
   previewApiImport: async (payload) => {
@@ -58,6 +104,65 @@ export const fboSuppliesApi = {
 
   confirmImport: async (supplies, source = 'api') => {
     const response = await api.post('/fbo-supplies/import/confirm', { supplies, source });
+    return response.data?.data ?? response.data;
+  },
+
+  downloadPackingExcel: async (id) => {
+    const response = await api.get(`/fbo-supplies/${id}/packing/export/excel`, {
+      params: { _: Date.now() },
+      responseType: 'arraybuffer',
+    });
+    const cd = String(
+      response.headers?.['content-disposition'] ?? response.headers?.['Content-Disposition'] ?? ''
+    );
+    let filename = `fbo_packing_${id}.xlsx`;
+    const utf8m = cd.match(/filename\*\s*=\s*UTF-8''([^;\s]+)/i);
+    if (utf8m) {
+      try {
+        filename = decodeURIComponent(utf8m[1].trim());
+      } catch {
+        filename = utf8m[1].trim();
+      }
+    } else {
+      const quoted = cd.match(/filename\s*=\s*"([^"]+)"/i);
+      if (quoted) filename = quoted[1];
+    }
+    return { buffer: response.data, filename };
+  },
+
+  updatePackingContent: async (supplyId, contentId, payload) => {
+    const response = await api.patch(
+      `/fbo-supplies/${supplyId}/packing/contents/${contentId}`,
+      payload
+    );
+    return response.data?.data ?? response.data;
+  },
+
+  getPacking: async (id) => {
+    const response = await api.get(`/fbo-supplies/${id}/packing`);
+    return response.data?.data ?? response.data;
+  },
+
+  packingScan: async (id, { barcode, activeCargoUnitId }) => {
+    const response = await api.post(`/fbo-supplies/${id}/packing/scan`, {
+      barcode,
+      activeCargoUnitId: activeCargoUnitId ?? null,
+    });
+    return response.data?.data ?? response.data;
+  },
+
+  packingScanRemove: async (id, { barcode, activeCargoUnitId }) => {
+    const response = await api.post(`/fbo-supplies/${id}/packing/scan-remove`, {
+      barcode,
+      activeCargoUnitId: activeCargoUnitId ?? null,
+    });
+    return response.data?.data ?? response.data;
+  },
+
+  deleteCargoUnit: async (supplyId, cargoUnitId) => {
+    const response = await api.delete(
+      `/fbo-supplies/${supplyId}/packing/cargo-units/${cargoUnitId}`
+    );
     return response.data?.data ?? response.data;
   },
 };

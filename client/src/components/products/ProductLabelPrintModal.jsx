@@ -21,12 +21,16 @@ export function ProductLabelPrintModal({
   onPrint,
   printing = false,
   error = '',
+  defaultCopies = 1,
 }) {
   const [copies, setCopies] = useState('1');
 
   useEffect(() => {
-    if (isOpen) setCopies('1');
-  }, [isOpen, product?.id]);
+    if (isOpen) {
+      const n = parseCopies(defaultCopies);
+      setCopies(String(n));
+    }
+  }, [isOpen, product?.id, defaultCopies]);
 
   if (!isOpen || !product) return null;
 

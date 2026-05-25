@@ -4,6 +4,22 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { query } from '../config/database.js';
+
+async function applyFboStockExclusive(warehouseId, isFbo, profileId) {
+  const wid = Number(warehouseId);
+  const pid = profileId != null ? Number(profileId) : null;
+  if (!Number.isFinite(wid) || !Number.isFinite(pid)) return;
+  if (isFbo) {
+    await query(
+      `UPDATE warehouses SET is_fbo_stock = FALSE WHERE profile_id = $1 AND id <> $2`,
+      [pid, wid]
+    );
+    await query(`UPDATE warehouses SET is_fbo_stock = TRUE WHERE id = $1`, [wid]);
+  } else {
+    await query(`UPDATE warehouses SET is_fbo_stock = FALSE WHERE id = $1`, [wid]);
+  }
+}
 
 class WarehousesService {
   constructor() {
@@ -85,9 +101,23 @@ class WarehousesService {
       wbWarehouseName: wbWarehouseNameValue
     };
     
+    const isFbo =
+      type === 'warehouse' &&
+      (data.isFboStock === true ||
+        data.is_fbo_stock === true ||
+        data.isFboStock === 'true' ||
+        data.is_fbo_stock === 'true');
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      payload.is_fbo_stock = isFbo;
+    }
+
     console.log('[WarehousesService] Create payload:', payload);
-    
-    return await this.repository.create(payload);
+
+    const created = await this.repository.create(payload);
+    if (isFbo && created?.id) {
+      await applyFboStockExclusive(created.id, true, profileId ?? payload.profile_id);
+    }
+    return created;
   }
 
   async update(id, data, { profileId = null } = {}) {
@@ -237,11 +267,21 @@ class WarehousesService {
     console.log('[WarehousesService] existing.type:', existing.type);
     console.log('[WarehousesService] existing.wb_warehouse_name:', existing.wb_warehouse_name);
 
+    if (type === 'warehouse' && (data.isFboStock !== undefined || data.is_fbo_stock !== undefined)) {
+      const v = data.isFboStock ?? data.is_fbo_stock;
+      payload.is_fbo_stock = v === true || v === 'true' || v === '1';
+    } else if (type !== 'warehouse' && repositoryFactory.isUsingPostgreSQL()) {
+      payload.is_fbo_stock = false;
+    }
+
     const updated = await this.repository.update(id, payload, profileId);
     if (!updated) {
       const error = new Error('Склад не найден');
       error.statusCode = 404;
       throw error;
+    }
+    if (payload.is_fbo_stock !== undefined) {
+      await applyFboStockExclusive(id, !!payload.is_fbo_stock, profileId ?? existing.profile_id);
     }
     console.log('[WarehousesService] Updated warehouse returned:', JSON.stringify(updated, null, 2));
     console.log('[WarehousesService] Updated warehouse wbWarehouseName:', updated.wbWarehouseName);

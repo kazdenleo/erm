@@ -17,6 +17,8 @@ const baseWarehouseSchema = z.object({
   name: z.string().optional().nullable(),
   orderAcceptanceTime: z.string().regex(/^([0-1][0-9]|2[0-3]):[0-5][0-9]$/, 'Неверный формат времени (HH:MM)').optional().nullable(),
   wbWarehouseName: z.string().optional().nullable(),
+  isFboStock: z.boolean().optional(),
+  is_fbo_stock: z.boolean().optional(),
 });
 
 /**

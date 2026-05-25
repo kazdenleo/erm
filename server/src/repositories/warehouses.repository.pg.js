@@ -71,7 +71,8 @@ class WarehousesRepositoryPG {
       supplierCode: row.supplier_code,
       mainWarehouseAddress: row.main_warehouse_address,
       orderAcceptanceTime: row.order_acceptance_time,
-      wbWarehouseName: row.wb_warehouse_name
+      wbWarehouseName: row.wb_warehouse_name,
+      isFboStock: row.is_fbo_stock === true,
     }));
   }
   
@@ -158,8 +159,8 @@ class WarehousesRepositoryPG {
     // Пытаемся вставить с полем wb_warehouse_name и organization_id
     try {
       const result = await query(`
-        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id, is_fbo_stock)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *
       `, [
         warehouseData.type || 'warehouse',
@@ -169,7 +170,8 @@ class WarehousesRepositoryPG {
         warehouseData.order_acceptance_time || null,
         warehouseData.wb_warehouse_name || null,
         orgId,
-        profId
+        profId,
+        warehouseData.is_fbo_stock === true,
       ]);
       
       const row = result.rows[0];
@@ -179,7 +181,8 @@ class WarehousesRepositoryPG {
         mainWarehouseId: row.main_warehouse_id,
         organizationId: row.organization_id,
         orderAcceptanceTime: row.order_acceptance_time,
-        wbWarehouseName: row.wb_warehouse_name || null
+        wbWarehouseName: row.wb_warehouse_name || null,
+        isFboStock: row.is_fbo_stock === true,
       };
     } catch (error) {
       if (error.message && error.message.includes('organization_id')) {
@@ -251,8 +254,8 @@ class WarehousesRepositoryPG {
       let paramIndex = 1;
       
       const allowedFields = includeWbWarehouseName 
-        ? ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'wb_warehouse_name', 'organization_id']
-        : ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'organization_id'];
+        ? ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'wb_warehouse_name', 'organization_id', 'is_fbo_stock']
+        : ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'organization_id', 'is_fbo_stock'];
       
       for (const field of allowedFields) {
         if (updates.hasOwnProperty(field)) {
