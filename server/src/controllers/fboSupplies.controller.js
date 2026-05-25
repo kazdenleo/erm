@@ -20,6 +20,15 @@ function setAttachmentXlsx(res, filename) {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`);
 }
 
+/** Организация из тела запроса или заголовка (как на странице «Интеграции»). */
+function resolveOrganizationIdFromRequest(req) {
+  const fromBody = req.body?.organizationId ?? req.body?.organization_id ?? null;
+  if (fromBody != null && String(fromBody).trim() !== '') return String(fromBody).trim();
+  const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+  if (orgHeader != null && String(orgHeader).trim() !== '') return String(orgHeader).trim();
+  return null;
+}
+
 class FboSuppliesController {
   async list(req, res, next) {
     try {
@@ -136,7 +145,8 @@ class FboSuppliesController {
   async previewApiImport(req, res, next) {
     try {
       const profileId = req.user?.profileId ?? null;
-      const { marketplace, organizationId, daysBack } = req.body || {};
+      const { marketplace, daysBack } = req.body || {};
+      const organizationId = resolveOrganizationIdFromRequest(req);
       const data = await fboSuppliesImportService.fetchMarketplacePreview({
         marketplace,
         profileId,

@@ -204,6 +204,14 @@ async function ymRequest(path, { apiKey, method = 'GET', body = null } = {}) {
 }
 
 function mapWbStateToStatus(status) {
+  const n = Number(status);
+  if (Number.isFinite(n)) {
+    if ([7, 8, 9].includes(n)) return 'return';
+    if ([6, 10].includes(n)) return 'closed';
+    if ([5].includes(n)) return 'shipped';
+    if ([2, 3, 4].includes(n)) return 'ready_for_supply';
+    if ([1].includes(n)) return 'new';
+  }
   const s = String(status ?? '').toLowerCase();
   if (s.includes('cancel') || s.includes('reject')) return 'return';
   if (s.includes('complete') || s.includes('accept') || s.includes('done')) return 'closed';
@@ -212,6 +220,60 @@ function mapWbStateToStatus(status) {
   if (s.includes('pack')) return 'packed';
   if (s.includes('assembl')) return 'assembled';
   return 'new';
+}
+
+/** Тело POST /api/v1/supplies (FBW) — фильтр по датам RFC3339. */
+function buildWbSuppliesListBody(daysBack) {
+  const days = Math.max(1, Math.min(365, Number(daysBack) || 90));
+  const till = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+  const toIso = (d) => d.toISOString();
+  return {
+    dates: [
+      { from: toIso(from), till: toIso(till), type: 'createDate' },
+      { from: toIso(from), till: toIso(till), type: 'supplyDate' },
+    ],
+  };
+}
+
+function parseWbSuppliesListResponse(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.supplies)) return data.supplies;
+  if (Array.isArray(data?.result)) return data.result;
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
+}
+
+function parseWbGoodsResponse(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.goods)) return data.goods;
+  if (Array.isArray(data?.products)) return data.products;
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
+}
+
+/** ID для GET /api/v1/supplies/{ID}/goods — supplyID или preorderID. */
+function wbSupplyGoodsApiId(row) {
+  const supplyId = row.supplyID ?? row.supplyId ?? row.supply_id;
+  if (supplyId != null && String(supplyId).trim() !== '' && Number(supplyId) !== 0) {
+    return String(supplyId);
+  }
+  const preorder = row.preorderID ?? row.preorderId ?? row.preorder_id;
+  if (preorder != null && String(preorder).trim() !== '') return String(preorder);
+  return null;
+}
+
+function wbExternalShipmentNumber(row) {
+  const supplyId = row.supplyID ?? row.supplyId;
+  if (supplyId != null && String(supplyId).trim() !== '' && Number(supplyId) !== 0) {
+    return String(supplyId);
+  }
+  const preorder = row.preorderID ?? row.preorderId;
+  if (preorder != null && String(preorder).trim() !== '') {
+    return `PRE-${preorder}`;
+  }
+  return '';
 }
 
 function mapYmStateToStatus(status) {
@@ -422,60 +484,59 @@ class FboSuppliesImportService {
       organizationId,
     });
     const apiKey = wbConfig?.api_key ?? wbConfig?.apiKey;
-    if (!apiKey) {
-      const err = new Error('Не настроен API-ключ Wildberries. Нужен токен с доступом «Поставки» (FBW).');
+    if (!apiKey || !String(apiKey).trim()) {
+      const err = new Error(
+        'Не настроен API-ключ Wildberries. Укажите токен категории «Поставки» (FBW) в «Интеграции» для выбранной организации и выберите ту же организацию в шапке сайта.'
+      );
       err.statusCode = 400;
       throw err;
     }
 
-    const since = new Date();
-    since.setDate(since.getDate() - Math.max(1, Math.min(365, Number(daysBack) || 90)));
-    const dateFrom = since.toISOString().slice(0, 10);
-    const dateTo = new Date().toISOString().slice(0, 10);
-
+    const listBody = buildWbSuppliesListBody(daysBack);
     let listData;
     try {
       listData = await wbFbwRequest('/api/v1/supplies', {
         apiKey,
         method: 'POST',
-        body: { dates: [{ from: dateFrom, to: dateTo }] },
+        body: listBody,
       });
     } catch (e1) {
-      try {
-        listData = await wbFbwRequest('/api/v1/supplies', {
-          apiKey,
-          method: 'POST',
-          body: { dateFrom, dateTo },
-        });
-      } catch (e2) {
-        const err = new Error(e1?.message || 'Не удалось получить список поставок WB (FBW)');
-        err.statusCode = 400;
-        throw err;
-      }
+      const err = new Error(
+        e1?.message ||
+          'Не удалось получить список поставок WB (FBW). Проверьте токен «Поставки» и доступ к supplies-api.wildberries.ru.'
+      );
+      err.statusCode = e1?.statusCode === 502 ? 502 : 400;
+      throw err;
     }
 
-    const rows = listData?.supplies ?? listData?.result ?? listData?.data ?? (Array.isArray(listData) ? listData : []);
+    const rows = parseWbSuppliesListResponse(listData);
     const candidates = [];
 
     for (const row of rows) {
-      const supplyId = row.supplyID ?? row.supplyId ?? row.id ?? row.preorderID;
-      const externalNumber = String(
-        row.supplyID ?? row.preorderID ?? row.giId ?? row.supplyId ?? supplyId ?? ''
-      ).trim();
-      if (!externalNumber) continue;
+      const externalNumber = wbExternalShipmentNumber(row);
+      const goodsApiId = wbSupplyGoodsApiId(row);
+      if (!externalNumber || !goodsApiId) continue;
 
       let items = [];
       try {
         const goodsData = await wbFbwRequest(
-          `/api/v1/supplies/${encodeURIComponent(String(supplyId ?? externalNumber))}/goods`,
+          `/api/v1/supplies/${encodeURIComponent(goodsApiId)}/goods`,
           { apiKey, method: 'GET' }
         );
-        const goods = goodsData?.goods ?? goodsData?.products ?? goodsData?.data ?? [];
-        for (const g of goods) {
-          const qty = parseInt(g.quantity ?? g.count ?? g.amount ?? 0, 10);
+        const list = parseWbGoodsResponse(goodsData);
+        for (const g of list) {
+          const qty = parseInt(
+            g.quantity ?? g.count ?? g.amount ?? g.readyForSaleQuantity ?? 0,
+            10
+          );
           if (!qty || qty <= 0) continue;
-          const sku = g.vendorCode ?? g.supplierArticle ?? g.sku ?? g.barcode ?? null;
-          const barcode = g.barcode ?? g.barCode ?? null;
+          const sku =
+            g.vendorCode ??
+            g.supplierArticle ??
+            g.supplierVendorCode ??
+            g.sku ??
+            null;
+          const barcode = g.barcode ?? g.barCode ?? g.barcodes?.[0] ?? null;
           const productId = await resolveProductId({ sku, barcode, profileId });
           items.push({
             productId,
@@ -483,7 +544,8 @@ class FboSuppliesImportService {
             sku,
             barcode,
             mpOfferId: sku,
-            name: g.name ?? g.subject ?? null,
+            mpProductId: g.nmID != null ? String(g.nmID) : g.nmId != null ? String(g.nmId) : null,
+            name: g.name ?? g.subject ?? g.brand ?? null,
             unresolved: productId == null,
           });
         }
@@ -491,15 +553,32 @@ class FboSuppliesImportService {
         items = [];
       }
 
+      const supplyId = row.supplyID ?? row.supplyId;
+      const preorderId = row.preorderID ?? row.preorderId;
+      const whName =
+        row.warehouseName ??
+        row.warehouse ??
+        row.warehouseAddress ??
+        (row.warehouseID != null ? `Склад WB #${row.warehouseID}` : null);
+
       candidates.push({
         importKey: `wb:${externalNumber}`,
         marketplace: 'wb',
-        name: row.name ?? row.warehouseName ?? `WB ${externalNumber}`,
-        readyAt: parseDateOnly(row.supplyDate ?? row.createDate ?? row.date ?? row.acceptedDate),
-        marketplaceWarehouseName: row.warehouseName ?? row.warehouse ?? null,
-        marketplaceWarehouseId: row.warehouseID != null ? String(row.warehouseID) : null,
+        name:
+          row.name ??
+          (supplyId ? `Поставка WB ${supplyId}` : `Заказ WB ${preorderId ?? goodsApiId}`),
+        readyAt: parseDateOnly(
+          row.supplyDate ?? row.factDate ?? row.createDate ?? row.updatedDate ?? row.date
+        ),
+        marketplaceWarehouseName: whName,
+        marketplaceWarehouseId:
+          row.warehouseID != null
+            ? String(row.warehouseID)
+            : row.warehouseId != null
+              ? String(row.warehouseId)
+              : null,
         externalShipmentNumber: externalNumber,
-        externalSupplyId: supplyId != null ? String(supplyId) : null,
+        externalSupplyId: supplyId != null ? String(supplyId) : String(preorderId ?? goodsApiId),
         deductionWarehouseId: null,
         organizationId: organizationId != null ? Number(organizationId) : null,
         deductStock: false,

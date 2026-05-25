@@ -6,6 +6,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { Modal } from '../../components/common/Modal/Modal';
 import { Button } from '../../components/common/Button/Button';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
+import { useAuth } from '../../context/AuthContext';
 import { getMarketplaceLabel } from '../../constants/fboSupplyStatuses';
 import './FboSupplies.css';
 
@@ -16,7 +17,13 @@ function fmtDate(v) {
   return d.toLocaleDateString('ru-RU');
 }
 
-export function FboSupplyImportModal({ open, onClose, mode, organizationId, onImported }) {
+export function FboSupplyImportModal({ open, onClose, mode, organizationId: organizationIdProp, onImported }) {
+  const { selectedOrganizationId } = useAuth();
+  const organizationId =
+    organizationIdProp != null && String(organizationIdProp).trim() !== ''
+      ? organizationIdProp
+      : selectedOrganizationId || null;
+
   const [loading, setLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [err, setErr] = useState(null);
@@ -161,6 +168,18 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId, onIm
             </Button>
           </div>
         )}
+        {mode === 'api' && !organizationId ? (
+          <p className="text-muted small mb-2">
+            Выберите организацию в шапке сайта — ключи маркетплейса задаются в «Интеграции» для каждой
+            организации.
+          </p>
+        ) : null}
+        {mode === 'api' && marketplace === 'wb' ? (
+          <p className="text-muted small mb-2">
+            Wildberries: поставки на склад WB (FBW). Нужен API-токен категории «Поставки» в разделе
+            «Интеграции».
+          </p>
+        ) : null}
 
         {mode === 'excel' && (
           <div style={{ marginBottom: 12 }}>

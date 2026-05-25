@@ -65,8 +65,31 @@ class IntegrationsRepositoryPG {
       );
       return result.rows[0] || null;
     }
-    // Legacy: если organizationId не передали — не возвращаем интеграции, чтобы не смешивать организации.
     return null;
+  }
+
+  /**
+   * Первая активная интеграция маркетплейса по code для профиля (любая организация).
+   */
+  async findFirstMarketplaceByCode(code, profileId) {
+    if (profileId == null || profileId === '') return null;
+    const result = await query(
+      `SELECT * FROM integrations
+       WHERE profile_id = $1 AND code = $2 AND type = 'marketplace' AND is_active = true
+       ORDER BY organization_id NULLS LAST, updated_at DESC
+       LIMIT 1`,
+      [profileId, code]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    if (row.config && typeof row.config === 'string') {
+      try {
+        row.config = JSON.parse(row.config);
+      } catch {
+        row.config = {};
+      }
+    }
+    return row;
   }
 
   /**

@@ -117,18 +117,32 @@ class IntegrationsService {
       if (organizationId != null && organizationId !== '') {
         try {
           // Основной источник ключей для МП — marketplace_cabinets конкретной организации.
-          // Это устраняет путаницу, когда в integrations остались старые ключи на ту же организацию.
           const list = await findAllMarketplaceCabinets(String(organizationId), { marketplaceType: type });
           const active = (list || []).filter((r) => r && (r.is_active ?? r.isActive) !== false);
-          const first = active[0] || list?.[0] || null;
-          if (first?.config && typeof first.config === 'object') return first.config;
+          for (const row of active.length ? active : list || []) {
+            const raw = row?.config;
+            const parsed =
+              this._safeParseJsonMaybe(raw) ?? (raw && typeof raw === 'object' ? raw : null);
+            if (parsed && this._hasCredentialsForBalance(type, parsed)) return parsed;
+          }
         } catch (e) {
           logger.warn('[Integrations Service] marketplace_cabinets config lookup:', e?.message || e);
         }
       }
-      // Fallback: integrations (если вдруг ключи хранятся там — legacy).
       const integration = await this.repository.findByCode(type, profileId, organizationId);
-      if (integration) return integration.config || {};
+      if (integration?.config && this._hasCredentialsForBalance(type, integration.config)) {
+        return integration.config;
+      }
+      if (profileId != null && profileId !== '') {
+        const cabinetRow = await this._getFirstCabinetBalanceRow(type, profileId);
+        if (cabinetRow?.config && this._hasCredentialsForBalance(type, cabinetRow.config)) {
+          return cabinetRow.config;
+        }
+        const anyForProfile = await this.repository.findFirstMarketplaceByCode(type, profileId);
+        if (anyForProfile?.config && this._hasCredentialsForBalance(type, anyForProfile.config)) {
+          return anyForProfile.config;
+        }
+      }
       return {};
     } else {
       // Старое хранилище
@@ -2148,7 +2162,9 @@ class IntegrationsService {
       api_key = ozonIntegration?.config?.api_key || ozonIntegration?.config?.apiKey;
     }
     if (!client_id || !api_key) {
-      throw new Error('Необходимы Client ID и API Key для Ozon. Настройте интеграцию на странице "Интеграции".');
+      throw new Error(
+        'Необходимы Client ID и API Key для Ozon. Укажите их в «Интеграции» для выбранной организации (или в кабинете Ozon организации) и выберите ту же организацию в шапке сайта.'
+      );
     }
     const fetch = (await import('node-fetch')).default;
     const url = path.startsWith('http') ? path : `https://api-seller.ozon.ru${path.startsWith('/') ? path : '/' + path}`;
