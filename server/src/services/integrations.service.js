@@ -2145,14 +2145,14 @@ class IntegrationsService {
    * @param {object} body - тело запроса
    * @returns {Promise<object>} - ответ result или весь data
    */
-  async _ozonApiPost(path, body, { profileId = null, ozonOverride = null } = {}) {
+  async _ozonApiPost(path, body, { profileId = null, organizationId = null, ozonOverride = null } = {}) {
     let client_id;
     let api_key;
     if (ozonOverride && typeof ozonOverride === 'object') {
       client_id = ozonOverride.client_id ?? ozonOverride.clientId;
       api_key = ozonOverride.api_key ?? ozonOverride.apiKey;
     } else if (this.usePostgreSQL && profileId != null && profileId !== '') {
-      const ozonCfg = await this.getMarketplaceConfig('ozon', { profileId });
+      const ozonCfg = await this.getMarketplaceConfig('ozon', { profileId, organizationId });
       client_id = ozonCfg?.client_id || ozonCfg?.clientId;
       api_key = ozonCfg?.api_key || ozonCfg?.apiKey;
     } else {

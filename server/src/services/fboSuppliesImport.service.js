@@ -115,6 +115,53 @@ async function resolveOrganizationId({ organizationName, organizationId, profile
   return r.rows?.[0]?.id ?? null;
 }
 
+function buildOzonSupplyListBody(daysBack) {
+  const days = Math.max(1, Math.min(365, Number(daysBack) || 90));
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  return {
+    limit: 100,
+    offset: 0,
+    filter: {
+      since: since.toISOString(),
+      to: new Date().toISOString(),
+    },
+  };
+}
+
+/** Разбор ответа POST /v3/supply-order/list (и совместимых форматов). */
+function parseOzonSupplyListRows(listData) {
+  const orders =
+    listData?.result?.orders ||
+    listData?.result?.supply_orders ||
+    listData?.orders ||
+    listData?.supply_orders ||
+    [];
+  const rows = [];
+  for (const order of orders) {
+    const supplies = order.supplies;
+    if (Array.isArray(supplies) && supplies.length) {
+      for (const supply of supplies) {
+        rows.push({
+          ...order,
+          ...supply,
+          supply_order_id: supply.supply_id ?? supply.id ?? order.supply_order_id ?? order.id,
+          supply_order_number:
+            supply.supply_order_number ??
+            supply.supply_number ??
+            order.supply_order_number ??
+            order.order_number,
+          bundle_id: supply.bundle_id ?? supply.bundle_ids?.[0] ?? order.bundle_id,
+          state: supply.supply_state ?? supply.state ?? order.state ?? order.status,
+        });
+      }
+    } else {
+      rows.push(order);
+    }
+  }
+  return rows;
+}
+
 function mapOzonStateToStatus(state) {
   const s = String(state || '').toLowerCase();
   if (s.includes('cancel') || s.includes('return')) return 'return';
@@ -143,10 +190,15 @@ function wbAuthHeader(apiKey) {
   return tokenClean.toLowerCase().startsWith('bearer ') ? tokenClean : `Bearer ${tokenClean}`;
 }
 
-function ymAuthHeader(apiKey) {
-  const raw = String(apiKey || '').trim();
-  if (!raw) return '';
-  return raw.toLowerCase().startsWith('api-key ') ? raw : `Api-Key ${raw}`;
+function ymApiKeyHeader(apiKey) {
+  const raw =
+    typeof integrationsService?._normalizeYandexApiKey === 'function'
+      ? integrationsService._normalizeYandexApiKey(apiKey)
+      : String(apiKey || '')
+          .replace(/\s+/g, ' ')
+          .replace(/\uFEFF/g, '')
+          .trim();
+  return raw;
 }
 
 async function wbFbwRequest(path, { apiKey, method = 'GET', body = null } = {}) {
@@ -175,8 +227,8 @@ async function wbFbwRequest(path, { apiKey, method = 'GET', body = null } = {}) 
 }
 
 async function ymRequest(path, { apiKey, method = 'GET', body = null } = {}) {
-  const auth = ymAuthHeader(apiKey);
-  if (!auth) {
+  const key = ymApiKeyHeader(apiKey);
+  if (!key) {
     const err = new Error('Не настроен API-ключ Яндекс.Маркета');
     err.statusCode = 400;
     throw err;
@@ -187,7 +239,11 @@ async function ymRequest(path, { apiKey, method = 'GET', body = null } = {}) {
   try {
     response = await fetch(url, {
       method,
-      headers: { Authorization: auth, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      headers: {
+        'Api-Key': key,
+        Accept: 'application/json',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
       ...(agent && { agent }),
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
@@ -222,17 +278,20 @@ function mapWbStateToStatus(status) {
   return 'new';
 }
 
-/** Тело POST /api/v1/supplies (FBW) — фильтр по датам RFC3339. */
+/** Тело POST /api/v1/supplies (FBW) — даты только YYYY-MM-DD. */
 function buildWbSuppliesListBody(daysBack) {
   const days = Math.max(1, Math.min(365, Number(daysBack) || 90));
   const till = new Date();
   const from = new Date();
   from.setDate(from.getDate() - days);
-  const toIso = (d) => d.toISOString();
+  const toDateOnly = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const fromStr = toDateOnly(from);
+  const tillStr = toDateOnly(till);
   return {
     dates: [
-      { from: toIso(from), till: toIso(till), type: 'createDate' },
-      { from: toIso(from), till: toIso(till), type: 'supplyDate' },
+      { from: fromStr, till: tillStr, type: 'createDate' },
+      { from: fromStr, till: tillStr, type: 'supplyDate' },
     ],
   };
 }
@@ -364,35 +423,33 @@ class FboSuppliesImportService {
   }
 
   async fetchOzonPreview({ profileId, organizationId, daysBack = 90 } = {}) {
-    const since = new Date();
-    since.setDate(since.getDate() - Math.max(1, Math.min(365, Number(daysBack) || 90)));
-    const listBody = {
-      filter: {
-        since: since.toISOString(),
-        to: new Date().toISOString(),
-      },
-      paging: { limit: 100, offset: 0 },
-    };
+    const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
+      profileId,
+      organizationId,
+    });
+    const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
+    const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
+    if (!clientId || !apiKey) {
+      const err = new Error(
+        'Не настроены Client ID и API Key Ozon. Укажите их в «Интеграции» для выбранной организации и выберите ту же организацию в шапке сайта.'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const listBody = buildOzonSupplyListBody(daysBack);
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
 
     let listData;
     try {
-      listData = await integrationsService._ozonApiPost('/v2/supply-order/list', listBody, { profileId });
+      listData = await integrationsService._ozonApiPost('/v3/supply-order/list', listBody, ozonApiOpts);
     } catch (e) {
-      try {
-        listData = await integrationsService._ozonApiPost('/v3/supply-order/list', { ...listBody, limit: 100, offset: 0 }, { profileId });
-      } catch (e2) {
-        const err = new Error(e?.message || 'Не удалось получить список поставок Ozon');
-        err.statusCode = 400;
-        throw err;
-      }
+      const err = new Error(e?.message || 'Не удалось получить список поставок Ozon');
+      err.statusCode = 400;
+      throw err;
     }
 
-    const orders =
-      listData?.result?.supply_orders ||
-      listData?.result?.orders ||
-      listData?.supply_orders ||
-      listData?.orders ||
-      [];
+    const orders = parseOzonSupplyListRows(listData);
 
     const candidates = [];
     for (const order of orders) {
@@ -409,7 +466,7 @@ class FboSuppliesImportService {
           const bundleData = await integrationsService._ozonApiPost(
             '/v1/supply-order/bundle',
             { bundle_ids: [String(bundleId)], limit: 500 },
-            { profileId }
+            ozonApiOpts
           );
           const rows =
             bundleData?.result?.items ||
@@ -606,8 +663,10 @@ class FboSuppliesImportService {
     });
     const apiKey = ymConfig?.api_key ?? ymConfig?.apiKey;
     const campaignId = ymConfig?.campaign_id ?? ymConfig?.campaignId;
-    if (!apiKey) {
-      const err = new Error('Не настроен API-ключ Яндекс.Маркета');
+    if (!apiKey || !ymApiKeyHeader(apiKey)) {
+      const err = new Error(
+        'Не настроен API-ключ Яндекс.Маркета (формат ACMA:...). Укажите токен в «Интеграции» для выбранной организации с доступом «Заявки на поставку».'
+      );
       err.statusCode = 400;
       throw err;
     }
