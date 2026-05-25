@@ -13,7 +13,10 @@ import {
   getReservableSupplyUnits,
 } from './sellableQuantity.service.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
+import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 import logger from '../utils/logger.js';
+
+export { syncProductQuantityFromWarehouseStock };
 
 export function isKitProductType(raw) {
   return String(raw || '').toLowerCase() === 'kit';
@@ -347,21 +350,6 @@ export async function computeKitMetricsFromComponents(kitProductId, opts = {}) {
 /** @deprecated Используйте computeKitMetricsFromComponents или readKitStockFromDb */
 export async function computeKitDisplayStock(kitProductId, opts = {}) {
   return computeKitMetricsFromComponents(kitProductId, opts);
-}
-
-export async function syncProductQuantityFromWarehouseStock(productId) {
-  const pid = Number(productId);
-  const r = await query(
-    `SELECT COALESCE(SUM(quantity), 0)::int AS total
-     FROM product_warehouse_stock WHERE product_id = $1`,
-    [pid]
-  );
-  const total = Math.max(0, Number(r.rows[0]?.total ?? 0) || 0);
-  await query(
-    `UPDATE products SET quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-    [total, pid]
-  );
-  return total;
 }
 
 async function resolveWarehouseIdsForKitRecalc(kitProductId, warehouseId = null) {

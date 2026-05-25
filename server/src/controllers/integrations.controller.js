@@ -4,6 +4,8 @@
  */
 
 import integrationsService from '../services/integrations.service.js';
+import repositoryFactory from '../config/repository-factory.js';
+import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 import logger from '../utils/logger.js';
 import { clearRuntimeNotifications } from '../utils/runtime-notifications.js';
 import {
@@ -67,8 +69,12 @@ class IntegrationsController {
    */
   async getSupplier(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: null });
+      }
       const { type } = req.params;
-      const config = await integrationsService.getSupplierConfig(type);
+      const config = await integrationsService.getSupplierConfig(type, { profileId: tid });
       return res.status(200).json({ ok: true, data: config });
     } catch (error) {
       next(error);
@@ -81,8 +87,12 @@ class IntegrationsController {
    */
   async saveSupplier(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
       const { type } = req.params;
-      const result = await integrationsService.saveSupplierConfig(type, req.body);
+      const result = await integrationsService.saveSupplierConfig(type, req.body, { profileId: tid });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);
@@ -120,7 +130,11 @@ class IntegrationsController {
       }
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
-      const integrations = await integrationsService.getAll({ profileId: tid, organizationId });
+      let integrations = await integrationsService.getAll({ profileId: tid, organizationId });
+      const prof = await repositoryFactory.getProfilesRepository().findById(tid);
+      if (!isProfileSupplierSyncEnabled(prof)) {
+        integrations = (integrations || []).filter((i) => i.type !== 'supplier');
+      }
       return res.status(200).json({ ok: true, data: integrations });
     } catch (error) {
       next(error);

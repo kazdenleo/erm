@@ -1,7 +1,7 @@
 /**
  * Расчёт «Доступно».
- * - UI (по умолчанию): наличие на складе + поставщики.
- * - Маркетплейсы (forMarketplace): то же − резерв под заказы (чтобы не принимать лишние заказы).
+ * Формула (таблица остатков): наличие + в пути + поставщики − резерв.
+ * - Маркетплейсы (forMarketplace): та же формула с резервом из журнала.
  */
 
 import { query } from '../config/database.js';
@@ -129,8 +129,20 @@ export async function computeAvailableQuantity(productId, opts = {}) {
     onHand = Math.max(pwsOnHand, productQty);
   }
 
+  let incoming = 0;
+  try {
+    const ir = await query(
+      `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity FROM products WHERE id = $1`,
+      [pid]
+    );
+    incoming = Number(ir.rows[0]?.incoming_quantity ?? 0) || 0;
+  } catch {
+    incoming = 0;
+  }
+
   let suppliers = 0;
-  if (repositoryFactory.isUsingPostgreSQL()) {
+  const supplierSyncOn = opts.supplierSyncEnabled !== false;
+  if (supplierSyncOn && repositoryFactory.isUsingPostgreSQL()) {
     const repo = repositoryFactory.getSupplierStocksRepository();
     if (repo && typeof repo.findBreakdownByProductIds === 'function') {
       const mainWarehouseId =
@@ -150,7 +162,7 @@ export async function computeAvailableQuantity(productId, opts = {}) {
     reserved = await getReservedQuantityFromMovements(pid);
   }
 
-  const available = Math.max(0, Math.floor(onHand + suppliers - reserved));
+  const available = Math.max(0, Math.floor(onHand + incoming + suppliers - reserved));
   return {
     available,
     onHand,
@@ -262,7 +274,8 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
       : await getRawReservedQuantityFromMovementsWithClient(client, pid);
 
   const supplyCap = onHand + incoming;
-  const available = computeOwnWarehouseAvailable({ onHand, incoming, reserved });
+  // Лимит резерва в applyChange сверяется с reservedRaw — «доступно» считаем по тому же источнику.
+  const available = computeOwnWarehouseAvailable({ onHand, incoming, reserved: reservedRaw });
 
   return { onHand, incoming, reserved, reservedRaw, available, supplyCap };
 }

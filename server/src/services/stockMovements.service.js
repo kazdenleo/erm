@@ -7,6 +7,7 @@ import { query } from '../config/database.js';
 import { getClient } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { NET_RESERVED_SUM_EXPR_SQL } from '../constants/netReservedStockSql.js';
+import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 
 function scheduleStockMovementMarketplaceSync(productId, opts) {
   const idNum = Number(productId);
@@ -121,7 +122,6 @@ class StockMovementsService {
 
     await this.productsRepository.setWarehouseFreeStock(idNum, warehouseId, newWh);
 
-    const { syncProductQuantityFromWarehouseStock } = await import('./kitStock.service.js');
     await syncProductQuantityFromWarehouseStock(idNum);
 
     const productAfter = await this.productsRepository.findById(idNum);
@@ -861,7 +861,6 @@ class StockMovementsService {
 
       await client.query('COMMIT');
 
-      const { syncProductQuantityFromWarehouseStock } = await import('./kitStock.service.js');
       await syncProductQuantityFromWarehouseStock(pid);
 
       return {

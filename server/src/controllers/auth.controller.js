@@ -237,6 +237,7 @@ export const authController = {
                 contact_phone: profile.contact_phone ?? null,
                 tariff: profile.tariff ?? null,
                 allow_private_orders: profile.allow_private_orders === true,
+                supplier_sync_enabled: profile.supplier_sync_enabled !== false,
               }
             : null,
           features: {},

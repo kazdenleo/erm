@@ -100,6 +100,10 @@ class ProfilesRepositoryPG {
       const v = updates.require_reserved_stock_for_assembly ?? updates.requireReservedStockForAssembly;
       set('require_reserved_stock_for_assembly', v === true || v === '1' || v === 'true');
     }
+    if (updates.supplier_sync_enabled !== undefined || updates.supplierSyncEnabled !== undefined) {
+      const v = updates.supplier_sync_enabled ?? updates.supplierSyncEnabled;
+      set('supplier_sync_enabled', v === true || v === '1' || v === 'true');
+    }
 
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

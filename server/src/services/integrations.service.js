@@ -4,6 +4,7 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 import { readData, writeData } from '../utils/storage.js';
 import logger from '../utils/logger.js';
 import { query, transaction } from '../config/database.js';
@@ -800,6 +801,13 @@ class IntegrationsService {
       throw err;
     }
 
+    if (profileId != null && profileId !== '' && repositoryFactory.isUsingPostgreSQL()) {
+      const prof = await repositoryFactory.getProfilesRepository().findById(profileId);
+      if (!isProfileSupplierSyncEnabled(prof)) {
+        return {};
+      }
+    }
+
     if (repositoryFactory.isUsingPostgreSQL()) {
       let integration = null;
       if (profileId != null && profileId !== '') {
@@ -831,11 +839,20 @@ class IntegrationsService {
   /**
    * Сохранить настройки поставщика
    */
-  async saveSupplierConfig(type, config) {
+  async saveSupplierConfig(type, config, { profileId = null } = {}) {
     if (!['mikado', 'moskvorechie'].includes(type)) {
       const err = new Error('Неизвестный тип поставщика');
       err.statusCode = 400;
       throw err;
+    }
+
+    if (profileId != null && profileId !== '' && repositoryFactory.isUsingPostgreSQL()) {
+      const prof = await repositoryFactory.getProfilesRepository().findById(profileId);
+      if (!isProfileSupplierSyncEnabled(prof)) {
+        const err = new Error('Синхронизация поставщиков отключена для этого аккаунта');
+        err.statusCode = 403;
+        throw err;
+      }
     }
 
     // Валидация обязательных полей
@@ -965,6 +982,13 @@ class IntegrationsService {
       supByCode.forEach((row, code) => {
         suppliers[code] = row.config || {};
       });
+
+      if (profileId != null && profileId !== '') {
+        const prof = await repositoryFactory.getProfilesRepository().findById(profileId);
+        if (!isProfileSupplierSyncEnabled(prof)) {
+          suppliers = { mikado: {}, moskvorechie: {} };
+        }
+      }
 
       return { marketplaces, suppliers };
     } else {

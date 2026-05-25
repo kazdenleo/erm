@@ -9,7 +9,9 @@ import { normalizeProductExportOptions } from '../services/productsExport.servic
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import repositoryFactory from '../config/repository-factory.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 
 const STOCK_LIST_DEFAULT_LIMIT = 50;
 const STOCK_LIST_MAX_LIMIT = 200;
@@ -278,10 +280,19 @@ class ProductsController {
       }
       let supplierBreakdown;
       if (isStockList && data.length > 0) {
-        const productIds = data.map((p) => p.id).filter((id) => id != null);
-        supplierBreakdown = await supplierStocksService.getBreakdownByProductIds(productIds, {
-          mainWarehouseId: options.warehouseId ?? null,
-        });
+        const tid = tenantListProfileId(req);
+        let supplierSyncOn = true;
+        if (tid != null && tid !== TENANT_LIST_EMPTY) {
+          const prof = await repositoryFactory.getProfilesRepository().findById(tid);
+          supplierSyncOn = isProfileSupplierSyncEnabled(prof);
+        }
+        if (supplierSyncOn) {
+          const productIds = data.map((p) => p.id).filter((id) => id != null);
+          supplierBreakdown = await supplierStocksService.getBreakdownByProductIds(productIds, {
+            mainWarehouseId: options.warehouseId ?? null,
+            profileId: tid != null && tid !== TENANT_LIST_EMPTY ? tid : null,
+          });
+        }
       }
       res.setHeader('X-Products-List-View', isStockList ? 'stock' : 'full');
       if (hasPaging) {
@@ -458,6 +469,17 @@ class ProductsController {
 
   async refreshSupplierStocks(req, res, next) {
     try {
+      const tid = tenantListProfileId(req);
+      if (tid != null && tid !== TENANT_LIST_EMPTY) {
+        const prof = await repositoryFactory.getProfilesRepository().findById(tid);
+        if (!isProfileSupplierSyncEnabled(prof)) {
+          return res.status(403).json({
+            ok: false,
+            message: 'Синхронизация поставщиков отключена для этого аккаунта',
+          });
+        }
+      }
+
       const { productId } = req.query;
       const productIdNum = productId ? parseInt(productId, 10) : null;
 

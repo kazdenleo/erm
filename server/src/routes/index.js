@@ -54,6 +54,7 @@ import marketplaceInventoryRoutes from './marketplaceInventory.routes.js';
 import marketplaceStockRoutes from './marketplaceStock.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
+import fboSuppliesController from '../controllers/fboSupplies.controller.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { marketplaceProductIdentifiersHelp } from '../controllers/helpDocs.controller.js';
 import { isAuthBootstrapRequest } from '../utils/authBootstrapPaths.js';
@@ -293,6 +294,13 @@ router.delete(
 );
 // Закупки (ожидание) и приёмки по закупкам — остальные методы
 router.use('/purchases', purchasesRoutes);
+
+// Шаблон Excel FBO (явный маршрут до вложенного router — только артикул + количество)
+router.get(
+  '/fbo-supplies/import/template/excel',
+  requireAuth,
+  wrapAsync(fboSuppliesController.downloadImportTemplateExcel.bind(fboSuppliesController))
+);
 
 // Поставки FBO на склады маркетплейсов
 router.use('/fbo-supplies', fboSuppliesRoutes);

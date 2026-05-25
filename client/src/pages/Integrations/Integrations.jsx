@@ -13,7 +13,8 @@ import { useAuth } from '../../context/AuthContext';
 import './Integrations.css';
 
 export function Integrations() {
-  const { selectedOrganizationId, setSelectedOrganizationId } = useAuth();
+  const { selectedOrganizationId, setSelectedOrganizationId, profile } = useAuth();
+  const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const [activeTab, setActiveTab] = useState('marketplaces');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -52,6 +53,12 @@ export function Integrations() {
     if (!selectedOrgId) return;
     loadConfigs();
   }, [selectedOrgId, loadConfigs]);
+
+  useEffect(() => {
+    if (!supplierSyncEnabled && activeTab === 'suppliers') {
+      setActiveTab('marketplaces');
+    }
+  }, [supplierSyncEnabled, activeTab]);
 
   // Если организация ещё не выбрана — выберем первую доступную (иначе заголовок X-Organization-Id не уйдёт).
   useEffect(() => {
@@ -119,7 +126,10 @@ export function Integrations() {
   return (
     <div className="card">
       <h1 className="title">Интеграции</h1>
-      <p className="subtitle">Настройка подключений к маркетплейсам и поставщикам</p>
+      <p className="subtitle">
+        Настройка подключений к маркетплейсам
+        {supplierSyncEnabled ? ' и поставщикам' : ''}
+      </p>
       <p className="subtitle small text-muted mb-3" style={{ marginTop: '-0.25rem' }}>
         <a
           href="/api/help/marketplace-product-identifiers"
@@ -144,12 +154,14 @@ export function Integrations() {
         >
           Маркетплейсы
         </button>
-        <button
-          className={`tab-btn ${activeTab === 'suppliers' ? 'active' : ''}`}
-          onClick={() => setActiveTab('suppliers')}
-        >
-          Поставщики
-        </button>
+        {supplierSyncEnabled ? (
+          <button
+            className={`tab-btn ${activeTab === 'suppliers' ? 'active' : ''}`}
+            onClick={() => setActiveTab('suppliers')}
+          >
+            Поставщики
+          </button>
+        ) : null}
       </div>
 
       {activeTab === 'marketplaces' && (

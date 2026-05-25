@@ -16,6 +16,7 @@ function emptyProfileForm() {
     contact_email: '',
     contact_phone: '',
     tariff: '',
+    supplier_sync_enabled: true,
   };
 }
 
@@ -98,6 +99,7 @@ export function Admin() {
       contact_email: p.contact_email || '',
       contact_phone: p.contact_phone || '',
       tariff: p.tariff || '',
+      supplier_sync_enabled: p.supplier_sync_enabled !== false,
     });
   }, [cabinetBundle]);
 
@@ -110,6 +112,7 @@ export function Admin() {
         contact_email: profile.contact_email ?? '',
         contact_phone: profile.contact_phone ?? '',
         tariff: profile.tariff ?? '',
+        supplier_sync_enabled: profile.supplier_sync_enabled !== false,
       });
     } else {
       setProfileForm(emptyProfileForm());
@@ -125,6 +128,7 @@ export function Admin() {
         contact_email: profileForm.contact_email.trim() || null,
         contact_phone: profileForm.contact_phone.trim() || null,
         tariff: profileForm.tariff.trim() || null,
+        supplier_sync_enabled: profileForm.supplier_sync_enabled === true,
       };
       if (!payload.name) {
         alert('Укажите название аккаунта');
@@ -150,6 +154,7 @@ export function Admin() {
         contact_email: cabinetForm.contact_email.trim() || null,
         contact_phone: cabinetForm.contact_phone.trim() || null,
         tariff: cabinetForm.tariff.trim() || null,
+        supplier_sync_enabled: cabinetForm.supplier_sync_enabled === true,
       };
       if (!payload.name) {
         alert('Укажите название');
@@ -318,6 +323,19 @@ export function Admin() {
               style={{ width: '100%', marginTop: '4px' }}
             />
           </label>
+          <label className="d-flex align-items-center gap-2 mt-2 mb-0" style={{ cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={profileForm.supplier_sync_enabled === true}
+              onChange={(e) =>
+                setProfileForm((f) => ({ ...f, supplier_sync_enabled: e.target.checked }))
+              }
+            />
+            <span>Синхронизация остатков поставщиков (Микадо, Москворечье)</span>
+          </label>
+          <p className="text-muted small mb-0">
+            Если выключено: в аккаунте скрываются настройки поставщиков в «Интеграциях» и колонка «Поставщики» в остатках.
+          </p>
           <div className="admin-form-actions">
             <Button variant="secondary" onClick={() => setProfileModal(false)}>
               Отмена
@@ -389,6 +407,16 @@ export function Admin() {
                   className="login-input"
                   style={{ width: '100%', marginTop: '4px' }}
                 />
+              </label>
+              <label className="d-flex align-items-center gap-2 mt-2 mb-0" style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={cabinetForm.supplier_sync_enabled === true}
+                  onChange={(e) =>
+                    setCabinetForm((f) => ({ ...f, supplier_sync_enabled: e.target.checked }))
+                  }
+                />
+                <span>Синхронизация остатков поставщиков</span>
               </label>
               <div className="admin-form-actions">
                 <Button variant="secondary" onClick={() => setCabinetId(null)}>

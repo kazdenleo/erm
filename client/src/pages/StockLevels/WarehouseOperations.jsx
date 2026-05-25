@@ -93,6 +93,18 @@ export function WarehouseOperations({
       return wOrg != null && String(wOrg) === orgId;
     });
   }, [ownWarehouses, transferOrganizationId]);
+  const transferWarehouseLabel = (w) => {
+    if (!w) return '';
+    return w.address || w.name || `Склад #${w.id}`;
+  };
+  const transferFromWarehouse = useMemo(
+    () => transferWarehouses.find((w) => String(w.id) === String(transferFromWarehouseId)),
+    [transferWarehouses, transferFromWarehouseId]
+  );
+  const transferToWarehouse = useMemo(
+    () => transferWarehouses.find((w) => String(w.id) === String(transferToWarehouseId)),
+    [transferWarehouses, transferToWarehouseId]
+  );
   const [inventorySessionsList, setInventorySessionsList] = useState([]);
   const [inventorySessionsLoading, setInventorySessionsLoading] = useState(false);
   const [inventoryDetailView, setInventoryDetailView] = useState(null);
@@ -502,11 +514,19 @@ export function WarehouseOperations({
         });
       }
       setTransferList([]);
-      setOpMessage('Перемещение выполнено');
+      const fromLbl = transferWarehouseLabel(transferFromWarehouse);
+      const toLbl = transferWarehouseLabel(transferToWarehouse);
+      const route =
+        fromLbl && toLbl ? `${fromLbl} → ${toLbl}` : '';
+      setOpMessage(
+        route
+          ? `Перемещение выполнено (${items.length} поз.): ${route}`
+          : `Перемещение выполнено (${items.length} поз.)`
+      );
       onRefresh?.();
     } catch (e) {
       const msg = e?.response?.data?.message || e?.message || 'Не удалось выполнить перемещение';
-      setOpMessage(String(msg));
+      setOpMessage('Ошибка: ' + String(msg));
     } finally {
       setOpLoading(false);
     }
@@ -2444,6 +2464,66 @@ export function WarehouseOperations({
             </p>
           )}
 
+          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
+            <div className="warehouse-ops-receipt-supplier-col">
+              <label>
+                Со склада <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                className="form-select"
+                value={transferFromWarehouseId}
+                onChange={(e) => setTransferFromWarehouseId(e.target.value)}
+                disabled={!transferOrganizationId}
+              >
+                <option value="">— выберите —</option>
+                {transferWarehouses.map((w) => (
+                  <option key={w.id} value={String(w.id)}>
+                    {transferWarehouseLabel(w)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-col">
+              <label>
+                На склад <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                className="form-select"
+                value={transferToWarehouseId}
+                onChange={(e) => setTransferToWarehouseId(e.target.value)}
+                disabled={!transferOrganizationId}
+              >
+                <option value="">— выберите —</option>
+                {transferWarehouses.map((w) => (
+                  <option key={w.id} value={String(w.id)}>
+                    {transferWarehouseLabel(w)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {transferOrganizationId && (
+            <div
+              className={`warehouse-ops-transfer-route${
+                transferFromWarehouseId && transferToWarehouseId ? '' : ' warehouse-ops-transfer-route--pending'
+              }`}
+            >
+              {transferFromWarehouseId && transferToWarehouseId ? (
+                <>
+                  <span className="warehouse-ops-transfer-route-label">Маршрут:</span>
+                  <strong>{transferWarehouseLabel(transferFromWarehouse)}</strong>
+                  <span className="warehouse-ops-transfer-route-arrow">→</span>
+                  <strong>{transferWarehouseLabel(transferToWarehouse)}</strong>
+                </>
+              ) : (
+                <span className="warehouse-ops-transfer-route-hint">
+                  Укажите склад-источник и склад-получатель перед добавлением товаров
+                </span>
+              )}
+            </div>
+          )}
+
           <form onSubmit={submitTransferScan} className="warehouse-ops-scan-form" style={{ marginTop: 10 }}>
             <div style={{ position: 'relative', flex: 1 }}>
               <input
@@ -2540,45 +2620,19 @@ export function WarehouseOperations({
                 Быстрый режим (по скану всегда 1 шт)
               </label>
             </div>
-            <Button type="submit" disabled={opLoading || !transferScanValue.trim() || !transferOrganizationId}>
+            <Button
+              type="submit"
+              disabled={
+                opLoading ||
+                !transferScanValue.trim() ||
+                !transferOrganizationId ||
+                !transferFromWarehouseId ||
+                !transferToWarehouseId
+              }
+            >
               Добавить по скану
             </Button>
           </form>
-
-          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
-            <div className="warehouse-ops-receipt-supplier-col">
-              <label>Со склада:</label>
-              <select
-                className="form-select"
-                value={transferFromWarehouseId}
-                onChange={(e) => setTransferFromWarehouseId(e.target.value)}
-                disabled={!transferOrganizationId}
-              >
-                <option value="">— выберите —</option>
-                {transferWarehouses.map((w) => (
-                  <option key={w.id} value={String(w.id)}>
-                    {w.address || w.name || `Склад #${w.id}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="warehouse-ops-receipt-supplier-col">
-              <label>На склад:</label>
-              <select
-                className="form-select"
-                value={transferToWarehouseId}
-                onChange={(e) => setTransferToWarehouseId(e.target.value)}
-                disabled={!transferOrganizationId}
-              >
-                <option value="">— выберите —</option>
-                {transferWarehouses.map((w) => (
-                  <option key={w.id} value={String(w.id)}>
-                    {w.address || w.name || `Склад #${w.id}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
 
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14, alignItems: 'flex-end' }}>
             <div style={{ minWidth: 280, flex: 1 }}>
@@ -2609,7 +2663,13 @@ export function WarehouseOperations({
             <Button
               type="button"
               onClick={addTransferItem}
-              disabled={opLoading || !transferSelectedProductId || !transferOrganizationId}
+              disabled={
+                opLoading ||
+                !transferSelectedProductId ||
+                !transferOrganizationId ||
+                !transferFromWarehouseId ||
+                !transferToWarehouseId
+              }
             >
               Добавить
             </Button>
@@ -2617,6 +2677,14 @@ export function WarehouseOperations({
 
           {transferList.length > 0 ? (
             <div className="warehouse-ops-receipts-list-wrap" style={{ marginTop: 12 }}>
+              {transferFromWarehouseId && transferToWarehouseId && (
+                <p className="warehouse-ops-transfer-list-route">
+                  Перемещение:{' '}
+                  <strong>{transferWarehouseLabel(transferFromWarehouse)}</strong>
+                  {' → '}
+                  <strong>{transferWarehouseLabel(transferToWarehouse)}</strong>
+                </p>
+              )}
               <table className="warehouse-ops-receipt-list-table table">
                 <thead>
                   <tr>
@@ -2654,13 +2722,27 @@ export function WarehouseOperations({
           )}
 
           {opMessage && mode === MODE_TRANSFER && (
-            <div className="warehouse-ops-msg success" style={{ marginTop: 12 }}>
+            <div
+              className={`warehouse-ops-msg ${
+                String(opMessage).startsWith('Ошибка') ? 'error' : 'success'
+              }`}
+              style={{ marginTop: 12 }}
+            >
               {opMessage}
             </div>
           )}
 
           <div className="warehouse-ops-receipt-list-actions" style={{ marginTop: 12 }}>
-            <Button onClick={submitTransfer} disabled={opLoading || !transferOrganizationId}>
+            <Button
+              onClick={submitTransfer}
+              disabled={
+                opLoading ||
+                !transferOrganizationId ||
+                !transferFromWarehouseId ||
+                !transferToWarehouseId ||
+                transferFromWarehouseId === transferToWarehouseId
+              }
+            >
               {opLoading ? 'Перемещение…' : 'Выполнить перемещение'}
             </Button>
             <Button

@@ -159,6 +159,47 @@
   color: var(--success, #10b981);
 }
 
+.warehouse-ops-msg.error {
+  color: var(--danger, #dc2626);
+}
+
+.warehouse-ops-transfer-route {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  font-size: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.warehouse-ops-transfer-route--pending {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.warehouse-ops-transfer-route-label {
+  color: #64748b;
+}
+
+.warehouse-ops-transfer-route-arrow {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.warehouse-ops-transfer-route-hint {
+  color: #92400e;
+}
+
+.warehouse-ops-transfer-list-route {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: #334155;
+}
+
 .warehouse-ops-inventory-table-wrap {
   overflow-x: auto;
   margin-bottom: 16px;

@@ -22,6 +22,7 @@ import {
   isKitStockHistoryMovement
 } from '../../utils/kitStockMetrics';
 import { onNavigationClick } from '../../utils/navigationClick.js';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import './StockLevels.css';
@@ -132,7 +133,7 @@ function inferPrevForDelta(after, prev, m, column) {
     return after + qc;
   }
   if (column === 'res' && movementTypeLower(m) === 'unreserve' && qc > 0) {
-    return after - qc;
+    return after + qc;
   }
   if (
     column === 'bal' &&
@@ -336,6 +337,7 @@ function buildHistoryDisplayRows(list) {
   };
 
   const reserveByKey = new Map();
+  const unreserveByKey = new Map();
   const outboundByKey = new Map();
   for (const m of list) {
     const key = reserveTimeGroupKey(movementCreatedAt(m));
@@ -343,15 +345,20 @@ function buildHistoryDisplayRows(list) {
     if (movementTypeLower(m) === 'reserve') {
       if (!reserveByKey.has(key)) reserveByKey.set(key, []);
       reserveByKey.get(key).push(m);
+    } else if (movementTypeLower(m) === 'unreserve' && !isOutboundBatchMovement(m)) {
+      if (!unreserveByKey.has(key)) unreserveByKey.set(key, []);
+      unreserveByKey.get(key).push(m);
     } else if (isOutboundBatchMovement(m)) {
       if (!outboundByKey.has(key)) outboundByKey.set(key, []);
       outboundByKey.get(key).push(m);
     }
   }
   for (const arr of reserveByKey.values()) sortBlock(arr);
+  for (const arr of unreserveByKey.values()) sortBlock(arr);
   for (const arr of outboundByKey.values()) sortBlock(arr);
 
   const emittedReserve = new Set();
+  const emittedUnreserve = new Set();
   const emittedOutbound = new Set();
   const out = [];
   for (const m of list) {
@@ -361,6 +368,14 @@ function buildHistoryDisplayRows(list) {
       emittedReserve.add(key);
       const block = reserveByKey.get(key) || [m];
       if (block.length >= 2) out.push({ kind: 'reserveGroup', movements: block });
+      else out.push({ kind: 'single', m: block[0] });
+      continue;
+    }
+    if (movementTypeLower(m) === 'unreserve' && !isOutboundBatchMovement(m)) {
+      if (!key || emittedUnreserve.has(key)) continue;
+      emittedUnreserve.add(key);
+      const block = unreserveByKey.get(key) || [m];
+      if (block.length >= 2) out.push({ kind: 'unreserveGroup', movements: block });
       else out.push({ kind: 'single', m: block[0] });
       continue;
     }
@@ -386,7 +401,11 @@ function buildHistoryDisplayRows(list) {
 
 /** Снимок после отображаемой строки (список журнала в DESC). */
 function snapshotAfterDisplayItem(item) {
-  if (item.kind === 'reserveGroup' || item.kind === 'outboundGroup') {
+  if (
+    item.kind === 'reserveGroup' ||
+    item.kind === 'unreserveGroup' ||
+    item.kind === 'outboundGroup'
+  ) {
     return snapshotFromMovement(item.movements[0]);
   }
   return snapshotFromMovement(item.m);
@@ -408,16 +427,17 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
     bal: cur.bal != null && !Number.isNaN(Number(cur.bal)) ? Number(cur.bal) : cur.bal,
   };
 
-  const reserveMs =
-    item.kind === 'reserveGroup'
+  const reserveLikeMs =
+    item.kind === 'reserveGroup' || item.kind === 'unreserveGroup'
       ? item.movements
-      : item.kind === 'single' && movementTypeLower(item.m) === 'reserve'
+      : item.kind === 'single' &&
+          (movementTypeLower(item.m) === 'reserve' || movementTypeLower(item.m) === 'unreserve')
         ? [item.m]
         : null;
 
-  if (reserveMs && reserveMs.length) {
-    const head = reserveMs[0];
-    const sumQc = sumMovementsQuantityChange(reserveMs);
+  if (reserveLikeMs && reserveLikeMs.length) {
+    const head = reserveLikeMs[0];
+    const sumQc = sumMovementsQuantityChange(reserveLikeMs);
     const dbInc = movementNum(head, 'incoming_after');
     const dbRes = movementNum(head, 'reserved_after');
     const dbBal = movementNum(head, 'balance_after');
@@ -427,26 +447,20 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
       out.inc = prevLineBelow.inc;
     }
 
-    const inferredRes =
-      prevLineBelow?.res != null && Number.isFinite(sumQc) ? prevLineBelow.res - sumQc : null;
-    // Для группы резервов (несколько заказов) — сумма quantity_change; иначе reserved_after только по первой строке
-    if (inferredRes != null && sumQc < 0) {
-      out.res = inferredRes;
-    } else if (dbRes != null) {
+    if (dbRes != null) {
       out.res = dbRes;
-    } else if (inferredRes != null) {
-      out.res = inferredRes;
+    } else if (prevLineBelow?.res != null && Number.isFinite(sumQc)) {
+      out.res =
+        sumQc > 0
+          ? Math.max(0, prevLineBelow.res - sumQc)
+          : Math.max(0, prevLineBelow.res + sumQc);
     }
 
-    if (dbBal != null) out.bal = dbBal;
-    else if (
-      prevLineBelow != null &&
-      (prevLineBelow.inc ?? 0) > 0 &&
-      (prevLineBelow.bal ?? 0) === 0
-    ) {
-      out.bal = 0;
-    } else if (out.bal == null && prevLineBelow?.bal != null && !Number.isNaN(prevLineBelow.bal)) {
+    // Резерв не меняет наличие на складе — в колонке «Наличие» держим снимок как у строки ниже.
+    if (prevLineBelow?.bal != null && !Number.isNaN(prevLineBelow.bal)) {
       out.bal = prevLineBelow.bal;
+    } else if (dbBal != null) {
+      out.bal = dbBal;
     }
     if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
     if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
@@ -513,9 +527,12 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
       if (dbBal != null) out.bal = dbBal;
       if (out.inc == null) out.inc = 0;
     }
-    if (t === 'unreserve') {
+    if (t === 'reserve' || t === 'unreserve') {
       const dbRes = movementNum(m, 'reserved_after');
       if (dbRes != null) out.res = dbRes;
+      if (prevLineBelow?.bal != null && !Number.isNaN(prevLineBelow.bal)) {
+        out.bal = prevLineBelow.bal;
+      }
     }
   }
 
@@ -537,7 +554,21 @@ function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null) {
     currentNetReserved != null && Number.isFinite(Number(currentNetReserved))
       ? Math.max(0, Math.floor(Number(currentNetReserved)))
       : null;
-  if (net != null && enriched[0]) {
+  const top = displayRows[0];
+  const topType =
+    top?.kind === 'single'
+      ? movementTypeLower(top.m)
+      : top?.kind === 'reserveGroup'
+        ? 'reserve'
+        : top?.kind === 'unreserveGroup'
+          ? 'unreserve'
+          : null;
+  const topIsReserveLine =
+    top?.kind === 'reserveGroup' ||
+    top?.kind === 'unreserveGroup' ||
+    topType === 'reserve' ||
+    topType === 'unreserve';
+  if (net != null && enriched[0] && !topIsReserveLine) {
     enriched[0].res = net;
   }
   return enriched;
@@ -545,18 +576,20 @@ function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null) {
 
 /** Синтетическое движение для inferPrevForDelta в сгруппированных строках. */
 function movementForDeltaInference(item, column) {
-  const reserveMs =
-    item.kind === 'reserveGroup'
+  const reserveLikeMs =
+    item.kind === 'reserveGroup' || item.kind === 'unreserveGroup'
       ? item.movements
-      : item.kind === 'single' && movementTypeLower(item.m) === 'reserve'
+      : item.kind === 'single' &&
+          (movementTypeLower(item.m) === 'reserve' || movementTypeLower(item.m) === 'unreserve')
         ? [item.m]
         : null;
-  if (reserveMs && reserveMs.length) {
+  if (reserveLikeMs && reserveLikeMs.length) {
     if (column === 'res') {
-      const sumQc = reserveMs.reduce((s, x) => s + Number(x.quantity_change || 0), 0);
-      return { ...reserveMs[0], quantity_change: sumQc };
+      const sumQc = reserveLikeMs.reduce((s, x) => s + Number(x.quantity_change || 0), 0);
+      const t = sumQc > 0 ? 'unreserve' : 'reserve';
+      return { ...reserveLikeMs[0], type: t, quantity_change: sumQc };
     }
-    return reserveMs[0];
+    return reserveLikeMs[0];
   }
   if (item.kind === 'outboundGroup') {
     const ms = item.movements;
@@ -774,6 +807,8 @@ function SupplierStockCell({ total, details }) {
 }
 
 export function WarehouseStocks() {
+  const { profile } = useAuth();
+  const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const {
     products,
     meta,
@@ -1313,6 +1348,10 @@ export function WarehouseStocks() {
   );
 
   useEffect(() => {
+    if (!supplierSyncEnabled) {
+      setSupplierBreakdownByProductId({});
+      return undefined;
+    }
     if (activeTab !== 'table' || !products.length) {
       if (!products.length) setSupplierBreakdownByProductId({});
       return undefined;
@@ -1346,7 +1385,7 @@ export function WarehouseStocks() {
     return () => {
       cancelled = true;
     };
-  }, [products, activeTab, stockWarehouseId, meta?.supplierBreakdown]);
+  }, [products, activeTab, stockWarehouseId, meta?.supplierBreakdown, supplierSyncEnabled]);
 
   useEffect(() => {
     if (!historyProduct) {
@@ -1543,19 +1582,21 @@ export function WarehouseStocks() {
         product.reservedQuantity ??
         0;
       const reserved = Math.max(0, Number(reservedRaw) || 0);
-      const allDetails = supplierBreakdownByProductId[String(product.id)] || [];
-      const supplierDetails = enrichSupplierDetailsLabels(
-        allDetails,
-        warehouses,
-        stockWarehouseId || null
-      );
-      const suppliers = supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0);
+      const allDetails = supplierSyncEnabled
+        ? supplierBreakdownByProductId[String(product.id)] || []
+        : [];
+      const supplierDetails = supplierSyncEnabled
+        ? enrichSupplierDetailsLabels(allDetails, warehouses, stockWarehouseId || null)
+        : [];
+      const suppliers = supplierSyncEnabled
+        ? supplierDetails.reduce((s, d) => s + (Number(d.stock) || 0), 0)
+        : 0;
       const available = stockTableAvailable({ onHand, incoming, reserved, suppliers });
       return { onHand, incoming, reserved, suppliers, supplierDetails, available };
     });
     // Все фильтры (категория, поиск, тип, «только в наличии») — на сервере по всему каталогу, не по строкам страницы.
     return built;
-  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId]);
+  }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId, supplierSyncEnabled]);
 
   const renderStockListPager = (placement) => {
     const idSuffix = placement === 'top' ? 'top' : 'bottom';
@@ -1736,7 +1777,7 @@ export function WarehouseStocks() {
                   <th>В пути</th>
                   <th>Наличие</th>
                   <th>Резерв</th>
-                  <th>Поставщики</th>
+                  {supplierSyncEnabled ? <th>Поставщики</th> : null}
                   <th>Доступно</th>
                 </tr>
               </thead>
@@ -1771,18 +1812,20 @@ export function WarehouseStocks() {
                         row.reserved
                       )}
                     </td>
-                    <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
-                      {row.suppliersDisplay ? (
-                        <span
-                          className="stock-main-value"
-                          title="Сколько комплектов можно собрать из остатков поставщиков по комплектующим"
-                        >
-                          {row.suppliersDisplay}
-                        </span>
-                      ) : (
-                        <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
-                      )}
-                    </td>
+                    {supplierSyncEnabled ? (
+                      <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
+                        {row.suppliersDisplay ? (
+                          <span
+                            className="stock-main-value"
+                            title="Сколько комплектов можно собрать из остатков поставщиков по комплектующим"
+                          >
+                            {row.suppliersDisplay}
+                          </span>
+                        ) : (
+                          <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
+                        )}
+                      </td>
+                    ) : null}
                     <td
                       title={
                         isKitProduct(row.product)
@@ -1905,14 +1948,16 @@ export function WarehouseStocks() {
             <Button variant="secondary" onClick={applyFilters} disabled={supplierStocksRefreshing || mpStockSyncing}>
               Обновить склад
             </Button>
-            <Button
-              variant="primary"
-              onClick={handleRefreshWarehouseAndSupplierStocks}
-              disabled={supplierStocksRefreshing || mpStockSyncing || productsLoading}
-              style={{ marginLeft: 8 }}
-            >
-              {supplierStocksRefreshing ? 'Обновление поставщиков…' : 'Обновить остатки поставщиков'}
-            </Button>
+            {supplierSyncEnabled ? (
+              <Button
+                variant="primary"
+                onClick={handleRefreshWarehouseAndSupplierStocks}
+                disabled={supplierStocksRefreshing || mpStockSyncing || productsLoading}
+                style={{ marginLeft: 8 }}
+              >
+                {supplierStocksRefreshing ? 'Обновление поставщиков…' : 'Обновить остатки поставщиков'}
+              </Button>
+            ) : null}
             <Button
               variant="secondary"
               onClick={handleMpPushButtonClick}
@@ -2030,11 +2075,17 @@ export function WarehouseStocks() {
                     );
                   }
 
-                  if (item.kind === 'reserveGroup') {
+                  if (item.kind === 'reserveGroup' || item.kind === 'unreserveGroup') {
                     const orderIds = item.movements
                       .map((x) => extractOrderIdFromReserveMovement(x))
                       .filter(Boolean);
-                    const reasonText = truncateReserveReason(orderIds);
+                    const reasonText =
+                      item.kind === 'unreserveGroup'
+                        ? `Снятие резерва (${orderIds.length} зак.): ${orderIds.join(', ')}`.slice(
+                            0,
+                            HISTORY_REASON_MAX_LEN
+                          )
+                        : truncateReserveReason(orderIds);
                     const createdAt = movementCreatedAt(item.movements[0]);
                     const rowKey = item.movements.map((x) => x.id).join('-');
                     const pinned = reserveOrdersFromMovements(item.movements);

@@ -212,8 +212,9 @@ async function afterInventoryTouch(sessionId, productIds) {
   if (!sessionId || !Array.isArray(productIds) || productIds.length === 0) return;
   try {
     const { default: ordersService } = await import('./orders.service.js');
-    const { recalculateKitsForComponent, syncProductQuantityFromWarehouseStock } =
-      await import('./kitStock.service.js');
+    const { recalculateKitsForComponent } = await import('./kitStock.service.js');
+    const { syncProductQuantityFromWarehouseStock } =
+      await import('./productWarehouseQuantity.service.js');
     for (const pid of productIds) {
       await syncProductQuantityFromWarehouseStock(pid);
       await ordersService.trimExcessReservesForProduct(pid, {
@@ -528,7 +529,8 @@ class InventorySessionsService {
     if (del?.productIds?.length) {
       try {
         const { default: ordersService } = await import('./orders.service.js');
-        const { syncProductQuantityFromWarehouseStock } = await import('./kitStock.service.js');
+        const { syncProductQuantityFromWarehouseStock } =
+          await import('./productWarehouseQuantity.service.js');
         for (const pid of del.productIds) {
           await syncProductQuantityFromWarehouseStock(pid);
           await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
