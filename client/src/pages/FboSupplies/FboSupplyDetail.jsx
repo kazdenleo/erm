@@ -71,7 +71,7 @@ export function FboSupplyDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { organizations } = useOrganizations();
-  const { warehouses } = useWarehouses();
+  const { warehouses, loadWarehouses, loading: warehousesLoading } = useWarehouses();
   const [supply, setSupply] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -85,7 +85,16 @@ export function FboSupplyDetail() {
   const [packing, setPacking] = useState(null);
   const [breakdownItem, setBreakdownItem] = useState(null);
   const [packingExporting, setPackingExporting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const selectAllItemsRef = useRef(null);
+
+  const deductionWarehouses = useMemo(() => {
+    return (warehouses || []).filter((w) => {
+      if (w.type !== 'warehouse') return false;
+      const sid = w.supplierId ?? w.supplier_id;
+      return sid == null || sid === '';
+    });
+  }, [warehouses]);
 
   const {
     printProductLabel,
@@ -120,6 +129,14 @@ export function FboSupplyDetail() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (supply?.organizationId != null && supply.organizationId !== '') {
+      loadWarehouses(supply.organizationId);
+    } else {
+      loadWarehouses();
+    }
+  }, [supply?.organizationId, loadWarehouses]);
 
   useEffect(() => {
     if (supply?.id) loadPacking();
@@ -357,6 +374,27 @@ export function FboSupplyDetail() {
         <Button variant="primary" size="small" onClick={handleAdvance} disabled={statusIdx >= FBO_SUPPLY_STATUS_ORDER.length - 2}>
           Следующий шаг →
         </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          size="small"
+          disabled={deleting || saving}
+          onClick={async () => {
+            if (!window.confirm('Удалить поставку? Связанные строки и грузоместа будут удалены.')) return;
+            setDeleting(true);
+            setErr(null);
+            try {
+              await fboSuppliesApi.delete(id);
+              navigate('/fbo-supplies');
+            } catch (e) {
+              setErr(e.response?.data?.message || e.message || 'Не удалось удалить поставку');
+            } finally {
+              setDeleting(false);
+            }
+          }}
+        >
+          {deleting ? 'Удаление…' : 'Удалить поставку'}
+        </Button>
       </div>
 
       {err && <div className="alert alert-danger">{err}</div>}
@@ -387,6 +425,54 @@ export function FboSupplyDetail() {
             </span>
           );
         })}
+      </div>
+
+      <div className="fbo-supply-deduction-bar">
+        <div className="fbo-deduction-warehouse-field" style={{ flex: '1 1 280px' }}>
+          <label>Склад списания остатков</label>
+          <select
+            className="form-select form-select-sm"
+            value={supply.deductionWarehouseId ?? ''}
+            onChange={(e) => {
+              const v = e.target.value ? Number(e.target.value) : null;
+              setSupply((s) => ({ ...s, deductionWarehouseId: v }));
+              saveField({ deductionWarehouseId: v });
+            }}
+            disabled={saving || warehousesLoading}
+          >
+            <option value="">
+              {warehousesLoading ? 'Загрузка складов…' : '— выберите склад —'}
+            </option>
+            {deductionWarehouses.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name || w.address || `Склад #${w.id}`}
+                {(w.isFboStock || w.is_fbo_stock) ? ' (FBO)' : ''}
+              </option>
+            ))}
+          </select>
+          {!warehousesLoading && !deductionWarehouses.length ? (
+            <p className="text-muted small mb-0 mt-1">
+              Нет складов типа «Склад» без привязки к поставщику. Добавьте склад в «Склады» для организации
+              поставки.
+            </p>
+          ) : null}
+        </div>
+        <div>
+          <label>Списать остатки при отгрузке</label>
+          <div className="form-check form-switch">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              checked={!!supply.deductStock}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setSupply((s) => ({ ...s, deductStock: v }));
+                saveField({ deductStock: v });
+              }}
+              disabled={saving}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="fbo-detail-tabs" role="tablist">
@@ -494,6 +580,7 @@ export function FboSupplyDetail() {
               const v = e.target.value ? Number(e.target.value) : null;
               setSupply((s) => ({ ...s, organizationId: v }));
               saveField({ organizationId: v });
+              loadWarehouses(v ?? undefined);
             }}
             disabled={saving}
           >
@@ -504,44 +591,6 @@ export function FboSupplyDetail() {
               </option>
             ))}
           </select>
-        </div>
-        <div>
-          <label>Склад списания остатков</label>
-          <select
-            className="form-select form-select-sm"
-            value={supply.deductionWarehouseId ?? ''}
-            onChange={(e) => {
-              const v = e.target.value ? Number(e.target.value) : null;
-              setSupply((s) => ({ ...s, deductionWarehouseId: v }));
-              saveField({ deductionWarehouseId: v });
-            }}
-            disabled={saving}
-          >
-            <option value="">—</option>
-            {(warehouses || [])
-              .filter((w) => w.type === 'warehouse' && !w.supplierId)
-              .map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name || w.address || `#${w.id}`}
-                </option>
-              ))}
-          </select>
-        </div>
-        <div>
-          <label>Списать остатки</label>
-          <div className="form-check form-switch">
-            <input
-              className="form-check-input"
-              type="checkbox"
-              checked={!!supply.deductStock}
-              onChange={(e) => {
-                const v = e.target.checked;
-                setSupply((s) => ({ ...s, deductStock: v }));
-                saveField({ deductStock: v });
-              }}
-              disabled={saving}
-            />
-          </div>
         </div>
         <div>
           <label>Создана</label>

@@ -81,6 +81,18 @@
   opacity: 0.55;
 }
 
+.fbo-supply-deduction-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+}
+
 .fbo-import-warn {
   color: #b45309;
   font-size: 12px;

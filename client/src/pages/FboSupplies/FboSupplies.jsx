@@ -35,6 +35,7 @@ export function FboSupplies() {
   const [templateLoading, setTemplateLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [calcLoading, setCalcLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -52,6 +53,26 @@ export function FboSupplies() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const handleDeleteSupply = async (supplyId, e) => {
+    e?.stopPropagation?.();
+    if (!window.confirm('Удалить поставку? Связанные строки и грузоместа будут удалены.')) return;
+    setDeletingId(supplyId);
+    setErr(null);
+    try {
+      await fboSuppliesApi.delete(supplyId);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(String(supplyId));
+        return next;
+      });
+      await load();
+    } catch (ex) {
+      setErr(ex.response?.data?.message || ex.message || 'Не удалось удалить поставку');
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <div className="fbo-supplies-page">
@@ -147,15 +168,16 @@ export function FboSupplies() {
                 <th>Дата готовности</th>
                 <th>Склад МП</th>
                 <th>Организация</th>
-                <th>Товаров</th>
+                <th>Кол-во, шт.</th>
                 <th>Статус</th>
                 <th>Создана</th>
+                <th style={{ width: 90 }} />
               </tr>
             </thead>
             <tbody>
               {!list.length && (
                 <tr>
-                  <td colSpan={11} className="text-center muted">
+                  <td colSpan={12} className="text-center muted">
                     Нет поставок. Загрузите из Excel или с маркетплейса.
                   </td>
                 </tr>
@@ -195,6 +217,17 @@ export function FboSupplies() {
                     <span className="badge bg-light text-dark">{getFboSupplyStatusLabel(row.status)}</span>
                   </td>
                   <td>{fmtDt(row.createdAt)}</td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={deletingId === row.id}
+                      onClick={(e) => handleDeleteSupply(row.id, e)}
+                    >
+                      {deletingId === row.id ? '…' : 'Удалить'}
+                    </Button>
+                  </td>
                 </tr>
               );
               })}

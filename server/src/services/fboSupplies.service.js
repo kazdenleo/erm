@@ -44,7 +44,8 @@ function mapSupplyRow(row) {
     stockDeductedAt: row.stock_deducted_at ?? null,
     source: row.source,
     note: row.note,
-    itemCount: row.item_count != null ? Number(row.item_count) : undefined,
+    itemCount: row.items_quantity_total != null ? Number(row.items_quantity_total) : undefined,
+    itemsLineCount: row.items_line_count != null ? Number(row.items_line_count) : undefined,
     items: row.items,
   };
 }
@@ -70,7 +71,8 @@ const SUPPLY_SELECT = `
   SELECT s.*,
          o.name AS organization_name,
          COALESCE(NULLIF(TRIM(w.address), ''), 'Склад #' || w.id::text) AS deduction_warehouse_name,
-         (SELECT COUNT(*)::int FROM fbo_supply_items i WHERE i.fbo_supply_id = s.id) AS item_count
+         (SELECT COALESCE(SUM(i.quantity), 0)::int FROM fbo_supply_items i WHERE i.fbo_supply_id = s.id) AS items_quantity_total,
+         (SELECT COUNT(*)::int FROM fbo_supply_items i WHERE i.fbo_supply_id = s.id) AS items_line_count
   FROM fbo_supplies s
   LEFT JOIN organizations o ON o.id = s.organization_id
   LEFT JOIN warehouses w ON w.id = s.deduction_warehouse_id

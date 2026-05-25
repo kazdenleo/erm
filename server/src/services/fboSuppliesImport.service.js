@@ -226,6 +226,10 @@ function mapOzonStateToStatus(state) {
   return 'new';
 }
 
+function sumSupplyItemsQuantity(items) {
+  return (items || []).reduce((sum, it) => sum + (parseInt(it?.quantity, 10) || 0), 0);
+}
+
 function normalizeMarketplaceImport(raw) {
   const m = String(raw || 'ozon').toLowerCase().trim();
   if (m.includes('wild') || m === 'wb') return 'wb';
@@ -497,7 +501,7 @@ class FboSuppliesImportService {
         status: 'new',
         source: 'excel',
         items,
-        itemCount: items.length,
+        itemCount: sumSupplyItemsQuantity(items),
         alreadyImported: false,
       },
     ];
@@ -621,7 +625,7 @@ class FboSuppliesImportService {
         deductStock: false,
         status: mapOzonStateToStatus(supply?.state ?? order.state ?? order.status),
         items,
-        itemCount: items.length,
+        itemCount: sumSupplyItemsQuantity(items),
         alreadyImported: false,
       });
     }
@@ -750,7 +754,7 @@ class FboSuppliesImportService {
         deductStock: false,
         status: mapWbStateToStatus(row.statusName ?? row.status ?? row.statusID),
         items,
-        itemCount: items.length,
+        itemCount: sumSupplyItemsQuantity(items),
         alreadyImported: false,
       };
     });
@@ -863,7 +867,7 @@ class FboSuppliesImportService {
         deductStock: false,
         status: mapYmStateToStatus(req.status),
         items,
-        itemCount: items.length,
+        itemCount: sumSupplyItemsQuantity(items),
         alreadyImported: false,
       });
     }

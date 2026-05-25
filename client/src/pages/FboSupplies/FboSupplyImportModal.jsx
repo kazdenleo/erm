@@ -293,7 +293,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                     <th>Название</th>
                     <th>Дата</th>
                     <th>Склад МП</th>
-                    <th>Товаров</th>
+                    <th>Кол-во, шт.</th>
                     <th>Статус</th>
                   </tr>
                 </thead>
@@ -320,7 +320,11 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                         <td>{fmtDate(c.readyAt)}</td>
                         <td>{c.marketplaceWarehouseName || '—'}</td>
                         <td>
-                          {(c.items || []).length || c.itemCount || 0}
+                          {c.itemCount ??
+                            (c.items || []).reduce(
+                              (s, it) => s + (parseInt(it.quantity, 10) || 0),
+                              0
+                            )}
                           {unresolved > 0 && (
                             <div className="fbo-import-warn">{unresolved} без привязки</div>
                           )}
