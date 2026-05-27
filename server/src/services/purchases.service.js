@@ -872,15 +872,23 @@ class PurchasesService {
     }
     const st = status != null && String(status).trim() !== '' ? String(status).trim() : null;
     const params = [pid];
-    let whereExtra = '';
+    let statusFilter = '';
     if (st) {
       params.push(st);
-      whereExtra = ` AND p.status = $${params.length}`;
+      statusFilter = ` AND p.status = $${params.length}`;
     }
     params.push(lim);
     const limParam = `$${params.length}`;
+    // Сначала LIMIT по закупкам профиля, затем агрегат позиций — иначе GROUP BY по всей purchase_items даёт 504.
     const r = await query(
-      `SELECT p.id, p.created_at, p.updated_at, p.ordered_at, p.completed_at,
+      `WITH page AS (
+         SELECT p.id
+         FROM purchases p
+         WHERE p.profile_id = $1${statusFilter}
+         ORDER BY p.created_at DESC, p.id DESC
+         LIMIT ${limParam}
+       )
+       SELECT p.id, p.created_at, p.updated_at, p.ordered_at, p.completed_at,
               p.status, p.supplier_id, p.organization_id, p.warehouse_id, p.note,
               s.name AS supplier_name,
               o.name AS organization_name,
@@ -888,21 +896,21 @@ class PurchasesService {
               COALESCE(agg.cnt, 0)::int AS items_count,
               COALESCE(agg.exp_sum, 0)::int AS expected_total,
               COALESCE(agg.rec_sum, 0)::int AS received_total
-       FROM purchases p
+       FROM page
+       INNER JOIN purchases p ON p.id = page.id
        LEFT JOIN (
          SELECT purchase_id,
                 COUNT(*)::int AS cnt,
                 COALESCE(SUM(expected_quantity), 0)::int AS exp_sum,
                 COALESCE(SUM(COALESCE(received_quantity, 0)), 0)::int AS rec_sum
          FROM purchase_items
+         WHERE purchase_id IN (SELECT id FROM page)
          GROUP BY purchase_id
        ) agg ON agg.purchase_id = p.id
        LEFT JOIN suppliers s ON s.id = p.supplier_id
        LEFT JOIN organizations o ON o.id = p.organization_id
        LEFT JOIN warehouses w ON w.id = p.warehouse_id
-       WHERE p.profile_id = $1${whereExtra}
-       ORDER BY p.created_at DESC, p.id DESC
-       LIMIT ${limParam}`,
+       ORDER BY p.created_at DESC, p.id DESC`,
       params
     );
     const rows = r.rows || [];

@@ -4,6 +4,7 @@
  */
 
 import api from './api.js';
+import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
 
 export const productsApi = {
   /**
@@ -16,6 +17,9 @@ export const productsApi = {
     if (options.brandId != null && options.brandId !== '') params.brandId = String(options.brandId);
     if (options.categoryId != null && options.categoryId !== '') params.categoryId = options.categoryId;
     if (options.search != null && String(options.search).trim() !== '') params.search = String(options.search).trim();
+    if (options.listView != null && String(options.listView).trim() !== '') {
+      params.listView = String(options.listView).trim();
+    }
     if (options.productType != null && String(options.productType).trim() !== '') {
       params.productType = String(options.productType).trim();
     }
@@ -217,13 +221,11 @@ export const productsApi = {
       err.statusCode = 404;
       throw err;
     }
-    const existing = Array.isArray(p.barcodes)
-      ? p.barcodes.map((b) => String(b).trim()).filter(Boolean)
-      : [];
-    if (existing.includes(add)) {
+    const existing = normalizeBarcodeRows(p.barcodes);
+    if (existing.some((r) => r.barcode === add)) {
       return p;
     }
-    const merged = [...existing, add];
+    const merged = [...existing, { barcode: add, marketplaces: [] }];
     await api.put(`/products/${id}`, { barcodes: merged });
     const wrap2 = await api.get(`/products/${id}`);
     const body2 = wrap2.data;

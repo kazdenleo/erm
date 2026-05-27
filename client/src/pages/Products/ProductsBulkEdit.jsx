@@ -16,6 +16,14 @@ import { userCategoriesApi } from '../../services/userCategories.api';
 import './ProductsBulkEdit.css';
 import './Products.css';
 
+/** Строки штрихкодов из products.barcodes (без отдельного import — eslint import/first). */
+function barcodeStringsFromProduct(barcodes) {
+  if (!Array.isArray(barcodes)) return [];
+  return barcodes
+    .map((b) => (typeof b === 'string' ? b : String(b?.barcode ?? b?.value ?? '').trim()))
+    .filter(Boolean);
+}
+
 const LOAD_LIMIT_SELECTED = 500;
 const LOAD_LIMIT_ALL = 200;
 const SESSION_MP_OZON = 'productsBulkShowMpOzon';
@@ -422,7 +430,7 @@ function volumeLitersFromMmDims(rowOrProduct) {
 
 function productToRow(p, mpAttrColDefs = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
-  const barcodes = Array.isArray(p.barcodes) ? p.barcodes : [];
+  const barcodes = barcodeStringsFromProduct(p.barcodes);
   const oz = normalizeJsonAttrs(p.ozon_attributes);
   const wb = normalizeJsonAttrs(p.wb_attributes);
   const ym = normalizeJsonAttrs(p.ym_attributes);

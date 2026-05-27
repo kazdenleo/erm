@@ -586,16 +586,33 @@ export function scheduleMarketplaceSyncForParentKits(componentProductId, opts = 
 }
 
 /** Нетто-резерв на SKU комплекта (журнал по product_id комплекта, не комплектующие). */
-export async function readKitSkuNetReserved(kitProductId) {
+export async function readKitSkuNetReserved(kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
-  const r = await query(
-    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-     FROM stock_movements
-     WHERE product_id = $1
-       AND type IN ('reserve', 'unreserve')`,
-    [kitId]
-  );
+  const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const whId =
+    whRaw != null && String(whRaw).trim() !== ''
+      ? typeof whRaw === 'string'
+        ? parseInt(whRaw, 10)
+        : Number(whRaw)
+      : null;
+  const warehouseScoped = Number.isFinite(whId) && whId > 0;
+  const r = warehouseScoped
+    ? await query(
+        `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+         FROM stock_movements
+         WHERE product_id = $1
+           AND type IN ('reserve', 'unreserve')
+           AND warehouse_id = $2`,
+        [kitId, whId]
+      )
+    : await query(
+        `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+         FROM stock_movements
+         WHERE product_id = $1
+           AND type IN ('reserve', 'unreserve')`,
+        [kitId]
+      );
   return Number(r.rows?.[0]?.rv ?? 0) || 0;
 }
 
@@ -636,36 +653,60 @@ function kitTotalDisplayReservedFromContext(kitId, ctx) {
 }
 
 /** Сумма нетто-резерва по всем комплектующим комплекта (отдельно по каждому product_id). */
-export async function sumKitComponentsNetReserved(kitProductId) {
+export async function sumKitComponentsNetReserved(kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
+  const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const whId =
+    whRaw != null && String(whRaw).trim() !== ''
+      ? typeof whRaw === 'string'
+        ? parseInt(whRaw, 10)
+        : Number(whRaw)
+      : null;
+  const warehouseScoped = Number.isFinite(whId) && whId > 0;
   try {
-    const r = await query(
-      `SELECT COALESCE(SUM(sub.rv), 0)::int AS total
-       FROM (
-         SELECT sm.product_id,
-           ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-         FROM stock_movements sm
-         WHERE sm.product_id IN (
-           SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
-         )
-           AND sm.type IN ('reserve', 'unreserve')
-         GROUP BY sm.product_id
-       ) sub`,
-      [kitId]
-    );
+    const r = warehouseScoped
+      ? await query(
+          `SELECT COALESCE(SUM(sub.rv), 0)::int AS total
+           FROM (
+             SELECT sm.product_id,
+               ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+             FROM stock_movements sm
+             WHERE sm.product_id IN (
+               SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
+             )
+               AND sm.type IN ('reserve', 'unreserve')
+               AND sm.warehouse_id = $2
+             GROUP BY sm.product_id
+           ) sub`,
+          [kitId, whId]
+        )
+      : await query(
+          `SELECT COALESCE(SUM(sub.rv), 0)::int AS total
+           FROM (
+             SELECT sm.product_id,
+               ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+             FROM stock_movements sm
+             WHERE sm.product_id IN (
+               SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
+             )
+               AND sm.type IN ('reserve', 'unreserve')
+             GROUP BY sm.product_id
+           ) sub`,
+          [kitId]
+        );
     return Number(r.rows?.[0]?.total ?? 0) || 0;
   } catch {
     return 0;
   }
 }
 
-export async function readKitDisplayReservedQuantity(kitProductId, _opts = {}) {
+export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
-  const onSku = await readKitSkuNetReserved(kitId);
+  const onSku = await readKitSkuNetReserved(kitId, opts);
   if (onSku > 0) return onSku;
-  return sumKitComponentsNetReserved(kitId);
+  return sumKitComponentsNetReserved(kitId, opts);
 }
 
 export async function getNetReservedForOrderProduct(orderDbId, productId) {
@@ -1006,18 +1047,37 @@ async function batchWarehouseOnHandMap(productIds, opts = {}) {
   return new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.quantity) || 0]));
 }
 
-async function batchNetReservedMap(productIds) {
+async function batchNetReservedMap(productIds, opts = {}) {
   const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
   if (!ids.length) return new Map();
-  const r = await query(
-    `SELECT product_id,
-       ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-     FROM stock_movements
-     WHERE product_id = ANY($1::bigint[])
-       AND type IN ('reserve', 'unreserve')
-     GROUP BY product_id`,
-    [ids]
-  );
+  const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const whId =
+    whRaw != null && String(whRaw).trim() !== ''
+      ? typeof whRaw === 'string'
+        ? parseInt(whRaw,  10)
+        : Number(whRaw)
+      : null;
+  const warehouseScoped = Number.isFinite(whId) && whId > 0;
+  const r = warehouseScoped
+    ? await query(
+        `SELECT product_id,
+         ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND type IN ('reserve', 'unreserve')
+         AND warehouse_id = $2
+       GROUP BY product_id`,
+        [ids, whId]
+      )
+    : await query(
+        `SELECT product_id,
+         ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND type IN ('reserve', 'unreserve')
+       GROUP BY product_id`,
+        [ids]
+      );
   return new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0]));
 }
 
@@ -1164,7 +1224,7 @@ export async function buildKitListStockContext(products, options = {}) {
       batchKitIdsWithWholeInbound(kitIds),
       batchWarehouseOnHandMap(kitIds, options),
       batchKitJournalBalanceMap(kitIds),
-      batchNetReservedMap([...kitIds, ...compIds]),
+      batchNetReservedMap([...kitIds, ...compIds], options),
       batchWarehouseOnHandMap(compIds, options),
       batchIncomingMap(compIds),
       batchSupplierStockMap(compIds, options)

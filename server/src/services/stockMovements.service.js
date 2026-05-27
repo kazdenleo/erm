@@ -6,7 +6,10 @@
 import { query } from '../config/database.js';
 import { getClient } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { NET_RESERVED_SUM_EXPR_SQL } from '../constants/netReservedStockSql.js';
+import {
+  NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
+  NET_RESERVED_SUM_EXPR_SQL
+} from '../constants/netReservedStockSql.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 
 /**
@@ -179,6 +182,14 @@ class StockMovementsService {
         });
       } catch {
         // не блокируем движение при сбое пересчёта резервов
+      }
+      try {
+        const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
+        await fboSupplyReserveService.onSupplyStockEvent(idNum, warehouseId, {
+          profileId: profId,
+        });
+      } catch {
+        /* ignore */
       }
     }
 
@@ -366,14 +377,23 @@ class StockMovementsService {
   /**
    * Получить историю движений по товару; синхронизирует products.reserved_quantity с журналом.
    */
-  async getHistory(productId, { limit = 100, profileId = null } = {}) {
+  async getHistory(productId, { limit = 100, profileId = null, warehouseId = null } = {}) {
     const cap = Math.max(1, Math.min(500, Number(limit) || 100));
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum)) {
       return { movements: [], netReserved: 0 };
     }
 
-    const rows = await this.repository.findByProduct(productId, { limit: cap, profileId });
+    let whFilter = null;
+    if (warehouseId != null && String(warehouseId).trim() !== '') {
+      whFilter = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
+    }
+
+    const rows = await this.repository.findByProduct(productId, {
+      limit: cap,
+      profileId,
+      warehouseId: whFilter
+    });
 
     const { isKitProductId, isKitStockHistoryMovementType, getKitComponents, readKitDisplayReservedQuantity } =
       await import('./kitStock.service.js');
@@ -401,7 +421,8 @@ class StockMovementsService {
       if (!Number.isFinite(cid) || cid < 1) continue;
       const compRows = await this.repository.findByProduct(cid, {
         limit: Math.min(cap, 80),
-        profileId
+        profileId,
+        warehouseId: whFilter
       });
       for (const m of compRows || []) {
         const t = String(m?.type || '').toLowerCase();
@@ -474,12 +495,18 @@ class StockMovementsService {
            AND (meta->>'order_id') ~ '^[0-9]+$'
          GROUP BY 1
        )
-       SELECT o.id, o.marketplace, o.order_id, o.status,
-              COALESCE(sku_net.sku_net_qty, 0) AS sku_net_qty
+       SELECT o.id,
+              o.marketplace,
+              o.order_id,
+              o.status,
+              COALESCE(sku_net.sku_net_qty, 0) AS sku_net_qty,
+              (o.id IS NULL) AS order_missing,
+              order_ids.order_row_id AS movement_order_db_id
        FROM order_ids
-       INNER JOIN orders o ON o.id = order_ids.order_row_id
        LEFT JOIN sku_net ON sku_net.order_row_id = order_ids.order_row_id
-       ORDER BY o.created_at DESC NULLS LAST, o.id DESC
+       LEFT JOIN orders o ON o.id = order_ids.order_row_id
+       WHERE COALESCE(sku_net.sku_net_qty, 0) > 0
+       ORDER BY o.created_at DESC NULLS LAST, order_ids.order_row_id DESC
        LIMIT 200`,
       [idNum]
     );
@@ -488,6 +515,7 @@ class StockMovementsService {
       const { default: ordersService, isOrderTerminalNoReserve } = await import('./orders.service.js');
       let cleaned = false;
       for (const r of res.rows || []) {
+        if (r.order_missing === true) continue;
         if (!isOrderTerminalNoReserve(r.status)) continue;
         const clientMp =
           r.marketplace === 'wb' ? 'wildberries' : r.marketplace === 'ym' ? 'yandex' : 'ozon';
@@ -503,7 +531,25 @@ class StockMovementsService {
 
     const out = [];
     for (const r of res.rows || []) {
+      const movementOrderDbId = Number(r.movement_order_db_id);
       const orderDbId = Number(r.id);
+      const orderMissing = r.order_missing === true;
+
+      if (orderMissing) {
+        const reservedQty = Number(r.sku_net_qty) || 0;
+        if (reservedQty <= 0) continue;
+        out.push({
+          orderDbId: Number.isFinite(movementOrderDbId) ? movementOrderDbId : null,
+          marketplace: 'ozon',
+          orderId: `удалён #${movementOrderDbId}`,
+          status: 'заказ удалён',
+          reservedQty,
+          staleReserve: true,
+          deletedOrderReserve: true
+        });
+        continue;
+      }
+
       if (!Number.isFinite(orderDbId) || orderDbId < 1) continue;
 
       let reservedQty = Number(r.sku_net_qty) || 0;
@@ -528,6 +574,75 @@ class StockMovementsService {
   }
 
   /**
+   * Резерв под поставки FBO (meta.fbo_supply_item_id) — в колонке «Резерв» учитывается, в заказах не показывается.
+   */
+  async listFboReservedSuppliesForProduct(productId, { profileId = null } = {}) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) return [];
+
+    const tid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : null;
+    if (tid != null && Number.isFinite(tid) && tid > 0) {
+      const pr = await query(`SELECT profile_id FROM products WHERE id = $1`, [idNum]);
+      const own = pr.rows?.[0]?.profile_id;
+      if (own != null && String(own) !== String(tid)) return [];
+    }
+
+    const res = await query(
+      `WITH nets AS (
+         SELECT meta->>'fbo_supply_item_id' AS item_id,
+                meta->>'fbo_supply_id' AS supply_id,
+                GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS reserved_qty
+         FROM stock_movements
+         WHERE product_id = $1
+           AND type IN ('reserve', 'unreserve')
+           AND meta->>'fbo_supply_item_id' IS NOT NULL
+           AND (meta->>'fbo_supply_item_id') ~ '^[0-9]+$'
+         GROUP BY meta->>'fbo_supply_item_id', meta->>'fbo_supply_id'
+         HAVING GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)) > 0
+       )
+       SELECT n.item_id,
+              n.supply_id,
+              n.reserved_qty,
+              s.marketplace,
+              s.status,
+              s.external_shipment_number,
+              si.quantity::int AS line_qty
+       FROM nets n
+       LEFT JOIN fbo_supplies s ON s.id = (n.supply_id)::bigint
+       LEFT JOIN fbo_supply_items si ON si.id = (n.item_id)::bigint
+       WHERE ($2::bigint IS NULL OR s.profile_id = $2 OR s.id IS NULL)
+       ORDER BY s.ready_at ASC NULLS LAST, s.id DESC, n.item_id`,
+      [idNum, tid]
+    );
+
+    return (res.rows || []).map((r) => {
+      const supplyId = Number(r.supply_id);
+      const supplyItemId = Number(r.item_id);
+      const ext = r.external_shipment_number != null ? String(r.external_shipment_number).trim() : '';
+      const label = ext
+        ? `FBO ${ext}`
+        : Number.isFinite(supplyId) && supplyId > 0
+          ? `FBO поставка №${supplyId}`
+          : 'FBO поставка';
+      return {
+        supplyId: Number.isFinite(supplyId) ? supplyId : null,
+        supplyItemId: Number.isFinite(supplyItemId) ? supplyItemId : null,
+        reservedQty: Number(r.reserved_qty) || 0,
+        marketplace: r.marketplace != null ? String(r.marketplace) : '',
+        status: r.status != null ? String(r.status) : '',
+        externalShipmentNumber: ext,
+        lineQty: Number(r.line_qty) || 0,
+        label
+      };
+    });
+  }
+
+  /**
    * Сводка резерва для модалки остатков (комплект: колонка = только SKU комплекта).
    */
   async getReserveSummaryForProduct(productId, { profileId = null } = {}) {
@@ -537,9 +652,14 @@ class StockMovementsService {
         displayReservedQty: 0,
         ordersReservedQty: 0,
         componentJournalReserve: 0,
-        orphanComponentReserve: 0
+        orphanComponentReserve: 0,
+        orphanJournalReserve: 0,
+        fboReservedQty: 0
       };
     }
+
+    const fboSupplies = await this.listFboReservedSuppliesForProduct(idNum, { profileId });
+    const fboReservedQty = fboSupplies.reduce((s, row) => s + (Number(row.reservedQty) || 0), 0);
 
     const orders = await this.listReservedOrdersForProduct(idNum, {
       profileId,
@@ -569,17 +689,58 @@ class StockMovementsService {
     const orphanComponentReserve =
       isKit && orders.length === 0 && componentJournalReserve > 0 ? componentJournalReserve : 0;
 
+    /** Резерв в журнале без заказа и без FBO (рассинхрон / удалённый заказ). */
+    const orphanJournalReserve = isKit
+      ? 0
+      : Math.max(0, displayReservedQty - ordersReservedQty - fboReservedQty);
+
     return {
       displayReservedQty,
       ordersReservedQty,
+      fboReservedQty,
       componentJournalReserve,
       orphanComponentReserve,
+      orphanJournalReserve,
       isKit
     };
   }
 
   /**
-   * Снять нетто-резерв без активных заказов (напр. order_id=0 на комплектующем).
+   * Снять резерв в журнале без заказа и без FBO (рассинхрон / удалённая запись).
+   */
+  async releaseUnattributedJournalReserve(productId, { profileId = null } = {}) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) {
+      const error = new Error('Некорректный ID товара');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const summary = await this.getReserveSummaryForProduct(idNum, { profileId });
+    const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);
+    if (orphanQty <= 0) {
+      return { releasedProductLines: 0, releasedQty: 0, skipped: true };
+    }
+
+    await this.applyChange(idNum, {
+      delta: orphanQty,
+      type: 'unreserve',
+      reason: 'Снятие резерва без привязки к заказу или FBO',
+      meta: { manual_unreserve: true, orphan_cleanup: true, unattributed_qty: orphanQty }
+    });
+
+    try {
+      const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+      await syncProductReservedQuantityFromJournal(idNum);
+    } catch {
+      /* ignore */
+    }
+
+    return { releasedProductLines: 1, releasedQty: orphanQty, skipped: false };
+  }
+
+  /**
+   * Снять весь нетто-резерв, если нет ни заказов, ни FBO (ручная очистка со страницы остатков).
    */
   async releaseOrphanNetReserveForProduct(productId, { profileId = null } = {}) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
@@ -589,11 +750,17 @@ class StockMovementsService {
       throw error;
     }
 
+    const summary = await this.getReserveSummaryForProduct(idNum, { profileId });
+    if (Number(summary.orphanJournalReserve) > 0) {
+      return this.releaseUnattributedJournalReserve(idNum, { profileId });
+    }
+
     const orders = await this.listReservedOrdersForProduct(idNum, {
       profileId,
       _skipStaleCleanup: true
     });
-    if (orders.length > 0) {
+    const fbo = await this.listFboReservedSuppliesForProduct(idNum, { profileId });
+    if (orders.length > 0 || fbo.length > 0) {
       return { releasedProductLines: 0, skipped: true };
     }
 

@@ -132,31 +132,36 @@ class StockMovementsRepositoryPG {
    * @param {object} options
    * @param {number} [options.limit=100]
    */
-  async findByProduct(productId, { limit = 100, profileId = null } = {}) {
+  async findByProduct(productId, { limit = 100, profileId = null, warehouseId = null } = {}) {
     const numericId = typeof productId === 'string' ? parseInt(productId, 10) : productId;
     if (!numericId || Number.isNaN(numericId)) {
       return [];
     }
     const pid = normalizeProfileId(profileId);
+    const whRaw = warehouseId != null && warehouseId !== '' ? Number(warehouseId) : null;
+    const whId = Number.isFinite(whRaw) && whRaw > 0 ? whRaw : null;
 
-    const sql = pid
-      ? `
+    const params = [numericId];
+    const where = ['product_id = $1'];
+    if (whId != null) {
+      params.push(whId);
+      where.push(`warehouse_id = $${params.length}`);
+    }
+    if (pid != null) {
+      params.push(pid);
+      where.push(`profile_id = $${params.length}`);
+    }
+    params.push(Math.max(1, Math.min(500, Number(limit) || 100)));
+    const limitIdx = params.length;
+
+    const sql = `
       SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, incoming_after, reserved_after, meta, warehouse_id
       FROM stock_movements
-      WHERE product_id = $1 AND profile_id = $3
+      WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
-      LIMIT $2
-    `
-      : `
-      SELECT id, product_id, created_at, type, reason, quantity_change, balance_after, incoming_after, reserved_after, meta, warehouse_id
-      FROM stock_movements
-      WHERE product_id = $1
-      ORDER BY created_at DESC, id DESC
-      LIMIT $2
+      LIMIT $${limitIdx}
     `;
-    const result = pid
-      ? await query(sql, [numericId, limit, pid])
-      : await query(sql, [numericId, limit]);
+    const result = await query(sql, params);
     return result.rows || [];
   }
 }

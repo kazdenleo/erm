@@ -16,9 +16,12 @@ export const stockMovementsApi = {
     return response.data?.data ?? response.data;
   },
 
-  getHistory: async (productId, { limit } = {}) => {
+  getHistory: async (productId, { limit, warehouseId } = {}) => {
     const params = {};
     if (limit) params.limit = limit;
+    if (warehouseId != null && String(warehouseId).trim() !== '') {
+      params.warehouseId = warehouseId;
+    }
     const response = await api.get(`/products/${productId}/stock-movements`, { params });
     return response.data;
   },

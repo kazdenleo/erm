@@ -344,7 +344,7 @@ function mapWbStateToStatus(status) {
   if (s.includes('transit') || s.includes('deliver') || s.includes('shipped')) return 'shipped';
   if (s.includes('ready') || s.includes('await')) return 'ready_for_supply';
   if (s.includes('pack')) return 'packed';
-  if (s.includes('assembl')) return 'assembled';
+  if (s.includes('assembl')) return 'packed';
   return 'new';
 }
 

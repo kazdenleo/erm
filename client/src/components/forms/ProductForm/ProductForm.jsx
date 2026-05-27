@@ -19,6 +19,13 @@ import {
   useProductLabelPrint,
 } from '../../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../../services/api.js';
+import {
+  BARCODE_MP_TOGGLES,
+  EMPTY_BARCODE_ROW,
+  barcodesForForm,
+  normalizeBarcodeRows,
+} from '../../../utils/productBarcodes.js';
+import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
 import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
@@ -285,7 +292,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
     sku_wb: '',
     sku_ym: '',
     buyout_rate: 95,
-    barcodes: [''],
+    barcodes: [{ ...EMPTY_BARCODE_ROW }],
     weight: '',
     length: '',
     width: '',
@@ -543,7 +550,7 @@ export function ProductForm({
         sku_wb: currentProduct.sku_wb || '',
         sku_ym: currentProduct.sku_ym || '',
         buyout_rate: buyoutRate,
-        barcodes: currentProduct.barcodes && currentProduct.barcodes.length > 0 ? currentProduct.barcodes : [''],
+        barcodes: barcodesForForm(currentProduct.barcodes),
         weight: currentProduct.weight || '',
         length: currentProduct.length || '',
         width: currentProduct.width || '',
@@ -1313,8 +1320,8 @@ export function ProductForm({
       if (lMm != null && (!prev.length || String(prev.length).trim() === '')) next.length = String(lMm);
       if (wMm != null && (!prev.width || String(prev.width).trim() === '')) next.width = String(wMm);
       if (hMm != null && (!prev.height || String(prev.height).trim() === '')) next.height = String(hMm);
-      if (barcodes.length > 0 && (!Array.isArray(prev.barcodes) || prev.barcodes.every((b) => !b || String(b).trim() === ''))) {
-        next.barcodes = barcodes;
+      if (barcodes.length > 0 && (!Array.isArray(prev.barcodes) || prev.barcodes.every((b) => !String((b?.barcode ?? b) || '').trim()))) {
+        next.barcodes = barcodes.map((b) => ({ barcode: b, marketplaces: [] }));
       }
       return next;
     });
@@ -1533,8 +1540,24 @@ export function ProductForm({
 
   const handleBarcodeChange = (index, value) => {
     setFormData((prev) => {
-      const newBarcodes = [...prev.barcodes];
-      newBarcodes[index] = value;
+      const newBarcodes = prev.barcodes.map((row, i) =>
+        i === index ? { ...row, barcode: value } : row
+      );
+      return { ...prev, barcodes: newBarcodes };
+    });
+  };
+
+  const toggleBarcodeMarketplace = (index, mp) => {
+    setFormData((prev) => {
+      const newBarcodes = prev.barcodes.map((row, i) => {
+        if (i !== index) return row;
+        const mps = Array.isArray(row.marketplaces) ? [...row.marketplaces] : [];
+        const has = mps.includes(mp);
+        return {
+          ...row,
+          marketplaces: has ? mps.filter((x) => x !== mp) : [...mps, mp],
+        };
+      });
       return { ...prev, barcodes: newBarcodes };
     });
   };
@@ -1645,7 +1668,7 @@ export function ProductForm({
   );
 
   const addBarcodeField = () => {
-    setFormData(prev => ({ ...prev, barcodes: [...prev.barcodes, ''] }));
+    setFormData(prev => ({ ...prev, barcodes: [...prev.barcodes, { ...EMPTY_BARCODE_ROW }] }));
   };
 
   const removeBarcodeField = (index) => {
@@ -2055,7 +2078,7 @@ export function ProductForm({
     }
 
     // Фильтруем пустые баркоды
-    const filteredBarcodes = formData.barcodes.filter(b => b && b.trim() !== '');
+    const filteredBarcodes = normalizeBarcodeRows(formData.barcodes);
 
     const toSku = (v) => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
     const trimOrNull = (s) => (s != null && String(s).trim() !== '' ? String(s).trim() : null);
@@ -2961,14 +2984,18 @@ export function ProductForm({
             + Добавить баркод
           </Button>
         </h4>
+        <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px' }}>
+          Отметьте маркетплейс на ШК — он будет использоваться при печати этикеток в поставках FBO.
+          Без отметки — внутренний штрихкод.
+        </div>
         <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
-          {formData.barcodes.map((barcode, index) => (
+          {formData.barcodes.map((row, index) => (
             <div key={index} style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
               <input
                 type="text"
                 className="form-control form-control-sm"
                 placeholder="Введите баркод (EAN, UPC и т.д.)"
-                value={barcode}
+                value={row.barcode ?? ''}
                 onChange={(e) => handleBarcodeChange(index, e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
@@ -2980,6 +3007,22 @@ export function ProductForm({
                 spellCheck={false}
                 style={{flex: 1}}
               />
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                {BARCODE_MP_TOGGLES.map((mp) => {
+                  const active = (row.marketplaces || []).includes(mp.code);
+                  return (
+                    <MarketplaceToggle
+                      key={mp.code}
+                      active={active}
+                      title={mp.title}
+                      color={mp.color}
+                      onToggle={() => toggleBarcodeMarketplace(index, mp.code)}
+                    >
+                      {mp.label}
+                    </MarketplaceToggle>
+                  );
+                })}
+              </div>
               {formData.barcodes.length > 1 && (
                 <Button
                   type="button"

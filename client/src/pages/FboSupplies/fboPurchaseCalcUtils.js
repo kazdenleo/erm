@@ -74,6 +74,12 @@ export function kitUnitsToComponentQty(kitQty, perKit) {
   return Math.max(0, Number(kitQty) || 0) * Math.max(1, Number(perKit) || 1);
 }
 
+export function getPurchaseRowDisplayName(row) {
+  const raw = String(row?.productName ?? '').trim();
+  if (!raw) return '—';
+  return raw.split(/\r?\n/)[0].trim() || '—';
+}
+
 export function sortPurchaseRows(rows) {
   return [...rows].sort((a, b) => {
     const aDone = a.toPurchase === 0;

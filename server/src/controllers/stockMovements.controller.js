@@ -62,7 +62,12 @@ class StockMovementsController {
       }
       const { id } = req.params;
       const limit = req.query.limit ? Number(req.query.limit) : 100;
-      const history = await stockMovementsService.getHistory(id, { limit, profileId: tid });
+      const warehouseId = req.query.warehouseId ?? req.query.warehouse_id ?? null;
+      const history = await stockMovementsService.getHistory(id, {
+        limit,
+        profileId: tid,
+        warehouseId
+      });
       const movements = Array.isArray(history) ? history : history?.movements ?? [];
       const netReserved =
         history?.netReserved != null ? Number(history.netReserved) : null;
@@ -80,9 +85,21 @@ class StockMovementsController {
         return res.status(200).json({ ok: true, data: [] });
       }
       const { id } = req.params;
-      const rows = await stockMovementsService.listReservedOrdersForProduct(id, { profileId: tid });
-      const summary = await stockMovementsService.getReserveSummaryForProduct(id, { profileId: tid });
-      return res.status(200).json({ ok: true, data: rows, summary });
+      let rows = await stockMovementsService.listReservedOrdersForProduct(id, { profileId: tid });
+      let fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
+        profileId: tid
+      });
+      let summary = await stockMovementsService.getReserveSummaryForProduct(id, { profileId: tid });
+      if (Number(summary.orphanJournalReserve) > 0) {
+        await stockMovementsService.releaseUnattributedJournalReserve(id, { profileId: tid }).catch(() => {});
+        rows = await stockMovementsService.listReservedOrdersForProduct(id, {
+          profileId: tid,
+          _skipStaleCleanup: true
+        });
+        fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, { profileId: tid });
+        summary = await stockMovementsService.getReserveSummaryForProduct(id, { profileId: tid });
+      }
+      return res.status(200).json({ ok: true, data: rows, fboSupplies, summary });
     } catch (error) {
       next(error);
     }

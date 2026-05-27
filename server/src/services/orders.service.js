@@ -1918,7 +1918,7 @@ class OrdersService {
    * Перевести заказ в статус «В закупке» (in_procurement). Разрешено только для заказов в статусе «Новый».
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
    */
-  async setOrderToProcurement(marketplace, orderId, profileId = null) {
+  async setOrderToProcurement(marketplace, orderId, profileId = null, opts = {}) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
       const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
@@ -1940,7 +1940,14 @@ class OrdersService {
           profileId
         );
       }
-      await this._reapplyReserveForOrderRows(rows);
+      if (!opts.skipReserveReapply) {
+        const rowsCopy = rows.map((r) => ({ ...r }));
+        setImmediate(() => {
+          this._reapplyReserveForOrderRows(rowsCopy).catch((e) => {
+            console.warn('[Orders] reapply reserve after procurement:', e?.message || e);
+          });
+        });
+      }
       return order;
     }
     const { readData, writeData } = await import('../utils/storage.js');
@@ -1955,6 +1962,63 @@ class OrdersService {
     order.returnedToNewAt = null;
     await writeData('orders', { ...data, orders, lastSync: new Date().toISOString() });
     return order;
+  }
+
+  /**
+   * Массово перевести заказы в «В закупке» и один раз дозарезервировать (без N тяжёлых HTTP-вызовов).
+   * @param {{ marketplace: string, orderId: string }[]} items
+   */
+  async bulkSetToProcurement(items, profileId = null) {
+    const refs = Array.isArray(items) ? items : [];
+    if (!repositoryFactory.isUsingPostgreSQL() || refs.length === 0) {
+      return { updated: 0, skipped: refs.length };
+    }
+    const seen = new Set();
+    const rowsForReserve = [];
+    let updated = 0;
+    let skipped = 0;
+
+    for (const it of refs) {
+      const mp = it?.marketplace != null ? String(it.marketplace).trim() : '';
+      const oid = it?.orderId != null ? String(it.orderId).trim() : '';
+      if (!mp || !oid) {
+        skipped += 1;
+        continue;
+      }
+      const dedupeKey = `${mp.toLowerCase()}|${oid}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const order = await this.setOrderToProcurement(mp, oid, profileId, { skipReserveReapply: true });
+      if (!order) {
+        skipped += 1;
+        continue;
+      }
+      updated += 1;
+      const groupRows = order.orderGroupId
+        ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
+        : [order];
+      for (const r of groupRows) {
+        const rid = orderRowDbId(r);
+        if (rid != null) rowsForReserve.push(r);
+      }
+    }
+
+    const reserveByDbId = new Map();
+    for (const r of rowsForReserve) {
+      const rid = orderRowDbId(r);
+      if (rid != null) reserveByDbId.set(rid, r);
+    }
+    const uniqueRows = [...reserveByDbId.values()];
+    if (uniqueRows.length > 0) {
+      setImmediate(() => {
+        this._reapplyReserveForOrderRows(uniqueRows).catch((e) => {
+          console.warn('[Orders] bulk reapply reserve after procurement:', e?.message || e);
+        });
+      });
+    }
+
+    return { updated, skipped };
   }
 
   /**

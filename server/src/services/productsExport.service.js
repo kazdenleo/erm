@@ -5,6 +5,7 @@
  */
 
 import ExcelJS from 'exceljs';
+import { barcodeStringsFromProduct } from '../utils/productBarcodes.js';
 
 const CELL_MAX = 32700;
 /** Имя листа со справочниками (используется в формулах Excel) */
@@ -1831,10 +1832,11 @@ function toExcelCellValue(v) {
   return v;
 }
 
+
 /** Одна строка товара как объект по ключам колонок */
 function productToRowObject(p) {
   const imageCols = splitProductImagesForExportColumns(p);
-  const barcodes = Array.isArray(p.barcodes) ? p.barcodes.filter(Boolean).join('; ') : '';
+  const barcodes = barcodeStringsFromProduct(p.barcodes).join('; ');
   const idRaw = p.id;
   const idCell =
     idRaw != null && idRaw !== ''

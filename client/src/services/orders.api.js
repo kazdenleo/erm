@@ -154,6 +154,12 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Массово в «В закупке» — один запрос вместо N (резерв пересчитывается на сервере в фоне). */
+  bulkSetToProcurement: async (items) => {
+    const response = await api.post('/orders/bulk-to-procurement', { items });
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Вернуть заказ в статус «Новый» (со сборки или «Собран»).
    */

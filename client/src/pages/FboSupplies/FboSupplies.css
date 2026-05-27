@@ -23,6 +23,17 @@
   font-size: 12px;
   background: var(--bs-light, #f0f0f0);
   color: #666;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.fbo-status-step:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.fbo-status-step.blocked:not(.active) {
+  opacity: 0.45;
 }
 
 .fbo-status-step.active {
@@ -109,6 +120,23 @@
 .fbo-items-toolbar .muted-hint {
   font-size: 13px;
   color: #64748b;
+}
+
+.fbo-supply-item-search {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.fbo-supply-item-search__input {
+  flex: 1 1 280px;
+  max-width: 420px;
+}
+
+.fbo-supply-item-search__hint {
+  font-size: 13px;
 }
 
 .fbo-detail-tabs {

@@ -21,9 +21,10 @@ import {
 import { resolveApiBaseUrl } from '../../services/api';
 import {
   FBO_SUPPLY_STATUS_ORDER,
+  FBO_SUPPLY_STATUS_OPTIONS,
+  canSelectFboSupplyStatus,
   getFboSupplyStatusLabel,
   getMarketplaceLabel,
-  getNextFboSupplyStatus,
   hasPackingDiscrepancy,
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
@@ -33,6 +34,7 @@ import {
   isSupplyItemPackingComplete,
   sortSupplyItemsForPacking,
 } from './fboSupplyPackingSort.js';
+import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
 import './FboSupplies.css';
 
 function packedCellClass(packed, planned) {
@@ -93,6 +95,7 @@ export function FboSupplyDetail() {
   const [breakdownItem, setBreakdownItem] = useState(null);
   const [packingExporting, setPackingExporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [itemSearchQuery, setItemSearchQuery] = useState('');
   const selectAllItemsRef = useRef(null);
 
   const deductionWarehouses = useMemo(
@@ -207,19 +210,22 @@ export function FboSupplyDetail() {
     [supply?.items, statsByItemId]
   );
 
-  const nextSupplyStatus = supply ? getNextFboSupplyStatus(supply.status) : null;
+  const filteredSupplyItems = useMemo(
+    () => filterSupplyItemsByQuery(sortedSupplyItems, itemSearchQuery),
+    [sortedSupplyItems, itemSearchQuery]
+  );
+
+  const itemSearchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
+
   const packingHasDiscrepancy = hasPackingDiscrepancy(supply, packing);
-  const blockReadyForSupply =
-    nextSupplyStatus === 'ready_for_supply' && packingHasDiscrepancy;
 
   const handlePackingChange = useCallback((newPacking, meta) => {
     setPacking(newPacking);
-    if (meta?.supplyStatus) {
+    if (meta && Object.prototype.hasOwnProperty.call(meta, 'packingAllMatch')) {
       setSupply((s) =>
         s
           ? {
               ...s,
-              status: meta.supplyStatus,
               packingAllMatch: meta.packingAllMatch,
               hasPackingDiscrepancy: meta.packingAllMatch === false,
             }
@@ -235,14 +241,13 @@ export function FboSupplyDetail() {
       setSupply((prev) => {
         if (!prev) return data;
         if (Object.prototype.hasOwnProperty.call(patch, 'deductionWarehouseId')) {
-          return {
-            ...prev,
-            deductionWarehouseId: data.deductionWarehouseId ?? null,
-            deductionWarehouseName: data.deductionWarehouseName ?? null,
-          };
+          return { ...prev, ...data };
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'deductStock')) {
           return { ...prev, deductStock: data.deductStock };
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'status')) {
+          return { ...prev, ...data };
         }
         return { ...prev, ...data };
       });
@@ -276,21 +281,37 @@ export function FboSupplyDetail() {
     }
   };
 
-  const handleAdvance = async () => {
-    try {
+  const applyStatusChangeResult = (data) => {
+    setSupply(data);
+    const sd = data?.stockDeduction;
+    if (sd?.applied) {
+      setStockMsg(`Списано остатков по ${sd.deductedLines} строкам.`);
+    } else if (data.status === 'shipped' && data.deductStock && sd?.error) {
+      setStockMsg(sd.error);
+    } else if (data.status === 'shipped' && data.deductStock && sd?.reason === 'already_deducted') {
+      setStockMsg('Остатки уже были списаны ранее.');
+    } else {
       setStockMsg(null);
-      const data = await fboSuppliesApi.advanceStatus(id);
-      setSupply(data);
-      const sd = data?.stockDeduction;
-      if (sd?.applied) {
-        setStockMsg(`Списано остатков по ${sd.deductedLines} строкам.`);
-      } else if (data.status === 'shipped' && data.deductStock && sd?.error) {
-        setStockMsg(sd.error);
-      } else if (data.status === 'shipped' && data.deductStock && sd?.reason === 'already_deducted') {
-        setStockMsg('Остатки уже были списаны ранее.');
-      }
+    }
+  };
+
+  const handleStatusChange = async (newStatus) => {
+    if (!supply || newStatus === supply.status) return;
+    if (!canSelectFboSupplyStatus(newStatus, packingHasDiscrepancy)) {
+      setErr(
+        'Нельзя перевести в «Готов к поставке»: есть расхождения между планом и сборкой. Упакуйте ровно запланированное количество.'
+      );
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const data = await fboSuppliesApi.update(id, { status: newStatus });
+      applyStatusChangeResult(data);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось сменить статус');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -315,10 +336,11 @@ export function FboSupplyDetail() {
 
   const printOneItem = async (it, copiesOverride) => {
     const copies = Math.min(99, Math.max(1, parseInt(copiesOverride ?? it.quantity, 10) || 1));
+    const marketplace = supply?.marketplace || undefined;
     if (!canUsePrintHelper(printHelperUrl)) {
-      return openProductLabelPrintTab(it.productId, copies);
+      return openProductLabelPrintTab(it.productId, copies, marketplace);
     }
-    return printProductLabel(it.productId, { copies });
+    return printProductLabel(it.productId, { copies, marketplace });
   };
 
   const buildBatchPrintItems = (items) =>
@@ -330,6 +352,7 @@ export function FboSupplyDetail() {
         productId: it.productId,
         copies: Math.min(99, Math.max(1, parseInt(it.quantity, 10) || 1)),
         title,
+        marketplace: supply?.marketplace || undefined,
       };
     });
 
@@ -429,19 +452,6 @@ export function FboSupplyDetail() {
           {packingExporting ? 'Excel…' : 'Excel грузоместа'}
         </Button>
         <Button
-          variant="primary"
-          size="small"
-          onClick={handleAdvance}
-          disabled={statusIdx >= FBO_SUPPLY_STATUS_ORDER.length - 2 || blockReadyForSupply}
-          title={
-            blockReadyForSupply
-              ? 'Устраните расхождения в сборке (план ≠ факт), чтобы перейти в «Готов к поставке»'
-              : undefined
-          }
-        >
-          Следующий шаг →
-        </Button>
-        <Button
           type="button"
           variant="secondary"
           size="small"
@@ -465,13 +475,6 @@ export function FboSupplyDetail() {
       </div>
 
       {err && <div className="alert alert-danger">{err}</div>}
-      {packingHasDiscrepancy && (
-        <div className="alert alert-warning mb-2">
-          Есть расхождения в поставке (план и сборка не совпадают). Статус поставки —{' '}
-          <strong>Новая</strong>. Переход в «Готов к поставке» доступен только когда по всем
-          позициям упаковано ровно запланированное количество.
-        </div>
-      )}
       {stockMsg && (
         <div className={`alert ${stockMsg.includes('Списано') ? 'alert-success' : 'alert-warning'}`}>
           {stockMsg}
@@ -490,98 +493,27 @@ export function FboSupplyDetail() {
       )}
 
       <div className="fbo-status-stepper">
-        {FBO_SUPPLY_STATUS_ORDER.filter((s) => s !== 'return').map((s, i) => {
+        {FBO_SUPPLY_STATUS_OPTIONS.map((s, i) => {
           const done = i < statusIdx;
           const active = s === supply.status;
+          const blocked = s === 'ready_for_supply' && packingHasDiscrepancy;
           return (
-            <span key={s} className={`fbo-status-step${active ? ' active' : ''}${done ? ' done' : ''}`}>
+            <button
+              key={s}
+              type="button"
+              className={`fbo-status-step${active ? ' active' : ''}${done ? ' done' : ''}${blocked ? ' blocked' : ''}`}
+              disabled={saving || blocked}
+              title={
+                blocked
+                  ? 'Устраните расхождения в сборке, чтобы выбрать этот статус'
+                  : `Установить: ${getFboSupplyStatusLabel(s)}`
+              }
+              onClick={() => handleStatusChange(s)}
+            >
               {getFboSupplyStatusLabel(s)}
-            </span>
+            </button>
           );
         })}
-      </div>
-
-      <div className="fbo-supply-deduction-bar">
-        <div className="fbo-deduction-warehouse-field" style={{ flex: '1 1 280px' }}>
-          <label>Склад списания остатков</label>
-          <select
-            className="form-select form-select-sm"
-            value={
-              supply.deductionWarehouseId != null && supply.deductionWarehouseId !== ''
-                ? String(supply.deductionWarehouseId)
-                : ''
-            }
-            onChange={(e) => {
-              const raw = e.target.value;
-              if (!raw) {
-                setSupply((s) => ({
-                  ...s,
-                  deductionWarehouseId: null,
-                  deductionWarehouseName: null,
-                }));
-                saveField({ deductionWarehouseId: null });
-                return;
-              }
-              const v = Number(raw);
-              const picked = deductionWarehouses.find((w) => String(w.id) === raw);
-              setSupply((s) => ({
-                ...s,
-                deductionWarehouseId: v,
-                deductionWarehouseName: picked ? warehouseSelectLabel(picked) : s.deductionWarehouseName,
-              }));
-              saveField({ deductionWarehouseId: v });
-            }}
-            disabled={warehousesLoading && deductionWarehouses.length === 0}
-          >
-            <option value="">
-              {warehousesLoading && deductionWarehouses.length === 0
-                ? 'Загрузка складов…'
-                : '— выберите склад —'}
-            </option>
-            {!warehousesLoading &&
-            supply.deductionWarehouseId &&
-            !deductionWarehouses.some((w) => String(w.id) === String(supply.deductionWarehouseId)) &&
-            supply.deductionWarehouseName ? (
-              <option value={String(supply.deductionWarehouseId)}>
-                {supply.deductionWarehouseName}
-              </option>
-            ) : null}
-            {deductionWarehouses.map((w) => (
-              <option key={w.id} value={String(w.id)}>
-                {warehouseSelectLabel(w)}
-                {(w.isFboStock || w.is_fbo_stock) ? ' (FBO)' : ''}
-              </option>
-            ))}
-          </select>
-          {warehousesError ? (
-            <p className="text-danger small mb-0 mt-1">{warehousesError}</p>
-          ) : null}
-          {!warehousesLoading && !warehousesError && !deductionWarehouses.length ? (
-            <p className="text-muted small mb-0 mt-1">
-              Нет складов типа «Склад» в вашем профиле. В разделе «Склады» создайте склад с типом{' '}
-              <strong>Склад</strong> (не «склад поставщика»).
-            </p>
-          ) : null}
-          {!warehousesLoading && deductionWarehouses.length > 0 ? (
-            <p className="text-muted small mb-0 mt-1">Доступно складов: {deductionWarehouses.length}</p>
-          ) : null}
-        </div>
-        <div>
-          <label>Списать остатки при отгрузке</label>
-          <div className="form-check form-switch">
-            <input
-              className="form-check-input"
-              type="checkbox"
-              checked={!!supply.deductStock}
-              onChange={(e) => {
-                const v = e.target.checked;
-                setSupply((s) => ({ ...s, deductStock: v }));
-                saveField({ deductStock: v });
-              }}
-              disabled={saving}
-            />
-          </div>
-        </div>
       </div>
 
       <div className="fbo-detail-tabs" role="tablist">
@@ -604,6 +536,25 @@ export function FboSupplyDetail() {
         </button>
       </div>
 
+      <div className="fbo-supply-item-search">
+        <input
+          type="search"
+          className="form-control form-control-sm fbo-supply-item-search__input"
+          value={itemSearchQuery}
+          onChange={(e) => setItemSearchQuery(e.target.value)}
+          placeholder="Поиск товаров: название, артикул или штрихкод"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Поиск товаров в поставке"
+        />
+        {itemSearchActive ? (
+          <span className="fbo-supply-item-search__hint muted-hint" aria-live="polite">
+            Найдено: <strong>{filteredSupplyItems.length}</strong> из{' '}
+            <strong>{sortedSupplyItems.length}</strong>
+          </span>
+        ) : null}
+      </div>
+
       {activeTab === 'packing' ? (
         <FboSupplyPacking
           supplyId={id}
@@ -612,6 +563,7 @@ export function FboSupplyDetail() {
           packing={packing}
           onPackingChange={handlePackingChange}
           onBreakdownClick={setBreakdownItem}
+          itemSearchQuery={itemSearchQuery}
         />
       ) : null}
 
@@ -709,6 +661,77 @@ export function FboSupplyDetail() {
           </select>
         </div>
         <div>
+          <label>Склад списания остатков</label>
+          <select
+            className="form-select form-select-sm"
+            value={
+              supply.deductionWarehouseId != null && supply.deductionWarehouseId !== ''
+                ? String(supply.deductionWarehouseId)
+                : ''
+            }
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (!raw) {
+                setSupply((s) => ({
+                  ...s,
+                  deductionWarehouseId: null,
+                  deductionWarehouseName: null,
+                }));
+                saveField({ deductionWarehouseId: null });
+                return;
+              }
+              const v = Number(raw);
+              const picked = deductionWarehouses.find((w) => String(w.id) === raw);
+              setSupply((s) => ({
+                ...s,
+                deductionWarehouseId: v,
+                deductionWarehouseName: picked ? warehouseSelectLabel(picked) : s.deductionWarehouseName,
+              }));
+              saveField({ deductionWarehouseId: v });
+            }}
+            disabled={warehousesLoading && deductionWarehouses.length === 0}
+          >
+            <option value="">
+              {warehousesLoading && deductionWarehouses.length === 0
+                ? 'Загрузка складов…'
+                : '— выберите склад —'}
+            </option>
+            {!warehousesLoading &&
+            supply.deductionWarehouseId &&
+            !deductionWarehouses.some((w) => String(w.id) === String(supply.deductionWarehouseId)) &&
+            supply.deductionWarehouseName ? (
+              <option value={String(supply.deductionWarehouseId)}>
+                {supply.deductionWarehouseName}
+              </option>
+            ) : null}
+            {deductionWarehouses.map((w) => (
+              <option key={w.id} value={String(w.id)}>
+                {warehouseSelectLabel(w)}
+                {(w.isFboStock || w.is_fbo_stock) ? ' (FBO)' : ''}
+              </option>
+            ))}
+          </select>
+          {warehousesError ? (
+            <p className="text-danger small mb-0 mt-1">{warehousesError}</p>
+          ) : null}
+        </div>
+        <div>
+          <label>Списать остатки при отгрузке</label>
+          <div className="form-check form-switch mt-1">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              checked={!!supply.deductStock}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setSupply((s) => ({ ...s, deductStock: v }));
+                saveField({ deductStock: v });
+              }}
+              disabled={saving}
+            />
+          </div>
+        </div>
+        <div>
           <label>Создана</label>
           <div>{fmtDt(supply.createdAt)}</div>
         </div>
@@ -749,6 +772,13 @@ export function FboSupplyDetail() {
           Снять выделение
         </Button>
         <span className="muted-hint" aria-live="polite">
+          {itemSearchActive ? (
+            <>
+              Найдено: <strong>{filteredSupplyItems.length}</strong> из{' '}
+              <strong>{sortedSupplyItems.length}</strong>
+              {' · '}
+            </>
+          ) : null}
           {printableItems.length ? (
             <>
               Выбрано: <strong>{selectedPrintableItems.length}</strong> из{' '}
@@ -784,13 +814,20 @@ export function FboSupplyDetail() {
               <th>Название</th>
               <th>Артикул</th>
               <th>Штрихкод</th>
-              <th>Кол-во</th>
+              <th title="Зарезервировано под поставку со склада списания">Кол-во</th>
               <th>Расхождения</th>
               <th style={{ width: 48 }} />
             </tr>
           </thead>
           <tbody>
-            {sortedSupplyItems.map((it) => {
+            {filteredSupplyItems.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="text-muted text-center py-3">
+                  {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
+                </td>
+              </tr>
+            ) : null}
+            {filteredSupplyItems.map((it) => {
               const canPrint = Boolean(it.productId);
               const rowSelected = selectedItemIds.has(String(it.id));
               const stat = statsByItemId.get(String(it.id));
@@ -830,7 +867,15 @@ export function FboSupplyDetail() {
                   </td>
                   <td>{it.sku || '—'}</td>
                   <td>{it.barcode || '—'}</td>
-                  <td>{it.quantity}</td>
+                  <td
+                    title={
+                      it.productId
+                        ? `Зарезервировано: ${it.reservedQuantity ?? 0}, план: ${it.quantity ?? 0}`
+                        : undefined
+                    }
+                  >
+                    {it.productId ? (it.reservedQuantity ?? 0) : '—'}
+                  </td>
                   <td>
                     <button
                       type="button"

@@ -7,6 +7,7 @@ import { productsApi } from '../../services/products.api';
 import { useProducts } from '../../hooks/useProducts';
 import { Modal } from '../../components/common/Modal/Modal';
 import { Button } from '../../components/common/Button/Button';
+import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
 
 function normalizeProductSearchQuery(value) {
   return String(value || '').trim();
@@ -19,7 +20,7 @@ function matchProductsLocal(products, query) {
   const exactSku = list.filter((p) => String(p?.sku || '').trim().toLowerCase() === q);
   if (exactSku.length) return exactSku.slice(0, 30);
   const exactBarcode = list.filter((p) =>
-    (Array.isArray(p.barcodes) ? p.barcodes : []).some(
+    barcodeStringsFromProduct(p.barcodes).some(
       (b) => String(b || '').trim().toLowerCase() === q
     )
   );
@@ -28,7 +29,7 @@ function matchProductsLocal(products, query) {
     .map((p) => {
       const sku = String(p?.sku || '').toLowerCase();
       const name = String(p?.name || '').toLowerCase();
-      const barcodes = (Array.isArray(p.barcodes) ? p.barcodes : [])
+      const barcodes = barcodeStringsFromProduct(p.barcodes)
         .map((b) => String(b || '').toLowerCase())
         .join(' ');
       const hitSku = sku.includes(q);

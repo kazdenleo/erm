@@ -2,14 +2,14 @@
  * Модалка: неизвестный штрихкод → привязать к существующему товару (с показом уже привязанных кодов).
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Modal } from '../Modal/Modal';
 import { Button } from '../Button/Button';
+import { ProductSearchInput } from '../ProductSearchInput/ProductSearchInput';
 import { productsApi } from '../../../services/products.api';
+import { barcodeStringsFromProduct } from '../../../utils/productBarcodes.js';
 import { playEventSound, SOUND_EVENTS } from '../../../utils/soundSettings';
 import './LinkBarcodeToProductModal.css';
-
-const OPTION_CAP = 400;
 
 export function LinkBarcodeToProductModal({
   isOpen,
@@ -64,19 +64,6 @@ export function LinkBarcodeToProductModal({
     };
   }, [isOpen, productId]);
 
-  const filteredProducts = useMemo(() => {
-    const list = Array.isArray(products) ? products.filter(Boolean) : [];
-    const q = search.trim().toLowerCase();
-    if (!q) return list.slice(0, OPTION_CAP);
-    const out = list.filter(
-      (p) =>
-        String(p.sku || '')
-          .toLowerCase()
-          .includes(q) || String(p.name || '').toLowerCase().includes(q)
-    );
-    return out.length > OPTION_CAP ? out.slice(0, OPTION_CAP) : out;
-  }, [products, search]);
-
   const handleLink = async () => {
     if (!trimmedBarcode || !productId) return;
     setSaving(true);
@@ -97,9 +84,7 @@ export function LinkBarcodeToProductModal({
     }
   };
 
-  const existingBarcodes = Array.isArray(detail?.barcodes)
-    ? detail.barcodes.map((b) => String(b).trim()).filter(Boolean)
-    : [];
+  const existingBarcodes = barcodeStringsFromProduct(detail?.barcodes);
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={title} size="large" closeOnBackdropClick={!saving}>
@@ -113,38 +98,29 @@ export function LinkBarcodeToProductModal({
         </div>
 
         <label className="link-barcode-modal__label-block">
-          Поиск по артикулу или названию
-          <input
-            type="text"
-            className="warehouse-ops-scan-input link-barcode-modal__search"
+          Поиск товара (штрихкод, артикул, название)
+          <ProductSearchInput
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Начните вводить…"
-            autoComplete="off"
+            onChange={setSearch}
+            products={products}
             disabled={saving}
+            placeholder="Введите для поиска…"
+            className="warehouse-ops-scan-input link-barcode-modal__search"
+            onSelect={(p) => {
+              if (p?.id) setProductId(String(p.id));
+              setSearch('');
+            }}
           />
         </label>
 
-        <label className="link-barcode-modal__label-block">
-          Товар
-          <select
-            className="warehouse-ops-select"
-            value={productId}
-            onChange={(e) => setProductId(e.target.value)}
-            disabled={saving}
-          >
-            <option value="">— Выберите товар —</option>
-            {filteredProducts.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.sku || p.id} — {p.name || 'Без названия'}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {!search.trim() && (products?.length || 0) > OPTION_CAP && (
+        {productId ? (
           <p className="warehouse-ops-hint link-barcode-modal__cap-hint">
-            Показаны первые {OPTION_CAP} товаров. Используйте поиск, чтобы сузить список.
+            Выбран: {detail?.sku || productId}
+            {detail?.name ? ` — ${detail.name}` : ''}
+          </p>
+        ) : (
+          <p className="warehouse-ops-hint link-barcode-modal__cap-hint">
+            Выберите товар из подсказок поиска.
           </p>
         )}
 

@@ -34,6 +34,7 @@ import {
   getProductParticipationBatch,
   buildProductDeleteBlockedMessage,
 } from './productParticipation.service.js';
+import { barcodeStringsFromProduct, normalizeBarcodeRows } from '../utils/productBarcodes.js';
 
 const MAX_EXPORT_PRODUCTS = 25000;
 
@@ -836,7 +837,7 @@ class ProductsService {
     const products = await this.getAll();
     const b = String(barcode || '').trim();
     if (!b) return null;
-    return products.find(p => Array.isArray(p.barcodes) && p.barcodes.includes(b)) || null;
+    return products.find((p) => barcodeStringsFromProduct(p.barcodes).includes(b)) || null;
   }
 
   async create(productData) {
@@ -908,7 +909,10 @@ class ProductsService {
     if (productData.organizationId !== undefined) {
       productData.organization_id = productData.organizationId !== '' && productData.organizationId != null ? productData.organizationId : null;
     }
-    // barcodes фронт передаёт как массив — репозиторий уже сохраняет productData.barcodes
+    // barcodes: нормализуем объекты { barcode, marketplaces }
+    if (productData.barcodes != null) {
+      productData.barcodes = normalizeBarcodeRows(productData.barcodes);
+    }
 
     if (
       productData.ozon_attributes != null &&
@@ -1101,9 +1105,7 @@ class ProductsService {
     }
     // Баркоды: явно пробрасываем массив в репозиторий (нормализуем для надёжности)
     if (Object.prototype.hasOwnProperty.call(updates, 'barcodes')) {
-      updates.barcodes = Array.isArray(updates.barcodes)
-        ? updates.barcodes.map(b => (b != null ? String(b).trim() : '')).filter(Boolean)
-        : [];
+      updates.barcodes = normalizeBarcodeRows(updates.barcodes);
     }
 
     // Подписи словаря Ozon из Excel/таблицы → id значения (как при импорте), иначе в JSON остаётся текст и селект в UI «пустой»

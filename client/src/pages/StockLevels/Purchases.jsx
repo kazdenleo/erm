@@ -5,6 +5,13 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
+import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
+import {
+  matchProductsLocal,
+  mergeProductLists,
+  normalizeProductSearchQuery,
+  searchProductsRemote,
+} from '../../utils/productSearch';
 import { useNavigate } from 'react-router-dom';
 import { purchasesApi } from '../../services/purchases.api';
 import { productsApi } from '../../services/products.api';
@@ -116,51 +123,6 @@ function PurchaseLineReduceControls({
       </Button>
     </div>
   );
-}
-
-function normalizeProductSearchQuery(value) {
-  return String(value || '').trim();
-}
-
-function matchProductsLocal(products, query) {
-  const q = normalizeProductSearchQuery(query).toLowerCase();
-  if (!q) return [];
-  const list = products || [];
-  const exactSku = list.filter((p) => String(p?.sku || '').trim().toLowerCase() === q);
-  if (exactSku.length) return exactSku.slice(0, 30);
-  const exactBarcode = list.filter((p) =>
-    (Array.isArray(p.barcodes) ? p.barcodes : []).some((b) => String(b || '').trim().toLowerCase() === q)
-  );
-  if (exactBarcode.length) return exactBarcode.slice(0, 30);
-  const scored = list
-    .map((p) => {
-      const sku = String(p?.sku || '').toLowerCase();
-      const name = String(p?.name || '').toLowerCase();
-      const barcodes = (Array.isArray(p.barcodes) ? p.barcodes : [])
-        .map((b) => String(b || '').toLowerCase())
-        .join(' ');
-      const hitSku = sku.includes(q);
-      const hitName = name.includes(q);
-      const hitBarcode = barcodes.includes(q);
-      if (!hitSku && !hitName && !hitBarcode) return null;
-      const score =
-        (hitSku ? 2 : 0) + (hitName ? 1 : 0) + (hitBarcode ? 2 : 0) + (sku.startsWith(q) ? 1 : 0);
-      return { p, score };
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.score - a.score);
-  return scored.map((x) => x.p).slice(0, 30);
-}
-
-function mergeProductLists(...lists) {
-  const map = new Map();
-  for (const list of lists) {
-    for (const p of list || []) {
-      if (p?.id == null) continue;
-      map.set(String(p.id), p);
-    }
-  }
-  return [...map.values()];
 }
 
 function formatSourceOrders(raw) {
@@ -315,9 +277,18 @@ export function Purchases() {
     setCreateSearchLoading(false);
   }, []);
 
+  const createProductLabelById = useMemo(() => {
+    const m = new Map();
+    for (const p of createSearchResults) {
+      if (p?.id != null) m.set(String(p.id), `${p.sku || '—'} — ${p.name || 'Без названия'}`);
+    }
+    return m;
+  }, [createSearchResults]);
+
   const addProductToCreateItems = useCallback((product, addQty = 1) => {
     const id = product?.id;
     if (id == null || id === '') return;
+    setCreateSearchResults((prev) => mergeProductLists(prev, [product]));
     const add = Math.max(1, parseInt(addQty, 10) || 1);
     const idStr = String(id);
     setCreateItems((prev) => {
@@ -713,25 +684,23 @@ export function Purchases() {
           <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
             Поиск товара по артикулу, названию или штрихкоду
           </p>
-          <form
-            className="warehouse-ops-list-row warehouse-ops-inventory-search-row"
-            onSubmit={handleCreateSearchSubmit}
-            style={{ marginBottom: 8 }}
-          >
-            <label htmlFor="purchase-create-product-search">Поиск</label>
-            <input
+          <div style={{ marginBottom: 8 }}>
+            <label htmlFor="purchase-create-product-search">Поиск (сканер или ввод)</label>
+            <ProductSearchInput
               id="purchase-create-product-search"
-              type="text"
-              className="warehouse-ops-scan-input"
-              placeholder="Артикул, название или штрихкод"
               value={createProductSearch}
-              onChange={(e) => setCreateProductSearch(e.target.value)}
-              autoComplete="off"
+              onChange={setCreateProductSearch}
+              products={products}
+              organizationId={createOrganizationId}
+              placeholder="Штрихкод, артикул, название"
+              onSelect={(p) => {
+                addProductToCreateItems(p, 1);
+                setCreateProductSearch('');
+                setCreateSearchResults([]);
+                setErr(null);
+              }}
             />
-            <Button type="submit" variant="secondary" disabled={!normalizeProductSearchQuery(createProductSearch)}>
-              Добавить
-            </Button>
-          </form>
+          </div>
           {createSearchLoading && (
             <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
               Поиск…
@@ -774,21 +743,11 @@ export function Purchases() {
         </div>
         {createItems.map((it, idx) => (
           <div key={idx} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-            <select
-              className="warehouse-ops-select"
-              value={it.productId}
-              onChange={(e) => {
-                const v = e.target.value;
-                setCreateItems((prev) => prev.map((x, i) => (i === idx ? { ...x, productId: v } : x)));
-              }}
-            >
-              <option value="">— Выберите товар —</option>
-              {(normalizeProductSearchQuery(createProductSearch) ? createFilteredProductOptions : productOptions).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
+            <span className="muted" style={{ minWidth: 200, fontSize: 13 }}>
+              {it.productId
+                ? createProductLabelById.get(String(it.productId)) || `Товар #${it.productId}`
+                : '— добавьте через поиск выше —'}
+            </span>
             <input
               className="warehouse-ops-qty-input"
               type="number"

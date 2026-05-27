@@ -1,7 +1,6 @@
 /** Статусы поставки FBO */
 export const FBO_SUPPLY_STATUSES = [
   'new',
-  'assembled',
   'packed',
   'ready_for_supply',
   'shipped',
@@ -11,7 +10,6 @@ export const FBO_SUPPLY_STATUSES = [
 
 export const FBO_SUPPLY_STATUS_LABELS = {
   new: 'Новая',
-  assembled: 'Собран',
   packed: 'Упакован',
   ready_for_supply: 'Готов к поставке',
   shipped: 'Отгружен',
@@ -21,7 +19,6 @@ export const FBO_SUPPLY_STATUS_LABELS = {
 
 export const FBO_SUPPLY_STATUS_ORDER = [
   'new',
-  'assembled',
   'packed',
   'ready_for_supply',
   'shipped',

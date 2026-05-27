@@ -70,6 +70,13 @@ function applyStockLevelsProductsListParams(config) {
   if (params.listView === 'full' || params.forExport === 'true' || params.forExport === '1') {
     return;
   }
+  // Поиск по артикулу/названию — по всей номенклатуре, не только по строкам остатков «в наличии».
+  if (params.search != null && String(params.search).trim() !== '') {
+    params.listView = 'full';
+    delete params.inStockOnly;
+    delete params.stockList;
+    return;
+  }
   if (params.listView !== 'stock') params.listView = 'stock';
   if (params.stockList == null || params.stockList === '') params.stockList = '1';
   if (params.limit == null || params.limit === '') params.limit = '50';

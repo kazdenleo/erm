@@ -879,7 +879,7 @@ export function Orders() {
     setProcurementModalLoading(true);
     try {
       const [drafts, supRes] = await Promise.all([
-        purchasesApi.list({ limit: 100 }),
+        purchasesApi.list({ status: 'open', limit: 50 }),
         suppliersApi.getAll(),
       ]);
       const listDrafts = Array.isArray(drafts) ? drafts : [];
@@ -982,6 +982,7 @@ export function Orders() {
           note,
         });
       }
+      const procurementItems = [];
       const seenProcKeys = new Set();
       for (const r of sourceRows) {
         for (const o of ordersArrayForPurchaseRow(r)) {
@@ -989,8 +990,11 @@ export function Orders() {
           if (seenProcKeys.has(dk)) continue;
           seenProcKeys.add(dk);
           if (!isOrderStatusEligibleForProcurement(o.marketplace, o.status)) continue;
-          await ordersApi.setToProcurement(o.marketplace, o.orderId);
+          procurementItems.push({ marketplace: o.marketplace, orderId: o.orderId });
         }
+      }
+      if (procurementItems.length > 0) {
+        await ordersApi.bulkSetToProcurement(procurementItems);
       }
       setSelectedKeys((prev) => {
         const next = new Set(prev);
@@ -1546,28 +1550,24 @@ export function Orders() {
         );
       } else if (targetStatus === 'in_procurement') {
         const reps = representativesForGroupScopedApi(toSend);
-        let ok = 0;
-        let skipped = 0;
-        const errors = [];
-        for (const o of reps) {
-          if (!isOrderStatusEligibleForProcurement(o.marketplace, o.status)) {
-            skipped += 1;
-            continue;
-          }
-          try {
-            await ordersApi.setToProcurement(o.marketplace, o.orderId);
-            ok += 1;
-          } catch (e) {
-            errors.push(`${o.orderId}: ${e.response?.data?.message || e.message}`);
-          }
+        const items = reps
+          .filter((o) => isOrderStatusEligibleForProcurement(o.marketplace, o.status))
+          .map((o) => ({ marketplace: o.marketplace, orderId: o.orderId }));
+        const skipped = reps.length - items.length;
+        try {
+          const result = await ordersApi.bulkSetToProcurement(items);
+          const ok = result?.updated ?? items.length;
+          setAssemblyMessage(
+            [
+              `В «В закупке» переведено: ${ok}.`,
+              skipped ? ` Пропущено (нет права из текущего статуса): ${skipped}.` : '',
+            ].join('')
+          );
+        } catch (e) {
+          setAssemblyMessage(
+            `Не удалось перевести в «В закупке»: ${e.response?.data?.message || e.message}`
+          );
         }
-        setAssemblyMessage(
-          [
-            `В «В закупке» переведено: ${ok}.`,
-            skipped ? ` Пропущено (нет права из текущего статуса): ${skipped}.` : '',
-            errors.length ? ` Ошибки: ${errors.slice(0, 8).join('; ')}` : '',
-          ].join('')
-        );
       } else if (targetStatus === 'in_assembly') {
         if (!contextOrganizationId) {
           setAssemblyMessage('Выберите организацию (вверху/в настройках аккаунта), затем повторите перевод «На сборке».');
@@ -1635,7 +1635,7 @@ export function Orders() {
     setProcurementModalLoading(true);
     try {
       const [drafts, supRes] = await Promise.all([
-        purchasesApi.list({ limit: 100 }),
+        purchasesApi.list({ status: 'open', limit: 50 }),
         suppliersApi.getAll(),
       ]);
       const listDrafts = Array.isArray(drafts) ? drafts : [];

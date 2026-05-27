@@ -8,6 +8,7 @@ import { PDFDocument } from 'pdf-lib';
 import { query } from '../config/database.js';
 import { categoryLabelTemplatesRepository } from '../repositories/categoryLabelTemplates.repository.pg.js';
 import productsService from './products.service.js';
+import { pickBarcodeForMarketplace } from '../utils/productBarcodes.js';
 import {
   getProductFieldDisplayValue,
   labelProductFieldLabel,
@@ -526,7 +527,7 @@ async function duplicateLabelPdf(pdfBuffer, copies) {
   return Buffer.from(await out.save());
 }
 
-async function buildLabelSvg({ template, product, attributeNames, categoryAttributeIds = null, mmToPx = MM_TO_PX }) {
+async function buildLabelSvg({ template, product, attributeNames, categoryAttributeIds = null, mmToPx = MM_TO_PX, marketplace = null }) {
   const { widthMm, heightMm, marginTopMm, marginRightMm, marginBottomMm, marginLeftMm } = parseSize(template);
   const widthPx = Math.round(widthMm * mmToPx);
   const heightPx = Math.round(heightMm * mmToPx);
@@ -542,9 +543,7 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
   const innerW = Math.max(10, widthPx - padL - padR);
   const elements = normalizeElements(template.elements);
   const attrValues = product.attribute_values || product.attributeValues || {};
-  const barcodeValue = Array.isArray(product.barcodes) && product.barcodes.length
-    ? String(product.barcodes[0]).trim()
-    : '';
+  const barcodeValue = pickBarcodeForMarketplace(product.barcodes, marketplace) || '';
 
   const lineGapPx = resolveLineGapPx(template, mmToPx);
   const blockGap = lineGapPx;
@@ -801,7 +800,7 @@ function templateFromPayload(body, categoryId) {
   };
 }
 
-async function renderWithTemplate(template, product, format = 'png', { previewScale = null } = {}) {
+async function renderWithTemplate(template, product, format = 'png', { previewScale = null, marketplace = null } = {}) {
   const categoryId = template.user_category_id ?? template.userCategoryId;
   const categoryAttributeIds = await loadCategoryAttributeIds(categoryId);
   const attrIds = (template.elements || [])
@@ -817,6 +816,7 @@ async function renderWithTemplate(template, product, format = 'png', { previewSc
     attributeNames,
     categoryAttributeIds,
     mmToPx,
+    marketplace,
   });
   const pngBuffer = await sharp(Buffer.from(svg)).png().toBuffer();
   if (format === 'pdf') {
@@ -858,7 +858,7 @@ export const productLabelsService = {
     return template;
   },
 
-  async renderProductLabel(productId, { profileId = null, format = 'png', copies = 1 } = {}) {
+  async renderProductLabel(productId, { profileId = null, format = 'png', copies = 1, marketplace = null } = {}) {
     const product = await productsService.getByIdWithDetails(productId);
     if (!product) {
       const err = new Error('Товар не найден');
@@ -874,7 +874,9 @@ export const productLabelsService = {
     }
 
     const copyCount = Math.min(99, Math.max(1, parseInt(copies, 10) || 1));
-    const rendered = await renderWithTemplate(template, product, format === 'pdf' ? 'pdf' : 'png');
+    const rendered = await renderWithTemplate(template, product, format === 'pdf' ? 'pdf' : 'png', {
+      marketplace,
+    });
 
     if (format === 'pdf' && copyCount > 1) {
       rendered.buffer = await duplicateLabelPdf(rendered.buffer, copyCount);

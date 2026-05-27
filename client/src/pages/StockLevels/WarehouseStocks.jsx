@@ -867,6 +867,7 @@ export function WarehouseStocks() {
   /** Товар, для которого открыта модалка резерва (таблица или история). */
   const [reserveModalProduct, setReserveModalProduct] = useState(null);
   const [reserveOrders, setReserveOrders] = useState([]);
+  const [reserveFboSupplies, setReserveFboSupplies] = useState([]);
   const [reserveSummary, setReserveSummary] = useState(null);
   const [reserveLoading, setReserveLoading] = useState(false);
   const [reserveError, setReserveError] = useState(null);
@@ -1395,7 +1396,10 @@ export function WarehouseStocks() {
     }
     let cancelled = false;
     setHistoryLoading(true);
-    stockMovementsApi.getHistory(historyProduct.id, { limit: 100 })
+    stockMovementsApi.getHistory(historyProduct.id, {
+      limit: 100,
+      warehouseId: stockWarehouseId || undefined
+    })
       .then(res => {
         if (cancelled) return;
         const list = res?.data ?? (Array.isArray(res) ? res : []);
@@ -1421,7 +1425,7 @@ export function WarehouseStocks() {
         if (!cancelled) setHistoryLoading(false);
       });
     return () => { cancelled = true; };
-  }, [historyProduct, currentPage]);
+  }, [historyProduct, currentPage, stockWarehouseId]);
 
   const displayHistoryRows = useMemo(() => {
     const visible = historyList.filter(
@@ -1460,7 +1464,9 @@ export function WarehouseStocks() {
     const res = await stockMovementsApi.getReservedOrders(pid);
     const list = res?.data ?? res ?? [];
     const arr = Array.isArray(list) ? list : [];
+    const fbo = Array.isArray(res?.fboSupplies) ? res.fboSupplies : [];
     setReserveOrders(arr);
+    setReserveFboSupplies(fbo);
     setReserveSummary(res?.summary ?? null);
     return arr;
   }, [reserveModalProduct?.id]);
@@ -1468,6 +1474,7 @@ export function WarehouseStocks() {
   useEffect(() => {
     if (!reserveModalOpen || !reserveModalProduct?.id) {
       setReserveOrders([]);
+      setReserveFboSupplies([]);
       setReserveSummary(null);
       return;
     }
@@ -1483,11 +1490,14 @@ export function WarehouseStocks() {
         if (cancelled) return;
         const list = res?.data ?? res ?? [];
         setReserveOrders(Array.isArray(list) ? list : []);
+        setReserveFboSupplies(Array.isArray(res?.fboSupplies) ? res.fboSupplies : []);
         setReserveSummary(res?.summary ?? null);
+        loadListRef.current?.({ page: currentPage, silent: true });
       })
       .catch(() => {
         if (!cancelled) {
           setReserveOrders([]);
+          setReserveFboSupplies([]);
           setReserveSummary(null);
         }
       })
@@ -1501,8 +1511,11 @@ export function WarehouseStocks() {
 
   const handleUnreserveOrderFromStock = useCallback(
     async (orderRow) => {
-      if (!orderRow?.marketplace || !orderRow?.orderId) return;
-      const key = `${orderRow.marketplace}|${orderRow.orderId}`;
+      if (orderRow?.orderDbId == null) return;
+      if (!orderRow.deletedOrderReserve && (!orderRow?.marketplace || !orderRow?.orderId)) return;
+      const key = orderRow.deletedOrderReserve
+        ? `deleted-${orderRow.orderDbId}`
+        : `${orderRow.marketplace}|${orderRow.orderId}`;
       setReserveUnreserveKey(key);
       setReserveError(null);
       try {
@@ -1510,7 +1523,12 @@ export function WarehouseStocks() {
         await reloadReserveOrdersList();
         loadListRef.current?.({ page: currentPage, silent: true });
         if (historyProduct?.id === reserveModalProduct?.id) {
-          stockMovementsApi.getHistory(historyProduct.id, { limit: 100 }).then((res) => {
+          stockMovementsApi
+            .getHistory(historyProduct.id, {
+              limit: 100,
+              warehouseId: stockWarehouseId || undefined
+            })
+            .then((res) => {
             const list = res?.data ?? res ?? [];
             setHistoryList(Array.isArray(list) ? list : []);
           });
@@ -1521,7 +1539,7 @@ export function WarehouseStocks() {
         setReserveUnreserveKey(null);
       }
     },
-    [reloadReserveOrdersList, currentPage, historyProduct?.id, reserveModalProduct?.id]
+    [reloadReserveOrdersList, currentPage, historyProduct?.id, reserveModalProduct?.id, stockWarehouseId]
   );
 
   const reserveModalTotalQty = useMemo(() => {
@@ -1534,12 +1552,7 @@ export function WarehouseStocks() {
   const handleReleaseAllReservesFromStock = useCallback(async () => {
     const pid = reserveModalProduct?.id;
     if (!pid || reserveBulkReleasing) return;
-    const orphanQty =
-      reserveSummary?.orphanComponentReserve || reserveSummary?.componentJournalReserve || 0;
-    const confirmMsg =
-      reserveOrders.length > 0
-        ? `Снять резерв по всем ${reserveOrders.length} заказам в списке (всего ${reserveModalTotalQty} шт.)?`
-        : `Снять резерв без заказа (${orphanQty || 'весь'} шт. в журнале комплектующих)?`;
+    const confirmMsg = `Снять резерв по всем ${reserveOrders.length} заказам в списке (всего ${reserveModalTotalQty} шт.)?`;
     if (!window.confirm(confirmMsg)) {
       return;
     }
@@ -1559,7 +1572,6 @@ export function WarehouseStocks() {
     reserveBulkReleasing,
     reserveOrders.length,
     reserveModalTotalQty,
-    reserveSummary,
     reloadReserveOrdersList,
     currentPage
   ]);
@@ -1996,7 +2008,13 @@ export function WarehouseStocks() {
           setHistoryProduct(null);
           closeReserveModal();
         }}
-        title={historyProduct ? `История остатков: ${historyProduct.name || historyProduct.sku || '—'}` : 'История остатков'}
+        title={
+          historyProduct
+            ? `История остатков: ${historyProduct.name || historyProduct.sku || '—'}${
+                stockWarehouseId ? ` · ${mainWarehouseName}` : ''
+              }`
+            : 'История остатков'
+        }
         size="large"
       >
         {historyLoading ? (
@@ -2220,39 +2238,52 @@ export function WarehouseStocks() {
           )
         ) : reserveLoading ? (
           <div className="loading">Загрузка…</div>
-        ) : reserveOrders.length === 0 ? (
-          <>
-            <p className="text-muted mb-2">Нет активного резерва по заказам.</p>
-            {(reserveSummary?.orphanComponentReserve > 0 ||
-              Number(reserveSummary?.componentJournalReserve) > 0) && (
-              <div className="alert alert-warning small mb-3" role="status">
-                В журнале комплектующих остался резерв{' '}
-                <strong>{reserveSummary.orphanComponentReserve || reserveSummary.componentJournalReserve}</strong>{' '}
-                шт. без привязки к заказу (колонка «Резерв» для комплекта — только по SKU комплекта).
-                {reserveError && (
-                  <p className="text-danger mb-0 mt-2" role="alert">
-                    {reserveError}
-                  </p>
-                )}
-                <div className="mt-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="small"
-                    disabled={reserveBulkReleasing}
-                    onClick={handleReleaseAllReservesFromStock}
-                  >
-                    {reserveBulkReleasing ? 'Снимаем…' : 'Снять резерв с комплектующих'}
-                  </Button>
-                </div>
-              </div>
-            )}
-          </>
         ) : (
           <>
+            {reserveOrders.length === 0 && reserveFboSupplies.length === 0 ? (
+              <p className="text-muted mb-2">Нет активного резерва по заказам и поставкам FBO.</p>
+            ) : null}
+            {reserveSummary?.isKit &&
+              reserveOrders.length === 0 &&
+              Number(reserveSummary.componentJournalReserve) > 0 && (
+                <p className="text-muted small mb-2">
+                  В журнале комплектующих: <strong>{reserveSummary.componentJournalReserve}</strong> шт.
+                  (в колонке «Резерв» для комплекта учитывается только SKU комплекта).
+                </p>
+              )}
+            {reserveFboSupplies.length > 0 ? (
+              <>
+                <p className="text-muted small mb-2 mt-1">
+                  Резерв под поставки FBO (колонка «Резерв» включает и заказы, и FBO):
+                </p>
+                <ul className="list-group mb-3">
+                  {reserveFboSupplies.map((f) => (
+                    <li
+                      key={`fbo-${f.supplyId}-${f.supplyItemId}`}
+                      className="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2"
+                    >
+                      {f.supplyId ? (
+                        <Link
+                          to={`/fbo-supplies/${f.supplyId}`}
+                          className="stock-levels-history-link"
+                          onClick={closeReserveModal}
+                        >
+                          {f.label || `FBO поставка №${f.supplyId}`}
+                        </Link>
+                      ) : (
+                        <span>{f.label || 'FBO поставка'}</span>
+                      )}
+                      <span className="badge bg-secondary rounded-pill">{f.reservedQty} шт.</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+            {reserveOrders.length > 0 ? (
+          <>
             <p className="text-muted small mb-2">
-              Сейчас зарезервировано <strong>{reserveModalTotalQty}</strong> шт. по{' '}
-              {reserveOrders.length} зак. (для комплектов в колонке «Резерв» — только SKU комплекта).
+              Резерв по заказам маркетплейса: <strong>{reserveModalTotalQty}</strong> шт.,{' '}
+              {reserveOrders.length} зак.
             </p>
             {reserveOrders.some((o) => o.staleReserve) && (
               <p className="text-warning small mb-2" role="status">
@@ -2281,20 +2312,26 @@ export function WarehouseStocks() {
             <ul className="list-group stock-levels-reserve-orders-list">
               {reserveOrders.map((o) => {
                 const rowKey = `${o.orderDbId}-${o.orderId}`;
-                const busy = reserveUnreserveKey === `${o.marketplace}|${o.orderId}`;
+                const busy = o.deletedOrderReserve
+                  ? reserveUnreserveKey === `deleted-${o.orderDbId}`
+                  : reserveUnreserveKey === `${o.marketplace}|${o.orderId}`;
                 return (
                   <li
                     key={rowKey}
                     className="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2"
                   >
                     <div className="d-flex flex-column gap-1">
-                      <Link
-                        to={`/orders/${o.marketplace}/${encodeURIComponent(o.orderId)}`}
-                        className="stock-levels-history-link"
-                        onClick={closeReserveModal}
-                      >
-                        {o.marketplace} · {o.orderId}
-                      </Link>
+                      {o.deletedOrderReserve ? (
+                        <span className="text-warning">Резерв в журнале: {o.orderId}</span>
+                      ) : (
+                        <Link
+                          to={`/orders/${o.marketplace}/${encodeURIComponent(o.orderId)}`}
+                          className="stock-levels-history-link"
+                          onClick={closeReserveModal}
+                        >
+                          {o.marketplace} · {o.orderId}
+                        </Link>
+                      )}
                       {o.status ? (
                         <span className={`small ${o.staleReserve ? 'text-warning' : 'text-muted'}`}>
                           {o.status}
@@ -2318,6 +2355,8 @@ export function WarehouseStocks() {
                 );
               })}
             </ul>
+          </>
+            ) : null}
           </>
         )}
       </Modal>

@@ -27,6 +27,7 @@ class ProductLabelsController {
         format,
         copies,
         profileId: resolveProfileIdForLabel(req),
+        marketplace: req.query?.marketplace ?? null,
       });
       res.setHeader('Content-Type', result.contentType);
       res.setHeader('Cache-Control', 'no-store');

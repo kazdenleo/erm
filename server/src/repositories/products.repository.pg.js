@@ -4,6 +4,28 @@
  */
 
 import { query, transaction } from '../config/database.js';
+import {
+  normalizeBarcodeRows,
+  parseBarcodesMarketplacesColumn,
+} from '../utils/productBarcodes.js';
+
+function mapBarcodeDbRow(row) {
+  return {
+    barcode: row.barcode,
+    marketplaces: parseBarcodesMarketplacesColumn(row.marketplaces),
+  };
+}
+
+async function insertProductBarcodes(client, productId, barcodes) {
+  const rows = normalizeBarcodeRows(barcodes);
+  for (const row of rows) {
+    if (!row.barcode) continue;
+    await client.query(
+      'INSERT INTO barcodes (product_id, barcode, marketplaces) VALUES ($1, $2, $3::jsonb)',
+      [productId, row.barcode, JSON.stringify(row.marketplaces || [])]
+    );
+  }
+}
 
 /** Единый ключ id товара для Map kit_components (PostgreSQL int8 в node-pg часто приходит строкой). */
 function productIdMapKey(rawId) {
@@ -430,18 +452,41 @@ class ProductsRepositoryPG {
     ];
     if (numericIds.length === 0) return;
 
+    const whRaw = options.warehouseId ?? options.warehouse_id ?? null;
+    const whId =
+      whRaw != null && String(whRaw).trim() !== ''
+        ? typeof whRaw === 'string'
+          ? parseInt(whRaw, 10)
+          : Number(whRaw)
+        : null;
+    const warehouseScoped = Number.isFinite(whId) && whId > 0;
+    const persistToDb = options.persistReservedToDb !== false && !warehouseScoped;
+
     let agg;
     try {
       const { NET_RESERVED_SUM_EXPR_SQL } = await import('../services/sellableQuantity.service.js');
-      agg = await query(
-        `SELECT product_id,
-          ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-         FROM stock_movements
-         WHERE product_id = ANY($1::bigint[])
-           AND type IN ('reserve', 'unreserve')
-         GROUP BY product_id`,
-        [numericIds]
-      );
+      if (warehouseScoped) {
+        agg = await query(
+          `SELECT product_id,
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+           FROM stock_movements
+           WHERE product_id = ANY($1::bigint[])
+             AND type IN ('reserve', 'unreserve')
+             AND warehouse_id = $2
+           GROUP BY product_id`,
+          [numericIds, whId]
+        );
+      } else {
+        agg = await query(
+          `SELECT product_id,
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+           FROM stock_movements
+           WHERE product_id = ANY($1::bigint[])
+             AND type IN ('reserve', 'unreserve')
+           GROUP BY product_id`,
+          [numericIds]
+        );
+      }
     } catch (e) {
       console.warn('[Products Repository] _reconcileReservedQuantityFromMovements:', e.message);
       return;
@@ -491,13 +536,13 @@ class ProductsRepositoryPG {
       p.net_reserved_quantity = calc;
       p.reservedQuantity = calc;
       p.netReservedQuantity = calc;
-      if (stored !== calc && Number.isFinite(nid) && nid > 0) {
+      if (stored !== calc && persistToDb && Number.isFinite(nid) && nid > 0) {
         idsToUpdate.push(nid);
         rvsToUpdate.push(calc);
       }
     }
 
-    if (idsToUpdate.length > 0 && options.persistReservedToDb !== false) {
+    if (idsToUpdate.length > 0 && persistToDb) {
       try {
         await query(
           `UPDATE products AS p
@@ -710,7 +755,7 @@ class ProductsRepositoryPG {
         }
       }
       const barcodesResult = await query(
-        `SELECT product_id, barcode FROM barcodes WHERE product_id = ANY($1)`,
+        `SELECT product_id, barcode, marketplaces FROM barcodes WHERE product_id = ANY($1) ORDER BY id`,
         [productIds]
       );
       
@@ -796,7 +841,7 @@ class ProductsRepositoryPG {
       barcodesResult.rows.forEach(row => {
         const key = String(row.product_id);
         if (!barcodesByProduct[key]) barcodesByProduct[key] = [];
-        barcodesByProduct[key].push(row.barcode);
+        barcodesByProduct[key].push(mapBarcodeDbRow(row));
       });
       
       // Создаем мапу остатков и себестоимости по товарам
@@ -1243,7 +1288,7 @@ class ProductsRepositoryPG {
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
-      WHERE p.sku = $1${profileClause}
+      WHERE LOWER(TRIM(p.sku)) = LOWER(TRIM($1))${profileClause}
     `, params);
     
     const product = result.rows[0] || null;
@@ -1320,7 +1365,7 @@ class ProductsRepositoryPG {
       for (const key of [...new Set(skuKeys)]) {
         const bySku = await query(
           `SELECT id FROM products
-           WHERE TRIM(sku) = TRIM($1)
+           WHERE LOWER(TRIM(sku)) = LOWER(TRIM($1))
              AND COALESCE(is_archived, false) = false
            LIMIT 1`,
           [key]
@@ -1363,10 +1408,10 @@ class ProductsRepositoryPG {
     
     // Получаем штрихкоды (используем числовой id, как при записи)
     const barcodesResult = await query(
-      'SELECT barcode FROM barcodes WHERE product_id = $1',
+      'SELECT barcode, marketplaces FROM barcodes WHERE product_id = $1 ORDER BY id',
       [numId]
     );
-    product.barcodes = barcodesResult.rows.map(r => r.barcode);
+    product.barcodes = barcodesResult.rows.map(mapBarcodeDbRow);
     
     // Получаем SKU маркетплейсов и Ozon product_id
     let skusResultDetail;
@@ -1541,14 +1586,12 @@ class ProductsRepositoryPG {
       
       // Добавляем штрихкоды (UNIQUE на barcode)
       if (productData.barcodes && Array.isArray(productData.barcodes)) {
-        for (const barcode of productData.barcodes) {
-          const s = typeof barcode === 'string' ? barcode.trim() : '';
-          if (s) {
-            await client.query(
-              'INSERT INTO barcodes (product_id, barcode) VALUES ($1, $2) ON CONFLICT (barcode) DO NOTHING',
-              [product.id, s]
-            );
-          }
+        for (const row of normalizeBarcodeRows(productData.barcodes)) {
+          if (!row.barcode) continue;
+          await client.query(
+            'INSERT INTO barcodes (product_id, barcode, marketplaces) VALUES ($1, $2, $3::jsonb) ON CONFLICT (barcode) DO NOTHING',
+            [product.id, row.barcode, JSON.stringify(row.marketplaces || [])]
+          );
         }
       }
       
@@ -1630,7 +1673,7 @@ class ProductsRepositoryPG {
       // Сервис после коммита вызовет findById(product.id) и получит полные данные.
       if (product.brand_name) product.brand = product.brand_name;
       product.barcodes = productData.barcodes && Array.isArray(productData.barcodes)
-        ? productData.barcodes.filter(b => b && String(b).trim()).map(b => String(b).trim())
+        ? normalizeBarcodeRows(productData.barcodes)
         : [];
       product.kit_components = product.product_type === 'kit' && productData.kit_components && Array.isArray(productData.kit_components)
         ? productData.kit_components.map(c => ({ productId: c.productId ?? c.component_product_id, quantity: c.quantity || 1 }))
@@ -1766,14 +1809,7 @@ class ProductsRepositoryPG {
       if (updates.barcodes !== undefined) {
         await client.query('DELETE FROM barcodes WHERE product_id = $1', [numId]);
         if (Array.isArray(updates.barcodes)) {
-          for (const barcode of updates.barcodes) {
-            if (barcode && barcode.trim()) {
-              await client.query(
-                'INSERT INTO barcodes (product_id, barcode) VALUES ($1, $2)',
-                [numId, barcode.trim()]
-              );
-            }
-          }
+          await insertProductBarcodes(client, numId, updates.barcodes);
         }
       }
 

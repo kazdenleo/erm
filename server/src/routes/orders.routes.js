@@ -78,6 +78,12 @@ router.post(
   wrapAsync(ordersController.sendToAssembly.bind(ordersController))
 );
 
+// Массово перевести заказы в «В закупке» (один пересчёт резерва в фоне)
+router.post(
+  '/bulk-to-procurement',
+  wrapAsync(ordersController.bulkSetToProcurement.bind(ordersController))
+);
+
 // Повторно снять резерв и списать по заказам (после закрытой поставки)
 router.post(
   '/reapply-assembly-stock',

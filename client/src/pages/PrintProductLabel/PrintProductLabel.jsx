@@ -21,6 +21,10 @@ export function PrintProductLabel() {
   const [searchParams] = useSearchParams();
   const id = useMemo(() => (productId != null ? String(productId).trim() : ''), [productId]);
   const copies = useMemo(() => parseCopiesParam(searchParams.get('copies')), [searchParams]);
+  const marketplace = useMemo(
+    () => (searchParams.get('marketplace') != null ? String(searchParams.get('marketplace')).trim() : ''),
+    [searchParams]
+  );
   const [blobUrl, setBlobUrl] = useState('');
   const [widthMm, setWidthMm] = useState(58);
   const [heightMm, setHeightMm] = useState(40);
@@ -43,7 +47,7 @@ export function PrintProductLabel() {
   useEffect(() => {
     imagesLoadedRef.current = 0;
     printCalledRef.current = false;
-  }, [id, copies]);
+  }, [id, copies, marketplace]);
 
   useEffect(() => {
     if (!id) return;
@@ -55,7 +59,10 @@ export function PrintProductLabel() {
         setError('');
         setBlobUrl('');
         const res = await api.get(`/products/${encodeURIComponent(id)}/label`, {
-          params: { format: 'png' },
+          params: {
+            format: 'png',
+            ...(marketplace ? { marketplace } : {}),
+          },
           responseType: 'blob',
           timeout: 60000,
           headers: { Accept: 'image/png' },
@@ -80,7 +87,7 @@ export function PrintProductLabel() {
         /* ignore */
       }
     };
-  }, [id]);
+  }, [id, copies, marketplace]);
 
   const schedulePrintWhenReady = () => {
     imagesLoadedRef.current += 1;

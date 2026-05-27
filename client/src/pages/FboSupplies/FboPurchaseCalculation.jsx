@@ -14,6 +14,7 @@ import { Modal } from '../../components/common/Modal/Modal';
 import {
   calcPurchaseTotals,
   componentQtyToKitUnits,
+  getPurchaseRowDisplayName,
   kitUnitsToComponentQty,
   recalcPurchaseRow,
   recalcPurchaseRows,
@@ -353,12 +354,7 @@ export function FboPurchaseCalculation() {
                   className={row.toPurchase === 0 ? 'fbo-item-row--complete' : ''}
                 >
                   <td className="fbo-pc-sticky-col">
-                    {row.productName || '—'}
-                    {row.kitSourceLabel ? (
-                      <div className="text-muted small" title="Комплект в поставке">
-                        {row.kitSourceLabel}
-                      </div>
-                    ) : null}
+                    {getPurchaseRowDisplayName(row)}
                   </td>
                   <td>{row.sku || '—'}</td>
                   <td>{row.onHand}</td>

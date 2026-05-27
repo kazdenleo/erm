@@ -1,6 +1,5 @@
 export const FBO_SUPPLY_STATUS_LABELS = {
   new: 'Новая',
-  assembled: 'Собран',
   packed: 'Упакован',
   ready_for_supply: 'Готов к поставке',
   shipped: 'Отгружен',
@@ -10,7 +9,6 @@ export const FBO_SUPPLY_STATUS_LABELS = {
 
 export const FBO_SUPPLY_STATUS_ORDER = [
   'new',
-  'assembled',
   'packed',
   'ready_for_supply',
   'shipped',
@@ -34,17 +32,25 @@ export function getNextFboSupplyStatus(current) {
   return FBO_SUPPLY_STATUS_ORDER[idx + 1];
 }
 
+/** Статусы в селекте (без «Возврат» — редкий кейс). */
+export const FBO_SUPPLY_STATUS_OPTIONS = FBO_SUPPLY_STATUS_ORDER.filter((s) => s !== 'return');
+
+/** Можно выбрать статус (единственный запрет — «Готов к поставке» при расхождениях). */
+export function canSelectFboSupplyStatus(status, hasDiscrepancy) {
+  if (status !== 'ready_for_supply') return true;
+  return !hasDiscrepancy;
+}
+
 /** Есть расхождение план/факт по сборке. */
 export function hasPackingDiscrepancy(supply, packing) {
   if (supply?.hasPackingDiscrepancy === true) return true;
   if (supply?.packingAllMatch === true) return false;
+  if (supply?.packingAllMatch === false) return true;
   const stats = packing?.itemStats;
   if (Array.isArray(stats) && stats.length) {
     return stats.some((s) => Number(s.packed) !== Number(s.planned));
   }
-  const items = supply?.items;
-  if (!Array.isArray(items) || !items.length) return true;
-  return true;
+  return false;
 }
 
 export function getMarketplaceLabel(mp) {

@@ -4,8 +4,6 @@
 
 import { query } from '../config/database.js';
 
-const STATUSES_REVERT_ON_DISCREPANCY = new Set(['assembled', 'packed', 'ready_for_supply']);
-
 /**
  * @param {number|string} supplyId
  * @returns {Promise<{ allMatch: boolean, hasItems: boolean, discrepancies: Array<{ supplyItemId: number, planned: number, packed: number, discrepancy: number }> }>}
@@ -47,25 +45,14 @@ export async function evaluateSupplyPacking(supplyId) {
 }
 
 /**
- * При расхождениях возвращает поставку в статус «Новая».
+ * Сверка сборки без смены статуса (статус меняется вручную, кроме запрета «Готов к поставке»).
  * @returns {Promise<{ allMatch: boolean, hasItems: boolean, status: string, reverted: boolean }>}
  */
 export async function syncSupplyStatusForPacking(supplyId) {
   const { allMatch, hasItems } = await evaluateSupplyPacking(supplyId);
   const statusR = await query(`SELECT status FROM fbo_supplies WHERE id = $1 LIMIT 1`, [supplyId]);
-  let status = statusR.rows?.[0]?.status || 'new';
-  let reverted = false;
-
-  if (hasItems && !allMatch && STATUSES_REVERT_ON_DISCREPANCY.has(status)) {
-    await query(
-      `UPDATE fbo_supplies SET status = 'new', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
-      [supplyId]
-    );
-    status = 'new';
-    reverted = true;
-  }
-
-  return { allMatch, hasItems, status, reverted };
+  const status = statusR.rows?.[0]?.status || 'new';
+  return { allMatch, hasItems, status, reverted: false };
 }
 
 export function assertCanSetReadyForSupply(packingEval) {
@@ -76,7 +63,7 @@ export function assertCanSetReadyForSupply(packingEval) {
   }
   if (!packingEval.allMatch) {
     const err = new Error(
-      'Есть расхождения между планом и сборкой. Устраните их — поставка остаётся в статусе «Новая». Переход в «Готов к поставке» возможен только при полном совпадении количеств.'
+      'Нельзя перевести в «Готов к поставке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
     );
     err.statusCode = 400;
     err.code = 'FBO_PACKING_DISCREPANCY';

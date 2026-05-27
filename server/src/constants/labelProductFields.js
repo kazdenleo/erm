@@ -2,6 +2,8 @@
  * Поля карточки товара для этикетки (см. client/src/constants/labelProductFields.js).
  */
 
+import { barcodeStringsFromProduct } from '../utils/productBarcodes.js';
+
 export const LABEL_PRODUCT_FIELD_LABELS = {
   brand: 'Бренд',
   length: 'Длина (мм)',
@@ -53,10 +55,8 @@ export function getProductFieldDisplayValue(product, fieldKey) {
       return String(product.organization_name ?? product.organizationName ?? '').trim();
     case 'country_of_origin':
       return String(product.country_of_origin ?? '').trim();
-    case 'barcodes_text': {
-      const list = Array.isArray(product.barcodes) ? product.barcodes : [];
-      return list.map((b) => String(b).trim()).filter(Boolean).join(', ');
-    }
+    case 'barcodes_text':
+      return barcodeStringsFromProduct(product.barcodes).join(', ');
     default:
       return '';
   }

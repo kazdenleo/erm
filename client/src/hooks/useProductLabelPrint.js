@@ -20,7 +20,13 @@ function normalizeBatchItem(raw) {
       ? Math.min(99, Math.floor(copiesRaw))
       : 1;
   const title = raw.title != null ? String(raw.title).trim() : '';
-  return { productId, copies, title: title || undefined };
+  const marketplace = raw?.marketplace != null ? String(raw.marketplace).trim() : '';
+  return {
+    productId,
+    copies,
+    title: title || undefined,
+    marketplace: marketplace || undefined,
+  };
 }
 
 function batchStorageGet() {
@@ -125,17 +131,21 @@ export function canUsePrintHelper(printHelperUrl = '') {
   return Boolean(String(printHelperUrl || '').trim());
 }
 
-export function buildProductLabelPrintPageUrl(productId, copies = 1) {
+export function buildProductLabelPrintPageUrl(productId, copies = 1, marketplace = null) {
   const id = productId != null ? String(productId).trim() : '';
   const n = Number(copies);
   const count = Number.isFinite(n) && n >= 1 ? Math.min(99, Math.floor(n)) : 1;
-  const copiesQuery = count > 1 ? `?copies=${count}` : '';
-  return `/print/product-label/${encodeURIComponent(id)}${copiesQuery}`;
+  const params = new URLSearchParams();
+  if (count > 1) params.set('copies', String(count));
+  const mp = marketplace != null ? String(marketplace).trim() : '';
+  if (mp) params.set('marketplace', mp);
+  const qs = params.toString();
+  return `/print/product-label/${encodeURIComponent(id)}${qs ? `?${qs}` : ''}`;
 }
 
 /** Открыть одну соседнюю вкладку со страницей печати (вызывать синхронно по клику). */
-export function openProductLabelPrintTab(productId, copies = 1) {
-  const url = buildProductLabelPrintPageUrl(productId, copies);
+export function openProductLabelPrintTab(productId, copies = 1, marketplace = null) {
+  const url = buildProductLabelPrintPageUrl(productId, copies, marketplace);
   try {
     const w = window.open(url, '_blank', 'noopener,noreferrer');
     if (w) {
@@ -171,17 +181,21 @@ export function useProductLabelPrint(printHelperUrl = '') {
       setPrinting(true);
       setError(null);
 
-      const labelPrintPageUrl = buildProductLabelPrintPageUrl(id, copies);
+      const labelPrintPageUrl = buildProductLabelPrintPageUrl(id, copies, options.marketplace);
       const labelFilePath = `/products/${encodeURIComponent(id)}/label`;
       const labelQuery = new URLSearchParams({ format: 'pdf' });
       if (copies > 1) labelQuery.set('copies', String(copies));
+      if (options.marketplace) labelQuery.set('marketplace', String(options.marketplace));
       const labelFileUrl = `${resolveApiBaseUrl()}${labelFilePath}?${labelQuery.toString()}`;
       const labelPngUrl = `${resolveApiBaseUrl()}${labelFilePath}?format=png`;
       const base = String(printHelperUrl || '').trim().replace(/\/$/, '');
 
       try {
         await api.get(labelFilePath, {
-          params: { format: 'png' },
+          params: {
+            format: 'png',
+            ...(options.marketplace ? { marketplace: String(options.marketplace) } : {}),
+          },
           responseType: 'blob',
           timeout: PRINT_HELPER_FETCH_MS,
           headers: { Accept: 'image/png' },
@@ -228,7 +242,7 @@ export function useProductLabelPrint(printHelperUrl = '') {
         return true;
       }
 
-      if (!openProductLabelPrintTab(id, copies)) {
+      if (!openProductLabelPrintTab(id, copies, options.marketplace)) {
         setError('Print Helper не ответил. Разрешите всплывающие окна для печати в браузере.');
         return false;
       }

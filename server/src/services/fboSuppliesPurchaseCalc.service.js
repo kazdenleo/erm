@@ -74,11 +74,6 @@ async function loadProductInfoById(productIds) {
   return map;
 }
 
-function formatKitSourceLabel(sources) {
-  if (!sources?.length) return null;
-  return sources.map((s) => s.label).filter(Boolean).join(', ');
-}
-
 function mergeKitSource(sources, kitProductId, label) {
   if (!sources.some((s) => s.kitProductId === kitProductId)) {
     sources.push({ kitProductId, label: label || `Комплект #${kitProductId}` });
@@ -394,7 +389,6 @@ class FboSuppliesPurchaseCalcService {
         ...r,
         isKitComponentRow,
         perKit,
-        kitSourceLabel: formatKitSourceLabel(r.kitSources),
         toPurchase,
         lineCostTotal,
       };

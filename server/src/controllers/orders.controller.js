@@ -524,6 +524,21 @@ class OrdersController {
   }
 
   /**
+   * Массово перевести заказы в «В закупке».
+   * POST /orders/bulk-to-procurement  body: { items: [{ marketplace, orderId }] }
+   */
+  async bulkSetToProcurement(req, res, next) {
+    try {
+      const raw = req.body?.items ?? req.body?.orderIds ?? [];
+      const items = Array.isArray(raw) ? raw : [];
+      const data = await ordersService.bulkSetToProcurement(items, req.user?.profileId ?? null);
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Перевести заказ в статус «В закупке». Только для заказов в статусе «Новый».
    * PUT /orders/:marketplace/:orderId/to-procurement
    */

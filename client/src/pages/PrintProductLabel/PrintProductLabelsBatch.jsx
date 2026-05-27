@@ -84,9 +84,13 @@ export function PrintProductLabelsBatch() {
         const productId = raw?.productId != null ? String(raw.productId).trim() : '';
         if (!productId) continue;
         const copies = normalizeCopies(raw.copies);
+        const marketplace = raw?.marketplace != null ? String(raw.marketplace).trim() : '';
         try {
           const res = await api.get(`/products/${encodeURIComponent(productId)}/label`, {
-            params: { format: 'png' },
+            params: {
+              format: 'png',
+              ...(marketplace ? { marketplace } : {}),
+            },
             responseType: 'blob',
             timeout: 60000,
             headers: { Accept: 'image/png' },

@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
+import { BarcodeScanField } from '../../components/common/BarcodeScanField/BarcodeScanField';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import { FboSupplyPackingRemoveModal } from './FboSupplyPackingRemoveModal.jsx';
@@ -14,6 +15,7 @@ import {
   isSupplyItemPackingComplete,
   sortSupplyItemsForPacking,
 } from './fboSupplyPackingSort.js';
+import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -53,29 +55,17 @@ export function FboSupplyPacking({
   packing,
   onPackingChange,
   onBreakdownClick,
+  itemSearchQuery = '',
 }) {
-  const [barcodeInput, setBarcodeInput] = useState('');
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState(null);
   const [scanMsg, setScanMsg] = useState(null);
   const [activeCargoUnitId, setActiveCargoUnitId] = useState(null);
   const [removeModalOpen, setRemoveModalOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const barcodeInputRef = useRef(null);
-  const barcodeValueRef = useRef('');
   const scanLoadingRef = useRef(false);
 
   scanLoadingRef.current = scanLoading;
-
-  useEffect(() => {
-    barcodeValueRef.current = barcodeInput;
-  }, [barcodeInput]);
-
-  useEffect(() => {
-    if (!scanLoading && barcodeInputRef.current) {
-      barcodeInputRef.current.focus();
-    }
-  }, [scanLoading, packing]);
 
   const statsByItemId = useMemo(
     () => buildStatsMap(packing?.itemStats),
@@ -86,6 +76,13 @@ export function FboSupplyPacking({
     () => sortSupplyItemsForPacking(supplyItems, statsByItemId),
     [supplyItems, statsByItemId]
   );
+
+  const filteredSupplyItems = useMemo(
+    () => filterSupplyItemsByQuery(sortedSupplyItems, itemSearchQuery),
+    [sortedSupplyItems, itemSearchQuery]
+  );
+
+  const itemSearchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
 
   const handleScan = useCallback(
     async (raw) => {
@@ -111,22 +108,15 @@ export function FboSupplyPacking({
         }
         setScanMsg(data?.message || 'Готово');
         playEventSound(SOUND_EVENTS.scan_ok);
-        setBarcodeInput('');
       } catch (e) {
         playEventSound(SOUND_EVENTS.scan_error);
         setScanError(e.response?.data?.message || e.message || 'Ошибка сканирования');
       } finally {
         setScanLoading(false);
-        setTimeout(() => barcodeInputRef.current?.focus(), 50);
       }
     },
     [supplyId, activeCargoUnitId, onPackingChange]
   );
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    handleScan(barcodeInput);
-  };
 
   const handleExportExcel = async () => {
     setExporting(true);
@@ -167,25 +157,25 @@ export function FboSupplyPacking({
 
   return (
     <div className="fbo-packing">
-      <form className="fbo-packing-scan" onSubmit={handleSubmit}>
-        <label className="form-label" htmlFor="fbo-packing-barcode">
-          Штрихкод
-        </label>
-        <div className="fbo-packing-scan-row">
-          <input
-            id="fbo-packing-barcode"
-            ref={barcodeInputRef}
-            type="text"
-            className="form-control"
-            placeholder="Коробка / паллета, затем товары поставки"
-            value={barcodeInput}
-            disabled={scanLoading}
-            onChange={(e) => setBarcodeInput(e.target.value)}
-            autoComplete="off"
-          />
-          <Button type="submit" variant="primary" disabled={scanLoading}>
-            {scanLoading ? '…' : 'Сканировать'}
-          </Button>
+      <div className="fbo-packing-scan">
+        <BarcodeScanField
+          id="fbo-packing-barcode"
+          label="Штрихкод"
+          className="form-control"
+          formClassName="fbo-packing-scan-row warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
+          placeholder="Коробка / паллета, затем товары поставки"
+          loading={scanLoading}
+          disabled={scanLoading}
+          enableGlobalCapture
+          onScan={handleScan}
+          hint={
+            <>
+              Сначала отсканируйте штрихкод <strong>коробки или паллеты</strong> — откроется грузоместо.
+              Затем сканируйте <strong>товары из этой поставки</strong> (+1 шт. за скан).
+              Повторный скан того же штрихкода коробки переключит на это грузоместо.
+            </>
+          }
+        >
           <Button
             type="button"
             variant="secondary"
@@ -194,13 +184,8 @@ export function FboSupplyPacking({
           >
             Убрать товар
           </Button>
-        </div>
-        <p className="fbo-packing-hint">
-          Сначала отсканируйте штрихкод <strong>коробки или паллеты</strong> — откроется грузоместо.
-          Затем сканируйте <strong>товары из этой поставки</strong> (+1 шт. за скан).
-          Повторный скан того же штрихкода коробки переключит на это грузоместо.
-        </p>
-      </form>
+        </BarcodeScanField>
+      </div>
 
       {activeCargo ? (
         <div className="fbo-packing-active alert alert-info">
@@ -296,6 +281,11 @@ export function FboSupplyPacking({
         <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
           не собранные сверху
         </span>
+        {itemSearchActive ? (
+          <span className="text-muted fw-normal" style={{ fontSize: 13, marginLeft: 8 }}>
+            · найдено {filteredSupplyItems.length} из {sortedSupplyItems.length}
+          </span>
+        ) : null}
       </h4>
       <div className="table-responsive">
         <table className="table table-sm table-hover">
@@ -303,12 +293,20 @@ export function FboSupplyPacking({
             <tr>
               <th>Название</th>
               <th>Артикул</th>
+              <th>Штрихкод</th>
               <th>План</th>
               <th>Расхождения</th>
             </tr>
           </thead>
           <tbody>
-            {sortedSupplyItems.map((it) => {
+            {filteredSupplyItems.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="text-muted text-center py-3">
+                  {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
+                </td>
+              </tr>
+            ) : null}
+            {filteredSupplyItems.map((it) => {
               const stat = statsByItemId.get(String(it.id));
               const planned = stat?.planned ?? it.quantity ?? 0;
               const packed = stat?.packed ?? 0;
@@ -318,6 +316,7 @@ export function FboSupplyPacking({
                 <tr key={it.id} className={complete ? 'fbo-item-row--complete' : ''}>
                   <td>{it.productName || it.name || '—'}</td>
                   <td>{it.sku || '—'}</td>
+                  <td>{it.barcode || '—'}</td>
                   <td>{planned}</td>
                   <td>
                     <button

@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
 
 // Приведение к числу (строка/число с фронта), пусто -> null
 const optionalNum = () => z.union([z.string(), z.number()]).optional().nullable().transform(v => {
@@ -71,7 +72,15 @@ export const createProductSchema = z.object({
   length: optionalNum(),
   width: optionalNum(),
   height: optionalNum(),
-  barcodes: z.array(z.string()).optional().default([]),
+  barcodes: z.array(
+    z.union([
+      z.string(),
+      z.object({
+        barcode: z.string(),
+        marketplaces: z.array(z.string()).optional(),
+      }),
+    ])
+  ).optional().default([]),
   description: z.string().optional().nullable(),
   country_of_origin: z.union([z.string(), z.number()]).optional().nullable().transform(v => {
     if (v == null || v === '') return null;
@@ -134,7 +143,9 @@ export const productIdSchema = z.object({
  */
 export function validateCreateProduct(req, res, next) {
   try {
-    req.body = createProductSchema.parse(req.body);
+    const raw = { ...(req.body || {}) };
+    if ('barcodes' in raw) raw.barcodes = normBarcodes(raw.barcodes);
+    req.body = createProductSchema.parse(raw);
     next();
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -157,7 +168,7 @@ function normSku(v) {
 
 function normBarcodes(v) {
   if (!Array.isArray(v)) return [];
-  return v.map(b => (b != null ? String(b).trim() : '')).filter(Boolean);
+  return normalizeBarcodeRows(v);
 }
 
 export function validateUpdateProduct(req, res, next) {

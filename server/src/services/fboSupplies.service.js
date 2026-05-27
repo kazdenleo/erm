@@ -6,11 +6,18 @@ import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { FBO_SUPPLY_STATUSES, getNextFboSupplyStatus } from '../constants/fboSupplyStatuses.js';
 import stockMovementsService from './stockMovements.service.js';
+import fboSupplyReserveService from './fboSupplyReserve.service.js';
 import {
   assertCanSetReadyForSupply,
   evaluateSupplyPacking,
   syncSupplyStatusForPacking,
 } from '../utils/fboSupplyPackingCheck.js';
+import {
+  pickBarcodeForMarketplace,
+  parseBarcodesMarketplacesColumn,
+} from '../utils/productBarcodes.js';
+
+const FBO_RESERVE_TERMINAL_STATUSES = new Set(['shipped', 'closed', 'return']);
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -61,6 +68,8 @@ function mapItemRow(row) {
     fboSupplyId: row.fbo_supply_id,
     productId: row.product_id,
     quantity: row.quantity,
+    reservedQuantity:
+      row.reserved_quantity != null ? Number(row.reserved_quantity) : row.reservedQuantity ?? undefined,
     barcode: row.barcode,
     sku: row.sku,
     mpOfferId: row.mp_offer_id,
@@ -159,6 +168,8 @@ class FboSuppliesService {
       err.statusCode = 400;
       throw err;
     }
+
+    await fboSupplyReserveService.releaseReservesForSupply(supplyId, { profileId });
 
     const whId = Number(supply.deductionWarehouseId);
     const items = (supply.items || []).filter((it) => it.productId && it.quantity > 0);
@@ -297,7 +308,9 @@ class FboSuppliesService {
        ORDER BY i.id ASC`,
       [id]
     );
-    supply.items = (itemsR.rows || []).map(mapItemRow);
+    supply.items = await fboSupplyReserveService.enrichItemsWithReserved(
+      (itemsR.rows || []).map(mapItemRow)
+    );
     const packingEval = await evaluateSupplyPacking(id);
     supply.packingAllMatch = packingEval.allMatch;
     supply.hasPackingDiscrepancy = packingEval.hasItems && !packingEval.allMatch;
@@ -382,6 +395,10 @@ class FboSuppliesService {
         );
       }
       return newId;
+    });
+
+    await fboSupplyReserveService.rebalanceReservesForSupply(supplyId, { profileId: pid }).catch((e) => {
+      console.warn('[FboSupplies] reserve after create:', e?.message || e);
     });
 
     const created = await this.getById(supplyId, { profileId: pid });
@@ -475,8 +492,14 @@ class FboSuppliesService {
         );
         throw e;
       }
+    } else if (FBO_RESERVE_TERMINAL_STATUSES.has(result.status)) {
+      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+    } else {
+      await fboSupplyReserveService.rebalanceReservesForSupply(id, { profileId: pid }).catch((e) => {
+        console.warn('[FboSupplies] reserve after update:', e?.message || e);
+      });
     }
-    return result;
+    return this.getById(id, { profileId: pid });
   }
 
   async advanceStatus(id, { profileId } = {}) {
@@ -513,7 +536,12 @@ class FboSuppliesService {
     return sid;
   }
 
-  async _loadProductForSupplyLine(productId, { profileId } = {}) {
+  async _getSupplyMarketplace(supplyId) {
+    const r = await query(`SELECT marketplace FROM fbo_supplies WHERE id = $1`, [supplyId]);
+    return r.rows?.[0]?.marketplace ?? null;
+  }
+
+  async _loadProductForSupplyLine(productId, { profileId, marketplace } = {}) {
     const pid = normalizeProfileId(profileId);
     const pnum = parseInt(productId, 10);
     if (!Number.isFinite(pnum) || pnum < 1) {
@@ -534,10 +562,14 @@ class FboSuppliesService {
     let barcode = null;
     try {
       const bc = await query(
-        `SELECT barcode FROM barcodes WHERE product_id = $1 ORDER BY id LIMIT 1`,
+        `SELECT barcode, marketplaces FROM barcodes WHERE product_id = $1 ORDER BY id`,
         [pnum]
       );
-      barcode = bc.rows?.[0]?.barcode ?? null;
+      const rows = (bc.rows || []).map((r) => ({
+        barcode: r.barcode,
+        marketplaces: parseBarcodesMarketplacesColumn(r.marketplaces),
+      }));
+      barcode = pickBarcodeForMarketplace(rows, marketplace);
     } catch {
       /* optional */
     }
@@ -551,7 +583,8 @@ class FboSuppliesService {
 
   async addSupplyItem(supplyId, payload, { profileId } = {}) {
     const sid = await this._assertSupplyAccess(supplyId, { profileId });
-    const prod = await this._loadProductForSupplyLine(payload.productId, { profileId });
+    const marketplace = await this._getSupplyMarketplace(sid);
+    const prod = await this._loadProductForSupplyLine(payload.productId, { profileId, marketplace });
     const qty = parseInt(payload.quantity, 10);
     if (!Number.isFinite(qty) || qty <= 0) {
       const err = new Error('Укажите количество больше 0');
@@ -566,6 +599,9 @@ class FboSuppliesService {
       [sid, prod.id, qty, prod.barcode, prod.sku, prod.name]
     );
     const row = ins.rows[0];
+    await fboSupplyReserveService
+      .rebalanceReservesForProduct(prod.id, { profileId: normalizeProfileId(profileId) })
+      .catch(() => {});
     return {
       id: row.id,
       supplyId: row.fbo_supply_id,
@@ -578,7 +614,8 @@ class FboSuppliesService {
     const pid = normalizeProfileId(profileId);
     const sid = await this._assertSupplyAccess(supplyId, { profileId });
     const iid = parseInt(itemId, 10);
-    const prod = await this._loadProductForSupplyLine(payload.productId, { profileId });
+    const marketplace = await this._getSupplyMarketplace(sid);
+    const prod = await this._loadProductForSupplyLine(payload.productId, { profileId, marketplace });
     const qty = parseInt(payload.quantity, 10);
     if (!Number.isFinite(qty) || qty <= 0) {
       const err = new Error('Укажите количество больше 0');
@@ -606,6 +643,9 @@ class FboSuppliesService {
       throw err;
     }
 
+    const prevR = await query(`SELECT product_id FROM fbo_supply_items WHERE id = $1`, [iid]);
+    const prevPid = prevR.rows?.[0]?.product_id;
+
     const r = await query(
       `UPDATE fbo_supply_items
        SET product_id = $1, sku = $2, name = $3, barcode = $4, quantity = $5, updated_at = CURRENT_TIMESTAMP
@@ -613,6 +653,12 @@ class FboSuppliesService {
        RETURNING id, fbo_supply_id, product_id, quantity`,
       [prod.id, prod.sku, prod.name, prod.barcode, qty, iid]
     );
+    await fboSupplyReserveService.rebalanceReservesForSupply(sid, { profileId: pid }).catch(() => {});
+    if (prevPid && Number(prevPid) !== Number(prod.id)) {
+      await fboSupplyReserveService
+        .rebalanceReservesForProduct(prevPid, { profileId: pid })
+        .catch(() => {});
+    }
     return {
       id: r.rows[0].id,
       supplyId: r.rows[0].fbo_supply_id,
@@ -634,7 +680,7 @@ class FboSuppliesService {
     }
 
     const belongs = await query(
-      `SELECT si.id
+      `SELECT si.id, si.product_id
        FROM fbo_supply_items si
        INNER JOIN fbo_supplies s ON s.id = si.fbo_supply_id
        WHERE si.id = $1 AND si.fbo_supply_id = $2
@@ -646,9 +692,16 @@ class FboSuppliesService {
       err.statusCode = 404;
       throw err;
     }
+    const productId = belongs.rows[0].product_id;
 
     if (qty === 0) {
+      await fboSupplyReserveService.releaseReservesForSupply(sid, { profileId: pid }).catch(() => {});
       await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [iid]);
+      if (productId) {
+        await fboSupplyReserveService
+          .rebalanceReservesForProduct(productId, { profileId: pid })
+          .catch(() => {});
+      }
       return { id: iid, quantity: 0, deleted: true };
     }
 
@@ -658,6 +711,11 @@ class FboSuppliesService {
        RETURNING id, fbo_supply_id, quantity`,
       [qty, iid]
     );
+    if (productId) {
+      await fboSupplyReserveService
+        .rebalanceReservesForProduct(productId, { profileId: pid })
+        .catch(() => {});
+    }
     return {
       id: r.rows[0].id,
       supplyId: r.rows[0].fbo_supply_id,
@@ -668,6 +726,7 @@ class FboSuppliesService {
 
   async delete(id, { profileId } = {}) {
     const pid = normalizeProfileId(profileId);
+    await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
     const r = await query(
       `DELETE FROM fbo_supplies WHERE id = $1 AND ($2::bigint IS NULL OR profile_id = $2) RETURNING id`,
       [id, pid]

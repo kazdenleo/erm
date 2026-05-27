@@ -291,6 +291,16 @@
   color: var(--muted);
 }
 
+.warehouse-ops-list-row--search > div {
+  flex: 1;
+  min-width: 220px;
+  max-width: 520px;
+}
+
+.warehouse-ops-list-row--search .warehouse-ops-scan-input {
+  width: 100%;
+}
+
 .warehouse-ops-select {
   flex: 1;
   min-width: 200px;
