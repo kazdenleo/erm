@@ -165,11 +165,17 @@ export function AuthProvider({ children }) {
     try {
       res = await authApi.login(String(email || '').trim(), password);
     } catch (err) {
+      const status = err?.response?.status;
       const msg =
         err?.response?.data?.message ||
         err?.response?.data?.error ||
         err?.message ||
         'Ошибка входа';
+      if (status === 429) {
+        throw new Error(
+          'Слишком много запросов к серверу. Подождите 1–2 минуты, перезапустите API (server/server.js) и попробуйте снова.'
+        );
+      }
       throw new Error(msg);
     }
     if (!res?.ok || !res?.data?.token) {

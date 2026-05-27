@@ -9,6 +9,29 @@ import repositoryFactory from '../config/repository-factory.js';
 import { NET_RESERVED_SUM_EXPR_SQL } from '../constants/netReservedStockSql.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 
+/**
+ * Сериализация операций по одному product_id между параллельными HTTP/синками.
+ * Иначе два заказа одновременно читают «доступно = 1» до commit первого резерва.
+ */
+export async function runWithProductStockLock(productId, fn) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) {
+    return fn();
+  }
+  const client = await getClient();
+  try {
+    await client.query('SELECT pg_advisory_lock($1::bigint)', [pid]);
+    return await fn();
+  } finally {
+    try {
+      await client.query('SELECT pg_advisory_unlock($1::bigint)', [pid]);
+    } catch {
+      /* ignore */
+    }
+    client.release();
+  }
+}
+
 function scheduleStockMovementMarketplaceSync(productId, opts) {
   const idNum = Number(productId);
   if (!Number.isFinite(idNum) || idNum < 1) return;
@@ -209,10 +232,23 @@ class StockMovementsService {
       }
 
       if (type === 'reserve' && safeDelta < 0) {
-        const reserveAdd = Math.abs(safeDelta);
+        const reserveAdd = Math.floor(Math.abs(safeDelta));
+        if (reserveAdd < 1) {
+          const err = new Error('Нулевой или некорректный объём резерва');
+          err.statusCode = 400;
+          throw err;
+        }
         const supply = await getProductSupplySnapshotWithClient(client, idNum);
         const journalBeforeRaw = supply.reservedRaw;
-        const availableForReserve = Math.max(0, supply.available);
+        const availableForReserve = Math.max(0, Math.floor(supply.available));
+        if (availableForReserve <= 0) {
+          const err = new Error(
+            `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
+              `уже зарезервировано ${journalBeforeRaw} (доступно без поставщиков: 0)`
+          );
+          err.statusCode = 400;
+          throw err;
+        }
         if (reserveAdd > availableForReserve) {
           const err = new Error(
             `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
@@ -228,6 +264,11 @@ class StockMovementsService {
           [journalAfter, idNum]
         );
         quantityChange = -reserveAdd;
+        if (quantityChange === 0) {
+          const err = new Error('Нулевой объём резерва — запись в журнал не создаётся');
+          err.statusCode = 400;
+          throw err;
+        }
       } else if (type === 'unreserve' && safeDelta > 0) {
         const journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
         const cap =
@@ -253,6 +294,12 @@ class StockMovementsService {
         quantityChange = release;
       } else {
         const err = new Error('Некорректная операция резерва');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      if (type === 'reserve' && (!Number.isFinite(quantityChange) || quantityChange >= 0)) {
+        const err = new Error('Некорректная запись резерва: quantity_change должно быть отрицательным');
         err.statusCode = 400;
         throw err;
       }

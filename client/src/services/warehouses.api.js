@@ -4,6 +4,13 @@
  */
 
 import api from './api';
+import {
+  getCachedWarehouseList,
+  getInflightWarehouseList,
+  setCachedWarehouseList,
+  setInflightWarehouseList,
+  warehouseListCacheKey,
+} from './warehouseListCache.js';
 
 export const warehousesApi = {
   /**
@@ -11,9 +18,25 @@ export const warehousesApi = {
    * @param {object} [options] - options.organizationId для фильтра по организации
    */
   getAll: async (options = {}) => {
-    const params = options.organizationId != null && options.organizationId !== '' ? { organizationId: options.organizationId } : undefined;
-    const response = await api.get('/warehouses', { params });
-    return response.data;
+    const key = warehouseListCacheKey(options.organizationId);
+    const cached = getCachedWarehouseList(key);
+    if (cached != null) {
+      return cached;
+    }
+    const existing = getInflightWarehouseList(key);
+    if (existing) {
+      return existing;
+    }
+    const params =
+      options.organizationId != null && options.organizationId !== ''
+        ? { organizationId: options.organizationId }
+        : undefined;
+    const promise = api.get('/warehouses', { params }).then((response) => {
+      const data = response.data;
+      setCachedWarehouseList(key, data);
+      return data;
+    });
+    return setInflightWarehouseList(key, promise);
   },
 
   /**

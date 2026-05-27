@@ -17,6 +17,15 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Склады для поля «Склад списания остатков» */
+  getDeductionWarehouses: async () => {
+    const response = await api.get('/fbo-supplies/deduction-warehouses');
+    const body = response.data;
+    if (Array.isArray(body)) return body;
+    if (Array.isArray(body?.data)) return body.data;
+    return [];
+  },
+
   getById: async (id) => {
     const response = await api.get(`/fbo-supplies/${id}`);
     return response.data?.data ?? response.data;

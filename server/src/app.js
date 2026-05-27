@@ -25,13 +25,17 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Trust proxy (для правильного определения IP за reverse proxy)
-app.set('trust proxy', 1);
+// Trust proxy (nginx): иначе rate limit видит один IP на всех пользователей
+app.set('trust proxy', true);
 
 // Security middleware (должны быть первыми)
 app.use(helmetMiddleware);
 app.use(corsMiddleware);
-app.use(rateLimiter);
+if (!config.api.rateLimit.disabled) {
+  app.use(rateLimiter);
+} else if (config.isDevelopment) {
+  console.log('[Config] API rate limit отключён (API_RATE_LIMIT_DISABLED или production без API_RATE_LIMIT_ENABLED)');
+}
 
 // Body parsing middleware с ограничением размера
 app.use(express.json({

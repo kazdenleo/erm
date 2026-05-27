@@ -8,7 +8,9 @@ function mockReq(method, originalUrl) {
 
 test('isAuthBootstrapRequest: login, me, register', () => {
   assert.equal(isAuthBootstrapRequest(mockReq('POST', '/api/auth/login')), true);
+  assert.equal(isAuthBootstrapRequest(mockReq('POST', '/auth/login')), true);
   assert.equal(isAuthBootstrapRequest(mockReq('GET', '/api/auth/me')), true);
+  assert.equal(isAuthBootstrapRequest(mockReq('GET', '/auth/me')), true);
   assert.equal(isAuthBootstrapRequest(mockReq('POST', '/api/auth/register-account')), true);
 });
 

@@ -47,7 +47,13 @@ export function FboSupplyPackingRemoveModal({
         barcode: trimmed,
         activeCargoUnitId,
       });
-      if (data?.packing) onPackingChange?.(data.packing);
+      if (data?.packing) {
+        onPackingChange?.(data.packing, {
+          supplyStatus: data.supplyStatus,
+          packingAllMatch: data.packingAllMatch,
+          statusReverted: data.statusReverted,
+        });
+      }
       setMsg(data?.message || 'Снято 1 шт.');
       playEventSound(SOUND_EVENTS.scan_ok);
       setBarcodeInput('');

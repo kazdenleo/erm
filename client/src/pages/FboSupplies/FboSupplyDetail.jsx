@@ -6,7 +6,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { useOrganizations } from '../../hooks/useOrganizations';
-import { useWarehouses } from '../../hooks/useWarehouses';
+import {
+  filterDeductionWarehouses,
+  warehouseSelectLabel,
+} from '../../utils/deductionWarehouses.js';
 import { Button } from '../../components/common/Button/Button';
 import { ProductLabelPrintModal } from '../../components/products/ProductLabelPrintModal.jsx';
 import {
@@ -20,6 +23,8 @@ import {
   FBO_SUPPLY_STATUS_ORDER,
   getFboSupplyStatusLabel,
   getMarketplaceLabel,
+  getNextFboSupplyStatus,
+  hasPackingDiscrepancy,
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
@@ -71,7 +76,9 @@ export function FboSupplyDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { organizations } = useOrganizations();
-  const { warehouses, loadWarehouses, loading: warehousesLoading } = useWarehouses();
+  const [allWarehouses, setAllWarehouses] = useState([]);
+  const [warehousesLoading, setWarehousesLoading] = useState(false);
+  const [warehousesError, setWarehousesError] = useState(null);
   const [supply, setSupply] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -88,13 +95,10 @@ export function FboSupplyDetail() {
   const [deleting, setDeleting] = useState(false);
   const selectAllItemsRef = useRef(null);
 
-  const deductionWarehouses = useMemo(() => {
-    return (warehouses || []).filter((w) => {
-      if (w.type !== 'warehouse') return false;
-      const sid = w.supplierId ?? w.supplier_id;
-      return sid == null || sid === '';
-    });
-  }, [warehouses]);
+  const deductionWarehouses = useMemo(
+    () => filterDeductionWarehouses(allWarehouses, supply?.deductionWarehouseId),
+    [allWarehouses, supply?.deductionWarehouseId]
+  );
 
   const {
     printProductLabel,
@@ -105,15 +109,30 @@ export function FboSupplyDetail() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setWarehousesLoading(true);
+    setWarehousesError(null);
     setErr(null);
     try {
       const data = await fboSuppliesApi.getById(id);
       setSupply(data);
       setSelectedItemIds(new Set());
+      let whList = [];
+      try {
+        whList = await fboSuppliesApi.getDeductionWarehouses();
+        setWarehousesError(null);
+      } catch (whErr) {
+        console.error('Error loading FBO deduction warehouses:', whErr);
+        setWarehousesError(
+          whErr.response?.data?.message || whErr.message || 'Ошибка загрузки складов'
+        );
+      }
+      setAllWarehouses(Array.isArray(whList) ? whList : []);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить поставку');
+      setAllWarehouses([]);
     } finally {
       setLoading(false);
+      setWarehousesLoading(false);
     }
   }, [id]);
 
@@ -129,14 +148,6 @@ export function FboSupplyDetail() {
   useEffect(() => {
     load();
   }, [load]);
-
-  useEffect(() => {
-    if (supply?.organizationId != null && supply.organizationId !== '') {
-      loadWarehouses(supply.organizationId);
-    } else {
-      loadWarehouses();
-    }
-  }, [supply?.organizationId, loadWarehouses]);
 
   useEffect(() => {
     if (supply?.id) loadPacking();
@@ -184,11 +195,45 @@ export function FboSupplyDetail() {
     [supply?.items, statsByItemId]
   );
 
+  const nextSupplyStatus = supply ? getNextFboSupplyStatus(supply.status) : null;
+  const packingHasDiscrepancy = hasPackingDiscrepancy(supply, packing);
+  const blockReadyForSupply =
+    nextSupplyStatus === 'ready_for_supply' && packingHasDiscrepancy;
+
+  const handlePackingChange = useCallback((newPacking, meta) => {
+    setPacking(newPacking);
+    if (meta?.supplyStatus) {
+      setSupply((s) =>
+        s
+          ? {
+              ...s,
+              status: meta.supplyStatus,
+              packingAllMatch: meta.packingAllMatch,
+              hasPackingDiscrepancy: meta.packingAllMatch === false,
+            }
+          : s
+      );
+    }
+  }, []);
+
   const saveField = async (patch) => {
     setSaving(true);
     try {
       const data = await fboSuppliesApi.update(id, patch);
-      setSupply(data);
+      setSupply((prev) => {
+        if (!prev) return data;
+        if (Object.prototype.hasOwnProperty.call(patch, 'deductionWarehouseId')) {
+          return {
+            ...prev,
+            deductionWarehouseId: data.deductionWarehouseId ?? null,
+            deductionWarehouseName: data.deductionWarehouseName ?? null,
+          };
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'deductStock')) {
+          return { ...prev, deductStock: data.deductStock };
+        }
+        return { ...prev, ...data };
+      });
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось сохранить');
     } finally {
@@ -371,7 +416,17 @@ export function FboSupplyDetail() {
         >
           {packingExporting ? 'Excel…' : 'Excel грузоместа'}
         </Button>
-        <Button variant="primary" size="small" onClick={handleAdvance} disabled={statusIdx >= FBO_SUPPLY_STATUS_ORDER.length - 2}>
+        <Button
+          variant="primary"
+          size="small"
+          onClick={handleAdvance}
+          disabled={statusIdx >= FBO_SUPPLY_STATUS_ORDER.length - 2 || blockReadyForSupply}
+          title={
+            blockReadyForSupply
+              ? 'Устраните расхождения в сборке (план ≠ факт), чтобы перейти в «Готов к поставке»'
+              : undefined
+          }
+        >
           Следующий шаг →
         </Button>
         <Button
@@ -398,6 +453,13 @@ export function FboSupplyDetail() {
       </div>
 
       {err && <div className="alert alert-danger">{err}</div>}
+      {packingHasDiscrepancy && (
+        <div className="alert alert-warning mb-2">
+          Есть расхождения в поставке (план и сборка не совпадают). Статус поставки —{' '}
+          <strong>Новая</strong>. Переход в «Готов к поставке» доступен только когда по всем
+          позициям упаковано ровно запланированное количество.
+        </div>
+      )}
       {stockMsg && (
         <div className={`alert ${stockMsg.includes('Списано') ? 'alert-success' : 'alert-warning'}`}>
           {stockMsg}
@@ -432,29 +494,64 @@ export function FboSupplyDetail() {
           <label>Склад списания остатков</label>
           <select
             className="form-select form-select-sm"
-            value={supply.deductionWarehouseId ?? ''}
+            value={
+              supply.deductionWarehouseId != null && supply.deductionWarehouseId !== ''
+                ? String(supply.deductionWarehouseId)
+                : ''
+            }
             onChange={(e) => {
-              const v = e.target.value ? Number(e.target.value) : null;
-              setSupply((s) => ({ ...s, deductionWarehouseId: v }));
+              const raw = e.target.value;
+              if (!raw) {
+                setSupply((s) => ({
+                  ...s,
+                  deductionWarehouseId: null,
+                  deductionWarehouseName: null,
+                }));
+                saveField({ deductionWarehouseId: null });
+                return;
+              }
+              const v = Number(raw);
+              const picked = deductionWarehouses.find((w) => String(w.id) === raw);
+              setSupply((s) => ({
+                ...s,
+                deductionWarehouseId: v,
+                deductionWarehouseName: picked ? warehouseSelectLabel(picked) : s.deductionWarehouseName,
+              }));
               saveField({ deductionWarehouseId: v });
             }}
-            disabled={saving || warehousesLoading}
+            disabled={warehousesLoading && deductionWarehouses.length === 0}
           >
             <option value="">
-              {warehousesLoading ? 'Загрузка складов…' : '— выберите склад —'}
+              {warehousesLoading && deductionWarehouses.length === 0
+                ? 'Загрузка складов…'
+                : '— выберите склад —'}
             </option>
+            {!warehousesLoading &&
+            supply.deductionWarehouseId &&
+            !deductionWarehouses.some((w) => String(w.id) === String(supply.deductionWarehouseId)) &&
+            supply.deductionWarehouseName ? (
+              <option value={String(supply.deductionWarehouseId)}>
+                {supply.deductionWarehouseName}
+              </option>
+            ) : null}
             {deductionWarehouses.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name || w.address || `Склад #${w.id}`}
+              <option key={w.id} value={String(w.id)}>
+                {warehouseSelectLabel(w)}
                 {(w.isFboStock || w.is_fbo_stock) ? ' (FBO)' : ''}
               </option>
             ))}
           </select>
-          {!warehousesLoading && !deductionWarehouses.length ? (
+          {warehousesError ? (
+            <p className="text-danger small mb-0 mt-1">{warehousesError}</p>
+          ) : null}
+          {!warehousesLoading && !warehousesError && !deductionWarehouses.length ? (
             <p className="text-muted small mb-0 mt-1">
-              Нет складов типа «Склад» без привязки к поставщику. Добавьте склад в «Склады» для организации
-              поставки.
+              Нет складов типа «Склад» в вашем профиле. В разделе «Склады» создайте склад с типом{' '}
+              <strong>Склад</strong> (не «склад поставщика»).
             </p>
+          ) : null}
+          {!warehousesLoading && deductionWarehouses.length > 0 ? (
+            <p className="text-muted small mb-0 mt-1">Доступно складов: {deductionWarehouses.length}</p>
           ) : null}
         </div>
         <div>
@@ -501,7 +598,7 @@ export function FboSupplyDetail() {
           marketplace={supply.marketplace}
           supplyItems={supply.items || []}
           packing={packing}
-          onPackingChange={setPacking}
+          onPackingChange={handlePackingChange}
           onBreakdownClick={setBreakdownItem}
         />
       ) : null}
@@ -575,18 +672,24 @@ export function FboSupplyDetail() {
           <label>Организация</label>
           <select
             className="form-select form-select-sm"
-            value={supply.organizationId ?? ''}
+            value={
+              supply.organizationId != null && supply.organizationId !== ''
+                ? String(supply.organizationId)
+                : ''
+            }
             onChange={(e) => {
               const v = e.target.value ? Number(e.target.value) : null;
               setSupply((s) => ({ ...s, organizationId: v }));
+            }}
+            onBlur={(e) => {
+              const v = e.target.value ? Number(e.target.value) : null;
               saveField({ organizationId: v });
-              loadWarehouses(v ?? undefined);
             }}
             disabled={saving}
           >
             <option value="">—</option>
             {(organizations || []).map((o) => (
-              <option key={o.id} value={o.id}>
+              <option key={o.id} value={String(o.id)}>
                 {o.name}
               </option>
             ))}

@@ -30,6 +30,19 @@ function resolveOrganizationIdFromRequest(req) {
 }
 
 class FboSuppliesController {
+  async listDeductionWarehouses(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      const data = await fboSuppliesService.listDeductionWarehouses({ profileId: tid });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      next(e);
+    }
+  }
+
   async list(req, res, next) {
     try {
       const tid = tenantListProfileId(req);

@@ -38,12 +38,20 @@ export function errorHandler(err, req, res, next) {
   let details = err.details ?? null;
 
   // Обработка ошибок базы данных - возвращаем 400 вместо 500
-  if (err.code === '42P01' || message.includes('does not exist') || message.includes('relation')) {
+  if (
+    err.code === '42P01' ||
+    err.code === '42703' ||
+    message.includes('does not exist') ||
+    message.includes('relation')
+  ) {
     statusCode = 400;
     if (message.includes('wb_commissions')) {
       message = 'Таблица wb_commissions не существует в базе данных. Необходимо выполнить миграции базы данных. Запустите команду: npm run migrate в папке server';
     } else if (message.includes('calculation_details')) {
       message = 'Колонка calculation_details отсутствует в таблице product_marketplace_prices. Выполните миграции: в папке server запустите команду npm run migrate';
+    } else if (/fbo_suppl/i.test(message)) {
+      message =
+        'Модуль поставок FBO не развёрнут в БД. На сервере в папке server выполните: npm run migrate (нужны миграции 102–107), затем pm2 restart erm-api';
     } else {
       message = `Таблица не существует: ${message}. Выполните миграции базы данных.`;
     }

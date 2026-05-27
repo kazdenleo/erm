@@ -5,6 +5,7 @@
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import fboSuppliesService from './fboSupplies.service.js';
+import { syncSupplyStatusForPacking } from '../utils/fboSupplyPackingCheck.js';
 
 function normalizeBarcode(v) {
   return v != null ? String(v).trim() : '';
@@ -90,6 +91,16 @@ function mapCargoRow(row) {
     fboSupplyId: row.fbo_supply_id,
     barcode: row.barcode,
     createdAt: row.created_at,
+  };
+}
+
+async function withPackingStatusSync(supplyId, packing) {
+  const sync = await syncSupplyStatusForPacking(supplyId);
+  return {
+    packing,
+    supplyStatus: sync.status,
+    packingAllMatch: sync.allMatch,
+    statusReverted: sync.reverted,
   };
 }
 
@@ -258,13 +269,14 @@ class FboSuppliesPackingService {
       const newQty = Number(upsert.rows[0]?.quantity ?? 1);
       const packing = await this.getPackingState(supplyId, { profileId });
       const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
+      const syncMeta = await withPackingStatusSync(supplyId, packing);
       return {
         action: 'product_added',
         message: `${name}: ${newQty} шт. в грузоместе`,
         activeCargoUnitId: activeId,
         supplyItemId: supplyItem.id,
         quantityInCargo: newQty,
-        packing,
+        ...syncMeta,
       };
     }
 
@@ -349,13 +361,14 @@ class FboSuppliesPackingService {
     const packing = await this.getPackingState(supplyId, { profileId });
     const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
     const newQty = Math.max(0, prevQty - 1);
+    const syncMeta = await withPackingStatusSync(supplyId, packing);
     return {
       action: 'product_removed',
       message: `${name}: −1 шт. из грузоместа ${cargoCheck.rows[0].barcode} (осталось ${newQty})`,
       activeCargoUnitId: activeId,
       supplyItemId: supplyItem.id,
       quantityInCargo: newQty,
-      packing,
+      ...syncMeta,
     };
   }
 
@@ -471,7 +484,7 @@ class FboSuppliesPackingService {
       throw err;
     }
     const packing = await this.getPackingState(supplyId, { profileId });
-    return { packing };
+    return withPackingStatusSync(supplyId, packing);
   }
 }
 

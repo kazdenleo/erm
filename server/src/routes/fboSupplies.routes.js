@@ -14,6 +14,10 @@ const excelUpload = createProductExcelImportUpload();
 router.use(requireAuth);
 
 router.get('/', wrapAsync(fboSuppliesController.list.bind(fboSuppliesController)));
+router.get(
+  '/deduction-warehouses',
+  wrapAsync(fboSuppliesController.listDeductionWarehouses.bind(fboSuppliesController))
+);
 router.post('/', wrapAsync(fboSuppliesController.create.bind(fboSuppliesController)));
 router.post(
   '/purchase-calculation',

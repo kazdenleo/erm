@@ -17,9 +17,11 @@ const projectRoot = __dirname.includes('server/src/config')
   ? join(__dirname, '../../../') 
   : process.cwd();
 
-// Загружаем переменные окружения (ищем .env в корне проекта)
+// Загружаем .env: корень репозитория, затем server/.env (перекрывает — как на VPS в /opt/erm/server)
 const envPath = join(projectRoot, '.env');
+const serverEnvPath = join(projectRoot, 'server', '.env');
 const envLoaded = dotenv.config({ path: envPath });
+dotenv.config({ path: serverEnvPath, override: true });
 
 // Логируем загрузку .env (только в development)
 if (process.env.NODE_ENV === 'development') {
@@ -66,6 +68,10 @@ const configSchema = z.object({
     .regex(/^\d+$/)
     .transform(Number)
     .optional(),
+  /** 1/true — отключить общий rate limit */
+  API_RATE_LIMIT_DISABLED: z.string().optional(),
+  /** 1/true — включить лимит в production (по умолчанию в production лимит выключен) */
+  API_RATE_LIMIT_ENABLED: z.string().optional(),
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
   
   // JWT (for future use)
@@ -157,9 +163,23 @@ try {
     api: {
       timeout: parsed.API_TIMEOUT,
       rateLimit: {
+        disabled: (() => {
+          const off = String(parsed.API_RATE_LIMIT_DISABLED || '').toLowerCase();
+          if (off === '1' || off === 'true') return true;
+          if (off === '0' || off === 'false') return false;
+          const on = String(parsed.API_RATE_LIMIT_ENABLED || '').toLowerCase();
+          if (parsed.NODE_ENV === 'production') {
+            return on !== '1' && on !== 'true';
+          }
+          // Локальная разработка: лимит выключен, пока явно не включён (SPA легко упирается в 429).
+          if (parsed.NODE_ENV === 'development' || parsed.NODE_ENV === 'test') {
+            return on !== '1' && on !== 'true';
+          }
+          return false;
+        })(),
         max:
           parsed.API_RATE_LIMIT_MAX ??
-          (parsed.NODE_ENV === 'development' ? 12000 : 8000),
+          (parsed.NODE_ENV === 'development' ? 50000 : 100000),
         windowMs:
           (parsed.API_RATE_LIMIT_WINDOW_MINUTES ?? 15) * 60 * 1000,
       },

@@ -7,6 +7,29 @@ import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import config from '../config/index.js';
+import { isAuthBootstrapRequest } from '../utils/authBootstrapPaths.js';
+
+/** Единый JSON-ответ при 429 (express-rate-limit иначе отдаёт англ. строку по умолчанию). */
+function rateLimitJsonHandler(message) {
+  return (_req, res, _next, options) => {
+    res.status(options.statusCode).json({
+      success: false,
+      message,
+    });
+  };
+}
+
+/** Реальный IP клиента (важно за nginx: иначе все пользователи = один IP). */
+function resolveClientIp(req) {
+  const xf = req.headers['x-forwarded-for'];
+  if (xf) {
+    const first = String(xf).split(',')[0].trim();
+    if (first) return first;
+  }
+  const realIp = req.headers['x-real-ip'];
+  if (realIp) return String(realIp).trim();
+  return req.ip || 'unknown';
+}
 
 /**
  * Helmet configuration
@@ -77,19 +100,39 @@ export const corsMiddleware = cors({
  * Rate Limiting
  * Ограничение количества запросов
  */
+const RATE_LIMIT_IP_MESSAGE =
+  'Слишком много запросов с вашего IP. Подождите несколько минут или увеличьте API_RATE_LIMIT_MAX в .env.';
+
 export const rateLimiter = rateLimit({
   windowMs: config.api.rateLimit.windowMs,
   // Для ERP типичны пакетные операции (пересчёт цен сотен товаров = сотни запросов за минуты).
-  // Настройка: API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MINUTES в .env
+  // Настройка: API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MINUTES, API_RATE_LIMIT_DISABLED в .env
   max: config.api.rateLimit.max,
-  message: {
-    success: false,
-    message: 'Too many requests from this IP, please try again later.',
-  },
+  keyGenerator: (req) => `ip:${resolveClientIp(req)}`,
+  handler: rateLimitJsonHandler(RATE_LIMIT_IP_MESSAGE),
   standardHeaders: true, // Возвращает rate limit info в заголовках
   legacyHeaders: false,
-  // Пропускаем health check
-  skip: (req) => req.url === '/health',
+  skip: (req) => {
+    if (config.api.rateLimit.disabled) return true;
+    const url = String(req.originalUrl || req.url || '').split('?')[0];
+    if (url === '/health' || url === '/api/health') return true;
+    // Логин/me не должны упираться в общий лимит IP (за nginx один IP на всех + пачки запросов SPA).
+    if (isAuthBootstrapRequest(req)) return true;
+    return false;
+  },
+});
+
+/** Отдельный лимит только на POST /auth/login (защита от перебора пароля). */
+export const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: config.isDevelopment ? 300 : 120,
+  keyGenerator: (req) => `login:${resolveClientIp(req)}`,
+  handler: rateLimitJsonHandler(
+    'Слишком много попыток входа. Подождите 15 минут и попробуйте снова.'
+  ),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => config.api.rateLimit.disabled,
 });
 
 /**

@@ -446,8 +446,33 @@ class OrdersService {
 
   /** Резерв одной позиции: PWS + в пути − резерв (без остатков поставщиков); у комплекта — + собираемость из комплектующих. */
   async _applyReserveForOrderComponent(productId, quantity, orderId, meta = {}) {
+    if (meta?._insideProductStockLock) {
+      return this._applyReserveForOrderComponentCore(productId, quantity, orderId, meta);
+    }
+    const { runWithProductStockLock } = await import('./stockMovements.service.js');
+    return runWithProductStockLock(productId, () =>
+      this._applyReserveForOrderComponentCore(productId, quantity, orderId, {
+        ...meta,
+        _insideProductStockLock: true
+      })
+    );
+  }
+
+  async _applyReserveForOrderComponentCore(productId, quantity, orderId, meta = {}) {
     if (!productId || quantity < 1) return;
     const qtyWanted = Math.max(1, parseInt(quantity, 10) || 1);
+
+    const reserveAsKitComponentEarly =
+      meta?.kit_product_id != null && Number(meta.kit_product_id) > 0;
+    const hasKitPrealloc =
+      (await isKitProductId(productId)) &&
+      !reserveAsKitComponentEarly &&
+      meta?.kit_reserve_preallocated != null &&
+      Number(meta.kit_reserve_preallocated) > 0;
+    if (!hasKitPrealloc) {
+      const snapGate = await getProductSupplySnapshotWithClient(null, productId);
+      if (Math.floor(snapGate.available) <= 0) return;
+    }
 
     let availableSupply;
     let qty;
@@ -504,7 +529,6 @@ class OrdersService {
       reason = `${reasonBase} (комплектующие, ${kitUnits} компл.)`;
     }
 
-    const { getProductSupplySnapshotWithClient } = await import('./sellableQuantity.service.js');
     const snapBeforeReserve = await getProductSupplySnapshotWithClient(null, productId);
     qty = Math.min(qty, Math.floor(snapBeforeReserve.available));
     if (qty <= 0) return;
@@ -935,6 +959,7 @@ class OrdersService {
     if (!id) return;
     const productId = await this._resolveProductIdForOrderStock(orderRow);
     if (!productId) return;
+
     const preferredWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
     const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
       productId,
@@ -985,12 +1010,11 @@ class OrdersService {
     const need = Math.max(0, qty - alreadyReservedForOrder);
     if (need <= 0) return;
 
-    const availableSupply = await getComponentAssemblableUnits(productId, { warehouseId });
-    const reserveNow = Math.min(need, Math.floor(availableSupply));
-    if (reserveNow <= 0) return;
+    const snapAvail = await getProductSupplySnapshotWithClient(null, productId);
+    if (Math.floor(snapAvail.available) <= 0) return;
 
-    const availableRecheck = await getComponentAssemblableUnits(productId, { warehouseId });
-    if (Math.floor(availableRecheck) < reserveNow) return;
+    const reserveNow = Math.min(need, Math.floor(snapAvail.available));
+    if (reserveNow <= 0) return;
 
     const snapFinal = await getProductSupplySnapshotWithClient(null, productId);
     if (Math.floor(snapFinal.available) < reserveNow) return;
@@ -1144,14 +1168,13 @@ class OrdersService {
         .map((id) => Number(id))
         .filter((n) => Number.isFinite(n) && n > 0)
     );
-    const { getReservableSupplyUnits } = await import('./sellableQuantity.service.js');
     const isKit = await isKitProductId(pid);
+    const snapProduct = await getProductSupplySnapshotWithClient(null, pid);
     if (!isKit) {
-      const availableSupply = await getReservableSupplyUnits(pid);
-      if (availableSupply <= 0) return;
+      if (Math.floor(snapProduct.available) <= 0) return;
     } else {
       const maxKits = await computeMaxKitUnitsReservable(pid);
-      if (maxKits <= 0) return;
+      if (maxKits <= 0 || Math.floor(snapProduct.available) <= 0) return;
     }
 
     const runQueueForProduct = async (forPid) => {
@@ -1164,12 +1187,11 @@ class OrdersService {
       for (const o of q) {
         const oid = orderRowDbId(o);
         if (oid && exclude.has(oid)) continue;
+        const snapLoop = await getProductSupplySnapshotWithClient(null, fp);
+        if (Math.floor(snapLoop.available) <= 0) break;
         if (isKit) {
           const maxK = await computeMaxKitUnitsReservable(fp);
           if (maxK <= 0) break;
-        } else {
-          const avail = await getReservableSupplyUnits(fp);
-          if (avail <= 0) break;
         }
         try {
           await this._applyReserveForOrderIfAbsent(o);
@@ -1535,7 +1557,7 @@ class OrdersService {
       const snap = await getProductSupplySnapshotWithClient(null, pid);
       const compAvail = snap.available;
       const maxKits = await this._computeMaxKitUnitsReservableForOrder(kitId, warehouseId);
-      return Math.max(Math.floor(compAvail), Math.floor(maxKits) * perKit);
+      return Math.min(Math.floor(compAvail), Math.floor(maxKits) * perKit);
     }
 
     if (await isKitProductId(pid)) {
@@ -1555,20 +1577,19 @@ class OrdersService {
     });
     const excludeIds = list.map((r) => orderRowDbId(r)).filter((id) => id != null);
     const touchedKitIds = new Set();
-    const { getReservableSupplyUnits } = await import('./sellableQuantity.service.js');
     for (const row of list) {
       if (!row) continue;
       try {
         const pid = await this._resolveProductIdForOrderStock(row);
         const pnum = Number(pid);
         if (Number.isFinite(pnum) && pnum > 0) {
+          const snapRow = await getProductSupplySnapshotWithClient(null, pnum);
+          if (Math.floor(snapRow.available) <= 0) continue;
           if (await isKitProductId(pnum)) {
             const wh = await this._resolveOwnWarehouseIdForOrder(row);
             const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(pnum, wh);
             const maxKits = await this._computeMaxKitUnitsReservableForOrder(pnum, warehouseId);
             if (maxKits <= 0) continue;
-          } else if ((await getReservableSupplyUnits(pnum)) <= 0) {
-            continue;
           }
         }
         await this._applyReserveForOrderIfAbsent(row);
@@ -2928,7 +2949,6 @@ class OrdersService {
     const orderIdStr = String(row.orderId ?? row.order_id ?? orderId);
     const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
     const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(pid, preferredWh);
-
     if (doUnreserve) {
       const release =
         quantity != null
@@ -2972,10 +2992,14 @@ class OrdersService {
         kitId != null && (await isKitProductId(kitId)) && pid !== Number(kitId)
           ? Number(kitId)
           : null;
-      const available = await this._getAvailableUnitsForOrderReserveLine(pid, row, {
-        warehouseId,
-        kitProductId
-      });
+      const snapManual = await getProductSupplySnapshotWithClient(null, pid);
+      const available = Math.min(
+        await this._getAvailableUnitsForOrderReserveLine(pid, row, {
+          warehouseId,
+          kitProductId
+        }),
+        Math.floor(snapManual.available)
+      );
       toAdd = Math.min(toAdd, available);
       if (toAdd <= 0) {
         if (qtyWanted != null && qtyWanted > 0) {

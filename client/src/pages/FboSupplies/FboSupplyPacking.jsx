@@ -102,7 +102,13 @@ export function FboSupplyPacking({
         if (data?.activeCargoUnitId != null) {
           setActiveCargoUnitId(data.activeCargoUnitId);
         }
-        if (data?.packing) onPackingChange(data.packing);
+        if (data?.packing) {
+          onPackingChange(data.packing, {
+            supplyStatus: data.supplyStatus,
+            packingAllMatch: data.packingAllMatch,
+            statusReverted: data.statusReverted,
+          });
+        }
         setScanMsg(data?.message || 'Готово');
         playEventSound(SOUND_EVENTS.scan_ok);
         setBarcodeInput('');
@@ -140,7 +146,13 @@ export function FboSupplyPacking({
     if (!window.confirm('Удалить грузоместо и весь его состав?')) return;
     try {
       const data = await fboSuppliesApi.deleteCargoUnit(supplyId, cargoUnitId);
-      if (data?.packing) onPackingChange(data.packing);
+      if (data?.packing) {
+        onPackingChange(data.packing, {
+          supplyStatus: data.supplyStatus,
+          packingAllMatch: data.packingAllMatch,
+          statusReverted: data.statusReverted,
+        });
+      }
       if (String(activeCargoUnitId) === String(cargoUnitId)) {
         setActiveCargoUnitId(null);
       }

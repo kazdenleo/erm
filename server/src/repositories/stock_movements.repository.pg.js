@@ -67,6 +67,13 @@ class StockMovementsRepositoryPG {
     const metaJson = meta == null ? null : typeof meta === 'string' ? meta : JSON.stringify(meta);
     const wh = warehouseId != null && warehouseId !== '' ? warehouseId : null;
     const profOverride = normalizeProfileId(profileId);
+    const typeNormPre = type != null ? String(type).trim().toLowerCase() : '';
+    const qc = Number(quantityChange);
+    if (typeNormPre === 'reserve' && (!Number.isFinite(qc) || qc >= 0)) {
+      const err = new Error('Резерв: quantity_change должно быть отрицательным');
+      err.statusCode = 400;
+      throw err;
+    }
     const sql = `
       INSERT INTO stock_movements (product_id, type, quantity_change, balance_after, incoming_after, reserved_after, reason, meta, warehouse_id, profile_id)
       SELECT $1::bigint, $2::varchar(32), $3::int,

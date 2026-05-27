@@ -297,6 +297,12 @@ export async function getReservableSupplyUnits(productId, opts = {}) {
   return getReservableSupplyUnitsWithClient(null, productId, opts);
 }
 
+/** Сколько единиц можно зарезервировать сейчас (0 — без записи в журнал). */
+export async function getReserveableUnitsWithClient(client, productId, opts = {}) {
+  const snap = await getProductSupplySnapshotWithClient(client, productId, opts);
+  return Math.max(0, Math.floor(snap.available));
+}
+
 export default {
   computeAvailableQuantity,
   computeOwnWarehouseAvailable,
@@ -307,6 +313,7 @@ export default {
   getProductSupplySnapshotWithClient,
   getReservableSupplyUnits,
   getReservableSupplyUnitsWithClient,
+  getReserveableUnitsWithClient,
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL

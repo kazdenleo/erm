@@ -10,7 +10,7 @@ export const FBO_SUPPLY_STATUSES = [
 ];
 
 export const FBO_SUPPLY_STATUS_LABELS = {
-  new: 'Новый',
+  new: 'Новая',
   assembled: 'Собран',
   packed: 'Упакован',
   ready_for_supply: 'Готов к поставке',

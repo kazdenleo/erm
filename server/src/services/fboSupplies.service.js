@@ -6,6 +6,11 @@ import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { FBO_SUPPLY_STATUSES, getNextFboSupplyStatus } from '../constants/fboSupplyStatuses.js';
 import stockMovementsService from './stockMovements.service.js';
+import {
+  assertCanSetReadyForSupply,
+  evaluateSupplyPacking,
+  syncSupplyStatusForPacking,
+} from '../utils/fboSupplyPackingCheck.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -79,6 +84,46 @@ const SUPPLY_SELECT = `
 `;
 
 class FboSuppliesService {
+  /**
+   * Склады для списания остатков в поставке FBO (свои склады профиля, без складов поставщиков).
+   */
+  async listDeductionWarehouses({ profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const baseSql = `
+      SELECT w.id, w.type, w.address, w.supplier_id, w.organization_id, w.wb_warehouse_name
+      FROM warehouses w
+      WHERE ($1::bigint IS NULL OR w.profile_id = $1)
+    `;
+    const orderSql = ` ORDER BY NULLIF(TRIM(w.address), ''), w.id`;
+
+    let r = await query(
+      `${baseSql}
+         AND LOWER(TRIM(COALESCE(w.type, ''))) = 'warehouse'
+         AND w.supplier_id IS NULL${orderSql}`,
+      [pid]
+    );
+    if (!r.rows?.length) {
+      r = await query(
+        `${baseSql}
+           AND LOWER(TRIM(COALESCE(w.type, ''))) <> 'supplier'
+           AND w.supplier_id IS NULL${orderSql}`,
+        [pid]
+      );
+    }
+    if (!r.rows?.length) {
+      r = await query(`${baseSql}${orderSql}`, [pid]);
+    }
+    return (r.rows || []).map((row) => ({
+      id: Number(row.id),
+      type: row.type,
+      address: row.address,
+      supplierId: row.supplier_id,
+      organizationId: row.organization_id,
+      wbWarehouseName: row.wb_warehouse_name || null,
+      isFboStock: false,
+    }));
+  }
+
   async _alreadyDeductedStock(supplyId, client = null) {
     const run = client?.query ? client.query.bind(client) : query;
     const r = await run(
@@ -257,6 +302,10 @@ class FboSuppliesService {
       [id]
     );
     supply.items = (itemsR.rows || []).map(mapItemRow);
+    const packingEval = await evaluateSupplyPacking(id);
+    supply.packingAllMatch = packingEval.allMatch;
+    supply.hasPackingDiscrepancy = packingEval.hasItems && !packingEval.allMatch;
+    supply.packingDiscrepancies = packingEval.discrepancies;
     return supply;
   }
 
@@ -397,6 +446,9 @@ class FboSuppliesService {
     if (payload.deductStock !== undefined) setField('deduct_stock', !!payload.deductStock);
     if (payload.note !== undefined) setField('note', payload.note);
     if (payload.status !== undefined && FBO_SUPPLY_STATUSES.includes(payload.status)) {
+      if (payload.status === 'ready_for_supply') {
+        assertCanSetReadyForSupply(await evaluateSupplyPacking(id));
+      }
       setField('status', payload.status);
     }
     if (!fields.length) return existing;
@@ -439,7 +491,15 @@ class FboSuppliesService {
       err.statusCode = 400;
       throw err;
     }
+    if (next === 'ready_for_supply') {
+      assertCanSetReadyForSupply(await evaluateSupplyPacking(id));
+    }
     return this.update(id, { status: next }, { profileId });
+  }
+
+  /** После изменения сборки: при расхождениях — статус «Новая». */
+  async syncStatusAfterPackingChange(supplyId) {
+    return syncSupplyStatusForPacking(supplyId);
   }
 
   async _assertSupplyAccess(supplyId, { profileId } = {}) {
