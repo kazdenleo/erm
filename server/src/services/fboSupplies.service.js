@@ -87,32 +87,28 @@ class FboSuppliesService {
   /**
    * Склады для списания остатков в поставке FBO (свои склады профиля, без складов поставщиков).
    */
-  async listDeductionWarehouses({ profileId } = {}) {
+  async listDeductionWarehouses({ profileId, organizationId = null } = {}) {
     const pid = normalizeProfileId(profileId);
-    const baseSql = `
-      SELECT w.id, w.type, w.address, w.supplier_id, w.organization_id, w.wb_warehouse_name
+    const orgId =
+      organizationId != null && organizationId !== '' && Number.isFinite(Number(organizationId))
+        ? Number(organizationId)
+        : null;
+    const r = await query(
+      `
+      SELECT w.id, w.type, w.address, w.supplier_id, w.organization_id, w.wb_warehouse_name, w.is_fbo_stock
       FROM warehouses w
       WHERE ($1::bigint IS NULL OR w.profile_id = $1)
-    `;
-    const orderSql = ` ORDER BY NULLIF(TRIM(w.address), ''), w.id`;
-
-    let r = await query(
-      `${baseSql}
-         AND LOWER(TRIM(COALESCE(w.type, ''))) = 'warehouse'
-         AND w.supplier_id IS NULL${orderSql}`,
-      [pid]
+        AND LOWER(TRIM(COALESCE(w.type, ''))) = 'warehouse'
+        AND w.supplier_id IS NULL
+        AND (
+          $2::bigint IS NULL
+          OR w.organization_id IS NULL
+          OR w.organization_id = $2
+        )
+      ORDER BY NULLIF(TRIM(w.wb_warehouse_name), ''), NULLIF(TRIM(w.address), ''), w.id
+      `,
+      [pid, orgId]
     );
-    if (!r.rows?.length) {
-      r = await query(
-        `${baseSql}
-           AND LOWER(TRIM(COALESCE(w.type, ''))) <> 'supplier'
-           AND w.supplier_id IS NULL${orderSql}`,
-        [pid]
-      );
-    }
-    if (!r.rows?.length) {
-      r = await query(`${baseSql}${orderSql}`, [pid]);
-    }
     return (r.rows || []).map((row) => ({
       id: Number(row.id),
       type: row.type,
@@ -120,7 +116,7 @@ class FboSuppliesService {
       supplierId: row.supplier_id,
       organizationId: row.organization_id,
       wbWarehouseName: row.wb_warehouse_name || null,
-      isFboStock: false,
+      isFboStock: !!row.is_fbo_stock,
     }));
   }
 

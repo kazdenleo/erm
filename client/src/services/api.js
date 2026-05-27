@@ -178,6 +178,8 @@ api.interceptors.response.use(
       // Ошибка уже обрабатывается на странице сборки
     } else if (error.config?.silentConsole === true) {
       /* вызывающий код обрабатывает ошибку без шума в консоли */
+    } else if (error.code === 'ERR_CANCELED' || error.name === 'CanceledError') {
+      /* отмена запроса при размонтировании / смене фильтра — не ошибка API */
     } else if (
       error.response?.status === 400 &&
       String(error.config?.url || '').includes('/marketplace-attributes')

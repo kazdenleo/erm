@@ -107,6 +107,28 @@ export function FboSupplyDetail() {
     setError: setLabelPrintError,
   } = useProductLabelPrint(printHelperUrl);
 
+  const loadDeductionWarehouses = useCallback(async (organizationId) => {
+    setWarehousesLoading(true);
+    setWarehousesError(null);
+    try {
+      const params =
+        organizationId != null && organizationId !== ''
+          ? { organizationId: String(organizationId) }
+          : {};
+      const whList = await fboSuppliesApi.getDeductionWarehouses(params);
+      setAllWarehouses(Array.isArray(whList) ? whList : []);
+      setWarehousesError(null);
+    } catch (whErr) {
+      console.error('Error loading FBO deduction warehouses:', whErr);
+      setAllWarehouses([]);
+      setWarehousesError(
+        whErr.response?.data?.message || whErr.message || 'Ошибка загрузки складов'
+      );
+    } finally {
+      setWarehousesLoading(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setWarehousesLoading(true);
@@ -116,25 +138,15 @@ export function FboSupplyDetail() {
       const data = await fboSuppliesApi.getById(id);
       setSupply(data);
       setSelectedItemIds(new Set());
-      let whList = [];
-      try {
-        whList = await fboSuppliesApi.getDeductionWarehouses();
-        setWarehousesError(null);
-      } catch (whErr) {
-        console.error('Error loading FBO deduction warehouses:', whErr);
-        setWarehousesError(
-          whErr.response?.data?.message || whErr.message || 'Ошибка загрузки складов'
-        );
-      }
-      setAllWarehouses(Array.isArray(whList) ? whList : []);
+      await loadDeductionWarehouses(data?.organizationId);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить поставку');
       setAllWarehouses([]);
+      setWarehousesLoading(false);
     } finally {
       setLoading(false);
-      setWarehousesLoading(false);
     }
-  }, [id]);
+  }, [id, loadDeductionWarehouses]);
 
   const loadPacking = useCallback(async () => {
     try {
@@ -681,9 +693,10 @@ export function FboSupplyDetail() {
               const v = e.target.value ? Number(e.target.value) : null;
               setSupply((s) => ({ ...s, organizationId: v }));
             }}
-            onBlur={(e) => {
+            onBlur={async (e) => {
               const v = e.target.value ? Number(e.target.value) : null;
-              saveField({ organizationId: v });
+              await saveField({ organizationId: v });
+              await loadDeductionWarehouses(v);
             }}
             disabled={saving}
           >

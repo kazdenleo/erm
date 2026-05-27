@@ -36,7 +36,13 @@ class FboSuppliesController {
       if (tid === TENANT_LIST_EMPTY) {
         return res.status(200).json({ ok: true, data: [] });
       }
-      const data = await fboSuppliesService.listDeductionWarehouses({ profileId: tid });
+      const orgQ = req.query?.organizationId;
+      const organizationId =
+        orgQ != null && String(orgQ).trim() !== '' ? String(orgQ).trim() : null;
+      const data = await fboSuppliesService.listDeductionWarehouses({
+        profileId: tid,
+        organizationId,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       next(e);
