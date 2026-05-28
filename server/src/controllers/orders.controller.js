@@ -426,6 +426,16 @@ class OrdersController {
     }
   }
 
+  /** Сброс зависшей блокировки синхронизации (если импорт «висит» минутами). */
+  async resetSyncFbs(req, res, next) {
+    try {
+      const data = ordersSyncService.clearSyncFbsLock();
+      return res.status(200).json({ ok: true, data, message: 'Блокировка синхронизации снята' });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async refreshOzon(req, res, next) {
     try {
       const { orderId } = req.params;

@@ -19,11 +19,15 @@ import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 
 // Небольшой in‑memory кэш для rate‑limit'а и отдачи последнего результата
+const SYNC_STALE_LOCK_MS = 20 * 60 * 1000;
+const SYNC_BACKGROUND_MAX_MS = 12 * 60 * 1000;
+
 const ordersSyncCache = {
   lastSyncTime: null,
   lastSyncResult: null,
   lastSyncError: null,
-  syncInProgress: false
+  syncInProgress: false,
+  syncStartedAt: null
 };
 
 /** Заказ из GET /orders за период до сопоставления с POST /orders/status */
@@ -237,9 +241,30 @@ function applyReturnedToNewStatusGuard(status) {
 }
 
 class OrdersSyncService {
+  resetStaleSyncLockIfNeeded() {
+    if (!ordersSyncCache.syncInProgress || !ordersSyncCache.syncStartedAt) return false;
+    if (Date.now() - ordersSyncCache.syncStartedAt < SYNC_STALE_LOCK_MS) return false;
+    logger.warn('[Orders Sync] сброс зависшей блокировки (таймаут ожидания)');
+    ordersSyncCache.syncInProgress = false;
+    ordersSyncCache.syncStartedAt = null;
+    if (!ordersSyncCache.lastSyncError) {
+      ordersSyncCache.lastSyncError =
+        'Предыдущая синхронизация заняла слишком долго и была сброшена. Запустите импорт снова.';
+    }
+    return true;
+  }
+
+  clearSyncFbsLock() {
+    ordersSyncCache.syncInProgress = false;
+    ordersSyncCache.syncStartedAt = null;
+    return { cleared: true };
+  }
+
   getSyncFbsStatus() {
+    this.resetStaleSyncLockIfNeeded();
     return {
       inProgress: Boolean(ordersSyncCache.syncInProgress),
+      syncStartedAt: ordersSyncCache.syncStartedAt ?? null,
       lastSyncTime: ordersSyncCache.lastSyncTime ?? null,
       lastSyncResult: ordersSyncCache.lastSyncResult ?? null,
       lastSyncError: ordersSyncCache.lastSyncError ?? null,
@@ -257,6 +282,7 @@ class OrdersSyncService {
     const organizationId = options.organizationId ?? null;
     const scheduler = options.scheduler === true;
 
+    this.resetStaleSyncLockIfNeeded();
     if (ordersSyncCache.syncInProgress) {
       return { started: false, inProgress: true };
     }
@@ -264,23 +290,32 @@ class OrdersSyncService {
     // Сразу помечаем «в работе», чтобы GET /sync-fbs/status не отдавал inProgress=false
     // до входа в syncFbs (клиент иначе завершает опрос раньше импорта).
     ordersSyncCache.syncInProgress = true;
+    ordersSyncCache.syncStartedAt = Date.now();
 
     // Важно: запуск в следующем тике, чтобы контроллер успел ответить.
     setTimeout(() => {
-      this.syncFbs({
+      const run = this.syncFbs({
         force,
         profileId,
         organizationId,
         scheduler,
         refreshStatuses,
         backgroundJob: true
-      })
+      });
+      const timeout = new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error('Синхронизация прервана по таймауту (12 мин). Уменьшите период или повторите позже.')),
+          SYNC_BACKGROUND_MAX_MS
+        );
+      });
+      Promise.race([run, timeout])
         .catch((e) => {
           ordersSyncCache.lastSyncError = e?.message || String(e);
           logger.error(`[Orders Sync] background sync failed: ${ordersSyncCache.lastSyncError}`);
         })
         .finally(() => {
           ordersSyncCache.syncInProgress = false;
+          ordersSyncCache.syncStartedAt = null;
         });
     }, 0);
 
@@ -302,6 +337,7 @@ class OrdersSyncService {
     const organizationId = options.organizationId ?? null;
     const catchUpLimit = refreshStatuses ? 500 : 40;
     const oneMinute = 60 * 1000;
+    this.resetStaleSyncLockIfNeeded();
 
     if (fromScheduler && isOrdersFbsBackgroundSyncPaused()) {
       logger.info('[Orders Sync] Фоновая синхронизация пропущена (пауза). Ручной импорт на странице «Заказы» по-прежнему доступен.');
@@ -367,6 +403,7 @@ class OrdersSyncService {
 
     if (!ownsBackgroundLock) {
       ordersSyncCache.syncInProgress = true;
+      ordersSyncCache.syncStartedAt = now;
     }
     ordersSyncCache.lastSyncTime = now;
     ordersSyncCache.lastSyncError = null;
@@ -391,8 +428,10 @@ class OrdersSyncService {
 
     // Чтобы "все" заказы попадали в систему, запрашиваем широкий период.
     // (WB API /api/v3/orders возвращает без текущего статуса — статус догружаем отдельно.)
-    const WB_DAYS_BACK = 365;
-    const OZON_DAYS_BACK = 365;
+    // Ручной импорт: короче период (быстрее на VPS). Планировщик — полный год.
+    const syncDaysBack = fromScheduler ? 365 : refreshStatuses ? 90 : 45;
+    const WB_DAYS_BACK = syncDaysBack;
+    const OZON_DAYS_BACK = syncDaysBack;
 
     // Конфиги маркетплейсов из того же источника, что и раздел «Интеграции» (БД или файлы).
     // Важно: если is_active сбился (или кабинет помечен неактивным), синк не должен «молчать» и переставать приносить заказы.
@@ -912,7 +951,10 @@ class OrdersSyncService {
         result: results
       };
     } finally {
-      ordersSyncCache.syncInProgress = false;
+      if (!ownsBackgroundLock) {
+        ordersSyncCache.syncInProgress = false;
+        ordersSyncCache.syncStartedAt = null;
+      }
     }
   }
 

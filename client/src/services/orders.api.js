@@ -73,6 +73,11 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
+  resetSyncFbs: async () => {
+    const response = await api.post('/orders/sync-fbs/reset');
+    return response.data?.data ?? response.data;
+  },
+
   /** Статус паузы фоновой синхронизации (сервер + не опрашивать список по таймеру на клиенте). */
   getOrdersFbsSyncPause: async () => {
     const response = await api.get('/orders/sync-auto-pause');

@@ -669,14 +669,20 @@ export function Orders() {
 
   const runSync = useCallback(
     async (silent = false, opts = {}) => {
-      if (syncInFlightRef.current) {
-        if (!silent) {
-          setSyncInfo({ message: 'Синхронизация уже выполняется, подождите…' });
-        }
+      const forceImport = opts.force === true;
+      // Тихий опрос при открытии страницы не блокирует ручной «Импорт».
+      if (syncInFlightRef.current && !silent && !forceImport) {
+        setSyncInfo({ message: 'Синхронизация уже выполняется, подождите…' });
         return;
       }
+      if (syncInFlightRef.current && !silent && forceImport) {
+        try {
+          await ordersApi.resetSyncFbs();
+        } catch {
+          /* ignore */
+        }
+      }
       syncInFlightRef.current = true;
-      const forceImport = opts.force === true;
       const refreshStatuses = opts.refreshStatuses === true;
       try {
         if (!silent) {
@@ -694,7 +700,7 @@ export function Orders() {
         }
 
         const startedAt = Date.now();
-        const MAX_WAIT_MS = 300000;
+        const MAX_WAIT_MS = 600000;
         let lastStatus = null;
         let sawInProgress = false;
         while (Date.now() - startedAt < MAX_WAIT_MS) {
@@ -704,7 +710,20 @@ export function Orders() {
           lastStatus = await ordersApi.getSyncFbsStatus().catch(() => null);
           if (lastStatus?.inProgress) sawInProgress = true;
           const elapsed = Date.now() - startedAt;
+          const elapsedSec = Math.floor(elapsed / 1000);
+          if (!silent && lastStatus?.inProgress) {
+            setSyncInfo({
+              message: forceImport
+                ? `Импорт заказов с маркетплейсов… (${elapsedSec} с)`
+                : `Синхронизация… (${elapsedSec} с)`
+            });
+          }
           if (!lastStatus?.inProgress && (sawInProgress || elapsed >= 5000)) break;
+          if (elapsed > 120000 && lastStatus?.inProgress && !silent) {
+            setSyncInfo({
+              message: `Импорт всё ещё идёт на сервере (${elapsedSec} с). Можно обновить список или нажать «Сбросить импорт».`
+            });
+          }
         }
 
         const ym = lastStatus?.lastSyncResult?.yandex;
@@ -781,6 +800,21 @@ export function Orders() {
 
   const handleSync = () => runSync(false, { force: true, refreshStatuses: true });
   const handleImportOrders = () => runSync(false, { force: true });
+
+  const handleResetSync = async () => {
+    try {
+      setSyncLoading(true);
+      await ordersApi.resetSyncFbs();
+      setSyncInfo({ message: 'Блокировка снята. Можно снова нажать «Импортировать заказы».' });
+      setSyncError(null);
+    } catch (e) {
+      setSyncError(e.response?.data?.message || e.message || 'Не удалось сбросить синхронизацию');
+    } finally {
+      syncInFlightRef.current = false;
+      setSyncLoading(false);
+      setSyncKind(null);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1776,10 +1810,20 @@ export function Orders() {
             size="small"
             onClick={handleImportOrders}
             disabled={syncLoading}
-            title="Полная загрузка заказов с Ozon, Wildberries и Яндекс.Маркет (обходит ограничение «не чаще раза в минуту»)"
+            title="Загрузка заказов за последние ~45 дней с Ozon, Wildberries и Яндекс.Маркет"
           >
             {syncLoading && syncKind === 'import' ? 'Импорт...' : '📥 Импортировать заказы'}
           </Button>
+          {syncLoading && (
+            <Button
+              variant="outline-secondary"
+              size="small"
+              onClick={() => void handleResetSync()}
+              title="Если импорт завис больше 2–3 минут"
+            >
+              Сбросить импорт
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="small"

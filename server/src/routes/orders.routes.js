@@ -48,6 +48,11 @@ router.get(
   wrapAsync(ordersController.getSyncFbsStatus.bind(ordersController))
 );
 
+router.post(
+  '/sync-fbs/reset',
+  wrapAsync(ordersController.resetSyncFbs.bind(ordersController))
+);
+
 // Пауза фоновой синхронизации заказов с МП (cron); ручной sync-fbs всё ещё работает
 router.get(
   '/sync-auto-pause',
