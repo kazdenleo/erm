@@ -90,8 +90,24 @@ app.get('/favicon.ico', (_req, res) => res.status(204).end());
 // Static uploads (product images)
 app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
 
+// Static client build (если nginx проксирует весь трафик на Node).
+// /api остаётся API, а всё остальное отдаём как SPA.
+const clientBuildDir = path.resolve(__dirname, '../../client/build');
+app.use(express.static(clientBuildDir));
+
 // API routes
 app.use('/api', routes);
+
+// SPA fallback: любой неизвестный GET (кроме /api и /uploads) → index.html
+app.get('*', (req, res, next) => {
+  try {
+    if (req.method !== 'GET') return next();
+    if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) return next();
+    return res.sendFile(path.join(clientBuildDir, 'index.html'));
+  } catch (e) {
+    return next(e);
+  }
+});
 
 // 404 handler
 app.use(notFoundHandler);
