@@ -3,16 +3,23 @@
  * Конфигурация подключения к PostgreSQL с пулом соединений и graceful shutdown
  */
 
+import '../load-env.js';
 import pg from 'pg';
 import config from './index.js';
+import { envFlag } from '../load-env.js';
 import logger from '../utils/logger.js';
 
 const { Pool } = pg;
 
+function shouldUsePostgreSQL() {
+  if (envFlag('USE_POSTGRESQL', true)) return true;
+  return config.database?.usePostgreSQL === true;
+}
+
 // Создаем пул соединений только если PostgreSQL включен
 let pool = null;
 
-if (config.database.usePostgreSQL) {
+if (shouldUsePostgreSQL()) {
   // Создаем конфигурацию пула (password только если указан)
   const poolConfig = {
     host: config.database.host,

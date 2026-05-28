@@ -4,6 +4,7 @@
  */
 
 import config from './index.js';
+import { envFlag } from '../load-env.js';
 
 // Старые репозитории (файловое хранилище)
 import productsRepositoryOld from '../repositories/products.repository.js';
@@ -35,7 +36,7 @@ import inquiriesRepositoryPG from '../repositories/inquiries.repository.pg.js';
 import marketplaceInventorySnapshotsRepositoryPG from '../repositories/marketplaceInventorySnapshots.repository.pg.js';
 
 // Единый флаг с config/database.js (USE_POSTGRESQL в .env)
-const USE_POSTGRESQL = config.database.usePostgreSQL === true;
+const USE_POSTGRESQL = envFlag('USE_POSTGRESQL', true) || config.database.usePostgreSQL === true;
 
 /**
  * Фабрика репозиториев

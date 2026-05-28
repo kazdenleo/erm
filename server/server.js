@@ -3,6 +3,7 @@
  * Точка входа для запуска сервера с graceful shutdown
  */
 
+import './src/load-env.js';
 import app from './src/app.js';
 import config from './src/config/index.js';
 import logger from './src/utils/logger.js';
@@ -127,15 +128,24 @@ process.on('SIGTERM', () => {
 // Запуск сервера
 async function startServer() {
   try {
-    if (repositoryFactory.isUsingPostgreSQL() && !config.database.usePostgreSQL) {
+    const usePg = config.database.usePostgreSQL || repositoryFactory.isUsingPostgreSQL();
+    if (repositoryFactory.isUsingPostgreSQL() && !usePg) {
       logger.error(
         'USE_POSTGRESQL: репозитории настроены на PostgreSQL, но пул не инициализирован. Установите USE_POSTGRESQL=true в server/.env'
       );
       process.exit(1);
     }
 
+    logger.info('Database config', {
+      usePostgreSQL: usePg,
+      host: config.database.host,
+      database: config.database.name,
+      user: config.database.user,
+      envUsePostgresql: process.env.USE_POSTGRESQL ?? '(not set)',
+    });
+
     // Проверяем подключение к БД перед запуском
-    if (config.database.usePostgreSQL) {
+    if (usePg) {
       const dbConnected = await testConnection();
       if (!dbConnected && config.isProduction) {
         logger.error('Database connection failed. Exiting...');
@@ -156,7 +166,7 @@ async function startServer() {
       logger.info('========================================');
       
       // Полный планировщик — при PostgreSQL; фоновая синхронизация заказов — всегда (и без PG)
-      if (config.database.usePostgreSQL) {
+      if (usePg) {
         try {
           await schedulerService.init();
         } catch (error) {

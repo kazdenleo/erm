@@ -34,9 +34,15 @@ cd "$APP_ROOT/client"
 if [ -f package-lock.json ]; then npm ci; else npm install; fi
 npm run build
 
-echo "==> pm2 restart"
-pm2 restart "$PM2_NAME"
+echo "==> pm2 restart (cwd=$APP_ROOT/server)"
+cd "$APP_ROOT/server"
+pm2 delete "$PM2_NAME" 2>/dev/null || true
+pm2 start server.js --name "$PM2_NAME" --cwd "$APP_ROOT/server"
 pm2 save
 pm2 list
+
+echo "==> health check"
+sleep 2
+curl -sf "http://127.0.0.1:${PORT:-3001}/health" | head -c 400 || echo "WARN: /health failed — см. pm2 logs $PM2_NAME"
 
 echo "==> done"

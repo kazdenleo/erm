@@ -3,36 +3,9 @@
  * Централизованная конфигурация с валидацией через Zod
  */
 
-import dotenv from 'dotenv';
+import '../load-env.js';
 import { z } from 'zod';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Определяем корень проекта (папка на уровень выше от server/src/config/)
-// Если запускаем из server/, то поднимаемся на уровень выше
-const projectRoot = __dirname.includes('server/src/config') 
-  ? join(__dirname, '../../../') 
-  : process.cwd();
-
-// Загружаем .env: корень репозитория, затем server/.env (перекрывает — как на VPS в /opt/erm/server)
-const envPath = join(projectRoot, '.env');
-const serverEnvPath = join(projectRoot, 'server', '.env');
-const envLoaded = dotenv.config({ path: envPath });
-dotenv.config({ path: serverEnvPath, override: true });
-
-// Логируем загрузку .env (только в development)
-if (process.env.NODE_ENV === 'development') {
-  if (envLoaded.error) {
-    console.warn(`[Config] .env file not found at: ${envPath}`);
-  } else {
-    console.log(`[Config] Loaded .env from: ${envPath}`);
-    console.log(`[Config] DB_USER: ${process.env.DB_USER || 'not set'}`);
-    console.log(`[Config] USE_POSTGRESQL: ${process.env.USE_POSTGRESQL || 'not set'}`);
-  }
-}
+import { envFlag } from '../load-env.js';
 
 // Схема валидации конфигурации
 const configSchema = z.object({
@@ -47,7 +20,14 @@ const configSchema = z.object({
   DB_NAME: z.string().min(1).default('erp_system'),
   DB_USER: z.string().default('admin'),
   DB_PASSWORD: z.string().default(''),
-  USE_POSTGRESQL: z.string().transform(val => val === 'true').default('true'),
+  USE_POSTGRESQL: z
+    .string()
+    .optional()
+    .transform((val) => {
+      if (val == null || String(val).trim() === '') return true;
+      const s = String(val).trim().toLowerCase();
+      return s === 'true' || s === '1' || s === 'yes';
+    }),
   
   // Redis (optional)
   REDIS_HOST: z.string().optional().default('localhost'),
