@@ -47,7 +47,7 @@ const configSchema = z.object({
   DB_NAME: z.string().min(1).default('erp_system'),
   DB_USER: z.string().default('admin'),
   DB_PASSWORD: z.string().default(''),
-  USE_POSTGRESQL: z.string().transform(val => val === 'true').default('false'),
+  USE_POSTGRESQL: z.string().transform(val => val === 'true').default('true'),
   
   // Redis (optional)
   REDIS_HOST: z.string().optional().default('localhost'),

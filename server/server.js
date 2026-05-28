@@ -7,6 +7,7 @@ import app from './src/app.js';
 import config from './src/config/index.js';
 import logger from './src/utils/logger.js';
 import { closePool, testConnection } from './src/config/database.js';
+import repositoryFactory from './src/config/repository-factory.js';
 import schedulerService from './src/services/scheduler.service.js';
 
 const PORT = config.port;
@@ -126,6 +127,13 @@ process.on('SIGTERM', () => {
 // Запуск сервера
 async function startServer() {
   try {
+    if (repositoryFactory.isUsingPostgreSQL() && !config.database.usePostgreSQL) {
+      logger.error(
+        'USE_POSTGRESQL: репозитории настроены на PostgreSQL, но пул не инициализирован. Установите USE_POSTGRESQL=true в server/.env'
+      );
+      process.exit(1);
+    }
+
     // Проверяем подключение к БД перед запуском
     if (config.database.usePostgreSQL) {
       const dbConnected = await testConnection();

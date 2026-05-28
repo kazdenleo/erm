@@ -16,6 +16,9 @@ router.use(requireAuth);
 router.get('/me', wrapAsync(usersController.getMe));
 router.put('/me', wrapAsync(usersController.updateMe));
 
+// Список пользователей для выбора (приглашения, назначения и т.п.) — без прав администратора.
+router.get('/invite-candidates', wrapAsync(usersController.getInviteCandidates));
+
 router.get('/', wrapAsync(usersController.getAll));
 router.get('/:id', wrapAsync(usersController.getById));
 router.post('/', wrapAsync(usersController.create));

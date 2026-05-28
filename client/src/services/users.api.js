@@ -21,6 +21,11 @@ export const usersApi = {
     return response.data;
   },
 
+  async getInviteCandidates() {
+    const response = await api.get('/users/invite-candidates');
+    return response.data;
+  },
+
   async getById(id) {
     const response = await api.get(`/users/${id}`);
     return response.data;

@@ -6,7 +6,17 @@
 import React, { useEffect, useState } from 'react';
 import { integrationsApi } from '../../services/integrations.api';
 import { Button } from '../../components/common/Button/Button';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+
+function notificationOpenUrl(n) {
+  const direct = String(n?.meta?.url || n?.meta?.link || '').trim();
+  if (direct) return direct;
+  const sid = n?.meta?.session_id ?? n?.meta?.sessionId ?? null;
+  if (sid != null && String(sid).trim() !== '') {
+    return `/stock-levels/warehouse?op=receipts_list&session=${encodeURIComponent(String(sid).trim())}`;
+  }
+  return '';
+}
 
 export function Notifications() {
   const navigate = useNavigate();
@@ -76,7 +86,9 @@ export function Notifications() {
         <div style={{ fontSize: '13px', color: 'var(--muted)' }}>Уведомлений нет.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {items.map((n) => (
+          {items.map((n) => {
+            const openUrl = notificationOpenUrl(n);
+            return (
             <div
               key={n.id}
               style={{
@@ -99,19 +111,18 @@ export function Notifications() {
               <div style={{ marginTop: '6px', fontSize: '12px', whiteSpace: 'pre-wrap' }}>
                 {n.message}
               </div>
-              {n?.meta?.url ? (
-                <div style={{ marginTop: '10px' }}>
+              {openUrl ? (
+                <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                   <Button
                     type="button"
                     variant="secondary"
-                    onClick={() => {
-                      const url = String(n.meta.url || '').trim();
-                      if (!url) return;
-                      navigate(url);
-                    }}
+                    onClick={() => navigate(openUrl)}
                   >
-                    Открыть
+                    Открыть приёмку
                   </Button>
+                  <Link to={openUrl} style={{ fontSize: 12 }}>
+                    {openUrl}
+                  </Link>
                 </div>
               ) : null}
               {(n.expires_at || n.checked_at) && (
@@ -122,7 +133,8 @@ export function Notifications() {
                 </div>
               )}
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
     </div>

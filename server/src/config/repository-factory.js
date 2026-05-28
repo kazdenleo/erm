@@ -3,7 +3,7 @@
  * Фабрика для выбора репозиториев (старое файловое хранилище или PostgreSQL)
  */
 
-import { getEnv } from './env.js';
+import config from './index.js';
 
 // Старые репозитории (файловое хранилище)
 import productsRepositoryOld from '../repositories/products.repository.js';
@@ -34,8 +34,8 @@ import usersRepositoryPG from '../repositories/users.repository.pg.js';
 import inquiriesRepositoryPG from '../repositories/inquiries.repository.pg.js';
 import marketplaceInventorySnapshotsRepositoryPG from '../repositories/marketplaceInventorySnapshots.repository.pg.js';
 
-// Определяем, использовать ли PostgreSQL
-const USE_POSTGRESQL = getEnv('USE_POSTGRESQL', 'true').toLowerCase() === 'true';
+// Единый флаг с config/database.js (USE_POSTGRESQL в .env)
+const USE_POSTGRESQL = config.database.usePostgreSQL === true;
 
 /**
  * Фабрика репозиториев

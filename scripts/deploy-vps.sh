@@ -14,6 +14,18 @@ echo "==> server dependencies"
 cd "$APP_ROOT/server"
 if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
+if [ -f "$APP_ROOT/server/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$APP_ROOT/server/.env"
+  set +a
+fi
+if [ "${USE_POSTGRESQL:-true}" != "true" ]; then
+  echo "ERROR: USE_POSTGRESQL must be true on VPS (current: ${USE_POSTGRESQL:-unset})"
+  echo "Fix: echo USE_POSTGRESQL=true >> $APP_ROOT/server/.env"
+  exit 1
+fi
+
 echo "==> migrations"
 npm run migrate
 

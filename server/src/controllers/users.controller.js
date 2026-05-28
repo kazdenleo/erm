@@ -99,6 +99,35 @@ export const usersController = {
     }
   },
 
+  /**
+   * Список пользователей для выбора в UI (например, приглашение в общую приёмку).
+   * В отличие от getAll — доступен любому пользователю с привязкой к профилю.
+   */
+  async getInviteCandidates(req, res, next) {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ ok: false, message: 'Требуется авторизация' });
+      }
+      if (req.user.profileId == null || req.user.profileId === '') {
+        return res.status(403).json({ ok: false, message: 'Действие доступно только пользователям с привязкой к аккаунту (профилю)' });
+      }
+      const list = await usersRepo.findAll({ profileId: req.user.profileId });
+      const safe = (Array.isArray(list) ? list : []).map((u) => ({
+        id: u.id,
+        email: u.email,
+        full_name: u.full_name,
+        last_name: u.last_name,
+        first_name: u.first_name,
+        middle_name: u.middle_name,
+        role: u.role,
+        account_role: u.account_role,
+      }));
+      return res.json({ ok: true, data: safe });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async getById(req, res, next) {
     try {
       const canManage = isAccountAdmin(req.user);

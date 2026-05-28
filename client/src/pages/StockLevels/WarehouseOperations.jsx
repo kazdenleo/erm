@@ -3,6 +3,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useLocation } from 'react-router-dom';
 import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
 import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
 import { productsApi } from '../../services/products.api';
@@ -95,6 +96,7 @@ export function WarehouseOperations({
   /** Спрятать внутреннюю полосу вкладок (вкладки вынесены в StockLevelsLayout) */
   hideTabs = false
 }) {
+  const location = useLocation();
   const { user } = useAuth();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
@@ -622,11 +624,12 @@ export function WarehouseOperations({
   }, []);
 
   useEffect(() => {
-    if (addReceiptModalOpen && receiptMode === 'scan') {
-      const t = setTimeout(() => scanInputRef.current?.focus(), 100);
+    if (addReceiptModalOpen && receiptMode === 'scan' && receiptWarehouseId) {
+      const t = setTimeout(() => scanInputRef.current?.focus(), 150);
       return () => clearTimeout(t);
     }
-  }, [addReceiptModalOpen, receiptMode]);
+    return undefined;
+  }, [addReceiptModalOpen, receiptMode, receiptWarehouseId]);
 
   useEffect(() => {
     return () => {
@@ -692,6 +695,10 @@ export function WarehouseOperations({
     const ownerIdRaw = d?.ownerUserId ?? d?.owner_user_id ?? null;
     const ownerId =
       ownerIdRaw != null && ownerIdRaw !== '' && Number.isFinite(Number(ownerIdRaw)) ? Number(ownerIdRaw) : null;
+    const widRaw = d?.warehouseId ?? d?.warehouse_id ?? null;
+    if (widRaw != null && widRaw !== '') {
+      setReceiptWarehouseId(String(widRaw));
+    }
     setReceiptSessionOwnerUserId(ownerId);
     setReceiptList(
       items.map((it) => ({
@@ -704,27 +711,54 @@ export function WarehouseOperations({
     );
   }, []);
 
-  // Если пришли по ссылке сессии (вариант 3: несколько устройств) — подхватываем session из URL.
-  useEffect(() => {
-    try {
-      const sp = new URLSearchParams(window.location.search || '');
-      const sid = String(sp.get('session') || '').trim();
-      if (sid) {
-        // Открываем модалку автоматически, чтобы по ссылке сразу попадать "в приёмку", а не в список.
-        if (!addReceiptModalOpen) setAddReceiptModalOpen(true);
-        setReceiptSessionEnabled(true);
-        setReceiptSessionId(sid);
-        receiptsApi.getSession(sid).then((res) => {
-          const d = res?.data ?? res;
-          if (d?.warehouseId != null) setReceiptWarehouseId(String(d.warehouseId));
-          setReceiptMode('scan');
-          applySessionStateToList(res);
-        }).catch(() => {});
+  const currentUserId = useMemo(() => {
+    const raw = user?.id ?? user?.userId ?? null;
+    if (raw == null || raw === '' || !Number.isFinite(Number(raw))) return null;
+    return Number(raw);
+  }, [user?.id, user?.userId]);
+
+  const isReceiptSessionGuest = useMemo(() => {
+    if (!receiptSessionEnabled || !String(receiptSessionId || '').trim()) return false;
+    if (receiptSessionOwnerUserId == null || currentUserId == null) return false;
+    return Number(receiptSessionOwnerUserId) !== Number(currentUserId);
+  }, [receiptSessionEnabled, receiptSessionId, receiptSessionOwnerUserId, currentUserId]);
+
+  const receiptWarehouseLabel = useMemo(() => {
+    if (!receiptWarehouseId) return '';
+    const w = ownWarehouses.find((x) => String(x.id) === String(receiptWarehouseId));
+    return w?.address || w?.name || `Склад #${receiptWarehouseId}`;
+  }, [receiptWarehouseId, ownWarehouses]);
+
+  const joinReceiptSessionFromUrl = useCallback(
+    async (sid) => {
+      const sessionId = String(sid || '').trim();
+      if (!sessionId) return;
+      setAddReceiptModalOpen(true);
+      setReceiptSessionEnabled(true);
+      setReceiptSessionId(sessionId);
+      setReceiptMode('scan');
+      setLookupError(null);
+      try {
+        const res = await receiptsApi.getSession(sessionId);
+        applySessionStateToList(res);
+      } catch (ex) {
+        setLookupError(
+          ex?.response?.data?.message || ex?.message || 'Сессия приёмки не найдена или истекла'
+        );
+        setReceiptSessionEnabled(false);
+        setReceiptSessionId('');
       }
-    } catch {
-      /* ignore */
-    }
-  }, [addReceiptModalOpen, applySessionStateToList]);
+    },
+    [applySessionStateToList]
+  );
+
+  // Если пришли по ссылке сессии (?session=) — подхватываем при каждом изменении URL (в т.ч. из уведомления).
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search || '');
+    const sid = String(sp.get('session') || '').trim();
+    if (!sid) return;
+    joinReceiptSessionFromUrl(sid);
+  }, [location.search, joinReceiptSessionFromUrl]);
 
   // Подтягиваем состояние сессии периодически (чтобы видеть сканы с других устройств).
   useEffect(() => {
@@ -750,7 +784,7 @@ export function WarehouseOperations({
     let cancelled = false;
     (async () => {
       try {
-        const res = await usersApi.getAll();
+        const res = await usersApi.getInviteCandidates();
         const rows = res?.data ?? [];
         const meIdRaw = user?.id ?? user?.userId ?? null;
         const meId =
@@ -918,8 +952,14 @@ export function WarehouseOperations({
       return;
     }
     const add = Math.max(1, parseInt(listQty, 10) || 1);
-    addToReceiptList(product, add);
-    setOpMessage(`В список: ${product.name} — ${add} шт`);
+    if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
+      addToReceiptSession(product, add)
+        .then(() => setOpMessage(`В список: ${product.name} — ${add} шт`))
+        .catch((ex) => setOpMessage('Ошибка: ' + (ex?.message || 'не удалось добавить')));
+    } else {
+      addToReceiptList(product, add);
+      setOpMessage(`В список: ${product.name} — ${add} шт`);
+    }
     setReceiptPickedProduct(null);
     setSelectedProductId('');
     setReceiptListSearch('');
@@ -3339,19 +3379,36 @@ export function WarehouseOperations({
             <label>
               Склад приёмки <span className="warehouse-ops-required-star">*</span>
             </label>
-            <select
-              value={receiptWarehouseId}
-              onChange={(e) => setReceiptWarehouseId(e.target.value)}
-              className="warehouse-ops-select"
-            >
-              <option value="">— Выберите склад —</option>
-              {ownWarehouses.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.address || w.name || `Склад #${w.id}`}
-                </option>
-              ))}
-            </select>
+            {receiptSessionEnabled && receiptSessionId ? (
+              <div className="warehouse-ops-select" style={{ padding: '8px 0', fontSize: 14 }}>
+                {receiptWarehouseLabel || (receiptWarehouseId ? `Склад #${receiptWarehouseId}` : 'Загрузка…')}
+                {isReceiptSessionGuest ? (
+                  <span className="muted" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+                    Склад задан создателем общей приёмки
+                  </span>
+                ) : null}
+              </div>
+            ) : (
+              <select
+                value={receiptWarehouseId}
+                onChange={(e) => setReceiptWarehouseId(e.target.value)}
+                className="warehouse-ops-select"
+              >
+                <option value="">— Выберите склад —</option>
+                {ownWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
+          {isReceiptSessionGuest && (
+            <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
+              Вы приглашены в общую приёмку: сканируйте товары — они попадут в общий список. Оформить документ может только создатель.
+            </p>
+          )}
+          {!isReceiptSessionGuest && (
           <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
             <label className="warehouse-ops-radio" style={{ margin: 0 }}>
               <input
@@ -3394,6 +3451,7 @@ export function WarehouseOperations({
               </span>
             )}
           </div>
+          )}
           {receiptSessionEnabled && receiptSessionId && (
             <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 6 }}>
               <Button
@@ -3411,7 +3469,7 @@ export function WarehouseOperations({
               </span>
             </div>
           )}
-          {receiptSessionEnabled && receiptSessionId && (
+          {receiptSessionEnabled && receiptSessionId && !isReceiptSessionGuest && (
             <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
               <label>Пригласить пользователя</label>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -3727,16 +3785,9 @@ export function WarehouseOperations({
                 <div className="warehouse-ops-receipt-list-actions">
                   <Button
                     onClick={applyReceiptList}
-                    disabled={
-                      opLoading ||
-                      (receiptSessionEnabled &&
-                        receiptSessionOwnerUserId != null &&
-                        Number(receiptSessionOwnerUserId) !== Number(user?.id ?? user?.userId ?? null))
-                    }
+                    disabled={opLoading || isReceiptSessionGuest}
                     title={
-                      receiptSessionEnabled &&
-                      receiptSessionOwnerUserId != null &&
-                      Number(receiptSessionOwnerUserId) !== Number(user?.id ?? user?.userId ?? null)
+                      isReceiptSessionGuest
                         ? 'Оформить может только создатель общей приёмки'
                         : undefined
                     }

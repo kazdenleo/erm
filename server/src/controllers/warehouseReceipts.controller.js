@@ -152,7 +152,7 @@ class WarehouseReceiptsController {
         type: 'receipt_session_invite',
         severity: 'info',
         title: 'Приглашение в общую приёмку',
-        message: `${from} приглашает вас в общую приёмку. Откройте уведомление, чтобы перейти к сканированию.`,
+        message: `${from} приглашает вас в общую приёмку. Нажмите «Открыть» или перейдите по ссылке: ${url}`,
         meta: {
           target_user_id: targetUserId,
           url,
