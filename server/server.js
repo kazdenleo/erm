@@ -144,12 +144,13 @@ async function startServer() {
       envUsePostgresql: process.env.USE_POSTGRESQL ?? '(not set)',
     });
 
-    // Проверяем подключение к БД перед запуском
+    // Проверяем подключение к БД перед запуском (не падаем — иначе nginx отдаёт 502 без логов в браузере)
     if (usePg) {
       const dbConnected = await testConnection();
-      if (!dbConnected && config.isProduction) {
-        logger.error('Database connection failed. Exiting...');
-        process.exit(1);
+      if (!dbConnected) {
+        logger.error(
+          'Database connection failed. API will start anyway; login and data endpoints will return errors until DB is fixed.'
+        );
       }
     }
     

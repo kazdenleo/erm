@@ -91,7 +91,29 @@ pm2 save
 
 Откройте сайт в браузере, зайдите в программу, проверьте то, что меняли.
 
-Если «белый экран» или 502 — смотрите логи:
+Если «белый экран» или **502 при входе** — API не отвечает (процесс не слушает порт). Сначала диагностика:
+
+```bash
+bash /opt/erm/scripts/vps-diagnose.sh
+```
+
+Частые причины 502:
+
+- `erm-api` не запущен в PM2 (`pm2 list` — status `stopped` / `errored`)
+- в `server/.env` нет `DB_*` или неверный пароль PostgreSQL (раньше сервер падал при старте)
+- nginx смотрит не на тот порт (должен совпадать с `PORT` в `.env`, обычно `3001`)
+
+Поднять API заново:
+
+```bash
+cd /opt/erm/server
+pm2 delete erm-api 2>/dev/null || true
+pm2 start server.js --name erm-api --cwd /opt/erm/server
+pm2 save
+curl -s http://127.0.0.1:3001/health
+```
+
+Логи:
 
 ```bash
 pm2 logs erm-api --lines 50
