@@ -6,6 +6,14 @@
 import '../load-env.js';
 import { z } from 'zod';
 import { envFlag } from '../load-env.js';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const projectRoot = __dirname.includes('server/src/config')
+  ? join(__dirname, '../../../')
+  : process.cwd();
 
 // Схема валидации конфигурации
 const configSchema = z.object({
