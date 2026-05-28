@@ -1043,25 +1043,6 @@ export function Orders() {
     setProcurementLoadingKey(procurementModalRow.key);
     setRefreshError(null);
     try {
-      if (procurementChoice === 'existing') {
-        const pid = parseInt(procurementExistingId, 10);
-        await purchasesApi.appendDraftItems(pid, { items });
-      } else {
-        const supplierId = parseInt(String(procurementSupplierId).trim(), 10);
-        const organizationId = parseInt(String(procurementOrganizationId).trim(), 10);
-        const warehouseId = parseInt(String(procurementWarehouseId).trim(), 10);
-        const note =
-          sourceRows.length > 1
-            ? `Из заказов (${sourceRows.length}): ${sourceRows.map((r) => r.first.orderId).join(', ')}`
-            : `Из заказа ${first.orderId} (${first.marketplace})`;
-        await purchasesApi.create({
-          supplierId,
-          organizationId,
-          warehouseId,
-          items,
-          note,
-        });
-      }
       const procurementItems = [];
       const seenProcKeys = new Set();
       for (const r of sourceRows) {
@@ -1073,9 +1054,23 @@ export function Orders() {
           procurementItems.push({ marketplace: o.marketplace, orderId: o.orderId });
         }
       }
-      if (procurementItems.length > 0) {
-        await ordersApi.bulkSetToProcurement(procurementItems);
+      const note =
+        sourceRows.length > 1
+          ? `Из заказов (${sourceRows.length}): ${sourceRows.map((r) => r.first.orderId).join(', ')}`
+          : `Из заказа ${first.orderId} (${first.marketplace})`;
+      const procurePayload = {
+        procurementItems,
+        items,
+        note,
+      };
+      if (procurementChoice === 'existing') {
+        procurePayload.existingPurchaseId = parseInt(procurementExistingId, 10);
+      } else {
+        procurePayload.supplierId = parseInt(String(procurementSupplierId).trim(), 10);
+        procurePayload.organizationId = parseInt(String(procurementOrganizationId).trim(), 10);
+        procurePayload.warehouseId = parseInt(String(procurementWarehouseId).trim(), 10);
       }
+      await purchasesApi.procureFromOrders(procurePayload);
       closeProcurementModal();
       await reloadOrders({ silent: true });
       setSelectedKeys((prev) => {

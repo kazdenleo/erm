@@ -223,12 +223,29 @@ function nowIso() {
 }
 
 /** Увеличить incoming на дельту по операции закупки (создание / добавление количества). */
-async function addIncomingDeltaForPurchaseInTx(client, purchaseId, productId, deltaQty, profileId) {
+async function addIncomingDeltaForPurchaseInTx(
+  client,
+  purchaseId,
+  productId,
+  deltaQty,
+  profileId,
+  { lightIncoming = false } = {}
+) {
   const d = Math.max(0, parseInt(deltaQty, 10) || 0);
   if (d <= 0) return;
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return;
   await assertProductAllowedInProfile(client, pid, profileId);
+  if (lightIncoming) {
+    await client.query(
+      `UPDATE products
+       SET incoming_quantity = COALESCE(incoming_quantity, 0) + $1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [d, pid]
+    );
+    return;
+  }
   await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
   const pr = await client.query('SELECT COALESCE(incoming_quantity, 0) AS inc FROM products WHERE id = $1', [pid]);
   const incoming = pr.rows?.[0]?.inc != null ? Number(pr.rows[0].inc) : 0;
@@ -246,6 +263,44 @@ async function addIncomingDeltaForPurchaseInTx(client, purchaseId, productId, de
     warehouseId: null,
     profileId,
   });
+}
+
+async function applyPurchaseLineItemsInTx(
+  client,
+  purchaseId,
+  normalized,
+  profileId,
+  { hasPrice, lightIncoming = false } = {}
+) {
+  for (const it of normalized) {
+    await assertProductAllowedInProfile(client, it.productId, profileId);
+    const sourceJson = JSON.stringify(normalizeSourceOrderList(it.sourceOrders));
+    if (hasPrice) {
+      await client.query(
+        `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
+         VALUES ($1, $2, $3, 0, $4::jsonb, (SELECT cost FROM products WHERE id = $2))
+         ON CONFLICT (purchase_id, product_id)
+         DO UPDATE SET
+           expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
+           updated_at = CURRENT_TIMESTAMP`,
+        [purchaseId, it.productId, it.qty, sourceJson]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
+         VALUES ($1, $2, $3, 0, $4::jsonb)
+         ON CONFLICT (purchase_id, product_id)
+         DO UPDATE SET
+           expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
+           updated_at = CURRENT_TIMESTAMP`,
+        [purchaseId, it.productId, it.qty, sourceJson]
+      );
+    }
+    await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
+    await addIncomingDeltaForPurchaseInTx(client, purchaseId, it.productId, it.qty, profileId, {
+      lightIncoming,
+    });
+  }
 }
 
 /** Снять incoming по ещё не принятой части удаляемой строки закупки. */
@@ -1066,9 +1121,45 @@ class PurchasesService {
    * Создать закупку с позициями: сразу incoming по добавленным количествам.
    * items: [{ productId, quantity }]
    */
+  /**
+   * Из заказов: статусы «В закупке» (bulk) + закупка (light incoming) — один HTTP-запрос.
+   */
+  async procureFromOrders(
+    {
+      procurementItems = [],
+      existingPurchaseId = null,
+      supplierId = null,
+      organizationId = null,
+      warehouseId = null,
+      items = [],
+      note = null,
+    } = {},
+    { userId, profileId } = {}
+  ) {
+    const refs = Array.isArray(procurementItems) ? procurementItems : [];
+    let procurement = { updated: 0, skipped: 0 };
+    if (refs.length > 0) {
+      procurement = await ordersService.bulkSetToProcurement(refs, profileId);
+    }
+
+    let purchaseId;
+    if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
+      purchaseId = parseInt(existingPurchaseId, 10);
+      await this.appendDraftItems(purchaseId, { items }, { profileId, lightIncoming: true });
+    } else {
+      const created = await this.create(
+        { supplierId, organizationId, warehouseId, items, note },
+        { userId, profileId, lightIncoming: true }
+      );
+      purchaseId = created?.id;
+    }
+
+    return { purchaseId, procurement };
+  }
+
   async create(
     { supplierId = null, organizationId = null, warehouseId = null, items = [], note = null } = {},
-    { userId, profileId } = {}
+    { userId, profileId, lightIncoming = false } = {}
   ) {
     const pid = normalizeProfileId(profileId);
     if (pid == null) {
@@ -1118,33 +1209,7 @@ class PurchasesService {
       );
       const purchaseId = ins.rows[0].id;
       const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
-
-      for (const it of normalized) {
-        await assertProductAllowedInProfile(client, it.productId, pid);
-        if (hasPrice) {
-          await client.query(
-            `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
-             VALUES ($1, $2, $3, 0, '[]'::jsonb, (SELECT cost FROM products WHERE id = $2))
-             ON CONFLICT (purchase_id, product_id)
-             DO UPDATE SET
-               expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
-               updated_at = CURRENT_TIMESTAMP`,
-            [purchaseId, it.productId, it.qty]
-          );
-        } else {
-          await client.query(
-            `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
-             VALUES ($1, $2, $3, 0, '[]'::jsonb)
-             ON CONFLICT (purchase_id, product_id)
-             DO UPDATE SET
-               expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
-               updated_at = CURRENT_TIMESTAMP`,
-            [purchaseId, it.productId, it.qty]
-          );
-        }
-        await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
-        await addIncomingDeltaForPurchaseInTx(client, purchaseId, it.productId, it.qty, pid);
-      }
+      await applyPurchaseLineItemsInTx(client, purchaseId, normalized, pid, { hasPrice, lightIncoming });
 
       return { id: purchaseId };
     });
@@ -1155,7 +1220,7 @@ class PurchasesService {
    * @param {number} purchaseId
    * @param {{ items: { productId, quantity|qty }[] }} payload
    */
-  async appendDraftItems(purchaseId, { items = [] } = {}, { profileId } = {}) {
+  async appendDraftItems(purchaseId, { items = [] } = {}, { profileId, lightIncoming = false } = {}) {
     const pid = normalizeProfileId(profileId);
     if (pid == null) {
       const err = new Error('Профиль не определён');
@@ -1192,33 +1257,7 @@ class PurchasesService {
       }
 
       const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
-
-      for (const it of normalized) {
-        await assertProductAllowedInProfile(client, it.productId, pid);
-        if (hasPrice) {
-          await client.query(
-            `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
-             VALUES ($1, $2, $3, 0, '[]'::jsonb, (SELECT cost FROM products WHERE id = $2))
-             ON CONFLICT (purchase_id, product_id)
-             DO UPDATE SET
-               expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
-               updated_at = CURRENT_TIMESTAMP`,
-            [id, it.productId, it.qty]
-          );
-        } else {
-          await client.query(
-            `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
-             VALUES ($1, $2, $3, 0, '[]'::jsonb)
-             ON CONFLICT (purchase_id, product_id)
-             DO UPDATE SET
-               expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
-               updated_at = CURRENT_TIMESTAMP`,
-            [id, it.productId, it.qty]
-          );
-        }
-        await mergeSourceOrdersInTx(client, id, it.productId, it.sourceOrders);
-        await addIncomingDeltaForPurchaseInTx(client, id, it.productId, it.qty, pid);
-      }
+      await applyPurchaseLineItemsInTx(client, id, normalized, pid, { hasPrice, lightIncoming });
 
       await client.query(
         `UPDATE purchases SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`,

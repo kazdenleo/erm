@@ -20,6 +20,10 @@ router.post(
   excelUpload.single('file'),
   wrapAsync(purchasesController.importFromExcel.bind(purchasesController))
 );
+router.post(
+  '/procure-from-orders',
+  wrapAsync(purchasesController.procureFromOrders.bind(purchasesController))
+);
 router.post('/', wrapAsync(purchasesController.create.bind(purchasesController)));
 router.get('/:id', wrapAsync(purchasesController.getById.bind(purchasesController)));
 router.post('/:id/draft-items', wrapAsync(purchasesController.appendDraftItems.bind(purchasesController)));

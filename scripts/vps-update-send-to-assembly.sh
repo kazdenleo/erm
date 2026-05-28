@@ -25,7 +25,10 @@ if ! grep -q '_scheduleReapplyReserveAfterReturnToNew' "$APP_ROOT/server/src/ser
   echo "ERROR: нет async return-to-new — сделайте git pull"
   exit 1
 fi
-echo "OK: фиксы orders (список, сборка, return-to-new) найдены"
+if ! grep -q 'procureFromOrders' "$APP_ROOT/server/src/services/purchases.service.js"; then
+  echo "WARN: нет procureFromOrders — «В закупку» может давать 504"
+fi
+echo "OK: фиксы orders/purchases найдены"
 
 echo "==> server"
 cd "$APP_ROOT/server"

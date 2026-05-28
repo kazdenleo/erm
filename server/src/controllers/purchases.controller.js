@@ -90,6 +90,36 @@ class PurchasesController {
     }
   }
 
+  /**
+   * POST /api/purchases/procure-from-orders
+   * Закупка + перевод заказов в «В закупке» одним запросом (без 504 nginx).
+   */
+  async procureFromOrders(req, res, next) {
+    try {
+      const body = req.body || {};
+      const userId = req.user?.id ?? null;
+      const profileId = req.user?.profileId ?? null;
+      const data = await purchasesService.procureFromOrders(
+        {
+          procurementItems: body.procurementItems ?? body.orderItems ?? [],
+          existingPurchaseId: body.existingPurchaseId ?? body.purchaseId ?? null,
+          supplierId: body.supplierId,
+          organizationId: body.organizationId,
+          warehouseId: body.warehouseId,
+          items: body.items,
+          note: body.note,
+        },
+        { userId, profileId }
+      );
+      return res.status(201).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async appendDraftItems(req, res, next) {
     try {
       const { id } = req.params;
