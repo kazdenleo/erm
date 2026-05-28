@@ -145,11 +145,14 @@ class StockMovementsRepositoryPG {
     const where = ['product_id = $1'];
     if (whId != null) {
       params.push(whId);
-      where.push(`warehouse_id = $${params.length}`);
+      // Исторические движения могли быть записаны без warehouse_id — не скрываем их при фильтре по складу,
+      // иначе пользователь видит «пустую историю» при наличии приёмки/движений.
+      where.push(`(warehouse_id = $${params.length} OR warehouse_id IS NULL)`);
     }
     if (pid != null) {
       params.push(pid);
-      where.push(`profile_id = $${params.length}`);
+      // У старых записей profile_id мог быть NULL — разрешаем показывать их внутри профиля.
+      where.push(`(profile_id = $${params.length} OR profile_id IS NULL)`);
     }
     params.push(Math.max(1, Math.min(500, Number(limit) || 100)));
     const limitIdx = params.length;

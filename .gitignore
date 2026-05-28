@@ -30,6 +30,7 @@ Thumbs.db
 # Misc
 *.tmp
 *.bak
+server/tmp-*.png
 
 # Local runtime data (do not commit)
 data/

@@ -524,6 +524,7 @@ class IntegrationsService {
   async getTokenNotifications(options = {}) {
     const warnDays = Number(options.warn_days ?? 10);
     const profileId = options.profileId ?? null;
+    const userId = options.userId != null && options.userId !== '' ? Number(options.userId) : null;
     const cache = (await readData('tokenStatusCache')) || {};
     const integrations = await this.getAll(
       repositoryFactory.isUsingPostgreSQL() && profileId != null && profileId !== ''
@@ -676,7 +677,13 @@ class IntegrationsService {
           if (mp === 'ozon' && title.toLowerCase().includes('api ключ деактивирован')) return true;
           return false;
         };
-        out.push(...runtime.filter((n) => !shouldHideAsStale(n)));
+        const isForThisUser = (n) => {
+          const target = n?.meta?.target_user_id ?? n?.meta?.targetUserId ?? null;
+          if (target == null || target === '') return true;
+          if (userId == null || Number.isNaN(userId)) return false;
+          return Number(target) === userId;
+        };
+        out.push(...runtime.filter((n) => !shouldHideAsStale(n) && isForThisUser(n)));
       }
     } catch (_) {}
 

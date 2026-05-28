@@ -71,6 +71,12 @@ export const purchasesApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Ручной ввод: добавить сразу N штук в приёмку (без N сканов). */
+  addReceiptQuantity: async (receiptId, payload) => {
+    const response = await api.post(`/purchases/receipts/${receiptId}/add-quantity`, payload);
+    return response.data?.data ?? response.data;
+  },
+
   completeReceipt: async (receiptId, payload = {}) => {
     const response = await api.post(`/purchases/receipts/${receiptId}/complete`, payload);
     return response.data?.data ?? response.data;

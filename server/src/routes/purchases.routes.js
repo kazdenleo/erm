@@ -25,6 +25,7 @@ router.post('/:id/receipts', wrapAsync(purchasesController.createReceipt.bind(pu
 // приёмки по закупке
 router.get('/receipts/:receiptId', wrapAsync(purchasesController.getReceipt.bind(purchasesController)));
 router.post('/receipts/:receiptId/scan', wrapAsync(purchasesController.scanReceipt.bind(purchasesController)));
+router.post('/receipts/:receiptId/add-quantity', wrapAsync(purchasesController.addReceiptQuantity.bind(purchasesController)));
 router.post('/receipts/:receiptId/complete', wrapAsync(purchasesController.completeReceipt.bind(purchasesController)));
 router.post('/receipts/:receiptId/resolve-extras', wrapAsync(purchasesController.resolveExtras.bind(purchasesController)));
 

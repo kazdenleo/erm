@@ -9,6 +9,7 @@ import { productsApi } from '../../services/products.api';
 import { stockMovementsApi } from '../../services/stockMovements.api';
 import { receiptsApi } from '../../services/receipts.api';
 import { inventorySessionsApi } from '../../services/inventorySessions.api';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useWarehouses } from '../../hooks/useWarehouses';
@@ -16,6 +17,7 @@ import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { onNavigationClick } from '../../utils/navigationClick.js';
+import { usersApi } from '../../services/users.api.js';
 import {
   isLikelyBarcodeScan,
   matchProductsLocal,
@@ -34,6 +36,36 @@ const MODE_RECEIPTS_LIST = 'receipts_list';
 const MODE_RETURN_SUPPLIER = 'return_supplier';
 const MODE_RETURN_CUSTOMER = 'return_customer';
 const MODE_TRANSFER = 'transfer';
+
+const RECEIPTS_SCANNER_ID_LS = 'warehouse_ops_receipts_scanner_id';
+
+function getOrCreateReceiptsScannerId() {
+  try {
+    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(RECEIPTS_SCANNER_ID_LS) : null;
+    if (v && String(v).trim()) return String(v).trim();
+  } catch {
+    /* ignore */
+  }
+  const id = `scn-${Math.random().toString(16).slice(2, 10)}`;
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPTS_SCANNER_ID_LS, id);
+  } catch {
+    /* ignore */
+  }
+  return id;
+}
+
+function parseScannerPrefixedCode(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return { scannerId: null, code: '' };
+
+  // Примеры префиксов: "A:123", "B-123", "C_123"
+  const m = s.match(/^([A-Za-z0-9]{1,16})[:\-_](.+)$/);
+  if (!m) return { scannerId: null, code: s };
+  const scannerId = String(m[1] || '').trim();
+  const code = String(m[2] || '').trim();
+  return { scannerId: scannerId || null, code };
+}
 
 const KNOWN_MODES = new Set([
   MODE_TABLE,
@@ -63,6 +95,7 @@ export function WarehouseOperations({
   /** Спрятать внутреннюю полосу вкладок (вкладки вынесены в StockLevelsLayout) */
   hideTabs = false
 }) {
+  const { user } = useAuth();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
   const { warehouses } = useWarehouses();
@@ -140,8 +173,35 @@ export function WarehouseOperations({
   const [receiptsLoading, setReceiptsLoading] = useState(false);
   const [receiptDetail, setReceiptDetail] = useState(null);
   const [addReceiptModalOpen, setAddReceiptModalOpen] = useState(false);
+  const [receiptScannerId, setReceiptScannerId] = useState(() => getOrCreateReceiptsScannerId());
+  const [receiptSessionEnabled, setReceiptSessionEnabled] = useState(false);
+  const [receiptSessionId, setReceiptSessionId] = useState('');
+  const [receiptSessionOwnerUserId, setReceiptSessionOwnerUserId] = useState(null);
+  const [boxAddCode, setBoxAddCode] = useState('');
+  const [boxAddQty, setBoxAddQty] = useState('');
+  const [boxAddBusy, setBoxAddBusy] = useState(false);
+  const [inviteUsers, setInviteUsers] = useState([]);
+  const [inviteUserId, setInviteUserId] = useState('');
+  const [inviteBusy, setInviteBusy] = useState(false);
   const [receiptDeleteLoading, setReceiptDeleteLoading] = useState(false);
   const [inventoryDeleteLoading, setInventoryDeleteLoading] = useState(false);
+
+  const leaveReceiptSession = useCallback(() => {
+    setReceiptSessionEnabled(false);
+    setReceiptSessionId('');
+    setReceiptSessionOwnerUserId(null);
+    setInviteUserId('');
+    setLookupError(null);
+    setOpMessage(null);
+    setReceiptList([]);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('session');
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      /* ignore */
+    }
+  }, []);
   // Возврат поставщику: организация, поставщик и список { productId, sku, name, quantity }
   const [returnOrganizationId, setReturnOrganizationId] = useState('');
   const [returnSupplierId, setReturnSupplierId] = useState('');
@@ -626,6 +686,100 @@ export function WarehouseOperations({
     }
   }, [addReceiptModalOpen]);
 
+  const applySessionStateToList = useCallback((sessionData) => {
+    const d = sessionData?.data ?? sessionData;
+    const items = Array.isArray(d?.items) ? d.items : [];
+    const ownerIdRaw = d?.ownerUserId ?? d?.owner_user_id ?? null;
+    const ownerId =
+      ownerIdRaw != null && ownerIdRaw !== '' && Number.isFinite(Number(ownerIdRaw)) ? Number(ownerIdRaw) : null;
+    setReceiptSessionOwnerUserId(ownerId);
+    setReceiptList(
+      items.map((it) => ({
+        productId: it.productId,
+        sku: it.sku || '—',
+        name: it.name || 'Без названия',
+        quantity: Number(it.quantity) || 0,
+        cost: it.cost ?? ''
+      }))
+    );
+  }, []);
+
+  // Если пришли по ссылке сессии (вариант 3: несколько устройств) — подхватываем session из URL.
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search || '');
+      const sid = String(sp.get('session') || '').trim();
+      if (sid) {
+        // Открываем модалку автоматически, чтобы по ссылке сразу попадать "в приёмку", а не в список.
+        if (!addReceiptModalOpen) setAddReceiptModalOpen(true);
+        setReceiptSessionEnabled(true);
+        setReceiptSessionId(sid);
+        receiptsApi.getSession(sid).then((res) => {
+          const d = res?.data ?? res;
+          if (d?.warehouseId != null) setReceiptWarehouseId(String(d.warehouseId));
+          setReceiptMode('scan');
+          applySessionStateToList(res);
+        }).catch(() => {});
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [addReceiptModalOpen, applySessionStateToList]);
+
+  // Подтягиваем состояние сессии периодически (чтобы видеть сканы с других устройств).
+  useEffect(() => {
+    if (!addReceiptModalOpen) return undefined;
+    if (!receiptSessionEnabled) return undefined;
+    const sid = String(receiptSessionId || '').trim();
+    if (!sid) return undefined;
+    let mounted = true;
+    const t = setInterval(() => {
+      if (!mounted) return;
+      receiptsApi.getSession(sid).then(applySessionStateToList).catch(() => {});
+    }, 1200);
+    return () => {
+      mounted = false;
+      clearInterval(t);
+    };
+  }, [addReceiptModalOpen, receiptSessionEnabled, receiptSessionId, applySessionStateToList]);
+
+  // Пользователи для приглашения (в рамках профиля): загружаем, когда открыта модалка и включена общая приёмка.
+  useEffect(() => {
+    if (!addReceiptModalOpen) return;
+    if (!receiptSessionEnabled) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await usersApi.getAll();
+        const rows = res?.data ?? [];
+        const meIdRaw = user?.id ?? user?.userId ?? null;
+        const meId =
+          meIdRaw != null && meIdRaw !== '' && Number.isFinite(Number(meIdRaw)) ? Number(meIdRaw) : null;
+        const meEmail = user?.email ? String(user.email).trim().toLowerCase() : null;
+        if (cancelled) return;
+        const filtered = (Array.isArray(rows) ? rows : []).filter((u) => {
+          if (!u) return false;
+          const uidRaw = u.id ?? u.user_id ?? u.userId ?? null;
+          const uid = uidRaw != null && uidRaw !== '' && Number.isFinite(Number(uidRaw)) ? Number(uidRaw) : null;
+          if (meId != null && uid != null && uid === meId) return false;
+          const em = u.email ? String(u.email).trim().toLowerCase() : null;
+          if (meEmail && em && em === meEmail) return false;
+          return true;
+        });
+        setInviteUsers(filtered);
+        // Если в селекте был выбран "сам себя" — сбрасываем.
+        if (meId != null && inviteUserId && Number(inviteUserId) === meId) {
+          setInviteUserId('');
+        }
+      } catch {
+        if (!cancelled) setInviteUsers([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [addReceiptModalOpen, receiptSessionEnabled, user?.id, user?.userId, user?.email, inviteUserId]);
+
   useEffect(() => {
     if (mode !== MODE_RECEIPTS_LIST) return;
     loadReceiptsList();
@@ -693,9 +847,33 @@ export function WarehouseOperations({
     });
   };
 
+  const addToReceiptSession = async (product, qty) => {
+    const sid = String(receiptSessionId || '').trim();
+    if (!sid) return;
+    const add = Math.max(1, parseInt(qty, 10) || 1);
+    const pc = product?.cost;
+    const defaultCost =
+      pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : null;
+    const res = await receiptsApi.addSessionQuantity(sid, {
+      code: String(product?.id || ''),
+      quantity: add,
+      cost: defaultCost
+    });
+    applySessionStateToList(res);
+  };
+
   /** Поступление по скану: 1 скан = +1 шт в список (без сохранения в БД) */
   const lookupByBarcodeOrSkuThenReceiptOne = async (value) => {
-    const v = String(value || '').trim();
+    const parsed = parseScannerPrefixedCode(value);
+    const v = String(parsed.code || '').trim();
+    if (parsed.scannerId) {
+      setReceiptScannerId(parsed.scannerId);
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPTS_SCANNER_ID_LS, parsed.scannerId);
+      } catch {
+        /* ignore */
+      }
+    }
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
       playEventSound(SOUND_EVENTS.scan_error);
@@ -709,13 +887,19 @@ export function WarehouseOperations({
     setLookupError(null);
     try {
       const product = await lookupProductByAny(v, { title: 'Выберите товар для поступления', allowLinkBarcode: true });
-      addToReceiptList(product, 1);
-      setOpMessage(`В список: +1 шт — ${product.name || product.sku}`);
+      if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
+        await addToReceiptSession(product, 1);
+      } else {
+        addToReceiptList(product, 1);
+      }
+      setOpMessage(`Сканер ${receiptScannerId || '—'} · в список: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
       setScanValue('');
       scanInputRef.current?.focus();
     } catch (e) {
-      setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
+      const msg = e?.message || 'поиск не удался';
+      setLookupError(msg);
+      setOpMessage('Ошибка: ' + msg);
       playEventSound(SOUND_EVENTS.scan_error);
     }
   };
@@ -775,6 +959,35 @@ export function WarehouseOperations({
     try {
       const organizationId = receiptOrganizationId ? Number(receiptOrganizationId) : null;
       const supplierId = receiptSupplierId ? Number(receiptSupplierId) : null;
+      if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
+        const meIdRaw = user?.id ?? user?.userId ?? null;
+        const meId =
+          meIdRaw != null && meIdRaw !== '' && Number.isFinite(Number(meIdRaw)) ? Number(meIdRaw) : null;
+        if (receiptSessionOwnerUserId != null && meId != null && Number(receiptSessionOwnerUserId) !== Number(meId)) {
+          setOpLoading(false);
+          setLookupError('Оформить общую приёмку может только пользователь, который её создал.');
+          return;
+        }
+        const r = await receiptsApi.completeSession(String(receiptSessionId || '').trim(), {
+          organizationId,
+          supplierId
+        });
+        const receiptNumber = r?.data?.receipt?.receipt_number || '';
+        setOpMessage(receiptNumber ? `Приёмка ${receiptNumber} оформлена` : 'Поступление оформлено');
+        setReceiptList([]);
+        setReceiptSessionEnabled(false);
+        setReceiptSessionId('');
+        setReceiptSessionOwnerUserId(null);
+        onRefresh?.();
+        if (addReceiptModalOpen) {
+          setAddReceiptModalOpen(false);
+          setOpMessage(null);
+          loadReceiptsList();
+        } else {
+          setMode(MODE_RECEIPTS_LIST);
+        }
+        return;
+      }
       const lines = receiptList.map(item => ({
         productId: item.productId,
         quantity: item.quantity,
@@ -823,7 +1036,9 @@ export function WarehouseOperations({
 
   /** Обработка ввода в поле скана: авто-добавление через короткую паузу (сканер вводит быстро, без Enter) */
   const handleReceiptScanChange = (e) => {
-    const value = e.target.value;
+    const rawValue = e.target.value;
+    // Некоторые сканеры вставляют \r/\n вместо Enter — нормализуем, чтобы обработка работала одинаково.
+    const value = String(rawValue || '').replace(/[\r\n]+/g, '');
     scanValueRef.current = value;
     setScanValue(value);
     setLookupError(null);
@@ -834,11 +1049,12 @@ export function WarehouseOperations({
     }
     if (!value.trim()) return;
 
-    const SCAN_DELAY_MS = 200;
+    const SCAN_DELAY_MS = 160;
     scanDebounceRef.current = setTimeout(() => {
       scanDebounceRef.current = null;
       const toProcess = scanValueRef.current.trim();
       if (!toProcess) return;
+      setOpMessage('Поиск товара…');
       lookupByBarcodeOrSkuThenReceiptOne(toProcess);
       setScanValue('');
       scanValueRef.current = '';
@@ -3136,6 +3352,117 @@ export function WarehouseOperations({
               ))}
             </select>
           </div>
+          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+            <label className="warehouse-ops-radio" style={{ margin: 0 }}>
+              <input
+                type="checkbox"
+                checked={receiptSessionEnabled}
+                onChange={async (e) => {
+                  const on = !!e.target.checked;
+                  setLookupError(null);
+                  setOpMessage(null);
+                  setReceiptSessionEnabled(on);
+                  if (!on) {
+                    leaveReceiptSession();
+                    return;
+                  }
+                  if (!receiptWarehouseId) {
+                    setLookupError('Сначала выберите склад приёмки');
+                    setReceiptSessionEnabled(false);
+                    return;
+                  }
+                  try {
+                    const created = await receiptsApi.createSession({ warehouseId: Number(receiptWarehouseId) });
+                    const d = created?.data ?? created;
+                    const sid = String(d?.sessionId || '').trim();
+                    if (sid) {
+                      setReceiptSessionId(sid);
+                      applySessionStateToList(created);
+                    }
+                  } catch (ex) {
+                    setLookupError(ex.response?.data?.message || ex.message || 'Не удалось создать общую приёмку');
+                    setReceiptSessionEnabled(false);
+                    setReceiptSessionId('');
+                  }
+                }}
+              />
+              <span>Общая приёмка (несколько устройств)</span>
+            </label>
+            {receiptSessionEnabled && receiptSessionId && (
+              <span className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
+                Код: <code>{receiptSessionId}</code> · откройте на другом устройстве ссылку с <code>?session={receiptSessionId}</code>
+              </span>
+            )}
+          </div>
+          {receiptSessionEnabled && receiptSessionId && (
+            <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 6 }}>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  leaveReceiptSession();
+                  setAddReceiptModalOpen(false);
+                }}
+              >
+                Выйти из общей приёмки
+              </Button>
+              <span className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
+                Приглашённые пользователи могут только выйти; оформить поступление может только создатель.
+              </span>
+            </div>
+          )}
+          {receiptSessionEnabled && receiptSessionId && (
+            <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+              <label>Пригласить пользователя</label>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <select
+                  className="warehouse-ops-select"
+                  value={inviteUserId}
+                  onChange={(e) => setInviteUserId(e.target.value)}
+                  style={{ minWidth: 260 }}
+                >
+                  <option value="">— Выберите пользователя —</option>
+                  {(inviteUsers || [])
+                    .filter((u) => u && (u.id != null || u.user_id != null || u.userId != null))
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {(u.full_name || [u.last_name, u.first_name].filter(Boolean).join(' ') || u.email || `User #${u.id}`) +
+                          (u.email ? ` (${u.email})` : '')}
+                      </option>
+                    ))}
+                </select>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={
+                    inviteBusy ||
+                    !inviteUserId ||
+                    (user?.id != null && Number(inviteUserId) === Number(user.id))
+                  }
+                  onClick={async () => {
+                    const sid = String(receiptSessionId || '').trim();
+                    const uid = inviteUserId ? Number(inviteUserId) : null;
+                    if (!sid || !uid || Number.isNaN(uid) || inviteBusy) return;
+                    try {
+                      setInviteBusy(true);
+                      setLookupError(null);
+                      await receiptsApi.inviteToSession(sid, { userId: uid });
+                      setOpMessage('Приглашение отправлено в уведомления.');
+                    } catch (ex) {
+                      setLookupError(ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение');
+                    } finally {
+                      setInviteBusy(false);
+                    }
+                  }}
+                >
+                  {inviteBusy ? 'Отправляю…' : 'Отправить'}
+                </Button>
+              </div>
+              <p className="warehouse-ops-hint" style={{ marginTop: 6 }}>
+                Приглашённый пользователь увидит уведомление и перейдёт сразу в общую приёмку (сканирование).
+              </p>
+            </div>
+          )}
           <div className="warehouse-ops-receipt-modes">
             <label className="warehouse-ops-radio">
               <input
@@ -3160,6 +3487,30 @@ export function WarehouseOperations({
           {receiptMode === 'scan' && (
             <>
               <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список (1 скан = 1 шт).</p>
+              <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+                <label>ID сканера</label>
+                <input
+                  type="text"
+                  className="warehouse-ops-input"
+                  style={{ maxWidth: 220 }}
+                  value={receiptScannerId}
+                  onChange={(e) => {
+                    const v = String(e.target.value || '').trim();
+                    setReceiptScannerId(v);
+                    try {
+                      if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPTS_SCANNER_ID_LS, v);
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                  placeholder="scn-..."
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <span className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
+                  Если несколько сканеров на одном ПК — настройте префикс (например <code>A:</code>, <code>B-</code>). ID подставится автоматически.
+                </span>
+              </div>
               <form onSubmit={handleScanSubmit} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
                 <input
                   ref={scanInputRef}
@@ -3174,6 +3525,87 @@ export function WarehouseOperations({
               </form>
             </>
           )}
+
+          <div style={{ marginTop: 10 }}>
+            <p className="warehouse-ops-hint" style={{ marginBottom: 6 }}>
+              Коробкой: введите штрихкод/артикул и количество — добавим сразу \(+N\) в список.
+            </p>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!receiptWarehouseId) {
+                  setLookupError('Сначала выберите склад приёмки');
+                  playEventSound(SOUND_EVENTS.scan_error);
+                  return;
+                }
+                if (boxAddBusy) return;
+                const raw = String(boxAddCode || '').trim();
+                const qty = Math.floor(Number(boxAddQty) || 0);
+                if (!raw || qty <= 0) return;
+                const parsed = parseScannerPrefixedCode(raw);
+                const code = String(parsed.code || '').trim();
+                if (parsed.scannerId) {
+                  setReceiptScannerId(parsed.scannerId);
+                  try {
+                    if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPTS_SCANNER_ID_LS, parsed.scannerId);
+                  } catch {
+                    /* ignore */
+                  }
+                }
+                try {
+                  setBoxAddBusy(true);
+                  setLookupError(null);
+                  const product = await lookupProductByAny(code, {
+                    title: 'Выберите товар для поступления',
+                    allowLinkBarcode: true
+                  });
+                  if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
+                    await addToReceiptSession(product, qty);
+                  } else {
+                    addToReceiptList(product, qty);
+                  }
+                  setOpMessage(`Сканер ${receiptScannerId || '—'} · в список: +${qty} шт — ${product.name || product.sku}`);
+                  playEventSound(SOUND_EVENTS.scan_ok);
+                  setBoxAddCode('');
+                  setBoxAddQty('');
+                  scanInputRef.current?.focus();
+                } catch (ex) {
+                  const msg = ex?.message || 'поиск не удался';
+                  setLookupError(msg);
+                  setOpMessage('Ошибка: ' + msg);
+                  playEventSound(SOUND_EVENTS.scan_error);
+                } finally {
+                  setBoxAddBusy(false);
+                }
+              }}
+              className="warehouse-ops-scan-form"
+            >
+              <input
+                type="text"
+                className="warehouse-ops-scan-input"
+                placeholder="ШК или артикул"
+                value={boxAddCode}
+                onChange={(e) => setBoxAddCode(e.target.value)}
+                disabled={!receiptWarehouseId || boxAddBusy}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <input
+                type="number"
+                min={1}
+                step={1}
+                className="warehouse-ops-qty-input"
+                style={{ width: 120 }}
+                placeholder="Кол-во"
+                value={boxAddQty}
+                onChange={(e) => setBoxAddQty(e.target.value)}
+                disabled={!receiptWarehouseId || boxAddBusy}
+              />
+              <Button type="submit" variant="secondary" disabled={!receiptWarehouseId || boxAddBusy}>
+                Добавить
+              </Button>
+            </form>
+          </div>
 
           {receiptMode === 'list' && (
             <div className="warehouse-ops-list-form">
@@ -3293,7 +3725,22 @@ export function WarehouseOperations({
                 </div>
                 <p className="warehouse-ops-receipt-cost-hint">Если указана себестоимость, она будет сохранена в карточке товара.</p>
                 <div className="warehouse-ops-receipt-list-actions">
-                  <Button onClick={applyReceiptList} disabled={opLoading}>
+                  <Button
+                    onClick={applyReceiptList}
+                    disabled={
+                      opLoading ||
+                      (receiptSessionEnabled &&
+                        receiptSessionOwnerUserId != null &&
+                        Number(receiptSessionOwnerUserId) !== Number(user?.id ?? user?.userId ?? null))
+                    }
+                    title={
+                      receiptSessionEnabled &&
+                      receiptSessionOwnerUserId != null &&
+                      Number(receiptSessionOwnerUserId) !== Number(user?.id ?? user?.userId ?? null)
+                        ? 'Оформить может только создатель общей приёмки'
+                        : undefined
+                    }
+                  >
                     {opLoading ? 'Оформление…' : 'Оформить поступление'}
                   </Button>
                   <Button variant="secondary" onClick={clearReceiptList} disabled={opLoading}>

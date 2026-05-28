@@ -479,20 +479,20 @@ class StockMovementsService {
 
     const res = await query(
       `WITH order_ids AS (
-         SELECT DISTINCT (meta->>'order_id')::bigint AS order_row_id
+         SELECT DISTINCT (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint AS order_row_id
          FROM stock_movements
          WHERE (${movementScopeSql})
            AND type IN ('reserve', 'unreserve')
-           AND (meta->>'order_id') ~ '^[0-9]+$'
-           AND (meta->>'order_id')::bigint > 0
+           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
+           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint > 0
        ),
        sku_net AS (
-         SELECT (meta->>'order_id')::bigint AS order_row_id,
+         SELECT (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint AS order_row_id,
            ${NET_RESERVED_SUM_EXPR_SQL}::int AS sku_net_qty
          FROM stock_movements
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
-           AND (meta->>'order_id') ~ '^[0-9]+$'
+           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
          GROUP BY 1
        )
        SELECT o.id,
@@ -792,7 +792,8 @@ class StockMovementsService {
        FROM stock_movements
        WHERE product_id = $1
          AND type IN ('reserve', 'unreserve')
-         AND (meta->>'order_id')::bigint = $2::bigint`,
+         AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
+         AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint = $2::bigint`,
       [pid, oid]
     );
     return Number(r.rows?.[0]?.rv ?? 0) || 0;

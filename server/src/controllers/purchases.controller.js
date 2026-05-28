@@ -162,11 +162,32 @@ class PurchasesController {
   async scanReceipt(req, res, next) {
     try {
       const { receiptId } = req.params;
-      const { productId, barcode, sku } = req.body || {};
+      const { productId, barcode, sku, scannerId } = req.body || {};
       const profileId = req.user?.profileId ?? null;
       const data = await purchasesService.scanToReceipt(
         receiptId,
-        { productId, barcode, sku },
+        { productId, barcode, sku, scannerId: scannerId ?? (req.get('x-scanner-id') || req.get('X-Scanner-Id') || null) },
+        { profileId }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async addReceiptQuantity(req, res, next) {
+    try {
+      const { receiptId } = req.params;
+      const { productId, barcode, sku, quantity, scannerId } = req.body || {};
+      const profileId = req.user?.profileId ?? null;
+      const effectiveScannerId =
+        scannerId ?? (req.get('x-scanner-id') || req.get('X-Scanner-Id') || null);
+      const data = await purchasesService.addQuantityToReceipt(
+        receiptId,
+        { productId, barcode, sku, quantity, scannerId: effectiveScannerId },
         { profileId }
       );
       return res.status(200).json({ ok: true, data });

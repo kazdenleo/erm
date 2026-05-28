@@ -863,6 +863,7 @@ export function WarehouseStocks() {
   const [historyList, setHistoryList] = useState([]);
   const [historyNetReserved, setHistoryNetReserved] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyWarehouseFilterIgnored, setHistoryWarehouseFilterIgnored] = useState(false);
   const [reserveModalOpen, setReserveModalOpen] = useState(false);
   /** Товар, для которого открыта модалка резерва (таблица или история). */
   const [reserveModalProduct, setReserveModalProduct] = useState(null);
@@ -1392,6 +1393,7 @@ export function WarehouseStocks() {
     if (!historyProduct) {
       setHistoryList([]);
       setHistoryNetReserved(null);
+      setHistoryWarehouseFilterIgnored(false);
       return;
     }
     let cancelled = false;
@@ -1403,7 +1405,39 @@ export function WarehouseStocks() {
       .then(res => {
         if (cancelled) return;
         const list = res?.data ?? (Array.isArray(res) ? res : []);
-        setHistoryList(Array.isArray(list) ? list : []);
+        const arr = Array.isArray(list) ? list : [];
+        // Если выбран склад, но история пуста — возможно движение записано по другому складу (или без склада).
+        // В этом случае показываем историю по всем складам, чтобы не вводить в заблуждение «пустым окном».
+        if (arr.length === 0 && stockWarehouseId) {
+          return stockMovementsApi
+            .getHistory(historyProduct.id, { limit: 100 })
+            .then((res2) => {
+              if (cancelled) return;
+              const list2 = res2?.data ?? (Array.isArray(res2) ? res2 : []);
+              setHistoryList(Array.isArray(list2) ? list2 : []);
+              setHistoryWarehouseFilterIgnored(true);
+              const net2 =
+                res2?.netReserved != null
+                  ? Number(res2.netReserved)
+                  : res2?.net_reserved != null
+                    ? Number(res2.net_reserved)
+                    : null;
+              setHistoryNetReserved(Number.isFinite(net2) ? net2 : null);
+              if (Number.isFinite(net2)) {
+                loadListRef.current?.({ page: currentPage, silent: true });
+              }
+              return;
+            })
+            .catch(() => {
+              if (!cancelled) {
+                setHistoryList([]);
+                setHistoryNetReserved(null);
+                setHistoryWarehouseFilterIgnored(false);
+              }
+            });
+        }
+        setHistoryWarehouseFilterIgnored(false);
+        setHistoryList(arr);
         const net =
           res?.netReserved != null
             ? Number(res.netReserved)
@@ -2023,6 +2057,11 @@ export function WarehouseStocks() {
           <p className="stock-levels-history-empty">Нет записей об изменениях остатков.</p>
         ) : (
           <>
+            {historyWarehouseFilterIgnored ? (
+              <p className="text-muted small mb-2" role="status">
+                История показана по <strong>всем складам</strong>, т.к. по выбранному складу записей не найдено.
+              </p>
+            ) : null}
             {historyNetReserved != null && (
               <p className="stock-levels-history-net-reserved text-muted small" style={{ marginBottom: 8 }}>
                 Сейчас в резерве по журналу: <strong>{historyNetReserved}</strong>

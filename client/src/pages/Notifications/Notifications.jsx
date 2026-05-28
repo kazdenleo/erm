@@ -6,8 +6,10 @@
 import React, { useEffect, useState } from 'react';
 import { integrationsApi } from '../../services/integrations.api';
 import { Button } from '../../components/common/Button/Button';
+import { useNavigate } from 'react-router-dom';
 
 export function Notifications() {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
@@ -97,6 +99,21 @@ export function Notifications() {
               <div style={{ marginTop: '6px', fontSize: '12px', whiteSpace: 'pre-wrap' }}>
                 {n.message}
               </div>
+              {n?.meta?.url ? (
+                <div style={{ marginTop: '10px' }}>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      const url = String(n.meta.url || '').trim();
+                      if (!url) return;
+                      navigate(url);
+                    }}
+                  >
+                    Открыть
+                  </Button>
+                </div>
+              ) : null}
               {(n.expires_at || n.checked_at) && (
                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--muted)' }}>
                   {n.expires_at && <span>expires_at: {String(n.expires_at).slice(0, 19).replace('T', ' ')}</span>}

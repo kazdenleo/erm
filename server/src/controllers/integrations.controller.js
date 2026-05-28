@@ -264,9 +264,11 @@ class IntegrationsController {
         return res.status(200).json({ ok: true, data: [] });
       }
       const { warn_days } = req.query;
+      const userId = req.user?.id ?? null;
       const data = await integrationsService.getTokenNotifications({
         warn_days,
-        profileId: tid
+        profileId: tid,
+        userId
       });
       return res.status(200).json({ ok: true, data });
     } catch (error) {

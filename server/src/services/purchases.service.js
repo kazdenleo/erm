@@ -17,12 +17,15 @@ import ordersService from './orders.service.js';
 // Anti-duplicate scans (in-memory): receiptId|barcode -> ts.
 // Один физический скан иногда даёт 2-3 HTTP запроса (\\n + Enter, или повтор в драйвере).
 const _scanRecent = new Map();
-function scanKey(receiptId, barcode, sku) {
+function scanKey(receiptId, barcode, sku, scannerId = null) {
   const rid = Number(receiptId);
   const b = barcode != null ? String(barcode).trim() : '';
   const s = sku != null ? String(sku).trim() : '';
   const digits = b ? b.replace(/\\D+/g, '') : '';
-  return `${rid}|${digits || b || s}`;
+  const sc = scannerId != null ? String(scannerId).trim() : '';
+  // Важно: несколько сканеров могут сканировать одну общую приёмку. Анти-дубликат должен быть "на сканер",
+  // иначе один сканер будет подавлять легитимные сканы другого.
+  return `${rid}|${sc || 'no-scanner'}|${digits || b || s}`;
 }
 function shouldIgnoreDuplicateScan(key, windowMs = 800) {
   const now = Date.now();
@@ -1578,7 +1581,11 @@ class PurchasesService {
   }
 
   /** Сканирование: +1 по товару (по productId или barcode) */
-  async scanToReceipt(receiptId, { productId = null, barcode = null, sku = null } = {}, { profileId } = {}) {
+  async scanToReceipt(
+    receiptId,
+    { productId = null, barcode = null, sku = null, scannerId = null } = {},
+    { profileId } = {}
+  ) {
     const rid = parseInt(receiptId, 10);
     if (!rid || Number.isNaN(rid)) {
       const err = new Error('Некорректный ID приёмки');
@@ -1594,9 +1601,10 @@ class PurchasesService {
     const pidNum = productId != null ? parseInt(productId, 10) : null;
     const bc = barcode != null ? String(barcode).trim() : '';
     const skuStr = sku != null ? String(sku).trim() : '';
+    const sc = scannerId != null ? String(scannerId).trim() : '';
 
     // Серверная защита от дублей
-    const k = scanKey(rid, bc, skuStr || String(pidNum || ''));
+    const k = scanKey(rid, bc, skuStr || String(pidNum || ''), sc || null);
     if (shouldIgnoreDuplicateScan(k)) {
       return { ok: true, ignoredDuplicate: true };
     }
@@ -1662,6 +1670,104 @@ class PurchasesService {
       );
       const scanned = up.rows?.[0]?.scanned_quantity ?? 0;
       return { ok: true, productId: resolvedProductId, scannedQuantity: scanned };
+    });
+  }
+
+  /** Ручной ввод: добавить сразу N штук в сканирование (коробками). */
+  async addQuantityToReceipt(
+    receiptId,
+    { productId = null, barcode = null, sku = null, quantity = 0, scannerId = null } = {},
+    { profileId } = {}
+  ) {
+    const rid = parseInt(receiptId, 10);
+    if (!rid || Number.isNaN(rid)) {
+      const err = new Error('Некорректный ID приёмки');
+      err.statusCode = 400;
+      throw err;
+    }
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    const qty = Math.floor(Number(quantity) || 0);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      const err = new Error('Количество должно быть больше 0');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Разрешаем ввод пачкой только в режиме scanning.
+    return transaction(async (client) => {
+      const r = await client.query(
+        `SELECT r.id, r.status, r.purchase_id
+         FROM purchase_receipts r
+         JOIN purchases p ON p.id = r.purchase_id
+         WHERE r.id = $1 AND p.profile_id = $2
+         FOR UPDATE`,
+        [rid, pid]
+      );
+      const receipt = r.rows?.[0];
+      if (!receipt) {
+        const err = new Error('Приёмка не найдена');
+        err.statusCode = 404;
+        throw err;
+      }
+      if (receipt.status !== 'scanning') {
+        const err = new Error('Ручной ввод доступен только для приёмки в статусе scanning');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      // Разрешаем идентификацию товара так же, как и в scanToReceipt.
+      const pidNum = productId != null ? parseInt(productId, 10) : null;
+      const bc = barcode != null ? String(barcode).trim() : '';
+      const skuStr = sku != null ? String(sku).trim() : '';
+      let resolvedProductId = pidNum;
+      if (!resolvedProductId && bc) {
+        const bcDigits = bc.replace(/\D+/g, '');
+        const br = await client.query(
+          `SELECT product_id
+           FROM barcodes
+           WHERE TRIM(barcode) = TRIM($1)
+              OR REGEXP_REPLACE(barcode, '\\D', '', 'g') = $2
+           LIMIT 1`,
+          [bc, bcDigits]
+        );
+        if (br.rows?.[0]?.product_id) resolvedProductId = Number(br.rows[0].product_id);
+      }
+      if (!resolvedProductId && skuStr) {
+        const pr = await client.query('SELECT id FROM products WHERE sku = $1 LIMIT 1', [skuStr]);
+        if (pr.rows?.[0]?.id) resolvedProductId = Number(pr.rows[0].id);
+      }
+      if (!resolvedProductId && bc) {
+        const pr = await client.query('SELECT id FROM products WHERE sku = $1 LIMIT 1', [bc]);
+        if (pr.rows?.[0]?.id) resolvedProductId = Number(pr.rows[0].id);
+      }
+      if (!resolvedProductId) {
+        const err = new Error('Товар не найден');
+        err.statusCode = 404;
+        throw err;
+      }
+      await assertProductAllowedInProfile(client, resolvedProductId, pid);
+
+      const up = await client.query(
+        `INSERT INTO purchase_receipt_items (receipt_id, product_id, scanned_quantity)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (receipt_id, product_id)
+         DO UPDATE SET scanned_quantity = purchase_receipt_items.scanned_quantity + $3::int, updated_at = CURRENT_TIMESTAMP
+         RETURNING scanned_quantity`,
+        [rid, resolvedProductId, qty]
+      );
+      const scanned = up.rows?.[0]?.scanned_quantity ?? 0;
+      return {
+        ok: true,
+        productId: resolvedProductId,
+        scannedQuantity: scanned,
+        added: qty,
+        scannerId: scannerId != null ? String(scannerId).trim() : null,
+      };
     });
   }
 
@@ -2149,7 +2255,7 @@ class PurchasesService {
     const uid = userId != null ? parseInt(userId, 10) : null;
     const supplier = supplierId != null && supplierId !== '' ? Number(supplierId) : null;
 
-    return transaction(async (client) => {
+    const result = await transaction(async (client) => {
       const r = await client.query(
         `SELECT r.id, r.status, r.extras_resolved, r.purchase_id
          FROM purchase_receipts r
@@ -2246,7 +2352,7 @@ class PurchasesService {
           });
         }
         await client.query('UPDATE purchase_receipts SET extras_resolved = true, updated_at = CURRENT_TIMESTAMP WHERE id = $1', [rid]);
-        return { ok: true, action: 'accept', extras };
+        return { ok: true, action: 'accept', extras, receiptWarehouseId };
       }
 
       // act === 'return' → создаём supplier_returns и строки, не меняя stock_actual (излишек не был принят)
@@ -2269,6 +2375,26 @@ class PurchasesService {
       await client.query('UPDATE purchase_receipts SET extras_resolved = true, updated_at = CURRENT_TIMESTAMP WHERE id = $1', [rid]);
       return { ok: true, action: 'return', supplierReturnId: returnId, extras };
     });
+
+    // После принятия излишков появляется свободный остаток на складе — нужно сразу дозарезервировать:
+    // - заказы "В закупке" (ordersService.ensureReservesForProductIfSupplyAvailable)
+    // - поставки FBO (fboSupplyReserveService.rebalanceReservesForProduct) по FIFO ready_at
+    if (result?.ok && result.action === 'accept' && Array.isArray(result.extras) && result.extras.length > 0) {
+      try {
+        const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
+        const wh = result.receiptWarehouseId ?? null;
+        for (const line of result.extras) {
+          const pid = Number(line?.productId);
+          if (!Number.isFinite(pid) || pid < 1) continue;
+          await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
+          await fboSupplyReserveService.onSupplyStockEvent(pid, wh, { profileId });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return result;
   }
 }
 

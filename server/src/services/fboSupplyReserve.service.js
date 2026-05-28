@@ -73,6 +73,39 @@ async function findFboReserveQueueByProduct(productId, profileId = null) {
   return r.rows || [];
 }
 
+function readyAtTs(v) {
+  if (!v) return null;
+  const t = new Date(v).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Снимать резерв — с самых поздних поставок (LIFO по ready_at). */
+function compareSupplyRowsForUnreserve(a, b) {
+  const ta = readyAtTs(a?.ready_at);
+  const tb = readyAtTs(b?.ready_at);
+  // null → в конец (как "самая поздняя / неизвестная")
+  const na = ta == null;
+  const nb = tb == null;
+  if (na && nb) {
+    // fallback по id, чтобы было детерминированно
+    const sa = Number(a?.fbo_supply_id) || 0;
+    const sb = Number(b?.fbo_supply_id) || 0;
+    if (sa !== sb) return sb - sa;
+    const ia = Number(a?.supply_item_id) || 0;
+    const ib = Number(b?.supply_item_id) || 0;
+    return ib - ia;
+  }
+  if (na) return -1; // a(null) раньше в сортировке DESC (т.е. "снимать первым")
+  if (nb) return 1;
+  if (ta !== tb) return tb - ta; // поздние раньше
+  const sa = Number(a?.fbo_supply_id) || 0;
+  const sb = Number(b?.fbo_supply_id) || 0;
+  if (sa !== sb) return sb - sa;
+  const ia = Number(a?.supply_item_id) || 0;
+  const ib = Number(b?.supply_item_id) || 0;
+  return ib - ia;
+}
+
 async function applyFboReserveDelta({ productId, warehouseId, supplyId, supplyItemId, delta, reason }) {
   const d = Math.floor(Number(delta) || 0);
   if (d === 0) return;
@@ -129,7 +162,10 @@ class FboSupplyReserveService {
       const queue = await findFboReserveQueueByProduct(pid, profileId);
       const allItemIds = new Set(queue.map((r) => String(r.supply_item_id)));
 
-      for (const row of queue) {
+      // Если нужно снять резерв (например, после списания остатка) — снимаем в обратном приоритете:
+      // сначала самые поздние поставки, чтобы более ранние по ready_at оставались зарезервированы.
+      const unreserveQueue = [...queue].sort(compareSupplyRowsForUnreserve);
+      for (const row of unreserveQueue) {
         const itemId = row.supply_item_id;
         const current = await getNetReservedForFboItem(itemId, pid);
         if (current <= 0) continue;

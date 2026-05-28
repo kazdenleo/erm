@@ -212,9 +212,17 @@ async function afterInventoryTouch(sessionId, productIds) {
   if (!sessionId || !Array.isArray(productIds) || productIds.length === 0) return;
   try {
     const { default: ordersService } = await import('./orders.service.js');
+    const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
     const { recalculateKitsForComponent } = await import('./kitStock.service.js');
     const { syncProductQuantityFromWarehouseStock } =
       await import('./productWarehouseQuantity.service.js');
+    let profId = null;
+    try {
+      const pr = await query(`SELECT profile_id FROM inventory_sessions WHERE id = $1`, [sessionId]);
+      profId = pr.rows?.[0]?.profile_id ?? null;
+    } catch {
+      profId = null;
+    }
     for (const pid of productIds) {
       await syncProductQuantityFromWarehouseStock(pid);
       await ordersService.trimExcessReservesForProduct(pid, {
@@ -222,6 +230,7 @@ async function afterInventoryTouch(sessionId, productIds) {
         meta: { inventory_session_id: sessionId },
       });
       await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
+      await fboSupplyReserveService.onSupplyStockEvent(pid, null, { profileId: profId });
       await recalculateKitsForComponent(pid, {});
     }
   } catch {

@@ -26,5 +26,27 @@ export const receiptsApi = {
   delete: async (id) => {
     const response = await api.delete(`/receipts/${id}`);
     return response.data;
-  }
+  },
+
+  // Общая "живая" приёмка (несколько устройств)
+  createSession: async (payload) => {
+    const response = await api.post('/receipts/sessions', payload);
+    return response.data;
+  },
+  getSession: async (id) => {
+    const response = await api.get(`/receipts/sessions/${id}`);
+    return response.data;
+  },
+  addSessionQuantity: async (id, payload) => {
+    const response = await api.post(`/receipts/sessions/${id}/add-quantity`, payload);
+    return response.data;
+  },
+  completeSession: async (id, payload) => {
+    const response = await api.post(`/receipts/sessions/${id}/complete`, payload);
+    return response.data;
+  },
+  inviteToSession: async (id, payload) => {
+    const response = await api.post(`/receipts/sessions/${id}/invite`, payload);
+    return response.data;
+  },
 };

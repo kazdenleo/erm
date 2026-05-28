@@ -98,6 +98,20 @@
   border-color: var(--primary);
 }
 
+.warehouse-ops-input {
+  padding: 10px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.warehouse-ops-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
 .warehouse-ops-error {
   color: var(--danger, #ef4444);
   font-size: 14px;

@@ -25,6 +25,49 @@ import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 
+const RECEIPT_SCANNER_ID_LS = 'erm:purchase-receipt-scanner-id';
+
+function getOrCreateScannerId() {
+  try {
+    const existing = typeof localStorage !== 'undefined' ? localStorage.getItem(RECEIPT_SCANNER_ID_LS) : null;
+    if (existing && String(existing).trim()) return String(existing).trim();
+  } catch {
+    /* ignore */
+  }
+  const next = `scn-${Math.random().toString(16).slice(2, 8)}`;
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPT_SCANNER_ID_LS, next);
+  } catch {
+    /* ignore */
+  }
+  return next;
+}
+
+/**
+ * Мульти‑сканеры на одном устройстве:
+ * если сканер умеет добавлять префикс, можно сделать "канал" без кнопок/горячих клавиш.
+ *
+ * Примеры:
+ * - A:4601234567890  -> scannerId=A, barcode=4601234567890
+ * - B-4601234567890  -> scannerId=B, barcode=4601234567890
+ * - S1#4601234567890 -> scannerId=S1, barcode=4601234567890
+ */
+function parseScannerPrefixedBarcode(raw) {
+  const v = String(raw || '').replace(/[\r\n]+/g, '').trim();
+  if (!v) return { barcode: '', scannerId: null };
+  // Префикс: 1-6 символов (буквы/цифры), затем разделитель :, -, #, |
+  const m = /^([a-z0-9]{1,6})\s*[:#|\-]\s*(.+)$/i.exec(v);
+  if (!m) return { barcode: v, scannerId: null };
+  const prefix = String(m[1] || '').trim();
+  const tail = String(m[2] || '').trim();
+  // Чтобы случайно не отрезать часть SKU/кода, считаем "сканерным" префикс только если хвост похож на штрихкод.
+  const tailDigits = tail.replace(/\D+/g, '');
+  if (tailDigits.length >= 4) {
+    return { barcode: tail, scannerId: prefix || null };
+  }
+  return { barcode: v, scannerId: null };
+}
+
 function fmtDt(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleString('ru-RU', {
@@ -175,10 +218,19 @@ export function Purchases() {
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
   const scanDebounceRef = useRef(null);
+  const [scannerId, setScannerId] = useState(() => getOrCreateScannerId());
   const scanInFlightRef = useRef(false);
   const lastScanRef = useRef({ value: '', at: 0 });
+  const receiptRefreshTimerRef = useRef(null);
+  const receiptRefreshInFlightRef = useRef(false);
+  const [pendingScans, setPendingScans] = useState(0);
+  const pendingScansRef = useRef(0);
   const [scanMsg, setScanMsg] = useState(null);
   const [lastScanLine, setLastScanLine] = useState(null);
+  const [boxAddCode, setBoxAddCode] = useState('');
+  const [boxAddQty, setBoxAddQty] = useState('');
+  const [boxAddBusy, setBoxAddBusy] = useState(false);
+  const [createReceiptBusy, setCreateReceiptBusy] = useState(false);
   const [extrasToResolve, setExtrasToResolve] = useState(null);
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
   const [receiptSupplierId, setReceiptSupplierId] = useState('');
@@ -458,17 +510,65 @@ export function Purchases() {
     }
   };
 
+  const scheduleReceiptRefresh = useCallback(
+    (rid) => {
+      const id = rid != null ? Number(rid) : null;
+      if (!id || Number.isNaN(id)) return;
+      if (receiptRefreshTimerRef.current) {
+        clearTimeout(receiptRefreshTimerRef.current);
+        receiptRefreshTimerRef.current = null;
+      }
+      // При активном сканировании не дёргаем getReceipt после каждого скана:
+      // один запрос раз в ~1.5с хорошо балансирует актуальность и нагрузку при нескольких сканерах.
+      receiptRefreshTimerRef.current = setTimeout(async () => {
+        if (receiptRefreshInFlightRef.current) return;
+        receiptRefreshInFlightRef.current = true;
+        try {
+          const data = await purchasesApi.getReceipt(id);
+          setReceipt(data);
+        } catch {
+          /* ignore */
+        } finally {
+          receiptRefreshInFlightRef.current = false;
+        }
+      }, 1500);
+    },
+    [setReceipt]
+  );
+
+  // Пока приёмка открыта и идёт поток сканов — периодически подтягиваем состояние (на случай пропущенных строк/излишков).
+  useEffect(() => {
+    const rid = receipt?.receipt?.id;
+    if (!rid) return undefined;
+    if (pendingScansRef.current <= 0) return undefined;
+    let mounted = true;
+    const t = setInterval(() => {
+      if (!mounted) return;
+      if (pendingScansRef.current <= 0) return;
+      scheduleReceiptRefresh(rid);
+    }, 2000);
+    return () => {
+      mounted = false;
+      clearInterval(t);
+    };
+  }, [receipt?.receipt?.id, scheduleReceiptRefresh, pendingScans]);
+
   const scan = async (valueOverride) => {
     const rid = receipt?.receipt?.id;
-    const v = String(valueOverride ?? scanValue ?? '').replace(/[\r\n]+/g, '').trim();
-    if (!rid || !v) return;
+    const raw = String(valueOverride ?? scanValue ?? '').replace(/[\r\n]+/g, '').trim();
+    if (!rid || !raw) return;
+    const parsed = parseScannerPrefixedBarcode(raw);
+    const v = parsed.barcode;
+    const effectiveScannerId = parsed.scannerId || scannerId || null;
+    if (!v) return;
     // Защита от двойного скана: некоторые сканеры шлют и \n, и Enter,
     // из-за чего scan() вызывается два раза почти одновременно.
     const now = Date.now();
     if (scanInFlightRef.current) return;
-    if (lastScanRef.current.value === v && now - (lastScanRef.current.at || 0) < 500) return;
+    const lastKey = `${effectiveScannerId || 'no-scanner'}|${v}`;
+    if (lastScanRef.current.value === lastKey && now - (lastScanRef.current.at || 0) < 500) return;
     scanInFlightRef.current = true;
-    lastScanRef.current = { value: v, at: now };
+    lastScanRef.current = { value: lastKey, at: now };
     try {
       setScanMsg('Сканирую…');
       setLastScanLine(null);
@@ -477,66 +577,52 @@ export function Purchases() {
         if (!it || it.id == null) continue;
         before.set(String(it.id), Number(it.scanned_quantity) || 0);
       }
-      await purchasesApi.scanReceipt(rid, { barcode: v });
-      const data = await purchasesApi.getReceipt(rid);
-      setReceipt(data);
-      // Обновить строку в списке закупок сразу (колонка «Принято») без ручного refresh:
-      // берём сумму received_quantity (если бэкенд обновляет её на скане), иначе fallback на scanned_quantity.
-      try {
-        const pid = data?.purchase?.id != null ? String(data.purchase.id) : null;
-        const items = Array.isArray(data?.items) ? data.items : [];
-        if (pid && items.length > 0) {
-          const expectedSum = items.reduce((s, it) => s + (Number(it.expected_quantity) || 0), 0);
-          const receivedSum = items.reduce((s, it) => s + (Number(it.received_quantity) || 0), 0);
-          const scannedSum = items.reduce((s, it) => s + (Number(it.scanned_quantity) || 0), 0);
-          const nextReceived = receivedSum > 0 ? receivedSum : scannedSum;
-          setList((prev) =>
-            (prev || []).map((p) => {
-              if (!p || String(p.id) !== pid) return p;
-              return {
-                ...p,
-                expected_total: p.expected_total ?? expectedSum,
-                expectedTotal: p.expectedTotal ?? expectedSum,
-                received_total: nextReceived,
-                receivedTotal: nextReceived,
-              };
-            })
-          );
-        }
-      } catch {
-        // ignore
+      pendingScansRef.current += 1;
+      setPendingScans(pendingScansRef.current);
+      const scanRes = await purchasesApi.scanReceipt(rid, { barcode: v, scannerId: effectiveScannerId });
+      // Оптимистично обновим строку по ответу сервера (productId + scannedQuantity),
+      // а полный receipt подтянем с debounce — чтобы несколько сканеров не "забивали" API.
+      const updatedProductId = Number(scanRes?.productId);
+      const updatedScannedQty = Number(scanRes?.scannedQuantity);
+      if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty) && updatedScannedQty >= 0) {
+        setReceipt((prev) => {
+          if (!prev?.receipt) return prev;
+          const items = Array.isArray(prev.items) ? prev.items : [];
+          let hit = false;
+          const nextItems = items.map((it) => {
+            if (Number(it?.product_id) !== updatedProductId) return it;
+            hit = true;
+            return { ...it, scanned_quantity: updatedScannedQty };
+          });
+          // Если товара ещё нет в списке строк (редкий кейс: скан вне позиций закупки) — просто дождёмся refresh.
+          return hit ? { ...prev, items: nextItems } : prev;
+        });
       }
+      scheduleReceiptRefresh(rid);
+      // UI списка закупок обновится при следующем reload; не дёргаем его на каждый скан.
       setScanValue('');
-      setScanMsg('Ок');
+      setScanMsg(null);
       playEventSound(SOUND_EVENTS.scan_ok);
 
-      const afterItems = Array.isArray(data?.items) ? data.items : [];
-      let changed = null;
-      for (const it of afterItems) {
-        if (!it || it.id == null) continue;
-        const id = String(it.id);
-        const prevQty = before.get(id) ?? 0;
-        const nextQty = Number(it.scanned_quantity) || 0;
-        if (nextQty > prevQty) {
-          changed = it;
-          break;
+      // Быстрый статус по последнему скану (без ожидания getReceipt)
+      if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty)) {
+        const curItems = Array.isArray(receipt?.items) ? receipt.items : [];
+        const hit = curItems.find((it) => Number(it?.product_id) === updatedProductId) || null;
+        if (hit) {
+          const exp = Number(hit.expected_quantity);
+          const expected = Number.isFinite(exp) ? exp : null;
+          const rec = Number(hit.received_quantity);
+          const received = Number.isFinite(rec) ? rec : null;
+          const over = expected != null && updatedScannedQty > expected;
+          setLastScanLine({
+            sku: hit.product_sku || '—',
+            name: hit.product_name || '—',
+            expected,
+            received,
+            scanned: updatedScannedQty,
+            over,
+          });
         }
-      }
-      if (changed) {
-        const exp = Number(changed.expected_quantity);
-        const expected = Number.isFinite(exp) ? exp : null;
-        const scanned = Number(changed.scanned_quantity) || 0;
-        const rec = Number(changed.received_quantity);
-        const received = Number.isFinite(rec) ? rec : null;
-        const over = expected != null && scanned > expected;
-        setLastScanLine({
-          sku: changed.product_sku || '—',
-          name: changed.product_name || '—',
-          expected,
-          received,
-          scanned,
-          over,
-        });
       }
       scanRef.current?.focus();
     } catch (e) {
@@ -554,6 +640,8 @@ export function Purchases() {
       setScanValue('');
       scanRef.current?.focus();
     } finally {
+      pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
+      setPendingScans(pendingScansRef.current);
       scanInFlightRef.current = false;
     }
   };
@@ -567,9 +655,12 @@ export function Purchases() {
       if (pending?.rid && pending?.barcode) {
         try {
           setScanMsg('Сканирую…');
-          await purchasesApi.scanReceipt(pending.rid, { barcode: pending.barcode });
-          const data = await purchasesApi.getReceipt(pending.rid);
-          setReceipt(data);
+          const parsed = parseScannerPrefixedBarcode(pending.barcode);
+          await purchasesApi.scanReceipt(pending.rid, {
+            barcode: parsed.barcode || pending.barcode,
+            scannerId: parsed.scannerId || scannerId || null
+          });
+          scheduleReceiptRefresh(pending.rid);
           setScanMsg('Ок');
           playEventSound(SOUND_EVENTS.scan_ok);
         } catch (e2) {
@@ -579,7 +670,7 @@ export function Purchases() {
       }
       setTimeout(() => scanRef.current?.focus(), 50);
     },
-    []
+    [scannerId, scheduleReceiptRefresh]
   );
 
   return (
@@ -875,20 +966,30 @@ export function Purchases() {
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
               <Button
                 onClick={async () => {
-                  const existingScanning = Array.isArray(detail?.receipts)
-                    ? detail.receipts.find((x) => String(x?.status) === 'scanning')
-                    : null;
-                  if (existingScanning?.id) {
-                    setErr(`У этой закупки уже есть незавершённая приёмка №${existingScanning.id}. Открываю её.`);
-                    await openReceipt(existingScanning.id);
-                    return;
+                  if (createReceiptBusy) return;
+                  setCreateReceiptBusy(true);
+                  try {
+                    setErr(null);
+                    const existingScanning = Array.isArray(detail?.receipts)
+                      ? detail.receipts.find((x) => String(x?.status) === 'scanning')
+                      : null;
+                    if (existingScanning?.id) {
+                      setErr(`У этой закупки уже есть незавершённая приёмка №${existingScanning.id}. Открываю её.`);
+                      await openReceipt(existingScanning.id);
+                      return;
+                    }
+                    const r = await purchasesApi.createReceipt(detail.purchase.id);
+                    await openDetail(detail.purchase.id);
+                    await openReceipt(r.id);
+                  } catch (ex) {
+                    setErr(ex.response?.data?.message || ex.message || 'Не удалось создать приёмку');
+                  } finally {
+                    setCreateReceiptBusy(false);
                   }
-                  const r = await purchasesApi.createReceipt(detail.purchase.id);
-                  await openDetail(detail.purchase.id);
-                  await openReceipt(r.id);
                 }}
+                disabled={createReceiptBusy}
               >
-                Создать приёмку (сканирование)
+                {createReceiptBusy ? 'Создаю приёмку…' : 'Создать приёмку (сканирование)'}
               </Button>
               <Button
                 variant="secondary"
@@ -1157,6 +1258,29 @@ export function Purchases() {
                   ))}
               </select>
             </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+              <span className="muted" style={{ fontSize: 13 }}>Сканер</span>
+              <input
+                className="warehouse-ops-input"
+                style={{ maxWidth: 220 }}
+                value={scannerId}
+                onChange={(e) => {
+                  const v = String(e.target.value || '').trim();
+                  setScannerId(v);
+                  try {
+                    if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPT_SCANNER_ID_LS, v);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                placeholder="scn-..."
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <span className="muted" style={{ fontSize: 12 }}>
+                Если несколько сканеров на одном ПК — настройте префикс (например <code>A:</code>, <code>B-</code>). Тогда ID будет подставляться автоматически, без переключений.
+              </span>
+            </div>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -1200,7 +1324,13 @@ export function Purchases() {
                 autoComplete="off"
               />
             </form>
-            {scanMsg && <p className="muted" style={{ marginTop: 8 }}>{scanMsg}</p>}
+            {pendingScans > 0 ? (
+              <p className="muted" style={{ marginTop: 8 }} role="status">
+                В очереди сканов: <strong>{pendingScans}</strong> · список обновляется автоматически
+              </p>
+            ) : scanMsg ? (
+              <p className="muted" style={{ marginTop: 8 }}>{scanMsg}</p>
+            ) : null}
             {lastScanLine && (
               <div
                 role="status"
@@ -1258,6 +1388,69 @@ export function Purchases() {
               </Button>
             </div>
 
+            <h4 style={{ marginTop: 14 }}>Коробкой (ручной ввод)</h4>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const rid = receipt?.receipt?.id;
+                const raw = String(boxAddCode || '').trim();
+                const qty = Math.floor(Number(boxAddQty) || 0);
+                if (!rid || !raw || qty <= 0 || boxAddBusy) return;
+
+                try {
+                  setBoxAddBusy(true);
+                  setErr(null);
+                  pendingScansRef.current += 1;
+                  setPendingScans(pendingScansRef.current);
+
+                  const parsed = parseScannerPrefixedBarcode(raw);
+                  const effectiveScannerId = parsed?.scannerId || scannerId || null;
+                  const code = String(parsed?.barcode || raw).trim();
+
+                  await purchasesApi.addReceiptQuantity(rid, {
+                    quantity: qty,
+                    barcode: code,
+                    sku: code,
+                    scannerId: effectiveScannerId,
+                  });
+
+                  setBoxAddCode('');
+                  setBoxAddQty('');
+                  scheduleReceiptRefresh(rid);
+                } catch (ex) {
+                  setErr(ex.response?.data?.message || ex.message || 'Не удалось добавить количество');
+                } finally {
+                  setBoxAddBusy(false);
+                  pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
+                  setPendingScans(pendingScansRef.current);
+                }
+              }}
+              className="warehouse-ops-scan-form"
+              style={{ marginTop: 8 }}
+            >
+              <input
+                className="warehouse-ops-scan-input"
+                value={boxAddCode}
+                onChange={(e) => setBoxAddCode(e.target.value)}
+                placeholder="ШК или артикул (можно с префиксом A:/B- для авто-ID сканера)"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <input
+                className="warehouse-ops-qty-input"
+                type="number"
+                min={1}
+                step={1}
+                value={boxAddQty}
+                onChange={(e) => setBoxAddQty(e.target.value)}
+                placeholder="Кол-во"
+                style={{ width: 120 }}
+              />
+              <Button type="submit" variant="secondary" disabled={boxAddBusy}>
+                Добавить
+              </Button>
+            </form>
+
             <h4 style={{ marginTop: 14 }}>Отсканировано</h4>
             {Array.isArray(receipt.items) && receipt.items.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
@@ -1269,6 +1462,7 @@ export function Purchases() {
                       <th>Закуп. цена</th>
                       <th>Заказано</th>
                       <th>Принято</th>
+                      <th style={{ width: 190 }}>Коробкой</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1348,6 +1542,69 @@ export function Purchases() {
                             </>
                           );
                         })()}
+                        <td>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              className="warehouse-ops-qty-input"
+                              style={{ width: 90 }}
+                              placeholder="+N"
+                              value={it._boxQtyInput ?? ''}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setReceipt((prev) => {
+                                  if (!prev?.items) return prev;
+                                  const nextItems = (prev.items || []).map((x) =>
+                                    x?.id === it.id ? { ...x, _boxQtyInput: v } : x
+                                  );
+                                  return { ...prev, items: nextItems };
+                                });
+                              }}
+                            />
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="small"
+                              onClick={async () => {
+                                const rid = receipt?.receipt?.id;
+                                const qty = Math.floor(Number(it._boxQtyInput) || 0);
+                                if (!rid || qty <= 0) return;
+                                try {
+                                  pendingScansRef.current += 1;
+                                  setPendingScans(pendingScansRef.current);
+                                  const effectiveScannerId = scannerId || null;
+                                  const res = await purchasesApi.addReceiptQuantity(rid, {
+                                    productId: it.product_id,
+                                    quantity: qty,
+                                    scannerId: effectiveScannerId,
+                                  });
+                                  const updatedProductId = Number(res?.productId);
+                                  const updatedScannedQty = Number(res?.scannedQuantity);
+                                  if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty)) {
+                                    setReceipt((prev) => {
+                                      if (!prev?.items) return prev;
+                                      const nextItems = (prev.items || []).map((x) => {
+                                        if (Number(x?.product_id) !== updatedProductId) return x;
+                                        return { ...x, scanned_quantity: updatedScannedQty, _boxQtyInput: '' };
+                                      });
+                                      return { ...prev, items: nextItems };
+                                    });
+                                  }
+                                  scheduleReceiptRefresh(rid);
+                                } catch (ex) {
+                                  setErr(ex.response?.data?.message || ex.message || 'Не удалось добавить количество');
+                                } finally {
+                                  pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
+                                  setPendingScans(pendingScansRef.current);
+                                }
+                              }}
+                            >
+                              Добавить
+                            </Button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
