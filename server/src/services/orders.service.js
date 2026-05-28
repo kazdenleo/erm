@@ -2051,18 +2051,39 @@ class OrdersService {
    * Перевести заказ в статус «В закупке» (in_procurement). Разрешено только для заказов в статусе «Новый».
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
    */
+  _scheduleReapplyReserveAfterProcurement({ orderGroupId, marketplace, orderId, profileId }) {
+    setImmediate(() => {
+      void (async () => {
+        let rows = [];
+        if (orderGroupId) {
+          rows = (await this.repository.findByOrderGroupId(orderGroupId, profileId)) || [];
+        } else if (marketplace && orderId != null) {
+          const findLite =
+            typeof this.repository.findByMarketplaceAndOrderIdLite === 'function'
+              ? (mp, oid, pid) => this.repository.findByMarketplaceAndOrderIdLite(mp, oid, pid)
+              : (mp, oid, pid) => this.repository.findByMarketplaceAndOrderId(mp, oid, pid);
+          const r = await findLite(marketplace, String(orderId), profileId);
+          if (r) rows = [r];
+        }
+        if (rows.length > 0) await this._reapplyReserveForOrderRows(rows);
+      })().catch((e) => {
+        console.warn('[Orders] background reserve after procurement:', e?.message || e);
+      });
+    });
+  }
+
   async setOrderToProcurement(marketplace, orderId, profileId = null, opts = {}) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
+      const findLite =
+        typeof this.repository.findByMarketplaceAndOrderIdLite === 'function'
+          ? (mp, oid, pid) => this.repository.findByMarketplaceAndOrderIdLite(mp, oid, pid)
+          : (mp, oid, pid) => this.repository.findByMarketplaceAndOrderId(mp, oid, pid);
+      const order = await findLite(marketplace, String(orderId), profileId);
       if (!order) return null;
       const stNorm = String(order.status ?? '').trim().toLowerCase();
       if (stNorm === 'in_procurement') return order;
       if (!orderEligibleForProcurement(order)) return null;
-      let rows = [order];
-      if (order.orderGroupId) {
-        rows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
-      }
       if (order.orderGroupId) {
         await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'in_procurement', profileId);
       } else {
@@ -2074,14 +2095,14 @@ class OrdersService {
         );
       }
       if (!opts.skipReserveReapply) {
-        const rowsCopy = rows.map((r) => ({ ...r }));
-        setImmediate(() => {
-          this._reapplyReserveForOrderRows(rowsCopy).catch((e) => {
-            console.warn('[Orders] reapply reserve after procurement:', e?.message || e);
-          });
+        this._scheduleReapplyReserveAfterProcurement({
+          orderGroupId: order.orderGroupId || null,
+          marketplace,
+          orderId,
+          profileId,
         });
       }
-      return order;
+      return { ...order, status: 'in_procurement' };
     }
     const { readData, writeData } = await import('../utils/storage.js');
     const data = await readData('orders');
@@ -2098,51 +2119,126 @@ class OrdersService {
   }
 
   /**
-   * Массово перевести заказы в «В закупке» и один раз дозарезервировать (без N тяжёлых HTTP-вызовов).
-   * @param {{ marketplace: string, orderId: string }[]} items
+   * Массово «В закупке»: один проход SQL + резерв в фоне (без N× findByMarketplaceAndOrderId).
    */
-  async bulkSetToProcurement(items, profileId = null) {
-    const refs = Array.isArray(items) ? items : [];
-    if (!repositoryFactory.isUsingPostgreSQL() || refs.length === 0) {
-      return { updated: 0, skipped: refs.length };
-    }
-    const seen = new Set();
-    const rowsForReserve = [];
-    let updated = 0;
-    let skipped = 0;
+  async _bulkSetToProcurementPg(items, profileId = null) {
+    const eligibleStatusSql = `(
+      o.status = 'new'
+      OR (
+        o.marketplace = 'wb'
+        AND (
+          o.status = '__wb_status_pending__'
+          OR LOWER(COALESCE(o.status, '')) = 'wb_status_unknown'
+        )
+      )
+    )`;
 
-    for (const it of refs) {
-      const mp = it?.marketplace != null ? String(it.marketplace).trim() : '';
+    const values = [];
+    const params = [];
+    let i = 1;
+    const seen = new Set();
+    let skipped = 0;
+    for (const it of items) {
+      const mp = this._marketplaceToOrdersDb(it?.marketplace);
       const oid = it?.orderId != null ? String(it.orderId).trim() : '';
       if (!mp || !oid) {
         skipped += 1;
         continue;
       }
-      const dedupeKey = `${mp.toLowerCase()}|${oid}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
+      const dk = `${mp}|${oid}`;
+      if (seen.has(dk)) continue;
+      seen.add(dk);
+      values.push(`($${i++}::text, $${i++}::text)`);
+      params.push(mp, oid);
+    }
+    if (values.length === 0) {
+      return { updated: 0, skipped: items.length };
+    }
 
-      const order = await this.setOrderToProcurement(mp, oid, profileId, { skipReserveReapply: true });
-      if (!order) {
-        skipped += 1;
-        continue;
+    let profileSql = '';
+    const pid = profileId != null && String(profileId).trim() !== '' ? Number(profileId) : null;
+    if (pid && Number.isFinite(pid)) {
+      profileSql = ` AND o.profile_id = $${i++}`;
+      params.push(pid);
+    }
+
+    const seedRes = await query(
+      `
+      WITH refs(marketplace, order_id) AS (VALUES ${values.join(',')})
+      SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity,
+             o.offer_id, o.marketplace_sku, o.product_name, o.delivery_address, o.status
+      FROM orders o
+      INNER JOIN refs r ON o.marketplace = r.marketplace AND o.order_id = r.order_id
+      WHERE ${eligibleStatusSql}
+      ${profileSql}
+      `,
+      params
+    );
+    const seedRows = seedRes.rows || [];
+    skipped += Math.max(0, seen.size - seedRows.length);
+
+    const groupIds = [
+      ...new Set(
+        seedRows
+          .map((r) => (r.order_group_id != null ? String(r.order_group_id).trim() : ''))
+          .filter(Boolean)
+      ),
+    ];
+    const singleIds = seedRows
+      .filter((r) => !r.order_group_id || String(r.order_group_id).trim() === '')
+      .map((r) => r.id);
+
+    const updatedById = new Map();
+
+    if (groupIds.length > 0) {
+      const gParams = [groupIds];
+      let gProfileSql = '';
+      if (pid && Number.isFinite(pid)) {
+        gProfileSql = ' AND o.profile_id = $2';
+        gParams.push(pid);
       }
-      updated += 1;
-      const groupRows = order.orderGroupId
-        ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
-        : [order];
-      for (const r of groupRows) {
-        const rid = orderRowDbId(r);
-        if (rid != null) rowsForReserve.push(r);
+      const gUp = await query(
+        `
+        UPDATE orders o
+        SET status = 'in_procurement',
+            returned_to_new_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE o.order_group_id = ANY($1::text[])
+        ${gProfileSql}
+        RETURNING o.*
+        `,
+        gParams
+      );
+      for (const row of gUp.rows || []) {
+        if (row?.id != null) updatedById.set(row.id, row);
       }
     }
 
-    const reserveByDbId = new Map();
-    for (const r of rowsForReserve) {
-      const rid = orderRowDbId(r);
-      if (rid != null) reserveByDbId.set(rid, r);
+    if (singleIds.length > 0) {
+      const sParams = [singleIds];
+      let sProfileSql = '';
+      if (pid && Number.isFinite(pid)) {
+        sProfileSql = ' AND o.profile_id = $2';
+        sParams.push(pid);
+      }
+      const sUp = await query(
+        `
+        UPDATE orders o
+        SET status = 'in_procurement',
+            returned_to_new_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE o.id = ANY($1::bigint[])
+        ${sProfileSql}
+        RETURNING o.*
+        `,
+        sParams
+      );
+      for (const row of sUp.rows || []) {
+        if (row?.id != null) updatedById.set(row.id, row);
+      }
     }
-    const uniqueRows = [...reserveByDbId.values()];
+
+    const uniqueRows = [...updatedById.values()];
     if (uniqueRows.length > 0) {
       setImmediate(() => {
         this._reapplyReserveForOrderRows(uniqueRows).catch((e) => {
@@ -2151,7 +2247,19 @@ class OrdersService {
       });
     }
 
-    return { updated, skipped };
+    return { updated: seedRows.length, skipped };
+  }
+
+  /**
+   * Массово перевести заказы в «В закупке» и один раз дозарезервировать (без N тяжёлых HTTP-вызовов).
+   * @param {{ marketplace: string, orderId: string }[]} items
+   */
+  async bulkSetToProcurement(items, profileId = null) {
+    const refs = Array.isArray(items) ? items : [];
+    if (!repositoryFactory.isUsingPostgreSQL() || refs.length === 0) {
+      return { updated: 0, skipped: refs.length };
+    }
+    return this._bulkSetToProcurementPg(refs, profileId);
   }
 
   /**

@@ -161,7 +161,7 @@ export const ordersApi = {
 
   /** Массово в «В закупке» — один запрос вместо N (резерв пересчитывается на сервере в фоне). */
   bulkSetToProcurement: async (items) => {
-    const response = await api.post('/orders/bulk-to-procurement', { items });
+    const response = await api.post('/orders/bulk-to-procurement', { items }, { timeout: 120000 });
     return response.data?.data ?? response.data;
   },
 

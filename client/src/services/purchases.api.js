@@ -12,7 +12,7 @@ export const purchasesApi = {
 
   /** Добавить позиции в закупку (incoming по дельте количества) */
   appendDraftItems: async (id, payload) => {
-    const response = await api.post(`/purchases/${id}/draft-items`, payload);
+    const response = await api.post(`/purchases/${id}/draft-items`, payload, { timeout: 120000 });
     return response.data?.data ?? response.data;
   },
 
@@ -36,7 +36,7 @@ export const purchasesApi = {
   },
 
   create: async (payload) => {
-    const response = await api.post('/purchases', payload);
+    const response = await api.post('/purchases', payload, { timeout: 120000 });
     return response.data?.data ?? response.data;
   },
 

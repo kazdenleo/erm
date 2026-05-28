@@ -1076,6 +1076,8 @@ export function Orders() {
       if (procurementItems.length > 0) {
         await ordersApi.bulkSetToProcurement(procurementItems);
       }
+      closeProcurementModal();
+      await reloadOrders({ silent: true });
       setSelectedKeys((prev) => {
         const next = new Set(prev);
         for (const r of sourceRows) {
@@ -1094,8 +1096,6 @@ export function Orders() {
         }
         return n;
       });
-      closeProcurementModal();
-      await reloadOrders({ silent: true });
     } catch (e) {
       console.error('Ошибка «В закупку»:', e);
       const msg = e.response?.data?.message || e.message || 'Не удалось оформить закупку и обновить заказ';

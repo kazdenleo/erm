@@ -82,7 +82,7 @@ export async function getHealth(req, res) {
     uptime: `${uptime}s`,
     environment: config.nodeEnv,
     version: '1.0.0',
-    build: '2026-05-28-orders-fast',
+    build: '2026-05-28-procurement-bulk',
     services: {
       server: { status: 'ok' },
       database: dbHealth,
