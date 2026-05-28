@@ -1979,10 +1979,37 @@ class OrdersService {
     });
   }
 
+  /** Резерв после return-to-new — только в фоне (не блокировать HTTP). */
+  _scheduleReapplyReserveAfterReturnToNew({ orderGroupId, marketplace, orderId, profileId }) {
+    setImmediate(() => {
+      void (async () => {
+        let rows = [];
+        if (orderGroupId) {
+          rows = (await this.repository.findByOrderGroupId(orderGroupId, profileId)) || [];
+          rows = rows.filter((row) => String(row.status || '').toLowerCase() === 'new');
+        } else if (marketplace && orderId != null) {
+          const r = await this.repository.findByMarketplaceAndOrderIdLite(
+            marketplace,
+            String(orderId),
+            profileId
+          );
+          if (r) rows = [r];
+        }
+        if (rows.length > 0) await this._reapplyReserveForOrderRows(rows);
+      })().catch((e) => {
+        console.warn('[Orders] background reserve after return-to-new:', e?.message || e);
+      });
+    });
+  }
+
   async returnOrderToNew(marketplace, orderId, profileId = null, opts = {}) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
+      const findLite =
+        typeof this.repository.findByMarketplaceAndOrderIdLite === 'function'
+          ? (mp, oid, pid) => this.repository.findByMarketplaceAndOrderIdLite(mp, oid, pid)
+          : (mp, oid, pid) => this.repository.findByMarketplaceAndOrderId(mp, oid, pid);
+      const order = await findLite(marketplace, String(orderId), profileId);
       if (!order) return null;
       if (order.orderGroupId) {
         const n = await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'new', profileId);
@@ -1995,20 +2022,18 @@ class OrdersService {
           );
         }
         if (!opts.skipReserveReapply) {
-          const groupRows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
-          const toReserve = (groupRows || []).filter(
-            (row) => String(row.status || '').toLowerCase() === 'new'
-          );
-          this._scheduleReapplyReserveForOrderRows(toReserve);
+          this._scheduleReapplyReserveAfterReturnToNew({
+            orderGroupId: order.orderGroupId,
+            profileId,
+          });
         }
-        return order;
+        return { ...order, status: 'new' };
       }
       await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'new' }, profileId);
-      const refreshed = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
-      if (!opts.skipReserveReapply && refreshed) {
-        this._scheduleReapplyReserveForOrderRows([refreshed]);
+      if (!opts.skipReserveReapply) {
+        this._scheduleReapplyReserveAfterReturnToNew({ marketplace, orderId, profileId });
       }
-      return refreshed ?? order;
+      return { ...order, status: 'new' };
     }
     const { readData, writeData } = await import('../utils/storage.js');
     const data = await readData('orders');

@@ -377,6 +377,48 @@ class OrdersRepositoryPG {
   }
 
   /**
+   * Быстрый поиск заказа для смены статуса (без LATERAL product_skus и подзапросов резерва).
+   */
+  async findByMarketplaceAndOrderIdLite(marketplace, orderId, profileId = null) {
+    const dbMarketplace = normalizeMarketplaceForDb(marketplace);
+    const oid = String(orderId ?? '').trim();
+    const pid = normalizeProfileId(profileId);
+    const pick = async (mp, idStr) => {
+      const result = await query(
+        `
+        SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id,
+               o.marketplace_sku, o.product_name, o.quantity, o.status, o.delivery_address
+        FROM orders o
+        WHERE o.marketplace = $1 AND o.order_id = $2${pid ? ' AND o.profile_id = $3' : ''}
+        LIMIT 1
+        `,
+        pid ? [mp, idStr, pid] : [mp, idStr]
+      );
+      return result.rows[0] ? rowToCamel(result.rows[0]) : null;
+    };
+
+    let row = await pick(dbMarketplace, oid);
+    if (row) return row;
+
+    if (dbMarketplace === 'ym') {
+      const colon = oid.indexOf(':');
+      const base = colon >= 0 ? oid.slice(0, colon) : oid;
+      if (base && base !== oid) {
+        row = await pick('ym', base);
+        if (row) return row;
+      }
+    }
+    if (dbMarketplace === 'ozon') {
+      const tilde = oid.indexOf('~');
+      if (tilde > 0) {
+        row = await pick('ozon', oid.slice(0, tilde));
+        if (row) return row;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Получить заказ по marketplace и order_id (camelCase)
    * Яндекс.Маркет: в БД order_id часто «число:offerId», order_group_id = числовой id заказа МП —
    * ищем также по группе и по базовому id (как getLocalOrderByMarketplaceAndOrderId в sync).

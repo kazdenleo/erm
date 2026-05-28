@@ -21,6 +21,10 @@ fi
 if ! grep -q 'bulkReturnToNew' "$APP_ROOT/server/src/services/orders.service.js"; then
   echo "WARN: нет bulkReturnToNew — возврат в «Новый» может давать 504"
 fi
+if ! grep -q '_scheduleReapplyReserveAfterReturnToNew' "$APP_ROOT/server/src/services/orders.service.js"; then
+  echo "ERROR: нет async return-to-new — сделайте git pull"
+  exit 1
+fi
 echo "OK: фиксы orders (список, сборка, return-to-new) найдены"
 
 echo "==> server"

@@ -533,12 +533,21 @@ class OrdersController {
   async returnToNew(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
-      const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
-      if (!order) {
+      const updated = await ordersService.returnOrderToNew(
+        marketplace,
+        orderId,
+        req.user?.profileId ?? null
+      );
+      if (!updated) {
         return res.status(404).json({ ok: false, message: 'Заказ не найден' });
       }
-      await ordersService.returnOrderToNew(marketplace, orderId, req.user?.profileId ?? null);
-      return res.status(200).json({ ok: true, data: { message: 'Заказ возвращён в статус «Новый»' } });
+      return res.status(200).json({
+        ok: true,
+        data: {
+          message: 'Заказ возвращён в статус «Новый»',
+          reservePending: true,
+        },
+      });
     } catch (error) {
       next(error);
     }
