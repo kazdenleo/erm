@@ -192,4 +192,90 @@ ls
 
 ---
 
+## Ошибка 504 при «На сборку» (`/api/orders/send-to-assembly`)
+
+**Симптом:** в браузере `504 Gateway Time-out`, в теле ответа HTML от **nginx** (не JSON от Node).
+
+**Причина:** nginx обрывает запрос примерно через **60 с**, а старый код ждал ответы Ozon/WB и резервы по каждому заказу в одном HTTP-запросе.
+
+**Что сделано в коде:** статус «На сборке» в ERM сохраняется сразу; поставки на маркетплейсах и резервы — **в фоне**. После деплоя ответ должен приходить за секунды.
+
+**Деплой на VPS:**
+
+```bash
+cd /opt/erm && git pull origin main
+cd /opt/erm/client && npm run build
+pm2 restart erm-api --update-env
+```
+
+**Если 504 остаётся** (очень много заказов за раз или медленная БД) — увеличьте таймаут nginx для API, в блоке `location /api/`:
+
+```nginx
+proxy_read_timeout 300s;
+proxy_connect_timeout 300s;
+proxy_send_timeout 300s;
+```
+
+Затем: `sudo nginx -t && sudo systemctl reload nginx`.
+
+Проверка API:
+
+```bash
+# Node напрямую (всегда /health, не /api/health)
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3001/health
+
+# Через nginx (после обновления — /api/health тоже работает)
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1/api/health
+
+# Прокси API: без токена обычно 401, не 404 и не 504
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1/api/auth/me
+```
+
+`404` на `/health` и `/api/health` через порт 80 **до обновления** — нормально: health живёт только на `:3001/health`. После `git pull` и перезапуска PM2 `/api/health` через nginx должен отдавать `200`.
+
+---
+
+## nginx отдаёт 404 на `/api/...`, а `:3001/api/...` работает
+
+**Симптом:**
+
+```bash
+curl -w "%{http_code}\n" -o /dev/null -s http://127.0.0.1:3001/api/auth/me   # 401
+curl -w "%{http_code}\n" -o /dev/null -s http://127.0.0.1/api/auth/me         # 404
+```
+
+**Причина:** в конфиге nginx **нет** `location /api/` с `proxy_pass` на Node (или прокси на другой порт/путь).
+
+**Диагностика:**
+
+```bash
+grep -R "proxy_pass\|location /api" /etc/nginx/sites-enabled/ -n
+nginx -t
+```
+
+**Исправление:** в блок `server` для вашего домена добавьте (порт `3001` как в `.env`):
+
+```nginx
+location /api/ {
+    proxy_pass http://127.0.0.1:3001/api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 300s;
+}
+```
+
+Полный пример: `docs/nginx-erm.example.conf` в репозитории.
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1/api/auth/me   # должно стать 401
+```
+
+Пока `/api` через nginx не работает, сайт в браузере может ходить «мимо» API или получать 504/404 на операции вроде «На сборку».
+
+---
+
 *В конец можно дописать от руки:* путь = `______`, PM2 = `______`, база = `______`.

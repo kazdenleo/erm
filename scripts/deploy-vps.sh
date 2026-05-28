@@ -36,13 +36,19 @@ npm run build
 
 echo "==> pm2 restart (cwd=$APP_ROOT/server)"
 cd "$APP_ROOT/server"
-pm2 delete "$PM2_NAME" 2>/dev/null || true
-pm2 start server.js --name "$PM2_NAME" --cwd "$APP_ROOT/server"
+if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
+  pm2 restart "$PM2_NAME" --update-env
+else
+  pm2 start server.js --name "$PM2_NAME" --cwd "$APP_ROOT/server"
+fi
 pm2 save
 pm2 list
 
 echo "==> health check"
 sleep 2
 curl -sf "http://127.0.0.1:${PORT:-3001}/health" | head -c 400 || echo "WARN: /health failed — см. pm2 logs $PM2_NAME"
+DOMAIN="${DOMAIN:-dttrade.ru}"
+curl -sf -o /dev/null -w "HTTPS /api/auth/me → %{http_code}\n" -k -H "Host: $DOMAIN" "https://127.0.0.1/api/auth/me" 2>/dev/null \
+  || echo "WARN: nginx HTTPS check skipped"
 
 echo "==> done"

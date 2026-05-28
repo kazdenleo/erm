@@ -83,6 +83,8 @@ app.get('/', (req, res) => {
 
 // Health check endpoint (до основных роутов)
 app.get('/health', wrapAsync(getHealth));
+// Через nginx проксируют только /api — дублируем health для диагностики
+app.get('/api/health', wrapAsync(getHealth));
 
 // Браузер всегда запрашивает favicon — без маршрута попадает в 404 и шумит errorHandler
 app.get('/favicon.ico', (_req, res) => res.status(204).end());

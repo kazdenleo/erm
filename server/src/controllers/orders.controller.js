@@ -16,8 +16,99 @@ import productsService from '../services/products.service.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { readData } from '../utils/storage.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import logger from '../utils/logger.js';
 
 const profilesRepo = repositoryFactory.getProfilesRepository();
+
+/** Поставки МП + предзагрузка этикеток — в фоне, чтобы nginx не отдавал 504. */
+async function processAssemblyShipmentsInBackground(orderIds, { profileId, organizationId }) {
+  const warnings = [];
+  const shipmentsUsed = [];
+  const byMarketplace = {};
+  for (const o of orderIds || []) {
+    const mp = (o.marketplace || '').toLowerCase();
+    const code = mp === 'wb' ? 'wildberries' : mp;
+    if (!['ozon', 'wildberries', 'yandex'].includes(code)) continue;
+    if (!byMarketplace[code]) byMarketplace[code] = [];
+    byMarketplace[code].push({ marketplace: o.marketplace, orderId: String(o.orderId) });
+  }
+  for (const [code, list] of Object.entries(byMarketplace)) {
+    if (list.length === 0) continue;
+    try {
+      const openShipment = await shipmentsService.getOrCreateOpenShipment(code, { profileId, organizationId });
+      const byShipmentId = new Map();
+      for (const o of list) {
+        const existingShip = await shipmentsService.findLocalShipmentContainingOrder(code, o.orderId, {
+          profileId,
+          organizationId
+        });
+        const useShip = existingShip || openShipment;
+        if (!byShipmentId.has(useShip.id)) {
+          byShipmentId.set(useShip.id, { shipment: useShip, orderIds: [] });
+        }
+        byShipmentId.get(useShip.id).orderIds.push(o.orderId);
+      }
+      for (const { shipment, orderIds: oids } of byShipmentId.values()) {
+        try {
+          const s = await shipmentsService.addOrdersToShipment(shipment.id, oids, { profileId, organizationId });
+          shipmentsUsed.push({
+            marketplace: code,
+            shipmentId: s.id,
+            shipmentName: s.name,
+            orderIds: oids,
+            localWbOnly: s.localWbOnly === true
+          });
+        } catch (e) {
+          if (code === 'ozon' && e?.statusCode === 502) {
+            warnings.push({
+              marketplace: code,
+              shipmentId: shipment.id,
+              message: e.message,
+              failedOrderIds: Array.isArray(e?.ozonErrors)
+                ? e.ozonErrors.map((x) => String(x?.postingNumber || '')).filter(Boolean)
+                : []
+            });
+            continue;
+          }
+          if (e?.statusCode === 409) {
+            const failed = Array.isArray(e.failedOrderIds) ? e.failedOrderIds.map(String) : [];
+            warnings.push({
+              marketplace: code,
+              shipmentId: shipment.id,
+              message: e.message,
+              failedOrderIds: failed
+            });
+            continue;
+          }
+          throw e;
+        }
+      }
+    } catch (e) {
+      logger.warn('[sendToAssembly] background shipments failed', {
+        marketplace: code,
+        message: e?.message || String(e)
+      });
+      warnings.push({ marketplace: code, message: e?.message || String(e) });
+    }
+  }
+  try {
+    const uniq = [...new Set((orderIds || []).map((o) => (o?.orderId != null ? String(o.orderId) : '')).filter(Boolean))];
+    for (const oid of uniq) {
+      ordersLabelsService
+        .findOrderById(oid)
+        .then((order) => ordersLabelsService.getLabelStatus(order, { organizationId }))
+        .catch(() => {});
+    }
+  } catch {
+    /* best effort */
+  }
+  if (shipmentsUsed.length || warnings.length) {
+    logger.info('[sendToAssembly] background shipments done', {
+      shipments: shipmentsUsed.length,
+      warnings: warnings.length
+    });
+  }
+}
 
 class OrdersController {
   async getAll(req, res, next) {
@@ -402,99 +493,23 @@ class OrdersController {
       } catch (_) {
         // best effort: не ломаем сборку из-за сбоя проверки
       }
-      const byMarketplace = {};
       const effectiveOrderIds = req.body?.orderIds;
-      for (const o of effectiveOrderIds) {
-        const mp = (o.marketplace || '').toLowerCase();
-        const code = mp === 'wb' ? 'wildberries' : mp;
-        if (!['ozon', 'wildberries', 'yandex'].includes(code)) continue;
-        if (!byMarketplace[code]) byMarketplace[code] = [];
-        byMarketplace[code].push({ marketplace: o.marketplace, orderId: String(o.orderId) });
-      }
-      const shipmentsUsed = [];
-      for (const [code, list] of Object.entries(byMarketplace)) {
-        if (list.length === 0) continue;
-        // Идемпотентность: если заказ уже привязан к какой-то поставке — используем её и не добавляем заново.
-        const openShipment = await shipmentsService.getOrCreateOpenShipment(code, { profileId, organizationId });
-        const byShipmentId = new Map(); // shipmentId -> { shipment, orderIds: [] }
 
-        for (const o of list) {
-          const existingShip = await shipmentsService.findLocalShipmentContainingOrder(code, o.orderId, {
-            profileId,
-            organizationId
-          });
-          const useShip = existingShip || openShipment;
-          if (!byShipmentId.has(useShip.id)) {
-            byShipmentId.set(useShip.id, { shipment: useShip, orderIds: [] });
-          }
-          byShipmentId.get(useShip.id).orderIds.push(o.orderId);
-        }
+      // Сначала статус в БД (быстро), поставки МП — в фоне (иначе nginx 504).
+      const result = await ordersService.sendToAssembly(effectiveOrderIds, profileId, { deferReserve: true });
 
-        for (const { shipment, orderIds } of byShipmentId.values()) {
-          try {
-            const s = await shipmentsService.addOrdersToShipment(shipment.id, orderIds, { profileId, organizationId });
-            shipmentsUsed.push({
-              marketplace: code,
-              shipmentId: s.id,
-              shipmentName: s.name,
-              orderIds,
-              localWbOnly: s.localWbOnly === true,
-            });
-          } catch (e) {
-            // Ozon 502: не удалось перевести постинги в «Ожидает отгрузки» (статус/ошибка Ozon API).
-            // По требованию: заказ всё равно уходит «На сборке» в ERM, а проблему показываем как предупреждение.
-            if (code === 'ozon' && e?.statusCode === 502) {
-              warnings.push({
-                marketplace: code,
-                shipmentId: shipment.id,
-                message: e.message,
-                failedOrderIds: Array.isArray(e?.ozonErrors) ? e.ozonErrors.map((x) => String(x?.postingNumber || '')).filter(Boolean) : []
-              });
-              continue;
-            }
-            // WB 409: часть заказов уже в другой поставке WB или статус не подходит.
-            // По требованию: такие заказы всё равно отправляем "На сборку" в ERM (физически они у нас),
-            // а ошибку превращаем в предупреждение.
-            if (e?.statusCode === 409) {
-              const failed = Array.isArray(e.failedOrderIds) ? e.failedOrderIds.map(String) : [];
-              warnings.push({
-                marketplace: code,
-                shipmentId: shipment.id,
-                message: e.message,
-                failedOrderIds: failed
-              });
-              continue;
-            }
-            throw e;
-          }
-        }
-      }
-      const result = await ordersService.sendToAssembly(effectiveOrderIds, profileId);
-
-      // Автопредзагрузка этикеток после перевода «На сборке».
-      // Делается в фоне: чтобы UI не ждал WB/Ozon/YM и не ловил 504/таймауты.
-      try {
-        const uniq = Array.isArray(effectiveOrderIds)
-          ? [...new Set(effectiveOrderIds.map((o) => (o?.orderId != null ? String(o.orderId) : '')).filter(Boolean))]
-          : [];
-        setTimeout(() => {
-          for (const oid of uniq) {
-            // getLabelStatus сам поставит скачивание в фон, если файла ещё нет
-            ordersLabelsService
-              .findOrderById(oid)
-              .then((order) => ordersLabelsService.getLabelStatus(order, { organizationId }))
-              .catch(() => {});
-          }
-        }, 0);
-      } catch {
-        /* best effort */
-      }
+      setImmediate(() => {
+        processAssemblyShipmentsInBackground(effectiveOrderIds, { profileId, organizationId }).catch((e) => {
+          logger.error('[sendToAssembly] background shipments error', { message: e?.message || String(e) });
+        });
+      });
 
       return res.status(200).json({
         ok: true,
         data: {
           ...result,
-          shipments: shipmentsUsed,
+          shipments: [],
+          shipmentsPending: true,
           warnings,
           statusPreserved: result?.statusPreserved ?? 0,
         },

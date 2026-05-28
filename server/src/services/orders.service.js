@@ -214,6 +214,8 @@ class OrdersService {
     const ok = [];
     const blocked = [];
     const productCache = new Map(); // productId -> { qty, reserved }
+    const kitCache = new Map(); // productId -> boolean
+    const fastBatch = refs.length > 50;
     for (const o of refs) {
       const mp = this._marketplaceToOrdersDb(o?.marketplace);
       const oid = o?.orderId != null ? String(o.orderId).trim() : '';
@@ -232,6 +234,10 @@ class OrdersService {
 
       // Если product_id в orders ещё не заполнен, пытаемся сопоставить через product_skus (как в UI).
       if (!prodId || !Number.isFinite(prodId) || prodId < 1) {
+        if (fastBatch) {
+          blocked.push({ marketplace: o.marketplace, orderId: oid, reason: 'не определён товар (product_id)' });
+          continue;
+        }
         try {
           const resolved = await this._resolveProductIdForOrderStock({
             marketplace: row.marketplace,
@@ -274,8 +280,13 @@ class OrdersService {
         blocked.push({ marketplace: o.marketplace, orderId: oid, reason: 'не определён товар (product_id)' });
         continue;
       }
+      let isKit = kitCache.get(prodId);
+      if (isKit === undefined) {
+        isKit = await isKitProductId(prodId);
+        kitCache.set(prodId, isKit);
+      }
       const reservedForLine =
-        orderDbId && Number.isFinite(orderDbId) && (await isKitProductId(prodId))
+        orderDbId && Number.isFinite(orderDbId) && isKit
           ? await getReservedKitUnitsForOrder(prodId, orderDbId)
           : resQty;
       if (reservedForLine < need) {
@@ -286,7 +297,7 @@ class OrdersService {
         });
         continue;
       }
-      if (!(await isKitProductId(prodId)) && prodQty < prodRes) {
+      if (!isKit && prodQty < prodRes) {
         blocked.push({
           marketplace: o.marketplace,
           orderId: oid,
@@ -1764,65 +1775,126 @@ class OrdersService {
    * @param {Array<{ marketplace: string, orderId: string }>} orderIds
    * @returns {{ sent: number, updated: number }}
    */
-  async sendToAssembly(orderIds, profileId = null) {
+  async _sendToAssemblyPostgresBulk(orderIds, profileId, { deferReserve }) {
+    const preserveStatuses = ['assembled', 'shipped', 'in_transit', 'delivered', 'cancelled'];
+    const values = [];
+    const params = [];
+    let i = 1;
+    for (const { marketplace, orderId } of orderIds) {
+      if (!marketplace || orderId == null) continue;
+      values.push(`($${i++}::text, $${i++}::text)`);
+      params.push(this._marketplaceToOrdersDb(marketplace), String(orderId));
+    }
+    if (values.length === 0) {
+      return { sent: orderIds.length, updated: 0, statusPreserved: 0, reserveRows: [] };
+    }
+
+    let profileSql = '';
+    const pid = profileId != null && String(profileId).trim() !== '' ? Number(profileId) : null;
+    if (pid && Number.isFinite(pid)) {
+      profileSql = ` AND o.profile_id = $${i++}`;
+      params.push(pid);
+    }
+
+    const preserveIdx = i++;
+    params.push(preserveStatuses);
+
+    const preservedRes = await query(
+      `
+      WITH refs(marketplace, order_id) AS (VALUES ${values.join(',')})
+      SELECT COUNT(*)::int AS cnt
+      FROM orders o
+      INNER JOIN refs r ON o.marketplace = r.marketplace AND o.order_id = r.order_id
+      WHERE o.status::text = ANY($${preserveIdx}::text[])
+      ${profileSql}
+      `,
+      params
+    );
+    const statusPreserved = Number(preservedRes.rows?.[0]?.cnt) || 0;
+
+    const upd = await query(
+      `
+      WITH refs(marketplace, order_id) AS (VALUES ${values.join(',')})
+      UPDATE orders o
+      SET status = 'in_assembly',
+          returned_to_new_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      FROM refs r
+      WHERE o.marketplace = r.marketplace
+        AND o.order_id = r.order_id
+        AND (o.status IS NULL OR NOT (o.status::text = ANY($${preserveIdx}::text[])))
+      ${profileSql}
+      RETURNING o.*
+      `,
+      params
+    );
+
+    const updated = upd.rowCount ?? 0;
+    const reserveRows = upd.rows || [];
+
+    const runReserveBackground = (rows) => {
+      setImmediate(() => {
+        void (async () => {
+          const pids = new Set();
+          for (const row of rows) {
+            await this._applyReserveForOrderIfAbsent(row).catch(() => {});
+            let productId = await this._resolveProductIdForOrderStock(row).catch(() => null);
+            if (!productId) productId = row.product_id;
+            const pn = Number(productId);
+            if (Number.isFinite(pn) && pn > 0) pids.add(pn);
+          }
+          for (const productId of pids) {
+            await this.ensureReservesForProductIfSupplyAvailable(productId).catch(() => {});
+          }
+        })();
+      });
+    };
+
+    if (deferReserve && reserveRows.length > 0) {
+      runReserveBackground(reserveRows);
+    } else if (!deferReserve && reserveRows.length > 0) {
+      const pids = new Set();
+      for (const row of reserveRows) {
+        await this._applyReserveForOrderIfAbsent(row).catch(() => {});
+        let productId = await this._resolveProductIdForOrderStock(row).catch(() => null);
+        if (!productId) productId = row.product_id;
+        const pn = Number(productId);
+        if (Number.isFinite(pn) && pn > 0) pids.add(pn);
+      }
+      for (const productId of pids) {
+        await this.ensureReservesForProductIfSupplyAvailable(productId).catch(() => {});
+      }
+    }
+
+    return { sent: orderIds.length, updated, statusPreserved };
+  }
+
+  async sendToAssembly(orderIds, profileId = null, options = {}) {
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
       return { sent: 0, updated: 0, statusPreserved: 0 };
     }
-    const preserveStatuses = new Set(['assembled', 'shipped', 'in_transit', 'delivered', 'cancelled']);
-    let updated = 0;
-    let statusPreserved = 0;
-    const touchedProductIds = new Set();
+    const deferReserve = options.deferReserve === true;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      for (const { marketplace, orderId } of orderIds) {
-        if (!marketplace || orderId == null) continue;
-        const mpForRepo = this._marketplaceToOrdersDb(marketplace);
-        const existing = await this.repository.findByMarketplaceAndOrderId(
-          mpForRepo,
-          String(orderId),
-          profileId
-        );
-        if (existing && preserveStatuses.has(String(existing.status || ''))) {
-          statusPreserved++;
-          continue;
-        }
-        const row = await this.repository.updateByMarketplaceAndOrderId(
-          mpForRepo,
-          String(orderId),
-          { status: 'in_assembly' },
-          profileId
-        );
-        if (row) {
-          updated++;
-          await this._applyReserveForOrderIfAbsent(row).catch(() => {});
-          let pid = await this._resolveProductIdForOrderStock(row).catch(() => null);
-          if (!pid) {
-            pid = row.productId ?? row.product_id;
-          }
-          const pn = Number(pid);
-          if (Number.isFinite(pn) && pn > 0) touchedProductIds.add(pn);
-        }
-      }
-      for (const pid of touchedProductIds) {
-        await this.ensureReservesForProductIfSupplyAvailable(pid).catch(() => {});
-      }
-    } else {
-      const { readData, writeData } = await import('../utils/storage.js');
-      const data = await readData('orders');
-      const orders = (data?.orders && [...data.orders]) || [];
-      const set = new Set(orderIds.map(o => `${o.marketplace}|${o.orderId}`));
-      let changed = false;
-      for (const order of orders) {
-        const key = `${order.marketplace}|${order.orderId}`;
-        if (set.has(key)) {
-          order.status = 'in_assembly';
-          order.returnedToNewAt = null;
-          updated++;
-          changed = true;
-        }
-      }
-      if (changed) await writeData('orders', { ...data, orders, lastSync: new Date().toISOString() });
+      return this._sendToAssemblyPostgresBulk(orderIds, profileId, { deferReserve });
     }
-    return { sent: orderIds.length, updated, statusPreserved };
+
+    let updated = 0;
+    const { readData, writeData } = await import('../utils/storage.js');
+    const data = await readData('orders');
+    const orders = (data?.orders && [...data.orders]) || [];
+    const set = new Set(orderIds.map((o) => `${o.marketplace}|${o.orderId}`));
+    let changed = false;
+    for (const order of orders) {
+      const key = `${order.marketplace}|${order.orderId}`;
+      if (set.has(key)) {
+        order.status = 'in_assembly';
+        order.returnedToNewAt = null;
+        updated++;
+        changed = true;
+      }
+    }
+    if (changed) await writeData('orders', { ...data, orders, lastSync: new Date().toISOString() });
+    return { sent: orderIds.length, updated, statusPreserved: 0 };
   }
 
   /**

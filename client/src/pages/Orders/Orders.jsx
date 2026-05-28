@@ -99,6 +99,11 @@ function appendAssemblyWarnings(msg, warnings) {
   return `${msg} Предупреждения МП: ${parts.join('; ')}`.trim();
 }
 
+function appendShipmentsPendingHint(msg, result) {
+  if (!result?.shipmentsPending) return msg;
+  return `${msg} Поставки на маркетплейсах создаются в фоне — обновите список заказов через 1–2 минуты.`.trim();
+}
+
 /**
  * Один запрос to-procurement на группу в БД: по сырому order_group_id, даже если UI не склеивает строки
  * (например, ненадёжный WB uid в orderGroupKey возвращает пустую строку).
@@ -1093,6 +1098,7 @@ export function Orders() {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
       msg = appendAssemblyWarnings(msg, result?.warnings);
+      msg = appendShipmentsPendingHint(msg, result);
       setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       await reloadOrders({ silent: true });
     } catch (e) {
@@ -1543,6 +1549,7 @@ export function Orders() {
         msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
       msg = appendAssemblyWarnings(msg, result?.warnings);
+      msg = appendShipmentsPendingHint(msg, result);
       setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       setSelectedKeys((prev) => {
         const next = new Set(prev);
@@ -1620,6 +1627,7 @@ export function Orders() {
         const updated = result?.updated ?? toSend.length;
         let msg = `В системе статус «На сборке» обновлён для строк: ${updated} из ${toSend.length}.`;
         msg = appendAssemblyWarnings(msg, result?.warnings);
+        msg = appendShipmentsPendingHint(msg, result);
         setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
       }
       setSelectedKeys((prev) => {
