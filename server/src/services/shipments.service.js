@@ -101,6 +101,26 @@ async function getLocalShipments() {
   return Array.isArray(data?.shipments) ? data.shipments : [];
 }
 
+/** Кэш индекса orderId→поставка (список заказов дергает его на каждой странице). */
+let orderShipmentIndexCache = { key: '', at: 0, map: null };
+const ORDER_SHIPMENT_INDEX_CACHE_MS = 20_000;
+
+function orderShipmentLookupKey(marketplace, orderId) {
+  const mp = marketplace === 'wb' ? 'wildberries' : marketplace;
+  const oid = orderId != null ? String(orderId).trim() : '';
+  return oid ? `${mp}|${oid}` : '';
+}
+
+function buildNeededShipmentKeys(onlyOrders) {
+  if (!Array.isArray(onlyOrders) || onlyOrders.length === 0) return null;
+  const set = new Set();
+  for (const o of onlyOrders) {
+    const k = orderShipmentLookupKey(o?.marketplace, o?.orderId ?? o?.order_id);
+    if (k) set.add(k);
+  }
+  return set.size > 0 ? set : null;
+}
+
 async function saveLocalShipments(shipments) {
   await writeData('shipments', { shipments, updatedAt: new Date().toISOString() });
 }
@@ -1151,7 +1171,23 @@ async function addOrdersToShipment(shipmentId, orderIds, { profileId = null, org
  * Индекс orderId → локальная поставка (для списка заказов).
  * @returns {Map<string, { shipmentId: string, shipmentName: string, shipmentClosed: boolean }>}
  */
-async function getOrderShipmentIndex({ profileId = null, organizationId = null } = {}) {
+async function getOrderShipmentIndex({
+  profileId = null,
+  organizationId = null,
+  onlyOrders = null,
+} = {}) {
+  const needed = buildNeededShipmentKeys(onlyOrders);
+  const cacheKey = `${profileId ?? ''}|${organizationId ?? ''}|${needed ? 'partial' : 'full'}`;
+  const now = Date.now();
+  if (
+    !needed &&
+    orderShipmentIndexCache.map &&
+    orderShipmentIndexCache.key === cacheKey &&
+    now - orderShipmentIndexCache.at < ORDER_SHIPMENT_INDEX_CACHE_MS
+  ) {
+    return orderShipmentIndexCache.map;
+  }
+
   const shipments = await getLocalShipments();
   const index = new Map();
   for (const s of shipments) {
@@ -1164,12 +1200,17 @@ async function getOrderShipmentIndex({ profileId = null, organizationId = null }
     for (const rawOid of s.orderIds || []) {
       const oid = String(rawOid).trim();
       if (!oid) continue;
-      index.set(`${mp}|${oid}`, {
+      const key = `${mp}|${oid}`;
+      if (needed && !needed.has(key)) continue;
+      index.set(key, {
         shipmentId: s.id,
         shipmentName,
         shipmentClosed: !!s.closed,
       });
     }
+  }
+  if (!needed) {
+    orderShipmentIndexCache = { key: cacheKey, at: now, map: index };
   }
   return index;
 }

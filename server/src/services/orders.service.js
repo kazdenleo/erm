@@ -1230,7 +1230,10 @@ class OrdersService {
   async getAll(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       const items = await this.repository.findAll(options);
-      await this.enrichOrdersReserveMetrics(items);
+      const light =
+        options.lightReserveEnrich === true ||
+        (options.limit != null && Number(options.limit) > 0);
+      await this.enrichOrdersReserveMetrics(items, { light });
       return items;
     } else {
       // Старое хранилище
@@ -1242,8 +1245,25 @@ class OrdersService {
    * reservedQty / needQty для списка заказов: сумма по SKU и комплектующим (не SQL по order_id).
    * reserveLines — разбивка для подсказки «артикул: зарезервировано/нужно».
    */
-  async enrichOrdersReserveMetrics(orders) {
+  /**
+   * @param {{ light?: boolean }} enrichOpts — light=true: только reserved_qty из SQL (список заказов, без N+1).
+   */
+  async enrichOrdersReserveMetrics(orders, enrichOpts = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders)) return orders;
+    const light = enrichOpts.light === true;
+    if (light) {
+      for (const o of orders) {
+        const need = Math.max(1, parseInt(o.quantity, 10) || 1);
+        const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+        o.reservedQty = reserved;
+        o.reserved_qty = reserved;
+        o.needQty = need;
+        o.need_qty = need;
+        o.hasReserve = o.hasReserve === true || o.has_reserve === true || reserved > 0;
+        o.fullyReserved = need > 0 && reserved >= need;
+      }
+      return orders;
+    }
     for (const o of orders) {
       try {
         const orderDbId = orderRowDbId(o);
@@ -1265,13 +1285,14 @@ class OrdersService {
 
   async getPage(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      const items = await this.repository.findAll(options);
-      await this.enrichOrdersReserveMetrics(items);
-      const total =
+      const lightReserve = options.lightReserveEnrich !== false;
+      const countPromise =
         typeof this.repository.countAll === 'function'
-          ? await this.repository.countAll(options)
-          : items.length;
-      return { items, total };
+          ? this.repository.countAll(options)
+          : Promise.resolve(null);
+      const [items, total] = await Promise.all([this.repository.findAll(options), countPromise]);
+      await this.enrichOrdersReserveMetrics(items, { light: lightReserve });
+      return { items, total: total ?? items.length };
     }
     const items = await this.repository.findAll();
     return { items, total: items.length };

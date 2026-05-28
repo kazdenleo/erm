@@ -140,15 +140,21 @@ class OrdersController {
         ...(Number.isFinite(offset) && offset > 0 ? { offset } : {}),
       };
       const hasPaging = Number.isFinite(limit) && limit > 0;
+      const fullReserveEnrich = req.query?.enrichReserve === 'full';
+      const listOptions = {
+        ...options,
+        ...(hasPaging ? { lightReserveEnrich: !fullReserveEnrich } : {}),
+      };
       const result = hasPaging
-        ? await ordersService.getPage(options)
-        : { items: await ordersService.getAll(options), total: null };
+        ? await ordersService.getPage(listOptions)
+        : { items: await ordersService.getAll(listOptions), total: null };
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId =
         orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
       const shipmentIndex = await shipmentsService.getOrderShipmentIndex({
         profileId: tid,
         organizationId,
+        onlyOrders: result.items,
       });
       const itemsWithLabel = (result.items || []).map((o) => {
         const mpDb = o.marketplace === 'wb' ? 'wildberries' : o.marketplace;

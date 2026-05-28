@@ -12,10 +12,13 @@ echo "==> git pull"
 git pull origin main
 
 if ! grep -q 'shipmentsPending' "$APP_ROOT/server/src/controllers/orders.controller.js"; then
-  echo "ERROR: в коде нет shipmentsPending — на GitHub ещё нет этого коммита или не та ветка."
+  echo "WARN: shipmentsPending не найден (старый send-to-assembly)"
+fi
+if ! grep -q 'lightReserveEnrich' "$APP_ROOT/server/src/services/orders.service.js"; then
+  echo "ERROR: нет lightReserveEnrich — список заказов может отдавать 504. Сделайте git pull."
   exit 1
 fi
-echo "OK: send-to-assembly fix найден в коде"
+echo "OK: фиксы send-to-assembly и списка заказов найдены"
 
 echo "==> server"
 cd "$APP_ROOT/server"
