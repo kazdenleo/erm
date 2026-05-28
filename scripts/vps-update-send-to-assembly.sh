@@ -18,7 +18,10 @@ if ! grep -q 'lightReserveEnrich' "$APP_ROOT/server/src/services/orders.service.
   echo "ERROR: нет lightReserveEnrich — список заказов может отдавать 504. Сделайте git pull."
   exit 1
 fi
-echo "OK: фиксы send-to-assembly и списка заказов найдены"
+if ! grep -q 'bulkReturnToNew' "$APP_ROOT/server/src/services/orders.service.js"; then
+  echo "WARN: нет bulkReturnToNew — возврат в «Новый» может давать 504"
+fi
+echo "OK: фиксы orders (список, сборка, return-to-new) найдены"
 
 echo "==> server"
 cd "$APP_ROOT/server"

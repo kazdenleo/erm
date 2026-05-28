@@ -1581,21 +1581,19 @@ export function Orders() {
     try {
       if (targetStatus === 'new') {
         const reps = representativesForGroupScopedApi(toSend);
-        let ok = 0;
-        const errors = [];
-        for (const o of reps) {
-          try {
-            await ordersApi.returnToNew(o.marketplace, o.orderId);
-            ok += 1;
-          } catch (e) {
-            errors.push(`${o.orderId}: ${e.response?.data?.message || e.message}`);
-          }
+        const items = reps.map((o) => ({ marketplace: o.marketplace, orderId: o.orderId }));
+        try {
+          const result = await ordersApi.bulkReturnToNew(items);
+          const ok = result?.updated ?? items.length;
+          const skipped = result?.skipped ?? 0;
+          setAssemblyMessage(
+            skipped > 0
+              ? `В «Новый» переведено: ${ok}. Пропущено: ${skipped}. Резерв дозаполняется в фоне.`
+              : `В «Новый» переведено: ${ok}. Резерв дозаполняется в фоне.`
+          );
+        } catch (e) {
+          setAssemblyMessage(e.response?.data?.message || e.message || 'Ошибка возврата в «Новый»');
         }
-        setAssemblyMessage(
-          errors.length
-            ? `В «Новый» переведено заказов (групп): ${ok}. Ошибки: ${errors.slice(0, 8).join('; ')}`
-            : `В «Новый» переведено заказов (групп): ${ok}.`
-        );
       } else if (targetStatus === 'in_procurement') {
         const reps = representativesForGroupScopedApi(toSend);
         const items = reps

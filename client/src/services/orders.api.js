@@ -160,6 +160,12 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Массово в «Новый» — один запрос вместо N (резерв пересчитывается на сервере в фоне). */
+  bulkReturnToNew: async (items) => {
+    const response = await api.post('/orders/bulk-return-to-new', { items });
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Вернуть заказ в статус «Новый» (со сборки или «Собран»).
    */

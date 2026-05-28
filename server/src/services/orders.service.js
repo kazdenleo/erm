@@ -1968,7 +1968,18 @@ class OrdersService {
    * Вернуть заказ в статус «Новый» (со сборки или «Собран»).
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
    */
-  async returnOrderToNew(marketplace, orderId, profileId = null) {
+  _scheduleReapplyReserveForOrderRows(rows) {
+    const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+    if (list.length === 0) return;
+    const copy = list.map((r) => ({ ...r }));
+    setImmediate(() => {
+      this._reapplyReserveForOrderRows(copy).catch((e) => {
+        console.warn('[Orders] reapply reserve after return-to-new:', e?.message || e);
+      });
+    });
+  }
+
+  async returnOrderToNew(marketplace, orderId, profileId = null, opts = {}) {
     if (!marketplace || orderId == null) return null;
     if (repositoryFactory.isUsingPostgreSQL()) {
       const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
@@ -1983,16 +1994,20 @@ class OrdersService {
             profileId
           );
         }
-        const groupRows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
-        const toReserve = (groupRows || []).filter(
-          (row) => String(row.status || '').toLowerCase() === 'new'
-        );
-        await this._reapplyReserveForOrderRows(toReserve);
+        if (!opts.skipReserveReapply) {
+          const groupRows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
+          const toReserve = (groupRows || []).filter(
+            (row) => String(row.status || '').toLowerCase() === 'new'
+          );
+          this._scheduleReapplyReserveForOrderRows(toReserve);
+        }
         return order;
       }
       await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'new' }, profileId);
       const refreshed = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
-      if (refreshed) await this._reapplyReserveForOrderRows([refreshed]);
+      if (!opts.skipReserveReapply && refreshed) {
+        this._scheduleReapplyReserveForOrderRows([refreshed]);
+      }
       return refreshed ?? order;
     }
     const { readData, writeData } = await import('../utils/storage.js');
@@ -2110,6 +2125,58 @@ class OrdersService {
         });
       });
     }
+
+    return { updated, skipped };
+  }
+
+  /**
+   * Массово вернуть заказы в «Новый» (один HTTP-запрос, резерв в фоне).
+   * @param {{ marketplace: string, orderId: string }[]} items
+   */
+  async bulkReturnToNew(items, profileId = null) {
+    const refs = Array.isArray(items) ? items : [];
+    if (!repositoryFactory.isUsingPostgreSQL() || refs.length === 0) {
+      return { updated: 0, skipped: refs.length };
+    }
+    const seen = new Set();
+    const rowsForReserve = [];
+    let updated = 0;
+    let skipped = 0;
+
+    for (const it of refs) {
+      const mp = it?.marketplace != null ? String(it.marketplace).trim() : '';
+      const oid = it?.orderId != null ? String(it.orderId).trim() : '';
+      if (!mp || !oid) {
+        skipped += 1;
+        continue;
+      }
+      const dedupeKey = `${mp.toLowerCase()}|${oid}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const order = await this.returnOrderToNew(mp, oid, profileId, { skipReserveReapply: true });
+      if (!order) {
+        skipped += 1;
+        continue;
+      }
+      updated += 1;
+      const groupRows = order.orderGroupId
+        ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
+        : [order];
+      for (const r of groupRows) {
+        if (String(r.status || '').toLowerCase() === 'new') {
+          const rid = orderRowDbId(r);
+          if (rid != null) rowsForReserve.push(r);
+        }
+      }
+    }
+
+    const reserveByDbId = new Map();
+    for (const r of rowsForReserve) {
+      const rid = orderRowDbId(r);
+      if (rid != null) reserveByDbId.set(rid, r);
+    }
+    this._scheduleReapplyReserveForOrderRows([...reserveByDbId.values()]);
 
     return { updated, skipped };
   }

@@ -560,6 +560,21 @@ class OrdersController {
   }
 
   /**
+   * Массово вернуть в «Новый».
+   * POST /orders/bulk-return-to-new  body: { items: [{ marketplace, orderId }] }
+   */
+  async bulkReturnToNew(req, res, next) {
+    try {
+      const raw = req.body?.items ?? req.body?.orderIds ?? [];
+      const items = Array.isArray(raw) ? raw : [];
+      const data = await ordersService.bulkReturnToNew(items, req.user?.profileId ?? null);
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Перевести заказ в статус «В закупке». Только для заказов в статусе «Новый».
    * PUT /orders/:marketplace/:orderId/to-procurement
    */

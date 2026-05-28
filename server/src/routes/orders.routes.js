@@ -84,6 +84,12 @@ router.post(
   wrapAsync(ordersController.bulkSetToProcurement.bind(ordersController))
 );
 
+// Массово вернуть в «Новый» (резерв в фоне)
+router.post(
+  '/bulk-return-to-new',
+  wrapAsync(ordersController.bulkReturnToNew.bind(ordersController))
+);
+
 // Повторно снять резерв и списать по заказам (после закрытой поставки)
 router.post(
   '/reapply-assembly-stock',
