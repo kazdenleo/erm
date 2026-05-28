@@ -7,12 +7,19 @@ import express from 'express';
 import purchasesController from '../controllers/purchases.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 import { requireAuth } from '../middleware/auth.js';
+import { createProductExcelImportUpload } from '../middleware/uploads.js';
 
 const router = express.Router();
+const excelUpload = createProductExcelImportUpload();
 router.use(requireAuth);
 
 // закупки
 router.get('/', wrapAsync(purchasesController.list.bind(purchasesController)));
+router.post(
+  '/import/excel',
+  excelUpload.single('file'),
+  wrapAsync(purchasesController.importFromExcel.bind(purchasesController))
+);
 router.post('/', wrapAsync(purchasesController.create.bind(purchasesController)));
 router.get('/:id', wrapAsync(purchasesController.getById.bind(purchasesController)));
 router.post('/:id/draft-items', wrapAsync(purchasesController.appendDraftItems.bind(purchasesController)));

@@ -10,6 +10,7 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
   const [formData, setFormData] = useState({
     name: '',
     active: true,
+    prefix: '',
     warehouses: []
   });
   
@@ -23,9 +24,11 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
   useEffect(() => {
     if (supplier) {
       const warehouses = supplier.apiConfig?.warehouses || [];
+      const apiConfig = supplier.apiConfig || supplier.api_config || {};
       setFormData({
         name: supplier.name || '',
         active: supplier.isActive !== undefined ? supplier.isActive : (supplier.active !== undefined ? supplier.active : true),
+        prefix: String(apiConfig.prefix ?? apiConfig.article_prefix ?? '').trim(),
         warehouses: warehouses.map(w => ({ name: w.name || '', time: w.time || '18:00' }))
       });
     }
@@ -85,6 +88,7 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
       name: formData.name.trim(),
       isActive: formData.active, // Используем isActive для соответствия с API
       apiConfig: {
+        prefix: formData.prefix.trim(),
         warehouses: formData.warehouses.map(w => ({
           name: w.name.trim(),
           time: w.time
@@ -127,6 +131,23 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
           />
           <label className="form-check-label" htmlFor="supplierActive">Активный поставщик</label>
         </div>
+      </div>
+
+      <div className="col-12">
+        <label className="form-label" htmlFor="supplierArticlePrefix">
+          Префикс артикула
+        </label>
+        <input
+          id="supplierArticlePrefix"
+          type="text"
+          className="form-control form-control-sm"
+          placeholder="Например: MI-"
+          value={formData.prefix}
+          onChange={(e) => handleChange('prefix', e.target.value)}
+        />
+        <p className="text-muted small mb-0 mt-1">
+          При импорте закупки из Excel этот префикс будет снят с начала артикула в файле, чтобы сопоставить товар с каталогом.
+        </p>
       </div>
 
       <div className="col-12">

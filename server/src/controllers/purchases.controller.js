@@ -4,6 +4,7 @@
  */
 
 import purchasesService from '../services/purchases.service.js';
+import purchasesImportService from '../services/purchasesImport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 class PurchasesController {
@@ -50,6 +51,40 @@ class PurchasesController {
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 403) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  /**
+   * POST /api/purchases/import/excel
+   * multipart: file, supplierId, organizationId, warehouseId
+   */
+  async importFromExcel(req, res, next) {
+    try {
+      if (!req.file?.buffer) {
+        return res.status(400).json({ ok: false, message: 'Загрузите файл Excel (.xlsx)' });
+      }
+      const supplierId = req.body?.supplierId ?? req.body?.supplier_id;
+      const organizationId = req.body?.organizationId ?? req.body?.organization_id;
+      const warehouseId = req.body?.warehouseId ?? req.body?.warehouse_id;
+      const userId = req.user?.id ?? null;
+      const profileId = req.user?.profileId ?? null;
+      const data = await purchasesImportService.importExcelAndCreate(req.file.buffer, {
+        supplierId,
+        organizationId,
+        warehouseId,
+        profileId,
+        userId,
+      });
+      return res.status(201).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          ...(e.details ? { details: e.details } : {}),
+        });
       }
       next(e);
     }

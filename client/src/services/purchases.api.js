@@ -40,6 +40,15 @@ export const purchasesApi = {
     return response.data?.data ?? response.data;
   },
 
+  /**
+   * Создать закупку из Excel (колонки: артикул, количество).
+   * @param {FormData} formData — file, supplierId, organizationId, warehouseId
+   */
+  importFromExcel: async (formData) => {
+    const response = await api.post('/purchases/import/excel', formData);
+    return response.data?.data ?? response.data;
+  },
+
   /** Догон incoming/даты для старых данных и повторная выкладка резервов по строкам закупки */
   markOrdered: async (id) => {
     const response = await api.post(`/purchases/${id}/mark-ordered`, {});

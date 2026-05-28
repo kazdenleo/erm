@@ -211,6 +211,8 @@ export function Purchases() {
   const [createProductSearch, setCreateProductSearch] = useState('');
   const [createSearchResults, setCreateSearchResults] = useState([]);
   const [createSearchLoading, setCreateSearchLoading] = useState(false);
+  const [excelImportLoading, setExcelImportLoading] = useState(false);
+  const excelInputRef = useRef(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
@@ -327,7 +329,15 @@ export function Purchases() {
     setCreateProductSearch('');
     setCreateSearchResults([]);
     setCreateSearchLoading(false);
+    setExcelImportLoading(false);
   }, []);
+
+  const createSupplierPrefix = useMemo(() => {
+    if (!createSupplierId) return '';
+    const s = (suppliers || []).find((x) => String(x.id) === String(createSupplierId));
+    const cfg = s?.apiConfig || s?.api_config || {};
+    return String(cfg.prefix ?? cfg.article_prefix ?? '').trim();
+  }, [suppliers, createSupplierId]);
 
   const createProductLabelById = useMemo(() => {
     const m = new Map();
@@ -507,6 +517,55 @@ export function Purchases() {
       if (res?.id) openDetail(res.id);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось создать закупку');
+    }
+  };
+
+  const importPurchaseFromExcel = async (file) => {
+    if (!file) return;
+    if (!String(createSupplierId || '').trim()) {
+      setErr('Выберите поставщика');
+      return;
+    }
+    if (!String(createOrganizationId || '').trim()) {
+      setErr('Выберите организацию');
+      return;
+    }
+    if (!String(createWarehouseId || '').trim()) {
+      setErr('Выберите склад назначения');
+      return;
+    }
+    setExcelImportLoading(true);
+    setErr(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('supplierId', String(createSupplierId));
+      formData.append('organizationId', String(createOrganizationId));
+      formData.append('warehouseId', String(createWarehouseId));
+      const res = await purchasesApi.importFromExcel(formData);
+      closeCreateModal();
+      setCreateSupplierId('');
+      setCreateOrganizationId('');
+      setCreateWarehouseId('');
+      setCreateItems([{ productId: '', quantity: 1 }]);
+      await reload();
+      if (res?.id) openDetail(res.id);
+    } catch (e) {
+      const msg = e.response?.data?.message || e.message || 'Не удалось импортировать Excel';
+      const unresolved = e.response?.data?.details?.unresolved;
+      if (Array.isArray(unresolved) && unresolved.length > 0) {
+        const extra = unresolved
+          .slice(0, 15)
+          .map((u) => `${u.cleanSku} (${u.quantity} шт.)`)
+          .join(', ');
+        const tail = unresolved.length > 15 ? ` … +${unresolved.length - 15}` : '';
+        setErr(`${msg}${extra ? `\n${extra}${tail}` : ''}`);
+      } else {
+        setErr(msg);
+      }
+    } finally {
+      setExcelImportLoading(false);
+      if (excelInputRef.current) excelInputRef.current.value = '';
     }
   };
 
@@ -730,7 +789,17 @@ export function Purchases() {
       )}
 
       <Modal isOpen={createOpen} onClose={closeCreateModal} title="Новая закупка" size="large">
-        <p className="muted">Выберите поставщика, организацию и склад назначения, затем добавьте позиции.</p>
+        <p className="muted">Выберите поставщика, организацию и склад назначения, затем добавьте позиции вручную или импортируйте из Excel.</p>
+        <input
+          ref={excelInputRef}
+          type="file"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) importPurchaseFromExcel(f);
+          }}
+        />
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
           <span className="muted" style={{ fontSize: 13 }}>Поставщик</span>
           <select className="warehouse-ops-select" value={createSupplierId} onChange={(e) => setCreateSupplierId(e.target.value)}>
@@ -768,10 +837,28 @@ export function Purchases() {
               ))}
           </select>
         </div>
+        {createSupplierPrefix ? (
+          <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+            Префикс поставщика для Excel: <strong>{createSupplierPrefix}</strong> — будет снят с начала артикула в файле.
+          </p>
+        ) : null}
         <div
           className="warehouse-ops-list-form"
           style={{ marginBottom: 14, borderTop: '1px solid var(--border, #e8e8e8)', paddingTop: 12 }}
         >
+          <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
+            Импорт из Excel: колонки «артикул» и «количество». Одинаковые артикулы суммируются. Если хотя бы один артикул не найден в каталоге, закупка не создаётся.
+          </p>
+          <div style={{ marginBottom: 12 }}>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={excelImportLoading}
+              onClick={() => excelInputRef.current?.click()}
+            >
+              {excelImportLoading ? 'Импорт…' : 'Импорт из Excel'}
+            </Button>
+          </div>
           <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
             Поиск товара по артикулу, названию или штрихкоду
           </p>
