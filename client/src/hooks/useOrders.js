@@ -28,14 +28,17 @@ export function useOrders(options = {}) {
       const response = await ordersApi.getAll(params);
       const loadedOrders = Array.isArray(response?.data) ? response.data : [];
       setOrders(loadedOrders);
-      setMeta({
+      const nextMeta = {
         total: response?.meta?.total ?? null,
         limit: response?.meta?.limit ?? params.limit ?? null,
         offset: response?.meta?.offset ?? params.offset ?? 0,
-      });
+      };
+      setMeta(nextMeta);
+      return { data: loadedOrders, meta: nextMeta };
     } catch (err) {
       console.error('Error loading orders:', err);
       setError(err.message || 'Ошибка загрузки заказов');
+      return { data: [], meta: { total: null, limit: null, offset: 0 } };
     } finally {
       if (!silent) {
         setLoading(false);

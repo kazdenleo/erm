@@ -261,12 +261,26 @@ class OrdersSyncService {
       return { started: false, inProgress: true };
     }
 
+    // Сразу помечаем «в работе», чтобы GET /sync-fbs/status не отдавал inProgress=false
+    // до входа в syncFbs (клиент иначе завершает опрос раньше импорта).
+    ordersSyncCache.syncInProgress = true;
+
     // Важно: запуск в следующем тике, чтобы контроллер успел ответить.
     setTimeout(() => {
-      this.syncFbs({ force, profileId, organizationId, scheduler, refreshStatuses })
+      this.syncFbs({
+        force,
+        profileId,
+        organizationId,
+        scheduler,
+        refreshStatuses,
+        backgroundJob: true
+      })
         .catch((e) => {
           ordersSyncCache.lastSyncError = e?.message || String(e);
           logger.error(`[Orders Sync] background sync failed: ${ordersSyncCache.lastSyncError}`);
+        })
+        .finally(() => {
+          ordersSyncCache.syncInProgress = false;
         });
     }, 0);
 
@@ -300,7 +314,8 @@ class OrdersSyncService {
       };
     }
 
-    if (ordersSyncCache.syncInProgress) {
+    const ownsBackgroundLock = options.backgroundJob === true;
+    if (ordersSyncCache.syncInProgress && !ownsBackgroundLock) {
       let waited = 0;
       const maxWait = force ? 120 * 1000 : oneMinute;
       while (ordersSyncCache.syncInProgress && waited < maxWait) {
@@ -309,7 +324,7 @@ class OrdersSyncService {
         /* eslint-enable no-await-in-loop */
         waited += 500;
       }
-      if (ordersSyncCache.syncInProgress) {
+      if (ordersSyncCache.syncInProgress && !ownsBackgroundLock) {
         logger.warn('[Orders Sync] предыдущий запуск ещё выполняется');
         return {
           rateLimited: true,
@@ -350,7 +365,9 @@ class OrdersSyncService {
       };
     }
 
-    ordersSyncCache.syncInProgress = true;
+    if (!ownsBackgroundLock) {
+      ordersSyncCache.syncInProgress = true;
+    }
     ordersSyncCache.lastSyncTime = now;
     ordersSyncCache.lastSyncError = null;
     const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} org=${organizationId != null && organizationId !== '' ? organizationId : '—'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0}`;
@@ -377,17 +394,56 @@ class OrdersSyncService {
     const WB_DAYS_BACK = 365;
     const OZON_DAYS_BACK = 365;
 
-    // Конфиги маркетплейсов из того же источника, что и раздел «Интеграции» (БД или файлы)
-    const { marketplaces } = await integrationsService.getAllConfigs({
+    // Конфиги маркетплейсов из того же источника, что и раздел «Интеграции» (БД или файлы).
+    // Важно: если is_active сбился (или кабинет помечен неактивным), синк не должен «молчать» и переставать приносить заказы.
+    // Поэтому при отсутствии ключей повторяем загрузку без фильтра onlyActive.
+    let marketplaces = (await integrationsService.getAllConfigs({
       profileId,
       organizationId,
       onlyActive: true
-    });
+    }))?.marketplaces;
+    const hasAnyKeys = (mps) => {
+      const oz = mps?.ozon || {};
+      const wb = mps?.wildberries || {};
+      const ym = mps?.yandex || {};
+      const ymApiKey = ym?.api_key ?? ym?.apiKey;
+      return Boolean((oz?.client_id && oz?.api_key) || (wb?.api_key || wb?.apiKey) || (ymApiKey && (ym?.campaign_id ?? ym?.campaignId)));
+    };
+    if (!hasAnyKeys(marketplaces)) {
+      marketplaces = (await integrationsService.getAllConfigs({
+        profileId,
+        organizationId,
+        onlyActive: false
+      }))?.marketplaces;
+    }
     const ozonConfig = marketplaces?.ozon || {};
     const wbConfig = marketplaces?.wildberries || {};
     const ymConfig = marketplaces?.yandex || {};
 
     const ymApiKey = ymConfig?.api_key ?? ymConfig?.apiKey;
+    const hasOzonKeys = Boolean(ozonConfig?.client_id && ozonConfig?.api_key);
+    const hasWbKeys = Boolean(wbConfig?.api_key || wbConfig?.apiKey);
+    const hasYmKeys = Boolean(ymApiKey);
+
+    if (!hasOzonKeys) results.ozon.reason = 'Ozon: ключи не настроены (client_id / api_key)';
+    if (!hasWbKeys) results.wildberries.reason = 'WB: ключ не настроен (api_key)';
+    if (!hasYmKeys) results.yandex.reason = 'Яндекс: ключ не настроен (api_key)';
+
+    if (!hasOzonKeys && !hasWbKeys && !hasYmKeys) {
+      const msg =
+        `Синхронизация заказов не запущена: не найдены ключи интеграций ` +
+        `(profile=${profileId != null && profileId !== '' ? profileId : '—'} org=${organizationId != null && organizationId !== '' ? organizationId : '—'}). ` +
+        `Проверьте «Интеграции» и выбранную организацию.`;
+      ordersSyncCache.lastSyncError = msg;
+      logger.warn(`[Orders Sync] ${msg}`);
+      return {
+        rateLimited: false,
+        retryAfterSeconds: 0,
+        cached: false,
+        skipped: true,
+        result: results,
+      };
+    }
     logger.info(
       `[Orders Sync] start (${ctx}): Ozon=${!!ozonConfig?.api_key} WB=${!!wbConfig?.api_key} ` +
         `Yandex api_key=${!!ymApiKey} campaign_id=${!!(ymConfig?.campaign_id ?? ymConfig?.campaignId)} ` +
@@ -396,7 +452,7 @@ class OrdersSyncService {
 
     // OZON
     try {
-      if (ozonConfig?.client_id && ozonConfig?.api_key) {
+      if (hasOzonKeys) {
         const ozonOrders = await fetchOzonFBSOrders(ozonConfig, OZON_DAYS_BACK);
         results.ozon.success = ozonOrders.length;
         results.ozon.orders = ozonOrders;
@@ -408,7 +464,7 @@ class OrdersSyncService {
 
     // Wildberries
     try {
-      if (wbConfig?.api_key) {
+      if (hasWbKeys) {
         // 1) Точные "новые" заказы (WB отдаёт их только тут)
         const wbNewOrders = await fetchWildberriesFBSOrders(wbConfig);
         const wbNewIds = new Set(wbNewOrders.map(o => String(o.orderId || '')).filter(Boolean));
@@ -457,7 +513,7 @@ class OrdersSyncService {
     // Yandex Market
     let ymReason = null;
     try {
-      if (ymApiKey) {
+      if (hasYmKeys) {
         const ymResult = await fetchYandexFBSOrders(ymConfig, { force });
         const ymOrders = ymResult?.orders ?? [];
         ymReason = ymResult?.reason ?? null;

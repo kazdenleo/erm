@@ -31,6 +31,22 @@ import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderSt
 import './Orders.css';
 import './OrderDetail.css';
 
+function buildOrdersSyncDoneMessage(lastStatus, { forceImport = false } = {}) {
+  const r = lastStatus?.lastSyncResult;
+  if (!r) return 'Синхронизация завершена. Список обновлён.';
+  const oz = r.ozon?.success ?? 0;
+  const wb = r.wildberries?.success ?? 0;
+  const ym = r.yandex?.success ?? 0;
+  const ymTail = r.yandex?.reason ? ` (${r.yandex.reason})` : '';
+  if (forceImport) {
+    return (
+      `Импорт завершён: Ozon ${oz}, WB ${wb}, Яндекс ${ym}${ymTail}. ` +
+      'Если заказ не виден во «Новых», откройте фильтр «Все» или другой статус.'
+    );
+  }
+  return `Синхронизация завершена: Ozon ${oz}, WB ${wb}, Яндекс ${ym}${ymTail}.`;
+}
+
 function orderKey(o) {
   const mp = normalizeMarketplaceForUI(o.marketplace);
   return `${mp}|${o.orderId ?? ''}`;
@@ -664,39 +680,64 @@ export function Orders() {
           setSyncError(null);
           setSyncInfo(null);
         }
-        const result = await ordersApi.syncFbs({
+        await ordersApi.syncFbs({
           force: forceImport,
           refreshStatuses
         });
-        if (!silent) setSyncInfo(result);
+        if (!silent) {
+          setSyncInfo({ message: forceImport ? 'Импорт заказов с маркетплейсов…' : 'Синхронизация…' });
+        }
 
         const startedAt = Date.now();
         const MAX_WAIT_MS = 300000;
         let lastStatus = null;
+        let sawInProgress = false;
         while (Date.now() - startedAt < MAX_WAIT_MS) {
           // eslint-disable-next-line no-await-in-loop
           await new Promise((r) => setTimeout(r, 1500));
           // eslint-disable-next-line no-await-in-loop
           lastStatus = await ordersApi.getSyncFbsStatus().catch(() => null);
-          if (!lastStatus?.inProgress) break;
+          if (lastStatus?.inProgress) sawInProgress = true;
+          const elapsed = Date.now() - startedAt;
+          if (!lastStatus?.inProgress && (sawInProgress || elapsed >= 5000)) break;
         }
 
         const ym = lastStatus?.lastSyncResult?.yandex;
         if (lastStatus?.lastSyncError && !silent) {
           setSyncError(String(lastStatus.lastSyncError));
+          setSyncInfo(null);
         } else if (forceImport && ym && Number(ym.success) === 0 && ym.reason && !silent) {
           setSyncError(`Яндекс.Маркет: ${ym.reason}`);
         } else if (lastStatus?.inProgress && !silent) {
           setSyncError(
-            'Синхронизация на сервере ещё идёт. Обновите список заказов через минуту.'
+            'Синхронизация на сервере ещё идёт. Подождите минуту и нажмите «Обновить список» или повторите импорт.'
           );
-        } else if (!silent && forceImport && ym != null) {
+        } else if (!silent) {
           setSyncInfo({
-            message: `Импорт завершён. Яндекс: ${ym.success ?? 0} строк${ym.reason ? ` (${ym.reason})` : ''}.`
+            message: buildOrdersSyncDoneMessage(lastStatus, { forceImport })
           });
         }
 
-        await reloadOrders({ silent: true });
+        if (forceImport) setCurrentPage(1);
+        const loaded = await reloadOrders({ silent: true, page: forceImport ? 1 : undefined });
+        if (forceImport) {
+          const r = lastStatus?.lastSyncResult;
+          const totalImported =
+            (r?.ozon?.success ?? 0) + (r?.wildberries?.success ?? 0) + (r?.yandex?.success ?? 0);
+          const listEmpty = Array.isArray(loaded?.data) ? loaded.data.length === 0 : false;
+          if (listEmpty && totalImported > 0 && statusFilter !== 'all') {
+            // Частый кейс: импорт принёс заказы, но текущий фильтр («Новые») их скрывает.
+            setStatusFilter('all');
+            await reloadOrders({ silent: true, page: 1 });
+            if (!silent) {
+              setSyncInfo({
+                message:
+                  (buildOrdersSyncDoneMessage(lastStatus, { forceImport }) || 'Импорт завершён.') +
+                  ' Показан фильтр «Все», т.к. по текущему фильтру список оказался пустым.'
+              });
+            }
+          }
+        }
       } catch (e) {
         const status = e.response?.status;
         const data = e.response?.data;
@@ -730,7 +771,7 @@ export function Orders() {
         }
       }
     },
-    [reloadOrders]
+    [reloadOrders, statusFilter]
   );
 
   const handleSync = () => runSync(false, { force: true, refreshStatuses: true });
@@ -2225,7 +2266,7 @@ export function Orders() {
         <div className="info" style={{marginBottom: '16px'}}>
           {syncInfo.rateLimited
             ? `Слишком частые запросы. Подождите ${syncInfo.retryAfterSeconds} секунд.`
-            : 'Синхронизация завершена.'}
+            : syncInfo.message || 'Синхронизация завершена. Список обновлён.'}
         </div>
       )}
 
