@@ -55,9 +55,12 @@ import marketplaceStockRoutes from './marketplaceStock.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
 import fboSuppliesController from '../controllers/fboSupplies.controller.js';
+import { createProductExcelImportUpload } from '../middleware/uploads.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { marketplaceProductIdentifiersHelp } from '../controllers/helpDocs.controller.js';
 import { isAuthBootstrapRequest } from '../utils/authBootstrapPaths.js';
+
+const purchaseExcelImportUpload = createProductExcelImportUpload();
 
 const router = express.Router();
 
@@ -291,6 +294,18 @@ router.delete(
   '/purchases/:id',
   requireAuth,
   wrapAsync(purchasesController.deletePurchase.bind(purchasesController))
+);
+router.delete(
+  '/purchases/:id/items/:itemId',
+  requireAuth,
+  wrapAsync(purchasesController.removeDraftLineItem.bind(purchasesController))
+);
+// Импорт закупки из Excel — явный маршрут (во вложенном Router в части окружений 404)
+router.post(
+  '/purchases/import/excel',
+  requireAuth,
+  purchaseExcelImportUpload.single('file'),
+  wrapAsync(purchasesController.importFromExcel.bind(purchasesController))
 );
 // Закупки (ожидание) и приёмки по закупкам — остальные методы
 router.use('/purchases', purchasesRoutes);

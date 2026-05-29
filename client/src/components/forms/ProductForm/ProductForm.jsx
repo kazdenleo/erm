@@ -19,6 +19,7 @@ import {
   useProductLabelPrint,
 } from '../../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../../services/api.js';
+import { createAsyncQueue } from '../../../utils/asyncQueue.js';
 import {
   BARCODE_MP_TOGGLES,
   EMPTY_BARCODE_ROW,
@@ -412,8 +413,6 @@ export function ProductForm({
   const [imageError, setImageError] = useState('');
   const [imageDropActive, setImageDropActive] = useState(false);
   const imageFileInputRef = useRef(null);
-  /** ID товара Ozon, для которого уже подгружали справочники (чтобы не дергать при каждом вводе) */
-  const ozonPreloadedForProductIdRef = useRef(null);
   /** Для каких товаров уже подставили вес/габариты из карточки */
   const ozonFilledFromProductIdRef = useRef(null);
   /** ID товара, для которого уже синхронизировали атрибуты из ozonFetchedProduct в форму */
@@ -438,7 +437,6 @@ export function ProductForm({
       setYmAttributeValues({});
       setProductImages([]);
       setImageError('');
-      ozonPreloadedForProductIdRef.current = null;
       ozonFilledFromProductIdRef.current = null;
       ozonSyncedFromFetchedRef.current = null;
     } else {
@@ -461,7 +459,6 @@ export function ProductForm({
       setCalculatedVolume('');
       setErrors({});
       setActiveTab('main');
-      ozonPreloadedForProductIdRef.current = null;
       ozonFilledFromProductIdRef.current = null;
       ozonSyncedFromFetchedRef.current = null;
     }
@@ -849,8 +846,9 @@ export function ProductForm({
     return /^\d+$/.test(s) ? s : '';
   }, [categoryResolvedForMappings]);
 
-  // Загрузка схемы атрибутов Ozon по сопоставлению категории (сервер дополняет пару desc/type по дереву Ozon)
+  // Загрузка схемы атрибутов Ozon — только на вкладке Ozon (не грузим при открытии карточки на «Основное»)
   useEffect(() => {
+    if (activeTab !== 'ozon') return undefined;
     const userCategoryId = formData.categoryId ? String(formData.categoryId).trim() : '';
     if (!userCategoryId || !hasOzonMarketplaceMapping) {
       setOzonAttributes([]);
@@ -888,7 +886,7 @@ export function ProductForm({
       })
       .finally(() => { if (!cancelled) setOzonAttributesLoading(false); });
     return () => { cancelled = true; };
-  }, [formData.categoryId, hasOzonMarketplaceMapping]);
+  }, [activeTab, formData.categoryId, hasOzonMarketplaceMapping]);
 
   // Автоподстановка значений документа в Ozon-атрибуты по названию поля
   useEffect(() => {
@@ -943,33 +941,42 @@ export function ProductForm({
     setOzonAttributeValues((prev) => ({ ...prev, [String(attrId)]: value }));
   }, []);
 
+  const ozonDictQueueRef = useRef(null);
+  if (!ozonDictQueueRef.current) {
+    ozonDictQueueRef.current = createAsyncQueue(2);
+  }
+  const ozonDictInflightRef = useRef(new Set());
+
   const loadOzonDictValues = useCallback((attrId) => {
     if (!ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return;
-    integrationsApi.getOzonAttributeValues(attrId, ozonDescIdForApi, ozonTypeIdForApi, { limit: 500 })
-      .then(({ result }) => {
-        setOzonDictValues((prev) => ({ ...prev, [attrId]: result || [] }));
-      })
-      .catch((err) => {
-        console.warn('[ProductForm] Ozon attribute values load failed:', err);
-        setOzonDictValues((prev) => ({ ...prev, [attrId]: [] }));
-      });
+    const key = String(attrId);
+    if (ozonDictInflightRef.current.has(key)) return;
+    ozonDictInflightRef.current.add(key);
+    ozonDictQueueRef.current(() =>
+      integrationsApi
+        .getOzonAttributeValues(attrId, ozonDescIdForApi, ozonTypeIdForApi, { limit: 500 })
+        .then(({ result }) => {
+          setOzonDictValues((prev) => {
+            if (Array.isArray(prev[attrId])) return prev;
+            return { ...prev, [attrId]: result || [] };
+          });
+        })
+        .catch((err) => {
+          console.warn('[ProductForm] Ozon attribute values load failed:', err);
+          setOzonDictValues((prev) => {
+            if (Array.isArray(prev[attrId])) return prev;
+            return { ...prev, [attrId]: [] };
+          });
+        })
+        .finally(() => {
+          ozonDictInflightRef.current.delete(key);
+        })
+    );
   }, [ozonDescIdForApi, ozonTypeIdForApi]);
 
-  // Подгружаем справочники Ozon, если в товаре уже есть значение (текст/id из БД/Excel) — иначе селект без нужной <option>
+  // WB: загрузка атрибутов категории (схема) — только на вкладке WB
   useEffect(() => {
-    if (!ozonAttributes?.length || !ozonDescIdForApi || !ozonTypeIdForApi || ozonTypeIdForApi <= 0) return;
-    ozonAttributes.forEach((attr) => {
-      const hasDict = attr.dictionary_id != null && Number(attr.dictionary_id) !== 0;
-      if (!hasDict) return;
-      const v = ozonAttributeValues[String(attr.id)];
-      if (v === undefined || v === null || String(v).trim() === '') return;
-      if (Array.isArray(ozonDictValues[attr.id])) return;
-      loadOzonDictValues(attr.id);
-    });
-  }, [ozonAttributes, ozonDescIdForApi, ozonTypeIdForApi, ozonAttributeValues, ozonDictValues, loadOzonDictValues]);
-
-  // WB: загрузка атрибутов категории (схема) по сопоставлению user category
-  useEffect(() => {
+    if (activeTab !== 'wb') return undefined;
     const userCategoryId = formData.categoryId ? String(formData.categoryId).trim() : '';
     if (!userCategoryId || !wbSubjectId || wbSubjectId <= 0) {
       setWbCategoryAttributes([]);
@@ -995,7 +1002,7 @@ export function ProductForm({
       })
       .finally(() => { if (!cancelled) setWbCategoryAttributesLoading(false); });
     return () => { cancelled = true; };
-  }, [formData.categoryId, wbSubjectId]);
+  }, [activeTab, formData.categoryId, wbSubjectId]);
 
   // Автоподстановка значений документа в WB-атрибуты по названию поля
   useEffect(() => {
@@ -1094,8 +1101,9 @@ export function ProductForm({
     });
   }, [wbCategoryAttributes, orgVatText]);
 
-  // Яндекс.Маркет: характеристики листовой категории (Partner API category/parameters)
+  // Яндекс.Маркет: характеристики листовой категории — только на вкладке YM
   useEffect(() => {
+    if (activeTab !== 'ym') return undefined;
     const userCategoryId = formData.categoryId ? String(formData.categoryId).trim() : '';
     if (!userCategoryId || !ymMarketCategoryId) {
       setYmCategoryAttributes([]);
@@ -1121,7 +1129,7 @@ export function ProductForm({
       })
       .finally(() => { if (!cancelled) setYmCategoryAttributesLoading(false); });
     return () => { cancelled = true; };
-  }, [formData.categoryId, ymMarketCategoryId]);
+  }, [activeTab, formData.categoryId, ymMarketCategoryId]);
 
   // Автоподстановка значений документа в YM-атрибуты по названию параметра
   useEffect(() => {
@@ -1174,19 +1182,37 @@ export function ProductForm({
   }, [ymCategoryAttributes, orgVatText]);
 
   const fetchOzonProductInfo = useCallback(async () => {
-    const productId = currentProduct?.ozon_product_id != null ? Number(currentProduct.ozon_product_id) : null;
+    const organizationId = resolveKitPickerOrganizationId(
+      formData.organizationId,
+      productsListOrganizationId
+    );
+    const productIdRaw =
+      String(formData.ozon_product_id || '').trim() ||
+      (currentProduct?.ozon_product_id != null ? String(currentProduct.ozon_product_id) : '');
+    const productId = productIdRaw ? Number(productIdRaw.replace(/\D/g, '')) : null;
     const offerId = formData.sku_ozon != null && String(formData.sku_ozon).trim() !== '' ? String(formData.sku_ozon).trim() : null;
     if (!productId && !offerId) {
-      setOzonSyncError('Укажите артикул Ozon (offer_id) или привяжите товар к карточке Ozon.');
+      setOzonSyncError('Укажите артикул Ozon (offer_id) или product_id карточки Ozon.');
+      return;
+    }
+    if (!organizationId) {
+      setOzonSyncError('Выберите организацию — данные запрашиваются из кабинета Ozon этой организации.');
       return;
     }
     setOzonSyncError('');
     setOzonSyncSuccess('');
     setOzonSyncLoading(true);
     try {
-      const data = await integrationsApi.getOzonProductInfo(productId ? { product_id: productId } : { offer_id: offerId });
+      const apiBase = { organizationId };
+      let data = null;
+      if (productId && productId > 0) {
+        data = await integrationsApi.getOzonProductInfo({ ...apiBase, product_id: productId });
+      }
+      if (!data && offerId) {
+        data = await integrationsApi.getOzonProductInfo({ ...apiBase, offer_id: offerId });
+      }
       if (!data) {
-        setOzonSyncError('Товар не найден в Ozon.');
+        setOzonSyncError('Товар не найден в кабинете Ozon выбранной организации.');
         return;
       }
       setSyncedOzonProductId(data.id != null ? Number(data.id) : null);
@@ -1222,21 +1248,35 @@ export function ProductForm({
     } finally {
       setOzonSyncLoading(false);
     }
-  }, [currentProduct?.ozon_product_id, formData.sku_ozon]);
+  }, [
+    currentProduct?.ozon_product_id,
+    formData.sku_ozon,
+    formData.ozon_product_id,
+    formData.organizationId,
+    productsListOrganizationId
+  ]);
 
   const fetchWbProductInfo = useCallback(async () => {
+    const organizationId = resolveKitPickerOrganizationId(
+      formData.organizationId,
+      productsListOrganizationId
+    );
     const nmId = formData.sku_wb != null && String(formData.sku_wb).trim() !== '' ? String(formData.sku_wb).trim() : null;
     if (!nmId) {
       setWbSyncError('Укажите nmId (ID номенклатуры Wildberries).');
+      return;
+    }
+    if (!organizationId) {
+      setWbSyncError('Выберите организацию — данные запрашиваются из кабинета Wildberries этой организации.');
       return;
     }
     setWbSyncError('');
     setWbSyncSuccess('');
     setWbSyncLoading(true);
     try {
-      const data = await integrationsApi.getWildberriesProductInfo({ nm_id: nmId });
+      const data = await integrationsApi.getWildberriesProductInfo({ nm_id: nmId, organizationId });
       if (!data) {
-        setWbSyncError('Товар не найден в Wildberries.');
+        setWbSyncError('Товар не найден в кабинете Wildberries выбранной организации.');
         return;
       }
       setWbFetchedProduct(data);
@@ -1267,7 +1307,7 @@ export function ProductForm({
     } finally {
       setWbSyncLoading(false);
     }
-  }, [formData.sku_wb]);
+  }, [formData.sku_wb, formData.organizationId, productsListOrganizationId]);
 
   const applyWbToMainCard = useCallback(() => {
     const p = wbFetchedProduct;
@@ -1356,23 +1396,6 @@ export function ProductForm({
       return next;
     });
   }, [ozonFetchedProduct]);
-
-  // После загрузки данных с Ozon: подгрузить справочники для атрибутов-словарей (Бренд и др.), чтобы в селекте отображалось значение
-  const loadOzonDictValuesRef = useRef(loadOzonDictValues);
-  loadOzonDictValuesRef.current = loadOzonDictValues;
-  useEffect(() => {
-    if (!ozonFetchedProduct?.id || !ozonAttributes?.length) return;
-    const productId = ozonFetchedProduct.id;
-    if (ozonPreloadedForProductIdRef.current === productId) return;
-    ozonPreloadedForProductIdRef.current = productId;
-    ozonAttributes.forEach((attr) => {
-      const hasDict = attr.dictionary_id != null && Number(attr.dictionary_id) !== 0;
-      const val = ozonAttributeValues[String(attr.id)];
-      if (hasDict && val !== undefined && val !== null && String(val).trim() !== '') {
-        loadOzonDictValuesRef.current(attr.id);
-      }
-    });
-  }, [ozonFetchedProduct?.id, ozonAttributes, ozonAttributeValues]);
 
   // Нормализация: в БД/Excel часто лежит подпись словаря, а селект Ozon хранит dictionary_value_id
   useEffect(() => {
@@ -3129,7 +3152,13 @@ export function ProductForm({
               type="button"
               variant="secondary"
               onClick={fetchOzonProductInfo}
-              disabled={ozonSyncLoading || ((!currentProduct?.ozon_product_id) && (!formData.sku_ozon || String(formData.sku_ozon).trim() === ''))}
+              disabled={
+                ozonSyncLoading ||
+                (
+                  !String(formData.ozon_product_id || currentProduct?.ozon_product_id || '').trim() &&
+                  !String(formData.sku_ozon || '').trim()
+                )
+              }
             >
               {ozonSyncLoading ? 'Загрузка…' : 'Обновить данные с Ozon'}
             </Button>

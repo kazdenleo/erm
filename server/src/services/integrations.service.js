@@ -1522,10 +1522,22 @@ class IntegrationsService {
   async getWildberriesProductInfo(params = {}) {
     const nmId = params.nm_id != null ? Number(params.nm_id) : null;
     const profileId = params.profileId ?? params.profile_id ?? null;
+    const organizationId = params.organizationId ?? params.organization_id ?? null;
     if (!nmId || nmId <= 0) {
       const err = new Error('Укажите nm_id (ID номенклатуры Wildberries).');
       err.statusCode = 400;
       throw err;
+    }
+    let wbOverride = params.wbOverride ?? null;
+    if (
+      (!wbOverride || typeof wbOverride !== 'object' || !(wbOverride.api_key || wbOverride.apiKey)) &&
+      organizationId != null &&
+      organizationId !== ''
+    ) {
+      wbOverride = await this.getMarketplaceConfig('wildberries', {
+        organizationId,
+        profileId
+      });
     }
     const body = {
       settings: {
@@ -1533,7 +1545,11 @@ class IntegrationsService {
         filter: { withPhoto: -1, nmID: [nmId] }
       }
     };
-    const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, { profileId });
+    const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, {
+      profileId,
+      organizationId,
+      wbOverride
+    });
     const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
     const first = Array.isArray(cards) && cards.length > 0 ? cards[0] : null;
     if (!first) return null;
@@ -2237,8 +2253,13 @@ class IntegrationsService {
         profileId: params.profileId ?? params.profile_id ?? null
       });
     }
+    const organizationId = params.organizationId ?? params.organization_id ?? null;
     const ozonApiOpts = {
       profileId: params.profileId ?? params.profile_id ?? null,
+      organizationId:
+        organizationId != null && String(organizationId).trim() !== ''
+          ? String(organizationId).trim()
+          : null,
       ozonOverride:
         ozonOverride && typeof ozonOverride === 'object' && (ozonOverride.client_id || ozonOverride.api_key)
           ? ozonOverride

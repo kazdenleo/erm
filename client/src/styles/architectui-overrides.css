@@ -98,31 +98,70 @@
 }
 .erm-product-card-overlay__body {
   flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.erm-product-card-overlay__body > .product-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 16px;
+  max-width: none;
+}
+
+.erm-product-card-overlay__body > :not(.product-form):not(.product-form__footer) {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   padding: 12px 14px;
 }
 
-/* Панель «Сохранить» привязана к низу оверлея карточки (не к левому краю экрана за сайдбаром) */
+/* Панель «Сохранить» — отдельная строка внизу оверлея (не в потоке прокрутки формы) */
 .erm-product-card-overlay .product-form__footer {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  width: auto;
+  position: static;
+  flex: 0 0 auto;
+  left: auto;
+  right: auto;
+  width: 100%;
   z-index: 3;
 }
 
-/* Полноэкранная модалка: нижняя панель внизу тела модалки */
+.erm-product-card-overlay .product-form {
+  padding-bottom: 16px;
+}
+
+/* Полноэкранная модалка: форма прокручивается, панель «Сохранить» закреплена внизу */
+.modal-erm .modal-dialog.modal-fullscreen .modal-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
 .modal-erm .modal-dialog.modal-fullscreen .modal-body {
-  position: relative;
-  padding-bottom: 72px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+.modal-erm .modal-dialog.modal-fullscreen .modal-body > .product-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 16px;
 }
 
 .modal-erm .modal-dialog.modal-fullscreen .product-form__footer {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  position: static;
+  flex: 0 0 auto;
+  left: auto;
+  right: auto;
   width: 100%;
   z-index: 2;
 }

@@ -23,9 +23,13 @@ export const purchasesApi = {
     const { reduceBy } = options;
     const hasExplicit =
       reduceBy != null && reduceBy !== '' && Number.isFinite(Number(reduceBy));
-    const config = hasExplicit
-      ? { data: { reduceBy: Math.floor(Number(reduceBy)) } }
-      : {};
+    const config = {};
+    if (hasExplicit) {
+      const rb = Math.floor(Number(reduceBy));
+      // query — надёжнее DELETE body за nginx; body дублируем для совместимости.
+      config.params = { reduceBy: rb };
+      config.data = { reduceBy: rb };
+    }
     const response = await api.delete(`/purchases/${purchaseId}/items/${itemId}`, config);
     return response.data?.data ?? response.data;
   },

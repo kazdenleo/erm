@@ -172,6 +172,9 @@ export const integrationsApi = {
   getWildberriesProductInfo: async (params = {}) => {
     const q = new URLSearchParams();
     if (params.nm_id != null && params.nm_id !== '') q.set('nm_id', String(params.nm_id));
+    if (params.organizationId != null && String(params.organizationId).trim() !== '') {
+      q.set('organizationId', String(params.organizationId).trim());
+    }
     const response = await api.get(`/integrations/marketplaces/wildberries/product-info?${q.toString()}`);
     return response.data?.data ?? response.data;
   },
@@ -203,6 +206,9 @@ export const integrationsApi = {
     const q = new URLSearchParams();
     if (params.product_id != null && params.product_id !== '') q.set('product_id', String(params.product_id));
     if (params.offer_id != null && params.offer_id !== '') q.set('offer_id', String(params.offer_id));
+    if (params.organizationId != null && String(params.organizationId).trim() !== '') {
+      q.set('organizationId', String(params.organizationId).trim());
+    }
     const response = await api.get(`/integrations/marketplaces/ozon/product-info?${q.toString()}`);
     return response.data?.data ?? response.data;
   },

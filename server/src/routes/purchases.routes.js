@@ -27,7 +27,6 @@ router.post(
 router.post('/', wrapAsync(purchasesController.create.bind(purchasesController)));
 router.get('/:id', wrapAsync(purchasesController.getById.bind(purchasesController)));
 router.post('/:id/draft-items', wrapAsync(purchasesController.appendDraftItems.bind(purchasesController)));
-router.delete('/:id/items/:itemId', wrapAsync(purchasesController.removeDraftLineItem.bind(purchasesController)));
 router.put('/:id', wrapAsync(purchasesController.updatePurchase.bind(purchasesController)));
 router.put('/:id/items/:itemId', wrapAsync(purchasesController.updatePurchaseItem.bind(purchasesController)));
 router.post('/:id/mark-ordered', wrapAsync(purchasesController.markOrdered.bind(purchasesController)));
@@ -40,7 +39,7 @@ router.post('/receipts/:receiptId/add-quantity', wrapAsync(purchasesController.a
 router.post('/receipts/:receiptId/complete', wrapAsync(purchasesController.completeReceipt.bind(purchasesController)));
 router.post('/receipts/:receiptId/resolve-extras', wrapAsync(purchasesController.resolveExtras.bind(purchasesController)));
 
-// DELETE для закупки и приёмки см. routes/index.js (главный роутер)
+// DELETE для закупки, строки закупки и приёмки — routes/index.js (главный роутер)
 
 export default router;
 

@@ -5,15 +5,18 @@
 
 import React, { useState, useEffect } from 'react';
 import { Button } from '../../common/Button/Button';
+import { supplierPrefixesFromApiConfig } from '../../../utils/supplierArticlePrefixes';
 
 export function SupplierForm({ supplier, onSubmit, onCancel }) {
   const [formData, setFormData] = useState({
     name: '',
     active: true,
-    prefix: '',
+    prefixes: [],
     warehouses: []
   });
-  
+
+  const [prefixInput, setPrefixInput] = useState('');
+
   const [warehouseForm, setWarehouseForm] = useState({
     name: '',
     time: '18:00'
@@ -24,13 +27,13 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
   useEffect(() => {
     if (supplier) {
       const warehouses = supplier.apiConfig?.warehouses || [];
-      const apiConfig = supplier.apiConfig || supplier.api_config || {};
       setFormData({
         name: supplier.name || '',
         active: supplier.isActive !== undefined ? supplier.isActive : (supplier.active !== undefined ? supplier.active : true),
-        prefix: String(apiConfig.prefix ?? apiConfig.article_prefix ?? '').trim(),
+        prefixes: supplierPrefixesFromApiConfig(supplier.apiConfig || supplier.api_config || {}),
         warehouses: warehouses.map(w => ({ name: w.name || '', time: w.time || '18:00' }))
       });
+      setPrefixInput('');
     }
   }, [supplier]);
 
@@ -77,6 +80,28 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
     }));
   };
 
+  const handleAddPrefix = () => {
+    const p = prefixInput.trim();
+    if (!p) return;
+    const key = p.toLowerCase();
+    if (formData.prefixes.some((x) => String(x).toLowerCase() === key)) {
+      alert('Такой префикс уже добавлен');
+      return;
+    }
+    setFormData((prev) => ({
+      ...prev,
+      prefixes: [...prev.prefixes, p].sort((a, b) => b.length - a.length),
+    }));
+    setPrefixInput('');
+  };
+
+  const handleRemovePrefix = (index) => {
+    setFormData((prev) => ({
+      ...prev,
+      prefixes: prev.prefixes.filter((_, i) => i !== index),
+    }));
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     
@@ -88,7 +113,7 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
       name: formData.name.trim(),
       isActive: formData.active, // Используем isActive для соответствия с API
       apiConfig: {
-        prefix: formData.prefix.trim(),
+        prefixes: formData.prefixes.map((p) => String(p).trim()).filter(Boolean),
         warehouses: formData.warehouses.map(w => ({
           name: w.name.trim(),
           time: w.time
@@ -134,20 +159,51 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
       </div>
 
       <div className="col-12">
-        <label className="form-label" htmlFor="supplierArticlePrefix">
-          Префикс артикула
-        </label>
-        <input
-          id="supplierArticlePrefix"
-          type="text"
-          className="form-control form-control-sm"
-          placeholder="Например: MI-"
-          value={formData.prefix}
-          onChange={(e) => handleChange('prefix', e.target.value)}
-        />
-        <p className="text-muted small mb-0 mt-1">
-          При импорте закупки из Excel этот префикс будет снят с начала артикула в файле, чтобы сопоставить товар с каталогом.
+        <label className="form-label">Префиксы артикула</label>
+        <p className="text-muted small mb-2">
+          При импорте закупки из Excel снимаются указанные префиксы и следующий за ними дефис (например, xmil- + e400058 → e400058).
         </p>
+        <div className="d-flex gap-2 flex-wrap mb-2">
+          <input
+            id="supplierArticlePrefix"
+            type="text"
+            className="form-control form-control-sm"
+            placeholder="Например: MI-"
+            value={prefixInput}
+            onChange={(e) => setPrefixInput(e.target.value)}
+            style={{ flex: 1 }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleAddPrefix();
+              }
+            }}
+          />
+          <Button type="button" variant="secondary" onClick={handleAddPrefix} size="small">
+            Добавить
+          </Button>
+        </div>
+        {formData.prefixes.length > 0 ? (
+          <div className="card">
+            <div className="card-body p-2" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {formData.prefixes.map((prefix, index) => (
+                <div key={`${prefix}-${index}`} className="d-flex align-items-center gap-2 p-2 border rounded">
+                  <code style={{ flex: 1, fontSize: '14px' }}>{prefix}</code>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="small"
+                    onClick={() => handleRemovePrefix(index)}
+                  >
+                    Удалить
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="alert alert-secondary py-2">Префиксы не добавлены</div>
+        )}
       </div>
 
       <div className="col-12">

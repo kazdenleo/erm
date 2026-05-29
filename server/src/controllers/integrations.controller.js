@@ -223,10 +223,21 @@ class IntegrationsController {
   async getWildberriesProductInfo(req, res, next) {
     try {
       const { nm_id } = req.query;
+      const { organizationId } = integrationScopeFromQuery(req);
       const tid = tenantListProfileId(req);
       const profileId =
         tid === TENANT_LIST_EMPTY || tid == null ? null : tid;
-      const data = await integrationsService.getWildberriesProductInfo({ nm_id, profileId });
+      const data = await integrationsService.getWildberriesProductInfo({
+        nm_id,
+        profileId,
+        organizationId:
+          organizationId != null && String(organizationId).trim() !== ''
+            ? String(organizationId).trim()
+            : null
+      });
+      if (!data) {
+        return res.status(404).json({ ok: false, error: 'Товар не найден в Wildberries.' });
+      }
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
@@ -512,12 +523,21 @@ class IntegrationsController {
     try {
       const product_id = req.query.product_id ?? req.query.productId;
       const offer_id = req.query.offer_id ?? req.query.offerId;
+      const { organizationId } = integrationScopeFromQuery(req);
       if ((product_id == null || product_id === '') && (offer_id == null || offer_id === '')) {
         return res.status(400).json({ ok: false, error: 'Укажите product_id (Ozon) или offer_id (артикул).' });
       }
+      const tid = tenantListProfileId(req);
+      const profileId =
+        tid === TENANT_LIST_EMPTY || tid == null ? null : tid;
       const item = await integrationsService.getOzonProductInfo({
         product_id: product_id != null && product_id !== '' ? Number(product_id) : undefined,
-        offer_id: offer_id != null && offer_id !== '' ? String(offer_id).trim() : undefined
+        offer_id: offer_id != null && offer_id !== '' ? String(offer_id).trim() : undefined,
+        organizationId:
+          organizationId != null && String(organizationId).trim() !== ''
+            ? String(organizationId).trim()
+            : null,
+        profileId
       });
       if (!item) {
         return res.status(404).json({ ok: false, error: 'Товар не найден в Ozon.' });

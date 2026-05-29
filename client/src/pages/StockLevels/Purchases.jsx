@@ -24,6 +24,7 @@ import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { onNavigationClick } from '../../utils/navigationClick.js';
+import { supplierPrefixesFromApiConfig } from '../../utils/supplierArticlePrefixes';
 
 const RECEIPT_SCANNER_ID_LS = 'erm:purchase-receipt-scanner-id';
 
@@ -85,6 +86,18 @@ function qtyCell(raw) {
   return Number.isFinite(n) ? n : '—';
 }
 
+function formatPurchaseApiError(e, fallback) {
+  const status = e?.response?.status;
+  const msg = e?.response?.data?.message || e?.message || fallback;
+  if (status === 429) {
+    return 'Слишком много запросов к серверу. Подождите 1–2 минуты и повторите.';
+  }
+  if (status === 404) {
+    return `${msg} (маршрут API не найден — обновите сервер и перезапустите API).`;
+  }
+  return msg;
+}
+
 /** Частичное или полное уменьшение «ожидалось» по строке закупки (поле «На … шт.» + «Уменьшить»). */
 function PurchaseLineReduceControls({
   purchaseId,
@@ -94,6 +107,8 @@ function PurchaseLineReduceControls({
   unreceived,
   onDone,
   setErr,
+  busy,
+  setBusy,
 }) {
   const [qtyStr, setQtyStr] = useState(String(unreceived));
 
@@ -131,13 +146,14 @@ function PurchaseLineReduceControls({
       <Button
         variant="secondary"
         size="small"
-        disabled={!valid}
+        disabled={!valid || busy}
         title={
           valid
             ? `После: ожидалось ${newExpected}, непринято ${newUnreceived}`
             : `Укажите от 1 до ${unreceived}`
         }
         onClick={async () => {
+          if (busy) return;
           const rb = Math.min(
             Math.max(1, parseInt(String(qtyStr).trim(), 10) || 0),
             unreceived
@@ -154,15 +170,18 @@ function PurchaseLineReduceControls({
           }
           if (!window.confirm(msg)) return;
           try {
+            setBusy(itemId);
             setErr(null);
             await purchasesApi.removeDraftLineItem(purchaseId, itemId, { reduceBy: rb });
             await onDone();
           } catch (e) {
-            setErr(e.response?.data?.message || e.message || 'Не удалось изменить строку');
+            setErr(formatPurchaseApiError(e, 'Не удалось изменить строку'));
+          } finally {
+            setBusy(null);
           }
         }}
       >
-        Уменьшить
+        {busy ? '…' : 'Уменьшить'}
       </Button>
     </div>
   );
@@ -202,6 +221,7 @@ export function Purchases() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
+  const [importOk, setImportOk] = useState(null);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createSupplierId, setCreateSupplierId] = useState('');
@@ -238,6 +258,9 @@ export function Purchases() {
   const [receiptSupplierId, setReceiptSupplierId] = useState('');
   /** null | 'asc' | 'desc' — сортировка позиций закупки по «Ожидалось» */
   const [detailExpectedQtySort, setDetailExpectedQtySort] = useState(null);
+  const [lineActionBusy, setLineActionBusy] = useState(null);
+  const [deletePurchaseBusy, setDeletePurchaseBusy] = useState(false);
+  const detailErrRef = useRef(null);
   /** null | 'asc' | 'desc' — сортировка строк приёмки по отсканированному количеству */
   const [receiptScannedQtySort, setReceiptScannedQtySort] = useState(null);
   const [linkBarcodeOpen, setLinkBarcodeOpen] = useState(false);
@@ -332,11 +355,10 @@ export function Purchases() {
     setExcelImportLoading(false);
   }, []);
 
-  const createSupplierPrefix = useMemo(() => {
-    if (!createSupplierId) return '';
+  const createSupplierPrefixes = useMemo(() => {
+    if (!createSupplierId) return [];
     const s = (suppliers || []).find((x) => String(x.id) === String(createSupplierId));
-    const cfg = s?.apiConfig || s?.api_config || {};
-    return String(cfg.prefix ?? cfg.article_prefix ?? '').trim();
+    return supplierPrefixesFromApiConfig(s?.apiConfig || s?.api_config || {});
   }, [suppliers, createSupplierId]);
 
   const createProductLabelById = useMemo(() => {
@@ -450,7 +472,14 @@ export function Purchases() {
     ]
   );
 
+  useEffect(() => {
+    if (err && detail && detailErrRef.current) {
+      detailErrRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [err, detail]);
+
   const openDetail = async (id) => {
+    setErr(null);
     setDetailLoading(true);
     setDetail(null);
     try {
@@ -536,6 +565,7 @@ export function Purchases() {
     }
     setExcelImportLoading(true);
     setErr(null);
+    setImportOk(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -543,6 +573,23 @@ export function Purchases() {
       formData.append('organizationId', String(createOrganizationId));
       formData.append('warehouseId', String(createWarehouseId));
       const res = await purchasesApi.importFromExcel(formData);
+      const summary = res?.importSummary;
+      if (summary?.parserVersion && summary.parserVersion !== 'v3-sum-by-file-article') {
+        setErr(
+          `На сервере старая версия импорта (${summary.parserVersion}). Нужны git pull и pm2 restart erm-api.`
+        );
+        return;
+      }
+      if (summary) {
+        const lines = (summary.preview || [])
+          .filter((p) => (p.excelLines?.length || 0) > 1)
+          .map((p) => `${p.cleanSku}: ${p.quantity} шт. (${(p.excelLines || []).map((l) => l.qty).join('+')})`)
+          .slice(0, 5);
+        const dupNote = lines.length ? ` Суммы дублей: ${lines.join('; ')}.` : '';
+        setImportOk(
+          `Импорт ${summary.parserVersion || ''}: ${summary.excelDataRows ?? '—'} строк Excel → ${summary.totalQuantity ?? '—'} шт.${dupNote}`
+        );
+      }
       closeCreateModal();
       setCreateSupplierId('');
       setCreateOrganizationId('');
@@ -738,6 +785,11 @@ export function Purchases() {
       <p className="subtitle">Ожидание поставки (incoming) и приёмки по закупкам</p>
 
       {err && <p className="error">{err}</p>}
+      {importOk && (
+        <p className="muted" style={{ color: 'var(--success, #198754)', marginBottom: 12 }}>
+          {importOk}
+        </p>
+      )}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
         <Button onClick={() => setCreateOpen(true)}>Новая закупка</Button>
         <Button variant="secondary" onClick={reload} disabled={loading}>
@@ -837,9 +889,10 @@ export function Purchases() {
               ))}
           </select>
         </div>
-        {createSupplierPrefix ? (
+        {createSupplierPrefixes.length > 0 ? (
           <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
-            Префикс поставщика для Excel: <strong>{createSupplierPrefix}</strong> — будет снят с начала артикула в файле.
+            Префиксы поставщика для Excel:{' '}
+            <strong>{createSupplierPrefixes.map((p) => `"${p}"`).join(', ')}</strong> — будут сняты с начала артикула в файле.
           </p>
         ) : null}
         <div
@@ -847,7 +900,7 @@ export function Purchases() {
           style={{ marginBottom: 14, borderTop: '1px solid var(--border, #e8e8e8)', paddingTop: 12 }}
         >
           <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
-            Импорт из Excel: колонки «артикул» и «количество». Одинаковые артикулы суммируются. Если хотя бы один артикул не найден в каталоге, закупка не создаётся.
+            Импорт из Excel: столбец A — артикул, столбец B — количество (заголовок не обязателен), либо колонки «артикул» и «количество». Одинаковые артикулы суммируются. Если хотя бы один артикул не найден в каталоге, закупка не создаётся.
           </p>
           <div style={{ marginBottom: 12 }}>
             <Button
@@ -963,6 +1016,16 @@ export function Purchases() {
           <div className="loading">Загрузка…</div>
         ) : detail?.purchase ? (
           <>
+            {err && (
+              <p
+                ref={detailErrRef}
+                className="error"
+                role="alert"
+                style={{ marginBottom: 12 }}
+              >
+                {err}
+              </p>
+            )}
             <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
               Создана: {fmtDt(detail.purchase.created_at)}. Ожидание (incoming) и резервы по заказам формируются при добавлении
               позиций; при приёмке товар уходит из ожидания на склад.
@@ -1080,8 +1143,10 @@ export function Purchases() {
               </Button>
               <Button
                 variant="secondary"
+                disabled={deletePurchaseBusy}
                 onClick={async (e) => {
                   e.stopPropagation();
+                  if (deletePurchaseBusy) return;
                   if (
                     !window.confirm(
                       `Удалить закупку №${detail.purchase.id} со всеми приёмками? Будет выполнен откат (сторно): в журнал движений добавятся обратные проводки, старые записи не удаляются. Остатки и incoming будут скорректированы; заказы из «В закупке» вернутся в «Новые», резерв снимется.`
@@ -1090,16 +1155,19 @@ export function Purchases() {
                     return;
                   }
                   try {
+                    setDeletePurchaseBusy(true);
                     setErr(null);
                     await purchasesApi.deletePurchase(detail.purchase.id);
                     setDetail(null);
                     await reload();
                   } catch (ex) {
-                    setErr(ex.response?.data?.message || ex.message || 'Не удалось удалить закупку');
+                    setErr(formatPurchaseApiError(ex, 'Не удалось удалить закупку'));
+                  } finally {
+                    setDeletePurchaseBusy(false);
                   }
                 }}
               >
-                Удалить закупку
+                {deletePurchaseBusy ? 'Удаляю…' : 'Удалить закупку'}
               </Button>
             </div>
             <h4>Позиции</h4>
@@ -1208,6 +1276,8 @@ export function Purchases() {
                                 received={received}
                                 unreceived={unreceived}
                                 setErr={setErr}
+                                busy={lineActionBusy === it.id}
+                                setBusy={setLineActionBusy}
                                 onDone={async () => {
                                   await openDetail(detail.purchase.id);
                                   await reload();
