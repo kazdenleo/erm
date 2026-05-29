@@ -407,6 +407,11 @@ export function ProductForm({
   const [ymCategoryAttributesLoading, setYmCategoryAttributesLoading] = useState(false);
   const [ymCategoryAttributesError, setYmCategoryAttributesError] = useState('');
   const [ymAttributeValues, setYmAttributeValues] = useState({});
+  const [ymSyncLoading, setYmSyncLoading] = useState(false);
+  const [ymSyncError, setYmSyncError] = useState('');
+  const [ymSyncSuccess, setYmSyncSuccess] = useState('');
+  /** Данные с Яндекс.Маркета после «Обновить данные с YM» */
+  const [ymFetchedProduct, setYmFetchedProduct] = useState(null);
   // Images (ERP storage + targeting marketplaces)
   const [productImages, setProductImages] = useState([]);
   const [imageUploadLoading, setImageUploadLoading] = useState(false);
@@ -434,6 +439,7 @@ export function ProductForm({
       setWbFetchedProduct(null);
       setWbShowAllFields(false);
       setWbAttributeValues({});
+      setYmFetchedProduct(null);
       setYmAttributeValues({});
       setProductImages([]);
       setImageError('');
@@ -456,6 +462,9 @@ export function ProductForm({
       setOzonSyncSuccess('');
       setWbSyncError('');
       setWbSyncSuccess('');
+      setYmSyncError('');
+      setYmSyncSuccess('');
+      setYmFetchedProduct(null);
       setCalculatedVolume('');
       setErrors({});
       setActiveTab('main');
@@ -1308,6 +1317,95 @@ export function ProductForm({
       setWbSyncLoading(false);
     }
   }, [formData.sku_wb, formData.organizationId, productsListOrganizationId]);
+
+  const fetchYmProductInfo = useCallback(async () => {
+    const organizationId = resolveKitPickerOrganizationId(
+      formData.organizationId,
+      productsListOrganizationId
+    );
+    const offerId =
+      (formData.sku_ym != null && String(formData.sku_ym).trim() !== ''
+        ? String(formData.sku_ym).trim()
+        : null) ||
+      (formData.sku != null && String(formData.sku).trim() !== '' ? String(formData.sku).trim() : null);
+    if (!offerId) {
+      setYmSyncError('Укажите offerId (артикул Яндекс.Маркет) или артикул ERP.');
+      return;
+    }
+    if (!organizationId) {
+      setYmSyncError('Выберите организацию — данные запрашиваются из кабинета Яндекс.Маркета этой организации.');
+      return;
+    }
+    setYmSyncError('');
+    setYmSyncSuccess('');
+    setYmSyncLoading(true);
+    try {
+      const data = await integrationsApi.getYandexProductInfo({ offer_id: offerId, organizationId });
+      if (!data) {
+        setYmSyncError('Товар не найден в кабинете Яндекс.Маркета выбранной организации.');
+        return;
+      }
+      setYmFetchedProduct(data);
+      const resolvedOfferId = String(data.offerId ?? offerId).trim();
+      const name = data.name != null ? String(data.name).trim() : '';
+      const description = data.description != null ? String(data.description).trim() : '';
+      setFormData((prev) => {
+        const next = { ...prev };
+        if (resolvedOfferId) next.sku_ym = resolvedOfferId;
+        if (name) next.mp_ym_name = name;
+        if (description) next.mp_ym_description = description;
+        return next;
+      });
+      if (Array.isArray(data.parameterValues) && data.parameterValues.length > 0) {
+        setYmAttributeValues((prev) => {
+          const next = { ...prev };
+          data.parameterValues.forEach((pv) => {
+            const pid = pv?.parameterId ?? pv?.id;
+            if (pid == null) return;
+            const key = String(pid);
+            if (next[key] != null && String(next[key]).trim() !== '') return;
+            let val = pv?.value ?? pv?.optionId ?? pv?.dictionaryValueId ?? pv?.id;
+            if (val != null && typeof val === 'object') {
+              val = val.value ?? val.id ?? val.label ?? '';
+            }
+            if (val != null && String(val).trim() !== '') {
+              next[key] = String(val).trim();
+            }
+          });
+          return next;
+        });
+      }
+      const wd = data.weightDimensions && typeof data.weightDimensions === 'object' ? data.weightDimensions : null;
+      if (wd) {
+        setFormData((prev) => {
+          const next = { ...prev };
+          const wG = wd.weight != null ? Number(wd.weight) : NaN;
+          const lMm = wd.length != null ? Number(wd.length) : NaN;
+          const wMm = wd.width != null ? Number(wd.width) : NaN;
+          const hMm = wd.height != null ? Number(wd.height) : NaN;
+          if (Number.isFinite(wG) && wG > 0 && (!prev.weight || String(prev.weight).trim() === '')) {
+            next.weight = String(Math.round(wG));
+          }
+          if (Number.isFinite(lMm) && lMm > 0 && (!prev.length || String(prev.length).trim() === '')) {
+            next.length = String(Math.round(lMm));
+          }
+          if (Number.isFinite(wMm) && wMm > 0 && (!prev.width || String(prev.width).trim() === '')) {
+            next.width = String(Math.round(wMm));
+          }
+          if (Number.isFinite(hMm) && hMm > 0 && (!prev.height || String(prev.height).trim() === '')) {
+            next.height = String(Math.round(hMm));
+          }
+          return next;
+        });
+      }
+      setYmSyncSuccess('Данные с Яндекс.Маркета загружены: артикул, название, описание и характеристики. Сохраните товар.');
+    } catch (err) {
+      const msg = err.response?.data?.error ?? err.message ?? 'Ошибка при загрузке данных с Яндекс.Маркета.';
+      setYmSyncError(msg);
+    } finally {
+      setYmSyncLoading(false);
+    }
+  }, [formData.sku_ym, formData.sku, formData.organizationId, productsListOrganizationId]);
 
   const applyWbToMainCard = useCallback(() => {
     const p = wbFetchedProduct;
@@ -2286,7 +2384,7 @@ export function ProductForm({
         </div>
       </div>
 
-      /* Характеристики упаковки */}
+      {/* Характеристики упаковки */}
       <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
         <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px', color: 'var(--text)' }}>
           📦 Характеристики упаковки
@@ -3959,6 +4057,19 @@ export function ProductForm({
           <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
             <Button
               type="button"
+              variant="secondary"
+              onClick={fetchYmProductInfo}
+              disabled={
+                ymSyncLoading ||
+                (
+                  !String(formData.sku_ym || formData.sku || '').trim()
+                )
+              }
+            >
+              {ymSyncLoading ? 'Загрузка…' : 'Обновить данные с Яндекс.Маркет'}
+            </Button>
+            <Button
+              type="button"
               variant="primary"
               onClick={() => handlePushCard('ym')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ym?.trim()}
@@ -3973,7 +4084,47 @@ export function ProductForm({
             >
               {pushCardLoading === 'all' ? 'Отправка…' : 'Отправить на все МП'}
             </Button>
+            <span className="text-muted small">
+              Подтянуть с Маркета или отправить изменения из ERP в кабинет (нужна связь и категория YM).
+            </span>
             </div>
+          {ymSyncError && (
+            <div className="alert alert-danger py-2 mb-2" style={{ fontSize: '12px' }}>
+              {ymSyncError}
+            </div>
+          )}
+          {ymSyncSuccess && (
+            <div className="alert alert-success py-2 mb-2" style={{ fontSize: '12px' }}>
+              {ymSyncSuccess}
+            </div>
+          )}
+          {ymFetchedProduct && (
+            <div className="card mb-3 border-warning">
+              <div className="card-header">Данные с Яндекс.Маркета</div>
+              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
+                {ymFetchedProduct.offerId ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>offerId:</span>{ymFetchedProduct.offerId}</div>
+                ) : null}
+                {ymFetchedProduct.shopSku ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>shopSku:</span>{ymFetchedProduct.shopSku}</div>
+                ) : null}
+                {ymFetchedProduct.marketSku ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>marketSku:</span>{ymFetchedProduct.marketSku}</div>
+                ) : null}
+                {ymFetchedProduct.name ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>Название:</span>{ymFetchedProduct.name}</div>
+                ) : null}
+                {ymFetchedProduct.description ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>Описание:</span>{ymFetchedProduct.description}</div>
+                ) : null}
+                {Array.isArray(ymFetchedProduct.parameterValues) && ymFetchedProduct.parameterValues.length > 0 ? (
+                  <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                    Характеристик загружено: {ymFetchedProduct.parameterValues.length}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
           {(pushCardError || pushCardMessage) && activeTab === 'ym' ? (
             <div
               className={`alert py-2 mb-2 ${pushCardError ? 'alert-danger' : 'alert-success'}`}

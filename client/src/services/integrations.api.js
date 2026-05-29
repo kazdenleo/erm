@@ -140,6 +140,22 @@ export const integrationsApi = {
   },
 
   /**
+   * Данные предложения Яндекс.Маркета по offer_id (артикул продавца).
+   * @param {{ offer_id?: string, organizationId?: number|string }} params
+   */
+  getYandexProductInfo: async (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.offer_id != null && String(params.offer_id).trim() !== '') {
+      q.set('offer_id', String(params.offer_id).trim());
+    }
+    if (params.organizationId != null && String(params.organizationId).trim() !== '') {
+      q.set('organizationId', String(params.organizationId).trim());
+    }
+    const response = await api.get(`/integrations/marketplaces/yandex/product-info?${q.toString()}`);
+    return response.data?.data ?? response.data;
+  },
+
+  /**
    * Получить комиссии Wildberries
    */
   getWildberriesCommissions: async (locale = 'ru') => {

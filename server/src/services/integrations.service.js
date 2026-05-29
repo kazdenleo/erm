@@ -1642,11 +1642,10 @@ class IntegrationsService {
   }
 
   /**
-   * Предложение Яндекс.Маркета по offerId (артикул ERP) через offer-mappings.
-   * @param {string} offerId
-   * @param {{ profileId?: number|string|null, organizationId?: number|string|null }} [opts]
+   * Запрос offer-mappings Яндекс.Маркета по offerId.
+   * @returns {Promise<object|null>} элемент offerMappings или null
    */
-  async getYandexOfferByOfferId(offerId, opts = {}) {
+  async _fetchYandexOfferMappingHit(offerId, opts = {}) {
     const oid = offerId != null ? String(offerId).trim() : '';
     if (!oid) {
       const err = new Error('Укажите offerId.');
@@ -1723,14 +1722,62 @@ class IntegrationsService {
       data?.result?.mappings ??
       [];
     const list = Array.isArray(mappings) ? mappings : [];
-    const hit =
-      list.find((m) => String(m?.offer?.offerId ?? m?.offerId ?? '').trim() === oid) || list[0];
+    return list.find((m) => String(m?.offer?.offerId ?? m?.offerId ?? '').trim() === oid) || list[0] || null;
+  }
+
+  /**
+   * Предложение Яндекс.Маркета по offerId (артикул ERP) через offer-mappings.
+   * @param {string} offerId
+   * @param {{ profileId?: number|string|null, organizationId?: number|string|null }} [opts]
+   */
+  async getYandexOfferByOfferId(offerId, opts = {}) {
+    const hit = await this._fetchYandexOfferMappingHit(offerId, opts);
     if (!hit) return null;
+    const oid = offerId != null ? String(offerId).trim() : '';
     const resolvedOfferId = String(hit?.offer?.offerId ?? hit?.offerId ?? oid).trim();
     const shopSku = hit?.offer?.shopSku ?? hit?.shopSku ?? null;
     return {
       offerId: resolvedOfferId,
       shopSku: shopSku != null ? String(shopSku).trim() : null
+    };
+  }
+
+  /**
+   * Данные карточки товара Яндекс.Маркета по offerId (артикул продавца).
+   * @param {{ offer_id?: string, profileId?: number|string|null, organizationId?: number|string|null }} params
+   */
+  async getYandexProductInfo(params = {}) {
+    const offerId = params.offer_id ?? params.offerId ?? null;
+    const hit = await this._fetchYandexOfferMappingHit(offerId, {
+      profileId: params.profileId ?? params.profile_id ?? null,
+      organizationId: params.organizationId ?? params.organization_id ?? null
+    });
+    if (!hit) return null;
+    const oid = offerId != null ? String(offerId).trim() : '';
+    const offer = hit?.offer && typeof hit.offer === 'object' ? hit.offer : {};
+    const mapping = hit?.mapping && typeof hit.mapping === 'object' ? hit.mapping : {};
+    const resolvedOfferId = String(offer.offerId ?? hit.offerId ?? oid).trim();
+    const shopSku = offer.shopSku ?? hit.shopSku ?? null;
+    const parameterValues = Array.isArray(offer.parameterValues) ? offer.parameterValues : [];
+    const weightDimensions = offer.weightDimensions && typeof offer.weightDimensions === 'object'
+      ? offer.weightDimensions
+      : null;
+    return {
+      offerId: resolvedOfferId,
+      shopSku: shopSku != null ? String(shopSku).trim() : null,
+      marketSku: mapping.marketSku != null ? String(mapping.marketSku) : null,
+      marketCategoryId:
+        offer.marketCategoryId ??
+        mapping.marketCategoryId ??
+        mapping.categoryId ??
+        null,
+      name: offer.name != null ? String(offer.name).trim() : null,
+      description: offer.description != null ? String(offer.description).trim() : null,
+      vendor: offer.vendor != null ? String(offer.vendor).trim() : null,
+      barcodes: Array.isArray(offer.barcodes) ? offer.barcodes.map(String) : [],
+      parameterValues,
+      weightDimensions,
+      raw: hit
     };
   }
 

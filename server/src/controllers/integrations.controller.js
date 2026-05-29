@@ -245,6 +245,37 @@ class IntegrationsController {
   }
 
   /**
+   * GET /api/integrations/marketplaces/yandex/product-info
+   * Данные предложения Яндекс.Маркета по offer_id (артикул продавца).
+   */
+  async getYandexProductInfo(req, res, next) {
+    try {
+      const offer_id = req.query.offer_id ?? req.query.offerId;
+      const { organizationId } = integrationScopeFromQuery(req);
+      if (offer_id == null || String(offer_id).trim() === '') {
+        return res.status(400).json({ ok: false, error: 'Укажите offer_id (артикул продавца).' });
+      }
+      const tid = tenantListProfileId(req);
+      const profileId =
+        tid === TENANT_LIST_EMPTY || tid == null ? null : tid;
+      const item = await integrationsService.getYandexProductInfo({
+        offer_id: String(offer_id).trim(),
+        profileId,
+        organizationId:
+          organizationId != null && String(organizationId).trim() !== ''
+            ? String(organizationId).trim()
+            : null
+      });
+      if (!item) {
+        return res.status(404).json({ ok: false, error: 'Товар не найден в Яндекс.Маркете.' });
+      }
+      return res.status(200).json({ ok: true, data: item });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/integrations/marketplaces/:type/token-status
    * Проверить токен маркетплейса
    */

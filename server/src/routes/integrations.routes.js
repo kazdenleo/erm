@@ -17,6 +17,7 @@ router.post('/marketplaces/ozon/categories/update', wrapAsync(integrationsContro
 router.get('/marketplaces/ozon/warehouses', wrapAsync(integrationsController.getOzonWarehouses));
 // Кампании Яндекс.Маркет (используем campaignId как "склад" для сопоставления)
 router.get('/marketplaces/yandex/campaigns', wrapAsync(integrationsController.getYandexCampaigns));
+router.get('/marketplaces/yandex/product-info', wrapAsync(integrationsController.getYandexProductInfo));
 // Атрибуты категории Ozon (характеристики и справочники)
 router.get('/marketplaces/ozon/product-info', wrapAsync(integrationsController.getOzonProductInfo));
 router.get('/marketplaces/ozon/category-attributes', wrapAsync(integrationsController.getOzonCategoryAttributes));
