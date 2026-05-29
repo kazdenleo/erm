@@ -6,42 +6,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { productsApi } from '../../services/products.api';
 import { Modal } from '../../components/common/Modal/Modal';
 import { Button } from '../../components/common/Button/Button';
-import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
-
 function normalizeProductSearchQuery(value) {
   return String(value || '').trim();
-}
-
-function matchProductsLocal(products, query) {
-  const q = normalizeProductSearchQuery(query).toLowerCase();
-  if (!q) return [];
-  const list = products || [];
-  const exactSku = list.filter((p) => String(p?.sku || '').trim().toLowerCase() === q);
-  if (exactSku.length) return exactSku.slice(0, 30);
-  const exactBarcode = list.filter((p) =>
-    barcodeStringsFromProduct(p.barcodes).some(
-      (b) => String(b || '').trim().toLowerCase() === q
-    )
-  );
-  if (exactBarcode.length) return exactBarcode.slice(0, 30);
-  const scored = list
-    .map((p) => {
-      const sku = String(p?.sku || '').toLowerCase();
-      const name = String(p?.name || '').toLowerCase();
-      const barcodes = barcodeStringsFromProduct(p.barcodes)
-        .map((b) => String(b || '').toLowerCase())
-        .join(' ');
-      const hitSku = sku.includes(q);
-      const hitName = name.includes(q);
-      const hitBarcode = barcodes.includes(q);
-      if (!hitSku && !hitName && !hitBarcode) return null;
-      const score =
-        (hitSku ? 2 : 0) + (hitName ? 1 : 0) + (hitBarcode ? 2 : 0) + (sku.startsWith(q) ? 1 : 0);
-      return { p, score };
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.score - a.score);
-  return scored.map((x) => x.p).slice(0, 30);
 }
 
 function mergeProductLists(...lists) {
