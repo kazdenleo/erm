@@ -2859,7 +2859,7 @@ export function ProductForm({
           <h4 style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: 'var(--text)' }}>
             Атрибуты категории
           </h4>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div className="row g-3">
             {categoryAttributes.map((attr) => {
               const key = String(attr.id);
               const value = formData.attributeValues[key];
@@ -2867,7 +2867,7 @@ export function ProductForm({
               if (attr.type === 'checkbox') {
                 const checked = rawValue === 'true' || rawValue === true;
                 return (
-                  <div key={attr.id} className="field">
+                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
                     <label className="label" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                       <input
                         type="checkbox"
@@ -2882,13 +2882,12 @@ export function ProductForm({
               }
               if (attr.type === 'number') {
                 return (
-                  <div key={attr.id} className="field">
+                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
                     <label className="label" htmlFor={`attr-${attr.id}`}>{attr.name} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span></label>
                     <input
                       id={`attr-${attr.id}`}
                       type="number"
                       className="form-control form-control-sm"
-                      style={{ maxWidth: 240 }}
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />
@@ -2897,13 +2896,12 @@ export function ProductForm({
               }
               if (attr.type === 'date') {
                 return (
-                  <div key={attr.id} className="field">
+                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
                     <label className="label" htmlFor={`attr-${attr.id}`}>{attr.name} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span></label>
                     <input
                       id={`attr-${attr.id}`}
                       type="date"
                       className="form-control form-control-sm"
-                      style={{ maxWidth: 240 }}
                       value={rawValue}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     />
@@ -2922,12 +2920,11 @@ export function ProductForm({
                 const merged = trimmed && !inDictionary ? [...dictStr, storedStr] : [...dictStr];
                 const options = [...new Set(merged.map(String))].sort((a, b) => a.localeCompare(b, 'ru'));
                 return (
-                  <div key={attr.id} className="field">
+                  <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
                     <label className="label" htmlFor={`attr-${attr.id}`}>{attr.name} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type]})</span></label>
                     <select
                       id={`attr-${attr.id}`}
                       className="form-select form-select-sm"
-                      style={{ maxWidth: 360 }}
                       value={storedStr}
                       onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                     >
@@ -2945,13 +2942,12 @@ export function ProductForm({
                 );
               }
               return (
-                <div key={attr.id} className="field">
+                <div key={attr.id} className="col-12 col-md-6 col-lg-4 field">
                   <label className="label" htmlFor={`attr-${attr.id}`}>{attr.name} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>({TYPE_LABELS[attr.type] || 'Текст'})</span></label>
                   <input
                     id={`attr-${attr.id}`}
                     type="text"
                     className="form-control form-control-sm"
-                    style={{ maxWidth: 360 }}
                     value={rawValue}
                     onChange={(e) => handleAttributeChange(attr.id, e.target.value)}
                   />

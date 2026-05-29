@@ -96,49 +96,59 @@
 .erm-product-card-overlay__close:hover {
   background: rgba(0,0,0,0.04);
 }
+/* Одна прокрутка на всю карточку; панель «Сохранить» липкая внизу */
 .erm-product-card-overlay__body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: 0;
 }
 
 .erm-product-card-overlay__body > .product-form {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px 14px 16px;
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow: visible;
+  width: 100%;
   max-width: none;
+  padding: 12px 16px 8px;
 }
 
 .erm-product-card-overlay__body > :not(.product-form):not(.product-form__footer) {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px 14px;
+  flex: 0 0 auto;
+  overflow: visible;
+  padding: 12px 16px;
 }
 
-/* Панель «Сохранить» — отдельная строка внизу оверлея (не в потоке прокрутки формы) */
 .erm-product-card-overlay .product-form__footer {
-  position: static;
+  position: sticky;
+  bottom: 0;
   flex: 0 0 auto;
   left: auto;
   right: auto;
   width: 100%;
   z-index: 3;
+  margin-top: auto;
 }
 
-.erm-product-card-overlay .product-form {
-  padding-bottom: 16px;
+.erm-product-card-overlay .product-form__footer-inner {
+  max-width: none;
+  margin: 0;
+  padding: 12px 16px;
 }
 
-/* Полноэкранная модалка: форма прокручивается, панель «Сохранить» закреплена внизу */
+/* Полноэкранная модалка «Редактировать товар» — без второй полосы прокрутки на dialog */
+.modal-erm .modal-dialog.modal-fullscreen {
+  overflow: hidden;
+}
+
 .modal-erm .modal-dialog.modal-fullscreen .modal-content {
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  overflow: hidden;
 }
 
 .modal-erm .modal-dialog.modal-fullscreen .modal-body {
@@ -146,24 +156,35 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-bottom: 0;
 }
 
 .modal-erm .modal-dialog.modal-fullscreen .modal-body > .product-form {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding-bottom: 16px;
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow: visible;
+  width: 100%;
+  max-width: none;
+  padding-bottom: 8px;
 }
 
 .modal-erm .modal-dialog.modal-fullscreen .product-form__footer {
-  position: static;
+  position: sticky;
+  bottom: 0;
   flex: 0 0 auto;
   left: auto;
   right: auto;
   width: 100%;
   z-index: 2;
+  margin-top: auto;
+}
+
+.modal-erm .modal-dialog.modal-fullscreen .product-form__footer-inner {
+  max-width: none;
+  margin: 0;
+  padding: 12px 16px;
 }
 
 /* Fullscreen modals should also respect the sidebar offset */
