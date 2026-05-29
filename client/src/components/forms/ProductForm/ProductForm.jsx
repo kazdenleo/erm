@@ -1265,6 +1265,61 @@ export function ProductForm({
     productsListOrganizationId
   ]);
 
+  const mergeWbFetchedIntoForm = useCallback((p) => {
+    if (!p) return;
+    const name = String(p.title ?? p.name ?? '').trim();
+    const brand = String(p.brand ?? '').trim();
+    const description = String(p.description ?? p.descriptionRu ?? '').trim();
+    const vendorCode = String(p.vendorCode ?? '').trim();
+    const dims = p.dimensions && typeof p.dimensions === 'object' ? p.dimensions : null;
+    const width = dims?.width;
+    const height = dims?.height;
+    const length = dims?.length;
+    const weightBrutto = dims?.weightBrutto;
+
+    const toNumber = (v) => {
+      const n = typeof v === 'number' ? v : (v != null && String(v).trim() !== '' ? Number(String(v).replace(',', '.')) : NaN);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const convertDimsToMm = (val, all) => {
+      const n = toNumber(val);
+      if (n == null) return null;
+      const max = Math.max(...all.map((x) => (toNumber(x) ?? 0)));
+      return max > 0 && max <= 200 ? Math.round(n * 10) : Math.round(n);
+    };
+
+    const convertWeightToG = (val) => {
+      const n = toNumber(val);
+      if (n == null) return null;
+      return n <= 50 ? Math.round(n * 1000) : Math.round(n);
+    };
+
+    const wMm = convertDimsToMm(width, [width, height, length]);
+    const hMm = convertDimsToMm(height, [width, height, length]);
+    const lMm = convertDimsToMm(length, [width, height, length]);
+    const wG = convertWeightToG(weightBrutto);
+
+    const skus = Array.isArray(p.sizes) ? (p.sizes.flatMap((s) => (Array.isArray(s?.skus) ? s.skus : []))) : [];
+    const barcodes = [...new Set(skus.map((x) => String(x).trim()).filter(Boolean))];
+
+    setFormData((prev) => {
+      const next = { ...prev };
+      if (name) next.mp_wb_name = name;
+      if (description) next.mp_wb_description = description;
+      if (brand) next.mp_wb_brand = brand;
+      if (vendorCode) next.mp_wb_vendor_code = vendorCode;
+      if (wG != null && (!prev.weight || String(prev.weight).trim() === '')) next.weight = String(wG);
+      if (lMm != null && (!prev.length || String(prev.length).trim() === '')) next.length = String(lMm);
+      if (wMm != null && (!prev.width || String(prev.width).trim() === '')) next.width = String(wMm);
+      if (hMm != null && (!prev.height || String(prev.height).trim() === '')) next.height = String(hMm);
+      if (barcodes.length > 0 && (!Array.isArray(prev.barcodes) || prev.barcodes.every((b) => !String((b?.barcode ?? b) || '').trim()))) {
+        next.barcodes = barcodes.map((b) => ({ barcode: b, marketplaces: [] }));
+      }
+      return next;
+    });
+  }, []);
+
   const fetchWbProductInfo = useCallback(async () => {
     const organizationId = resolveKitPickerOrganizationId(
       formData.organizationId,
@@ -1289,6 +1344,7 @@ export function ProductForm({
         return;
       }
       setWbFetchedProduct(data);
+      mergeWbFetchedIntoForm(data);
       // Заполним wbAttributeValues из пришедших характеристик (если в товаре ещё не сохранены)
       if (Array.isArray(data.characteristics) && data.characteristics.length > 0) {
         setWbAttributeValues((prev) => {
@@ -1309,14 +1365,14 @@ export function ProductForm({
       if (nmFromWb != null && String(nmFromWb).trim() !== '') {
         setFormData((prev) => ({ ...prev, sku_wb: String(nmFromWb).trim() }));
       }
-      setWbSyncSuccess('Данные с Wildberries загружены во вкладку.');
+      setWbSyncSuccess('Данные с Wildberries загружены в поля WB. Сохраните товар.');
     } catch (err) {
       const msg = err.response?.data?.error ?? err.message ?? 'Ошибка при загрузке данных с Wildberries.';
       setWbSyncError(msg);
     } finally {
       setWbSyncLoading(false);
     }
-  }, [formData.sku_wb, formData.organizationId, productsListOrganizationId]);
+  }, [formData.sku_wb, formData.organizationId, productsListOrganizationId, mergeWbFetchedIntoForm]);
 
   const fetchYmProductInfo = useCallback(async () => {
     const organizationId = resolveKitPickerOrganizationId(
@@ -1406,65 +1462,6 @@ export function ProductForm({
       setYmSyncLoading(false);
     }
   }, [formData.sku_ym, formData.sku, formData.organizationId, productsListOrganizationId]);
-
-  const applyWbToMainCard = useCallback(() => {
-    const p = wbFetchedProduct;
-    if (!p) return;
-    const name = String(p.title ?? p.name ?? '').trim();
-    const brand = String(p.brand ?? '').trim();
-    const description = String(p.description ?? p.descriptionRu ?? '').trim();
-    const vendorCode = String(p.vendorCode ?? '').trim();
-    const dims = p.dimensions && typeof p.dimensions === 'object' ? p.dimensions : null;
-    const width = dims?.width;
-    const height = dims?.height;
-    const length = dims?.length;
-    const weightBrutto = dims?.weightBrutto;
-
-    const toNumber = (v) => {
-      const n = typeof v === 'number' ? v : (v != null && String(v).trim() !== '' ? Number(String(v).replace(',', '.')) : NaN);
-      return Number.isFinite(n) ? n : null;
-    };
-
-    const convertDimsToMm = (val, all) => {
-      const n = toNumber(val);
-      if (n == null) return null;
-      const max = Math.max(...all.map((x) => (toNumber(x) ?? 0)));
-      // эвристика: если размеры выглядят как см (обычно 1..200), переводим в мм
-      return max > 0 && max <= 200 ? Math.round(n * 10) : Math.round(n);
-    };
-
-    const convertWeightToG = (val) => {
-      const n = toNumber(val);
-      if (n == null) return null;
-      // эвристика: <= 50 — скорее кг, > 50 — скорее граммы
-      return n <= 50 ? Math.round(n * 1000) : Math.round(n);
-    };
-
-    const wMm = convertDimsToMm(width, [width, height, length]);
-    const hMm = convertDimsToMm(height, [width, height, length]);
-    const lMm = convertDimsToMm(length, [width, height, length]);
-    const wG = convertWeightToG(weightBrutto);
-
-    const skus = Array.isArray(p.sizes) ? (p.sizes.flatMap((s) => (Array.isArray(s?.skus) ? s.skus : []))) : [];
-    const barcodes = [...new Set(skus.map((x) => String(x).trim()).filter(Boolean))];
-
-    setFormData((prev) => {
-      const next = { ...prev };
-      if (name) next.mp_wb_name = name;
-      if (description) next.mp_wb_description = description;
-      if (brand) next.mp_wb_brand = brand;
-      if (vendorCode) next.mp_wb_vendor_code = vendorCode;
-      if (wG != null && (!prev.weight || String(prev.weight).trim() === '')) next.weight = String(wG);
-      if (lMm != null && (!prev.length || String(prev.length).trim() === '')) next.length = String(lMm);
-      if (wMm != null && (!prev.width || String(prev.width).trim() === '')) next.width = String(wMm);
-      if (hMm != null && (!prev.height || String(prev.height).trim() === '')) next.height = String(hMm);
-      if (barcodes.length > 0 && (!Array.isArray(prev.barcodes) || prev.barcodes.every((b) => !String((b?.barcode ?? b) || '').trim()))) {
-        next.barcodes = barcodes.map((b) => ({ barcode: b, marketplaces: [] }));
-      }
-      return next;
-    });
-    setWbSyncSuccess('Текст и артикул продавца подставлены в поля WB; при пустых учётных полях — вес, габариты и штрихкоды. Сохраните товар.');
-  }, [wbFetchedProduct]);
 
   // Синхронизация формы с данными из блока «Данные с Ozon»: при появлении ozonFetchedProduct подставляем все атрибуты в поля формы
   useEffect(() => {
@@ -3651,87 +3648,26 @@ export function ProductForm({
               {wbSyncSuccess}
             </div>
           )}
-          {wbFetchedProduct && (
-            <div className="card mb-3">
-              <div className="card-header">
-                Данные с WB (все поля по товару)
-              </div>
-              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
-                {(wbFetchedProduct.title || wbFetchedProduct.name) && (
-                  <div>
-                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>Название:</span>
-                    <span>{wbFetchedProduct.title || wbFetchedProduct.name}</span>
-                  </div>
-                )}
-                {wbFetchedProduct.brand && (
-                  <div>
-                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>Бренд:</span>
-                    <span>{wbFetchedProduct.brand}</span>
-                  </div>
-                )}
-                {(wbFetchedProduct.description || wbFetchedProduct.descriptionRu) && (
-                  <div>
-                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>Описание:</span>
-                    <div style={{ marginTop: '4px', whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}>
-                      {String(wbFetchedProduct.description || wbFetchedProduct.descriptionRu || '').trim().slice(0, 500)}
-                      {String(wbFetchedProduct.description || wbFetchedProduct.descriptionRu || '').length > 500 ? '…' : ''}
-                    </div>
-                  </div>
-                )}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px 16px' }}>
-                  {(wbFetchedProduct.nmId ?? wbFetchedProduct.nmID) != null && (
-                    <span><span style={{ color: 'var(--muted)' }}>nmId:</span> {wbFetchedProduct.nmId ?? wbFetchedProduct.nmID}</span>
-                  )}
-                  {wbFetchedProduct.vendorCode && (
-                    <span><span style={{ color: 'var(--muted)' }}>vendorCode:</span> {wbFetchedProduct.vendorCode}</span>
-                  )}
-                </div>
-                <div className="mt-3 pt-3 border-top">
-                  <button type="button" className="btn btn-link p-0" onClick={() => setWbShowAllFields((v) => !v)}>
-                    {wbShowAllFields ? 'Свернуть все поля' : 'Все поля (сырой ответ API)'}
-                  </button>
-                  {wbShowAllFields && wbFetchedProduct && (
-                    <div style={{ marginTop: '8px', maxHeight: '320px', overflow: 'auto', fontSize: '11px', fontFamily: 'monospace' }}>
-                      {Object.entries(wbFetchedProduct).map(([key, value]) => {
-                        let display = value;
-                        try {
-                          if (value !== null && typeof value === 'object') display = JSON.stringify(value, null, 2);
-                          else display = value == null ? '—' : String(value);
-                        } catch (_) {
-                          display = value == null ? '—' : String(value);
-                        }
-                        return (
-                          <div key={key} style={{ marginBottom: '6px', wordBreak: 'break-all' }}>
-                            <span style={{ color: 'var(--muted)', marginRight: '6px' }}>{key}:</span>
-                            <span style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="card-footer d-flex gap-2 flex-wrap">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="small"
-                  onClick={applyWbToMainCard}
-                >
-                  Подставить в поля WB
-                </Button>
-                <span className="text-muted small" style={{ alignSelf: 'center' }}>
-                  Подставит в поля WB: название, описание, бренд, артикул продавца; при пустых учётных полях — вес, габариты и штрихкоды.
-                </span>
-              </div>
-            </div>
-          )}
           <div className="card mt-3 border-secondary">
             <div className="card-header">Текст карточки Wildberries</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
-                Поля ниже относятся только к WB и не совпадают с названием/описанием/брендом на вкладке «Основное». Артикул продавца (vendorCode) и nmId — в блоке «Связь с маркетплейсом» выше.
+                Поля только для WB (не совпадают с вкладкой «Основное»). nmId и vendorCode — в блоке «Связь с маркетплейсом» выше.
+                После «Обновить данные с WB» значения подставляются сюда автоматически.
               </p>
+              {wbFetchedProduct && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 14px', fontSize: '12px', marginBottom: '12px' }}>
+                  {(wbFetchedProduct.nmId ?? wbFetchedProduct.nmID) != null && (
+                    <span><span style={{ color: 'var(--muted)' }}>nmId:</span> {wbFetchedProduct.nmId ?? wbFetchedProduct.nmID}</span>
+                  )}
+                  {wbFetchedProduct.vendorCode && (
+                    <span><span style={{ color: 'var(--muted)' }}>vendorCode:</span> {String(wbFetchedProduct.vendorCode)}</span>
+                  )}
+                  {wbFetchedProduct.subjectName && (
+                    <span><span style={{ color: 'var(--muted)' }}>Категория WB:</span> {String(wbFetchedProduct.subjectName)}</span>
+                  )}
+                </div>
+              )}
               <div className="row g-3">
                 <div className="col-md-6">
                   <label className="form-label" htmlFor="wb-tab-name-wb">Название (WB)</label>
@@ -3766,274 +3702,129 @@ export function ProductForm({
                   />
                 </div>
               </div>
+              {wbFetchedProduct && (
+                <div className="mt-2 pt-2 border-top">
+                  <button type="button" className="btn btn-link p-0" onClick={() => setWbShowAllFields((v) => !v)}>
+                    {wbShowAllFields ? 'Свернуть сырой ответ API' : 'Сырой ответ API WB'}
+                  </button>
+                  {wbShowAllFields && (
+                    <div style={{ marginTop: '8px', maxHeight: '280px', overflow: 'auto', fontSize: '11px', fontFamily: 'monospace' }}>
+                      {Object.entries(wbFetchedProduct).map(([key, value]) => {
+                        let display = value;
+                        try {
+                          if (value !== null && typeof value === 'object') display = JSON.stringify(value, null, 2);
+                          else display = value == null ? '—' : String(value);
+                        } catch (_) {
+                          display = value == null ? '—' : String(value);
+                        }
+                        return (
+                          <div key={key} style={{ marginBottom: '6px', wordBreak: 'break-all' }}>
+                            <span style={{ color: 'var(--muted)', marginRight: '6px' }}>{key}:</span>
+                            <span style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-      </div>
+          </div>
 
           <div className="card mt-3">
-            <div className="card-header">Атрибуты WB (по категории)</div>
+            <div className="card-header">Атрибуты WB</div>
             <div className="card-body">
               {formData.categoryId && categoryDetailsLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка данных категории…</div>
               ) : !formData.categoryId ? (
-                <div className="text-muted" style={{ fontSize: '12px' }}>Выберите категорию выше, чтобы подгрузить атрибуты WB.</div>
-              ) : !wbSubjectId || wbSubjectId <= 0 ? (
-                <div className="alert alert-warning py-2 mb-0" style={{ fontSize: '12px' }}>
-                  Для выбранной категории не задано сопоставление WB (subjectId). Заполните <code>marketplace_mappings.wb</code> в категории.
+                <div className="text-muted" style={{ fontSize: '12px' }}>
+                  Выберите категорию на вкладке «Основное» или нажмите «Обновить данные с WB».
                 </div>
-              ) : wbCategoryAttributesError ? (
+              ) : wbCategoryAttributesError && !(Array.isArray(wbFetchedProduct?.characteristics) && wbFetchedProduct.characteristics.length > 0) ? (
                 <div className="alert alert-danger py-2 mb-0" style={{ fontSize: '12px' }}>
                   {wbCategoryAttributesError}
                 </div>
-              ) : wbCategoryAttributesLoading ? (
-                <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка атрибутов категории WB…</div>
-              ) : wbCategoryAttributes.length === 0 ? (
-                <div className="text-muted" style={{ fontSize: '12px' }}>Нет атрибутов для этой категории (или WB не вернул список).</div>
               ) : (
-                <div className="row g-3">
-                  {wbCategoryAttributes.map((a) => {
-                    const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
-                    const key = id != null ? String(id) : String(a?.name || '');
-                    const name = a?.name ?? a?.charcName ?? a?.characteristic_name ?? (key ? `ID ${key}` : 'Характеристика');
-                    const required = Boolean(a?.required ?? a?.isRequired ?? a?.is_required);
-                    const value = wbAttributeValues[key] ?? '';
-                    return (
-                      <div key={key} className="col-12 col-md-6 col-lg-4">
-                        <label className="form-label" htmlFor={`wb-cat-attr-${key}`}>
-                          {name}
-                          {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
-                        </label>
-            <input
-                          id={`wb-cat-attr-${key}`}
-                          type="text"
-                          className="form-control form-control-sm"
-                          value={value}
-                          onChange={(e) => setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))}
-            />
-          </div>
-                    );
-                  })}
-                </div>
-              )}
-              <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '8px' }}>
-                Значения ниже сохраняются как <code>wb_attributes</code> (характеристики предмета по категории). Название, описание, бренд и артикул продавца для WB — в блоке выше.
-              </div>
-            </div>
-          </div>
-
-          {wbFetchedProduct && (
-            <div className="card mt-3">
-              <div className="card-header">Поля карточки WB</div>
-              <div className="card-body">
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 14px', fontSize: '12px', marginBottom: '10px' }}>
-                {(wbFetchedProduct.nmId ?? wbFetchedProduct.nmID) != null && (
-                  <span><span style={{ color: 'var(--muted)' }}>nmId:</span> {wbFetchedProduct.nmId ?? wbFetchedProduct.nmID}</span>
-                )}
-                {wbFetchedProduct.imtID != null && (
-                  <span><span style={{ color: 'var(--muted)' }}>imtID:</span> {wbFetchedProduct.imtID}</span>
-                )}
-                {wbFetchedProduct.nmUUID && (
-                  <span><span style={{ color: 'var(--muted)' }}>nmUUID:</span> {String(wbFetchedProduct.nmUUID)}</span>
-                )}
-                {wbFetchedProduct.subjectID != null && (
-                  <span><span style={{ color: 'var(--muted)' }}>subjectID:</span> {wbFetchedProduct.subjectID}</span>
-                )}
-                {wbFetchedProduct.subjectName && (
-                  <span><span style={{ color: 'var(--muted)' }}>Категория WB:</span> {String(wbFetchedProduct.subjectName)}</span>
-                )}
-                {wbFetchedProduct.vendorCode && (
-                  <span><span style={{ color: 'var(--muted)' }}>vendorCode:</span> {String(wbFetchedProduct.vendorCode)}</span>
-                )}
-                {wbFetchedProduct.needKiz != null && (
-                  <span><span style={{ color: 'var(--muted)' }}>needKiz:</span> {wbFetchedProduct.needKiz ? 'true' : 'false'}</span>
-                )}
-                {wbFetchedProduct.createdAt && (
-                  <span><span style={{ color: 'var(--muted)' }}>createdAt:</span> {String(wbFetchedProduct.createdAt).slice(0, 19)}</span>
-                )}
-                {wbFetchedProduct.updatedAt && (
-                  <span><span style={{ color: 'var(--muted)' }}>updatedAt:</span> {String(wbFetchedProduct.updatedAt).slice(0, 19)}</span>
-                )}
-              </div>
-              <div className="row g-3">
-                <div className="col-md-6">
-                  <label className="form-label" htmlFor="wb-title">Название (WB)</label>
-            <input
-                    id="wb-title"
-              type="text"
-                    className="form-control form-control-sm"
-                    value={String(wbFetchedProduct.title ?? wbFetchedProduct.name ?? '').trim()}
-              readOnly
-                    style={{ background: 'rgba(255,255,255,0.03)', cursor: 'default' }}
-            />
-            </div>
-                <div className="col-md-6">
-                  <label className="form-label" htmlFor="wb-brand">Бренд (WB)</label>
-                  <input
-                    id="wb-brand"
-                    type="text"
-                    className="form-control form-control-sm"
-                    value={String(wbFetchedProduct.brand ?? '').trim()}
-                    readOnly
-                    style={{ background: 'rgba(255,255,255,0.03)', cursor: 'default' }}
-                  />
-          </div>
-        </div>
-              <div className="mt-3">
-                <label className="form-label" htmlFor="wb-desc">Описание (WB)</label>
-                <textarea
-                  id="wb-desc"
-                  className="form-control form-control-sm"
-                  rows="4"
-                  value={String(wbFetchedProduct.description ?? wbFetchedProduct.descriptionRu ?? '').trim()}
-                  readOnly
-                  style={{ background: 'rgba(255,255,255,0.03)', cursor: 'default' }}
-                />
-              </div>
-              <div className="row g-3 mt-1">
-                <div className="col-md-3">
-                  <label className="form-label" htmlFor="wb-weight">Вес (WB)</label>
-            <input
-                    id="wb-weight"
-              type="number"
-                    className="form-control form-control-sm"
-                    value={wbFetchedProduct?.dimensions?.weightBrutto != null ? String(wbFetchedProduct.dimensions.weightBrutto) : ''}
-                    readOnly
-                    style={{ background: 'rgba(255,255,255,0.03)', cursor: 'default' }}
-            />
-          </div>
-                <div className="col-md-3">
-                  <label className="form-label" htmlFor="wb-length">Длина (WB)</label>
-            <input
-                    id="wb-length"
-              type="number"
-                    className="form-control form-control-sm"
-                    value={wbFetchedProduct?.dimensions?.length != null ? String(wbFetchedProduct.dimensions.length) : ''}
-                    readOnly
-                    style={{ background: 'rgba(255,255,255,0.03)', cursor: 'default' }}
-            />
-          </div>
-                <div className="col-md-3">
-                  <label className="form-label" htmlFor="wb-width">Ширина (WB)</label>
-            <input
-                    id="wb-width"
-              type="number"
-                    className="form-control form-control-sm"
-                    value={wbFetchedProduct?.dimensions?.width != null ? String(wbFetchedProduct.dimensions.width) : ''}
-                    readOnly
-                    style={{ background: 'rgba(255,255,255,0.03)', cursor: 'default' }}
-            />
-          </div>
-                <div className="col-md-3">
-                  <label className="form-label" htmlFor="wb-height">Высота (WB)</label>
-                  <input
-                    id="wb-height"
-                    type="number"
-                    className="form-control form-control-sm"
-                    value={wbFetchedProduct?.dimensions?.height != null ? String(wbFetchedProduct.dimensions.height) : ''}
-                    readOnly
-                    style={{ background: 'rgba(255,255,255,0.03)', cursor: 'default' }}
-                  />
-        </div>
-      </div>
-
-              {Array.isArray(wbFetchedProduct.photos) && wbFetchedProduct.photos.length > 0 && (
-                <div style={{ marginTop: '12px' }}>
-                  <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '6px' }}>
-                    Фото WB: {wbFetchedProduct.photos.length}
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                    {wbFetchedProduct.photos.slice(0, 6).map((ph, idx) => {
-                      const src = ph?.square || ph?.tm || ph?.c246x328 || ph?.big || ph?.hq;
-                      if (!src) return null;
-                      return (
-                        <a key={idx} href={src} target="_blank" rel="noreferrer" style={{ display: 'inline-block' }}>
-                          <img
-                            src={src}
-                            alt={`wb-${idx}`}
-                            style={{ width: '56px', height: '56px', objectFit: 'cover', borderRadius: '8px', border: '1px solid rgba(203, 17, 171, 0.18)' }}
-                          />
-                        </a>
-                      );
-                    })}
-                    {wbFetchedProduct.photos.length > 6 && (
-                      <div style={{ fontSize: '11px', color: 'var(--muted)', alignSelf: 'center' }}>
-                        …ещё {wbFetchedProduct.photos.length - 6}
-                      </div>
-                    )}
-                  </div>
-        </div>
-      )}
-
-              {Array.isArray(wbFetchedProduct.sizes) && wbFetchedProduct.sizes.length > 0 && (
-                <div style={{ marginTop: '12px' }}>
-                  <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '6px' }}>
-                    Размеры/SKU WB: {wbFetchedProduct.sizes.length}
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px' }}>
-                    {wbFetchedProduct.sizes.slice(0, 8).map((s, idx) => {
-                      const skus = Array.isArray(s?.skus) ? s.skus.map((x) => String(x)).filter(Boolean) : [];
-                      return (
-                        <div key={idx} style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 14px' }}>
-                          {s?.chrtID != null && <span><span style={{ color: 'var(--muted)' }}>chrtID:</span> {s.chrtID}</span>}
-                          {s?.techSize != null && <span><span style={{ color: 'var(--muted)' }}>techSize:</span> {String(s.techSize)}</span>}
-                          {s?.wbSize != null && String(s.wbSize) !== '' && <span><span style={{ color: 'var(--muted)' }}>wbSize:</span> {String(s.wbSize)}</span>}
-                          {skus.length > 0 && <span><span style={{ color: 'var(--muted)' }}>skus:</span> {skus.join(', ')}</span>}
-                        </div>
-                      );
-                    })}
-                    {wbFetchedProduct.sizes.length > 8 && (
-                      <div style={{ fontSize: '11px', color: 'var(--muted)' }}>… и ещё {wbFetchedProduct.sizes.length - 8}</div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '8px' }}>
-                Примечание: `needKiz`, `photos`, `sizes/skus` и прочие служебные поля WB сохраняются в “сыром ответе” (кнопка «Все поля»). В ERP мы редактируем то, что реально используется: название/описание/бренд/упаковка/баркоды и характеристики.
-              </div>
-              </div>
-            </div>
-          )}
-
-          {Array.isArray(wbFetchedProduct?.characteristics) && wbFetchedProduct.characteristics.length > 0 && (
-            <div className="card mt-3">
-              <div className="card-header">Атрибуты WB (характеристики категории)</div>
-              <div className="card-body">
-              <div className="row g-3">
-                {wbFetchedProduct.characteristics.map((c) => {
-                  const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
-                  const name = c?.name ?? c?.characteristic_name ?? (id != null ? `ID ${id}` : 'Характеристика');
-                  const key = id != null ? String(id) : String(name);
-                  const fromApi = Array.isArray(c?.value) ? c.value : (c?.value ?? '');
-                  const value = wbAttributeValues[key] ?? fromApi;
-                  const display = (() => {
-                    if (Array.isArray(value)) return value.map((v) => (v == null ? '' : String(v))).join('; ');
-                    if (value != null && typeof value === 'object') {
-                      try { return JSON.stringify(value); } catch (_) { return String(value); }
-                    }
-                    return value == null ? '' : String(value);
-                  })();
-                  return (
-                    <div key={key} className="col-12 col-md-6 col-lg-4">
-                      <label className="form-label" htmlFor={`wb-attr-${key}`}>
-                        {name} <span style={{ fontSize: '11px', color: 'var(--muted)' }}>(WB)</span>
-                      </label>
-                      <input
-                        id={`wb-attr-${key}`}
-                        type="text"
-                        className="form-control form-control-sm"
-                        value={display}
-                        onChange={(e) => setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))}
-                      />
+                <>
+                  {wbCategoryAttributesError && (
+                    <div className="alert alert-warning py-2 mb-2" style={{ fontSize: '12px' }}>
+                      Схема категории WB недоступна ({wbCategoryAttributesError}). Показаны характеристики из загруженной карточки.
                     </div>
-                  );
-                })}
-              </div>
+                  )}
+                  {wbCategoryAttributesLoading && wbCategoryAttributes.length === 0 && !(Array.isArray(wbFetchedProduct?.characteristics) && wbFetchedProduct.characteristics.length > 0) ? (
+                    <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка атрибутов категории WB…</div>
+                  ) : wbCategoryAttributes.length > 0 ? (
+                    <div className="row g-3">
+                      {wbCategoryAttributes.map((a) => {
+                        const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
+                        const key = id != null ? String(id) : String(a?.name || '');
+                        const name = a?.name ?? a?.charcName ?? a?.characteristic_name ?? (key ? `ID ${key}` : 'Характеристика');
+                        const required = Boolean(a?.required ?? a?.isRequired ?? a?.is_required);
+                        const value = wbAttributeValues[key] ?? '';
+                        return (
+                          <div key={key} className="col-12 col-md-6 col-lg-4">
+                            <label className="form-label" htmlFor={`wb-cat-attr-${key}`}>
+                              {name}
+                              {required ? <span style={{ color: '#ef4444' }}> *</span> : null}
+                            </label>
+                            <input
+                              id={`wb-cat-attr-${key}`}
+                              type="text"
+                              className="form-control form-control-sm"
+                              value={value}
+                              onChange={(e) => setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : Array.isArray(wbFetchedProduct?.characteristics) && wbFetchedProduct.characteristics.length > 0 ? (
+                    <div className="row g-3">
+                      {wbFetchedProduct.characteristics.map((c) => {
+                        const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
+                        const name = c?.name ?? c?.characteristic_name ?? (id != null ? `ID ${id}` : 'Характеристика');
+                        const key = id != null ? String(id) : String(name);
+                        const fromApi = Array.isArray(c?.value) ? c.value : (c?.value ?? '');
+                        const value = wbAttributeValues[key] ?? fromApi;
+                        const display = (() => {
+                          if (Array.isArray(value)) return value.map((v) => (v == null ? '' : String(v))).join('; ');
+                          if (value != null && typeof value === 'object') {
+                            try { return JSON.stringify(value); } catch (_) { return String(value); }
+                          }
+                          return value == null ? '' : String(value);
+                        })();
+                        return (
+                          <div key={key} className="col-12 col-md-6 col-lg-4">
+                            <label className="form-label" htmlFor={`wb-attr-${key}`}>
+                              {name}
+                            </label>
+                            <input
+                              id={`wb-attr-${key}`}
+                              type="text"
+                              className="form-control form-control-sm"
+                              value={display}
+                              onChange={(e) => setWbAttributeValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : !wbSubjectId || wbSubjectId <= 0 ? (
+                    <div className="alert alert-warning py-2 mb-0" style={{ fontSize: '12px' }}>
+                      Нет сопоставления WB в категории и карточка ещё не загружена. Заполните <code>marketplace_mappings.wb</code> или нажмите «Обновить данные с WB».
+                    </div>
+                  ) : (
+                    <div className="text-muted" style={{ fontSize: '12px' }}>
+                      Нет характеристик. Загрузите карточку с WB или проверьте сопоставление категории.
+                    </div>
+                  )}
+                </>
+              )}
               <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '8px' }}>
-                Эти значения сохраняются в товаре как `wb_attributes` (аналогично `ozon_attributes`) и не создают отдельные атрибуты ERP.
-              </div>
+                Сохраняются как <code>wb_attributes</code>. Название, описание и бренд — в блоке «Текст карточки» выше.
               </div>
             </div>
-          )}
+          </div>
 
         </div>
       )}
