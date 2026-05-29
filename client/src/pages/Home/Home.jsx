@@ -3,18 +3,17 @@
  * Главная страница приложения
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { PageTitle } from '../../components/layout/PageTitle/PageTitle';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { useProducts } from '../../hooks/useProducts';
-import { useOrders } from '../../hooks/useOrders';
+import { productsApi } from '../../services/products.api.js';
+import { ordersApi } from '../../services/orders.api';
 import { questionsApi } from '../../services/questions.api';
 import { integrationsApi } from '../../services/integrations.api';
 import { MarketplaceInventorySummary } from '../../components/MarketplaceInventorySummary/MarketplaceInventorySummary.jsx';
-import { countOrderGroupsWithStatuses } from '../../utils/orderListGroupKey';
 import './Home.css';
 
 /** Плашка «Нужно обработать»: новые + на сборке (ещё не «Собран») */
@@ -58,62 +57,41 @@ function formatRubAmountInt(n) {
   }).format(Math.round(n));
 }
 
-function categoryLabel(p) {
-  const name = (p.category_name || p.categoryName || '').trim();
-  if (name) return name;
-  return 'Без категории';
-}
-
-function aggregateStocksByCategory(products) {
-  const list = Array.isArray(products) ? products : [];
-  const map = new Map();
-  let totalQty = 0;
-  let totalCostSum = 0;
-
-  for (const p of list) {
-    const qty = Math.max(0, Number(p.quantity) || 0);
-    const unitCost = p.cost != null && p.cost !== '' ? Number(p.cost) : null;
-    const lineCost = unitCost != null && Number.isFinite(unitCost) ? qty * unitCost : 0;
-
-    totalQty += qty;
-    totalCostSum += lineCost;
-
-    const cid =
-      p.categoryId != null && String(p.categoryId).trim() !== ''
-        ? String(p.categoryId)
-        : '_none';
-    const label = categoryLabel(p);
-
-    if (!map.has(cid)) {
-      map.set(cid, { categoryId: cid, name: label, qty: 0, costSum: 0 });
-    }
-    const row = map.get(cid);
-    row.qty += qty;
-    row.costSum += lineCost;
-  }
-
-  const rows = [...map.values()].sort((a, b) =>
-    a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' })
-  );
-
-  return { rows, totalQty, totalCostSum };
-}
-
-/** Позиций с ненулевым остатком на складе */
-function countSkusWithStock(products) {
-  const list = Array.isArray(products) ? products : [];
-  return list.filter((p) => (Number(p.quantity) || 0) > 0).length;
-}
-
 export function Home() {
   const { isAccountAdmin, user, profileId } = useAuth();
-  const { products, loading, error, loadProducts } = useProducts();
-  const { orders, loading: ordersLoading, error: ordersError } = useOrders();
+  const [needProcessOrderCount, setNeedProcessOrderCount] = useState(0);
+  const [ordersLoading, setOrdersLoading] = useState(true);
+  const [ordersError, setOrdersError] = useState(null);
+  const [stockSummary, setStockSummary] = useState(null);
+  const [stockSummaryLoading, setStockSummaryLoading] = useState(true);
+  const [stockSummaryError, setStockSummaryError] = useState(null);
   const [stockDetailOpen, setStockDetailOpen] = useState(false);
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
   const [balanceData, setBalanceData] = useState(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [balanceError, setBalanceError] = useState(null);
+
+  const loadOrderNeedProcessCount = useCallback(async () => {
+    setOrdersLoading(true);
+    setOrdersError(null);
+    try {
+      const counts = await ordersApi.getStatusCounts();
+      const sum = ORDER_NEED_PROCESS_STATUSES.reduce(
+        (acc, st) => acc + (Number(counts?.[st]) || 0),
+        0
+      );
+      setNeedProcessOrderCount(sum);
+    } catch (e) {
+      setOrdersError(e?.message || 'Не удалось загрузить счётчик заказов');
+      setNeedProcessOrderCount(0);
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOrderNeedProcessCount();
+  }, [profileId, loadOrderNeedProcessCount]);
 
   const loadQuestionsStats = useCallback(async () => {
     if (user?.profileId == null || user?.profileId === '') {
@@ -170,22 +148,37 @@ export function Home() {
     loadMarketplaceBalances();
   }, [loadMarketplaceBalances]);
 
+  const loadStockSummary = useCallback(() => {
+    setStockSummaryLoading(true);
+    setStockSummaryError(null);
+    return productsApi
+      .getHomeStockSummary()
+      .then((data) => setStockSummary(data || null))
+      .catch((e) => {
+        setStockSummaryError(
+          e?.response?.data?.message || e?.message || 'Не удалось загрузить сводку остатков'
+        );
+        setStockSummary(null);
+      })
+      .finally(() => setStockSummaryLoading(false));
+  }, []);
+
+  useEffect(() => {
+    loadStockSummary();
+  }, [profileId, loadStockSummary]);
+
   /** col-12 — ниже md плашки в столбик; иначе без xs-класса третья колонка могла обрезаться/уезжать за край */
   const widgetColClass = isAccountAdmin
     ? 'col-12 col-md-6 col-xl-3'
     : 'col-12 col-md-6 col-xl-4';
 
-  const needProcessOrderCount = useMemo(
-    () => countOrderGroupsWithStatuses(orders, ORDER_NEED_PROCESS_STATUSES),
-    [orders]
-  );
-
-  const { rows, totalQty, totalCostSum } = useMemo(
-    () => aggregateStocksByCategory(products),
-    [products]
-  );
-
-  const stockPositionsCount = useMemo(() => countSkusWithStock(products), [products]);
+  const rows = stockSummary?.rows ?? [];
+  const totalQty = Number(stockSummary?.totalQty) || 0;
+  const totalCostSum = Number(stockSummary?.totalCostSum) || 0;
+  const stockPositionsCount = Number(stockSummary?.skusWithStock) || 0;
+  const totalProductsCount = Number(stockSummary?.totalProducts) || 0;
+  const stockLoading = stockSummaryLoading;
+  const stockError = stockSummaryError;
 
   return (
     <div>
@@ -216,7 +209,7 @@ export function Home() {
               </div>
               <div className="widget-content-right">
                 <div className="widget-numbers text-white">
-                  <span>{loading ? '…' : formatQty(products.length)}</span>
+                  <span>{stockLoading ? '…' : formatQty(totalProductsCount)}</span>
                 </div>
               </div>
             </div>
@@ -282,7 +275,7 @@ export function Home() {
                   <div className="widget-heading">Остатки</div>
                 </div>
                 <div className="widget-numbers text-white home-stock-plate-col-center">
-                  {loading ? '…' : error ? '—' : (
+                  {stockLoading ? '…' : stockError ? '—' : (
                     <>
                       <span className="home-stock-plate-num">{formatQty(totalQty)}</span>
                       <span className="home-stock-plate-suffix"> шт</span>
@@ -290,7 +283,7 @@ export function Home() {
                   )}
                 </div>
                 <div className="widget-numbers text-white home-stock-plate-col-right">
-                  {loading ? '…' : error ? '—' : (() => {
+                  {stockLoading ? '…' : stockError ? '—' : (() => {
                     const amt = formatRubAmountInt(totalCostSum);
                     return amt == null ? '—' : (
                       <>
@@ -507,23 +500,23 @@ export function Home() {
         >
           <div className="home-stock-modal-total mb-3" role="status">
             <strong>Итого по себестоимости:</strong>{' '}
-            {loading ? '…' : error ? '—' : formatRub(totalCostSum)}
+            {stockLoading ? '…' : stockError ? '—' : formatRub(totalCostSum)}
             <span className="text-muted ms-2">
-              · единиц: {loading ? '…' : formatQty(totalQty)}
+              · единиц: {stockLoading ? '…' : formatQty(totalQty)}
               {' · '}
-              позиций с остатком: {loading ? '…' : formatQty(stockPositionsCount)}
+              позиций с остатком: {stockLoading ? '…' : formatQty(stockPositionsCount)}
             </span>
           </div>
-          {error && (
+          {stockError && (
             <div className="alert alert-danger d-flex flex-wrap align-items-center gap-2" role="alert">
-              {error}
-              <Button type="button" variant="secondary" size="small" onClick={() => loadProducts()}>
+              {stockError}
+              <Button type="button" variant="secondary" size="small" onClick={() => loadStockSummary()}>
                 Повторить
               </Button>
             </div>
           )}
-          {!error && loading && <div className="text-muted">Загрузка…</div>}
-          {!error && !loading && (
+          {!stockError && stockLoading && <div className="text-muted">Загрузка…</div>}
+          {!stockError && !stockLoading && (
             <div className="table-responsive">
               <table className="align-middle mb-0 table table-striped table-hover">
                 <thead>

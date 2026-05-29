@@ -28,10 +28,10 @@ function isOrdersFbsSyncEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
-/** Cron (node-cron, Europe/Moscow). По умолчанию каждые 2 мин; переопределение: ORDERS_FBS_SYNC_CRON */
+/** Cron (node-cron, Europe/Moscow). По умолчанию каждые 5 мин; переопределение: ORDERS_FBS_SYNC_CRON */
 function getOrdersFbsSyncCronExpression() {
   const c = process.env.ORDERS_FBS_SYNC_CRON;
-  return c && String(c).trim() ? String(c).trim() : '*/2 * * * *';
+  return c && String(c).trim() ? String(c).trim() : '*/5 * * * *';
 }
 
 /** Фоновая синхронизация отзывов (Ozon/WB/Яндекс). Выкл: REVIEWS_SYNC_ENABLED=0 */
@@ -443,6 +443,11 @@ class SchedulerService {
       const ordersFbsCron = getOrdersFbsSyncCronExpression();
       if (isOrdersFbsSyncEnabled()) {
         ordersFbsSyncJob = cron.schedule(ordersFbsCron, async () => {
+          const syncStatus = ordersSyncService.getSyncFbsStatus();
+          if (syncStatus.inProgress) {
+            logger.info('[Scheduler] FBS orders sync: пропуск — предыдущий прогон ещё выполняется');
+            return;
+          }
           logger.info('[Scheduler] FBS orders sync (cron)...');
           try {
             // force: иначе при синке <1 мин назад (UI/другой поток) вернётся кэш без запросов к МП — новые заказы не подтянутся
@@ -565,7 +570,7 @@ class SchedulerService {
           job: ordersFbsSyncJob,
           schedule: ordersFbsCron,
           description:
-            'Синхронизация FBS-заказов (Ozon, WB, Яндекс). Интервал: ORDERS_FBS_SYNC_CRON, по умолчанию */2 * * * *'
+            'Синхронизация FBS-заказов (Ozon, WB, Яндекс). Интервал: ORDERS_FBS_SYNC_CRON, по умолчанию */5 * * * *'
         });
       }
 
@@ -824,6 +829,11 @@ class SchedulerService {
 
     const run = async () => {
       try {
+        const syncStatus = ordersSyncService.getSyncFbsStatus();
+        if (syncStatus.inProgress) {
+          logger.info('[Scheduler] FBS orders sync: пропуск — предыдущий прогон ещё выполняется');
+          return;
+        }
         logger.info('[Scheduler] FBS orders sync (server background)...');
         const out = await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
         if (out?.rateLimited) {

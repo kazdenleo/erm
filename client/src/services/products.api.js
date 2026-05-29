@@ -7,6 +7,12 @@ import api from './api.js';
 import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
 
 export const productsApi = {
+  /** Сводка остатков по категориям для главной (лёгкий SQL на сервере). */
+  getHomeStockSummary: async () => {
+    const response = await api.get('/products/home-stock-summary');
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Получить все товары
    * @param {object} [options] - options.cacheBust = true добавляет _t=timestamp чтобы не брать кэш (актуальные сохранённые цены)

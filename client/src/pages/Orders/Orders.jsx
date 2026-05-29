@@ -352,7 +352,7 @@ async function resolvePurchaseLinesByCatalogSku(lines) {
   const need = lines.filter((l) => !l.productId && l.article && l.article !== '—');
   if (need.length === 0) return lines;
   try {
-    const data = await productsApi.getAll({ cacheBust: true });
+    const data = await productsApi.getAll({ cacheBust: true, limit: 500, listView: 'stock' });
     const products = Array.isArray(data) ? data : data?.data ?? data?.products ?? [];
     if (!Array.isArray(products) || products.length === 0) return lines;
     const bySku = new Map();
@@ -542,7 +542,7 @@ export function Orders() {
 
   useEffect(() => {
     if (addOrderOpen && productsList.length === 0) {
-      productsApi.getAll().then((data) => {
+      productsApi.getAll({ limit: 500 }).then((data) => {
         const list = Array.isArray(data) ? data : data?.data ?? data?.products ?? [];
         setProductsList(list);
       }).catch(() => setProductsList([]));

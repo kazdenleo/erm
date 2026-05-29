@@ -6,6 +6,7 @@
 import { Pool } from 'pg';
 import config from '../config/index.js';
 import logger from '../utils/logger.js';
+import ordersSyncService from '../services/orders.sync.service.js';
 
 let serverStartTime = Date.now();
 let dbPool = null;
@@ -76,6 +77,7 @@ export async function getHealth(req, res) {
   const uptime = Math.floor((Date.now() - serverStartTime) / 1000);
   const dbHealth = await checkDatabase();
 
+  const ordersSync = ordersSyncService.getSyncFbsStatus();
   const health = {
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -86,6 +88,11 @@ export async function getHealth(req, res) {
     services: {
       server: { status: 'ok' },
       database: dbHealth,
+      ordersFbsSync: {
+        inProgress: Boolean(ordersSync.inProgress),
+        lastSyncError: ordersSync.lastSyncError ?? null,
+        syncStartedAt: ordersSync.syncStartedAt ?? null,
+      },
     },
   };
 

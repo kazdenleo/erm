@@ -426,10 +426,14 @@ class OrdersSyncService {
     /** Если синк WB прошёл — множество id из /api/v3/orders/new (иначе null, правило не трогаем). */
     let wbNewIdsThisSync = null;
 
-    // Чтобы "все" заказы попадали в систему, запрашиваем широкий период.
-    // (WB API /api/v3/orders возвращает без текущего статуса — статус догружаем отдельно.)
-    // Ручной импорт: короче период (быстрее на VPS). Планировщик — полный год.
-    const syncDaysBack = fromScheduler ? 365 : refreshStatuses ? 90 : 45;
+    // Чтобы заказы попадали в систему, запрашиваем период назад.
+    // Ручной импорт: короче (быстрее на VPS). Планировщик: ORDERS_FBS_SYNC_SCHEDULER_DAYS_BACK (по умолчанию 60, не 365).
+    const schedulerDays = (() => {
+      const n = Number(process.env.ORDERS_FBS_SYNC_SCHEDULER_DAYS_BACK);
+      if (Number.isFinite(n) && n > 0) return Math.min(365, Math.floor(n));
+      return 60;
+    })();
+    const syncDaysBack = fromScheduler ? schedulerDays : refreshStatuses ? 90 : 45;
     const WB_DAYS_BACK = syncDaysBack;
     const OZON_DAYS_BACK = syncDaysBack;
 

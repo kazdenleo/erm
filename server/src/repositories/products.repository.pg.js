@@ -2238,6 +2238,59 @@ class ProductsRepositoryPG {
     const result = await query(sql, params);
     return parseInt(result.rows[0].total);
   }
+
+  /**
+   * Сводка остатков для главной страницы (агрегация в SQL, без полной выгрузки каталога).
+   */
+  async getHomeStockSummary(profileId = null) {
+    const params = [];
+    let where = 'WHERE COALESCE(p.is_archived, false) = false';
+    if (profileId != null && profileId !== '') {
+      params.push(profileId);
+      where += ' AND p.profile_id = $1';
+    }
+    const rowsRes = await query(
+      `SELECT COALESCE(p.user_category_id::text, '_none') AS category_id,
+              COALESCE(uc.name, 'Без категории') AS category_name,
+              COALESCE(SUM(GREATEST(COALESCE(p.quantity, 0), 0)), 0)::bigint AS qty,
+              COALESCE(SUM(GREATEST(COALESCE(p.quantity, 0), 0) * COALESCE(p.cost, 0)), 0) AS cost_sum
+       FROM products p
+       LEFT JOIN user_categories uc ON uc.id = p.user_category_id
+       ${where}
+       GROUP BY p.user_category_id, uc.name
+       ORDER BY category_name`,
+      params
+    );
+    const skusRes = await query(
+      `SELECT COUNT(*)::int AS skus_with_stock
+       FROM products p
+       ${where} AND COALESCE(p.quantity, 0) > 0`,
+      params
+    );
+    const totalRes = await query(
+      `SELECT COUNT(*)::int AS total_products FROM products p ${where}`,
+      params
+    );
+    const rows = rowsRes.rows || [];
+    let totalQty = 0;
+    let totalCostSum = 0;
+    for (const r of rows) {
+      totalQty += Number(r.qty) || 0;
+      totalCostSum += Number(r.cost_sum) || 0;
+    }
+    return {
+      rows: rows.map((r) => ({
+        categoryId: r.category_id,
+        name: r.category_name,
+        qty: Number(r.qty) || 0,
+        costSum: Number(r.cost_sum) || 0,
+      })),
+      totalQty,
+      totalCostSum,
+      skusWithStock: Number(skusRes.rows[0]?.skus_with_stock) || 0,
+      totalProducts: Number(totalRes.rows[0]?.total_products) || 0,
+    };
+  }
 }
 
 export default new ProductsRepositoryPG();

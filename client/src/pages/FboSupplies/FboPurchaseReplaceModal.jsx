@@ -4,7 +4,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { productsApi } from '../../services/products.api';
-import { useProducts } from '../../hooks/useProducts';
 import { Modal } from '../../components/common/Modal/Modal';
 import { Button } from '../../components/common/Button/Button';
 import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
@@ -57,7 +56,6 @@ function mergeProductLists(...lists) {
 }
 
 export function FboPurchaseReplaceModal({ context, saving, onClose, onConfirm }) {
-  const { products } = useProducts();
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -82,17 +80,15 @@ export function FboPurchaseReplaceModal({ context, saving, onClose, onConfirm })
       setSearchLoading(false);
       return undefined;
     }
-    const local = matchProductsLocal(products, q);
-    if (local.length) setSearchResults(local);
     let cancelled = false;
     const timer = setTimeout(async () => {
       setSearchLoading(true);
       try {
         const res = await productsApi.getAll({ search: q, limit: 40 });
         const remote = Array.isArray(res?.data) ? res.data : [];
-        if (!cancelled) setSearchResults(mergeProductLists(local, remote));
+        if (!cancelled) setSearchResults(mergeProductLists([], remote));
       } catch {
-        if (!cancelled) setSearchResults(local);
+        if (!cancelled) setSearchResults([]);
       } finally {
         if (!cancelled) setSearchLoading(false);
       }
@@ -101,7 +97,7 @@ export function FboPurchaseReplaceModal({ context, saving, onClose, onConfirm })
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [context, search, products]);
+  }, [context, search]);
 
   const pickProduct = useCallback((p) => {
     setSelectedProduct(p);

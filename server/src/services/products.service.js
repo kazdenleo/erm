@@ -152,6 +152,42 @@ class ProductsService {
     return this._attachParticipationFlags(items);
   }
 
+  /** Сводка остатков по категориям для главной (без загрузки всего каталога). */
+  async getHomeStockSummary(options = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const list = await this.getAll(options);
+      let totalQty = 0;
+      let totalCostSum = 0;
+      let skusWithStock = 0;
+      const map = new Map();
+      for (const p of list) {
+        const qty = Math.max(0, Number(p.quantity) || 0);
+        const unitCost = p.cost != null && p.cost !== '' ? Number(p.cost) : null;
+        const lineCost = unitCost != null && Number.isFinite(unitCost) ? qty * unitCost : 0;
+        totalQty += qty;
+        totalCostSum += lineCost;
+        if (qty > 0) skusWithStock += 1;
+        const cid =
+          p.user_category_id != null && String(p.user_category_id).trim() !== ''
+            ? String(p.user_category_id)
+            : '_none';
+        const label = (p.category_name || p.categoryName || 'Без категории').trim() || 'Без категории';
+        if (!map.has(cid)) map.set(cid, { categoryId: cid, name: label, qty: 0, costSum: 0 });
+        const row = map.get(cid);
+        row.qty += qty;
+        row.costSum += lineCost;
+      }
+      return {
+        rows: [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+        totalQty,
+        totalCostSum,
+        skusWithStock,
+      };
+    }
+    const profileId = options.profileId ?? options.profile_id ?? null;
+    return this.repository.getHomeStockSummary(profileId);
+  }
+
   _isStockListInStockOnly(options = {}) {
     return (
       options.inStockOnly === true ||

@@ -110,6 +110,10 @@ async function processAssemblyShipmentsInBackground(orderIds, { profileId, organ
   }
 }
 
+/** Без limit — не отдаём весь список (риск 504 на VPS при большом каталоге заказов). */
+const ORDER_LIST_DEFAULT_LIMIT = 200;
+const ORDER_LIST_MAX_LIMIT = 500;
+
 class OrdersController {
   async getAll(req, res, next) {
     try {
@@ -123,8 +127,14 @@ class OrdersController {
       const search = req.query?.search ? String(req.query.search).trim() : null;
       const limitRaw = req.query?.limit;
       const offsetRaw = req.query?.offset;
-      const limit = limitRaw != null ? Number(limitRaw) : null;
+      let limit = limitRaw != null ? Number(limitRaw) : null;
       const offset = offsetRaw != null ? Number(offsetRaw) : 0;
+      let hasPaging = Number.isFinite(limit) && limit > 0;
+      if (!hasPaging) {
+        limit = ORDER_LIST_DEFAULT_LIMIT;
+        hasPaging = true;
+      }
+      if (limit > ORDER_LIST_MAX_LIMIT) limit = ORDER_LIST_MAX_LIMIT;
       let excludeManual = false;
       if (tid != null) {
         const prof = await profilesRepo.findById(tid);
@@ -136,10 +146,9 @@ class OrdersController {
         ...(marketplace ? { marketplace } : {}),
         ...(status ? { status } : {}),
         ...(search ? { search } : {}),
-        ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+        limit,
         ...(Number.isFinite(offset) && offset > 0 ? { offset } : {}),
       };
-      const hasPaging = Number.isFinite(limit) && limit > 0;
       const fullReserveEnrich = req.query?.enrichReserve === 'full';
       const listOptions = {
         ...options,

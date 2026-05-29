@@ -36,6 +36,12 @@ router.put(
   wrapAsync(productsController.replaceAll.bind(productsController))
 );
 
+// Сводка остатков для главной (до /)
+router.get(
+  '/home-stock-summary',
+  wrapAsync(productsController.getHomeStockSummary.bind(productsController))
+);
+
 // Получить все товары
 router.get('/', wrapAsync(productsController.getAll.bind(productsController)));
 

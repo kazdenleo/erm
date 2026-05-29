@@ -14,6 +14,9 @@ import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfi
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 
 const STOCK_LIST_DEFAULT_LIMIT = 50;
+/** Без limit в запросе — не отдаём весь каталог (риск 504 на VPS). Исключение: forExport=1 */
+const PRODUCT_LIST_DEFAULT_LIMIT = 200;
+const PRODUCT_LIST_MAX_LIMIT = 500;
 const STOCK_LIST_MAX_LIMIT = 200;
 
 /** Запрос со страницы «Остатки» (старый фронт без listView=stock). */
@@ -236,10 +239,22 @@ class ProductsController {
       if (isStockList) {
         options.listView = 'stock';
       }
+      const forExport =
+        req.query.forExport === 'true' ||
+        req.query.forExport === '1' ||
+        req.query.forExport === 1;
       let hasPaging = req.query.limit != null || req.query.offset != null;
+      if (!hasPaging && !forExport) {
+        options.limit = PRODUCT_LIST_DEFAULT_LIMIT;
+        options.offset = 0;
+        hasPaging = true;
+      }
       if (req.query.limit != null) options.limit = parseInt(req.query.limit, 10);
       if (req.query.page != null) options.page = parseInt(req.query.page, 10);
       if (req.query.offset != null) options.offset = parseInt(req.query.offset, 10);
+      if (hasPaging && Number.isFinite(options.limit) && options.limit > PRODUCT_LIST_MAX_LIMIT) {
+        options.limit = PRODUCT_LIST_MAX_LIMIT;
+      }
       if (isStockList) {
         if (!Number.isFinite(options.limit) || options.limit <= 0) {
           options.limit = STOCK_LIST_DEFAULT_LIMIT;
@@ -314,6 +329,23 @@ class ProductsController {
             }
           : {}),
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Сводка остатков для главной (SQL-агрегат, без выгрузки всего каталога). */
+  async getHomeStockSummary(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({
+          ok: true,
+          data: { rows: [], totalQty: 0, totalCostSum: 0, skusWithStock: 0, totalProducts: 0 },
+        });
+      }
+      const data = await productsService.getHomeStockSummary(tid != null ? { profileId: tid } : {});
+      return res.status(200).json({ ok: true, data });
     } catch (error) {
       next(error);
     }

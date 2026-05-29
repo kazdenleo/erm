@@ -3,16 +3,62 @@
  * Раздел "Остатки": общий остаток, остаток поставщики, основной склад
  */
 
-import React, { useEffect, useState, useRef } from 'react';
-import { useProducts } from '../../hooks/useProducts';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
+import { productsApi } from '../../services/products.api';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { supplierStocksApi } from '../../services/supplierStocks.api';
 import { Button } from '../../components/common/Button/Button';
 import './StockLevels.css';
 
+const STOCK_PAGE_SIZE = 200;
+
+async function loadAllStockListProducts() {
+  const all = [];
+  let offset = 0;
+  for (;;) {
+    const res = await productsApi.getAll({
+      stockList: true,
+      listView: 'stock',
+      limit: STOCK_PAGE_SIZE,
+      offset,
+      cacheBust: true,
+    });
+    const chunk = Array.isArray(res?.data)
+      ? res.data
+      : Array.isArray(res?.data?.data)
+        ? res.data.data
+        : [];
+    all.push(...chunk);
+    if (chunk.length < STOCK_PAGE_SIZE) break;
+    offset += STOCK_PAGE_SIZE;
+    if (offset > 20000) break;
+  }
+  return all;
+}
+
 export function StockLevels() {
-  const { products, loading: productsLoading, error: productsError } = useProducts();
+  const [products, setProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsError, setProductsError] = useState(null);
+
+  const loadStockProducts = useCallback(async () => {
+    setProductsLoading(true);
+    setProductsError(null);
+    try {
+      const list = await loadAllStockListProducts();
+      setProducts(list);
+    } catch (e) {
+      setProductsError(e?.message || 'Ошибка загрузки товаров');
+      setProducts([]);
+    } finally {
+      setProductsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStockProducts();
+  }, [loadStockProducts]);
   const {
     warehouses,
     loading: warehousesLoading,
