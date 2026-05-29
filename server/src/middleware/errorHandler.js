@@ -102,6 +102,13 @@ export function errorHandler(err, req, res, next) {
     statusCode = 400;
     message = 'Required field is missing';
     details = err.column;
+  } else if (
+    message.includes('timeout exceeded when trying to connect') ||
+    /connection terminated|too many clients/i.test(message)
+  ) {
+    statusCode = 503;
+    message =
+      'База данных перегружена (нет свободных соединений). Подождите несколько секунд и повторите.';
   } else if (err.code === 'ECONNREFUSED') {
     statusCode = 503;
     message = 'Database connection failed';

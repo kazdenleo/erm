@@ -28,6 +28,10 @@ const configSchema = z.object({
   DB_NAME: z.string().min(1).default('erp_system'),
   DB_USER: z.string().default('admin'),
   DB_PASSWORD: z.string().default(''),
+  /** Макс. соединений пула Node → PostgreSQL (на VPS при нехватке — 30–40) */
+  DB_POOL_MAX: z.string().regex(/^\d+$/).transform(Number).optional(),
+  /** Ожидание свободного соединения из пула, мс */
+  DB_CONNECTION_TIMEOUT_MS: z.string().regex(/^\d+$/).transform(Number).optional(),
   USE_POSTGRESQL: z
     .string()
     .optional()
@@ -134,9 +138,9 @@ try {
       // Pool configuration
       pool: {
         min: 2,
-        max: 20,
+        max: parsed.DB_POOL_MAX ?? 20,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 2000,
+        connectionTimeoutMillis: parsed.DB_CONNECTION_TIMEOUT_MS ?? 10000,
       }
     },
     

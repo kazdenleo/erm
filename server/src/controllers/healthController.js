@@ -3,68 +3,36 @@
  * Проверка состояния сервера и подключений
  */
 
-import { Pool } from 'pg';
+import { query, getPoolStats } from '../config/database.js';
 import config from '../config/index.js';
 import logger from '../utils/logger.js';
 import ordersSyncService from '../services/orders.sync.service.js';
 
 let serverStartTime = Date.now();
-let dbPool = null;
-
-// Инициализация пула подключений для проверки
-// Создаем пул только если PostgreSQL включен и конфигурация корректна
-if (config.database.usePostgreSQL) {
-  try {
-    const poolConfig = {
-      host: config.database.host,
-      port: config.database.port,
-      database: config.database.name,
-      user: config.database.user,
-      max: 1, // Для health check достаточно 1 соединения
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-    };
-    
-    // Добавляем password только если он указан (не пустая строка)
-    if (config.database.password && config.database.password.trim() !== '') {
-      poolConfig.password = config.database.password;
-    }
-    
-    dbPool = new Pool(poolConfig);
-    
-    // Логируем настройки подключения (без пароля) для отладки
-    logger.debug('Health check DB pool initialized', {
-      host: config.database.host,
-      port: config.database.port,
-      database: config.database.name,
-      user: config.database.user,
-      hasPassword: !!config.database.password && config.database.password.trim() !== '',
-    });
-  } catch (error) {
-    logger.warn('Failed to initialize DB pool for health check:', error);
-    dbPool = null;
-  }
-}
 
 /**
- * Проверка подключения к базе данных
+ * Проверка подключения к базе данных (общий пул приложения, без второго Pool).
  */
 async function checkDatabase() {
-  if (!config.database.usePostgreSQL || !dbPool) {
+  if (!config.database.usePostgreSQL) {
     return { status: 'skipped', message: 'PostgreSQL not configured' };
   }
 
   try {
-    const client = await dbPool.connect();
-    await client.query('SELECT 1');
-    client.release();
-    return { status: 'ok', message: 'Database connection successful' };
+    await query('SELECT 1');
+    const pool = getPoolStats();
+    return {
+      status: 'ok',
+      message: 'Database connection successful',
+      ...(pool ? { pool } : {}),
+    };
   } catch (error) {
     logger.error('Database health check failed:', error);
     return {
       status: 'error',
       message: 'Database connection failed',
       error: error.message,
+      pool: getPoolStats(),
     };
   }
 }
@@ -84,7 +52,7 @@ export async function getHealth(req, res) {
     uptime: `${uptime}s`,
     environment: config.nodeEnv,
     version: '1.0.0',
-    build: '2026-05-28-procure-from-orders',
+    build: '2026-05-29-db-pool',
     services: {
       server: { status: 'ok' },
       database: dbHealth,
@@ -96,9 +64,7 @@ export async function getHealth(req, res) {
     },
   };
 
-  // Если база данных недоступна, возвращаем 503
   const httpStatus = dbHealth.status === 'ok' || dbHealth.status === 'skipped' ? 200 : 503;
 
   res.status(httpStatus).json(health);
 }
-

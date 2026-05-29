@@ -845,8 +845,8 @@ export function Orders() {
     }
   };
 
-  // Фон на сервере подтягивает заказы в БД (ORDERS_FBS_SYNC_CRON). На клиенте: через 2 с — тихий sync;
-  // далее каждые 2 мин GET /orders. Пока включена пауза — таймеры не ставим (статусы не «прыгают» во время сборки).
+  // Фон на сервере подтягивает заказы (ORDERS_FBS_SYNC_CRON). На клиенте — только обновление списка,
+  // без POST /sync-fbs (иначе пул БД забивается параллельно с cron и десятками GET при открытии страницы).
   useEffect(() => {
     if (!ordersAutoSyncPauseLoaded || ordersAutoSyncPaused) return undefined;
     let mounted = true;
@@ -854,8 +854,8 @@ export function Orders() {
 
     const t0 = setTimeout(() => {
       if (!mounted) return;
-      runSync(true, { force: false });
-    }, 2000);
+      reloadOrders({ silent: true });
+    }, 5000);
 
     const poll = setInterval(() => {
       if (!mounted) return;

@@ -146,6 +146,17 @@ export async function transaction(callback) {
   }
 }
 
+/** Статистика пула (для /health и диагностики перегрузки). */
+export function getPoolStats() {
+  if (!pool) return null;
+  return {
+    total: pool.totalCount,
+    idle: pool.idleCount,
+    waiting: pool.waitingCount,
+    max: pool.options?.max ?? null,
+  };
+}
+
 /**
  * Функция для проверки подключения
  */
