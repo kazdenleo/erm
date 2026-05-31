@@ -14,6 +14,53 @@ import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 import ordersService from './orders.service.js';
 import logger from '../utils/logger.js';
+import { runWithProductStockLock } from './stockMovements.service.js';
+
+const PURCHASE_LOCK_TIMEOUT_MS = 60000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function purchaseTransaction(callback) {
+  return transaction(callback, {
+    lockTimeoutMs: PURCHASE_LOCK_TIMEOUT_MS,
+    statementTimeoutMs: 180000,
+  });
+}
+
+async function runWithLockRetry(fn, { attempts = 4, delayMs = 2500 } = {}) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (e?.statusCode !== 503 || i >= attempts - 1) throw e;
+      await sleep(delayMs * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
+/** «В пути» после commit — через advisory lock по товару, без конкуренции с резервом в одной транзакции. */
+async function applyIncomingDeltasAfterCommit(deltas) {
+  if (!deltas || deltas.size === 0) return;
+  const entries = [...deltas.entries()].sort((a, b) => a[0] - b[0]);
+  for (const [productId, qty] of entries) {
+    const d = Math.max(0, parseInt(qty, 10) || 0);
+    if (d <= 0) continue;
+    await runWithProductStockLock(productId, async () => {
+      await query(
+        `UPDATE products
+         SET incoming_quantity = COALESCE(incoming_quantity, 0) + $1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [d, productId]
+      );
+    });
+  }
+}
 
 // Anti-duplicate scans (in-memory): receiptId|barcode -> ts.
 // Один физический скан иногда даёт 2-3 HTTP запроса (\\n + Enter, или повтор в драйвере).
@@ -190,7 +237,7 @@ async function mergeSourceOrdersInTx(client, purchaseId, productId, newOrders) {
   const norm = normalizeSourceOrderList(newOrders);
   if (norm.length === 0) return;
   const r = await client.query(
-    `SELECT source_orders FROM purchase_items WHERE purchase_id = $1 AND product_id = $2 FOR UPDATE`,
+    `SELECT source_orders FROM purchase_items WHERE purchase_id = $1 AND product_id = $2`,
     [purchaseId, productId]
   );
   if (!r.rows?.length) return;
@@ -298,13 +345,14 @@ async function insertNewPurchaseLineItemsInTx(
   purchaseId,
   normalized,
   profileId,
-  { hasPrice, lightIncoming = false } = {}
+  { hasPrice, lightIncoming = false, deferIncomingUpdate = false } = {}
 ) {
   const merged = await mergeNormalizedPurchaseLines(normalized);
-  await applyPurchaseLineItemsInTx(client, purchaseId, merged, profileId, {
+  return applyPurchaseLineItemsInTx(client, purchaseId, merged, profileId, {
     hasPrice,
     lightIncoming,
     insertOnly: true,
+    deferIncomingUpdate,
   });
 }
 
@@ -313,9 +361,9 @@ async function applyPurchaseLineItemsInTx(
   purchaseId,
   normalized,
   profileId,
-  { hasPrice, lightIncoming = false, insertOnly = false } = {}
+  { hasPrice, lightIncoming = false, insertOnly = false, deferIncomingUpdate = false } = {}
 ) {
-  if (!normalized.length) return;
+  if (!normalized.length) return null;
 
   const pidNorm = normalizeProfileId(profileId);
   const productIds = [...new Set(normalized.map((it) => it.productId).filter(Boolean))];
@@ -386,6 +434,9 @@ async function applyPurchaseLineItemsInTx(
   }
 
   if (lightIncoming && incomingDeltas.size > 0) {
+    if (deferIncomingUpdate) {
+      return incomingDeltas;
+    }
     const batchIds = [...incomingDeltas.keys()];
     const batchQtys = batchIds.map((id) => incomingDeltas.get(id));
     await client.query(
@@ -397,6 +448,7 @@ async function applyPurchaseLineItemsInTx(
       [batchIds, batchQtys]
     );
   }
+  return null;
 }
 
 /** Снять incoming по ещё не принятой части удаляемой строки закупки. */
@@ -1261,42 +1313,44 @@ class PurchasesService {
     } = {},
     { userId, profileId } = {}
   ) {
-    const refs = Array.isArray(procurementItems) ? procurementItems : [];
+    return runWithLockRetry(async () => {
+      const refs = Array.isArray(procurementItems) ? procurementItems : [];
 
-    // Сначала закупка — иначе при таймауте заказы уже «В закупке», а документа нет.
-    let purchaseId;
-    if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
-      purchaseId = parseInt(existingPurchaseId, 10);
-      await this.appendDraftItems(purchaseId, { items }, { profileId, lightIncoming: true });
-    } else {
-      const created = await this.create(
-        { supplierId, organizationId, warehouseId, items, note },
-        { userId, profileId, lightIncoming: true }
-      );
-      purchaseId = created?.id;
-    }
+      // Сначала закупка — иначе при таймауте заказы уже «В закупке», а документа нет.
+      let purchaseId;
+      if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
+        purchaseId = parseInt(existingPurchaseId, 10);
+        await this.appendDraftItems(purchaseId, { items }, { profileId, lightIncoming: true });
+      } else {
+        const created = await this.create(
+          { supplierId, organizationId, warehouseId, items, note },
+          { userId, profileId, lightIncoming: true }
+        );
+        purchaseId = created?.id;
+      }
 
-    let procurement = { updated: 0, skipped: 0 };
-    let rowsForReserve = [];
-    if (refs.length > 0) {
-      const bulk = await ordersService.bulkSetToProcurement(refs, profileId, {
-        skipReserveReapply: true,
-      });
-      procurement = { updated: bulk.updated, skipped: bulk.skipped };
-      rowsForReserve = bulk.rows || [];
-    }
+      let procurement = { updated: 0, skipped: 0 };
+      let rowsForReserve = [];
+      if (refs.length > 0) {
+        const bulk = await ordersService.bulkSetToProcurement(refs, profileId, {
+          skipReserveReapply: true,
+        });
+        procurement = { updated: bulk.updated, skipped: bulk.skipped };
+        rowsForReserve = bulk.rows || [];
+      }
 
-    if (rowsForReserve.length > 0) {
-      setImmediate(() => {
-        ordersService._reapplyReserveForOrderRows(rowsForReserve).catch((e) => {
-          logger.warn('[Purchases] background reserve after procure-from-orders', {
-            message: e?.message || String(e),
+      if (rowsForReserve.length > 0) {
+        setImmediate(() => {
+          ordersService._reapplyReserveForOrderRows(rowsForReserve).catch((e) => {
+            logger.warn('[Purchases] background reserve after procure-from-orders', {
+              message: e?.message || String(e),
+            });
           });
         });
-      });
-    }
+      }
 
-    return { purchaseId, procurement };
+      return { purchaseId, procurement };
+    });
   }
 
   async create(
@@ -1342,7 +1396,8 @@ class PurchasesService {
       throw err;
     }
 
-    return transaction(async (client) => {
+    let incomingDeltas = null;
+    const result = await purchaseTransaction(async (client) => {
       const ins = await client.query(
         `INSERT INTO purchases (supplier_id, organization_id, warehouse_id, profile_id, created_by_user_id, status, ordered_at, note)
          VALUES ($1, $2, $3, $4, $5, 'open', CURRENT_TIMESTAMP, $6)
@@ -1351,10 +1406,18 @@ class PurchasesService {
       );
       const purchaseId = ins.rows[0].id;
       const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
-      await insertNewPurchaseLineItemsInTx(client, purchaseId, normalized, pid, { hasPrice, lightIncoming });
+      incomingDeltas = await insertNewPurchaseLineItemsInTx(client, purchaseId, normalized, pid, {
+        hasPrice,
+        lightIncoming,
+        deferIncomingUpdate: lightIncoming,
+      });
 
       return { id: purchaseId };
     });
+    if (lightIncoming && incomingDeltas?.size) {
+      await applyIncomingDeltasAfterCommit(incomingDeltas);
+    }
+    return result;
   }
 
   /**
@@ -1389,7 +1452,8 @@ class PurchasesService {
       throw err;
     }
 
-    return transaction(async (client) => {
+    let incomingDeltas = null;
+    const result = await purchaseTransaction(async (client) => {
       await assertPurchaseInProfile(client, id, pid);
       const head = await client.query('SELECT id FROM purchases WHERE id = $1 FOR UPDATE', [id]);
       if (!head.rows?.[0]) {
@@ -1399,7 +1463,11 @@ class PurchasesService {
       }
 
       const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
-      await applyPurchaseLineItemsInTx(client, id, normalized, pid, { hasPrice, lightIncoming });
+      incomingDeltas = await applyPurchaseLineItemsInTx(client, id, normalized, pid, {
+        hasPrice,
+        lightIncoming,
+        deferIncomingUpdate: lightIncoming,
+      });
 
       await client.query(
         `UPDATE purchases SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
@@ -1407,6 +1475,10 @@ class PurchasesService {
       );
       return { ok: true, id };
     });
+    if (lightIncoming && incomingDeltas?.size) {
+      await applyIncomingDeltasAfterCommit(incomingDeltas);
+    }
+    return result;
   }
 
   /**
