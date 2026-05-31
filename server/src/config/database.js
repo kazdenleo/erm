@@ -128,15 +128,28 @@ export async function getClient() {
 /**
  * Функция для выполнения транзакции
  */
-export async function transaction(callback) {
+export async function transaction(callback, { lockTimeoutMs = 20000, statementTimeoutMs = 120000 } = {}) {
   const client = await getClient();
   try {
     await client.query('BEGIN');
+    if (lockTimeoutMs > 0) {
+      await client.query(`SET LOCAL lock_timeout = '${Math.floor(lockTimeoutMs)}ms'`);
+    }
+    if (statementTimeoutMs > 0) {
+      await client.query(`SET LOCAL statement_timeout = '${Math.floor(statementTimeoutMs)}ms'`);
+    }
     const result = await callback(client);
     await client.query('COMMIT');
     return result;
   } catch (error) {
     await client.query('ROLLBACK');
+    if (String(error?.code) === '55P03' || /lock timeout/i.test(String(error?.message || ''))) {
+      const err = new Error(
+        'Не удалось завершить операцию: база данных занята другим процессом. Подождите 30 секунд и повторите.'
+      );
+      err.statusCode = 503;
+      throw err;
+    }
     logger.error('Transaction rolled back', {
       error: error.message,
     });

@@ -274,37 +274,46 @@ async function addIncomingDeltaForPurchaseInTx(
   });
 }
 
-const SOURCE_ORDERS_ON_CONFLICT_SQL = `
-  source_orders = (
-    SELECT COALESCE(jsonb_agg(obj), '[]'::jsonb)
-    FROM (
-      SELECT DISTINCT ON (mk)
-        jsonb_build_object(
-          'marketplace', COALESCE(elem->>'marketplace', ''),
-          'orderId', COALESCE(elem->>'orderId', '')
-        ) AS obj,
-        mk
-      FROM (
-        SELECT
-          lower(COALESCE(elem->>'marketplace', '')) || '|' || COALESCE(elem->>'orderId', '') AS mk,
-          elem
-        FROM (
-          SELECT jsonb_array_elements(COALESCE(purchase_items.source_orders, '[]'::jsonb)) AS elem
-          UNION ALL
-          SELECT jsonb_array_elements(EXCLUDED.source_orders) AS elem
-        ) raw
-        WHERE COALESCE(elem->>'orderId', '') <> ''
-      ) merged
-      ORDER BY mk
-    ) dedup
-  )`;
+async function mergeNormalizedPurchaseLines(normalized) {
+  const byProduct = new Map();
+  for (const it of normalized) {
+    const pid = it.productId;
+    if (!byProduct.has(pid)) {
+      byProduct.set(pid, {
+        productId: pid,
+        qty: 0,
+        sourceOrders: [],
+      });
+    }
+    const row = byProduct.get(pid);
+    row.qty += it.qty;
+    row.sourceOrders = normalizeSourceOrderList([...row.sourceOrders, ...it.sourceOrders]);
+  }
+  return [...byProduct.values()];
+}
+
+/** Новая закупка: только INSERT (без ON CONFLICT — быстрее и без блокировок). */
+async function insertNewPurchaseLineItemsInTx(
+  client,
+  purchaseId,
+  normalized,
+  profileId,
+  { hasPrice, lightIncoming = false } = {}
+) {
+  const merged = await mergeNormalizedPurchaseLines(normalized);
+  await applyPurchaseLineItemsInTx(client, purchaseId, merged, profileId, {
+    hasPrice,
+    lightIncoming,
+    insertOnly: true,
+  });
+}
 
 async function applyPurchaseLineItemsInTx(
   client,
   purchaseId,
   normalized,
   profileId,
-  { hasPrice, lightIncoming = false } = {}
+  { hasPrice, lightIncoming = false, insertOnly = false } = {}
 ) {
   if (!normalized.length) return;
 
@@ -325,45 +334,60 @@ async function applyPurchaseLineItemsInTx(
     }
   }
 
-  const qtyByProduct = new Map();
-  const sourcesByProduct = new Map();
+  const incomingDeltas = new Map();
+
   for (const it of normalized) {
-    const pid = it.productId;
-    qtyByProduct.set(pid, (qtyByProduct.get(pid) || 0) + it.qty);
-    const prev = sourcesByProduct.get(pid) || [];
-    sourcesByProduct.set(pid, normalizeSourceOrderList([...prev, ...it.sourceOrders]));
+    const sourceJson = JSON.stringify(normalizeSourceOrderList(it.sourceOrders));
+    if (insertOnly) {
+      if (hasPrice) {
+        await client.query(
+          `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
+           VALUES ($1, $2, $3, 0, $4::jsonb, (SELECT cost FROM products WHERE id = $2))`,
+          [purchaseId, it.productId, it.qty, sourceJson]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
+           VALUES ($1, $2, $3, 0, $4::jsonb)`,
+          [purchaseId, it.productId, it.qty, sourceJson]
+        );
+      }
+    } else if (hasPrice) {
+      await client.query(
+        `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
+         VALUES ($1, $2, $3, 0, $4::jsonb, (SELECT cost FROM products WHERE id = $2))
+         ON CONFLICT (purchase_id, product_id)
+         DO UPDATE SET
+           expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
+           updated_at = CURRENT_TIMESTAMP`,
+        [purchaseId, it.productId, it.qty, sourceJson]
+      );
+      await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
+    } else {
+      await client.query(
+        `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
+         VALUES ($1, $2, $3, 0, $4::jsonb)
+         ON CONFLICT (purchase_id, product_id)
+         DO UPDATE SET
+           expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
+           updated_at = CURRENT_TIMESTAMP`,
+        [purchaseId, it.productId, it.qty, sourceJson]
+      );
+      await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
+    }
+    if (lightIncoming) {
+      incomingDeltas.set(it.productId, (incomingDeltas.get(it.productId) || 0) + it.qty);
+    } else {
+      await addIncomingDeltaForPurchaseInTx(client, purchaseId, it.productId, it.qty, profileId, {
+        lightIncoming: false,
+        skipProductAssert: true,
+      });
+    }
   }
 
-  const batchIds = [...qtyByProduct.keys()];
-  const batchQtys = batchIds.map((id) => qtyByProduct.get(id));
-  const batchSources = batchIds.map((id) => JSON.stringify(sourcesByProduct.get(id) || []));
-
-  const onConflict = `
-    ON CONFLICT (purchase_id, product_id) DO UPDATE SET
-      expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
-      ${SOURCE_ORDERS_ON_CONFLICT_SQL},
-      updated_at = CURRENT_TIMESTAMP`;
-
-  if (hasPrice) {
-    await client.query(
-      `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
-       SELECT $1, u.product_id, u.qty, 0, u.source_orders::jsonb,
-              (SELECT cost FROM products p WHERE p.id = u.product_id)
-       FROM unnest($2::bigint[], $3::int[], $4::text[]) AS u(product_id, qty, source_orders)
-       ${onConflict}`,
-      [purchaseId, batchIds, batchQtys, batchSources]
-    );
-  } else {
-    await client.query(
-      `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
-       SELECT $1, u.product_id, u.qty, 0, u.source_orders::jsonb
-       FROM unnest($2::bigint[], $3::int[], $4::text[]) AS u(product_id, qty, source_orders)
-       ${onConflict}`,
-      [purchaseId, batchIds, batchQtys, batchSources]
-    );
-  }
-
-  if (lightIncoming) {
+  if (lightIncoming && incomingDeltas.size > 0) {
+    const batchIds = [...incomingDeltas.keys()];
+    const batchQtys = batchIds.map((id) => incomingDeltas.get(id));
     await client.query(
       `UPDATE products p
        SET incoming_quantity = COALESCE(p.incoming_quantity, 0) + v.qty,
@@ -372,14 +396,6 @@ async function applyPurchaseLineItemsInTx(
        WHERE p.id = v.product_id`,
       [batchIds, batchQtys]
     );
-    return;
-  }
-
-  for (const it of normalized) {
-    await addIncomingDeltaForPurchaseInTx(client, purchaseId, it.productId, it.qty, profileId, {
-      lightIncoming: false,
-      skipProductAssert: true,
-    });
   }
 }
 
@@ -1335,7 +1351,7 @@ class PurchasesService {
       );
       const purchaseId = ins.rows[0].id;
       const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
-      await applyPurchaseLineItemsInTx(client, purchaseId, normalized, pid, { hasPrice, lightIncoming });
+      await insertNewPurchaseLineItemsInTx(client, purchaseId, normalized, pid, { hasPrice, lightIncoming });
 
       return { id: purchaseId };
     });
