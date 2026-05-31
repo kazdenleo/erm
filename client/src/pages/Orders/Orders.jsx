@@ -799,7 +799,7 @@ export function Orders() {
     [reloadOrders, statusFilter]
   );
 
-  const handleSync = () => runSync(false, { force: true, refreshStatuses: true });
+  const handleSync = () => runSync(false, { refreshStatuses: true });
   const handleImportOrders = () => runSync(false, { force: true });
 
   const handleResetSync = async () => {

@@ -19,8 +19,8 @@ import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 
 // Небольшой in‑memory кэш для rate‑limit'а и отдачи последнего результата
-const SYNC_STALE_LOCK_MS = 20 * 60 * 1000;
-const SYNC_BACKGROUND_MAX_MS = 12 * 60 * 1000;
+const SYNC_STALE_LOCK_MS = 5 * 60 * 1000;
+const SYNC_BACKGROUND_MAX_MS = 18 * 60 * 1000;
 
 const ordersSyncCache = {
   lastSyncTime: null,
@@ -431,7 +431,7 @@ class OrdersSyncService {
     const schedulerDays = (() => {
       const n = Number(process.env.ORDERS_FBS_SYNC_SCHEDULER_DAYS_BACK);
       if (Number.isFinite(n) && n > 0) return Math.min(365, Math.floor(n));
-      return 60;
+      return 14;
     })();
     const syncDaysBack = fromScheduler ? schedulerDays : refreshStatuses ? 90 : 45;
     const WB_DAYS_BACK = syncDaysBack;
@@ -891,11 +891,10 @@ class OrdersSyncService {
         console.warn('[Orders Sync] releaseReservesForTerminalStatusOrders:', e?.message || e);
       }
 
-      // Авто-резерв для новых заказов (и «ожидающих» WB до резолва статуса): product_id или сопоставление по SKU.
-      // Идемпотентно: reserve создаётся только если его ещё нет. Сначала крупные заказы — меньше частичных резервов.
+      // Авто-резерв только для заказов, пришедших с МП в этом прогоне (не для всего каталога в БД).
       const reserveKeysDone = new Set();
       const rowsToAutoReserve = [];
-      for (const o of allOrders) {
+      for (const o of newOrders) {
         try {
           if (!o || !orderEligibleForProcurement(o)) continue;
           if (!o.marketplace || o.orderId == null) continue;
@@ -926,7 +925,12 @@ class OrdersSyncService {
         }
       }
       if (rowsToAutoReserve.length > 0) {
-        await ordersService._reapplyReserveForOrderRows(rowsToAutoReserve);
+        const rowsCopy = rowsToAutoReserve.slice();
+        setImmediate(() => {
+          ordersService._reapplyReserveForOrderRows(rowsCopy).catch((e) => {
+            logger.warn('[Orders Sync] background reserve reapply failed:', e?.message || e);
+          });
+        });
       }
     } else {
       await writeData('orders', {
