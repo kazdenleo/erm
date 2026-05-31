@@ -274,6 +274,31 @@ async function addIncomingDeltaForPurchaseInTx(
   });
 }
 
+const SOURCE_ORDERS_ON_CONFLICT_SQL = `
+  source_orders = (
+    SELECT COALESCE(jsonb_agg(obj), '[]'::jsonb)
+    FROM (
+      SELECT DISTINCT ON (mk)
+        jsonb_build_object(
+          'marketplace', COALESCE(elem->>'marketplace', ''),
+          'orderId', COALESCE(elem->>'orderId', '')
+        ) AS obj,
+        mk
+      FROM (
+        SELECT
+          lower(COALESCE(elem->>'marketplace', '')) || '|' || COALESCE(elem->>'orderId', '') AS mk,
+          elem
+        FROM (
+          SELECT jsonb_array_elements(COALESCE(purchase_items.source_orders, '[]'::jsonb)) AS elem
+          UNION ALL
+          SELECT jsonb_array_elements(EXCLUDED.source_orders) AS elem
+        ) raw
+        WHERE COALESCE(elem->>'orderId', '') <> ''
+      ) merged
+      ORDER BY mk
+    ) dedup
+  )`;
+
 async function applyPurchaseLineItemsInTx(
   client,
   purchaseId,
@@ -281,6 +306,8 @@ async function applyPurchaseLineItemsInTx(
   profileId,
   { hasPrice, lightIncoming = false } = {}
 ) {
+  if (!normalized.length) return;
+
   const pidNorm = normalizeProfileId(profileId);
   const productIds = [...new Set(normalized.map((it) => it.productId).filter(Boolean))];
   if (pidNorm != null && productIds.length > 0) {
@@ -298,32 +325,59 @@ async function applyPurchaseLineItemsInTx(
     }
   }
 
+  const qtyByProduct = new Map();
+  const sourcesByProduct = new Map();
   for (const it of normalized) {
-    const sourceJson = JSON.stringify(normalizeSourceOrderList(it.sourceOrders));
-    if (hasPrice) {
-      await client.query(
-        `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
-         VALUES ($1, $2, $3, 0, $4::jsonb, (SELECT cost FROM products WHERE id = $2))
-         ON CONFLICT (purchase_id, product_id)
-         DO UPDATE SET
-           expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
-           updated_at = CURRENT_TIMESTAMP`,
-        [purchaseId, it.productId, it.qty, sourceJson]
-      );
-    } else {
-      await client.query(
-        `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
-         VALUES ($1, $2, $3, 0, $4::jsonb)
-         ON CONFLICT (purchase_id, product_id)
-         DO UPDATE SET
-           expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
-           updated_at = CURRENT_TIMESTAMP`,
-        [purchaseId, it.productId, it.qty, sourceJson]
-      );
-    }
-    await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
+    const pid = it.productId;
+    qtyByProduct.set(pid, (qtyByProduct.get(pid) || 0) + it.qty);
+    const prev = sourcesByProduct.get(pid) || [];
+    sourcesByProduct.set(pid, normalizeSourceOrderList([...prev, ...it.sourceOrders]));
+  }
+
+  const batchIds = [...qtyByProduct.keys()];
+  const batchQtys = batchIds.map((id) => qtyByProduct.get(id));
+  const batchSources = batchIds.map((id) => JSON.stringify(sourcesByProduct.get(id) || []));
+
+  const onConflict = `
+    ON CONFLICT (purchase_id, product_id) DO UPDATE SET
+      expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
+      ${SOURCE_ORDERS_ON_CONFLICT_SQL},
+      updated_at = CURRENT_TIMESTAMP`;
+
+  if (hasPrice) {
+    await client.query(
+      `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
+       SELECT $1, u.product_id, u.qty, 0, u.source_orders::jsonb,
+              (SELECT cost FROM products p WHERE p.id = u.product_id)
+       FROM unnest($2::bigint[], $3::int[], $4::text[]) AS u(product_id, qty, source_orders)
+       ${onConflict}`,
+      [purchaseId, batchIds, batchQtys, batchSources]
+    );
+  } else {
+    await client.query(
+      `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
+       SELECT $1, u.product_id, u.qty, 0, u.source_orders::jsonb
+       FROM unnest($2::bigint[], $3::int[], $4::text[]) AS u(product_id, qty, source_orders)
+       ${onConflict}`,
+      [purchaseId, batchIds, batchQtys, batchSources]
+    );
+  }
+
+  if (lightIncoming) {
+    await client.query(
+      `UPDATE products p
+       SET incoming_quantity = COALESCE(p.incoming_quantity, 0) + v.qty,
+           updated_at = CURRENT_TIMESTAMP
+       FROM unnest($1::bigint[], $2::int[]) AS v(product_id, qty)
+       WHERE p.id = v.product_id`,
+      [batchIds, batchQtys]
+    );
+    return;
+  }
+
+  for (const it of normalized) {
     await addIncomingDeltaForPurchaseInTx(client, purchaseId, it.productId, it.qty, profileId, {
-      lightIncoming,
+      lightIncoming: false,
       skipProductAssert: true,
     });
   }
@@ -1192,11 +1246,8 @@ class PurchasesService {
     { userId, profileId } = {}
   ) {
     const refs = Array.isArray(procurementItems) ? procurementItems : [];
-    let procurement = { updated: 0, skipped: 0 };
-    if (refs.length > 0) {
-      procurement = await ordersService.bulkSetToProcurement(refs, profileId);
-    }
 
+    // Сначала закупка — иначе при таймауте заказы уже «В закупке», а документа нет.
     let purchaseId;
     if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
       purchaseId = parseInt(existingPurchaseId, 10);
@@ -1207,6 +1258,26 @@ class PurchasesService {
         { userId, profileId, lightIncoming: true }
       );
       purchaseId = created?.id;
+    }
+
+    let procurement = { updated: 0, skipped: 0 };
+    let rowsForReserve = [];
+    if (refs.length > 0) {
+      const bulk = await ordersService.bulkSetToProcurement(refs, profileId, {
+        skipReserveReapply: true,
+      });
+      procurement = { updated: bulk.updated, skipped: bulk.skipped };
+      rowsForReserve = bulk.rows || [];
+    }
+
+    if (rowsForReserve.length > 0) {
+      setImmediate(() => {
+        ordersService._reapplyReserveForOrderRows(rowsForReserve).catch((e) => {
+          logger.warn('[Purchases] background reserve after procure-from-orders', {
+            message: e?.message || String(e),
+          });
+        });
+      });
     }
 
     return { purchaseId, procurement };

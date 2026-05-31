@@ -2121,7 +2121,7 @@ class OrdersService {
   /**
    * Массово «В закупке»: один проход SQL + резерв в фоне (без N× findByMarketplaceAndOrderId).
    */
-  async _bulkSetToProcurementPg(items, profileId = null) {
+  async _bulkSetToProcurementPg(items, profileId = null, { skipReserveReapply = false } = {}) {
     const eligibleStatusSql = `(
       o.status = 'new'
       OR (
@@ -2239,7 +2239,7 @@ class OrdersService {
     }
 
     const uniqueRows = [...updatedById.values()];
-    if (uniqueRows.length > 0) {
+    if (uniqueRows.length > 0 && !skipReserveReapply) {
       setImmediate(() => {
         this._reapplyReserveForOrderRows(uniqueRows).catch((e) => {
           console.warn('[Orders] bulk reapply reserve after procurement:', e?.message || e);
@@ -2247,19 +2247,19 @@ class OrdersService {
       });
     }
 
-    return { updated: seedRows.length, skipped };
+    return { updated: seedRows.length, skipped, rows: uniqueRows };
   }
 
   /**
    * Массово перевести заказы в «В закупке» и один раз дозарезервировать (без N тяжёлых HTTP-вызовов).
    * @param {{ marketplace: string, orderId: string }[]} items
    */
-  async bulkSetToProcurement(items, profileId = null) {
+  async bulkSetToProcurement(items, profileId = null, options = {}) {
     const refs = Array.isArray(items) ? items : [];
     if (!repositoryFactory.isUsingPostgreSQL() || refs.length === 0) {
-      return { updated: 0, skipped: refs.length };
+      return { updated: 0, skipped: refs.length, rows: [] };
     }
-    return this._bulkSetToProcurementPg(refs, profileId);
+    return this._bulkSetToProcurementPg(refs, profileId, options);
   }
 
   /**
