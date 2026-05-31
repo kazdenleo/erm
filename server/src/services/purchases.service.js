@@ -13,6 +13,7 @@ import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 import ordersService from './orders.service.js';
+import logger from '../utils/logger.js';
 
 // Anti-duplicate scans (in-memory): receiptId|barcode -> ts.
 // Один физический скан иногда даёт 2-3 HTTP запроса (\\n + Enter, или повтор в драйвере).
@@ -175,7 +176,13 @@ async function reapplyInProcurementReservesForPurchase(purchaseId, profileId) {
     }
   }
   if (rowsToReserve.length > 0) {
-    await ordersService._reapplyReserveForOrderRows(rowsToReserve);
+    setImmediate(() => {
+      ordersService._reapplyReserveForOrderRows(rowsToReserve).catch((e) => {
+        logger.warn('[Purchases] background reapply reserve after receipt', {
+          message: e?.message || String(e),
+        });
+      });
+    });
   }
 }
 
@@ -229,13 +236,15 @@ async function addIncomingDeltaForPurchaseInTx(
   productId,
   deltaQty,
   profileId,
-  { lightIncoming = false } = {}
+  { lightIncoming = false, skipProductAssert = false } = {}
 ) {
   const d = Math.max(0, parseInt(deltaQty, 10) || 0);
   if (d <= 0) return;
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return;
-  await assertProductAllowedInProfile(client, pid, profileId);
+  if (!skipProductAssert) {
+    await assertProductAllowedInProfile(client, pid, profileId);
+  }
   if (lightIncoming) {
     await client.query(
       `UPDATE products
@@ -272,8 +281,24 @@ async function applyPurchaseLineItemsInTx(
   profileId,
   { hasPrice, lightIncoming = false } = {}
 ) {
+  const pidNorm = normalizeProfileId(profileId);
+  const productIds = [...new Set(normalized.map((it) => it.productId).filter(Boolean))];
+  if (pidNorm != null && productIds.length > 0) {
+    const allowed = await client.query(
+      `SELECT id FROM products WHERE id = ANY($1::bigint[]) AND profile_id = $2::bigint`,
+      [productIds, pidNorm]
+    );
+    const ok = new Set((allowed.rows || []).map((r) => Number(r.id)));
+    for (const id of productIds) {
+      if (!ok.has(id)) {
+        const err = new Error('Товар недоступен в вашем аккаунте');
+        err.statusCode = 403;
+        throw err;
+      }
+    }
+  }
+
   for (const it of normalized) {
-    await assertProductAllowedInProfile(client, it.productId, profileId);
     const sourceJson = JSON.stringify(normalizeSourceOrderList(it.sourceOrders));
     if (hasPrice) {
       await client.query(
@@ -299,6 +324,7 @@ async function applyPurchaseLineItemsInTx(
     await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
     await addIncomingDeltaForPurchaseInTx(client, purchaseId, it.productId, it.qty, profileId, {
       lightIncoming,
+      skipProductAssert: true,
     });
   }
 }
@@ -811,6 +837,35 @@ async function releaseReservesAfterRevertForSourceOrder(marketplace, orderId) {
     if (st === 'in_procurement') continue;
     await ordersService.releaseReserveIfExistsForOrder(r.marketplace, r.orderId ?? r.order_id);
   }
+}
+
+/** Резервы после закупки — в фоне, чтобы HTTP не упирался в nginx 504. */
+function schedulePurchaseReserveCleanup({ orders = [], productIds = [], reason, meta } = {}) {
+  const orderList = Array.isArray(orders) ? orders : [];
+  const prodList = [...new Set((Array.isArray(productIds) ? productIds : []).filter(Boolean))];
+  if (orderList.length === 0 && prodList.length === 0) return;
+
+  setImmediate(() => {
+    void (async () => {
+      const uniq = new Map();
+      for (const o of orderList) {
+        const k = `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
+        if (!k.endsWith('|')) uniq.set(k, o);
+      }
+      for (const o of uniq.values()) {
+        await releaseReservesAfterRevertForSourceOrder(o.marketplace, o.orderId).catch(() => {});
+      }
+      for (const prodId of prodList) {
+        await ordersService
+          .trimExcessReservesForProduct(prodId, { reason, meta })
+          .catch(() => {});
+      }
+    })().catch((e) => {
+      logger.warn('[Purchases] background reserve cleanup failed', {
+        message: e?.message || String(e),
+      });
+    });
+  });
 }
 
 class PurchasesService {
@@ -1403,25 +1458,12 @@ class PurchasesService {
       }
     });
 
-    const uniqRel = new Map();
-    for (const o of ordersToRelease) {
-      const k = `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
-      if (!k.endsWith('|')) uniqRel.set(k, o);
-    }
-    for (const o of uniqRel.values()) {
-      await releaseReservesAfterRevertForSourceOrder(o.marketplace, o.orderId);
-    }
-
-    // Если ожидание (incoming) уменьшили, мог образоваться "избыточный резерв"
-    // (reserved > actual + incoming). Доснимем лишнее, чтобы резерв не появлялся без покрытия.
-    if (productIdToTrim) {
-      await ordersService
-        .trimExcessReservesForProduct(productIdToTrim, {
-          reason: 'Уменьшение ожидания по строке закупки',
-          meta: { purchase_id: purId, purchase_item_id: lineId }
-        })
-        .catch(() => {});
-    }
+    schedulePurchaseReserveCleanup({
+      orders: ordersToRelease,
+      productIds: productIdToTrim ? [productIdToTrim] : [],
+      reason: 'Уменьшение ожидания по строке закупки',
+      meta: { purchase_id: purId, purchase_item_id: lineId },
+    });
 
     return {
       ok: true,
@@ -1495,7 +1537,13 @@ class PurchasesService {
 
       return { ok: true, status: 'open', ensuredReserveOrders: ordersToReserve.length };
     });
-    await reapplyInProcurementReservesForPurchase(id, pid).catch(() => {});
+    setImmediate(() => {
+      reapplyInProcurementReservesForPurchase(id, pid).catch((e) => {
+        logger.warn('[Purchases] background reapply reserve after markOrdered', {
+          message: e?.message || String(e),
+        });
+      });
+    });
     return res;
   }
 
@@ -2243,22 +2291,17 @@ class PurchasesService {
       await client.query(`DELETE FROM purchases WHERE id = $1`, [id]);
     });
 
+    schedulePurchaseReserveCleanup({
+      orders: sourceList,
+      productIds: productIdsToTrim,
+      reason: 'Удаление закупки и снятие ожидания (incoming)',
+      meta: { purchase_id: id },
+    });
+
     const uniq = new Map();
     for (const o of sourceList || []) {
       const k = `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
       if (!k.endsWith('|')) uniq.set(k, o);
-    }
-    for (const o of uniq.values()) {
-      await releaseReservesAfterRevertForSourceOrder(o.marketplace, o.orderId);
-    }
-
-    for (const prodId of [...new Set(productIdsToTrim)]) {
-      await ordersService
-        .trimExcessReservesForProduct(prodId, {
-          reason: `Удаление закупки и снятие ожидания (incoming)`,
-          meta: { purchase_id: id }
-        })
-        .catch(() => {});
     }
 
     return { ok: true, releasedOrders: [...uniq.values()] };

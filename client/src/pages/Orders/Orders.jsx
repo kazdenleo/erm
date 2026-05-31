@@ -21,6 +21,7 @@ import {
 } from '../../constants/orderStatuses';
 import { OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
 import { onNavigationClick } from '../../utils/navigationClick.js';
+import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import {
   normalizeMarketplaceForUI,
   orderGroupKey,
@@ -1093,7 +1094,7 @@ export function Orders() {
       });
     } catch (e) {
       console.error('Ошибка «В закупку»:', e);
-      const msg = e.response?.data?.message || e.message || 'Не удалось оформить закупку и обновить заказ';
+      const msg = getApiErrorMessage(e, 'Не удалось оформить закупку и обновить заказ');
       setProcurementModalErr(msg);
       setRefreshError(msg);
     } finally {

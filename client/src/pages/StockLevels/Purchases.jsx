@@ -23,6 +23,7 @@ import { useOrganizations } from '../../hooks/useOrganizations';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
+import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { supplierPrefixesFromApiConfig } from '../../utils/supplierArticlePrefixes';
 
@@ -87,15 +88,7 @@ function qtyCell(raw) {
 }
 
 function formatPurchaseApiError(e, fallback) {
-  const status = e?.response?.status;
-  const msg = e?.response?.data?.message || e?.message || fallback;
-  if (status === 429) {
-    return 'Слишком много запросов к серверу. Подождите 1–2 минуты и повторите.';
-  }
-  if (status === 404) {
-    return `${msg} (маршрут API не найден — обновите сервер и перезапустите API).`;
-  }
-  return msg;
+  return getApiErrorMessage(e, fallback);
 }
 
 /** Частичное или полное уменьшение «ожидалось» по строке закупки (поле «На … шт.» + «Уменьшить»). */

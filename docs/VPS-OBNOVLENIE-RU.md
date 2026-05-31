@@ -278,4 +278,56 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1/api/auth/me   # дол
 
 ---
 
+## Ошибка 504 «системно» на разных страницах
+
+**Симптом:** в консоли браузера `504 Gateway Time-out`, в теле ответа **HTML от nginx** (не JSON `{ ok: false, message: "..." }`).
+
+**Что это значит:** nginx **не дождался** ответа от Node.js. Запрос мог ещё выполняться на сервере, но браузер уже получил 504.
+
+### Шаг 1 — проверить, жив ли API
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3001/health
+pm2 list
+pm2 logs erm-api --lines 30
+```
+
+`200` на `:3001/health` — Node работает. Если `502/000` — перезапустите: `pm2 restart erm-api`.
+
+### Шаг 2 — таймаут nginx (самая частая причина)
+
+В блоке **`location /api/`** должны быть строки (см. `docs/nginx-erm.example.conf`):
+
+```nginx
+proxy_read_timeout 300s;
+proxy_connect_timeout 300s;
+proxy_send_timeout 300s;
+```
+
+```bash
+grep -R "proxy_read_timeout\|location /api" /etc/nginx/sites-enabled/ -n
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Без `proxy_read_timeout` nginx обрывает запрос **через ~60 секунд** — отсюда 504 на «В закупку», удалении закупки, синхронизации и т.д.
+
+### Шаг 3 — обновить код и пересобрать клиент
+
+В новых версиях тяжёлая работа (резервы, поставки МП) уходит **в фон**, HTTP отвечает быстрее:
+
+```bash
+cd /opt/erm && git pull
+cd server && npm ci
+cd ../client && npm ci && npm run build
+pm2 restart erm-api --update-env
+```
+
+### Шаг 4 — если 504 остаётся
+
+1. В `server/.env`: `DB_POOL_MAX=40` (если много параллельных запросов с одной страницы).
+2. Логи медленных запросов: `pm2 logs erm-api | grep "Slow request"`.
+3. Проверка PostgreSQL: `sudo systemctl status postgresql`.
+
+---
+
 *В конец можно дописать от руки:* путь = `______`, PM2 = `______`, база = `______`.

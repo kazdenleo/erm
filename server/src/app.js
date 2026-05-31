@@ -7,6 +7,7 @@ import express from 'express';
 import config from './config/index.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import requestLogger from './middleware/requestLogger.js';
+import { slowRequestLogger } from './middleware/slowRequest.js';
 import { 
   helmetMiddleware, 
   corsMiddleware, 
@@ -60,6 +61,7 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Request logging (после body parsing)
 app.use(requestLogger);
+app.use(slowRequestLogger(15000));
 
 // Root endpoint (информация об API)
 app.get('/', (req, res) => {

@@ -51,4 +51,9 @@ DOMAIN="${DOMAIN:-dttrade.ru}"
 curl -sf -o /dev/null -w "HTTPS /api/auth/me → %{http_code}\n" -k -H "Host: $DOMAIN" "https://127.0.0.1/api/auth/me" 2>/dev/null \
   || echo "WARN: nginx HTTPS check skipped"
 
+echo "==> nginx API timeouts (504 fix)"
+if [ -f "$APP_ROOT/scripts/vps-fix-nginx-timeouts.sh" ]; then
+  bash "$APP_ROOT/scripts/vps-fix-nginx-timeouts.sh" || echo "WARN: nginx timeout patch skipped (run with sudo if needed)"
+fi
+
 echo "==> done"
