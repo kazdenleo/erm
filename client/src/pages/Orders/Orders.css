@@ -33,6 +33,35 @@
   font-variant-numeric: tabular-nums;
 }
 
+.orders-col-reserve {
+  white-space: nowrap;
+  text-align: center;
+}
+
+.orders-reserve-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+/* Резерв покрыт со склада (в наличии) */
+.orders-reserve-badge--on-hand {
+  color: #0d4d1f;
+  background: rgba(25, 135, 84, 0.18);
+  border: 1px solid rgba(25, 135, 84, 0.45);
+}
+
+/* Резерв с участием «в пути» */
+.orders-reserve-badge--incoming {
+  color: #495057;
+  background: rgba(108, 117, 125, 0.14);
+  border: 1px solid rgba(108, 117, 125, 0.35);
+}
+
 .orders-checkbox-label {
   display: inline-flex;
   align-items: center;

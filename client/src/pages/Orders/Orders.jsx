@@ -53,13 +53,39 @@ function orderKey(o) {
   return `${mp}|${o.orderId ?? ''}`;
 }
 
+/** Плашка резерва в списке: зелёная — со склада, серая — с участием «в пути». */
+function groupReserveCoverageKind(orders) {
+  let anyIncoming = false;
+  let anyOnHand = false;
+  for (const o of orders || []) {
+    const k = String(o.reserveCoverage ?? o.reserve_coverage ?? 'none').toLowerCase();
+    if (k === 'on_hand') anyOnHand = true;
+    if (k === 'incoming') anyIncoming = true;
+  }
+  if (anyIncoming) return 'incoming';
+  if (anyOnHand) return 'on_hand';
+  return 'none';
+}
+
+function reserveBadgeClassName(coverageKind) {
+  if (coverageKind === 'on_hand') return 'orders-reserve-badge orders-reserve-badge--on-hand';
+  if (coverageKind === 'incoming') return 'orders-reserve-badge orders-reserve-badge--incoming';
+  return 'orders-reserve-badge orders-reserve-badge--incoming';
+}
+
 /** Подсказка к бейджу резерва: итого и по каждой позиции / комплектующей. */
-function formatOrderReserveBadgeTitle({ reservedQty, needQty, orders, isGroup }) {
+function formatOrderReserveBadgeTitle({ reservedQty, needQty, orders, isGroup, coverageKind }) {
   const fully =
     needQty > 0 && reservedQty >= needQty
       ? ' (полностью)'
       : '';
-  const head = `Зарезервировано ${reservedQty} из ${needQty}${fully}`;
+  const sourceHint =
+    coverageKind === 'on_hand'
+      ? '\nПокрытие: со склада (в наличии).'
+      : coverageKind === 'incoming'
+        ? '\nПокрытие: с участием товара в пути.'
+        : '';
+  const head = `Зарезервировано ${reservedQty} из ${needQty}${fully}${sourceHint}`;
   const pool = isGroup ? orders || [] : orders?.length ? [orders[0]] : [];
   const lines = [];
   for (const o of pool) {
@@ -2535,6 +2561,9 @@ export function Orders() {
                   ? groupOrders.reduce((s, o) => s + lineNeed(o), 0)
                   : lineNeed(first);
                 const showReserveCell = reservedQty > 0;
+                const reserveCoverageKind = isGroup
+                  ? groupReserveCoverageKind(groupOrders)
+                  : groupReserveCoverageKind([first]);
                 const stickerDisplay = (() => {
                   if (isGroup) {
                     const asmLines = groupOrders.filter((o) => isAssemblyLikeStatus(o.status));
@@ -2651,21 +2680,13 @@ export function Orders() {
                   <td className="orders-col-reserve">
                     {showReserveCell ? (
                       <span
-                        className="badge"
-                        style={{
-                          border: '1px solid rgba(0,0,0,0.12)',
-                          background: 'rgba(0,0,0,0.04)',
-                          color: 'var(--text)',
-                          padding: '2px 8px',
-                          borderRadius: 999,
-                          fontSize: 12,
-                          fontWeight: 600,
-                        }}
+                        className={reserveBadgeClassName(reserveCoverageKind)}
                         title={formatOrderReserveBadgeTitle({
                           reservedQty,
                           needQty,
                           orders: groupOrders,
                           isGroup,
+                          coverageKind: reserveCoverageKind,
                         })}
                       >
                         {reservedQty}/{needQty}

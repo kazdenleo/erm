@@ -25,12 +25,80 @@ import {
 } from './kitStock.service.js';
 import {
   NET_RESERVED_SUM_EXPR_SQL,
+  RAW_RESERVED_SUM_EXPR_SQL,
   getProductSupplySnapshotWithClient
 } from './sellableQuantity.service.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
+
+/**
+ * Покрытие резерва по заказу: только со склада (on_hand) или с участием «в пути» (incoming).
+ * @returns {'none'|'on_hand'|'incoming'}
+ */
+export function classifyOrderReserveCoverage({ onHand = 0, reservedRaw = 0, orderReserved = 0 } = {}) {
+  const R = Math.max(0, Math.floor(Number(orderReserved) || 0));
+  if (R <= 0) return 'none';
+  const H = Math.max(0, Math.floor(Number(onHand) || 0));
+  const raw = Math.max(0, Math.floor(Number(reservedRaw) || 0));
+  const reservedOthers = Math.max(0, raw - R);
+  const fromOnHand = Math.min(R, Math.max(0, H - reservedOthers));
+  if (fromOnHand >= R) return 'on_hand';
+  return 'incoming';
+}
+
+async function batchProductReserveSupplyMap(productIds) {
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const map = new Map();
+  if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
+  const r = await query(
+    `SELECT p.id,
+      COALESCE(p.incoming_quantity, 0)::int AS incoming,
+      GREATEST(
+        COALESCE(p.quantity, 0),
+        COALESCE((
+          SELECT SUM(COALESCE(pws.quantity, 0))::int
+          FROM product_warehouse_stock pws
+          WHERE pws.product_id = p.id
+        ), 0)
+      )::int AS on_hand,
+      COALESCE((
+        SELECT ${RAW_RESERVED_SUM_EXPR_SQL}::int
+        FROM stock_movements sm
+        WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+      ), 0)::int AS reserved_raw
+     FROM products p
+     WHERE p.id = ANY($1::int[])`,
+    [ids]
+  );
+  for (const row of r.rows || []) {
+    const id = Number(row.id);
+    if (!Number.isFinite(id) || id < 1) continue;
+    map.set(id, {
+      onHand: Number(row.on_hand ?? 0) || 0,
+      incoming: Number(row.incoming ?? 0) || 0,
+      reservedRaw: Number(row.reserved_raw ?? 0) || 0
+    });
+  }
+  return map;
+}
+
+function applyReserveCoverageToOrderRow(orderRow, supplyMap) {
+  const reserved = Math.max(0, Number(orderRow.reservedQty ?? orderRow.reserved_qty) || 0);
+  if (reserved <= 0) {
+    orderRow.reserveCoverage = 'none';
+    orderRow.reserve_coverage = 'none';
+    return;
+  }
+  const pid = Number(orderRow.productId ?? orderRow.product_id);
+  const sup = Number.isFinite(pid) && pid > 0 ? supplyMap.get(pid) : null;
+  const kind = sup
+    ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved })
+    : 'incoming';
+  orderRow.reserveCoverage = kind;
+  orderRow.reserve_coverage = kind;
+}
 
 /** marketplace как в product_skus: ozon | wb | ym */
 function marketplaceForProductSkus(marketplace) {
@@ -1244,6 +1312,14 @@ class OrdersService {
   async enrichOrdersReserveMetrics(orders, enrichOpts = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders)) return orders;
     const light = enrichOpts.light === true;
+    const supplyPids = [];
+    for (const o of orders) {
+      const pid = Number(o.productId ?? o.product_id);
+      const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+      if (Number.isFinite(pid) && pid > 0 && reserved > 0) supplyPids.push(pid);
+    }
+    const supplyMap = await batchProductReserveSupplyMap(supplyPids);
+
     if (light) {
       for (const o of orders) {
         const need = Math.max(1, parseInt(o.quantity, 10) || 1);
@@ -1254,6 +1330,7 @@ class OrdersService {
         o.need_qty = need;
         o.hasReserve = o.hasReserve === true || o.has_reserve === true || reserved > 0;
         o.fullyReserved = need > 0 && reserved >= need;
+        applyReserveCoverageToOrderRow(o, supplyMap);
       }
       return orders;
     }
@@ -1269,6 +1346,7 @@ class OrdersService {
         o.hasReserve = sum.hasReserve;
         o.fullyReserved = sum.fullyReserved;
         o.reserveLines = sum.lines;
+        applyReserveCoverageToOrderRow(o, supplyMap);
       } catch {
         /* ignore */
       }
