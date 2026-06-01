@@ -5,6 +5,7 @@
 import { query, transaction } from '../config/database.js';
 import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
+import logger from '../utils/logger.js';
 
 /** Инвентаризация: много строк FOR UPDATE — дольше обычных транзакций. */
 const INVENTORY_TX_OPTS = { lockTimeoutMs: 120000, statementTimeoutMs: 600000 };
@@ -62,8 +63,9 @@ async function requireInventoryWarehouseId(client, warehouseId) {
 }
 
 async function getPwsQuantity(client, productId, whId) {
+  // Без FOR UPDATE: на складе уже pg_advisory_xact_lock — меньше deadlock с резервом по заказам.
   const pwsRow = await client.query(
-    `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2 FOR UPDATE`,
+    `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2`,
     [productId, whId]
   );
   return pwsRow.rows?.[0] ? Number(pwsRow.rows[0].quantity) : 0;
@@ -153,6 +155,7 @@ async function applyInventoryLine(client, {
     meta: { inventory_session_id: sessionId, warehouse_id: whId },
     warehouseId: whId,
     profileId: null,
+    skipReservedQtySync: true,
   });
 
   return { applied: true, productId, counted: true };
@@ -233,13 +236,25 @@ async function afterInventoryTouch(sessionId, productIds) {
   });
 }
 
+/** Синхронизация products.quantity и резервов после успешной инвентаризации. */
+async function syncProductsAfterInventory(sessionId, productIds) {
+  if (!Array.isArray(productIds) || productIds.length === 0) return;
+  const { syncProductQuantityFromWarehouseStock } =
+    await import('./productWarehouseQuantity.service.js');
+  const { syncProductReservedQuantityFromJournal } =
+    await import('./sellableQuantity.service.js');
+  const unique = [...new Set(productIds.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))];
+  for (const pid of unique) {
+    await syncProductQuantityFromWarehouseStock(pid);
+    await syncProductReservedQuantityFromJournal(pid);
+  }
+}
+
 async function afterInventoryTouchBackground(sessionId, productIds) {
   try {
     const { default: ordersService } = await import('./orders.service.js');
     const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
     const { recalculateKitsForComponent } = await import('./kitStock.service.js');
-    const { syncProductQuantityFromWarehouseStock } =
-      await import('./productWarehouseQuantity.service.js');
     let profId = null;
     try {
       const pr = await query(`SELECT profile_id FROM inventory_sessions WHERE id = $1`, [sessionId]);
@@ -247,8 +262,8 @@ async function afterInventoryTouchBackground(sessionId, productIds) {
     } catch {
       profId = null;
     }
-    for (const pid of productIds) {
-      await syncProductQuantityFromWarehouseStock(pid);
+    const unique = [...new Set(productIds.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))];
+    for (const pid of unique) {
       await ordersService.trimExcessReservesForProduct(pid, {
         reason: `После инвентаризации №${sessionId}`,
         meta: { inventory_session_id: sessionId },
@@ -257,8 +272,11 @@ async function afterInventoryTouchBackground(sessionId, productIds) {
       await fboSupplyReserveService.onSupplyStockEvent(pid, null, { profileId: profId });
       await recalculateKitsForComponent(pid, {});
     }
-  } catch {
-    // ignore
+  } catch (e) {
+    logger.warn('[Inventory] afterInventoryTouchBackground failed', {
+      sessionId,
+      message: e?.message || String(e),
+    });
   }
 }
 
@@ -434,6 +452,7 @@ class InventorySessionsService {
     );
 
     if (result?.sessionId && result.productIds?.length) {
+      await syncProductsAfterInventory(result.sessionId, result.productIds);
       afterInventoryTouch(result.sessionId, result.productIds);
     }
 
@@ -520,6 +539,7 @@ class InventorySessionsService {
     );
 
     if (result?.sessionId && result.productIds?.length) {
+      await syncProductsAfterInventory(result.sessionId, result.productIds);
       afterInventoryTouch(result.sessionId, result.productIds);
     }
 
@@ -587,6 +607,7 @@ class InventorySessionsService {
     );
 
     if (del?.productIds?.length) {
+      await syncProductsAfterInventory(sid, del.productIds);
       afterInventoryTouch(sid, del.productIds);
     }
 

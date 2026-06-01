@@ -16,12 +16,12 @@ export const inventorySessionsApi = {
   },
 
   apply: async (payload) => {
-    const response = await api.post('/inventory-sessions/apply', payload);
+    const response = await api.post('/inventory-sessions/apply', payload, { timeout: 300000 });
     return response.data?.data ?? response.data;
   },
 
   update: async (id, payload) => {
-    const response = await api.put(`/inventory-sessions/${id}`, payload);
+    const response = await api.put(`/inventory-sessions/${id}`, payload, { timeout: 300000 });
     return response.data?.data ?? response.data;
   },
 

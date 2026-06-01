@@ -62,7 +62,19 @@ class StockMovementsRepositoryPG {
    * Запись движения со снимком products.* после того, как вызывающий код уже обновил остатки (в той же транзакции).
    * @param {import('pg').PoolClient|null} client — если null, используется пул
    */
-  async insertSnapshotAfterProduct(client, { productId, type, quantityChange, reason = null, meta = null, warehouseId = null, profileId = null }) {
+  async insertSnapshotAfterProduct(
+    client,
+    {
+      productId,
+      type,
+      quantityChange,
+      reason = null,
+      meta = null,
+      warehouseId = null,
+      profileId = null,
+      skipReservedQtySync = false,
+    } = {}
+  ) {
     const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
     const metaJson = meta == null ? null : typeof meta === 'string' ? meta : JSON.stringify(meta);
     const wh = warehouseId != null && warehouseId !== '' ? warehouseId : null;
@@ -110,7 +122,7 @@ class StockMovementsRepositoryPG {
     const result = await run(sql, params);
     const movement = result.rows[0] || null;
     const typeNorm = type != null ? String(type).trim().toLowerCase() : '';
-    if (movement && typeNorm !== 'reserve' && typeNorm !== 'unreserve') {
+    if (movement && !skipReservedQtySync && typeNorm !== 'reserve' && typeNorm !== 'unreserve') {
       await run(
         `UPDATE products p
          SET reserved_quantity = COALESCE((
