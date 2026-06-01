@@ -4,6 +4,15 @@
 
 import { query, transaction } from '../config/database.js';
 import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
+import { runWithDbRetry } from '../utils/dbRetry.js';
+
+/** Инвентаризация: много строк FOR UPDATE — дольше обычных транзакций. */
+const INVENTORY_TX_OPTS = { lockTimeoutMs: 120000, statementTimeoutMs: 600000 };
+
+/** Ключ advisory xact_lock по складу (не пересекается с product_id > 0). */
+function inventoryWarehouseLockKey(whId) {
+  return -1_000_000_000 - Math.abs(Number(whId) || 0);
+}
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -161,7 +170,13 @@ async function runInventoryLines(client, {
   let applied = 0;
   const affectedProductIds = new Set();
 
-  for (const raw of linesInput) {
+  const sortedLines = [...linesInput].sort((a, b) => {
+    const pa = parseLineProductId(a) ?? 0;
+    const pb = parseLineProductId(b) ?? 0;
+    return pa - pb;
+  });
+
+  for (const raw of sortedLines) {
     const productId = parseLineProductId(raw);
     const quantityAfter = parseLineQuantityAfter(raw);
     if (!productId) continue;
@@ -185,7 +200,9 @@ async function runInventoryLines(client, {
 
   // Без хотя бы одной пересчитанной позиции не обнуляем весь склад (защита от пустого/битого lines).
   if (zeroUnlisted && listedIds.size > 0) {
-    const unlisted = await findUnlistedWithStock(client, whId, profileId, listedIds);
+    const unlisted = (await findUnlistedWithStock(client, whId, profileId, listedIds)).sort(
+      (a, b) => Number(a.product_id) - Number(b.product_id)
+    );
     for (const row of unlisted) {
       const productId = parseInt(row.product_id, 10);
       if (!productId || Number.isNaN(productId)) continue;
@@ -210,6 +227,13 @@ async function runInventoryLines(client, {
 
 async function afterInventoryTouch(sessionId, productIds) {
   if (!sessionId || !Array.isArray(productIds) || productIds.length === 0) return;
+  const ids = [...productIds];
+  setImmediate(() => {
+    afterInventoryTouchBackground(sessionId, ids).catch(() => {});
+  });
+}
+
+async function afterInventoryTouchBackground(sessionId, productIds) {
   try {
     const { default: ordersService } = await import('./orders.service.js');
     const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
@@ -353,8 +377,11 @@ class InventorySessionsService {
     const pid = normalizeProfileId(profileId);
     const zeroUnlistedFlag = zeroUnlisted !== false;
 
-    const result = await transaction(async (client) => {
+    const result = await runWithDbRetry(
+      () =>
+        transaction(async (client) => {
       const whId = await requireInventoryWarehouseId(client, warehouseId);
+      await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [inventoryWarehouseLockKey(whId)]);
 
       const ins = await client.query(
         `INSERT INTO inventory_sessions (created_by_user_id, profile_id, lines_count, note, warehouse_id)
@@ -402,10 +429,12 @@ class InventorySessionsService {
       }
 
       return { sessionId, linesApplied: applied, productIds };
-    });
+    }, INVENTORY_TX_OPTS),
+      { label: 'inventory-apply' }
+    );
 
     if (result?.sessionId && result.productIds?.length) {
-      await afterInventoryTouch(result.sessionId, result.productIds);
+      afterInventoryTouch(result.sessionId, result.productIds);
     }
 
     return result;
@@ -432,8 +461,17 @@ class InventorySessionsService {
     const zeroUnlistedFlag = zeroUnlisted !== false;
 
     const revertProductIds = new Set();
-    const result = await transaction(async (client) => {
-      for (const line of oldLines || []) {
+    const result = await runWithDbRetry(
+      () =>
+        transaction(async (client) => {
+      const whNum = Number(whId);
+      if (Number.isFinite(whNum) && whNum > 0) {
+        await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [inventoryWarehouseLockKey(whNum)]);
+      }
+      const oldSorted = [...(oldLines || [])].sort(
+        (a, b) => Number(a.product_id) - Number(b.product_id)
+      );
+      for (const line of oldSorted) {
         const productId = parseInt(line.product_id, 10);
         if (!productId || Number.isNaN(productId)) continue;
         if (pid != null) {
@@ -477,10 +515,12 @@ class InventorySessionsService {
         linesApplied: applied,
         productIds: [...new Set([...revertProductIds, ...productIds])],
       };
-    });
+    }, INVENTORY_TX_OPTS),
+      { label: 'inventory-update' }
+    );
 
     if (result?.sessionId && result.productIds?.length) {
-      await afterInventoryTouch(result.sessionId, result.productIds);
+      afterInventoryTouch(result.sessionId, result.productIds);
     }
 
     return result;
@@ -496,9 +536,18 @@ class InventorySessionsService {
     const pid = normalizeProfileId(profileId);
     const reason = `Аннулирование инвентаризации №${sid}`;
 
-    const del = await transaction(async (client) => {
+    const del = await runWithDbRetry(
+      () =>
+        transaction(async (client) => {
+      const whNum = Number(whId);
+      if (Number.isFinite(whNum) && whNum > 0) {
+        await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [inventoryWarehouseLockKey(whNum)]);
+      }
       const touchedIds = [];
-      for (const line of lines || []) {
+      const linesSorted = [...(lines || [])].sort(
+        (a, b) => Number(a.product_id) - Number(b.product_id)
+      );
+      for (const line of linesSorted) {
         const productId = parseInt(line.product_id, 10);
         const qb = line.quantity_before != null ? Number(line.quantity_before) : 0;
         const qa = line.quantity_after != null ? Number(line.quantity_after) : 0;
@@ -533,20 +582,12 @@ class InventorySessionsService {
 
       await client.query('DELETE FROM inventory_sessions WHERE id = $1', [sid]);
       return { deleted: true, id: sid, productIds: [...new Set(touchedIds)] };
-    });
+    }, INVENTORY_TX_OPTS),
+      { label: 'inventory-delete' }
+    );
 
     if (del?.productIds?.length) {
-      try {
-        const { default: ordersService } = await import('./orders.service.js');
-        const { syncProductQuantityFromWarehouseStock } =
-          await import('./productWarehouseQuantity.service.js');
-        for (const pid of del.productIds) {
-          await syncProductQuantityFromWarehouseStock(pid);
-          await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
-        }
-      } catch {
-        // ignore
-      }
+      afterInventoryTouch(sid, del.productIds);
     }
 
     return del;
