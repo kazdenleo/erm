@@ -213,17 +213,38 @@ class UserCategoriesController {
       }
 
       if (marketplace === 'wb') {
+        const subjectOverrideRaw = req.query.subject_id ?? req.query.subjectId ?? null;
+        const subjectOverride = subjectOverrideRaw != null ? Number(subjectOverrideRaw) : 0;
         const subjectIdRaw =
-          mm?.wb ??
-          mm?.wb_subject_id ??
-          mm?.wbSubjectId ??
-          null;
+          subjectOverride > 0
+            ? subjectOverride
+            : (mm?.wb ?? mm?.wb_subject_id ?? mm?.wbSubjectId ?? null);
         const subjectId = subjectIdRaw != null ? Number(subjectIdRaw) : 0;
         if (!subjectId || subjectId <= 0) {
-          return res.status(400).json({ ok: false, error: 'Для WB не задан subjectId в сопоставлении категории (marketplace_mappings.wb).' });
+          return res.status(400).json({
+            ok: false,
+            error: 'Для WB не задан subjectId. Укажите сопоставление в категории ERP или загрузите карточку с WB (subjectID).'
+          });
         }
-        const list = await integrationsService.getWildberriesCategoryAttributes(subjectId, { forceRefresh });
-        return res.status(200).json({ ok: true, data: Array.isArray(list) ? list : [] });
+        const organizationId = req.query.organization_id ?? req.query.organizationId ?? null;
+        try {
+          const list = await integrationsService.getWildberriesCategoryAttributes(subjectId, {
+            forceRefresh,
+            organizationId
+          });
+          return res.status(200).json({ ok: true, data: Array.isArray(list) ? list : [] });
+        } catch (e) {
+          logger.warn('[User Categories] WB category attributes failed', {
+            userCategoryId: id,
+            subjectId,
+            organizationId,
+            err: e?.message
+          });
+          return res.status(e?.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 502).json({
+            ok: false,
+            error: e?.message || 'Не удалось загрузить характеристики категории Wildberries.'
+          });
+        }
       }
 
       if (marketplace === 'ym') {

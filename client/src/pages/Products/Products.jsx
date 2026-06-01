@@ -486,7 +486,11 @@ export function Products() {
       setEditingProduct(null);
     } catch (error) {
       console.error('Error saving product:', error);
-      const message = error.response?.data?.message || error.message || 'Неизвестная ошибка';
+      const message =
+        error.response?.data?.details?.map((d) => d.message || d.path?.join('.')).filter(Boolean).join('; ')
+        || error.response?.data?.message
+        || error.message
+        || 'Неизвестная ошибка';
       alert('Ошибка сохранения товара: ' + message);
     }
   };

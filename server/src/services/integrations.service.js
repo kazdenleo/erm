@@ -1398,9 +1398,18 @@ class IntegrationsService {
    * WB Content API: GET запрос с Authorization.
    * @private
    * @param {string} path
+   * @param {{ profileId?: number|string|null, organizationId?: number|string|null, wbOverride?: object }} [opts]
    */
-  async _wbContentApiGet(path) {
-    const config = await this.getMarketplaceConfig('wildberries');
+  async _wbContentApiGet(path, opts = {}) {
+    const profileId = opts.profileId ?? opts.profile_id ?? null;
+    const organizationId = opts.organizationId ?? opts.organization_id ?? null;
+    const config =
+      opts.wbOverride && typeof opts.wbOverride === 'object'
+        ? opts.wbOverride
+        : await this.getMarketplaceConfig('wildberries', {
+            ...(profileId != null && profileId !== '' ? { profileId } : {}),
+            ...(organizationId != null && organizationId !== '' ? { organizationId } : {})
+          });
     if (!config || !config.api_key) {
       const err = new Error('API ключ Wildberries не настроен');
       err.statusCode = 400;
@@ -1490,7 +1499,7 @@ class IntegrationsService {
 
     let data;
     try {
-      data = await this._wbContentApiGet(`/content/v2/object/charcs/${subjectIdNum}`);
+      data = await this._wbContentApiGet(`/content/v2/object/charcs/${subjectIdNum}`, opts);
     } catch (e) {
       if (e?.statusCode === 404) {
         logger.debug('[Integrations Service] WB charcs 404 for subjectId, returning empty list', { subjectId: subjectIdNum });

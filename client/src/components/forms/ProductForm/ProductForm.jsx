@@ -168,6 +168,47 @@ function isEmptyMarketplaceValue(v) {
   return false;
 }
 
+/** Значение характеристики WB для хранения в wb_attributes (строка/число/boolean). */
+function normalizeWbAttributeScalar(v) {
+  if (v === undefined || v === null) return '';
+  if (typeof v === 'boolean' || typeof v === 'number') return v;
+  if (Array.isArray(v)) {
+    const s = v.map((x) => (x == null ? '' : String(x).trim())).filter(Boolean).join('; ');
+    return s;
+  }
+  if (typeof v === 'object') {
+    try {
+      return JSON.stringify(v);
+    } catch (_) {
+      return String(v);
+    }
+  }
+  return String(v);
+}
+
+function mergeWbCharacteristicsIntoValues(characteristics, prev = {}) {
+  const next = { ...prev };
+  if (!Array.isArray(characteristics)) return next;
+  for (const c of characteristics) {
+    const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
+    const key = id != null ? String(id) : String(c?.name ?? c?.characteristic_name ?? '').trim();
+    if (!key) continue;
+    if (!isEmptyMarketplaceValue(next[key])) continue;
+    const raw = c?.value;
+    const normalized = normalizeWbAttributeScalar(raw);
+    if (isEmptyMarketplaceValue(normalized)) continue;
+    next[key] = normalized;
+  }
+  return next;
+}
+
+function resolveWbSubjectIdFromMappings(mm) {
+  if (!mm || typeof mm !== 'object') return 0;
+  const raw = mm.wb ?? mm.wb_subject_id ?? mm.wbSubjectId ?? null;
+  const n = raw != null ? Number(raw) : 0;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 function vatCodeToText(code) {
   const c = String(code || '').trim().toUpperCase();
   if (!c) return '';
@@ -606,7 +647,12 @@ export function ProductForm({
         : {};
       setOzonAttributeValues(ozonAttrs);
       const wbAttrs = currentProduct.wb_attributes && typeof currentProduct.wb_attributes === 'object'
-        ? Object.fromEntries(Object.entries(currentProduct.wb_attributes).map(([k, v]) => [String(k), v]))
+        ? Object.fromEntries(
+            Object.entries(currentProduct.wb_attributes).map(([k, v]) => [
+              String(k),
+              normalizeWbAttributeScalar(v)
+            ])
+          )
         : {};
       setWbAttributeValues(wbAttrs);
       const ymAttrs = currentProduct.ym_attributes && typeof currentProduct.ym_attributes === 'object'
@@ -835,10 +881,20 @@ export function ProductForm({
     if (typeof mm === 'string') {
       try { mm = JSON.parse(mm || '{}'); } catch (_) { mm = {}; }
     }
-    const subject = mm?.wb;
-    const n = subject != null ? Number(subject) : 0;
-    return Number.isFinite(n) ? n : 0;
+    return resolveWbSubjectIdFromMappings(mm);
   }, [formData.categoryId, categoryResolvedForMappings]);
+
+  const effectiveWbSubjectId = useMemo(() => {
+    if (wbSubjectId > 0) return wbSubjectId;
+    const fromCard = wbFetchedProduct?.subjectID ?? wbFetchedProduct?.subjectId;
+    const n = fromCard != null ? Number(fromCard) : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [wbSubjectId, wbFetchedProduct]);
+
+  const wbAttributesOrganizationId = useMemo(
+    () => resolveKitPickerOrganizationId(formData.organizationId, productsListOrganizationId),
+    [formData.organizationId, productsListOrganizationId]
+  );
 
   // Яндекс.Маркет: id листовой категории (строка цифр — без потери точности для длинных id)
   const ymMarketCategoryId = useMemo(() => {
@@ -987,15 +1043,23 @@ export function ProductForm({
   useEffect(() => {
     if (activeTab !== 'wb') return undefined;
     const userCategoryId = formData.categoryId ? String(formData.categoryId).trim() : '';
-    if (!userCategoryId || !wbSubjectId || wbSubjectId <= 0) {
+    if (!userCategoryId || !effectiveWbSubjectId || effectiveWbSubjectId <= 0) {
       setWbCategoryAttributes([]);
       setWbCategoryAttributesError('');
-      return;
+      return undefined;
+    }
+    if (!wbAttributesOrganizationId) {
+      setWbCategoryAttributes([]);
+      setWbCategoryAttributesError('Выберите организацию — атрибуты WB запрашиваются из кабинета этой организации.');
+      return undefined;
     }
     let cancelled = false;
     setWbCategoryAttributesLoading(true);
     setWbCategoryAttributesError('');
-    userCategoriesApi.getMarketplaceAttributes(userCategoryId, 'wb')
+    userCategoriesApi.getMarketplaceAttributes(userCategoryId, 'wb', {
+      organizationId: wbAttributesOrganizationId,
+      subjectId: effectiveWbSubjectId !== wbSubjectId ? effectiveWbSubjectId : undefined
+    })
       .then((res) => {
         if (cancelled) return;
         const list = res?.data ?? res;
@@ -1005,13 +1069,13 @@ export function ProductForm({
         if (!cancelled) {
           console.warn('[ProductForm] WB category attributes load failed:', err);
           setWbCategoryAttributes([]);
-          const msg = err?.response?.data?.error || err?.message || 'Ошибка загрузки атрибутов WB.';
+          const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Ошибка загрузки атрибутов WB.';
           setWbCategoryAttributesError(msg);
         }
       })
       .finally(() => { if (!cancelled) setWbCategoryAttributesLoading(false); });
     return () => { cancelled = true; };
-  }, [activeTab, formData.categoryId, wbSubjectId]);
+  }, [activeTab, formData.categoryId, effectiveWbSubjectId, wbSubjectId, wbAttributesOrganizationId]);
 
   // Автоподстановка значений документа в WB-атрибуты по названию поля
   useEffect(() => {
@@ -1345,20 +1409,8 @@ export function ProductForm({
       }
       setWbFetchedProduct(data);
       mergeWbFetchedIntoForm(data);
-      // Заполним wbAttributeValues из пришедших характеристик (если в товаре ещё не сохранены)
       if (Array.isArray(data.characteristics) && data.characteristics.length > 0) {
-        setWbAttributeValues((prev) => {
-          const next = { ...prev };
-          data.characteristics.forEach((c) => {
-            const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
-            if (id == null) return;
-            const v = Array.isArray(c?.value) ? (c.value[0] ?? '') : (c?.value ?? '');
-            if (v == null) return;
-            if (next[String(id)] != null && String(next[String(id)]).trim() !== '') return;
-            next[String(id)] = typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? v : String(v);
-          });
-          return next;
-        });
+        setWbAttributeValues((prev) => mergeWbCharacteristicsIntoValues(data.characteristics, prev));
       }
       // На вкладке WB заполняем nmId, если оно пришло нормализованным
       const nmFromWb = data.nmId ?? data.nmID ?? data.nm_id;
@@ -1373,6 +1425,11 @@ export function ProductForm({
       setWbSyncLoading(false);
     }
   }, [formData.sku_wb, formData.organizationId, productsListOrganizationId, mergeWbFetchedIntoForm]);
+
+  useEffect(() => {
+    if (!Array.isArray(wbFetchedProduct?.characteristics) || wbFetchedProduct.characteristics.length === 0) return;
+    setWbAttributeValues((prev) => mergeWbCharacteristicsIntoValues(wbFetchedProduct.characteristics, prev));
+  }, [wbFetchedProduct]);
 
   const fetchYmProductInfo = useCallback(async () => {
     const organizationId = resolveKitPickerOrganizationId(
@@ -2230,6 +2287,22 @@ export function ProductForm({
       }
       return Object.keys(out).length > 0 ? out : undefined;
     })();
+    const wbAttributesPayload = (() => {
+      const out = {};
+      for (const [k, v] of Object.entries(wbAttributeValues)) {
+        if (v === undefined || v === null) continue;
+        const key = String(k).trim();
+        if (!key) continue;
+        const normalized = normalizeWbAttributeScalar(v);
+        if (isEmptyMarketplaceValue(normalized)) continue;
+        if (typeof normalized === 'string') {
+          out[key] = normalized.trim();
+        } else {
+          out[key] = normalized;
+        }
+      }
+      return Object.keys(out).length > 0 ? out : undefined;
+    })();
     const payload = {
       name: formData.name.trim(),
       sku: formData.sku.trim(),
@@ -2269,7 +2342,7 @@ export function ProductForm({
         : [],
       attribute_values: attributeValuesPayload,
       ozon_attributes: ozonAttributesPayload,
-      wb_attributes: Object.keys(wbAttributeValues).length > 0 ? wbAttributeValues : undefined,
+      wb_attributes: wbAttributesPayload,
       ym_attributes: Object.keys(ymAttributeValues).length > 0 ? ymAttributeValues : undefined,
       marketplace_ozon_product_id: (() => {
         const manual = String(formData.ozon_product_id || '').trim();
@@ -3784,15 +3857,10 @@ export function ProductForm({
                         const id = c?.id ?? c?.characteristic_id ?? c?.charcID;
                         const name = c?.name ?? c?.characteristic_name ?? (id != null ? `ID ${id}` : 'Характеристика');
                         const key = id != null ? String(id) : String(name);
-                        const fromApi = Array.isArray(c?.value) ? c.value : (c?.value ?? '');
-                        const value = wbAttributeValues[key] ?? fromApi;
-                        const display = (() => {
-                          if (Array.isArray(value)) return value.map((v) => (v == null ? '' : String(v))).join('; ');
-                          if (value != null && typeof value === 'object') {
-                            try { return JSON.stringify(value); } catch (_) { return String(value); }
-                          }
-                          return value == null ? '' : String(value);
-                        })();
+                        const raw = wbAttributeValues[key];
+                        const display = isEmptyMarketplaceValue(raw)
+                          ? ''
+                          : (typeof raw === 'string' ? raw : String(normalizeWbAttributeScalar(raw)));
                         return (
                           <div key={key} className="col-12 col-md-6 col-lg-4">
                             <label className="form-label" htmlFor={`wb-attr-${key}`}>
@@ -3809,9 +3877,9 @@ export function ProductForm({
                         );
                       })}
                     </div>
-                  ) : !wbSubjectId || wbSubjectId <= 0 ? (
+                  ) : !effectiveWbSubjectId || effectiveWbSubjectId <= 0 ? (
                     <div className="alert alert-warning py-2 mb-0" style={{ fontSize: '12px' }}>
-                      Нет сопоставления WB в категории и карточка ещё не загружена. Заполните <code>marketplace_mappings.wb</code> или нажмите «Обновить данные с WB».
+                      Нет subjectId WB. Заполните сопоставление в категории ERP или нажмите «Обновить данные с WB».
                     </div>
                   ) : (
                     <div className="text-muted" style={{ fontSize: '12px' }}>
