@@ -28,7 +28,20 @@ import {
   singleOrderListGroupKey,
   marketplaceOrderIdForApi
 } from '../../utils/orderListGroupKey';
-import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
+import {
+  isAssemblyLikeStatus,
+  orderStickerCellValue,
+  shouldShowOrdersStickerColumn
+} from '../../utils/orderStickerDisplay';
+import {
+  groupReserveCoverageKind,
+  reserveBadgeClassName,
+  formatOrderReserveBadgeTitle
+} from '../../utils/orderReserveBadge.js';
+import {
+  buildProcurementEditableLines,
+  productsMapFromStockList
+} from '../../utils/procurementPreview.js';
 import './Orders.css';
 import './OrderDetail.css';
 
@@ -51,59 +64,6 @@ function buildOrdersSyncDoneMessage(lastStatus, { forceImport = false } = {}) {
 function orderKey(o) {
   const mp = normalizeMarketplaceForUI(o.marketplace);
   return `${mp}|${o.orderId ?? ''}`;
-}
-
-/** Плашка резерва в списке: зелёная — со склада, серая — с участием «в пути». */
-function groupReserveCoverageKind(orders) {
-  let anyIncoming = false;
-  let anyOnHand = false;
-  for (const o of orders || []) {
-    const k = String(o.reserveCoverage ?? o.reserve_coverage ?? 'none').toLowerCase();
-    if (k === 'on_hand') anyOnHand = true;
-    if (k === 'incoming') anyIncoming = true;
-  }
-  if (anyIncoming) return 'incoming';
-  if (anyOnHand) return 'on_hand';
-  return 'none';
-}
-
-function reserveBadgeClassName(coverageKind) {
-  if (coverageKind === 'on_hand') return 'orders-reserve-badge orders-reserve-badge--on-hand';
-  if (coverageKind === 'incoming') return 'orders-reserve-badge orders-reserve-badge--incoming';
-  return 'orders-reserve-badge orders-reserve-badge--incoming';
-}
-
-/** Подсказка к бейджу резерва: итого и по каждой позиции / комплектующей. */
-function formatOrderReserveBadgeTitle({ reservedQty, needQty, orders, isGroup, coverageKind }) {
-  const fully =
-    needQty > 0 && reservedQty >= needQty
-      ? ' (полностью)'
-      : '';
-  const sourceHint =
-    coverageKind === 'on_hand'
-      ? '\nПокрытие: со склада (в наличии).'
-      : coverageKind === 'incoming'
-        ? '\nПокрытие: с участием товара в пути.'
-        : '';
-  const head = `Зарезервировано ${reservedQty} из ${needQty}${fully}${sourceHint}`;
-  const pool = isGroup ? orders || [] : orders?.length ? [orders[0]] : [];
-  const lines = [];
-  for (const o of pool) {
-    const rl = o.reserveLines ?? o.reserve_lines;
-    if (Array.isArray(rl)) lines.push(...rl);
-  }
-  if (!lines.length) {
-    return `${head}\nТовары и комплектующие по заказу`;
-  }
-  const detail = lines
-    .map((l) => {
-      const label = String(l.label || l.productName || 'Позиция').trim();
-      const r = Number(l.reservedQty) || 0;
-      const n = Number(l.needQty) || 0;
-      return `${label}: ${r}/${n}`;
-    })
-    .join('\n');
-  return `${head}\n${detail}`;
 }
 
 /** Сообщение «на сборку», если поставка WB заведена только в ERM без ключа API */
@@ -424,6 +384,8 @@ export function Orders() {
   const [statusFilter, setStatusFilter] = useState('new');
   /** Колонка «Поставка» — только на вкладке «Собран» */
   const showShipmentColumn = statusFilter === 'assembled';
+  /** Колонка «Стикер» — на сборке и у собранных (не на «Новый» / «В закупке») */
+  const showStickerColumn = shouldShowOrdersStickerColumn(statusFilter);
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [statusCounts, setStatusCounts] = useState({ all: 0 });
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
@@ -491,6 +453,9 @@ export function Orders() {
   const [procurementWarehouseId, setProcurementWarehouseId] = useState('');
   /** Сортировка таблицы позиций в модалке закупки по количеству */
   const [procurementPreviewQtySort, setProcurementPreviewQtySort] = useState(null);
+  /** Редактируемые позиции закупки (кол-во, исключение, подсказка по складу) */
+  const [procurementEditableLines, setProcurementEditableLines] = useState([]);
+  const [procurementLinesReady, setProcurementLinesReady] = useState(false);
 
   const procurementWarehouseOptions = useMemo(
     () => (warehouses || []).filter((w) => w?.type === 'warehouse' && !w?.supplier_id),
@@ -540,9 +505,8 @@ export function Orders() {
     procurementWarehouseOptions,
   ]);
 
-  const procurementMergedPreviewLines = useMemo(() => {
-    if (!procurementModalRow) return [];
-    const lines = mergePurchaseLinesByArticle(purchaseLinesFromDisplayRow(procurementModalRow));
+  const procurementDisplayLines = useMemo(() => {
+    const lines = procurementEditableLines.filter((l) => !l.excluded);
     if (procurementPreviewQtySort == null) return lines;
     const dir = procurementPreviewQtySort === 'asc' ? 1 : -1;
     const q = (l) => {
@@ -554,11 +518,89 @@ export function Orders() {
       if (d !== 0) return d * dir;
       return String(a.article || '').localeCompare(String(b.article || ''), 'ru', { numeric: true });
     });
-  }, [procurementModalRow, procurementPreviewQtySort]);
+  }, [procurementEditableLines, procurementPreviewQtySort]);
+
+  const procurementExcludedOnHandCount = useMemo(
+    () => procurementEditableLines.filter((l) => l.excluded && l.stockStatus === 'on_hand').length,
+    [procurementEditableLines]
+  );
 
   useEffect(() => {
     setProcurementPreviewQtySort(null);
+    setProcurementEditableLines([]);
+    setProcurementLinesReady(false);
   }, [procurementModalRow?.key]);
+
+  useEffect(() => {
+    if (!procurementModalRow || procurementModalLoading) return undefined;
+    let cancelled = false;
+    setProcurementLinesReady(false);
+    (async () => {
+      try {
+        const rawLines = purchaseLinesFromDisplayRow(procurementModalRow);
+        const resolved = await resolvePurchaseLinesByCatalogSku(rawLines);
+        const merged = mergePurchaseLinesByArticle(resolved);
+        const sourceOrders =
+          procurementModalBulkSourceRows && procurementModalBulkSourceRows.length > 0
+            ? procurementModalBulkSourceRows.flatMap((r) => ordersArrayForPurchaseRow(r))
+            : ordersArrayForPurchaseRow(procurementModalRow);
+        const pids = [
+          ...new Set(
+            merged.map((l) => Number(l.productId)).filter((id) => Number.isInteger(id) && id >= 1)
+          ),
+        ];
+        let productsById = new Map();
+        if (pids.length > 0) {
+          const data = await productsApi.getAll({ cacheBust: true, limit: 2000, listView: 'stock' });
+          const products = Array.isArray(data) ? data : data?.data ?? data?.products ?? [];
+          productsById = productsMapFromStockList(products);
+        }
+        const editable = buildProcurementEditableLines(merged, sourceOrders, productsById);
+        if (!cancelled) {
+          setProcurementEditableLines(editable);
+          setProcurementLinesReady(true);
+        }
+      } catch {
+        if (!cancelled) {
+          setProcurementEditableLines([]);
+          setProcurementLinesReady(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [procurementModalRow, procurementModalBulkSourceRows, procurementModalLoading]);
+
+  const setProcurementLineQuantity = (lineKey, rawQty) => {
+    const n = parseInt(rawQty, 10);
+    const quantity = Number.isFinite(n) ? Math.max(0, n) : 0;
+    setProcurementEditableLines((prev) =>
+      prev.map((l) =>
+        l.lineKey === lineKey ? { ...l, quantity, excluded: quantity <= 0 ? l.excluded : false } : l
+      )
+    );
+  };
+
+  const removeProcurementLine = (lineKey) => {
+    setProcurementEditableLines((prev) =>
+      prev.map((l) => (l.lineKey === lineKey ? { ...l, excluded: true, quantity: 0 } : l))
+    );
+  };
+
+  const restoreProcurementLine = (lineKey) => {
+    setProcurementEditableLines((prev) =>
+      prev.map((l) => {
+        if (l.lineKey !== lineKey) return l;
+        const qty = Math.max(0, Number(l.orderNeed) || 0);
+        return {
+          ...l,
+          excluded: false,
+          quantity: l.stockStatus === 'on_hand' ? 0 : qty > 0 ? qty : 1,
+        };
+      })
+    );
+  };
 
   useEffect(() => {
     if (!allowPrivateOrders) {
@@ -1015,15 +1057,18 @@ export function Orders() {
     setProcurementModalBulkSourceRows(null);
     setProcurementModalErr(null);
     setProcurementPreviewQtySort(null);
+    setProcurementEditableLines([]);
+    setProcurementLinesReady(false);
     setProcurementOrganizationId('');
     setProcurementWarehouseId('');
   };
 
   const submitProcurementFromOrder = async () => {
     if (!procurementModalRow) return;
-    let lines = purchaseLinesFromDisplayRow(procurementModalRow);
-    lines = await resolvePurchaseLinesByCatalogSku(lines);
-    const missingCatalog = lines.filter((l) => !l.productId);
+    const activeLines = procurementEditableLines.filter(
+      (l) => !l.excluded && l.productId && Number(l.quantity) > 0
+    );
+    const missingCatalog = procurementEditableLines.filter((l) => !l.excluded && !l.productId);
     if (missingCatalog.length > 0) {
       const names = missingCatalog.map((l) => l.article || l.name || '?').join(', ');
       setProcurementModalErr(
@@ -1031,14 +1076,17 @@ export function Orders() {
       );
       return;
     }
-    const merged = mergePurchaseLinesByArticle(lines);
-    const items = merged.map((l) => ({
+    const items = activeLines.map((l) => ({
       productId: l.productId,
-      quantity: l.quantity,
+      quantity: Math.max(1, parseInt(l.quantity, 10) || 1),
       sourceOrders: l.sourceOrders ?? [],
     }));
     if (items.length === 0) {
-      setProcurementModalErr('Нет позиций для закупки');
+      setProcurementModalErr(
+        procurementExcludedOnHandCount > 0
+          ? 'Все позиции уже на складе или сняты с закупки. Добавьте количество хотя бы для одной строки.'
+          : 'Нет позиций для закупки'
+      );
       return;
     }
     if (procurementChoice === 'existing') {
@@ -1324,6 +1372,7 @@ export function Orders() {
     const byStatus =
       statusFilter === 'all' ||
       stNorm === statusFilter ||
+      (statusFilter === 'in_assembly' && o.status === 'wb_assembly') ||
       (!isWb && o.status === statusFilter);
     return byMarketplace && byStatus && bySearch;
   }), [orders, marketplaceFilter, statusFilter, orderSearchQuery]);
@@ -1357,7 +1406,11 @@ export function Orders() {
       const mpLower = String(o.marketplace || '').toLowerCase();
       const isWb = mpLower === 'wb' || mpLower === 'wildberries';
       const stNorm = isWb ? normalizeWbNewLikeStatus(o.status) : String(o.status ?? '');
-      return stNorm === statusFilter || (!isWb && o.status === statusFilter);
+      return (
+        stNorm === statusFilter ||
+        (statusFilter === 'in_assembly' && o.status === 'wb_assembly') ||
+        (!isWb && o.status === statusFilter)
+      );
     });
     const byGroup = new Map(); // gid -> normalizedMarketplace
     for (const o of ordersByStatus) {
@@ -2097,12 +2150,13 @@ export function Orders() {
                       <strong>{totalOrderUnitsFromBulkRows(procurementModalBulkSourceRows)}</strong>
                       {' · '}
                       Уникальных строк закупки (после объединения по артикулу):{' '}
-                      <strong>
-                        {
-                          mergePurchaseLinesByArticle(purchaseLinesFromDisplayRow(procurementModalRow))
-                            .length
-                        }
-                      </strong>
+                      <strong>{procurementEditableLines.length}</strong>
+                      {procurementExcludedOnHandCount > 0 ? (
+                        <>
+                          {' '}
+                          · на складе (не закупаем): <strong>{procurementExcludedOnHandCount}</strong>
+                        </>
+                      ) : null}
                       . Совпадение «заказов МП» и «позиций» бывает, если заказ — одна строка в БД с количеством больше 1. После
                       подтверждения строки попадут в закупку; каждая позиция заказа — в статус «В закупке».
                     </>
@@ -2113,54 +2167,134 @@ export function Orders() {
                     </>
                   )}
                 </p>
-                <table className="table" style={{ marginBottom: 16, fontSize: 14 }}>
-                  <thead>
-                    <tr>
-                      <th>Товар</th>
-                      <th>Артикул</th>
-                      <th
-                        className={`orders-th-sortable${procurementPreviewQtySort ? ' orders-th-sortable--active' : ''}`}
-                      >
-                        <button
-                          type="button"
-                          className="orders-th-sortable-btn"
-                          aria-label={
-                            procurementPreviewQtySort == null
-                              ? 'Сортировать по количеству по возрастанию'
-                              : procurementPreviewQtySort === 'asc'
-                                ? 'Сортировать по количеству по убыванию'
-                                : 'Сбросить сортировку по количеству'
-                          }
-                          onClick={() =>
-                            setProcurementPreviewQtySort((prev) =>
-                              prev == null ? 'asc' : prev === 'asc' ? 'desc' : null
-                            )
-                          }
-                          title={
-                            procurementPreviewQtySort == null
-                              ? 'Нажмите: сортировать по количеству ↑'
-                              : procurementPreviewQtySort === 'asc'
-                                ? 'Сейчас ↑. Нажмите — ↓'
-                                : 'Сейчас ↓. Нажмите — без сортировки'
-                          }
-                        >
-                          Кол-во
-                          {procurementPreviewQtySort === 'asc' ? ' ↑' : ''}
-                          {procurementPreviewQtySort === 'desc' ? ' ↓' : ''}
-                        </button>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {procurementMergedPreviewLines.map((line, i) => (
-                      <tr key={`${line.article}-${line.productId ?? 'x'}-${i}`}>
-                        <td>{line.name}</td>
-                        <td>{line.article}</td>
-                        <td>{line.quantity}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                {!procurementLinesReady ? (
+                  <p className="muted" style={{ marginBottom: 16 }}>
+                    Подготовка списка и проверка остатков на складе…
+                  </p>
+                ) : (
+                  <>
+                    {procurementExcludedOnHandCount > 0 ? (
+                      <p className="orders-procurement-stock-hint" style={{ marginBottom: 10 }}>
+                        Позиции с пометкой «На складе» уже покрыты остатком или резервом со склада — по умолчанию
+                        не попадают в закупку. При необходимости верните строку и укажите количество.
+                      </p>
+                    ) : null}
+                    <table className="table orders-procurement-lines-table" style={{ marginBottom: 16, fontSize: 14 }}>
+                      <thead>
+                        <tr>
+                          <th>Товар</th>
+                          <th>Артикул</th>
+                          <th>Склад</th>
+                          <th className="orders-procurement-th-need">По заказу</th>
+                          <th
+                            className={`orders-th-sortable orders-procurement-th-qty${procurementPreviewQtySort ? ' orders-th-sortable--active' : ''}`}
+                          >
+                            <button
+                              type="button"
+                              className="orders-th-sortable-btn"
+                              aria-label={
+                                procurementPreviewQtySort == null
+                                  ? 'Сортировать по количеству к закупке по возрастанию'
+                                  : procurementPreviewQtySort === 'asc'
+                                    ? 'Сортировать по количеству к закупке по убыванию'
+                                    : 'Сбросить сортировку по количеству'
+                              }
+                              onClick={() =>
+                                setProcurementPreviewQtySort((prev) =>
+                                  prev == null ? 'asc' : prev === 'asc' ? 'desc' : null
+                                )
+                              }
+                            >
+                              К закупке
+                              {procurementPreviewQtySort === 'asc' ? ' ↑' : ''}
+                              {procurementPreviewQtySort === 'desc' ? ' ↓' : ''}
+                            </button>
+                          </th>
+                          <th className="orders-procurement-th-actions" aria-label="Действия" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {procurementEditableLines.map((line) => {
+                          const dimmed = line.excluded;
+                          const rowClass = [
+                            dimmed ? 'orders-procurement-line--excluded' : '',
+                            line.stockStatus === 'on_hand' && !dimmed ? 'orders-procurement-line--on-hand' : '',
+                            line.stockStatus === 'partial' && !dimmed ? 'orders-procurement-line--partial' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ');
+                          return (
+                            <tr key={line.lineKey} className={rowClass || undefined}>
+                              <td>{line.name}</td>
+                              <td>{line.article}</td>
+                              <td className="orders-procurement-stock-cell">
+                                {line.stockStatus === 'on_hand' ? (
+                                  <span
+                                    className="orders-procurement-stock-badge orders-procurement-stock-badge--on-hand"
+                                    title={`На складе: ${line.onHand}, по заказу: ${line.orderNeed}`}
+                                  >
+                                    На складе
+                                  </span>
+                                ) : line.stockStatus === 'partial' ? (
+                                  <span
+                                    className="orders-procurement-stock-badge orders-procurement-stock-badge--partial"
+                                    title={`На складе ${line.onHand}, покрыто ${line.covered} из ${line.orderNeed}`}
+                                  >
+                                    Частично
+                                  </span>
+                                ) : (
+                                  <span className="text-muted">—</span>
+                                )}
+                              </td>
+                              <td className="orders-procurement-need-cell">{line.orderNeed}</td>
+                              <td className="orders-procurement-qty-cell">
+                                {dimmed ? (
+                                  <span className="text-muted">—</span>
+                                ) : (
+                                  <input
+                                    type="number"
+                                    className="form-control orders-procurement-qty-input"
+                                    min={0}
+                                    max={9999}
+                                    value={line.quantity}
+                                    onChange={(e) => setProcurementLineQuantity(line.lineKey, e.target.value)}
+                                    aria-label={`Количество к закупке: ${line.article || line.name}`}
+                                  />
+                                )}
+                              </td>
+                              <td className="orders-procurement-actions-cell">
+                                {dimmed ? (
+                                  <button
+                                    type="button"
+                                    className="orders-procurement-restore-btn"
+                                    onClick={() => restoreProcurementLine(line.lineKey)}
+                                  >
+                                    Вернуть
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="orders-procurement-remove-btn"
+                                    title="Убрать из закупки"
+                                    aria-label={`Убрать из закупки: ${line.article || line.name}`}
+                                    onClick={() => removeProcurementLine(line.lineKey)}
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {procurementDisplayLines.length === 0 && procurementLinesReady ? (
+                      <p className="muted" style={{ marginBottom: 12 }}>
+                        Нет активных позиций для закупки. Верните строку из списка или измените количество.
+                      </p>
+                    ) : null}
+                  </>
+                )}
 
                 {procurementDraftPurchases.length > 0 && (
                   <div className="form-group" style={{ marginBottom: 14 }}>
@@ -2489,7 +2623,7 @@ export function Orders() {
                 <th>Количество</th>
                 <th>Цена</th>
                 <th>Резерв</th>
-                <th>Стикер</th>
+                {showStickerColumn ? <th>Стикер</th> : null}
                 {showShipmentColumn ? <th>Поставка</th> : null}
                 <th>Действия</th>
               </tr>
@@ -2695,9 +2829,11 @@ export function Orders() {
                       <span className="text-muted">—</span>
                     )}
                   </td>
-                  <td className="orders-col-sticker" title={stickerDisplay !== '—' ? stickerDisplay : ''}>
-                    {stickerDisplay}
-                  </td>
+                  {showStickerColumn ? (
+                    <td className="orders-col-sticker" title={stickerDisplay !== '—' ? stickerDisplay : ''}>
+                      {stickerDisplay}
+                    </td>
+                  ) : null}
                   {showShipmentColumn && first.status === 'assembled' ? (
                     <td className="orders-col-shipment" title={first.localShipmentName || ''}>
                       {first.localShipmentName ? (

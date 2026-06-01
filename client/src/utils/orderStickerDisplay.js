@@ -5,6 +5,12 @@ export function isAssemblyLikeStatus(status) {
   return s === 'in_assembly' || s === 'assembled' || s === 'wb_assembly';
 }
 
+/** Колонка «Стикер» в списке заказов — не на «Новый» и не в «В закупке». */
+export function shouldShowOrdersStickerColumn(statusFilter) {
+  const f = String(statusFilter ?? '').trim();
+  return f === 'in_assembly' || f === 'assembled' || f === 'wb_assembly' || f === 'all';
+}
+
 /**
  * Значение для колонки «Стикер» на сборке/собранных:
  * WB — номер стикера; Ozon и Я.Маркет — номер заказа (order_group_id или order_id).

@@ -347,7 +347,10 @@ const EMPTY_PRODUCT_FORM_DATA = {
   mp_wb_description: '',
   mp_wb_brand: '',
   mp_ym_name: '',
-  mp_ym_description: ''
+  mp_ym_description: '',
+  mp_ozon_name: '',
+  mp_ozon_description: '',
+  mp_ozon_brand: ''
 };
 
 export function ProductForm({
@@ -631,7 +634,10 @@ export function ProductForm({
         mp_wb_description: currentProduct.mp_wb_description || '',
         mp_wb_brand: currentProduct.mp_wb_brand || '',
         mp_ym_name: currentProduct.mp_ym_name || '',
-        mp_ym_description: currentProduct.mp_ym_description || ''
+        mp_ym_description: currentProduct.mp_ym_description || '',
+        mp_ozon_name: currentProduct.mp_ozon_name || '',
+        mp_ozon_description: currentProduct.mp_ozon_description || '',
+        mp_ozon_brand: currentProduct.mp_ozon_brand || ''
       });
       const ozonAttrs = currentProduct.ozon_attributes && typeof currentProduct.ozon_attributes === 'object'
         ? Object.fromEntries(
@@ -1254,6 +1260,48 @@ export function ProductForm({
     });
   }, [ymCategoryAttributes, orgVatText]);
 
+  const mergeOzonFetchedIntoForm = useCallback((data) => {
+    if (!data) return;
+    const name = String(data.name ?? data.title ?? '').trim();
+    const rawDesc = data.description ?? data.description_html ?? '';
+    const description =
+      rawDesc != null
+        ? String(rawDesc)
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        : '';
+    let brand = String(data.brand ?? '').trim();
+    const attrs = data.attributes ?? data.attribute_values;
+    if (!brand && Array.isArray(attrs)) {
+      const brandAttr = attrs.find(
+        (a) =>
+          Number(a.attribute_id ?? a.id) === 85 ||
+          /бренд|brand/i.test(String(a.name ?? a.attribute_id ?? ''))
+      );
+      const v0 = brandAttr?.values?.[0];
+      if (v0) {
+        brand = String(v0.value ?? v0.dictionary_value_id ?? v0.id ?? '').trim();
+      }
+    }
+    setFormData((prev) => {
+      const next = { ...prev };
+      if (name) next.mp_ozon_name = name;
+      if (description) next.mp_ozon_description = description;
+      if (brand) next.mp_ozon_brand = brand;
+      if (data.weight != null && (!prev.weight || String(prev.weight).trim() === '')) {
+        next.weight = String(data.weight);
+      }
+      const dx = data.dimension_x ?? data.width;
+      const dy = data.dimension_y ?? data.height;
+      const dz = data.dimension_z ?? data.length;
+      if (dx != null && (!prev.width || String(prev.width).trim() === '')) next.width = String(dx);
+      if (dy != null && (!prev.height || String(prev.height).trim() === '')) next.height = String(dy);
+      if (dz != null && (!prev.length || String(prev.length).trim() === '')) next.length = String(dz);
+      return next;
+    });
+  }, []);
+
   const fetchOzonProductInfo = useCallback(async () => {
     const organizationId = resolveKitPickerOrganizationId(
       formData.organizationId,
@@ -1290,6 +1338,7 @@ export function ProductForm({
       }
       setSyncedOzonProductId(data.id != null ? Number(data.id) : null);
       setOzonFetchedProduct(data);
+      mergeOzonFetchedIntoForm(data);
       const offerIdFromOzon = (data.offer_id ?? data.sku ?? '').trim();
       setFormData((prev) => {
         const next = { ...prev };
@@ -1314,7 +1363,9 @@ export function ProductForm({
         });
         setOzonAttributeValues((prev) => ({ ...prev, ...nextAttrs }));
       }
-      setOzonSyncSuccess('Данные с Ozon загружены: артикул, атрибуты (в т.ч. название, аннотация, бренд) и при необходимости габариты. Сохраните товар.');
+      setOzonSyncSuccess(
+        'Данные с Ozon загружены в поля вкладки (название, описание, бренд, атрибуты). Можно отредактировать и отправить обратно на Ozon.'
+      );
     } catch (err) {
       const msg = err.response?.data?.error ?? err.message ?? 'Ошибка при загрузке данных с Ozon.';
       setOzonSyncError(msg);
@@ -1326,7 +1377,8 @@ export function ProductForm({
     formData.sku_ozon,
     formData.ozon_product_id,
     formData.organizationId,
-    productsListOrganizationId
+    productsListOrganizationId,
+    mergeOzonFetchedIntoForm
   ]);
 
   const mergeWbFetchedIntoForm = useCallback((p) => {
@@ -1689,22 +1741,45 @@ export function ProductForm({
 
   const handlePushCard = async (marketplace) => {
     if (!currentProduct?.id) {
-      setPushCardError('Сначала сохраните товар в ERP.');
+      setPushCardError('Сначала сохраните товар в ERP (кнопка «Сохранить» внизу формы).');
+      return;
+    }
+    const productPatch = buildProductSubmitPayload();
+    if (!productPatch) {
+      setPushCardError('Исправьте ошибки в форме перед отправкой на маркетплейс.');
       return;
     }
     setPushCardLoading(marketplace);
     setPushCardError('');
     setPushCardMessage('');
     try {
-      const body = await productsApi.pushCard(currentProduct.id, marketplace);
+      const body = await productsApi.pushCard(currentProduct.id, marketplace, productPatch);
       const payload = body?.data ?? body;
+      const updated = payload?.product ?? body?.product;
+      if (updated?.id) {
+        setCurrentProduct(updated);
+        onProductUpdate?.(updated);
+      } else {
+        try {
+          const fresh = await productsApi.getById(currentProduct.id);
+          const full = fresh?.data ?? fresh;
+          if (full?.id) {
+            setCurrentProduct(full);
+            onProductUpdate?.(full);
+          }
+        } catch {
+          /* push мог пройти без перечитывания */
+        }
+      }
       const text = formatPushCardResults(payload);
       const allFailed =
         Array.isArray(payload?.results) && payload.results.length > 0 && payload.results.every((r) => !r.ok);
       if (allFailed || payload?.ok === false) {
         setPushCardError(text || 'Не удалось отправить данные на маркетплейс');
       } else {
-        setPushCardMessage(text || 'Данные отправлены на маркетплейс');
+        setPushCardMessage(
+          (text ? `${text}. ` : '') + 'Изменения сохранены в ERP и отправлены в кабинет маркетплейса.'
+        );
       }
     } catch (e) {
       setPushCardError(e?.response?.data?.message || e?.message || 'Ошибка отправки на маркетплейс');
@@ -2245,11 +2320,9 @@ export function ProductForm({
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    
+  const buildProductSubmitPayload = () => {
     if (!validate()) {
-      return;
+      return null;
     }
 
     // Фильтруем пустые баркоды
@@ -2324,6 +2397,9 @@ export function ProductForm({
       sku_ozon: toSku(formData.sku_ozon),
       sku_wb: toSku(formData.sku_wb),
       sku_ym: toSku(formData.sku_ym),
+      mp_ozon_name: trimOrNull(formData.mp_ozon_name),
+      mp_ozon_description: trimOrNull(formData.mp_ozon_description),
+      mp_ozon_brand: trimOrNull(formData.mp_ozon_brand),
       mp_wb_vendor_code: trimOrNull(formData.mp_wb_vendor_code),
       mp_wb_name: trimOrNull(formData.mp_wb_name),
       mp_wb_description: trimOrNull(formData.mp_wb_description),
@@ -2359,10 +2435,13 @@ export function ProductForm({
       })(),
     };
 
-    console.log('[ProductForm] Submitting payload:', payload);
-    console.log('[ProductForm] Brand value:', formData.brand);
-    console.log('[ProductForm] Buyout rate value:', formData.buyout_rate);
+    return payload;
+  };
 
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const payload = buildProductSubmitPayload();
+    if (!payload) return;
     onSubmit(payload);
   };
 
@@ -3333,11 +3412,51 @@ export function ProductForm({
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ozon?.trim()}
               title={!currentProduct?.id ? 'Сначала сохраните товар' : 'Отправить поля вкладки Ozon в кабинет'}
             >
-              {pushCardLoading === 'ozon' ? 'Отправка…' : 'Отправить на Ozon'}
+              {pushCardLoading === 'ozon' ? 'Отправка…' : 'Сохранить и отправить на Ozon'}
             </Button>
             <span className="text-muted small">
-              Подтянуть с Ozon или отправить изменения из ERP в кабинет (нужна связь и категория Ozon).
+              «Обновить с Ozon» — загрузка в ERP. «Сохранить и отправить» — сначала запись в ERP, затем выгрузка в кабинет Ozon.
             </span>
+          </div>
+          <div className="card mt-3 border-secondary">
+            <div className="card-header">Текст карточки Ozon</div>
+            <div className="card-body">
+              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
+                Поля для выгрузки на Ozon (отдельно от вкладки «Основное»). После «Обновить с Ozon» подставляются автоматически.
+              </p>
+              <div className="row g-3">
+                <div className="col-md-6">
+                  <label className="form-label" htmlFor="ozon-tab-name">Название (Ozon)</label>
+                  <input
+                    id="ozon-tab-name"
+                    type="text"
+                    className="form-control form-control-sm"
+                    value={formData.mp_ozon_name}
+                    onChange={(e) => handleChange('mp_ozon_name', e.target.value)}
+                  />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label" htmlFor="ozon-tab-brand">Бренд (Ozon)</label>
+                  <input
+                    id="ozon-tab-brand"
+                    type="text"
+                    className="form-control form-control-sm"
+                    value={formData.mp_ozon_brand}
+                    onChange={(e) => handleChange('mp_ozon_brand', e.target.value)}
+                  />
+                </div>
+                <div className="col-12">
+                  <label className="form-label" htmlFor="ozon-tab-description">Описание (Ozon)</label>
+                  <textarea
+                    id="ozon-tab-description"
+                    className="form-control form-control-sm"
+                    rows={5}
+                    value={formData.mp_ozon_description}
+                    onChange={(e) => handleChange('mp_ozon_description', e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
           </div>
           {(pushCardError || pushCardMessage) && activeTab === 'ozon' ? (
             <div
@@ -3697,10 +3816,10 @@ export function ProductForm({
               onClick={() => handlePushCard('wb')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_wb?.trim()}
             >
-              {pushCardLoading === 'wb' ? 'Отправка…' : 'Отправить на WB'}
+              {pushCardLoading === 'wb' ? 'Отправка…' : 'Сохранить и отправить на WB'}
             </Button>
             <span className="text-muted small">
-              Подтянуть с WB или отправить изменения из ERP в кабинет.
+              «Обновить с WB» — загрузка в ERP. «Сохранить и отправить» — запись в ERP и выгрузка в кабинет WB.
             </span>
           </div>
           {(pushCardError || pushCardMessage) && activeTab === 'wb' ? (
@@ -3933,7 +4052,7 @@ export function ProductForm({
               onClick={() => handlePushCard('ym')}
               disabled={!!pushCardLoading || !currentProduct?.id || !formData.sku_ym?.trim()}
             >
-              {pushCardLoading === 'ym' ? 'Отправка…' : 'Отправить на Яндекс.Маркет'}
+              {pushCardLoading === 'ym' ? 'Отправка…' : 'Сохранить и отправить на Я.Маркет'}
             </Button>
             <Button
               type="button"
@@ -3941,7 +4060,7 @@ export function ProductForm({
               onClick={() => handlePushCard('all')}
               disabled={!!pushCardLoading || !currentProduct?.id}
             >
-              {pushCardLoading === 'all' ? 'Отправка…' : 'Отправить на все МП'}
+              {pushCardLoading === 'all' ? 'Отправка…' : 'Сохранить и отправить на все МП'}
             </Button>
             <span className="text-muted small">
               Подтянуть с Маркета или отправить изменения из ERP в кабинет (нужна связь и категория YM).

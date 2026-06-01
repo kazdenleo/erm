@@ -753,23 +753,9 @@ class OrdersController {
       let reserve = null;
 
       try {
-        const local = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId });
-        if (
-          local?.assembledAt ||
-          local?.assembledByEmail ||
-          local?.assembledByFullName ||
-          (local?.assemblyStickerNumber ?? local?.assembly_sticker_number)
-        ) {
-          assembly = {
-            assembledAt: local.assembledAt ?? null,
-            assembledByUserId: local.assembledByUserId ?? null,
-            assembledByEmail: local.assembledByEmail ?? null,
-            assembledByFullName: local.assembledByFullName ?? null,
-            assemblyStickerNumber: local.assemblyStickerNumber ?? local.assembly_sticker_number ?? null,
-          };
-        }
+        assembly = await ordersService.getAssemblyInfoForOrder(marketplace, orderId, { profileId });
       } catch {
-        /* нет строки в локальной БД */
+        assembly = null;
       }
 
       try {

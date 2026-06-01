@@ -429,6 +429,16 @@ class ProductsController {
     try {
       const { id, marketplace } = req.params;
       const profileId = req.user?.profileId ?? null;
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const patch =
+        body.product && typeof body.product === 'object'
+          ? body.product
+          : Object.keys(body).length > 0
+            ? body
+            : null;
+      if (patch && Object.keys(patch).length > 0) {
+        await productsService.update(id, patch, { profileId });
+      }
       const result = await productsService.pushProductCardToMarketplace(id, marketplace, { profileId });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {

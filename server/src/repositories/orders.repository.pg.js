@@ -104,6 +104,9 @@ class OrdersRepositoryPG {
           OR ( o.marketplace = 'wb' AND (LOWER(COALESCE(o.status, '')) = 'wb_status_unknown' OR o.status = '__wb_status_pending__') )
         )`;
         params.push(st);
+      } else if (stNorm === 'in_assembly') {
+        whereSql += ` AND ( o.status = $${paramIndex++} OR ( o.marketplace = 'wb' AND o.status = 'wb_assembly' ) )`;
+        params.push(st);
       } else {
         whereSql += ` AND o.status = $${paramIndex++}`;
         params.push(st);
@@ -509,6 +512,16 @@ class OrdersRepositoryPG {
         pid ? [pid, oid, `${oid}~%`] : [oid, `${oid}~%`]
       );
       if (rOzon.rows[0]?.id) return await this.findById(rOzon.rows[0].id);
+    }
+
+    if (dbMarketplace === 'wb') {
+      const rWbGroup = await query(
+        pid
+          ? `SELECT id FROM orders WHERE marketplace = 'wb' AND profile_id = $1 AND order_group_id = $2 ORDER BY id ASC LIMIT 1`
+          : `SELECT id FROM orders WHERE marketplace = 'wb' AND order_group_id = $1 ORDER BY id ASC LIMIT 1`,
+        pid ? [pid, oid] : [oid]
+      );
+      if (rWbGroup.rows[0]?.id) return await this.findById(rWbGroup.rows[0].id);
     }
 
     return null;
@@ -935,6 +948,30 @@ class OrdersRepositoryPG {
       pid ? [dbM, String(orderId), pid, sticker] : [dbM, String(orderId), sticker]
     );
     return result.rows?.[0] ?? null;
+  }
+
+  /** Номер стикера на все строки группы WB/Ozon/YM (после загрузки этикетки). */
+  async setAssemblyStickerNumberByOrderGroupId(orderGroupId, stickerNumber, profileId = null) {
+    if (!orderGroupId) return 0;
+    const pid = normalizeProfileId(profileId);
+    const sticker =
+      stickerNumber != null && String(stickerNumber).trim() !== '' ? String(stickerNumber).trim() : null;
+    if (!sticker) return 0;
+    const result = await query(
+      pid
+        ? `
+          UPDATE orders
+          SET assembly_sticker_number = $3, updated_at = CURRENT_TIMESTAMP
+          WHERE order_group_id = $1 AND profile_id = $2::bigint
+        `
+        : `
+          UPDATE orders
+          SET assembly_sticker_number = $2, updated_at = CURRENT_TIMESTAMP
+          WHERE order_group_id = $1
+        `,
+      pid ? [String(orderGroupId), pid, sticker] : [String(orderGroupId), sticker]
+    );
+    return result.rowCount ?? 0;
   }
   
   /**

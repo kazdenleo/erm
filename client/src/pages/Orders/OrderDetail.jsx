@@ -10,6 +10,10 @@ import { ordersApi } from '../../services/orders.api';
 import { Button } from '../../components/common/Button/Button';
 import { getOrderStatusLabel } from '../../constants/orderStatuses';
 import { marketplaceOrderIdForApi } from '../../utils/orderListGroupKey';
+import {
+  groupReserveCoverageKind,
+  reserveBadgeClassName
+} from '../../utils/orderReserveBadge.js';
 import './OrderDetail.css';
 
 function orderReserveLineKey(line) {
@@ -53,6 +57,38 @@ function clampLineQty(raw, min, max) {
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n)) return min;
   return Math.min(max, Math.max(min, n));
+}
+
+function shouldShowOrderAssemblySection(assembly) {
+  if (!assembly || typeof assembly !== 'object') return false;
+  return Boolean(
+    assembly.onAssembly ||
+      assembly.assembledAt ||
+      assembly.assembledByEmail ||
+      assembly.assembledByFullName ||
+      assembly.assemblyStickerNumber
+  );
+}
+
+function OrderAssemblySection({ assembly }) {
+  if (!shouldShowOrderAssemblySection(assembly)) return null;
+  return (
+    <section className="order-detail-section" style={{ marginBottom: 16 }}>
+      <h3>Сборка в системе</h3>
+      <dl className="detail-dl">
+        {assembly.assembledAt ? (
+          <>
+            <dt>Собран</dt>
+            <dd>{new Date(assembly.assembledAt).toLocaleString('ru-RU')}</dd>
+            <dt>Собрал</dt>
+            <dd>{formatAssemblyWho(assembly)}</dd>
+          </>
+        ) : null}
+        <dt>Номер стикера</dt>
+        <dd>{assembly.assemblyStickerNumber || '—'}</dd>
+      </dl>
+    </section>
+  );
 }
 
 /** Резерв на складе: весь заказ и отдельные товары / комплектующие (с частичным количеством) */
@@ -168,12 +204,30 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
   const hasReserve = reserve?.hasReserve === true || reservedQty > 0;
   const label = hasReserve ? 'Снять весь резерв' : 'Поставить резерв на заказ';
   const variant = hasReserve ? 'secondary' : 'primary';
+  const summaryCoverage =
+    reserve?.reserveCoverage ??
+    reserve?.reserve_coverage ??
+    groupReserveCoverageKind(detailLines);
 
   return (
     <section className="order-detail-section order-reserve-panel" style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         <div style={{ flex: '1 1 200px' }}>
-          <h3 style={{ margin: '0 0 4px' }}>Резерв на складе</h3>
+          <h3 style={{ margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            Резерв на складе
+            {needQty > 0 && reservedQty > 0 ? (
+              <span
+                className={reserveBadgeClassName(summaryCoverage)}
+                title={
+                  summaryCoverage === 'on_hand'
+                    ? 'Со склада (в наличии)'
+                    : 'С участием товара в пути'
+                }
+              >
+                {reservedQty}/{needQty}
+              </span>
+            ) : null}
+          </h3>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--muted, #666)' }}>
             {needQty > 0
               ? `Зарезервировано по заказу: ${reservedQty} из ${needQty}`
@@ -181,6 +235,13 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 ? 'Загрузка…'
                 : 'Нет данных о количестве'}
           </p>
+          {needQty > 0 && reservedQty > 0 ? (
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>
+              {summaryCoverage === 'on_hand'
+                ? 'Плашка зелёная — резерв покрыт наличием на складе.'
+                : 'Плашка серая — в резерве есть товар «в пути».'}
+            </p>
+          ) : null}
           <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>
             По каждой позиции укажите количество и нажмите «Снять» или «В резерв» (не обязательно всё сразу).
           </p>
@@ -198,6 +259,8 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             const { reserved: r, need: n, remaining, available, maxReserve } = lineReserveBounds(line);
             const pieceHint = lineReserveDisplayUnits(line).pieceHint;
             const lineHas = r > 0;
+            const lineCoverage =
+              line.reserveCoverage ?? line.reserve_coverage ?? (lineHas ? 'incoming' : 'none');
             const maxQty = lineHas ? r : maxReserve;
             const title =
               line.label ||
@@ -218,7 +281,16 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 className="order-reserve-line"
               >
                 <span className="order-reserve-line__title">
-                  {title}: <strong>{r}</strong> из {n}
+                  {title}:{' '}
+                  {r > 0 ? (
+                    <span className={reserveBadgeClassName(lineCoverage)} style={{ marginRight: 4 }}>
+                      {r}/{n}
+                    </span>
+                  ) : (
+                    <>
+                      <strong>{r}</strong> из {n}
+                    </>
+                  )}
                   {pieceHint ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}> ({pieceHint})</span>
                   ) : null}
@@ -463,32 +535,17 @@ export function OrderDetail() {
         onChanged={(r) => setData((d) => (d ? { ...d, reserve: r } : d))}
       />
 
-      {(data?.assembly?.assembledAt ||
-        data?.assembly?.assembledByEmail ||
-        data?.assembly?.assembledByFullName ||
-        data?.assembly?.assemblyStickerNumber) && (
-        <section className="order-detail-section" style={{ marginTop: 16 }}>
-          <h3>Сборка в системе</h3>
-          <dl className="detail-dl">
-            <dt>Собран</dt>
-            <dd>
-              {data.assembly.assembledAt
-                ? new Date(data.assembly.assembledAt).toLocaleString('ru-RU')
-                : '—'}
-            </dd>
-            <dt>Собрал</dt>
-            <dd>{formatAssemblyWho(data.assembly)}</dd>
-            <dt>Номер стикера</dt>
-            <dd>{data.assembly.assemblyStickerNumber || '—'}</dd>
-          </dl>
-        </section>
-      )}
+      <OrderAssemblySection assembly={data?.assembly} />
 
       {mpKey === 'ozon' && detail && (
         <OzonDetail detail={detail} localLines={localLines} />
       )}
       {(mpKey === 'wildberries' || mpKey === 'wb') && detail && (
-        <WildberriesDetail detail={detail} localLines={localLines} />
+        <WildberriesDetail
+          detail={detail}
+          localLines={localLines}
+          assemblyStickerNumber={data?.assembly?.assemblyStickerNumber}
+        />
       )}
       {(mpKey === 'yandex' || mpKey === 'ym' || mpKey === 'yandexmarket') && detail && (
         <>
@@ -556,26 +613,7 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
         onChanged={onReserveChange}
       />
     ) : null;
-  const assemblyBlock =
-    assembly &&
-    (assembly.assembledAt ||
-      assembly.assembledByEmail ||
-      assembly.assembledByFullName ||
-      assembly.assemblyStickerNumber) ? (
-      <section className="order-detail-section" style={{ marginBottom: 16 }}>
-        <h3>Сборка в системе</h3>
-        <dl className="detail-dl">
-          <dt>Собран</dt>
-          <dd>
-            {assembly.assembledAt ? new Date(assembly.assembledAt).toLocaleString('ru-RU') : '—'}
-          </dd>
-          <dt>Собрал</dt>
-          <dd>{formatAssemblyWho(assembly)}</dd>
-          <dt>Номер стикера</dt>
-          <dd>{assembly.assemblyStickerNumber || '—'}</dd>
-        </dl>
-      </section>
-    ) : null;
+  const assemblyBlock = <OrderAssemblySection assembly={assembly} />;
   const localLinesBlock =
     localLines?.length > 0 ? <LocalOrderLinesSection localLines={localLines} /> : null;
   if (mpNorm === 'ozon' && detail)
@@ -598,7 +636,11 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
             Детали с маркетплейса доступны только для заказов в статусе «Новый». Показаны сохранённые данные.
           </p>
         )}
-        <WildberriesDetail detail={detail} localLines={localLines} />
+        <WildberriesDetail
+          detail={detail}
+          localLines={localLines}
+          assemblyStickerNumber={assembly?.assemblyStickerNumber}
+        />
       </>
     );
   }
@@ -891,7 +933,7 @@ export function YandexDetail({ detail, localLines }) {
   );
 }
 
-export function WildberriesDetail({ detail, localLines }) {
+export function WildberriesDetail({ detail, localLines, assemblyStickerNumber = null }) {
   const address = detail.address || {};
   const offices = detail.offices || [];
   const qty = detail.quantity != null ? Number(detail.quantity) : 1;
@@ -907,6 +949,12 @@ export function WildberriesDetail({ detail, localLines }) {
         <dl className="detail-dl">
           <dt>ID</dt><dd>{detail.id}</dd>
           <dt>Order UID</dt><dd>{detail.orderUid}</dd>
+          {assemblyStickerNumber != null && String(assemblyStickerNumber).trim() !== '' ? (
+            <>
+              <dt>Номер стикера</dt>
+              <dd>{assemblyStickerNumber}</dd>
+            </>
+          ) : null}
           <dt>Артикул</dt><dd>{detail.article}</dd>
           <dt>Время появления на маркетплейсе</dt><dd>{detail.createdAt ? new Date(detail.createdAt).toLocaleString('ru-RU') : '—'}</dd>
           <dt>Цена</dt><dd>{detail.price} {detail.convertedPrice != null && `(${detail.convertedPrice} коп.)`}</dd>

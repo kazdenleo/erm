@@ -476,12 +476,21 @@ async function fetchWBLabel(order, { organizationId = null } = {}) {
 
     function extractStickerNumber(sticker) {
       if (!sticker || typeof sticker !== 'object') return null;
+      const partA = sticker.partA ?? sticker.part_a;
+      const partB = sticker.partB ?? sticker.part_b;
+      if (partA != null && partB != null) {
+        const combined = `${String(partA).trim()}${String(partB).trim()}`;
+        if (combined) return combined;
+      }
       const cand =
         sticker.stickerId ??
         sticker.sticker_id ??
         sticker.stickerNumber ??
         sticker.sticker_number ??
         sticker.sticker ??
+        sticker.barcode ??
+        sticker.orderId ??
+        sticker.order_id ??
         sticker.id ??
         null;
       if (cand == null) return null;

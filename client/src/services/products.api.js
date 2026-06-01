@@ -187,10 +187,17 @@ export const productsApi = {
   /**
    * Отправить данные карточки на маркетплейс (ozon | wb | ym | all).
    */
-  pushCard: async (productId, marketplace) => {
+  /**
+   * Отправить карточку на МП. При productPatch сначала сохраняет поля в ERP (тот же запрос).
+   * @param {object|null} [productPatch]
+   */
+  pushCard: async (productId, marketplace, productPatch = null) => {
     const id = encodeURIComponent(String(productId));
     const mp = encodeURIComponent(String(marketplace).trim());
-    const response = await api.post(`/products/${id}/push-card/${mp}`);
+    const response = await api.post(
+      `/products/${id}/push-card/${mp}`,
+      productPatch && typeof productPatch === 'object' ? productPatch : undefined
+    );
     return response.data;
   },
 

@@ -84,6 +84,45 @@ async function batchProductReserveSupplyMap(productIds) {
   return map;
 }
 
+function enrichReserveLinesCoverage(lines, supplyMap) {
+  if (!Array.isArray(lines)) return;
+  for (const line of lines) {
+    const r = Math.max(0, Number(line.reservedQty) || 0);
+    const pid = Number(line.productId);
+    if (r <= 0 || !Number.isFinite(pid) || pid < 1) {
+      line.reserveCoverage = 'none';
+      continue;
+    }
+    const sup = supplyMap.get(pid);
+    line.reserveCoverage = sup
+      ? classifyOrderReserveCoverage({ ...sup, orderReserved: r })
+      : 'incoming';
+  }
+}
+
+function reserveCoverageFromLines(lines) {
+  let anyIncoming = false;
+  let anyOnHand = false;
+  for (const line of lines || []) {
+    const k = line.reserveCoverage;
+    if (k === 'on_hand') anyOnHand = true;
+    if (k === 'incoming') anyIncoming = true;
+  }
+  if (anyIncoming) return 'incoming';
+  if (anyOnHand) return 'on_hand';
+  return 'none';
+}
+
+async function enrichReserveSummaryCoverage(summary) {
+  if (!summary || typeof summary !== 'object') return summary;
+  const lines = Array.isArray(summary.lines) ? summary.lines : [];
+  const pids = lines.map((l) => Number(l.productId)).filter((id) => id > 0);
+  const supplyMap = await batchProductReserveSupplyMap(pids);
+  enrichReserveLinesCoverage(lines, supplyMap);
+  summary.reserveCoverage = reserveCoverageFromLines(lines);
+  return summary;
+}
+
 function applyReserveCoverageToOrderRow(orderRow, supplyMap) {
   const reserved = Math.max(0, Number(orderRow.reservedQty ?? orderRow.reserved_qty) || 0);
   if (reserved <= 0) {
@@ -383,12 +422,84 @@ class OrdersService {
     if (!repositoryFactory.isUsingPostgreSQL()) return null;
     if (!marketplace || orderId == null) return null;
     if (typeof this.repository.setAssemblyStickerNumberByMarketplaceAndOrderId !== 'function') return null;
-    return await this.repository.setAssemblyStickerNumberByMarketplaceAndOrderId(
+    let row = await this.repository.setAssemblyStickerNumberByMarketplaceAndOrderId(
       marketplace,
       String(orderId),
       stickerNumber,
       profileId
     );
+    if (!row) {
+      const groupRows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+      const withId = groupRows.find((r) => r?.orderId != null);
+      if (withId) {
+        row = await this.repository.setAssemblyStickerNumberByMarketplaceAndOrderId(
+          marketplace,
+          String(withId.orderId),
+          stickerNumber,
+          profileId
+        );
+      }
+    }
+    const gid = row?.orderGroupId ?? row?.order_group_id;
+    if (
+      gid &&
+      typeof this.repository.setAssemblyStickerNumberByOrderGroupId === 'function'
+    ) {
+      await this.repository.setAssemblyStickerNumberByOrderGroupId(gid, stickerNumber, profileId);
+    }
+    return row;
+  }
+
+  /**
+   * Сборка и номер стикера по всем строкам заказа (группа WB/Ozon/YM).
+   */
+  async getAssemblyInfoForOrder(marketplace, orderId, { profileId = null } = {}) {
+    let rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    if (!rows.length) {
+      const one = await this.getByMarketplaceAndOrderId(marketplace, orderId, { profileId });
+      if (one) rows = [one];
+    }
+    if (!rows.length) return null;
+
+    const assemblyStatuses = new Set(['in_assembly', 'assembled', 'wb_assembly']);
+    let assemblyStickerNumber = null;
+    let assembledAt = null;
+    let assembledByUserId = null;
+    let assembledByEmail = null;
+    let assembledByFullName = null;
+    let onAssembly = false;
+
+    for (const r of rows) {
+      if (assemblyStatuses.has(String(r.status ?? '').trim())) onAssembly = true;
+      const sn = String(r.assemblyStickerNumber ?? r.assembly_sticker_number ?? '').trim();
+      if (sn && !assemblyStickerNumber) assemblyStickerNumber = sn;
+      const at = r.assembledAt ?? r.assembled_at;
+      if (at && (!assembledAt || new Date(at) > new Date(assembledAt))) {
+        assembledAt = at;
+        assembledByUserId = r.assembledByUserId ?? r.assembled_by_user_id ?? null;
+        assembledByEmail = r.assembledByEmail ?? r.assembled_by_email ?? null;
+        assembledByFullName = r.assembledByFullName ?? r.assembled_by_full_name ?? null;
+      }
+    }
+
+    if (
+      !onAssembly &&
+      !assembledAt &&
+      !assemblyStickerNumber &&
+      !assembledByEmail &&
+      !assembledByFullName
+    ) {
+      return null;
+    }
+
+    return {
+      assembledAt,
+      assembledByUserId,
+      assembledByEmail,
+      assembledByFullName,
+      assemblyStickerNumber,
+      onAssembly
+    };
   }
 
   /**
@@ -1346,7 +1457,12 @@ class OrdersService {
         o.hasReserve = sum.hasReserve;
         o.fullyReserved = sum.fullyReserved;
         o.reserveLines = sum.lines;
-        applyReserveCoverageToOrderRow(o, supplyMap);
+        enrichReserveLinesCoverage(sum.lines, supplyMap);
+        o.reserveCoverage = reserveCoverageFromLines(sum.lines);
+        o.reserve_coverage = o.reserveCoverage;
+        if (o.reserveCoverage === 'none') {
+          applyReserveCoverageToOrderRow(o, supplyMap);
+        }
       } catch {
         /* ignore */
       }
@@ -3337,7 +3453,7 @@ class OrdersService {
         profileId
       });
     }
-    return summary;
+    return enrichReserveSummaryCoverage(summary);
   }
 
   /**
@@ -3473,7 +3589,9 @@ class OrdersService {
       }
     }
 
-    const after = await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]);
+    const after = await enrichReserveSummaryCoverage(
+      await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row])
+    );
     return {
       action: doUnreserve ? 'unreserve' : 'reserve',
       productId: pid,
@@ -3557,7 +3675,7 @@ class OrdersService {
       }
     }
 
-    const after = await this._summarizeReserveForRows(rows);
+    const after = await enrichReserveSummaryCoverage(await this._summarizeReserveForRows(rows));
     return {
       action: doUnreserve ? 'unreserve' : 'reserve',
       ...after,
