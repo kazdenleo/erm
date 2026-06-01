@@ -140,7 +140,7 @@ try {
         min: 2,
         max: parsed.DB_POOL_MAX ?? 20,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: parsed.DB_CONNECTION_TIMEOUT_MS ?? 10000,
+        connectionTimeoutMillis: parsed.DB_CONNECTION_TIMEOUT_MS ?? 30000,
       }
     },
     

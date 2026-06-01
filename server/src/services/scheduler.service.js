@@ -20,6 +20,11 @@ import ordersSyncService from './orders.sync.service.js';
 import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
+import {
+  getSchedulerDbJobName,
+  isSchedulerDbJobRunning,
+  runSchedulerDbJob,
+} from '../utils/schedulerDbMutex.js';
 
 /** Фоновая синхронизация FBS-заказов (Ozon/WB/Яндекс). Выкл: ORDERS_FBS_SYNC_ENABLED=0 */
 function isOrdersFbsSyncEnabled() {
@@ -93,7 +98,7 @@ async function runSupplierStocksSync() {
  */
 function getMinPricesNightlyCron() {
   const c = process.env.MIN_PRICES_NIGHTLY_CRON;
-  return c && String(c).trim() ? String(c).trim() : '15 3 * * *';
+  return c && String(c).trim() ? String(c).trim() : '15 4 * * *';
 }
 
 /** Ежедневный импорт остатков МП + "в пути"/возвраты. По умолчанию 04:30 МСК; переопределение: MP_INVENTORY_DAILY_CRON */
@@ -109,7 +114,7 @@ function isMarketplaceInventoryDailyEnabled() {
 }
 
 /** Для fallback-планировщика: минут от 01:00 МСК до запуска полного пересчёта (должно совпадать с дефолтным cron). */
-const FALLBACK_MIN_PRICES_MINUTES_AFTER_1AM = 135; // 01:00 + 2ч15м = 03:15
+const FALLBACK_MIN_PRICES_MINUTES_AFTER_1AM = 195; // 01:00 + 3ч15м = 04:15 (после категорий МП)
 
 /** Если 1|true — прежний сценарий: только recalculateAndSaveAll() (live API на каждый товар). */
 function isMinPricesLegacyLiveRecalc() {
@@ -166,6 +171,7 @@ class SchedulerService {
       
       // Обновление категорий и комиссий WB каждый день в 1:00 ночи
       const wbUpdateJob = cron.schedule('0 1 * * *', async () => {
+        await runSchedulerDbJob('wb-categories-commissions', async () => {
         logger.info('[Scheduler] Starting scheduled WB categories and commissions update...');
         try {
           const res = await wbMarketplaceService.updateCategoriesAndCommissions();
@@ -198,6 +204,7 @@ class SchedulerService {
             marketplace: 'wildberries',
           });
         }
+        });
       }, {
         scheduled: false, // Не запускаем автоматически, запустим вручную
         timezone: 'Europe/Moscow'
@@ -205,6 +212,7 @@ class SchedulerService {
 
       // Тарифы WB — в 1:10 (не в 1:00 вместе с категориями/комиссиями, чтобы не ловить 429 от лимитов API)
       const wbTariffsJob = cron.schedule('10 1 * * *', async () => {
+        await runSchedulerDbJob('wb-tariffs', async () => {
         logger.info('[Scheduler] Starting scheduled WB tariffs update...');
         try {
           await integrationsService.updateWildberriesTariffs();
@@ -220,6 +228,7 @@ class SchedulerService {
             marketplace: 'wildberries'
           });
         }
+        });
       }, {
         scheduled: false, // Не запускаем автоматически, запустим вручную
         timezone: 'Europe/Moscow'
@@ -230,6 +239,7 @@ class SchedulerService {
 
       // Обновление списка акций Ozon каждый день в 1:00 ночи
       const ozonActionsJob = cron.schedule('0 1 * * *', async () => {
+        await runSchedulerDbJob('ozon-actions', async () => {
         logger.info('[Scheduler] Starting scheduled Ozon actions update...');
         try {
           await pricesService.updateAndCacheOzonActions();
@@ -245,6 +255,7 @@ class SchedulerService {
             marketplace: 'ozon'
           });
         }
+        });
       }, {
         scheduled: false,
         timezone: 'Europe/Moscow'
@@ -252,6 +263,7 @@ class SchedulerService {
 
       // Обновление категорий Ozon каждый день в 1:30 ночи (после WB, чтобы не перегружать API)
       const ozonCategoriesJob = cron.schedule('30 1 * * *', async () => {
+        await runSchedulerDbJob('ozon-categories', async () => {
         logger.info('[Scheduler] Starting scheduled Ozon categories update...');
         try {
           await integrationsService.updateOzonCategories();
@@ -267,13 +279,15 @@ class SchedulerService {
             marketplace: 'ozon'
           });
         }
+        });
       }, {
         scheduled: false, // Не запускаем автоматически, запустим вручную
         timezone: 'Europe/Moscow'
       });
 
-      // Обновление категорий Яндекс.Маркета каждый день в 2:00 ночи
-      const ymCategoriesJob = cron.schedule('0 2 * * *', async () => {
+      // Обновление категорий Яндекс.Маркета — 2:30 МСК (очередь DB job, не параллельно с Ozon)
+      const ymCategoriesJob = cron.schedule('30 2 * * *', async () => {
+        await runSchedulerDbJob('yandex-categories', async () => {
         logger.info('[Scheduler] Starting scheduled Yandex categories update...');
         try {
           await integrationsService.updateYandexCategories();
@@ -289,6 +303,7 @@ class SchedulerService {
             marketplace: 'yandex'
           });
         }
+        });
       }, {
         scheduled: false,
         timezone: 'Europe/Moscow'
@@ -298,6 +313,7 @@ class SchedulerService {
       // Днём — только recalculate-one / смена данных по товару (live для этого SKU).
       const minPricesNightlyCron = getMinPricesNightlyCron();
       const minPricesRecalcJob = cron.schedule(minPricesNightlyCron, async () => {
+        await runSchedulerDbJob('min-prices-nightly', async () => {
         if (isMinPricesLegacyLiveRecalc()) {
           logger.info('[Scheduler] Min prices: LEGACY recalculateAndSaveAll (live API per product)...');
           try {
@@ -349,6 +365,7 @@ class SchedulerService {
             message: `recalculateAndSaveAllFromCache failed: ${error?.message || String(error)}`
           });
         }
+        });
       }, {
         scheduled: false,
         timezone: 'Europe/Moscow'
@@ -448,6 +465,12 @@ class SchedulerService {
             logger.info('[Scheduler] FBS orders sync: пропуск — предыдущий прогон ещё выполняется');
             return;
           }
+          if (isSchedulerDbJobRunning()) {
+            logger.info(
+              `[Scheduler] FBS orders sync: пропуск — ночная задача БД (${getSchedulerDbJobName() || '…'})`
+            );
+            return;
+          }
           logger.info('[Scheduler] FBS orders sync (cron)...');
           try {
             // force: иначе при синке <1 мин назад (UI/другой поток) вернётся кэш без запросов к МП — новые заказы не подтянутся
@@ -472,8 +495,11 @@ class SchedulerService {
       const supplierStocksCron = getSupplierStocksSyncCronExpression();
       if (isSupplierStocksSyncEnabled()) {
         supplierStocksSyncJob = cron.schedule(supplierStocksCron, async () => {
-          logger.info('[Scheduler] Supplier stocks sync (cron)...');
-          await runSupplierStocksSync();
+          if (isSchedulerDbJobRunning()) {
+            logger.info('[Scheduler] Supplier stocks sync: пропуск — ночная задача БД');
+            return;
+          }
+          await runSchedulerDbJob('supplier-stocks', () => runSupplierStocksSync());
         }, {
           scheduled: false,
           timezone: 'Europe/Moscow'
@@ -691,91 +717,57 @@ class SchedulerService {
       logger.info(`[Scheduler] Next WB update scheduled for 01:00 MSK (${next.toISOString()} UTC, in ${Math.round(msUntilNextRun / 1000 / 60)} min)`);
       
       setTimeout(async () => {
-        logger.info('[Scheduler] Starting scheduled WB categories and commissions update...');
-        try {
+        await runSchedulerDbJob('wb-categories-commissions', async () => {
+          logger.info('[Scheduler] Starting scheduled WB categories and commissions update...');
           await wbMarketplaceService.updateCategoriesAndCommissions();
           logger.info('[Scheduler] WB update completed successfully');
-        } catch (error) {
-          logger.error('[Scheduler] WB update failed:', error);
-        }
-        
-        // Обновляем тарифы WB
-        logger.info('[Scheduler] Starting scheduled WB tariffs update...');
-        try {
+        }).catch((error) => logger.error('[Scheduler] WB update failed:', error));
+
+        await runSchedulerDbJob('wb-tariffs', async () => {
+          logger.info('[Scheduler] Starting scheduled WB tariffs update...');
           await integrationsService.updateWildberriesTariffs();
           logger.info('[Scheduler] WB tariffs update completed successfully');
-        } catch (error) {
-          logger.error('[Scheduler] WB tariffs update failed:', error);
-        }
-        
-        // Обновляем комиссии WB
-        logger.info('[Scheduler] Starting scheduled WB commissions update...');
-        try {
+        }).catch((error) => logger.error('[Scheduler] WB tariffs update failed:', error));
+
+        await runSchedulerDbJob('wb-commissions', async () => {
+          logger.info('[Scheduler] Starting scheduled WB commissions update...');
           await integrationsService.updateWildberriesCommissions();
           logger.info('[Scheduler] WB commissions update completed successfully');
-        } catch (error) {
-          logger.error('[Scheduler] WB commissions update failed:', error);
-        }
+        }).catch((error) => logger.error('[Scheduler] WB commissions update failed:', error));
 
-        // Обновляем список акций Ozon
-        logger.info('[Scheduler] Starting scheduled Ozon actions update...');
-        try {
+        await runSchedulerDbJob('ozon-actions', async () => {
+          logger.info('[Scheduler] Starting scheduled Ozon actions update...');
           await pricesService.updateAndCacheOzonActions();
           logger.info('[Scheduler] Ozon actions update completed successfully');
-        } catch (error) {
-          logger.error('[Scheduler] Ozon actions update failed:', error);
-        }
+        }).catch((error) => logger.error('[Scheduler] Ozon actions update failed:', error));
 
-        // После 01:00: кэш калькулятора + пересчёт из БД в то же локальное время, что дефолтный MIN_PRICES_NIGHTLY_CRON (см. FALLBACK_MIN_PRICES_MINUTES_AFTER_1AM)
-        setTimeout(async () => {
-          if (isMinPricesLegacyLiveRecalc()) {
-            logger.info('[Scheduler] Min prices: LEGACY recalculateAndSaveAll (fallback)...');
-            try {
-              await pricesService.recalculateAndSaveAll();
-              logger.info('[Scheduler] Legacy min prices recalculate completed');
-            } catch (error) {
-              logger.error('[Scheduler] Legacy min prices recalculate failed:', error);
-            }
-            return;
-          }
-          logger.info('[Scheduler] MP calculator cache sync (fallback scheduler)...');
-          try {
-            await pricesService.syncCalculatorCacheFromApi({ delayMs: getCalculatorCacheSyncDelayMs() });
-          } catch (error) {
-            logger.error('[Scheduler] MP calculator cache sync failed:', error);
-          }
-          logger.info('[Scheduler] Min prices from cache (fallback scheduler)...');
-          try {
-            const { totalProcessed } = await pricesService.recalculateAndSaveAllFromCache();
-            logger.info(`[Scheduler] Min prices from cache completed (${totalProcessed} products)`);
-          } catch (error) {
-            logger.error('[Scheduler] Min prices from cache failed:', error);
-          }
-        }, FALLBACK_MIN_PRICES_MINUTES_AFTER_1AM * 60 * 1000);
-        
-        // Обновляем категории Ozon (через 30 минут после WB)
-        setTimeout(async () => {
-          logger.info('[Scheduler] Starting scheduled Ozon categories update...');
-          try {
+        setTimeout(() => {
+          void runSchedulerDbJob('ozon-categories', async () => {
+            logger.info('[Scheduler] Starting scheduled Ozon categories update...');
             await integrationsService.updateOzonCategories();
             logger.info('[Scheduler] Ozon categories update completed successfully');
-          } catch (error) {
-            logger.error('[Scheduler] Ozon categories update failed:', error);
-          }
+          }).catch((error) => logger.error('[Scheduler] Ozon categories update failed:', error));
+        }, 30 * 60 * 1000);
 
-          // Обновляем категории Яндекс.Маркета (через 30 минут после Ozon)
-          setTimeout(async () => {
+        setTimeout(() => {
+          void runSchedulerDbJob('yandex-categories', async () => {
             logger.info('[Scheduler] Starting scheduled Yandex categories update...');
-            try {
-              await integrationsService.updateYandexCategories();
-              logger.info('[Scheduler] Yandex categories update completed successfully');
-            } catch (error) {
-              logger.error('[Scheduler] Yandex categories update failed:', error);
-            }
-          }, 30 * 60 * 1000);
-        }, 30 * 60 * 1000); // 30 минут
+            await integrationsService.updateYandexCategories();
+            logger.info('[Scheduler] Yandex categories update completed successfully');
+          }).catch((error) => logger.error('[Scheduler] Yandex categories update failed:', error));
+        }, 90 * 60 * 1000);
 
-        // Планируем следующий запуск
+        setTimeout(() => {
+          void runSchedulerDbJob('min-prices-nightly', async () => {
+            if (isMinPricesLegacyLiveRecalc()) {
+              await pricesService.recalculateAndSaveAll();
+              return;
+            }
+            await pricesService.syncCalculatorCacheFromApi({ delayMs: getCalculatorCacheSyncDelayMs() });
+            await pricesService.recalculateAndSaveAllFromCache();
+          }).catch((error) => logger.error('[Scheduler] Min prices nightly failed:', error));
+        }, FALLBACK_MIN_PRICES_MINUTES_AFTER_1AM * 60 * 1000);
+
         scheduleNextRun();
       }, msUntilNextRun);
     };
