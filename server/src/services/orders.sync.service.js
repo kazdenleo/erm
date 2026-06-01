@@ -1378,6 +1378,40 @@ class OrdersSyncService {
     err.statusCode = 501;
     throw err;
   }
+
+  /**
+   * Детали только из локальной БД (без запроса к МП) — для быстрого резерва в карточке заказа.
+   */
+  async getOrderDetailLocalOnly(marketplace, orderIdRaw, { profileId = null } = {}) {
+    const orderId = decodeURIComponent(String(orderIdRaw || '').trim());
+    if (!orderId) return null;
+    const normMarketplace = String(marketplace || '').toLowerCase();
+    if (normMarketplace === 'ozon') {
+      const local = await getLocalOrderByMarketplaceAndOrderId('ozon', orderId, profileId);
+      if (!local) return null;
+      return {
+        marketplace: 'ozon',
+        detail: buildOzonDetailFromLocalOrder(local, ozonPostingNumberFromOrderId(orderId)),
+        fromLocal: true
+      };
+    }
+    if (normMarketplace === 'wildberries' || normMarketplace === 'wb') {
+      const localOrder = await getLocalOrderByMarketplaceAndOrderId('wildberries', orderId, profileId);
+      if (!localOrder) return null;
+      return {
+        marketplace: 'wildberries',
+        detail: buildWBDetailFromLocalOrder(localOrder, orderId),
+        fromLocal: true
+      };
+    }
+    if (normMarketplace === 'yandex' || normMarketplace === 'ym' || normMarketplace === 'yandexmarket') {
+      const localOrder = await getLocalOrderByMarketplaceAndOrderId('yandex', orderId, profileId);
+      if (!localOrder) return null;
+      const detail = await buildYandexDetailFromLocalOrder(localOrder, profileId);
+      return { marketplace: 'yandex', detail, fromLocal: true };
+    }
+    return null;
+  }
 }
 
 // ===== Helpers, перенесённые из старого server.js =====

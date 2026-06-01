@@ -457,16 +457,9 @@ class OrdersService {
 
   /** Резерв одной позиции: PWS + в пути − резерв (без остатков поставщиков); у комплекта — + собираемость из комплектующих. */
   async _applyReserveForOrderComponent(productId, quantity, orderId, meta = {}) {
-    if (meta?._insideProductStockLock) {
-      return this._applyReserveForOrderComponentCore(productId, quantity, orderId, meta);
-    }
-    const { runWithProductStockLock } = await import('./stockMovements.service.js');
-    return runWithProductStockLock(productId, () =>
-      this._applyReserveForOrderComponentCore(productId, quantity, orderId, {
-        ...meta,
-        _insideProductStockLock: true
-      })
-    );
+    // Резерв сериализуется транзакцией в applyChange (FOR UPDATE + pg_advisory_xact_lock).
+    // Внешний runWithProductStockLock держал второе соединение из пула и увеличивал очередь HTTP.
+    return this._applyReserveForOrderComponentCore(productId, quantity, orderId, meta);
   }
 
   async _applyReserveForOrderComponentCore(productId, quantity, orderId, meta = {}) {
@@ -2971,10 +2964,18 @@ class OrdersService {
   /** Дополнить резерв позициями из API МП, если в БД ещё одна строка (типично YM до повторного синка). */
   async _augmentReserveFromDetailItems(summary, marketplace, orderId, rows, { profileId = null } = {}) {
     if (!rows?.length) return summary;
+    // Несколько строк уже в БД — API МП не нужен (иначе таймаут 90 с при синхронизации).
+    if (rows.length > 1) return summary;
     let detailItems = [];
     try {
       const { default: ordersSyncService } = await import('./orders.sync.service.js');
-      const pack = await ordersSyncService.getOrderDetail(marketplace, orderId, { profileId });
+      const MP_AUGMENT_MS = Number(process.env.ORDER_RESERVE_MP_AUGMENT_MS) || 12000;
+      const pack = await Promise.race([
+        ordersSyncService.getOrderDetail(marketplace, orderId, { profileId }),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('ORDER_DETAIL_MP_TIMEOUT')), MP_AUGMENT_MS);
+        })
+      ]);
       detailItems = this._extractDetailLineItems(pack?.detail, marketplace);
     } catch {
       return summary;
@@ -3241,7 +3242,11 @@ class OrdersService {
     return `Резерв частично установлен: ${after.reservedQty} из ${after.needQty}`;
   }
 
-  async getOrderReserveSummary(marketplace, orderId, { profileId = null } = {}) {
+  async getOrderReserveSummary(
+    marketplace,
+    orderId,
+    { profileId = null, skipDetailAugment = false } = {}
+  ) {
     const rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {
       const err = new Error('Заказ не найден в системе');
@@ -3249,9 +3254,11 @@ class OrdersService {
       throw err;
     }
     let summary = await this._summarizeReserveForRows(rows);
-    summary = await this._augmentReserveFromDetailItems(summary, marketplace, orderId, rows, {
-      profileId
-    });
+    if (!skipDetailAugment) {
+      summary = await this._augmentReserveFromDetailItems(summary, marketplace, orderId, rows, {
+        profileId
+      });
+    }
     return summary;
   }
 

@@ -102,10 +102,12 @@ export const ordersApi = {
   /**
    * Получить детальную информацию по заказу (Ozon: fbs/get, WB: заказ из списка)
    */
-  getOrderDetail: async (marketplace, orderId) => {
+  getOrderDetail: async (marketplace, orderId, options = {}) => {
     const mp = encodeURIComponent(marketplace);
     const id = encodeURIComponent(orderId);
-    const response = await api.get(`/orders/${mp}/${id}/detail`);
+    const params = {};
+    if (options.fast === true) params.fast = '1';
+    const response = await api.get(`/orders/${mp}/${id}/detail`, { params });
     return response.data?.data ?? response.data;
   },
 

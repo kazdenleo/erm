@@ -654,7 +654,7 @@ export function Orders() {
     setDetailModalLoading(true);
     setDetailModalError(null);
     setDetailModalData(null);
-    ordersApi.getOrderDetail(marketplace, orderId)
+    ordersApi.getOrderDetail(marketplace, orderId, { fast: true })
       .then((result) => {
         setDetailModalData(result);
         setDetailModalError(null);

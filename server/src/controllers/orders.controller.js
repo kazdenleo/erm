@@ -701,8 +701,13 @@ class OrdersController {
   async getOrderReserve(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
+      const augmentMp =
+        req.query.augment_mp === '1' ||
+        req.query.augmentMp === '1' ||
+        req.query.augment === '1';
       const data = await ordersService.getOrderReserveSummary(marketplace, orderId, {
-        profileId: req.user?.profileId ?? null
+        profileId: req.user?.profileId ?? null,
+        skipDetailAugment: !augmentMp
       });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
@@ -737,11 +742,18 @@ class OrdersController {
   async getDetail(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
-      const result = await ordersSyncService.getOrderDetail(marketplace, orderId, { profileId: req.user?.profileId ?? null });
+      const profileId = req.user?.profileId ?? null;
+      const fast =
+        req.query.fast === '1' ||
+        req.query.fast === 'true' ||
+        req.query.quick === '1';
+
       let assembly = null;
       let localLines = [];
+      let reserve = null;
+
       try {
-        const local = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
+        const local = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId });
         if (
           local?.assembledAt ||
           local?.assembledByEmail ||
@@ -757,21 +769,77 @@ class OrdersController {
           };
         }
       } catch {
-        /* нет строки в локальной БД — только маркетплейс */
+        /* нет строки в локальной БД */
       }
+
       try {
-        localLines = await ordersService.getLocalLinesForOrderDetail(marketplace, orderId, { profileId: req.user?.profileId ?? null });
+        localLines = await ordersService.getLocalLinesForOrderDetail(marketplace, orderId, { profileId });
       } catch {
         localLines = [];
       }
-      let reserve = null;
+
       try {
         reserve = await ordersService.getOrderReserveSummary(marketplace, orderId, {
-          profileId: req.user?.profileId ?? null
+          profileId,
+          skipDetailAugment: true
         });
       } catch {
         reserve = null;
       }
+
+      if (fast) {
+        const localPack =
+          (await ordersSyncService.getOrderDetailLocalOnly(marketplace, orderId, { profileId })) || {
+            marketplace: String(marketplace || '').toLowerCase() === 'wb' ? 'wildberries' : marketplace,
+            detail: null,
+            fromLocal: true
+          };
+        return res.status(200).json({
+          ok: true,
+          data: {
+            ...localPack,
+            orderId: String(orderId),
+            assembly,
+            localLines,
+            reserve
+          }
+        });
+      }
+
+      const mpTimeoutMs = Number(process.env.ORDER_DETAIL_MP_TIMEOUT_MS) || 25000;
+      let result;
+      try {
+        result = await Promise.race([
+          ordersSyncService.getOrderDetail(marketplace, orderId, { profileId }),
+          new Promise((_, reject) => {
+            setTimeout(() => {
+              const err = new Error(
+                'Превышено время ожидания ответа маркетплейса. Резерв доступен по данным из системы.'
+              );
+              err.statusCode = 504;
+              reject(err);
+            }, mpTimeoutMs);
+          })
+        ]);
+      } catch (mpErr) {
+        const localPack = await ordersSyncService.getOrderDetailLocalOnly(marketplace, orderId, {
+          profileId
+        });
+        if (localPack) {
+          result = localPack;
+        } else if (mpErr?.statusCode === 400 || mpErr?.statusCode === 404 || mpErr?.statusCode === 501) {
+          return res.status(mpErr.statusCode).json({ ok: false, message: mpErr.message });
+        } else if (localLines.length > 0 || reserve) {
+          result = {
+            marketplace: String(marketplace || '').toLowerCase(),
+            detail: null,
+            fromLocal: true
+          };
+        } else {
+          throw mpErr;
+        }
+      }
+
       return res.status(200).json({
         ok: true,
         data: {
@@ -779,7 +847,7 @@ class OrdersController {
           orderId: String(orderId),
           assembly,
           localLines,
-          reserve,
+          reserve
         }
       });
     } catch (error) {

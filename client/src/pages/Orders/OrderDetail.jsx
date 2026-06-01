@@ -617,7 +617,18 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
       </>
     );
   }
-  return null;
+  return (
+    <>
+      {reserveBlock}
+      {assemblyBlock}
+      {localLinesBlock}
+      {!detail && (
+        <p className="order-detail-local-hint" style={{ marginBottom: 12, fontSize: 13, color: 'var(--muted)' }}>
+          Детали с маркетплейса не загружены. Резерв и позиции — по данным из системы.
+        </p>
+      )}
+    </>
+  );
 }
 
 export function OzonDetail({ detail, localLines }) {
