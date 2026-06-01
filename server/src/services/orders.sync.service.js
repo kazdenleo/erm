@@ -323,6 +323,52 @@ class OrdersSyncService {
   }
 
   /**
+   * Фоновая синхронизация по всем профилям (планировщик) — не блокирует HTTP и пул БД.
+   */
+  startSyncFbsForAllProfilesInBackground(options = {}) {
+    const refreshStatuses = options.refreshStatuses === true;
+    const force = options.force === true || refreshStatuses;
+    const scheduler = options.scheduler === true;
+
+    this.resetStaleSyncLockIfNeeded();
+    if (ordersSyncCache.syncInProgress) {
+      return { started: false, inProgress: true };
+    }
+
+    ordersSyncCache.syncInProgress = true;
+    ordersSyncCache.syncStartedAt = Date.now();
+
+    setTimeout(() => {
+      const run = this.syncFbsForAllProfiles({
+        ...options,
+        force,
+        scheduler,
+        refreshStatuses,
+        backgroundJob: true
+      });
+      const timeout = new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error('Синхронизация прервана по таймауту (18 мин). Уменьшите период или повторите позже.')),
+          SYNC_BACKGROUND_MAX_MS
+        );
+      });
+      Promise.race([run, timeout])
+        .catch((e) => {
+          ordersSyncCache.lastSyncError = e?.message || String(e);
+          logger.error(
+            `[Orders Sync] background all-profiles sync failed: ${ordersSyncCache.lastSyncError}`
+          );
+        })
+        .finally(() => {
+          ordersSyncCache.syncInProgress = false;
+          ordersSyncCache.syncStartedAt = null;
+        });
+    }, 0);
+
+    return { started: true, inProgress: true };
+  }
+
+  /**
    * Синхронизация FBS заказов со всех маркетплейсов.
    * Реализует:
    *  - rate limiting: не чаще 1 раза в минуту (обходим при options.force)
@@ -994,8 +1040,9 @@ class OrdersSyncService {
       profiles: [],
       result: null
     };
+    const backgroundJob = options.backgroundJob === true;
     for (const profileId of ids) {
-      const out = await this.syncFbs({ ...options, profileId });
+      const out = await this.syncFbs({ ...options, profileId, backgroundJob });
       combined.profiles.push({ profileId, ...out });
       if (out.rateLimited) combined.rateLimited = true;
       if (out.cached) combined.cached = true;

@@ -471,17 +471,13 @@ class SchedulerService {
             );
             return;
           }
-          logger.info('[Scheduler] FBS orders sync (cron)...');
-          try {
-            // force: иначе при синке <1 мин назад (UI/другой поток) вернётся кэш без запросов к МП — новые заказы не подтянутся
-            const out = await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
-            if (out?.rateLimited) {
-              logger.info(
-                `[Scheduler] FBS orders sync: пропуск (${out.message || `подождите ${out.retryAfterSeconds ?? '?'} с`})`
-              );
-            }
-          } catch (error) {
-            logger.error('[Scheduler] FBS orders sync failed:', error?.message || error);
+          logger.info('[Scheduler] FBS orders sync (cron, background)...');
+          const out = ordersSyncService.startSyncFbsForAllProfilesInBackground({
+            force: true,
+            scheduler: true
+          });
+          if (!out.started && out.inProgress) {
+            logger.info('[Scheduler] FBS orders sync: пропуск — предыдущий прогон ещё выполняется');
           }
         }, {
           scheduled: false,
@@ -633,8 +629,8 @@ class SchedulerService {
         setTimeout(() => {
           (async () => {
             try {
-              logger.info('[Scheduler] Deferred FBS orders sync (~90s after startup)...');
-              await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
+              logger.info('[Scheduler] Deferred FBS orders sync (~90s after startup, background)...');
+              ordersSyncService.startSyncFbsForAllProfilesInBackground({ force: true, scheduler: true });
             } catch (e) {
               logger.warn('[Scheduler] Deferred FBS orders sync:', e?.message || e);
             }
@@ -779,8 +775,8 @@ class SchedulerService {
       const ivMin = Math.max(2, Number(process.env.ORDERS_FBS_SYNC_INTERVAL_MINUTES || 2));
       const runFbs = async () => {
         try {
-          logger.info('[Scheduler] FBS orders sync (fallback interval)...');
-          await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
+          logger.info('[Scheduler] FBS orders sync (fallback interval, background)...');
+          ordersSyncService.startSyncFbsForAllProfilesInBackground({ force: true, scheduler: true });
         } catch (e) {
           logger.error('[Scheduler] FBS orders sync failed:', e?.message || e);
         }
@@ -827,11 +823,12 @@ class SchedulerService {
           return;
         }
         logger.info('[Scheduler] FBS orders sync (server background)...');
-        const out = await ordersSyncService.syncFbsForAllProfiles({ force: true, scheduler: true });
-        if (out?.rateLimited) {
-          logger.info(
-            `[Scheduler] FBS orders sync: пропуск (${out.message || `подождите ${out.retryAfterSeconds ?? '?'} с`})`
-          );
+        const out = ordersSyncService.startSyncFbsForAllProfilesInBackground({
+          force: true,
+          scheduler: true
+        });
+        if (!out.started && out.inProgress) {
+          logger.info('[Scheduler] FBS orders sync: пропуск — предыдущий прогон ещё выполняется');
         }
       } catch (e) {
         logger.error('[Scheduler] FBS orders sync failed:', e?.message || e);

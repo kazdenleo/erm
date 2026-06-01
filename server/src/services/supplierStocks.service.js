@@ -134,8 +134,8 @@ class SupplierStocksService {
       }
     }
 
-    // 3. Файловый кэш (legacy)
-    if (!stockData) {
+    // 3. Файловый кэш (legacy; при PostgreSQL — только supplier_stocks, файл часто битый при параллельных записях)
+    if (!stockData && !repositoryFactory.isUsingPostgreSQL()) {
       try {
         const stockCache = await readData('supplierStockCache');
         const supplierCache = stockCache?.[apiSupplierCode] || stockCache?.[supplier] || {};
