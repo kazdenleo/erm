@@ -14,6 +14,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 import ordersService from './orders.service.js';
 import logger from '../utils/logger.js';
+import { runWithDbRetry } from '../utils/dbRetry.js';
 const PURCHASE_LOCK_TIMEOUT_MS = 60000;
 
 function sleep(ms) {
@@ -199,39 +200,58 @@ function parseSourceOrdersJson(raw) {
   return [];
 }
 
+function collectProductIdsFromPurchaseItems(items) {
+  const ids = new Set();
+  for (const it of items || []) {
+    const pid = parseInt(it.productId ?? it.product_id, 10);
+    if (Number.isFinite(pid) && pid > 0) ids.add(pid);
+  }
+  return ids;
+}
+
+/**
+ * После закупки / «в пути»: дозарезервировать заказы «В закупке» по FIFO (наличие + incoming − резерв).
+ * Отдельно от начисления incoming — иначе в UI «в пути» есть, а колонка «Резерв» = 0.
+ */
+function scheduleProcurementReserveReapply(productIds, { label = 'procurement-reserve' } = {}) {
+  const pids = [...(productIds instanceof Set ? productIds : new Set(productIds || []))].filter(
+    (id) => Number.isFinite(id) && id > 0
+  );
+  if (!pids.length) return;
+  setImmediate(() => {
+    (async () => {
+      for (const productId of pids) {
+        await runWithDbRetry(
+          () => ordersService.ensureReservesForProductIfSupplyAvailable(productId),
+          { label: `${label}-p${productId}`, attempts: 6, delayMs: 2500 }
+        ).catch((e) => {
+          logger.warn(`[Purchases] ${label}`, {
+            productId,
+            message: e?.message || String(e),
+          });
+        });
+      }
+    })();
+  });
+}
+
 /** После приёмки/заказа у поставщика: дозарезервировать заказы «В закупке», если появилось покрытие. */
 async function reapplyInProcurementReservesForPurchase(purchaseId, profileId) {
   const purId = parseInt(purchaseId, 10);
   const pid = normalizeProfileId(profileId);
   if (!purId || Number.isNaN(purId) || pid == null) return;
   const items = await query(
-    'SELECT source_orders FROM purchase_items WHERE purchase_id = $1',
+    'SELECT product_id, source_orders FROM purchase_items WHERE purchase_id = $1',
     [purId]
   );
-  const uniq = new Map();
+  const productIds = new Set();
   for (const row of items.rows || []) {
-    for (const o of parseSourceOrdersJson(row.source_orders)) {
-      if (!o?.marketplace || o?.orderId == null) continue;
-      const k = `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
-      if (!k.endsWith('|')) uniq.set(k, { marketplace: o.marketplace, orderId: String(o.orderId) });
-    }
+    const p = parseInt(row.product_id, 10);
+    if (Number.isFinite(p) && p > 0) productIds.add(p);
   }
-  const rowsToReserve = [];
-  for (const o of uniq.values()) {
-    const row = await ordersService.getByMarketplaceAndOrderId(o.marketplace, o.orderId, { profileId: pid });
-    if (row && String(row.status || '').toLowerCase() === 'in_procurement') {
-      rowsToReserve.push(row);
-    }
-  }
-  if (rowsToReserve.length > 0) {
-    setImmediate(() => {
-      ordersService._reapplyReserveForOrderRows(rowsToReserve).catch((e) => {
-        logger.warn('[Purchases] background reapply reserve after receipt', {
-          message: e?.message || String(e),
-        });
-      });
-    });
-  }
+  scheduleProcurementReserveReapply(productIds, {
+    label: 'background reapply reserve after purchase',
+  });
 }
 
 async function mergeSourceOrdersInTx(client, purchaseId, productId, newOrders) {
@@ -1331,22 +1351,17 @@ class PurchasesService {
       }
 
       let procurement = { updated: 0, skipped: 0 };
-      let rowsForReserve = [];
       if (refs.length > 0) {
         const bulk = await ordersService.bulkSetToProcurement(refs, profileId, {
           skipReserveReapply: true,
         });
         procurement = { updated: bulk.updated, skipped: bulk.skipped };
-        rowsForReserve = bulk.rows || [];
       }
 
-      if (rowsForReserve.length > 0) {
-        setImmediate(() => {
-          ordersService._reapplyReserveForOrderRows(rowsForReserve).catch((e) => {
-            logger.warn('[Purchases] background reserve after procure-from-orders', {
-              message: e?.message || String(e),
-            });
-          });
+      const productIds = collectProductIdsFromPurchaseItems(items);
+      if (productIds.size > 0) {
+        scheduleProcurementReserveReapply(productIds, {
+          label: 'background reserve after procure-from-orders',
         });
       }
 
