@@ -2502,6 +2502,10 @@ async function fetchYandexOrderDetailRaw(config, orderIdRaw) {
   throw err;
 }
 
+/** Кэш GET v2/campaigns — при догоне заказов YM иначе сотни одинаковых запросов подряд. */
+const YANDEX_CAMPAIGNS_CACHE_MS = 5 * 60 * 1000;
+const yandexCampaignsCache = new Map();
+
 /**
  * Получить businessId и списки campaignIds для API v1.
  * Используется config.business_id или запрос GET v2/campaigns.
@@ -2513,6 +2517,20 @@ async function fetchYandexOrderDetailRaw(config, orderIdRaw) {
  * }}
  */
 async function getYandexBusinessAndCampaigns(config) {
+  const api_key = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
+  const campaign_id = config?.campaign_id ?? config?.campaignId;
+  const configBusinessId = config?.business_id ?? config?.businessId;
+  const cacheKey = `${api_key}|${String(campaign_id ?? '')}|${String(configBusinessId ?? '')}`;
+  const hit = yandexCampaignsCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < YANDEX_CAMPAIGNS_CACHE_MS) {
+    return hit.value;
+  }
+  const value = await resolveYandexBusinessAndCampaigns(config);
+  yandexCampaignsCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+async function resolveYandexBusinessAndCampaigns(config) {
   const rawKey = config?.api_key ?? config?.apiKey;
   const api_key = normalizeYandexApiKey(rawKey);
   const campaign_id = config?.campaign_id ?? config?.campaignId;

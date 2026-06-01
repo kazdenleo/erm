@@ -253,7 +253,9 @@ export async function writeData(type, data) {
     };
     
     const jsonString = JSON.stringify(data, replacerFunc, 2);
-    await fs.promises.writeFile(filePath, jsonString, 'utf8');
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(tmpPath, jsonString, 'utf8');
+    await fs.promises.rename(tmpPath, filePath);
     return true;
   } catch (error) {
     console.error(`[Storage] Error writing ${type}:`, error.message);

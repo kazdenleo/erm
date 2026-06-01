@@ -15,6 +15,7 @@ import stockMovementsRepositoryPG from '../repositories/stock_movements.reposito
 import ordersService from './orders.service.js';
 import logger from '../utils/logger.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
+import { enqueueProcurementReserveJob } from '../utils/procurementReserveQueue.js';
 const PURCHASE_LOCK_TIMEOUT_MS = 60000;
 
 function sleep(ms) {
@@ -219,11 +220,11 @@ function scheduleProcurementReserveReapply(productIds, { label = 'procurement-re
   );
   if (!pids.length) return;
   setImmediate(() => {
-    (async () => {
+    enqueueProcurementReserveJob(async () => {
       for (const productId of pids) {
         await runWithDbRetry(
           () => ordersService.ensureReservesForProductIfSupplyAvailable(productId),
-          { label: `${label}-p${productId}`, attempts: 6, delayMs: 2500 }
+          { label: `${label}-p${productId}`, attempts: 3, delayMs: 2000 }
         ).catch((e) => {
           logger.warn(`[Purchases] ${label}`, {
             productId,
@@ -231,7 +232,7 @@ function scheduleProcurementReserveReapply(productIds, { label = 'procurement-re
           });
         });
       }
-    })();
+    }, { label });
   });
 }
 

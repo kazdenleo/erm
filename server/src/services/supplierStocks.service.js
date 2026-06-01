@@ -355,13 +355,16 @@ class SupplierStocksService {
         logger.error(`[Supplier Stocks] PostgreSQL save error for ${supplier}:${sku}:`, error.message);
       }
     }
-    try {
-      const stockCache = (await readData('supplierStockCache')) || {};
-      if (!stockCache[apiSupplierCode]) stockCache[apiSupplierCode] = {};
-      stockCache[apiSupplierCode][sku] = stockData;
-      await writeData('supplierStockCache', stockCache);
-    } catch (error) {
-      logger.error('[Supplier Stocks] File cache save error:', error.message);
+    // При PostgreSQL остатки в supplier_stocks; файл без блокировки портился при параллельных запросах.
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      try {
+        const stockCache = (await readData('supplierStockCache')) || {};
+        if (!stockCache[apiSupplierCode]) stockCache[apiSupplierCode] = {};
+        stockCache[apiSupplierCode][sku] = stockData;
+        await writeData('supplierStockCache', stockCache);
+      } catch (error) {
+        logger.error('[Supplier Stocks] File cache save error:', error.message);
+      }
     }
   }
 
