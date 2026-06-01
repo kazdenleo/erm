@@ -12,15 +12,44 @@ import {
 } from '../constants/netReservedStockSql.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 
+const STOCK_LOCK_MAX_CONCURRENT = (() => {
+  const n = Number(process.env.PRODUCT_STOCK_LOCK_MAX);
+  if (Number.isFinite(n) && n >= 1) return Math.min(16, Math.floor(n));
+  return 6;
+})();
+
+let stockLockInUse = 0;
+const stockLockWaitQueue = [];
+
+function acquireStockLockSlot() {
+  if (stockLockInUse < STOCK_LOCK_MAX_CONCURRENT) {
+    stockLockInUse += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    stockLockWaitQueue.push(resolve);
+  }).then(() => {
+    stockLockInUse += 1;
+  });
+}
+
+function releaseStockLockSlot() {
+  stockLockInUse = Math.max(0, stockLockInUse - 1);
+  const next = stockLockWaitQueue.shift();
+  if (next) next();
+}
+
 /**
  * Сериализация операций по одному product_id между параллельными HTTP/синками.
  * Иначе два заказа одновременно читают «доступно = 1» до commit первого резерва.
+ * Одновременно не более STOCK_LOCK_MAX_CONCURRENT выделенных соединений (остальное — очередь).
  */
 export async function runWithProductStockLock(productId, fn) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) {
     return fn();
   }
+  await acquireStockLockSlot();
   const client = await getClient();
   try {
     await client.query('SELECT pg_advisory_lock($1::bigint)', [pid]);
@@ -32,6 +61,7 @@ export async function runWithProductStockLock(productId, fn) {
       /* ignore */
     }
     client.release();
+    releaseStockLockSlot();
   }
 }
 

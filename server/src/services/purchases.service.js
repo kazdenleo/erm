@@ -14,8 +14,6 @@ import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 import ordersService from './orders.service.js';
 import logger from '../utils/logger.js';
-import { runWithProductStockLock } from './stockMovements.service.js';
-
 const PURCHASE_LOCK_TIMEOUT_MS = 60000;
 
 function sleep(ms) {
@@ -43,23 +41,26 @@ async function runWithLockRetry(fn, { attempts = 4, delayMs = 2500 } = {}) {
   throw lastErr;
 }
 
-/** «В пути» после commit — через advisory lock по товару, без конкуренции с резервом в одной транзакции. */
+/** «В пути» после commit — один запрос, одно соединение из пула (без N× advisory lock). */
 async function applyIncomingDeltasAfterCommit(deltas) {
   if (!deltas || deltas.size === 0) return;
-  const entries = [...deltas.entries()].sort((a, b) => a[0] - b[0]);
-  for (const [productId, qty] of entries) {
+  const batchIds = [];
+  const batchQtys = [];
+  for (const [productId, qty] of deltas.entries()) {
     const d = Math.max(0, parseInt(qty, 10) || 0);
     if (d <= 0) continue;
-    await runWithProductStockLock(productId, async () => {
-      await query(
-        `UPDATE products
-         SET incoming_quantity = COALESCE(incoming_quantity, 0) + $1,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2`,
-        [d, productId]
-      );
-    });
+    batchIds.push(Number(productId));
+    batchQtys.push(d);
   }
+  if (batchIds.length === 0) return;
+  await query(
+    `UPDATE products p
+     SET incoming_quantity = COALESCE(p.incoming_quantity, 0) + v.qty,
+         updated_at = CURRENT_TIMESTAMP
+     FROM unnest($1::bigint[], $2::int[]) AS v(product_id, qty)
+     WHERE p.id = v.product_id`,
+    [batchIds, batchQtys]
+  );
 }
 
 // Anti-duplicate scans (in-memory): receiptId|barcode -> ts.

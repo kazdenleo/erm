@@ -105,7 +105,23 @@ export async function getClient() {
     throw new Error('PostgreSQL pool is not initialized. Check USE_POSTGRESQL setting.');
   }
 
-  const client = await pool.connect();
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (error) {
+    const stats = getPoolStats();
+    const msg = String(error?.message || '');
+    if (/timeout exceeded when trying to connect|too many clients/i.test(msg)) {
+      logger.warn('Database pool exhausted on connect', stats);
+      const err = new Error(
+        'База данных перегружена (нет свободных соединений). Подождите несколько секунд и повторите.'
+      );
+      err.statusCode = 503;
+      err.code = error.code;
+      throw err;
+    }
+    throw error;
+  }
   const query = client.query.bind(client);
   const release = client.release.bind(client);
   
