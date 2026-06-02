@@ -1560,7 +1560,12 @@ class IntegrationsService {
       wbOverride
     });
     const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
-    const first = Array.isArray(cards) && cards.length > 0 ? cards[0] : null;
+    if (!Array.isArray(cards) || cards.length === 0) return null;
+    const wantNm = Number(nmId);
+    const first =
+      cards.find((c) => Number(c?.nmID ?? c?.nmId) === wantNm) ||
+      cards.find((c) => String(c?.nmID ?? c?.nmId) === String(nmId)) ||
+      null;
     if (!first) return null;
     // Возвращаем всю карточку (как есть), но добавим нормализованные поля для удобства фронта
     return {
@@ -1670,20 +1675,23 @@ class IntegrationsService {
       )
     ];
 
-    const verifyNmId = async (nm) => {
+    const verifyNmId = async (nm, listCard = null) => {
       if (nm == null) return null;
       let full = null;
       try {
         full = await this.getWildberriesProductInfo({ nm_id: nm, ...scope });
       } catch {
-        return null;
+        full = null;
       }
-      if (!full) return null;
-      const codes = this._wbCardVendorCodes(full);
+      const codes = full
+        ? this._wbCardVendorCodes(full)
+        : listCard
+          ? this._wbCardVendorCodes(listCard)
+          : [];
       if (!codes.some((c) => this._wbNormVendor(c) === want)) return null;
       const matched = codes.find((c) => this._wbNormVendor(c) === want) || vc;
       return {
-        nmId: Number(full.nmId ?? full.nmID ?? nm),
+        nmId: Number(full?.nmId ?? full?.nmID ?? listCard?.nmID ?? listCard?.nmId ?? nm),
         vendorCode: String(matched).trim()
       };
     };
@@ -1719,7 +1727,7 @@ class IntegrationsService {
           seenNm.add(key);
           scanned += 1;
           if (!this._wbCardVendorCodes(c).some((code) => this._wbNormVendor(code) === want)) continue;
-          const hit = await verifyNmId(nm);
+          const hit = await verifyNmId(nm, c);
           if (hit) return hit;
         }
         const next = data?.cursor;
@@ -1755,15 +1763,14 @@ class IntegrationsService {
           const key = String(nm);
           if (seenNm.has(key)) continue;
           seenNm.add(key);
-          const hit = await verifyNmId(nm);
+          const hit = await verifyNmId(nm, c);
           if (hit) return hit;
           if (seenNm.size >= MAX_VERIFY) break;
         }
 
         const next = data?.cursor;
-        const total = next?.total != null ? Number(next.total) : null;
         if (!next?.updatedAt || next?.nmID == null) break;
-        if (total != null && total < cursor.limit) break;
+        if (cards.length < cursor.limit) break;
         cursor = {
           limit: cursor.limit,
           updatedAt: next.updatedAt,
@@ -1772,7 +1779,6 @@ class IntegrationsService {
       }
     }
 
-    // textSearch иногда возвращает устаревший vendorCode — полный проход по каталогу кабинета.
     return scanAllCards(2000);
   }
 
