@@ -2715,6 +2715,8 @@ export function Orders() {
                   const n = Number(o?.quantity);
                   return Number.isFinite(n) && n > 0 ? n : 1;
                 };
+                const lineNeed = (o) =>
+                  Math.max(1, Number(o?.needQty ?? o?.need_qty ?? o?.quantity) || 1);
                 const mergedGroupLines = (() => {
                   if (!isGroup) return [];
                   const byKey = new Map();
@@ -2737,10 +2739,31 @@ export function Orders() {
                           : `n:${nameNorm || '_'}`;
                     const cur = byKey.get(key);
                     const add = lineQty(o);
-                    if (!cur) byKey.set(key, { name, article, quantity: add });
-                    else byKey.set(key, { ...cur, quantity: (cur.quantity || 0) + add });
+                    const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+                    const need = lineNeed(o);
+                    if (!cur) {
+                      byKey.set(key, {
+                        name,
+                        article,
+                        quantity: add,
+                        reservedQty: reserved,
+                        needQty: need,
+                        orders: [o],
+                      });
+                    } else {
+                      byKey.set(key, {
+                        ...cur,
+                        quantity: (cur.quantity || 0) + add,
+                        reservedQty: (cur.reservedQty || 0) + reserved,
+                        needQty: (cur.needQty || 0) + need,
+                        orders: [...(cur.orders || []), o],
+                      });
+                    }
                   }
-                  return [...byKey.values()];
+                  return [...byKey.values()].map((line) => ({
+                    ...line,
+                    coverageKind: groupReserveCoverageKind(line.orders || []),
+                  }));
                 })();
                 const sq = Number(first?.quantity);
                 const singleQty = Number.isFinite(sq) && sq > 0 ? sq : 1;
@@ -2762,8 +2785,6 @@ export function Orders() {
                       0
                     )
                   : Number(first.reservedQty ?? first.reserved_qty ?? 0) || 0;
-                const lineNeed = (o) =>
-                  Math.max(1, Number(o.needQty ?? o.need_qty ?? o.quantity) || 1);
                 const needQty = isGroup
                   ? groupOrders.reduce((s, o) => s + lineNeed(o), 0)
                   : lineNeed(first);
@@ -2874,29 +2895,28 @@ export function Orders() {
                   </td>
                   <td className="orders-col-qty">
                     {isGroup ? (
-                      <>
-                        <div className="orders-stacked-lines orders-stacked-lines--qty">
-                          {mergedGroupLines.map((o, i) => (
-                            <div key={i} className="orders-stacked-line">{o.quantity}</div>
-                          ))}
-                        </div>
-                        {showReserveCell ? (
-                          <div className="orders-qty-reserve-footer">
-                            <span
-                              className={reserveBadgeClassName(reserveCoverageKind)}
-                              title={formatOrderReserveBadgeTitle({
-                                reservedQty,
-                                needQty,
-                                orders: groupOrders,
-                                isGroup,
-                                coverageKind: reserveCoverageKind,
-                              })}
-                            >
-                              рез. {reservedQty}/{needQty}
-                            </span>
-                          </div>
-                        ) : null}
-                      </>
+                      <div className="orders-stacked-lines orders-stacked-lines--qty">
+                        {mergedGroupLines.map((line, i) => {
+                          const lineReserved = Number(line.reservedQty) || 0;
+                          const lineNeed = Number(line.needQty) || line.quantity || 1;
+                          return (
+                            <div key={i} className="orders-stacked-line orders-stacked-line--qty-row">
+                              {lineReserved > 0 ? (
+                                <OrderQuantityWithReserve
+                                  qty={line.quantity}
+                                  reservedQty={lineReserved}
+                                  needQty={lineNeed}
+                                  coverageKind={line.coverageKind}
+                                  groupOrders={line.orders}
+                                  isGroup={(line.orders || []).length > 1}
+                                />
+                              ) : (
+                                <span className="orders-qty-value">{line.quantity}</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     ) : (
                       <OrderQuantityWithReserve
                         qty={singleQty}

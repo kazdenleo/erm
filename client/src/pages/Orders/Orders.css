@@ -44,8 +44,12 @@
   font-variant-numeric: tabular-nums;
 }
 
-.orders-qty-reserve-footer {
-  margin-top: 4px;
+.orders-stacked-line--qty-row {
+  min-height: 1.6em;
+}
+
+.orders-stacked-line--qty-row .orders-qty-with-reserve {
+  justify-content: flex-start;
 }
 
 .orders-reserve-badge {
