@@ -554,21 +554,8 @@ function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null) {
     currentNetReserved != null && Number.isFinite(Number(currentNetReserved))
       ? Math.max(0, Math.floor(Number(currentNetReserved)))
       : null;
-  const top = displayRows[0];
-  const topType =
-    top?.kind === 'single'
-      ? movementTypeLower(top.m)
-      : top?.kind === 'reserveGroup'
-        ? 'reserve'
-        : top?.kind === 'unreserveGroup'
-          ? 'unreserve'
-          : null;
-  const topIsReserveLine =
-    top?.kind === 'reserveGroup' ||
-    top?.kind === 'unreserveGroup' ||
-    topType === 'reserve' ||
-    topType === 'unreserve';
-  if (net != null && enriched[0] && !topIsReserveLine) {
+  // Верхняя строка — актуальный нетто-резерв с API (reserved_after в движении может быть неточным после сверки).
+  if (net != null && enriched[0]) {
     enriched[0].res = net;
   }
   return enriched;

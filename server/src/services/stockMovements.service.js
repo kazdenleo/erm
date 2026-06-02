@@ -857,6 +857,19 @@ class StockMovementsService {
         warehouseId,
         profileId: profId
       });
+      const movementId = movement?.id ?? movement?.movement_id;
+      if (movementId != null) {
+        await client.query(
+          `UPDATE stock_movements sm
+           SET reserved_after = COALESCE((
+             SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+             FROM stock_movements
+             WHERE product_id = $1 AND type IN ('reserve', 'unreserve')
+           ), 0)
+           WHERE sm.id = $2`,
+          [pid, movementId]
+        );
+      }
       await client.query(
         `UPDATE products p
          SET reserved_quantity = COALESCE((
@@ -869,6 +882,15 @@ class StockMovementsService {
         [pid]
       );
       await client.query('COMMIT');
+      if (movementId != null) {
+        const rv = await query(
+          `SELECT reserved_after FROM stock_movements WHERE id = $1`,
+          [movementId]
+        );
+        if (movement && rv.rows?.[0]) {
+          movement.reserved_after = rv.rows[0].reserved_after;
+        }
+      }
       return movement;
     } catch (e) {
       await client.query('ROLLBACK');
