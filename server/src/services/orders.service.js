@@ -1554,6 +1554,28 @@ class OrdersService {
     return orders;
   }
 
+  /**
+   * Фоново дозарезервировать строки списка заказов, где есть остаток, но резерв неполный.
+   * (например после ручной корректировки наличия или если заказ пришёл раньше поступления).
+   */
+  _scheduleEnsureReservesForUnderReservedOrders(orders) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders) || !orders.length) {
+      return;
+    }
+    const rows = orders.filter((o) => {
+      const st = String(o.status || '').trim().toLowerCase();
+      if (!['new', 'in_procurement', 'in_assembly'].includes(st)) return false;
+      const need = Math.max(1, parseInt(o.quantity, 10) || 1);
+      const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+      return reserved < need;
+    });
+    if (!rows.length) return;
+    const copy = rows.slice();
+    setImmediate(() => {
+      this._reapplyReserveForOrderRows(copy).catch(() => {});
+    });
+  }
+
   async getPage(options = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
       const lightReserve = options.lightReserveEnrich !== false;
@@ -1563,6 +1585,7 @@ class OrdersService {
           : Promise.resolve(null);
       const [items, total] = await Promise.all([this.repository.findAll(options), countPromise]);
       await this.enrichOrdersReserveMetrics(items, { light: lightReserve });
+      this._scheduleEnsureReservesForUnderReservedOrders(items);
       return { items, total: total ?? items.length };
     }
     const items = await this.repository.findAll();

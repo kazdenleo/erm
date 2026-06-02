@@ -239,6 +239,12 @@ class StockMovementsService {
         // не блокируем движение при сбое пересчёта резервов
       }
       try {
+        const { default: ordersService } = await import('./orders.service.js');
+        await ordersService.ensureReservesForProductIfSupplyAvailable(idNum);
+      } catch {
+        // не блокируем движение при сбое дозарезервирования
+      }
+      try {
         const { default: fboSupplyReserveService } = await import('./fboSupplyReserve.service.js');
         await fboSupplyReserveService.onSupplyStockEvent(idNum, warehouseId, {
           profileId: profId,
