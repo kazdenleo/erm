@@ -11,6 +11,9 @@ import { query, transaction } from '../config/database.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
+import { extractWbWarehouseList, hasWbTariffsWarehouseList } from '../utils/wbTariffs.js';
+
+export { extractWbWarehouseList, hasWbTariffsWarehouseList };
 
 class IntegrationsService {
   /** Ленивая инициализация — иначе цикл stockMovements/kitStock → integrations при загрузке repository-factory. */
@@ -1055,33 +1058,72 @@ class IntegrationsService {
    */
   async getWildberriesTariffs(date = null, opts = {}) {
     const scope = this._normalizeIntegrationScope(opts);
+
+    const loadAndMaybeCache = async () => {
+      const data = await this._fetchWildberriesTariffsFromAPI(date, scope);
+      if (hasWbTariffsWarehouseList(data)) {
+        await writeData('wbTariffsCache', {
+          data,
+          lastUpdate: new Date().toISOString(),
+          profileId: scope.profileId ?? null,
+        });
+      } else {
+        logger.warn('[Integrations Service] WB tariffs API returned no warehouseList', {
+          topKeys: data && typeof data === 'object' ? Object.keys(data) : [],
+        });
+      }
+      return data;
+    };
+
     try {
-      // Сначала проверяем кэш
       const cachedData = await readData('wbTariffsCache');
-      if (cachedData && cachedData.data && cachedData.lastUpdate) {
-        const lastUpdate = new Date(cachedData.lastUpdate);
-        const now = new Date();
-        const hoursSinceUpdate = (now - lastUpdate) / (1000 * 60 * 60);
-        
-        // Если данные обновлены менее 24 часов назад, возвращаем из кэша
+      const scopePid =
+        scope.profileId != null && scope.profileId !== '' ? String(scope.profileId) : null;
+      const cachePid =
+        cachedData?.profileId != null && cachedData.profileId !== ''
+          ? String(cachedData.profileId)
+          : null;
+      const profileCacheOk =
+        scopePid == null || cachePid == null || scopePid === cachePid;
+
+      if (
+        cachedData?.data &&
+        cachedData.lastUpdate &&
+        hasWbTariffsWarehouseList(cachedData.data) &&
+        profileCacheOk
+      ) {
+        const hoursSinceUpdate =
+          (Date.now() - new Date(cachedData.lastUpdate).getTime()) / (1000 * 60 * 60);
         if (hoursSinceUpdate < 24) {
           logger.info('[Integrations Service] Returning WB tariffs from cache');
           return cachedData.data;
         }
+      } else if (cachedData?.data && !profileCacheOk) {
+        logger.warn('[Integrations Service] WB tariffs cache profile mismatch, refetching', {
+          scopePid,
+          cachePid,
+        });
+      } else if (cachedData?.data) {
+        logger.warn('[Integrations Service] WB tariffs cache invalid (empty warehouseList), refetching');
       }
 
-      // Если кэша нет или он устарел, загружаем из API
       logger.info('[Integrations Service] Loading WB tariffs from API');
-      return await this._fetchWildberriesTariffsFromAPI(date, scope);
+      return await loadAndMaybeCache();
     } catch (error) {
       logger.error('[Integrations Service] Error getting WB tariffs:', error);
-      // Если ошибка при получении из кэша, пробуем загрузить из API
-      try {
-        return await this._fetchWildberriesTariffsFromAPI(date, scope);
-      } catch (apiError) {
-        throw apiError;
-      }
+      return await loadAndMaybeCache();
     }
+  }
+
+  /** Тарифы WB с принудительным обновлением, если кэш пустой или битый. */
+  async ensureWildberriesTariffs(opts = {}) {
+    let data = await this.getWildberriesTariffs(null, opts);
+    if (hasWbTariffsWarehouseList(data)) return data;
+
+    logger.warn('[Integrations Service] ensureWildberriesTariffs: empty data, forcing update');
+    await this.updateWildberriesTariffs(opts);
+    data = await this.getWildberriesTariffs(null, opts);
+    return data;
   }
 
   /**
@@ -2028,29 +2070,45 @@ class IntegrationsService {
   /**
    * Обновить тарифы Wildberries (вызывается из планировщика)
    */
-  async updateWildberriesTariffs() {
+  async updateWildberriesTariffs(opts = {}) {
+    const scope = this._normalizeIntegrationScope(opts);
     try {
       logger.info('[Integrations Service] Starting WB tariffs update...');
-      
-      const config = await this.getMarketplaceConfig('wildberries');
+
+      const config = await this.getMarketplaceConfig('wildberries', scope);
       if (!config || !config.api_key) {
         logger.warn('[Integrations Service] WB API key not configured, skipping tariffs update');
-        return { success: false, message: 'API ключ не настроен' };
+        return { success: false, message: 'API ключ Wildberries не настроен' };
       }
 
-      // Загружаем тарифы из API
-      const tariffsData = await this._fetchWildberriesTariffsFromAPI();
-      
-      // Сохраняем в кэш
-      const cacheData = {
+      const tariffsData = await this._fetchWildberriesTariffsFromAPI(null, scope);
+
+      if (!hasWbTariffsWarehouseList(tariffsData)) {
+        const warehouses = extractWbWarehouseList(tariffsData).length;
+        logger.warn('[Integrations Service] WB tariffs update: empty warehouseList', {
+          warehouses,
+          keys: tariffsData && typeof tariffsData === 'object' ? Object.keys(tariffsData) : [],
+        });
+        return {
+          success: false,
+          message:
+            'WB не вернул тарифы складов. Проверьте токен (категория «Тарифы») и повторите позже.',
+        };
+      }
+
+      await writeData('wbTariffsCache', {
         data: tariffsData,
-        lastUpdate: new Date().toISOString()
+        lastUpdate: new Date().toISOString(),
+        profileId: scope.profileId ?? null,
+      });
+
+      logger.info('[Integrations Service] WB tariffs updated successfully', {
+        warehouses: extractWbWarehouseList(tariffsData).length,
+      });
+      return {
+        success: true,
+        message: `Тарифы обновлены (${extractWbWarehouseList(tariffsData).length} складов)`,
       };
-      
-      await writeData('wbTariffsCache', cacheData);
-      
-      logger.info('[Integrations Service] WB tariffs updated successfully');
-      return { success: true, message: 'Тарифы обновлены успешно' };
     } catch (error) {
       // При 401 от WB не «роняем» приложение на старте/в планировщике — просто пропускаем обновление.
       const status = error?.statusCode ?? error?.status ?? null;

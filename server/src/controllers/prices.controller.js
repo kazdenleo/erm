@@ -16,7 +16,11 @@ class PricesController {
       
       console.log(`[Prices Controller] Getting Ozon prices for offer_id: ${offer_id}`);
       const source = req.query.source === 'cache' ? 'cache' : 'live';
-      const result = await pricesService.getOzonPrices(offer_id, { source });
+      const integrationScope = {
+        profileId: req.user?.profileId ?? null,
+        organizationId: req.headers['x-organization-id'] ?? req.query.organizationId ?? null,
+      };
+      const result = await pricesService.getOzonPrices(offer_id, { source, integrationScope });
       console.log(`[Prices Controller] Ozon prices result:`, result.found ? 'found' : 'not found');
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
@@ -32,7 +36,17 @@ class PricesController {
         return res.status(400).json({ ok: false, message: 'Необходим параметр offer_id' });
       }
       
-      const result = await pricesService.getWBPrices(offer_id, category_id, wb_warehouse_name || null, user_category_id || null);
+      const integrationScope = {
+        profileId: req.user?.profileId ?? null,
+        organizationId: req.headers['x-organization-id'] ?? req.query.organizationId ?? null,
+      };
+      const result = await pricesService.getWBPrices(
+        offer_id,
+        category_id,
+        wb_warehouse_name || null,
+        user_category_id || null,
+        { integrationScope }
+      );
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);
@@ -148,7 +162,14 @@ class PricesController {
       }
       
       const source = req.query.source === 'cache' ? 'cache' : 'live';
-      const result = await pricesService.getYMPrices(offer_id, category_id || null, user_category_id || null, { source });
+      const integrationScope = {
+        profileId: req.user?.profileId ?? null,
+        organizationId: req.headers['x-organization-id'] ?? req.query.organizationId ?? null,
+      };
+      const result = await pricesService.getYMPrices(offer_id, category_id || null, user_category_id || null, {
+        source,
+        integrationScope,
+      });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);
@@ -240,7 +261,14 @@ class PricesController {
         return res.status(400).json({ ok: false, message: 'Некорректный ID товара (передайте productId в теле запроса)' });
       }
       const useCalculatorCache = req.body?.useCalculatorCache === true;
-      const result = await pricesService.recalculateAndSaveForProduct(id, { useCalculatorCache });
+      const integrationScope = {
+        profileId: req.user?.profileId ?? null,
+        organizationId: req.headers['x-organization-id'] ?? null,
+      };
+      const result = await pricesService.recalculateAndSaveForProduct(id, {
+        useCalculatorCache,
+        integrationScope,
+      });
       return res.status(200).json({
         ok: true,
         message: 'Минимальные цены пересчитаны и сохранены',

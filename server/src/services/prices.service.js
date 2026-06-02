@@ -17,6 +17,7 @@ import path from 'path';
 import repositoryFactory from '../config/repository-factory.js';
 import { calculateMinPrice } from './min-price-calculator.service.js';
 import { applyOzonV5ItemToCalculator } from './ozon-v5-item-calculator.js';
+import { extractWbWarehouseList } from '../utils/wbTariffs.js';
 
 // Временная функция для получения кэшированных данных WB
 function getWBCachedData() {
@@ -56,6 +57,102 @@ function getWBWarehousesCache() {
 }
 
 class PricesService {
+  _integrationScopeFromOptions(options = {}) {
+    const s = options.integrationScope || {};
+    return {
+      profileId: s.profileId != null && s.profileId !== '' ? s.profileId : null,
+      organizationId:
+        s.organizationId != null && s.organizationId !== '' ? s.organizationId : null,
+    };
+  }
+
+  async _getOzonApiCredentials(options = {}) {
+    const scope = this._integrationScopeFromOptions(options);
+    const cfg = await integrationsService.getMarketplaceConfig('ozon', scope);
+    return {
+      scope,
+      client_id: cfg?.client_id ?? cfg?.clientId ?? null,
+      api_key: cfg?.api_key ?? cfg?.apiKey ?? null,
+    };
+  }
+
+  async _getYandexApiCredentials(options = {}) {
+    const scope = this._integrationScopeFromOptions(options);
+    const cfg = await integrationsService.getMarketplaceConfig('yandex', scope);
+    return {
+      scope,
+      api_key: cfg?.api_key ?? cfg?.apiKey ?? null,
+      campaign_id: cfg?.campaign_id ?? cfg?.campaignId ?? null,
+    };
+  }
+
+  async _fetchOzonV5PriceItems(filter, client_id, api_key) {
+    const response = await fetch('https://api-seller.ozon.ru/v5/product/info/prices', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'Client-Id': String(client_id),
+        'Api-Key': String(api_key),
+      },
+      body: JSON.stringify({
+        cursor: '',
+        filter: { visibility: 'ALL', ...filter },
+        limit: 100,
+      }),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      const err = new Error(`Ozon API ${response.status}: ${errorText.substring(0, 200)}`);
+      err.statusCode = response.status;
+      throw err;
+    }
+    const data = await response.json();
+    return data.items || (data.result && data.result.items) || [];
+  }
+
+  async _fetchOzonV3ProductByOfferId(offer_id, client_id, api_key) {
+    const response = await fetch('https://api-seller.ozon.ru/v3/product/info/list', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'Client-Id': String(client_id),
+        'Api-Key': String(api_key),
+      },
+      body: JSON.stringify({
+        offer_id: [String(offer_id).trim()],
+        product_id: [],
+        sku: [],
+      }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.result?.items?.[0] || null;
+  }
+
+  /** v5 по offer_id; при пустом ответе — product_id из v3 или синтетическая запись для applyOzonV5ItemToCalculator */
+  async _resolveOzonV5PriceItem(offer_id, client_id, api_key) {
+    const oid = String(offer_id).trim();
+    if (!oid) return null;
+
+    let items = await this._fetchOzonV5PriceItems({ offer_id: [oid] }, client_id, api_key);
+    if (items.length) return items[0];
+
+    const v3Item = await this._fetchOzonV3ProductByOfferId(oid, client_id, api_key);
+    if (!v3Item?.id) return null;
+
+    items = await this._fetchOzonV5PriceItems({ product_id: [v3Item.id] }, client_id, api_key);
+    if (items.length) return items[0];
+
+    return {
+      offer_id: v3Item.offer_id || oid,
+      product_id: v3Item.id,
+      price: { price: parseFloat(v3Item.price || v3Item.marketing_price || 0) },
+      commissions: {},
+    };
+  }
+
   /**
    * Загрузить акции Ozon из API и товары по каждой акции, сохранить в кэш (cron раз в сутки в 01:00)
    */
@@ -1111,61 +1208,34 @@ class PricesService {
         };
       }
 
-      // Получаем конфигурацию Ozon через integrationsService
-      const integrations = await integrationsService.getAll();
-      const ozonIntegration = integrations.find(i => i.code === 'ozon');
-      const client_id = ozonIntegration?.config?.client_id;
-      const api_key = ozonIntegration?.config?.api_key;
-      
+      const { client_id, api_key } = await this._getOzonApiCredentials(options);
+
       if (!client_id || !api_key) {
         return {
           found: false,
-          error: 'Необходимы Client ID и API Key для подключения к Ozon'
+          error: 'Необходимы Client ID и API Key для подключения к Ozon (настройки интеграции)',
         };
       }
-      
+
       console.log(`[Prices Service] Getting Ozon prices for offer_id: ${offer_id}`);
-      
-      // Используем endpoint v5 для получения детальной информации о ценах
-      const response = await fetch('https://api-seller.ozon.ru/v5/product/info/prices', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'Client-Id': String(client_id),
-          'Api-Key': String(api_key)
-        },
-        body: JSON.stringify({
-          cursor: "",
-          filter: {
-            offer_id: [offer_id],
-            visibility: "ALL"
-          },
-          limit: 100
-        }),
-        timeout: 10000
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[Prices Service] Ozon API error: ${response.status}`, errorText);
+
+      let item;
+      try {
+        item = await this._resolveOzonV5PriceItem(offer_id, client_id, api_key);
+      } catch (apiErr) {
+        console.error('[Prices Service] Ozon API error:', apiErr.message);
         return {
           found: false,
-          error: `API Error: ${errorText.substring(0, 100)}`
+          error: apiErr.message || 'Ошибка API Ozon',
         };
       }
-      
-      const data = await response.json();
-      const items = data.items || (data.result && data.result.items);
-      
-      if (!items || items.length === 0) {
+
+      if (!item) {
         return {
           found: false,
-          message: 'Информация о ценах не найдена'
+          error: `Товар «${offer_id}» не найден в кабинете Ozon. Проверьте артикул Ozon в карточке и что товар есть в этом кабинете.`,
         };
       }
-      
-      const item = items[0];
       const built = await applyOzonV5ItemToCalculator(item, offer_id, client_id, api_key);
       if (built.found && built.calculator) {
         await this._tryUpsertMpCalculatorCacheFromOffer('ozon', offer_id, built.calculator, 'live_v5');
@@ -1198,15 +1268,14 @@ class PricesService {
         };
       }
 
-      // Получаем конфигурацию WB через integrationsService
-      const integrations = await integrationsService.getAll();
-      const wbIntegration = integrations.find(i => i.code === 'wildberries');
-      const api_key = wbIntegration?.config?.api_key;
-      
+      const integrationScope = options.integrationScope || {};
+      const wbConfig = await integrationsService.getMarketplaceConfig('wildberries', integrationScope);
+      const api_key = wbConfig?.api_key ?? wbConfig?.apiKey;
+
       if (!api_key) {
         return {
           found: false,
-          error: 'Необходим API Key для подключения к Wildberries'
+          error: 'Необходим API Key для подключения к Wildberries (настройки интеграции)'
         };
       }
       
@@ -1350,12 +1419,17 @@ class PricesService {
       // Используем кэшированные данные складов (пока не перенесены в БД)
       const wbWarehouses = getWBWarehousesCache();
       
-      // Получаем тарифы из кэша через integrationsService
       let boxTariffsData = null;
       try {
-        boxTariffsData = await integrationsService.getWildberriesTariffs();
+        boxTariffsData = await integrationsService.ensureWildberriesTariffs(integrationScope);
       } catch (error) {
-        console.error('[Prices Service] Error getting WB tariffs from cache:', error);
+        console.error('[Prices Service] Error getting WB tariffs:', error);
+        return {
+          found: false,
+          error:
+            error?.message ||
+            'Не удалось загрузить тарифы Wildberries. Обновите тарифы в настройках интеграции WB.',
+        };
       }
       
       // Ищем склад для расчета логистики через маппинг основного склада
@@ -1438,23 +1512,16 @@ class PricesService {
         }
       }
       
-      // Поддержка разных форматов ответа API WB: response.data.warehouseList или data.warehouseList или warehouseList
-      const warehouseList = boxTariffsData?.response?.data?.warehouseList
-        ?? boxTariffsData?.data?.warehouseList
-        ?? boxTariffsData?.warehouseList;
-      const isWarehouseListValid = Array.isArray(warehouseList) && warehouseList.length > 0;
+      const warehouseList = extractWbWarehouseList(boxTariffsData);
 
-      if (!isWarehouseListValid) {
+      if (!warehouseList.length) {
         logger.warn('[Prices Service] WB tariffs check failed', {
-          hasResponse: !!boxTariffsData?.response,
-          hasResponseData: !!boxTariffsData?.response?.data,
-          hasData: !!boxTariffsData?.data,
           topLevelKeys: boxTariffsData ? Object.keys(boxTariffsData) : [],
-          responseDataKeys: boxTariffsData?.response?.data ? Object.keys(boxTariffsData.response.data) : []
         });
         return {
           found: false,
-          error: 'Тарифы Wildberries не загружены. Пожалуйста, обновите тарифы в настройках интеграции.'
+          error:
+            'Тарифы Wildberries не загружены. В интеграции WB нажмите «Обновить тарифы» (нужен токен с доступом к тарифам).',
         };
       }
 
@@ -1853,14 +1920,14 @@ class PricesService {
         };
       }
 
-      const integrations = await integrationsService.getAll();
-      const ymIntegration = integrations.find(i => i.code === 'yandex');
-      const api_key = ymIntegration?.config?.api_key;
-      const campaign_id = ymIntegration?.config?.campaign_id;
+      const { api_key, campaign_id } = await this._getYandexApiCredentials(options);
 
       if (!api_key) {
         logger.warn('[Prices Service] getYMPrices: no API key for Yandex');
-        return { found: false, error: 'Необходим API Key для подключения к Yandex.Market' };
+        return {
+          found: false,
+          error: 'Необходим API Key для подключения к Yandex.Market (настройки интеграции)',
+        };
       }
 
       // Разрешаем categoryId: из параметра, или из user_category.marketplace_mappings.ym
@@ -2253,7 +2320,19 @@ class PricesService {
     const costPart = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
     const addExp = Number(product.additional_expenses ?? product.additionalExpenses ?? 0) || 0;
     const basePrice = costPart + addExp;
-    const mpOpts = options.useCalculatorCache ? { source: 'cache' } : {};
+    const integrationScope = {
+      profileId:
+        options.integrationScope?.profileId ?? product.profile_id ?? product.profileId ?? null,
+      organizationId:
+        options.integrationScope?.organizationId ??
+        product.organization_id ??
+        product.organizationId ??
+        null,
+    };
+    const mpOpts = {
+      ...(options.useCalculatorCache ? { source: 'cache' } : {}),
+      integrationScope,
+    };
     const minProfitRaw = (product.min_price != null && product.min_price !== '' && !isNaN(Number(product.min_price))) ? Number(product.min_price) : null;
     const minProfit = minProfitRaw != null ? minProfitRaw : 50;
     if (basePrice <= 0) {
@@ -2264,10 +2343,9 @@ class PricesService {
     let wbAcquiringPercent = null;
     let wbGemServicesPercent = null;
     try {
-      const integrations = await integrationsService.getAll();
-      const wb = integrations.find(i => i.code === 'wildberries' || i.code === 'wb');
-      wbAcquiringPercent = wb?.config?.acquiring_percent != null ? Number(wb.config.acquiring_percent) : null;
-      wbGemServicesPercent = wb?.config?.gem_services_percent != null ? Number(wb.config.gem_services_percent) : null;
+      const wb = await integrationsService.getMarketplaceConfig('wildberries', integrationScope);
+      wbAcquiringPercent = wb?.acquiring_percent != null ? Number(wb.acquiring_percent) : null;
+      wbGemServicesPercent = wb?.gem_services_percent != null ? Number(wb.gem_services_percent) : null;
     } catch (e) {
       logger.warn('[Prices Service] WB settings for recalc:', e.message);
     }
@@ -2311,6 +2389,8 @@ class PricesService {
         errors.ozon = err.message || String(err);
         logger.warn(`[Prices Service] recalc Ozon for product ${productId}:`, err.message);
       }
+    } else if (product.sku && !skuOzon) {
+      errors.ozon = 'Нет артикула Ozon. Укажите артикул Ozon в карточке товара.';
     }
 
     // Логируем всегда (console.log), чтобы в консоли было видно путь для WB

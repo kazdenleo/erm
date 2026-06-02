@@ -898,7 +898,7 @@ export function Prices() {
     setCalculatedPrices(prev => ({ ...prev, ...fromStored }));
   }, [products]);
 
-  /** Пересчитать минимальные цены только для одного товара — расчёт по API и saveBulk. */
+  /** Пересчитать минимальные цены для одного товара на сервере (Ozon, WB, YM с учётом профиля). */
   const handleRecalcOne = async (productId) => {
     if (!productId) return;
     const product = products.find((p) => String(p?.id) === String(productId));
@@ -923,117 +923,37 @@ export function Prices() {
         return;
       }
 
-      let categoryMappings = [];
-      if (product.id) {
-        try {
-          const mappingsResponse = await categoryMappingsApi.getByProduct(product.id);
-          const data = mappingsResponse?.data !== undefined ? mappingsResponse.data : mappingsResponse;
-          if (Array.isArray(data)) categoryMappings = data;
-          else if (data?.ok && Array.isArray(data.data)) categoryMappings = data.data;
-          else if (data?.data && Array.isArray(data.data)) categoryMappings = data.data;
-          else {
-            const found = data && typeof data === 'object' ? Object.values(data).find((v) => Array.isArray(v)) : null;
-            categoryMappings = found || [];
-          }
-        } catch (_) {
-          // продолжаем без маппингов
+      const res = await pricesApi.recalculateForProduct(productId);
+      const payload = res?.data !== undefined ? res.data : res;
+      const errors = payload?.errors && typeof payload.errors === 'object' ? payload.errors : {};
+      const errParts = Object.entries(errors).filter(([, v]) => v);
+
+      setPriceErrors((prev) => {
+        const next = { ...prev };
+        if (errParts.length) {
+          next[productKey] = { ...(next[productKey] || {}), ...Object.fromEntries(errParts) };
+        } else if (next[productKey]) {
+          const cleared = { ...next[productKey] };
+          delete cleared.ozon;
+          delete cleared.wb;
+          delete cleared.ym;
+          if (Object.keys(cleared).length === 0) delete next[productKey];
+          else next[productKey] = cleared;
         }
-      }
-
-      const prices = {};
-      const calculatorDataForProduct = {};
-      const skuOzon = product.sku_ozon || product.ozon_sku || (product.product_skus && product.product_skus.ozon);
-      const skuWb = product.sku_wb || product.wb_sku || (product.product_skus && product.product_skus.wb);
-      const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym) || product.sku;
-      const minProfit = (product.minPrice != null && product.minPrice !== '' && !isNaN(Number(product.minPrice))) ? Number(product.minPrice) : null;
-
-      if (skuOzon) {
-        try {
-          const rawOzon = await pricesApi.getOzonPrice(skuOzon);
-          const ozonResult = getPriceResult(rawOzon);
-          if (ozonResult?.found && ozonResult?.calculator && !ozonResult.error && !ozonResult.missingData) {
-            calculatorDataForProduct.ozon = ozonResult.calculator;
-            prices.ozon = minProfit != null ? calculateMinPrice(basePriceNum, ozonResult.calculator, 'ozon', minProfit, product) : null;
-          }
-        } catch (err) {
-          setPriceErrors((prev) => ({ ...prev, [productKey]: { ...prev[productKey], ozon: err.response?.data?.message || err.message } }));
-        }
-      }
-
-      if (skuWb) {
-        try {
-          const mapping = categoryMappings.find((m) => m.marketplace === 'wb' || m.marketplace === 'wildberries');
-          let categoryId = mapping?.category_id ?? null;
-          if (!categoryId && product.category_id) categoryId = product.category_id;
-          if (!categoryId && !product.user_category_id) {
-            setPriceErrors((prev) => ({
-              ...prev,
-              [productKey]: {
-                ...prev[productKey],
-                wb: 'Категория WB не указана. Настройте маппинг категории в разделе «Категории».'
-              }
-            }));
-          } else {
-            const rawWb = await pricesApi.getWBPrice(
-              skuWb,
-              categoryId,
-              wbWarehouseName,
-              !categoryId && product.user_category_id ? product.user_category_id : null
-            );
-            const wbResult = getPriceResult(rawWb);
-            if (wbResult?.found && wbResult?.calculator) {
-              calculatorDataForProduct.wb = wbResult.calculator;
-              prices.wb = minProfit != null ? calculateMinPrice(basePriceNum, wbResult.calculator, 'wb', minProfit, product, wbAcquiringPercent, wbGemServicesPercent) : null;
-              setPriceErrors((prev) => {
-                const next = { ...prev, [productKey]: { ...(prev[productKey] || {}) } };
-                delete next[productKey].wb;
-                if (Object.keys(next[productKey]).length === 0) delete next[productKey];
-                return next;
-              });
-            } else if (wbResult?.error) {
-              setPriceErrors((prev) => ({ ...prev, [productKey]: { ...prev[productKey], wb: wbResult.error } }));
-            }
-          }
-        } catch (err) {
-          setPriceErrors((prev) => ({ ...prev, [productKey]: { ...prev[productKey], wb: err.response?.data?.message || err.response?.data?.error || err.message } }));
-        }
-      }
-
-      if (skuYm) {
-        try {
-          const ymMapping = categoryMappings.find((m) => m.marketplace === 'ym' || m.marketplace === 'yandex');
-          const ymCategoryId = ymMapping?.category_id ?? null;
-          const rawYm = await pricesApi.getYMPrice(skuYm, ymCategoryId, !ymCategoryId && product.user_category_id ? product.user_category_id : null);
-          const ymResult = getPriceResult(rawYm);
-          if (ymResult?.found && ymResult?.calculator) {
-            calculatorDataForProduct.ym = ymResult.calculator;
-            prices.ym = minProfit != null ? calculateMinPrice(basePriceNum, ymResult.calculator, 'ym', minProfit, product) : null;
-          } else if (ymResult?.error) {
-            setPriceErrors((prev) => ({ ...prev, [productKey]: { ...prev[productKey], ym: ymResult.error } }));
-          }
-        } catch (err) {
-          setPriceErrors((prev) => ({ ...prev, [productKey]: { ...prev[productKey], ym: err.response?.data?.message || err.message } }));
-        }
-      }
-
-      const hasDetails = (obj) => obj && typeof obj === 'object' && !obj.error && (obj.commissions != null || obj.logistics_cost != null);
-      const saveItem = {
-        productId: product.id ?? product.sku,
-        ozon: prices.ozon ?? undefined,
-        wb: prices.wb ?? undefined,
-        ym: prices.ym ?? undefined,
-        ozonDetails: hasDetails(calculatorDataForProduct.ozon) ? calculatorDataForProduct.ozon : undefined,
-        wbDetails: hasDetails(calculatorDataForProduct.wb) ? calculatorDataForProduct.wb : undefined,
-        ymDetails: hasDetails(calculatorDataForProduct.ym) ? calculatorDataForProduct.ym : undefined
-      };
-      await pricesApi.saveBulk([saveItem]);
-
-      setCalculatedPrices((prev) => ({ ...prev, [productKey]: { ...prices, _estimated: { ozon: false, wb: false, ym: false } } }));
-      setCalculatorData((prev) => ({ ...prev, [productKey]: calculatorDataForProduct }));
+        return next;
+      });
 
       await loadListRef.current();
-      setRecalcAllMessage('Цены для товара пересчитаны и сохранены.');
-      setTimeout(() => setRecalcAllMessage(null), 3000);
+
+      if (errParts.length) {
+        const summary = errParts.map(([mp, msg]) => `${mp.toUpperCase()}: ${msg}`).join(' · ');
+        setRecalcAllMessage(
+          summary.length > 220 ? `Частично: ${summary.slice(0, 217)}…` : `Частично сохранено. ${summary}`
+        );
+      } else {
+        setRecalcAllMessage('Цены для товара пересчитаны и сохранены.');
+      }
+      setTimeout(() => setRecalcAllMessage(null), 6000);
     } catch (err) {
       console.error('[Prices] recalc one failed:', err);
       setRecalcAllMessage('Ошибка пересчёта: ' + (err.response?.data?.message || err.message));
@@ -1535,8 +1455,10 @@ export function Prices() {
                             title={priceErrors[productKey].ozon}
                           >
                             <span style={{color: '#ef4444', fontSize: '12px'}}>⚠️ Ошибка</span>
-                            <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px'}}>
-                              Данных нет
+                            <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', maxWidth: '240px'}}>
+                              {priceErrors[productKey].ozon.length > 85
+                                ? priceErrors[productKey].ozon.substring(0, 85) + '…'
+                                : priceErrors[productKey].ozon}
                             </div>
                           </div>
                         ) : skuOzon ? (

@@ -209,7 +209,7 @@ class IntegrationsController {
    */
   async updateWildberriesTariffs(req, res, next) {
     try {
-      const result = await integrationsService.updateWildberriesTariffs();
+      const result = await integrationsService.updateWildberriesTariffs(integrationScopeFromQuery(req));
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);
