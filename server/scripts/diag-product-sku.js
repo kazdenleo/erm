@@ -6,13 +6,18 @@ import { getProductSupplySnapshotWithClient } from '../src/services/sellableQuan
 
 const sku = process.argv[2] || 'AN1096';
 const pr = await query(
-  `SELECT id, sku, quantity, incoming_quantity, reserved_quantity, profile_id
+  `SELECT id, sku, organization_id, profile_id, quantity, incoming_quantity, reserved_quantity
    FROM products WHERE UPPER(TRIM(sku)) = UPPER(TRIM($1)) LIMIT 5`,
   [sku]
 );
 console.log('products', pr.rows);
 if (!pr.rows[0]) process.exit(0);
 const pid = pr.rows[0].id;
+const skus = await query(
+  `SELECT marketplace, sku, marketplace_product_id FROM product_skus WHERE product_id = $1`,
+  [pid]
+);
+console.log('product_skus', skus.rows);
 const pws = await query('SELECT * FROM product_warehouse_stock WHERE product_id = $1', [pid]);
 console.log('pws', pws.rows);
 const snap = await getProductSupplySnapshotWithClient(null, pid);

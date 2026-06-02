@@ -301,11 +301,15 @@ function labelFromKitApiHint(part) {
   return sku || name || '';
 }
 
-/** Организация для запроса подсказок: карточка → фильтр списка → сессия */
-function resolveKitPickerOrganizationId(formOrgId, productsListOrganizationId) {
+/** Организация для запросов к МП: карточка → товар в БД → фильтр списка → сессия */
+function resolveKitPickerOrganizationId(formOrgId, productsListOrganizationId, productOrgId) {
   const fromF =
     formOrgId != null && formOrgId !== '' && String(formOrgId).trim() !== ''
       ? String(formOrgId).trim()
+      : '';
+  const fromProduct =
+    productOrgId != null && String(productOrgId).trim() !== ''
+      ? String(productOrgId).trim()
       : '';
   const fromList =
     productsListOrganizationId != null && String(productsListOrganizationId).trim() !== ''
@@ -313,7 +317,7 @@ function resolveKitPickerOrganizationId(formOrgId, productsListOrganizationId) {
       : '';
   const { organizationId: sessOrg } = getApiSessionContext();
   const fromSession = sessOrg != null && String(sessOrg).trim() !== '' ? String(sessOrg).trim() : '';
-  return fromF || fromList || fromSession || undefined;
+  return fromF || fromProduct || fromList || fromSession || undefined;
 }
 
 const EMPTY_PRODUCT_FORM_DATA = {
@@ -898,8 +902,13 @@ export function ProductForm({
   }, [wbSubjectId, wbFetchedProduct]);
 
   const wbAttributesOrganizationId = useMemo(
-    () => resolveKitPickerOrganizationId(formData.organizationId, productsListOrganizationId),
-    [formData.organizationId, productsListOrganizationId]
+    () =>
+      resolveKitPickerOrganizationId(
+        formData.organizationId,
+        productsListOrganizationId,
+        currentProduct?.organization_id ?? currentProduct?.organizationId
+      ),
+    [formData.organizationId, productsListOrganizationId, currentProduct?.organization_id, currentProduct?.organizationId]
   );
 
   // Яндекс.Маркет: id листовой категории (строка цифр — без потери точности для длинных id)
@@ -1305,15 +1314,20 @@ export function ProductForm({
   const fetchOzonProductInfo = useCallback(async () => {
     const organizationId = resolveKitPickerOrganizationId(
       formData.organizationId,
-      productsListOrganizationId
+      productsListOrganizationId,
+      currentProduct?.organization_id ?? currentProduct?.organizationId
     );
     const productIdRaw =
       String(formData.ozon_product_id || '').trim() ||
       (currentProduct?.ozon_product_id != null ? String(currentProduct.ozon_product_id) : '');
     const productId = productIdRaw ? Number(productIdRaw.replace(/\D/g, '')) : null;
-    const offerId = formData.sku_ozon != null && String(formData.sku_ozon).trim() !== '' ? String(formData.sku_ozon).trim() : null;
+    const offerId =
+      (formData.sku_ozon != null && String(formData.sku_ozon).trim() !== ''
+        ? String(formData.sku_ozon).trim()
+        : null) ||
+      (formData.sku != null && String(formData.sku).trim() !== '' ? String(formData.sku).trim() : null);
     if (!productId && !offerId) {
-      setOzonSyncError('Укажите артикул Ozon (offer_id) или product_id карточки Ozon.');
+      setOzonSyncError('Укажите артикул Ozon (offer_id), product_id карточки Ozon или артикул ERP.');
       return;
     }
     if (!organizationId) {
@@ -1367,7 +1381,11 @@ export function ProductForm({
         'Данные с Ozon загружены в поля вкладки (название, описание, бренд, атрибуты). Можно отредактировать и отправить обратно на Ozon.'
       );
     } catch (err) {
-      const msg = err.response?.data?.error ?? err.message ?? 'Ошибка при загрузке данных с Ozon.';
+      const msg =
+        err.response?.data?.message ??
+        err.response?.data?.error ??
+        err.message ??
+        'Ошибка при загрузке данных с Ozon.';
       setOzonSyncError(msg);
     } finally {
       setOzonSyncLoading(false);
@@ -1439,7 +1457,8 @@ export function ProductForm({
   const fetchWbProductInfo = useCallback(async () => {
     const organizationId = resolveKitPickerOrganizationId(
       formData.organizationId,
-      productsListOrganizationId
+      productsListOrganizationId,
+      currentProduct?.organization_id ?? currentProduct?.organizationId
     );
     const nmId = formData.sku_wb != null && String(formData.sku_wb).trim() !== '' ? String(formData.sku_wb).trim() : null;
     if (!nmId) {
@@ -1471,7 +1490,11 @@ export function ProductForm({
       }
       setWbSyncSuccess('Данные с Wildberries загружены в поля WB. Сохраните товар.');
     } catch (err) {
-      const msg = err.response?.data?.error ?? err.message ?? 'Ошибка при загрузке данных с Wildberries.';
+      const msg =
+        err.response?.data?.message ??
+        err.response?.data?.error ??
+        err.message ??
+        'Ошибка при загрузке данных с Wildberries.';
       setWbSyncError(msg);
     } finally {
       setWbSyncLoading(false);
@@ -1486,7 +1509,8 @@ export function ProductForm({
   const fetchYmProductInfo = useCallback(async () => {
     const organizationId = resolveKitPickerOrganizationId(
       formData.organizationId,
-      productsListOrganizationId
+      productsListOrganizationId,
+      currentProduct?.organization_id ?? currentProduct?.organizationId
     );
     const offerId =
       (formData.sku_ym != null && String(formData.sku_ym).trim() !== ''
@@ -3399,7 +3423,7 @@ export function ProductForm({
                 ozonSyncLoading ||
                 (
                   !String(formData.ozon_product_id || currentProduct?.ozon_product_id || '').trim() &&
-                  !String(formData.sku_ozon || '').trim()
+                  !String(formData.sku_ozon || formData.sku || '').trim()
                 )
               }
             >
