@@ -222,18 +222,28 @@ class IntegrationsController {
    */
   async getWildberriesProductInfo(req, res, next) {
     try {
-      const { nm_id } = req.query;
+      const { nm_id, vendor_code } = req.query;
       const { organizationId } = integrationScopeFromQuery(req);
       const tid = tenantListProfileId(req);
       const profileId =
         tid === TENANT_LIST_EMPTY || tid == null ? null : tid;
+      const org =
+        organizationId != null && String(organizationId).trim() !== ''
+          ? String(organizationId).trim()
+          : null;
+      const scope = { profileId, organizationId: org };
+      const vc = vendor_code != null ? String(vendor_code).trim() : '';
+      let resolvedNmId = nm_id != null && String(nm_id).trim() !== '' ? String(nm_id).trim() : null;
+      if (!resolvedNmId && vc) {
+        const card = await integrationsService.getWildberriesProductByVendorCode(vc, scope);
+        if (!card?.nmId) {
+          return res.status(404).json({ ok: false, error: 'Товар не найден в Wildberries.' });
+        }
+        resolvedNmId = String(card.nmId);
+      }
       const data = await integrationsService.getWildberriesProductInfo({
-        nm_id,
-        profileId,
-        organizationId:
-          organizationId != null && String(organizationId).trim() !== ''
-            ? String(organizationId).trim()
-            : null
+        nm_id: resolvedNmId,
+        ...scope
       });
       if (!data) {
         return res.status(404).json({ ok: false, error: 'Товар не найден в Wildberries.' });

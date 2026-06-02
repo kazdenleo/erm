@@ -22,6 +22,27 @@ function normalizeMp(marketplace) {
   return mp;
 }
 
+function uniqueNonEmpty(values) {
+  const seen = new Set();
+  const out = [];
+  for (const v of values) {
+    const s = v != null ? String(v).trim() : '';
+    if (!s) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
+
+function parsePositiveInt(raw) {
+  const s = raw != null ? String(raw).trim() : '';
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function assertCredentials(mp, cfg) {
   if (mp === 'ozon' && !integrationsService._hasOzonCredentials(cfg)) {
     const err = new Error('Кабинет Ozon не настроен для выбранной организации (Client ID и API Key).');
@@ -41,17 +62,21 @@ function assertCredentials(mp, cfg) {
 }
 
 /**
- * Найти карточку на маркетплейсе по артикулу ERP.
+ * Найти карточку на маркетплейсе (сначала по полям связи / подсказкам, затем по артикулу ERP).
+ * @param {object} params
+ * @param {object} [params.hints] sku_ozon, ozon_product_id, mp_wb_vendor_code, sku_wb, sku_ym
  * @returns {Promise<{ marketplace: string, sku_ozon?: string, marketplace_ozon_product_id?: number|null, sku_wb?: string, mp_wb_vendor_code?: string, sku_ym?: string, displaySku: string }>}
  */
-export async function resolveMarketplaceListingByErpSku({ marketplace, erpSku, profileId, organizationId }) {
+export async function resolveMarketplaceListingByErpSku({
+  marketplace,
+  erpSku,
+  profileId,
+  organizationId,
+  hints = {}
+}) {
   const mp = normalizeMp(marketplace);
   const sku = erpSku != null ? String(erpSku).trim() : '';
-  if (!sku) {
-    const err = new Error('У товара не указан артикул ERP (sku).');
-    err.statusCode = 400;
-    throw err;
-  }
+  const h = hints && typeof hints === 'object' ? hints : {};
   if (organizationId == null || organizationId === '') {
     const err = new Error('У товара не указана организация — выберите организацию в карточке.');
     err.statusCode = 400;
@@ -66,14 +91,34 @@ export async function resolveMarketplaceListingByErpSku({ marketplace, erpSku, p
   assertCredentials(mp, cfg);
 
   if (mp === 'ozon') {
-    const item = await integrationsService.getOzonProductInfo({
-      offer_id: sku,
-      profileId,
-      organizationId,
-      ozonOverride: cfg
-    });
+    const productId = parsePositiveInt(h.ozon_product_id ?? h.marketplace_ozon_product_id);
+    const offerCandidates = uniqueNonEmpty([h.sku_ozon, sku]);
+    let item = null;
+    if (productId) {
+      item = await integrationsService.getOzonProductInfo({
+        product_id: productId,
+        profileId,
+        organizationId,
+        ozonOverride: cfg
+      });
+    }
+    for (const offerId of offerCandidates) {
+      if (item) break;
+      item = await integrationsService.getOzonProductInfo({
+        offer_id: offerId,
+        profileId,
+        organizationId,
+        ozonOverride: cfg
+      });
+    }
     if (!item) {
-      const err = new Error(`Товар с артикулом «${sku}» не найден в кабинете Ozon организации.`);
+      const tried = [
+        productId ? `product_id ${productId}` : null,
+        ...offerCandidates.map((o) => `offer_id «${o}»`)
+      ].filter(Boolean);
+      const err = new Error(
+        `Товар не найден в кабинете Ozon организации (проверено: ${tried.join(', ') || '—'}).`
+      );
       err.statusCode = 404;
       throw err;
     }
@@ -88,27 +133,66 @@ export async function resolveMarketplaceListingByErpSku({ marketplace, erpSku, p
   }
 
   if (mp === 'wb') {
-    const card = await integrationsService.getWildberriesProductByVendorCode(sku, {
-      profileId,
-      organizationId,
-      wbOverride: cfg
-    });
+    const nmId = parsePositiveInt(h.sku_wb ?? h.wbNmId);
+    const skuWbRaw = h.sku_wb != null ? String(h.sku_wb).trim() : '';
+    const vendorCandidates = uniqueNonEmpty([
+      h.mp_wb_vendor_code,
+      h.wbVendorCode,
+      skuWbRaw && !nmId ? skuWbRaw : null,
+      sku
+    ]);
+    const wbOpts = { profileId, organizationId, wbOverride: cfg };
+    let card = null;
+    for (const vc of vendorCandidates) {
+      const hit = await integrationsService.getWildberriesProductByVendorCode(vc, wbOpts);
+      if (hit?.nmId != null) {
+        card = hit;
+        break;
+      }
+    }
+    if (!card && nmId) {
+      const info = await integrationsService.getWildberriesProductInfo({
+        nm_id: nmId,
+        profileId,
+        organizationId,
+        wbOverride: cfg
+      });
+      if (info) {
+        card = {
+          nmId,
+          vendorCode: String(info.vendorCode ?? info.vendor_code ?? vendorCandidates[0] ?? sku).trim()
+        };
+      }
+    }
     if (!card || card.nmId == null) {
-      const err = new Error(`Товар с артикулом «${sku}» не найден в кабинете Wildberries организации.`);
+      const tried = [
+        ...vendorCandidates.map((v) => `vendorCode «${v}»`),
+        nmId ? `nmId ${nmId}` : null
+      ].filter(Boolean);
+      const err = new Error(
+        `Товар не найден в кабинете Wildberries организации (проверено: ${tried.join(', ') || '—'}).`
+      );
       err.statusCode = 404;
       throw err;
     }
     return {
       marketplace: mp,
       sku_wb: String(card.nmId),
-      mp_wb_vendor_code: card.vendorCode || sku,
+      mp_wb_vendor_code: card.vendorCode || vendorCandidates[0] || sku,
       displaySku: String(card.nmId)
     };
   }
 
-  const ym = await integrationsService.getYandexOfferByOfferId(sku, { profileId, organizationId });
+  const ymCandidates = uniqueNonEmpty([h.sku_ym, sku]);
+  let ym = null;
+  for (const offerId of ymCandidates) {
+    ym = await integrationsService.getYandexOfferByOfferId(offerId, { profileId, organizationId });
+    if (ym?.offerId) break;
+  }
   if (!ym?.offerId) {
-    const err = new Error(`Предложение с offerId «${sku}» не найдено в кабинете Яндекс.Маркета организации.`);
+    const err = new Error(
+      `Предложение не найдено в кабинете Яндекс.Маркета организации (проверено: ${ymCandidates.map((o) => `«${o}»`).join(', ') || '—'}).`
+    );
     err.statusCode = 404;
     throw err;
   }

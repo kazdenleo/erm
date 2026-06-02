@@ -418,7 +418,17 @@ class ProductsController {
     try {
       const { id, marketplace } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const result = await productsService.linkProductToMarketplace(id, marketplace, { profileId });
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const hints =
+        body.hints && typeof body.hints === 'object'
+          ? body.hints
+          : Object.keys(body).length > 0
+            ? body
+            : {};
+      const result = await productsService.linkProductToMarketplace(id, marketplace, {
+        profileId,
+        hints
+      });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);

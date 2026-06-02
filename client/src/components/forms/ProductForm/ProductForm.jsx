@@ -1480,9 +1480,19 @@ export function ProductForm({
       productsListOrganizationId,
       currentProduct?.organization_id ?? currentProduct?.organizationId
     );
-    const nmId = formData.sku_wb != null && String(formData.sku_wb).trim() !== '' ? String(formData.sku_wb).trim() : null;
-    if (!nmId) {
-      setWbSyncError('Укажите nmId (ID номенклатуры Wildberries).');
+    const skuWbRaw =
+      formData.sku_wb != null && String(formData.sku_wb).trim() !== '' ? String(formData.sku_wb).trim() : '';
+    const nmId = skuWbRaw && /^\d+$/.test(skuWbRaw) ? skuWbRaw : null;
+    const vendorCandidates = [
+      formData.mp_wb_vendor_code,
+      currentProduct?.mp_wb_vendor_code,
+      skuWbRaw && !nmId ? skuWbRaw : null
+    ]
+      .map((v) => (v != null && String(v).trim() !== '' ? String(v).trim() : ''))
+      .filter(Boolean);
+    const vendorCodes = [...new Set(vendorCandidates)];
+    if (!nmId && vendorCodes.length === 0) {
+      setWbSyncError('Укажите nmId (номенклатура WB) или vendorCode (артикул продавца).');
       return;
     }
     if (!organizationId) {
@@ -1493,8 +1503,26 @@ export function ProductForm({
     setWbSyncSuccess('');
     setWbSyncLoading(true);
     try {
-      const data = await integrationsApi.getWildberriesProductInfo({ nm_id: nmId, organizationId });
+      const apiBase = { organizationId };
+      let data = null;
+      let lastErr = null;
+      if (nmId) {
+        try {
+          data = await integrationsApi.getWildberriesProductInfo({ ...apiBase, nm_id: nmId });
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      for (const vendorCode of vendorCodes) {
+        if (data) break;
+        try {
+          data = await integrationsApi.getWildberriesProductInfo({ ...apiBase, vendor_code: vendorCode });
+        } catch (e) {
+          lastErr = e;
+        }
+      }
       if (!data) {
+        if (lastErr) throw lastErr;
         setWbSyncError('Товар не найден в кабинете Wildberries выбранной организации.');
         return;
       }
@@ -1519,7 +1547,14 @@ export function ProductForm({
     } finally {
       setWbSyncLoading(false);
     }
-  }, [formData.sku_wb, formData.organizationId, productsListOrganizationId, mergeWbFetchedIntoForm]);
+  }, [
+    formData.sku_wb,
+    formData.mp_wb_vendor_code,
+    formData.organizationId,
+    productsListOrganizationId,
+    currentProduct?.mp_wb_vendor_code,
+    mergeWbFetchedIntoForm
+  ]);
 
   useEffect(() => {
     if (!Array.isArray(wbFetchedProduct?.characteristics) || wbFetchedProduct.characteristics.length === 0) return;
@@ -3850,7 +3885,13 @@ export function ProductForm({
               type="button"
               variant="secondary"
               onClick={fetchWbProductInfo}
-              disabled={wbSyncLoading || (!formData.sku_wb || String(formData.sku_wb).trim() === '')}
+              disabled={
+                wbSyncLoading ||
+                (
+                  !String(formData.sku_wb || '').trim() &&
+                  !String(formData.mp_wb_vendor_code || currentProduct?.mp_wb_vendor_code || '').trim()
+                )
+              }
             >
               {wbSyncLoading ? 'Загрузка…' : 'Обновить данные с WB'}
             </Button>

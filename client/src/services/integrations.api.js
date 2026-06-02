@@ -188,6 +188,10 @@ export const integrationsApi = {
   getWildberriesProductInfo: async (params = {}) => {
     const q = new URLSearchParams();
     if (params.nm_id != null && params.nm_id !== '') q.set('nm_id', String(params.nm_id));
+    const vendorCode = params.vendor_code ?? params.vendorCode;
+    if (vendorCode != null && String(vendorCode).trim() !== '') {
+      q.set('vendor_code', String(vendorCode).trim());
+    }
     if (params.organizationId != null && String(params.organizationId).trim() !== '') {
       q.set('organizationId', String(params.organizationId).trim());
     }

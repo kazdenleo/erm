@@ -1372,11 +1372,24 @@ class ProductsService {
     }
     const orgId = product.organization_id ?? product.organizationId;
     const erpSku = product.sku;
+    const bodyHints = options.hints && typeof options.hints === 'object' ? options.hints : {};
+    const hints = {
+      sku_ozon: bodyHints.sku_ozon ?? product.sku_ozon ?? null,
+      ozon_product_id:
+        bodyHints.ozon_product_id ??
+        product.marketplace_ozon_product_id ??
+        product.ozon_product_id ??
+        null,
+      mp_wb_vendor_code: bodyHints.mp_wb_vendor_code ?? product.mp_wb_vendor_code ?? null,
+      sku_wb: bodyHints.sku_wb ?? product.sku_wb ?? null,
+      sku_ym: bodyHints.sku_ym ?? product.sku_ym ?? null
+    };
     const resolved = await resolveMarketplaceListingByErpSku({
       marketplace,
       erpSku,
       profileId: options.profileId ?? product.profile_id ?? product.profileId ?? null,
-      organizationId: orgId
+      organizationId: orgId,
+      hints
     });
 
     const updates = {

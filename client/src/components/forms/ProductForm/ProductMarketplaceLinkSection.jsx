@@ -14,7 +14,9 @@ function isMarketplaceLinked(marketplace, formData) {
     );
   }
   if (marketplace === 'wb') {
-    return !!String(formData?.sku_wb || '').trim();
+    return !!(
+      String(formData?.sku_wb || '').trim() || String(formData?.mp_wb_vendor_code || '').trim()
+    );
   }
   if (marketplace === 'ym') {
     return !!String(formData?.sku_ym || '').trim();
@@ -40,14 +42,31 @@ export function ProductMarketplaceLinkSection({
   const linked = isMarketplaceLinked(marketplace, formData);
   const skuTrim = erpSku != null ? String(erpSku).trim() : '';
   const orgTrim = organizationId != null ? String(organizationId).trim() : '';
-  const canLink = !!productId && !!skuTrim && !!orgTrim && !linking;
+  const wbVendorTrim = String(formData?.mp_wb_vendor_code || '').trim();
+  const wbNmTrim = String(formData?.sku_wb || '').trim();
+  const ozonOfferTrim = String(formData?.sku_ozon || '').trim();
+  const ozonPidTrim = String(formData?.ozon_product_id || '').trim();
+  const ymOfferTrim = String(formData?.sku_ym || '').trim();
+  const hasLinkIdentifiers =
+    marketplace === 'wb'
+      ? !!(wbVendorTrim || wbNmTrim || skuTrim)
+      : marketplace === 'ozon'
+        ? !!(ozonOfferTrim || ozonPidTrim || skuTrim)
+        : marketplace === 'ym'
+          ? !!(ymOfferTrim || skuTrim)
+          : !!skuTrim;
+  const canLink = !!productId && !!orgTrim && hasLinkIdentifiers && !linking;
 
   const linkDisabledReason = !productId
     ? 'Сначала сохраните товар'
     : !orgTrim
       ? 'Выберите организацию'
-      : !skuTrim
-        ? 'Укажите артикул ERP'
+      : !hasLinkIdentifiers
+        ? marketplace === 'wb'
+          ? 'Укажите vendorCode WB, nmId или артикул ERP'
+          : marketplace === 'ozon'
+            ? 'Укажите offer_id Ozon, product_id или артикул ERP'
+            : 'Укажите offerId ЯМ или артикул ERP'
         : '';
 
   const handleAutoLink = async () => {
@@ -56,7 +75,17 @@ export function ProductMarketplaceLinkSection({
     setLinkError('');
     setLinkSuccess('');
     try {
-      const body = await productsApi.linkMarketplace(productId, marketplace);
+      const hints = {};
+      if (marketplace === 'wb') {
+        if (wbVendorTrim) hints.mp_wb_vendor_code = wbVendorTrim;
+        if (wbNmTrim) hints.sku_wb = wbNmTrim;
+      } else if (marketplace === 'ozon') {
+        if (ozonOfferTrim) hints.sku_ozon = ozonOfferTrim;
+        if (ozonPidTrim) hints.ozon_product_id = ozonPidTrim;
+      } else if (marketplace === 'ym' && ymOfferTrim) {
+        hints.sku_ym = ymOfferTrim;
+      }
+      const body = await productsApi.linkMarketplace(productId, marketplace, hints);
       const payload = body?.data ?? body;
       const product = payload?.product ?? payload;
       if (!product?.id) {
@@ -95,12 +124,12 @@ export function ProductMarketplaceLinkSection({
           title={
             linkDisabledReason ||
             (linked
-              ? 'Пересвязать по артикулу ERP'
-              : 'Связать с маркетплейсом по артикулу ERP')
+              ? 'Пересвязать с карточкой маркетплейса'
+              : 'Связать с карточкой маркетплейса')
           }
           disabled={!canLink}
           onClick={handleAutoLink}
-          aria-label="Связать с маркетплейсом по артикулу ERP"
+          aria-label="Связать с карточкой маркетплейса"
         >
           <i
             className="pe-7s-link"
@@ -116,7 +145,25 @@ export function ProductMarketplaceLinkSection({
       </div>
       <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px', lineHeight: 1.45 }}>
         Идентификаторы для сопоставления товара ERP с карточкой на площадке. Иконка справа ищет карточку в
-        кабинете организации по артикулу ERP (<code>{skuTrim || '—'}</code>).
+        кабинете организации
+        {marketplace === 'wb' ? (
+          <>
+            {' '}
+            по vendorCode WB (<code>{wbVendorTrim || '—'}</code>), nmId (<code>{wbNmTrim || '—'}</code>) или
+            артикулу ERP (<code>{skuTrim || '—'}</code>).
+          </>
+        ) : marketplace === 'ozon' ? (
+          <>
+            {' '}
+            по offer_id (<code>{ozonOfferTrim || '—'}</code>), product_id или артикулу ERP (
+            <code>{skuTrim || '—'}</code>).
+          </>
+        ) : (
+          <>
+            {' '}
+            по offerId ЯМ (<code>{ymOfferTrim || '—'}</code>) или артикулу ERP (<code>{skuTrim || '—'}</code>).
+          </>
+        )}
       </p>
       {linkError && <div className="text-danger small mb-2">{linkError}</div>}
       {linkSuccess && <div className="text-success small mb-2">{linkSuccess}</div>}

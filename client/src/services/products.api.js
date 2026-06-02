@@ -177,10 +177,12 @@ export const productsApi = {
    * @param {number|string} productId
    * @param {'ozon'|'wb'|'ym'} marketplace
    */
-  linkMarketplace: async (productId, marketplace) => {
+  linkMarketplace: async (productId, marketplace, hints = null) => {
     const id = encodeURIComponent(String(productId));
     const mp = encodeURIComponent(String(marketplace).trim());
-    const response = await api.post(`/products/${id}/link-marketplace/${mp}`);
+    const body =
+      hints && typeof hints === 'object' && Object.keys(hints).length > 0 ? hints : undefined;
+    const response = await api.post(`/products/${id}/link-marketplace/${mp}`, body);
     return response.data;
   },
 
