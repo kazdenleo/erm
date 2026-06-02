@@ -272,6 +272,9 @@ class StockMovementsService {
         netForOrder = await getNetReservedForOrderProduct(orderDbIdRaw, idNum);
       }
 
+      const journalReconcile =
+        metaOut.journal_reconcile === true || metaOut.journal_reconcile === 'true';
+
       if (type === 'reserve' && safeDelta < 0) {
         const reserveAdd = Math.floor(Math.abs(safeDelta));
         if (reserveAdd < 1) {
@@ -281,23 +284,25 @@ class StockMovementsService {
         }
         const supply = await getProductSupplySnapshotWithClient(client, idNum);
         const journalBeforeRaw = supply.reservedRaw;
-        const availableForReserve = Math.max(0, Math.floor(supply.available));
-        if (availableForReserve <= 0) {
-          const err = new Error(
-            `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
-              `уже зарезервировано ${journalBeforeRaw} (доступно без поставщиков: 0)`
-          );
-          err.statusCode = 400;
-          throw err;
-        }
-        if (reserveAdd > availableForReserve) {
-          const err = new Error(
-            `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
-              `уже зарезервировано ${journalBeforeRaw}, запрошено ${reserveAdd} ` +
-              `(доступно без поставщиков: ${availableForReserve})`
-          );
-          err.statusCode = 400;
-          throw err;
+        if (!journalReconcile) {
+          const availableForReserve = Math.max(0, Math.floor(supply.available));
+          if (availableForReserve <= 0) {
+            const err = new Error(
+              `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
+                `уже зарезервировано ${journalBeforeRaw} (доступно без поставщиков: 0)`
+            );
+            err.statusCode = 400;
+            throw err;
+          }
+          if (reserveAdd > availableForReserve) {
+            const err = new Error(
+              `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
+                `уже зарезервировано ${journalBeforeRaw}, запрошено ${reserveAdd} ` +
+                `(доступно без поставщиков: ${availableForReserve})`
+            );
+            err.statusCode = 400;
+            throw err;
+          }
         }
         const journalAfter = journalBeforeRaw + reserveAdd;
         await client.query(
@@ -355,7 +360,7 @@ class StockMovementsService {
         profileId: profId
       });
 
-      if (type === 'reserve') {
+      if (type === 'reserve' && !journalReconcile) {
         const snapAfter = await getProductSupplySnapshotWithClient(client, idNum);
         if (snapAfter.reservedRaw > snapAfter.supplyCap) {
           const err = new Error(
@@ -413,6 +418,8 @@ class StockMovementsService {
     if (!idNum || Number.isNaN(idNum)) {
       return { movements: [], netReserved: 0 };
     }
+
+    await this.reconcileJournalReserveForProduct(idNum, { profileId }).catch(() => {});
 
     let whFilter = null;
     if (warehouseId != null && String(warehouseId).trim() !== '') {
@@ -719,10 +726,16 @@ class StockMovementsService {
     const orphanComponentReserve =
       isKit && orders.length === 0 && componentJournalReserve > 0 ? componentJournalReserve : 0;
 
-    /** Резерв в журнале без заказа и без FBO (рассинхрон / удалённый заказ). */
-    const orphanJournalReserve = isKit
-      ? 0
-      : Math.max(0, displayReservedQty - ordersReservedQty - fboReservedQty);
+    /** Резерв в журнале сверх заказов и FBO (лишний нетто в журнале). */
+    const orphanJournalReserve = Math.max(
+      0,
+      displayReservedQty - ordersReservedQty - fboReservedQty
+    );
+    /** Нетто в журнале меньше, чем резерв по заказам/FBO (лишние unreserve без привязки). */
+    const journalDeficit = Math.max(
+      0,
+      ordersReservedQty + fboReservedQty - displayReservedQty
+    );
 
     return {
       displayReservedQty,
@@ -731,8 +744,166 @@ class StockMovementsService {
       componentJournalReserve,
       orphanComponentReserve,
       orphanJournalReserve,
+      journalDeficit,
       isKit
     };
+  }
+
+  /** Нетто-резерв FBO по product_id (только строки с fbo_supply_item_id). */
+  async _fboJournalNetForProduct(productId) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return 0;
+    const r = await query(
+      `SELECT GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1
+         AND type IN ('reserve', 'unreserve')
+         AND meta->>'fbo_supply_item_id' IS NOT NULL
+         AND (meta->>'fbo_supply_item_id') ~ '^[0-9]+$'`,
+      [pid]
+    );
+    return Number(r.rows?.[0]?.rv ?? 0) || 0;
+  }
+
+  /** Сумма положительных нетто-резервов по заказам (meta.order_id) для product_id. */
+  async _ordersJournalNetForProduct(productId) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return 0;
+    const r = await query(
+      `WITH nets AS (
+         SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_r
+         FROM stock_movements
+         WHERE product_id = $1
+           AND type IN ('reserve', 'unreserve')
+           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
+         GROUP BY (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint
+       )
+       SELECT COALESCE(SUM(net_r), 0)::int AS total FROM nets WHERE net_r > 0`,
+      [pid]
+    );
+    return Number(r.rows?.[0]?.total ?? 0) || 0;
+  }
+
+  /**
+   * Выровнять нетто журнала с суммой резерва по заказам и FBO для одного product_id.
+   * Устраняет «лишние» unreserve без order_id, из‑за которых глобальный нетто = 0 при активных заказах.
+   */
+  async _reconcileJournalNetForProductId(productId, { profileId = null, sourceProductId = null } = {}) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true };
+    }
+
+    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+    const journalNet = await getReservedQuantityFromMovements(pid);
+    const ordersNet = await this._ordersJournalNetForProduct(pid);
+    const fboNet = await this._fboJournalNetForProduct(pid);
+    const expectedNet = ordersNet + fboNet;
+    const drift = journalNet - expectedNet;
+
+    if (drift === 0) {
+      return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, expectedNet };
+    }
+
+    const src = Number(sourceProductId) || pid;
+    if (drift < 0) {
+      const add = Math.floor(-drift);
+      if (add < 1) {
+        return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, expectedNet };
+      }
+      await this.applyChange(pid, {
+        delta: -add,
+        type: 'reserve',
+        reason: 'Сверка журнала резерва с заказами и FBO',
+        meta: {
+          journal_reconcile: true,
+          deficit_qty: add,
+          source_product_id: src,
+          journal_net_before: journalNet,
+          expected_net: expectedNet
+        }
+      });
+      return { productId: pid, reserveAdded: add, unreserveAdded: 0, skipped: false, journalNet, expectedNet };
+    }
+
+    const release = Math.floor(drift);
+    if (release < 1) {
+      return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, expectedNet };
+    }
+    await this.applyChange(pid, {
+      delta: release,
+      type: 'unreserve',
+      reason: 'Снятие резерва без привязки к заказу или FBO',
+      meta: {
+        journal_reconcile: true,
+        orphan_cleanup: true,
+        unattributed_qty: release,
+        source_product_id: src,
+        journal_net_before: journalNet,
+        expected_net: expectedNet
+      }
+    });
+    return { productId: pid, reserveAdded: 0, unreserveAdded: release, skipped: false, journalNet, expectedNet };
+  }
+
+  /**
+   * Сверка журнала резерва для товара (комплект + комплектующие).
+   */
+  async reconcileJournalReserveForProduct(productId, { profileId = null } = {}) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) {
+      return { lines: 0, reserveAdded: 0, unreserveAdded: 0, details: [] };
+    }
+
+    const tid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : null;
+    if (tid != null && Number.isFinite(tid) && tid > 0) {
+      const pr = await query(`SELECT profile_id FROM products WHERE id = $1`, [idNum]);
+      const own = pr.rows?.[0]?.profile_id;
+      if (own != null && String(own) !== String(tid)) {
+        return { lines: 0, reserveAdded: 0, unreserveAdded: 0, details: [] };
+      }
+    }
+
+    return runWithProductStockLock(idNum, async () => {
+      const productIds = await this._productIdsForReserveRelease(idNum);
+      const details = [];
+      let reserveAdded = 0;
+      let unreserveAdded = 0;
+      let lines = 0;
+
+      for (const pid of productIds) {
+        const row = await this._reconcileJournalNetForProductId(pid, {
+          profileId,
+          sourceProductId: idNum
+        });
+        if (!row.skipped) {
+          lines += 1;
+          reserveAdded += row.reserveAdded || 0;
+          unreserveAdded += row.unreserveAdded || 0;
+        }
+        details.push(row);
+      }
+
+      const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+      const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
+      try {
+        if (await isKitProductId(idNum)) {
+          const net = await readKitDisplayReservedQuantity(idNum);
+          await syncProductReservedQuantityFromJournal(idNum, { reserved: net });
+        } else {
+          await syncProductReservedQuantityFromJournal(idNum);
+        }
+      } catch {
+        /* ignore */
+      }
+
+      return { lines, reserveAdded, unreserveAdded, details };
+    });
   }
 
   /**
@@ -749,24 +920,26 @@ class StockMovementsService {
     const summary = await this.getReserveSummaryForProduct(idNum, { profileId });
     const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);
     if (orphanQty <= 0) {
+      const deficit = Math.floor(Number(summary.journalDeficit) || 0);
+      if (deficit > 0) {
+        const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId });
+        return {
+          releasedProductLines: recon.lines,
+          releasedQty: recon.unreserveAdded,
+          reserveAdded: recon.reserveAdded,
+          skipped: recon.lines === 0
+        };
+      }
       return { releasedProductLines: 0, releasedQty: 0, skipped: true };
     }
 
-    await this.applyChange(idNum, {
-      delta: orphanQty,
-      type: 'unreserve',
-      reason: 'Снятие резерва без привязки к заказу или FBO',
-      meta: { manual_unreserve: true, orphan_cleanup: true, unattributed_qty: orphanQty }
-    });
-
-    try {
-      const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
-      await syncProductReservedQuantityFromJournal(idNum);
-    } catch {
-      /* ignore */
-    }
-
-    return { releasedProductLines: 1, releasedQty: orphanQty, skipped: false };
+    const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId });
+    return {
+      releasedProductLines: recon.lines,
+      releasedQty: recon.unreserveAdded,
+      reserveAdded: recon.reserveAdded,
+      skipped: recon.lines === 0
+    };
   }
 
   /**

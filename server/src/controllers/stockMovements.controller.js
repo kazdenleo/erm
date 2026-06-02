@@ -85,20 +85,14 @@ class StockMovementsController {
         return res.status(200).json({ ok: true, data: [] });
       }
       const { id } = req.params;
-      let rows = await stockMovementsService.listReservedOrdersForProduct(id, { profileId: tid });
-      let fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
+      await stockMovementsService
+        .reconcileJournalReserveForProduct(id, { profileId: tid })
+        .catch(() => {});
+      const rows = await stockMovementsService.listReservedOrdersForProduct(id, { profileId: tid });
+      const fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
         profileId: tid
       });
-      let summary = await stockMovementsService.getReserveSummaryForProduct(id, { profileId: tid });
-      if (Number(summary.orphanJournalReserve) > 0) {
-        await stockMovementsService.releaseUnattributedJournalReserve(id, { profileId: tid }).catch(() => {});
-        rows = await stockMovementsService.listReservedOrdersForProduct(id, {
-          profileId: tid,
-          _skipStaleCleanup: true
-        });
-        fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, { profileId: tid });
-        summary = await stockMovementsService.getReserveSummaryForProduct(id, { profileId: tid });
-      }
+      const summary = await stockMovementsService.getReserveSummaryForProduct(id, { profileId: tid });
       return res.status(200).json({ ok: true, data: rows, fboSupplies, summary });
     } catch (error) {
       next(error);
