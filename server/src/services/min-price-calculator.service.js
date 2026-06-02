@@ -3,6 +3,11 @@
  * Дублирует логику клиента (Prices.jsx calculateMinPrice) для пересчёта на сервере.
  */
 
+function safeExpenseNum(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export function calculateMinPrice(basePrice, calculator, marketplace, minProfit, product = null, wbAcquiringPercent = null, wbGemServicesPercent = null) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -60,7 +65,7 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
     if (marketplace === 'ozon' && logisticsCost > 0) logisticsCost = Math.round(logisticsCost);
   }
 
-  let deliveryToCustomer = (commission.delivery_amount != null) ? Number(commission.delivery_amount) : 0;
+  let deliveryToCustomer = safeExpenseNum(commission.delivery_amount);
   let ymDeliveryPercent = 0;
   if (marketplace === 'ym' && calculator.ymTariffs) {
     const addRelative = (t) => (!t || (t.valueType || '').toLowerCase() !== 'relative') ? 0 : (Number(t.value) || 0) / 100;
@@ -74,9 +79,9 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
     const returnRate = 1 - buyoutRateInput / 100;
     if (buyoutRateInput < 100 && returnRate > 0) {
       returnLossCost = basePriceNum * returnRate;
-      const returnAmount = (commission.return_amount != null) ? Number(commission.return_amount) : 0;
+      const returnAmount = safeExpenseNum(commission.return_amount);
       returnCost = returnAmount * returnRate;
-      const rp = (commission.return_processing_amount != null) ? Number(commission.return_processing_amount) : 0;
+      const rp = safeExpenseNum(commission.return_processing_amount);
       returnProcessingCost = rp * returnRate;
     }
   }
@@ -87,7 +92,14 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
   if (marketplace === 'wb' && wbGemServicesPercent != null) gemServicesPercent = (Number(wbGemServicesPercent) || 0) / 100;
   const brandPromotionPercent = (calculator.brand_promotion_percent != null && !isNaN(Number(calculator.brand_promotion_percent))) ? Number(calculator.brand_promotion_percent) / 100 : 0;
 
-  const fixedExpenses = Number(processingCost) + Number(logisticsCost) + Number(deliveryToCustomer) + Number(returnCost) + Number(returnProcessingCost) + Number(returnLossCost) + (marketplace === 'ym' ? (ymAgencyFixed + ymPaymentTransferFixed) : 0);
+  const fixedExpenses =
+    safeExpenseNum(processingCost) +
+    safeExpenseNum(logisticsCost) +
+    safeExpenseNum(deliveryToCustomer) +
+    safeExpenseNum(returnCost) +
+    safeExpenseNum(returnProcessingCost) +
+    safeExpenseNum(returnLossCost) +
+    (marketplace === 'ym' ? safeExpenseNum(ymAgencyFixed) + safeExpenseNum(ymPaymentTransferFixed) : 0);
   const taxRate = 0.15;
   const targetProfitBeforeTax = Number(minProfitNum) / (1 - taxRate);
 

@@ -34,7 +34,14 @@ const r = await pricesService.recalculateAndSaveForProduct(p.id);
 console.log('recalc errors:', r.errors);
 
 const skuWb = p.sku_wb || p.sku;
-const wbResult = await pricesService.getWBPrices(skuWb, null, null, p.user_category_id, { integrationScope: scope });
+const vendorOffer = p.mp_wb_vendor_code || p.marketplace_skus?.wb;
+const wbResult = await pricesService.getWBPrices(
+  vendorOffer || skuWb,
+  null,
+  null,
+  p.user_category_id,
+  { integrationScope: scope, productId: p.id }
+);
 const data = wbResult?.data ?? wbResult;
 console.log('getWBPrices:', {
   found: data?.found,

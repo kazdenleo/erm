@@ -1375,7 +1375,14 @@ export function Prices() {
                   const isLoading = loadingPrices[productKey];
                   
                   const skuOzon = product.sku_ozon || product.ozon_sku || (product.product_skus && product.product_skus.ozon);
-                  const skuWb = product.sku_wb || product.wb_sku || (product.product_skus && product.product_skus.wb);
+                  const skuWb =
+                    product.mp_wb_vendor_code ||
+                    (product.product_skus && product.product_skus.wb) ||
+                    product.wb_sku ||
+                    (product.sku_wb && !/^\d+$/.test(String(product.sku_wb).trim())
+                      ? product.sku_wb
+                      : null) ||
+                    product.sku_wb;
                   const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym);
                   
                   return (

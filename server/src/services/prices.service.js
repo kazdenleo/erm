@@ -41,6 +41,53 @@ function getWBCachedData() {
   }
 }
 
+/** Число из тарифа WB (запятая, пробелы); NaN → fallback. */
+function parseWbTariffAmount(value, fallback = 0) {
+  if (value == null || value === '') return fallback;
+  const s = String(value).replace(/\s/g, '').replace(',', '.');
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function parseWbDraftColumn(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(String(raw));
+  } catch {
+    return null;
+  }
+}
+
+/** vendorCode для API/поиска товара (не nmId). */
+function resolveWbVendorOfferId(product) {
+  if (!product) return null;
+  const candidates = [
+    product.mp_wb_vendor_code,
+    product.marketplace_skus?.wb,
+    product.product_skus?.wb
+  ];
+  for (const v of candidates) {
+    const s = v != null ? String(v).trim() : '';
+    if (s && !/^\d+$/.test(s)) return s;
+  }
+  const sku = product.sku_wb != null ? String(product.sku_wb).trim() : '';
+  if (sku && !/^\d+$/.test(sku)) return sku;
+  return null;
+}
+
+/** nmId WB из wb_draft или поля nmId на форме. */
+function resolveWbNmId(product) {
+  if (!product) return null;
+  const draft = parseWbDraftColumn(product.wb_draft);
+  const fromDraft = draft?.nmId ?? draft?.nmID ?? draft?.nm_id;
+  if (fromDraft != null && String(fromDraft).trim() !== '') {
+    return String(fromDraft).trim();
+  }
+  const sku = product.sku_wb != null ? String(product.sku_wb).trim() : '';
+  return /^\d+$/.test(sku) ? sku : null;
+}
+
 // Временная функция для получения кэшированных складов WB
 function getWBWarehousesCache() {
   try {
@@ -1105,7 +1152,8 @@ class PricesService {
           `SELECT TRIM(sku) AS sku FROM product_skus WHERE product_id = $1 AND marketplace = 'wb' LIMIT 1`,
           [productId]
         );
-        const skuWb = skuRow.rows[0]?.sku || product.sku_wb || product.sku;
+        const skuWb =
+          skuRow.rows[0]?.sku || resolveWbVendorOfferId(product) || resolveWbNmId(product) || product.sku;
         if (!skuWb) continue;
         const mappings = await categoryMappingsRepo.findAll({ productId });
         const wbMapping = mappings.find(m => m.marketplace === 'wb' || m.marketplace === 'wildberries');
@@ -1570,17 +1618,42 @@ class PricesService {
       let productVolume = null;
       let productCost = null;
       try {
-        console.log(`[Prices Service] Looking for product with offer_id: "${offer_id}"`);
-        // SKU маркетплейсов хранятся в таблице product_skus, а не в products
-        const productResult = await query(
-          `SELECT p.id, p.sku, p.volume, p.cost, p.price,
-                  ps_wb.sku as sku_wb
-           FROM products p
-           LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
-           WHERE (ps_wb.sku = $1 OR p.sku = $1)
-           LIMIT 1`,
-          [offer_id]
+        const productIdOpt = options.productId ?? options.product_id ?? null;
+        console.log(
+          `[Prices Service] Looking for product offer_id="${offer_id}" productId=${productIdOpt ?? 'none'}`
         );
+        let productResult;
+        if (productIdOpt != null && String(productIdOpt).trim() !== '') {
+          productResult = await query(
+            `SELECT p.id, p.sku, p.volume, p.cost, p.price,
+                    ps_wb.sku as sku_wb
+             FROM products p
+             LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
+             WHERE p.id = $1
+             LIMIT 1`,
+            [Number(productIdOpt)]
+          );
+        } else {
+          const offerTrim = offer_id != null ? String(offer_id).trim() : '';
+          const isNmId = /^\d+$/.test(offerTrim);
+          productResult = await query(
+            isNmId
+              ? `SELECT p.id, p.sku, p.volume, p.cost, p.price,
+                        ps_wb.sku as sku_wb
+                 FROM products p
+                 LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
+                 WHERE ps_wb.sku = $1 OR p.sku = $1
+                    OR TRIM(COALESCE(p.wb_draft::jsonb->>'nmId', p.wb_draft::jsonb->>'nmID', '')) = $1
+                 LIMIT 1`
+              : `SELECT p.id, p.sku, p.volume, p.cost, p.price,
+                        ps_wb.sku as sku_wb
+                 FROM products p
+                 LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
+                 WHERE ps_wb.sku = $1 OR p.sku = $1
+                 LIMIT 1`,
+            [offerTrim]
+          );
+        }
         
         if (productResult.rows && productResult.rows.length > 0) {
           const row = productResult.rows[0];
@@ -1839,14 +1912,14 @@ class PricesService {
           FBO: {
             percent: fboPercent,
             value: 0,
-            delivery_amount: parseFloat(fboLogisticsFirstLiter),
-            return_amount: parseFloat(returnDeliveryBase)
+            delivery_amount: parseWbTariffAmount(fboLogisticsFirstLiter),
+            return_amount: parseWbTariffAmount(returnDeliveryBase)
           },
           FBS: {
             percent: fbsPercent, // ВАЖНО: Для WB используется ТОЛЬКО эта комиссия (FBS из kgvpMarketplace)
             value: 0,
-            delivery_amount: parseFloat(fbsLogisticsFirstLiter),
-            return_amount: parseFloat(returnDeliveryExpr)
+            delivery_amount: parseWbTariffAmount(fbsLogisticsFirstLiter),
+            return_amount: parseWbTariffAmount(returnDeliveryExpr)
           }
         },
         fullCommissions: {},
@@ -2352,7 +2425,8 @@ class PricesService {
 
     const mappings = await categoryMappingsRepo.findAll({ productId });
     const skuOzon = product.sku_ozon || product.sku;
-    const skuWb = product.sku_wb || product.sku;
+    const skuWb =
+      resolveWbVendorOfferId(product) || resolveWbNmId(product) || product.sku_wb || product.sku;
     const skuYm = product.sku_ym || product.sku;
     const wbMapping = mappings.find(m => m.marketplace === 'wb' || m.marketplace === 'wildberries');
     const ymMapping = mappings.find(m => m.marketplace === 'ym' || m.marketplace === 'yandex');
@@ -2398,7 +2472,10 @@ class PricesService {
     if (skuWb && (wbCategoryId || product.user_category_id)) {
       try {
         console.log(`[Prices Service] Calling getWBPrices for product ${productId} (${skuWb})...`);
-        const wbResult = await this.getWBPrices(skuWb, wbCategoryId, wbWarehouseName, product.user_category_id || null, mpOpts);
+        const wbResult = await this.getWBPrices(skuWb, wbCategoryId, wbWarehouseName, product.user_category_id || null, {
+          ...mpOpts,
+          productId: product.id
+        });
         const data = wbResult?.data ?? wbResult;
         console.log(`[Prices Service] getWBPrices result product ${productId}: found=${!!data?.found}, hasCalculator=${!!data?.calculator}, error=${data?.error ? String(data.error).slice(0, 80) : 'none'}`);
         if (data?.found && data?.calculator) {
