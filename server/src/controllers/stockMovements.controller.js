@@ -85,9 +85,11 @@ class StockMovementsController {
         return res.status(200).json({ ok: true, data: [] });
       }
       const { id } = req.params;
-      await stockMovementsService
-        .reconcileJournalReserveForProduct(id, { profileId: tid })
-        .catch(() => {});
+      if (await stockMovementsService.hasJournalReserveDrift(id, { profileId: tid })) {
+        await stockMovementsService
+          .reconcileJournalReserveForProduct(id, { profileId: tid })
+          .catch(() => {});
+      }
       const rows = await stockMovementsService.listReservedOrdersForProduct(id, { profileId: tid });
       const fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
         profileId: tid

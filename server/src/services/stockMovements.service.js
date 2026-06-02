@@ -419,7 +419,9 @@ class StockMovementsService {
       return { movements: [], netReserved: 0 };
     }
 
-    await this.reconcileJournalReserveForProduct(idNum, { profileId }).catch(() => {});
+    if (await this.hasJournalReserveDrift(idNum, { profileId })) {
+      await this.reconcileJournalReserveForProduct(idNum, { profileId }).catch(() => {});
+    }
 
     let whFilter = null;
     if (warehouseId != null && String(warehouseId).trim() !== '') {
@@ -846,6 +848,34 @@ class StockMovementsService {
     return { productId: pid, reserveAdded: 0, unreserveAdded: release, skipped: false, journalNet, expectedNet };
   }
 
+  /** Есть ли рассинхрон нетто журнала с резервом по заказам/FBO (комплект + комплектующие). */
+  async hasJournalReserveDrift(productId, { profileId = null } = {}) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) return false;
+
+    const tid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : null;
+    if (tid != null && Number.isFinite(tid) && tid > 0) {
+      const pr = await query(`SELECT profile_id FROM products WHERE id = $1`, [idNum]);
+      const own = pr.rows?.[0]?.profile_id;
+      if (own != null && String(own) !== String(tid)) return false;
+    }
+
+    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+    const productIds = await this._productIdsForReserveRelease(idNum);
+    for (const pid of productIds) {
+      const journalNet = await getReservedQuantityFromMovements(pid);
+      const ordersNet = await this._ordersJournalNetForProduct(pid);
+      const fboNet = await this._fboJournalNetForProduct(pid);
+      if (journalNet !== ordersNet + fboNet) return true;
+    }
+    return false;
+  }
+
   /**
    * Сверка журнала резерва для товара (комплект + комплектующие).
    */
@@ -869,41 +899,41 @@ class StockMovementsService {
       }
     }
 
-    return runWithProductStockLock(idNum, async () => {
-      const productIds = await this._productIdsForReserveRelease(idNum);
-      const details = [];
-      let reserveAdded = 0;
-      let unreserveAdded = 0;
-      let lines = 0;
+    const productIds = await this._productIdsForReserveRelease(idNum);
+    const details = [];
+    let reserveAdded = 0;
+    let unreserveAdded = 0;
+    let lines = 0;
 
-      for (const pid of productIds) {
-        const row = await this._reconcileJournalNetForProductId(pid, {
+    for (const pid of productIds) {
+      const row = await runWithProductStockLock(pid, () =>
+        this._reconcileJournalNetForProductId(pid, {
           profileId,
           sourceProductId: idNum
-        });
-        if (!row.skipped) {
-          lines += 1;
-          reserveAdded += row.reserveAdded || 0;
-          unreserveAdded += row.unreserveAdded || 0;
-        }
-        details.push(row);
+        })
+      );
+      if (!row.skipped) {
+        lines += 1;
+        reserveAdded += row.reserveAdded || 0;
+        unreserveAdded += row.unreserveAdded || 0;
       }
+      details.push(row);
+    }
 
-      const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
-      const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
-      try {
-        if (await isKitProductId(idNum)) {
-          const net = await readKitDisplayReservedQuantity(idNum);
-          await syncProductReservedQuantityFromJournal(idNum, { reserved: net });
-        } else {
-          await syncProductReservedQuantityFromJournal(idNum);
-        }
-      } catch {
-        /* ignore */
+    const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+    const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
+    try {
+      if (await isKitProductId(idNum)) {
+        const net = await readKitDisplayReservedQuantity(idNum);
+        await syncProductReservedQuantityFromJournal(idNum, { reserved: net });
+      } else {
+        await syncProductReservedQuantityFromJournal(idNum);
       }
+    } catch {
+      /* ignore */
+    }
 
-      return { lines, reserveAdded, unreserveAdded, details };
-    });
+    return { lines, reserveAdded, unreserveAdded, details };
   }
 
   /**
