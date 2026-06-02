@@ -1619,6 +1619,33 @@ class IntegrationsService {
   }
 
   /**
+   * Все vendorCode из карточки WB (корень и variants).
+   * @param {object} card
+   * @returns {string[]}
+   */
+  _wbCardVendorCodes(card) {
+    const out = [];
+    const push = (v) => {
+      const s = v != null ? String(v).trim() : '';
+      if (s) out.push(s);
+    };
+    if (!card || typeof card !== 'object') return out;
+    push(card.vendorCode);
+    push(card.vendor_code);
+    if (Array.isArray(card.variants)) {
+      for (const v of card.variants) {
+        push(v?.vendorCode);
+        push(v?.vendor_code);
+      }
+    }
+    return out;
+  }
+
+  _wbNormVendor(s) {
+    return String(s || '').trim().toLowerCase();
+  }
+
+  /**
    * Карточка WB по артикулу продавца (vendorCode) через textSearch в Content API.
    * @param {string} vendorCode
    * @param {{ profileId?: number|string|null, organizationId?: number|string|null, wbOverride?: object }} [opts]
@@ -1630,41 +1657,79 @@ class IntegrationsService {
       err.statusCode = 400;
       throw err;
     }
-    const body = {
-      settings: {
-        cursor: { limit: 100 },
-        filter: { withPhoto: -1, textSearch: vc }
-      }
+    const want = this._wbNormVendor(vc);
+    const scope = {
+      profileId: opts.profileId ?? opts.profile_id ?? null,
+      organizationId: opts.organizationId ?? opts.organization_id ?? null,
+      wbOverride: opts.wbOverride
     };
-    const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, opts);
-    const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
-    if (!Array.isArray(cards) || cards.length === 0) return null;
-    const norm = (s) => String(s || '').trim().toLowerCase();
-    const want = norm(vc);
-    const candidates = cards.filter((c) => norm(c?.vendorCode ?? c?.vendor_code) === want);
-    if (candidates.length === 0) return null;
 
-    // textSearch иногда отдаёт неверный vendorCode в кратком ответе — проверяем карточку по nmId.
-    for (const hit of candidates.slice(0, 15)) {
-      const nm = hit.nmID ?? hit.nmId ?? null;
-      if (nm == null) continue;
+    const searchTexts = [
+      ...new Set(
+        [vc, vc.toUpperCase(), vc.toLowerCase(), vc.replace(/-/g, '')].filter(Boolean)
+      )
+    ];
+
+    const verifyNmId = async (nm) => {
+      if (nm == null) return null;
       let full = null;
       try {
-        full = await this.getWildberriesProductInfo({
-          nm_id: nm,
-          profileId: opts.profileId ?? opts.profile_id ?? null,
-          organizationId: opts.organizationId ?? opts.organization_id ?? null,
-          wbOverride: opts.wbOverride
-        });
+        full = await this.getWildberriesProductInfo({ nm_id: nm, ...scope });
       } catch {
-        full = null;
+        return null;
       }
-      if (!full) continue;
-      const fullVc = norm(full.vendorCode ?? full.vendor_code);
-      if (fullVc === want) {
-        return {
-          nmId: Number(nm),
-          vendorCode: String(full.vendorCode ?? full.vendor_code ?? vc).trim()
+      if (!full) return null;
+      const codes = this._wbCardVendorCodes(full);
+      if (!codes.some((c) => this._wbNormVendor(c) === want)) return null;
+      const matched = codes.find((c) => this._wbNormVendor(c) === want) || vc;
+      return {
+        nmId: Number(full.nmId ?? full.nmID ?? nm),
+        vendorCode: String(matched).trim()
+      };
+    };
+
+    const seenNm = new Set();
+    const MAX_PAGES = 3;
+    const MAX_VERIFY = 40;
+
+    for (const searchText of searchTexts) {
+      let cursor = { limit: 100 };
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const body = {
+          settings: {
+            sort: { ascending: true },
+            cursor,
+            filter: { withPhoto: -1, textSearch: searchText }
+          }
+        };
+        let data;
+        try {
+          data = await this._wbContentApiPost('/content/v2/get/cards/list', body, scope);
+        } catch {
+          break;
+        }
+        const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
+        if (!Array.isArray(cards) || cards.length === 0) break;
+
+        for (const c of cards) {
+          const nm = c?.nmID ?? c?.nmId;
+          if (nm == null) continue;
+          const key = String(nm);
+          if (seenNm.has(key)) continue;
+          seenNm.add(key);
+          const hit = await verifyNmId(nm);
+          if (hit) return hit;
+          if (seenNm.size >= MAX_VERIFY) break;
+        }
+
+        const next = data?.cursor;
+        const total = next?.total != null ? Number(next.total) : null;
+        if (!next?.updatedAt || next?.nmID == null) break;
+        if (total != null && total < cursor.limit) break;
+        cursor = {
+          limit: cursor.limit,
+          updatedAt: next.updatedAt,
+          nmID: next.nmID
         };
       }
     }

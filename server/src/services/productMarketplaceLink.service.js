@@ -57,8 +57,7 @@ export function collectWbVendorCandidates({ hints = {}, product = null, erpSku =
     product?.marketplace_skus?.wb,
     h.sku_ozon,
     product?.sku_ozon,
-    skuWbRaw && !nmId ? skuWbRaw : null,
-    erpSku != null ? String(erpSku).trim() : ''
+    skuWbRaw && !nmId ? skuWbRaw : null
   ]);
 }
 
