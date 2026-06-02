@@ -1692,6 +1692,44 @@ class IntegrationsService {
     const MAX_PAGES = 3;
     const MAX_VERIFY = 40;
 
+    const scanAllCards = async (maxCards = 2000) => {
+      let cursor = { limit: 100 };
+      let scanned = 0;
+      while (scanned < maxCards) {
+        const body = {
+          settings: {
+            sort: { ascending: true },
+            cursor,
+            filter: { withPhoto: -1 }
+          }
+        };
+        let data;
+        try {
+          data = await this._wbContentApiPost('/content/v2/get/cards/list', body, scope);
+        } catch {
+          break;
+        }
+        const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
+        if (!Array.isArray(cards) || cards.length === 0) break;
+        for (const c of cards) {
+          const nm = c?.nmID ?? c?.nmId;
+          if (nm == null) continue;
+          const key = String(nm);
+          if (seenNm.has(key)) continue;
+          seenNm.add(key);
+          scanned += 1;
+          if (!this._wbCardVendorCodes(c).some((code) => this._wbNormVendor(code) === want)) continue;
+          const hit = await verifyNmId(nm);
+          if (hit) return hit;
+        }
+        const next = data?.cursor;
+        if (!next?.updatedAt || next?.nmID == null) break;
+        if (cards.length < cursor.limit) break;
+        cursor = { limit: cursor.limit, updatedAt: next.updatedAt, nmID: next.nmID };
+      }
+      return null;
+    };
+
     for (const searchText of searchTexts) {
       let cursor = { limit: 100 };
       for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -1733,7 +1771,9 @@ class IntegrationsService {
         };
       }
     }
-    return null;
+
+    // textSearch иногда возвращает устаревший vendorCode — полный проход по каталогу кабинета.
+    return scanAllCards(2000);
   }
 
   /**
