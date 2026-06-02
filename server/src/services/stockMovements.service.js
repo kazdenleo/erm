@@ -787,6 +787,77 @@ class StockMovementsService {
   }
 
   /**
+   * Корректирующая запись в журнал (без проверки остатка и без pg_advisory_lock сессии).
+   */
+  async _applyJournalReconcileDelta(productId, { type, qty, reason, meta = {} } = {}) {
+    const pid = Number(productId);
+    const units = Math.floor(Number(qty) || 0);
+    if (!Number.isFinite(pid) || pid < 1 || units < 1) return null;
+
+    const product = await this.productsRepository.findById(pid);
+    if (!product) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const metaObj = meta && typeof meta === 'object' && !Array.isArray(meta) ? { ...meta } : {};
+    const warehouseId = await this.resolveWarehouseIdForProductStock(
+      pid,
+      metaObj.warehouse_id ?? metaObj.warehouseId
+    );
+    if (!warehouseId) {
+      const error = new Error('Не найден склад для операции');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const typeNorm = String(type || '').toLowerCase();
+    const quantityChange =
+      typeNorm === 'reserve' ? -units : typeNorm === 'unreserve' ? units : null;
+    if (quantityChange == null) {
+      const error = new Error('Некорректный тип сверки журнала');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const profId = product.profile_id ?? product.profileId ?? null;
+    const metaOut = { ...metaObj, warehouse_id: warehouseId, journal_reconcile: true };
+
+    const client = await getClient();
+    try {
+      await client.query('BEGIN');
+      const movement = await this.repository.insertSnapshotAfterProduct(client, {
+        productId: pid,
+        type: typeNorm,
+        quantityChange,
+        reason: reason || null,
+        meta: metaOut,
+        warehouseId,
+        profileId: profId
+      });
+      await client.query(
+        `UPDATE products p
+         SET reserved_quantity = COALESCE((
+           SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+           FROM stock_movements sm
+           WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+         ), 0),
+         updated_at = CURRENT_TIMESTAMP
+         WHERE p.id = $1::bigint`,
+        [pid]
+      );
+      await client.query('COMMIT');
+      return movement;
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Выровнять нетто журнала с суммой резерва по заказам и FBO для одного product_id.
    * Устраняет «лишние» unreserve без order_id, из‑за которых глобальный нетто = 0 при активных заказах.
    */
@@ -813,12 +884,11 @@ class StockMovementsService {
       if (add < 1) {
         return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, expectedNet };
       }
-      await this.applyChange(pid, {
-        delta: -add,
+      await this._applyJournalReconcileDelta(pid, {
         type: 'reserve',
+        qty: add,
         reason: 'Сверка журнала резерва с заказами и FBO',
         meta: {
-          journal_reconcile: true,
           deficit_qty: add,
           source_product_id: src,
           journal_net_before: journalNet,
@@ -832,12 +902,11 @@ class StockMovementsService {
     if (release < 1) {
       return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, expectedNet };
     }
-    await this.applyChange(pid, {
-      delta: release,
+    await this._applyJournalReconcileDelta(pid, {
       type: 'unreserve',
+      qty: release,
       reason: 'Снятие резерва без привязки к заказу или FBO',
       meta: {
-        journal_reconcile: true,
         orphan_cleanup: true,
         unattributed_qty: release,
         source_product_id: src,
@@ -906,12 +975,10 @@ class StockMovementsService {
     let lines = 0;
 
     for (const pid of productIds) {
-      const row = await runWithProductStockLock(pid, () =>
-        this._reconcileJournalNetForProductId(pid, {
-          profileId,
-          sourceProductId: idNum
-        })
-      );
+      const row = await this._reconcileJournalNetForProductId(pid, {
+        profileId,
+        sourceProductId: idNum
+      });
       if (!row.skipped) {
         lines += 1;
         reserveAdded += row.reserveAdded || 0;
