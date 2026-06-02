@@ -6,7 +6,10 @@
 
 import { query, closePool } from '../../src/config/database.js';
 import stockMovementsService from '../../src/services/stockMovements.service.js';
-import { NET_RESERVED_SUM_EXPR_SQL } from '../../src/constants/netReservedStockSql.js';
+import {
+  NET_RESERVED_SUM_EXPR_SQL,
+  RAW_RESERVED_SUM_EXPR_SQL
+} from '../../src/constants/netReservedStockSql.js';
 
 async function resolveProductId(arg) {
   const n = Number(arg);
@@ -28,21 +31,27 @@ async function main() {
   const sku = skuR.rows?.[0]?.sku ?? '—';
 
   const before = await query(
-    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net
+    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net,
+            ${RAW_RESERVED_SUM_EXPR_SQL}::numeric AS raw
      FROM stock_movements WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
     [pid]
   );
-  console.log(`[Admin] pid=${pid} sku=${sku} journal_net_before=${before.rows?.[0]?.net ?? 0}`);
+  console.log(
+    `[Admin] pid=${pid} sku=${sku} journal_net_before=${before.rows?.[0]?.net ?? 0} raw=${before.rows?.[0]?.raw ?? 0}`
+  );
 
   const result = await stockMovementsService.reconcileJournalReserveForProduct(pid);
   console.log('[Admin] reconcile:', result);
 
   const after = await query(
-    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net
+    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net,
+            ${RAW_RESERVED_SUM_EXPR_SQL}::numeric AS raw
      FROM stock_movements WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
     [pid]
   );
-  console.log(`[Admin] journal_net_after=${after.rows?.[0]?.net ?? 0}`);
+  console.log(
+    `[Admin] journal_net_after=${after.rows?.[0]?.net ?? 0} raw=${after.rows?.[0]?.raw ?? 0}`
+  );
 }
 
 main()

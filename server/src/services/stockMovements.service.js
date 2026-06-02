@@ -8,7 +8,8 @@ import { getClient } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import {
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
-  NET_RESERVED_SUM_EXPR_SQL
+  NET_RESERVED_SUM_EXPR_SQL,
+  RAW_RESERVED_SUM_EXPR_SQL
 } from '../constants/netReservedStockSql.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 
@@ -767,6 +768,26 @@ class StockMovementsService {
     return Number(r.rows?.[0]?.rv ?? 0) || 0;
   }
 
+  /** Нетто и сырое нетто резерва по product_id в журнале. */
+  async _journalNetsForProduct(productId) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      return { journalNet: 0, rawNet: 0 };
+    }
+    const r = await query(
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net,
+              ${RAW_RESERVED_SUM_EXPR_SQL}::numeric AS raw
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+      [pid]
+    );
+    const row = r.rows?.[0];
+    return {
+      journalNet: Number(row?.net ?? 0) || 0,
+      rawNet: Number(row?.raw ?? 0) || 0
+    };
+  }
+
   /** Сумма положительных нетто-резервов по заказам (meta.order_id) для product_id. */
   async _ordersJournalNetForProduct(productId) {
     const pid = Number(productId);
@@ -867,22 +888,21 @@ class StockMovementsService {
       return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true };
     }
 
-    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
-    const journalNet = await getReservedQuantityFromMovements(pid);
+    const { journalNet, rawNet } = await this._journalNetsForProduct(pid);
     const ordersNet = await this._ordersJournalNetForProduct(pid);
     const fboNet = await this._fboJournalNetForProduct(pid);
     const expectedNet = ordersNet + fboNet;
-    const drift = journalNet - expectedNet;
+    const rawDrift = rawNet - expectedNet;
 
-    if (drift === 0) {
-      return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, expectedNet };
+    if (rawDrift === 0) {
+      return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, rawNet, expectedNet };
     }
 
     const src = Number(sourceProductId) || pid;
-    if (drift < 0) {
-      const add = Math.floor(-drift);
+    if (rawDrift < 0) {
+      const add = Math.floor(-rawDrift);
       if (add < 1) {
-        return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, expectedNet };
+        return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, rawNet, expectedNet };
       }
       await this._applyJournalReconcileDelta(pid, {
         type: 'reserve',
@@ -895,10 +915,10 @@ class StockMovementsService {
           expected_net: expectedNet
         }
       });
-      return { productId: pid, reserveAdded: add, unreserveAdded: 0, skipped: false, journalNet, expectedNet };
+      return { productId: pid, reserveAdded: add, unreserveAdded: 0, skipped: false, journalNet, rawNet, expectedNet };
     }
 
-    const release = Math.floor(drift);
+    const release = Math.floor(rawDrift);
     if (release < 1) {
       return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true, journalNet, expectedNet };
     }
@@ -914,7 +934,7 @@ class StockMovementsService {
         expected_net: expectedNet
       }
     });
-    return { productId: pid, reserveAdded: 0, unreserveAdded: release, skipped: false, journalNet, expectedNet };
+    return { productId: pid, reserveAdded: 0, unreserveAdded: release, skipped: false, journalNet, rawNet, expectedNet };
   }
 
   /** Есть ли рассинхрон нетто журнала с резервом по заказам/FBO (комплект + комплектующие). */
@@ -934,13 +954,12 @@ class StockMovementsService {
       if (own != null && String(own) !== String(tid)) return false;
     }
 
-    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
     const productIds = await this._productIdsForReserveRelease(idNum);
     for (const pid of productIds) {
-      const journalNet = await getReservedQuantityFromMovements(pid);
+      const { rawNet } = await this._journalNetsForProduct(pid);
       const ordersNet = await this._ordersJournalNetForProduct(pid);
       const fboNet = await this._fboJournalNetForProduct(pid);
-      if (journalNet !== ordersNet + fboNet) return true;
+      if (rawNet !== ordersNet + fboNet) return true;
     }
     return false;
   }
