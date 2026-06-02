@@ -43,6 +43,25 @@ function parsePositiveInt(raw) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** Кандидаты vendorCode для поиска карточки WB (поля формы, product_skus, Ozon offer_id, ERP). */
+export function collectWbVendorCandidates({ hints = {}, product = null, erpSku = '' }) {
+  const h = hints && typeof hints === 'object' ? hints : {};
+  const skuWbRaw = [h.sku_wb, product?.sku_wb]
+    .map((v) => (v != null ? String(v).trim() : ''))
+    .find(Boolean);
+  const nmId = parsePositiveInt(skuWbRaw);
+  return uniqueNonEmpty([
+    h.mp_wb_vendor_code,
+    h.wbVendorCode,
+    product?.mp_wb_vendor_code,
+    product?.marketplace_skus?.wb,
+    h.sku_ozon,
+    product?.sku_ozon,
+    skuWbRaw && !nmId ? skuWbRaw : null,
+    erpSku != null ? String(erpSku).trim() : ''
+  ]);
+}
+
 function assertCredentials(mp, cfg) {
   if (mp === 'ozon' && !integrationsService._hasOzonCredentials(cfg)) {
     const err = new Error('Кабинет Ozon не настроен для выбранной организации (Client ID и API Key).');
@@ -134,13 +153,11 @@ export async function resolveMarketplaceListingByErpSku({
 
   if (mp === 'wb') {
     const nmId = parsePositiveInt(h.sku_wb ?? h.wbNmId);
-    const skuWbRaw = h.sku_wb != null ? String(h.sku_wb).trim() : '';
-    const vendorCandidates = uniqueNonEmpty([
-      h.mp_wb_vendor_code,
-      h.wbVendorCode,
-      skuWbRaw && !nmId ? skuWbRaw : null,
-      sku
-    ]);
+    const vendorCandidates = collectWbVendorCandidates({
+      hints: h,
+      product: h._product ?? null,
+      erpSku: sku
+    });
     const wbOpts = { profileId, organizationId, wbOverride: cfg };
     let card = null;
     for (const vc of vendorCandidates) {

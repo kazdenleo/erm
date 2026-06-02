@@ -1632,7 +1632,7 @@ class IntegrationsService {
     }
     const body = {
       settings: {
-        cursor: { limit: 20 },
+        cursor: { limit: 100 },
         filter: { withPhoto: -1, textSearch: vc }
       }
     };
@@ -1641,12 +1641,12 @@ class IntegrationsService {
     if (!Array.isArray(cards) || cards.length === 0) return null;
     const norm = (s) => String(s || '').trim().toLowerCase();
     const exact = cards.find((c) => norm(c?.vendorCode ?? c?.vendor_code) === norm(vc));
-    const first = exact || cards[0];
-    const nm = first.nmID ?? first.nmId ?? null;
+    if (!exact) return null;
+    const nm = exact.nmID ?? exact.nmId ?? null;
     if (nm == null) return null;
     return {
       nmId: Number(nm),
-      vendorCode: String(first.vendorCode ?? first.vendor_code ?? vc).trim()
+      vendorCode: String(exact.vendorCode ?? exact.vendor_code ?? vc).trim()
     };
   }
 

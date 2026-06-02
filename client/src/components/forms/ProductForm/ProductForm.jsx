@@ -1486,6 +1486,8 @@ export function ProductForm({
     const vendorCandidates = [
       formData.mp_wb_vendor_code,
       currentProduct?.mp_wb_vendor_code,
+      formData.sku_ozon,
+      currentProduct?.sku_ozon,
       skuWbRaw && !nmId ? skuWbRaw : null
     ]
       .map((v) => (v != null && String(v).trim() !== '' ? String(v).trim() : ''))
@@ -1550,9 +1552,11 @@ export function ProductForm({
   }, [
     formData.sku_wb,
     formData.mp_wb_vendor_code,
+    formData.sku_ozon,
     formData.organizationId,
     productsListOrganizationId,
     currentProduct?.mp_wb_vendor_code,
+    currentProduct?.sku_ozon,
     mergeWbFetchedIntoForm
   ]);
 
@@ -3889,7 +3893,13 @@ export function ProductForm({
                 wbSyncLoading ||
                 (
                   !String(formData.sku_wb || '').trim() &&
-                  !String(formData.mp_wb_vendor_code || currentProduct?.mp_wb_vendor_code || '').trim()
+                  !String(
+                    formData.mp_wb_vendor_code ||
+                      currentProduct?.mp_wb_vendor_code ||
+                      formData.sku_ozon ||
+                      currentProduct?.sku_ozon ||
+                      ''
+                  ).trim()
                 )
               }
             >

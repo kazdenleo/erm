@@ -79,6 +79,8 @@ export function ProductMarketplaceLinkSection({
       if (marketplace === 'wb') {
         if (wbVendorTrim) hints.mp_wb_vendor_code = wbVendorTrim;
         if (wbNmTrim) hints.sku_wb = wbNmTrim;
+        const ozonOffer = String(formData?.sku_ozon || '').trim();
+        if (ozonOffer) hints.sku_ozon = ozonOffer;
       } else if (marketplace === 'ozon') {
         if (ozonOfferTrim) hints.sku_ozon = ozonOfferTrim;
         if (ozonPidTrim) hints.ozon_product_id = ozonPidTrim;

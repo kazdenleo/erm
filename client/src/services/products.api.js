@@ -180,9 +180,17 @@ export const productsApi = {
   linkMarketplace: async (productId, marketplace, hints = null) => {
     const id = encodeURIComponent(String(productId));
     const mp = encodeURIComponent(String(marketplace).trim());
+    const q = new URLSearchParams();
+    if (hints && typeof hints === 'object') {
+      for (const [key, val] of Object.entries(hints)) {
+        if (val != null && String(val).trim() !== '') q.set(key, String(val).trim());
+      }
+    }
+    const qs = q.toString();
+    const url = `/products/${id}/link-marketplace/${mp}${qs ? `?${qs}` : ''}`;
     const body =
       hints && typeof hints === 'object' && Object.keys(hints).length > 0 ? hints : undefined;
-    const response = await api.post(`/products/${id}/link-marketplace/${mp}`, body);
+    const response = await api.post(url, body);
     return response.data;
   },
 

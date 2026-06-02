@@ -419,12 +419,21 @@ class ProductsController {
       const { id, marketplace } = req.params;
       const profileId = req.user?.profileId ?? null;
       const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const hints =
+      const fromBody =
         body.hints && typeof body.hints === 'object'
           ? body.hints
           : Object.keys(body).length > 0
             ? body
             : {};
+      const q = req.query || {};
+      const hints = {
+        ...fromBody,
+        mp_wb_vendor_code: q.mp_wb_vendor_code ?? fromBody.mp_wb_vendor_code,
+        sku_wb: q.sku_wb ?? fromBody.sku_wb,
+        sku_ozon: q.sku_ozon ?? fromBody.sku_ozon,
+        ozon_product_id: q.ozon_product_id ?? fromBody.ozon_product_id,
+        sku_ym: q.sku_ym ?? fromBody.sku_ym
+      };
       const result = await productsService.linkProductToMarketplace(id, marketplace, {
         profileId,
         hints

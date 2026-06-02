@@ -1364,7 +1364,7 @@ class ProductsService {
    * @param {{ profileId?: number|string|null }} [options]
    */
   async linkProductToMarketplace(productId, marketplace, options = {}) {
-    const product = await this.getById(productId);
+    const product = await this.getByIdWithDetails(productId);
     if (!product) {
       const err = new Error('Товар не найден');
       err.statusCode = 404;
@@ -1374,15 +1374,16 @@ class ProductsService {
     const erpSku = product.sku;
     const bodyHints = options.hints && typeof options.hints === 'object' ? options.hints : {};
     const hints = {
-      sku_ozon: bodyHints.sku_ozon ?? product.sku_ozon ?? null,
+      sku_ozon: bodyHints.sku_ozon ?? product.sku_ozon ?? product.marketplace_skus?.ozon ?? null,
       ozon_product_id:
         bodyHints.ozon_product_id ??
         product.marketplace_ozon_product_id ??
         product.ozon_product_id ??
         null,
       mp_wb_vendor_code: bodyHints.mp_wb_vendor_code ?? product.mp_wb_vendor_code ?? null,
-      sku_wb: bodyHints.sku_wb ?? product.sku_wb ?? null,
-      sku_ym: bodyHints.sku_ym ?? product.sku_ym ?? null
+      sku_wb: bodyHints.sku_wb ?? product.sku_wb ?? product.marketplace_skus?.wb ?? null,
+      sku_ym: bodyHints.sku_ym ?? product.sku_ym ?? product.marketplace_skus?.ym ?? null,
+      _product: product
     };
     const resolved = await resolveMarketplaceListingByErpSku({
       marketplace,
