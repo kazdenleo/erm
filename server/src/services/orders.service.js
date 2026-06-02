@@ -749,7 +749,9 @@ class OrdersService {
       const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
       const kitParentId = reserveAsKitComponent ? Number(meta.kit_product_id) : null;
       if (kitParentId > 0) {
-        availableSupply = await this._getAvailableUnitsForOrderReserveLine(productId, null, {
+        const orderRow =
+          meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
+        availableSupply = await this._getAvailableUnitsForOrderReserveLine(productId, orderRow, {
           warehouseId: wh,
           kitProductId: kitParentId
         });
@@ -767,8 +769,13 @@ class OrdersService {
         : null;
     if (Number.isFinite(orderDbId) && orderDbId > 0) {
       const alreadyForOrder = await this._getReservedQtyForOrderProduct(orderDbId, productId);
-      if (alreadyForOrder >= qtyWanted) return;
-      qty = Math.min(qty, qtyWanted - alreadyForOrder);
+      const partialLine = meta?.partial_line === true;
+      if (partialLine) {
+        qty = Math.min(qty, qtyWanted);
+      } else {
+        if (alreadyForOrder >= qtyWanted) return;
+        qty = Math.min(qty, qtyWanted - alreadyForOrder);
+      }
       if (qty <= 0) return;
     }
 
@@ -3610,7 +3617,14 @@ class OrdersService {
     const before = await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]);
     const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
     const act = String(action || 'toggle').toLowerCase();
-    const doUnreserve = act === 'unreserve' || (act === 'toggle' && net > 0);
+    let doUnreserve = false;
+    if (act === 'unreserve') {
+      doUnreserve = true;
+    } else if (act === 'reserve') {
+      doUnreserve = false;
+    } else {
+      doUnreserve = net > 0 || before.hasReserve === true;
+    }
     const orderIdStr = String(row.orderId ?? row.order_id ?? orderId);
     const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
     const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(pid, preferredWh);
@@ -3640,18 +3654,15 @@ class OrdersService {
       const qtyWanted =
         quantity != null ? Math.max(1, parseInt(quantity, 10) || 1) : null;
       const already = net;
-      const orderQty = Math.max(1, parseInt(row.quantity, 10) || 1);
-      let target = qtyWanted;
-      if (target == null) {
-        if (await isKitProductId(pid)) {
-          target = orderQty;
-        } else {
-          const kitId = await this._resolveProductIdForOrderStock(row);
-          const perNeed = await this._resolveShipmentQtyForOrderProduct(row, pid);
-          target = Math.max(1, perNeed - already);
-        }
+      const perNeed = await this._resolveShipmentQtyForOrderProduct(row, pid);
+      const headroom = Math.max(0, perNeed - already);
+      let toAdd;
+      if (qtyWanted != null) {
+        // quantity — сколько штук добавить в резерв в этой операции (не целевой итог)
+        toAdd = Math.min(qtyWanted, headroom);
+      } else {
+        toAdd = headroom;
       }
-      let toAdd = Math.max(0, target - already);
       const kitId = await this._resolveProductIdForOrderStock(row);
       const kitProductId =
         kitId != null && (await isKitProductId(kitId)) && pid !== Number(kitId)
@@ -3692,7 +3703,10 @@ class OrdersService {
             meta.kit_units = Math.floor(toAdd / perKit) || 1;
           }
         }
-        await this._applyReserveForOrderComponent(pid, toAdd, orderIdStr, meta);
+        await this._applyReserveForOrderComponent(pid, toAdd, orderIdStr, {
+          ...meta,
+          order_row: row
+        });
       }
     }
 

@@ -84,16 +84,22 @@ function lineReserveUnreserveMax(line) {
   return Math.max(0, b.reserved);
 }
 
-/** Количество для API: резерв хранится по штукам комплектующей. */
+/** Количество для API: резерв в штуках (приращение за одну операцию). */
 function lineReserveApiQuantity(line, uiQty, { unreserve = false } = {}) {
   const q = Math.max(1, parseInt(uiQty, 10) || 1);
-  const { reserveInKitUnits, perKit, reservedPieces } = lineReserveBounds(line);
-  if (!reserveInKitUnits) return q;
-  if (unreserve) {
-    const capPieces = Math.max(0, Number(reservedPieces) || 0);
-    return Math.min(q * perKit, capPieces);
+  const b = lineReserveBounds(line);
+  if (!b.reserveInKitUnits) {
+    const headroom = Math.max(0, b.needPieces - b.reservedPieces);
+    return unreserve
+      ? Math.min(q, Math.max(0, b.reservedPieces))
+      : Math.min(q, headroom > 0 ? headroom : q);
   }
-  return q * perKit;
+  const pieces = q * b.perKit;
+  if (unreserve) {
+    return Math.min(pieces, Math.max(0, b.reservedPieces));
+  }
+  const headroomPieces = Math.max(0, b.needPieces - b.reservedPieces);
+  return Math.min(pieces, headroomPieces > 0 ? headroomPieces : pieces);
 }
 
 function clampLineQty(raw, min, max) {
@@ -180,7 +186,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
         next[key] = prev != null ? clampLineQty(prev, 1, max) : 1;
       } else if (maxReserve > 0) {
         const max = maxReserve;
-        next[key] = prev != null ? clampLineQty(prev, 1, max) : Math.min(1, max);
+        next[key] = prev != null ? clampLineQty(prev, 1, max) : max;
       }
     }
     setLineQty(next);
@@ -393,7 +399,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                   >
                     {lineLoadingKey === key ? '…' : lineHas ? 'Снять' : 'В резерв'}
                   </Button>
-                  {maxQty > 1 ? (
+                  {maxQty >= 1 && (lineHas || maxQty > 1) ? (
                     <button
                       type="button"
                       className="order-reserve-line__max-btn"
@@ -403,7 +409,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                         handleLineAction(line, lineHas ? 'unreserve' : 'reserve', maxQty);
                       }}
                     >
-                      {lineHas ? 'Снять всё' : 'Макс.'}
+                      {lineHas ? 'Снять всё' : 'Весь заказ'}
                     </button>
                   ) : null}
                 </div>
