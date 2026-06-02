@@ -91,12 +91,12 @@ export async function resolveMarketplaceListingByErpSku({
   assertCredentials(mp, cfg);
 
   if (mp === 'ozon') {
-    const productId = parsePositiveInt(h.ozon_product_id ?? h.marketplace_ozon_product_id);
+    const ozonProductId = parsePositiveInt(h.ozon_product_id ?? h.marketplace_ozon_product_id);
     const offerCandidates = uniqueNonEmpty([h.sku_ozon, sku]);
     let item = null;
-    if (productId) {
+    if (ozonProductId) {
       item = await integrationsService.getOzonProductInfo({
-        product_id: productId,
+        product_id: ozonProductId,
         profileId,
         organizationId,
         ozonOverride: cfg
@@ -113,7 +113,7 @@ export async function resolveMarketplaceListingByErpSku({
     }
     if (!item) {
       const tried = [
-        productId ? `product_id ${productId}` : null,
+        ozonProductId ? `product_id ${ozonProductId}` : null,
         ...offerCandidates.map((o) => `offer_id «${o}»`)
       ].filter(Boolean);
       const err = new Error(
