@@ -233,18 +233,32 @@ class IntegrationsController {
           : null;
       const scope = { profileId, organizationId: org };
       const vc = vendor_code != null ? String(vendor_code).trim() : '';
-      let resolvedNmId = nm_id != null && String(nm_id).trim() !== '' ? String(nm_id).trim() : null;
-      if (!resolvedNmId && vc) {
+      const nmRaw = nm_id != null && String(nm_id).trim() !== '' ? String(nm_id).trim() : null;
+      let resolvedNmId = null;
+      if (vc) {
         const card = await integrationsService.getWildberriesProductByVendorCode(vc, scope);
         if (!card?.nmId) {
           return res.status(404).json({ ok: false, error: 'Товар не найден в Wildberries.' });
         }
         resolvedNmId = String(card.nmId);
+      } else if (nmRaw) {
+        resolvedNmId = nmRaw;
+      } else {
+        return res.status(400).json({ ok: false, error: 'Укажите nm_id или vendor_code.' });
       }
       const data = await integrationsService.getWildberriesProductInfo({
         nm_id: resolvedNmId,
         ...scope
       });
+      if (data && vc) {
+        const cardVc = String(data.vendorCode ?? data.vendor_code ?? '').trim().toLowerCase();
+        if (cardVc && cardVc !== vc.toLowerCase()) {
+          return res.status(404).json({
+            ok: false,
+            error: `Карточка nmId ${resolvedNmId} в кабинете WB имеет vendorCode «${data.vendorCode ?? data.vendor_code}», ожидался «${vc}».`
+          });
+        }
+      }
       if (!data) {
         return res.status(404).json({ ok: false, error: 'Товар не найден в Wildberries.' });
       }

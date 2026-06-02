@@ -1493,6 +1493,15 @@ export function ProductForm({
       .map((v) => (v != null && String(v).trim() !== '' ? String(v).trim() : ''))
       .filter(Boolean);
     const vendorCodes = [...new Set(vendorCandidates)];
+    const expectedVendor = String(
+      formData.mp_wb_vendor_code || currentProduct?.mp_wb_vendor_code || ''
+    ).trim();
+    const normVc = (v) => String(v || '').trim().toLowerCase();
+    const matchesExpectedVendor = (card) => {
+      if (!expectedVendor) return true;
+      const loaded = normVc(card?.vendorCode ?? card?.vendor_code);
+      return loaded === normVc(expectedVendor);
+    };
     if (!nmId && vendorCodes.length === 0) {
       setWbSyncError('Укажите nmId (номенклатура WB) или vendorCode (артикул продавца).');
       return;
@@ -1508,24 +1517,50 @@ export function ProductForm({
       const apiBase = { organizationId };
       let data = null;
       let lastErr = null;
-      if (nmId) {
+      for (const vendorCode of vendorCodes) {
+        if (data) break;
+        try {
+          const hit = await integrationsApi.getWildberriesProductInfo({
+            ...apiBase,
+            vendor_code: vendorCode
+          });
+          if (hit && matchesExpectedVendor(hit)) data = hit;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (!data && nmId && !expectedVendor) {
         try {
           data = await integrationsApi.getWildberriesProductInfo({ ...apiBase, nm_id: nmId });
         } catch (e) {
           lastErr = e;
         }
       }
-      for (const vendorCode of vendorCodes) {
-        if (data) break;
+      if (!data && nmId && expectedVendor) {
         try {
-          data = await integrationsApi.getWildberriesProductInfo({ ...apiBase, vendor_code: vendorCode });
+          const hit = await integrationsApi.getWildberriesProductInfo({ ...apiBase, nm_id: nmId });
+          if (hit && matchesExpectedVendor(hit)) {
+            data = hit;
+          } else if (hit) {
+            const loadedVc = String(hit.vendorCode ?? hit.vendor_code ?? '').trim();
+            const loadedNm = hit.nmId ?? hit.nmID ?? hit.nm_id ?? nmId;
+            setWbSyncError(
+              `nmId ${loadedNm} в кабинете WB — другой товар (vendorCode «${loadedVc || '—'}»). ` +
+                `Очистите поле nmId или нажмите «Связать» заново по vendorCode «${expectedVendor}».`
+            );
+            return;
+          }
         } catch (e) {
           lastErr = e;
         }
       }
       if (!data) {
         if (lastErr) throw lastErr;
-        setWbSyncError('Товар не найден в кабинете Wildberries выбранной организации.');
+        setWbSyncError(
+          expectedVendor
+            ? `Товар с vendorCode «${expectedVendor}» не найден в кабинете Wildberries выбранной организации.`
+            : 'Товар не найден в кабинете Wildberries выбранной организации.'
+        );
         return;
       }
       setWbFetchedProduct(data);
