@@ -159,25 +159,33 @@ export async function resolveMarketplaceListingByErpSku({
     });
     const wbOpts = { profileId, organizationId, wbOverride: cfg };
     let card = null;
-    for (const vc of vendorCandidates) {
-      const hit = await integrationsService.getWildberriesProductByVendorCode(vc, wbOpts);
-      if (hit?.nmId != null) {
-        card = hit;
-        break;
-      }
-    }
-    if (!card && nmId) {
+    const vendorHint = String(h.mp_wb_vendor_code ?? '').trim();
+    if (nmId) {
       const info = await integrationsService.getWildberriesProductInfo({
         nm_id: nmId,
+        vendor_code: vendorHint || vendorCandidates[0] || undefined,
         profileId,
         organizationId,
         wbOverride: cfg
       });
       if (info) {
-        card = {
-          nmId,
-          vendorCode: String(info.vendorCode ?? info.vendor_code ?? vendorCandidates[0] ?? sku).trim()
-        };
+        const cardVc = integrationsService._wbNormVendor(info.vendorCode ?? info.vendor_code);
+        const wantVcs = vendorCandidates.map((v) => integrationsService._wbNormVendor(v));
+        if (wantVcs.length === 0 || wantVcs.some((v) => v && v === cardVc)) {
+          card = {
+            nmId: Number(info.nmId ?? info.nmID ?? nmId),
+            vendorCode: String(info.vendorCode ?? info.vendor_code ?? vendorCandidates[0] ?? sku).trim()
+          };
+        }
+      }
+    }
+    if (!card) {
+      for (const vc of vendorCandidates) {
+        const hit = await integrationsService.getWildberriesProductByVendorCode(vc, wbOpts);
+        if (hit?.nmId != null) {
+          card = hit;
+          break;
+        }
       }
     }
     if (!card || card.nmId == null) {

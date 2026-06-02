@@ -1517,6 +1517,30 @@ export function ProductForm({
       const apiBase = { organizationId };
       let data = null;
       let lastErr = null;
+      // Сначала nmId из формы (если указан) — не перезаписываем чужой id поиском только по vendorCode
+      if (nmId) {
+        try {
+          const hit = await integrationsApi.getWildberriesProductInfo({
+            ...apiBase,
+            nm_id: nmId,
+            vendor_code: expectedVendor || vendorCodes[0] || undefined
+          });
+          if (hit && matchesExpectedVendor(hit)) data = hit;
+          else if (hit && expectedVendor) {
+            const loadedVc = String(hit.vendorCode ?? hit.vendor_code ?? '').trim();
+            const loadedNm = hit.nmId ?? hit.nmID ?? hit.nm_id ?? nmId;
+            setWbSyncError(
+              `nmId ${loadedNm} в кабинете WB — другой товар (vendorCode «${loadedVc || '—'}»). ` +
+                `Очистите nmId или укажите верный vendorCode «${expectedVendor}».`
+            );
+            return;
+          } else if (hit) {
+            data = hit;
+          }
+        } catch (e) {
+          lastErr = e;
+        }
+      }
       for (const vendorCode of vendorCodes) {
         if (data) break;
         try {
@@ -1525,31 +1549,6 @@ export function ProductForm({
             vendor_code: vendorCode
           });
           if (hit && matchesExpectedVendor(hit)) data = hit;
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-      if (!data && nmId && !expectedVendor) {
-        try {
-          data = await integrationsApi.getWildberriesProductInfo({ ...apiBase, nm_id: nmId });
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-      if (!data && nmId && expectedVendor) {
-        try {
-          const hit = await integrationsApi.getWildberriesProductInfo({ ...apiBase, nm_id: nmId });
-          if (hit && matchesExpectedVendor(hit)) {
-            data = hit;
-          } else if (hit) {
-            const loadedVc = String(hit.vendorCode ?? hit.vendor_code ?? '').trim();
-            const loadedNm = hit.nmId ?? hit.nmID ?? hit.nm_id ?? nmId;
-            setWbSyncError(
-              `nmId ${loadedNm} в кабинете WB — другой товар (vendorCode «${loadedVc || '—'}»). ` +
-                `Очистите поле nmId или нажмите «Связать» заново по vendorCode «${expectedVendor}».`
-            );
-            return;
-          }
         } catch (e) {
           lastErr = e;
         }

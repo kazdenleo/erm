@@ -1522,10 +1522,93 @@ class IntegrationsService {
     return normalized;
   }
 
+  _normalizeWbListCard(card, nmIdFallback = null) {
+    if (!card || typeof card !== 'object') return null;
+    const nm = card.nmID ?? card.nmId ?? nmIdFallback;
+    return {
+      ...card,
+      nmId: nm,
+      vendorCode: card.vendorCode ?? card.vendor_code ?? null,
+      title: card.title ?? card.name ?? card.object ?? null,
+      brand: card.brand ?? null,
+      description: card.description ?? card.descriptionRu ?? null,
+      raw: card
+    };
+  }
+
+  /**
+   * Карточка из list API (textSearch / обход каталога), когда filter nmID отдаёт пусто или чужие nmId.
+   */
+  async _wbFindListCardByNmId(nmId, scope = {}) {
+    const wantNm = Number(nmId);
+    const wantStr = String(nmId);
+    const match = (c) => {
+      const n = c?.nmID ?? c?.nmId;
+      if (n == null) return false;
+      return Number(n) === wantNm || String(n) === wantStr;
+    };
+
+    let cursor = { limit: 100 };
+    for (let page = 0; page < 3; page += 1) {
+      const body = {
+        settings: {
+          sort: { ascending: true },
+          cursor,
+          filter: { withPhoto: -1, textSearch: wantStr }
+        }
+      };
+      try {
+        const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, scope);
+        const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
+        const hit = Array.isArray(cards) ? cards.find(match) : null;
+        if (hit) return hit;
+        const next = data?.cursor;
+        if (!next?.updatedAt || next?.nmID == null || !Array.isArray(cards) || cards.length < cursor.limit) {
+          break;
+        }
+        cursor = { limit: cursor.limit, updatedAt: next.updatedAt, nmID: next.nmID };
+      } catch {
+        break;
+      }
+    }
+
+    cursor = { limit: 100 };
+    let scanned = 0;
+    const maxScan = 800;
+    while (scanned < maxScan) {
+      const body = {
+        settings: {
+          sort: { ascending: true },
+          cursor,
+          filter: { withPhoto: -1 }
+        }
+      };
+      let data;
+      try {
+        data = await this._wbContentApiPost('/content/v2/get/cards/list', body, scope);
+      } catch {
+        break;
+      }
+      const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
+      if (!Array.isArray(cards) || cards.length === 0) break;
+      for (const c of cards) {
+        const n = c?.nmID ?? c?.nmId;
+        if (n == null) continue;
+        scanned += 1;
+        if (match(c)) return c;
+      }
+      const next = data?.cursor;
+      if (!next?.updatedAt || next?.nmID == null) break;
+      if (cards.length < cursor.limit) break;
+      cursor = { limit: cursor.limit, updatedAt: next.updatedAt, nmID: next.nmID };
+    }
+    return null;
+  }
+
   /**
    * Получить карточку товара Wildberries по nmId (номенклатура).
    * WB Content API: POST /content/v2/get/cards/list
-   * @param {{ nm_id: number|string, profileId?: number|string|null }} params
+   * @param {{ nm_id: number|string, vendor_code?: string, profileId?: number|string|null }} params
    * @returns {Promise<object|null>}
    */
   async getWildberriesProductInfo(params = {}) {
@@ -1548,35 +1631,40 @@ class IntegrationsService {
         profileId
       });
     }
-    const body = {
-      settings: {
-        cursor: { limit: 100 },
-        filter: { withPhoto: -1, nmID: [nmId] }
-      }
-    };
-    const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, {
-      profileId,
-      organizationId,
-      wbOverride
-    });
-    const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
-    if (!Array.isArray(cards) || cards.length === 0) return null;
+    const scope = { profileId, organizationId, wbOverride };
     const wantNm = Number(nmId);
-    const first =
-      cards.find((c) => Number(c?.nmID ?? c?.nmId) === wantNm) ||
-      cards.find((c) => String(c?.nmID ?? c?.nmId) === String(nmId)) ||
-      null;
-    if (!first) return null;
-    // Возвращаем всю карточку (как есть), но добавим нормализованные поля для удобства фронта
-    return {
-      ...first,
-      nmId: first.nmID ?? first.nmId ?? nmId,
-      vendorCode: first.vendorCode ?? first.vendor_code ?? null,
-      title: first.title ?? first.name ?? first.object ?? null,
-      brand: first.brand ?? null,
-      description: first.description ?? first.descriptionRu ?? null,
-      raw: first
-    };
+    let first = null;
+    try {
+      const body = {
+        settings: {
+          cursor: { limit: 100 },
+          filter: { withPhoto: -1, nmID: [nmId] }
+        }
+      };
+      const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, scope);
+      const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
+      if (Array.isArray(cards) && cards.length > 0) {
+        first =
+          cards.find((c) => Number(c?.nmID ?? c?.nmId) === wantNm) ||
+          cards.find((c) => String(c?.nmID ?? c?.nmId) === String(nmId)) ||
+          null;
+      }
+    } catch {
+      first = null;
+    }
+    if (!first) {
+      first = await this._wbFindListCardByNmId(nmId, scope);
+    }
+    if (!first) {
+      const vc = params.vendor_code ?? params.vendorCode;
+      if (vc != null && String(vc).trim() !== '') {
+        const byVc = await this.getWildberriesProductByVendorCode(String(vc).trim(), scope);
+        if (byVc?.nmId != null && Number(byVc.nmId) === wantNm) {
+          first = await this._wbFindListCardByNmId(byVc.nmId, scope);
+        }
+      }
+    }
+    return this._normalizeWbListCard(first, nmId);
   }
 
   /**

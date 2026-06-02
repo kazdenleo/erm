@@ -248,6 +248,7 @@ class IntegrationsController {
       }
       const data = await integrationsService.getWildberriesProductInfo({
         nm_id: resolvedNmId,
+        vendor_code: vc || undefined,
         ...scope
       });
       if (data && vc) {
