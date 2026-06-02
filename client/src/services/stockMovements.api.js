@@ -63,6 +63,12 @@ export const stockMovementsApi = {
   transfer: async (productId, payload) => {
     const response = await api.post(`/products/${productId}/stock-transfer`, payload);
     return response.data;
-  }
+  },
+
+  /** Сброс истории остатков и установка текущих значений (администратор аккаунта). */
+  resetStockHistory: async (productId, payload) => {
+    const response = await api.post(`/products/${productId}/stock-history-reset`, payload);
+    return response.data;
+  },
 };
 

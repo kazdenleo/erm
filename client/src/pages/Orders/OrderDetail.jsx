@@ -65,41 +65,35 @@ function lineReserveBounds(line) {
     ? Math.floor(availablePieces / perKit)
     : availablePieces;
   const maxReserve = Math.min(remaining, available);
+  const remainingPieces = Math.max(0, units.needPieces - units.reservedPieces);
+  const inputMax = reserveInKitUnits
+    ? Math.min(remainingPieces, availablePieces > 0 ? availablePieces : remainingPieces)
+    : maxReserve;
   return {
     ...units,
     remaining,
     available,
     availablePieces,
     maxReserve,
+    remainingPieces,
+    inputMax,
   };
 }
 
 function lineReserveUnreserveMax(line) {
   const b = lineReserveBounds(line);
-  if (b.reserveInKitUnits) {
-    const pieces = Math.max(0, Number(b.reservedPieces) || 0);
-    if (pieces <= 0) return 0;
-    return Math.max(1, Math.ceil(pieces / b.perKit));
-  }
-  return Math.max(0, b.reserved);
+  return Math.max(0, Number(b.reservedPieces) || Number(line.reservedQty) || 0);
 }
 
 /** Количество для API: резерв в штуках (приращение за одну операцию). */
 function lineReserveApiQuantity(line, uiQty, { unreserve = false } = {}) {
   const q = Math.max(1, parseInt(uiQty, 10) || 1);
   const b = lineReserveBounds(line);
-  if (!b.reserveInKitUnits) {
-    const headroom = Math.max(0, b.needPieces - b.reservedPieces);
-    return unreserve
-      ? Math.min(q, Math.max(0, b.reservedPieces))
-      : Math.min(q, headroom > 0 ? headroom : q);
-  }
-  const pieces = q * b.perKit;
   if (unreserve) {
-    return Math.min(pieces, Math.max(0, b.reservedPieces));
+    return Math.min(q, Math.max(0, b.reservedPieces));
   }
-  const headroomPieces = Math.max(0, b.needPieces - b.reservedPieces);
-  return Math.min(pieces, headroomPieces > 0 ? headroomPieces : pieces);
+  const headroomPieces = Math.max(0, b.remainingPieces);
+  return Math.min(q, headroomPieces > 0 ? headroomPieces : q);
 }
 
 function clampLineQty(raw, min, max) {
@@ -176,21 +170,29 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
     : [];
 
   useEffect(() => {
-    const next = {};
-    for (const line of detailLines) {
-      const key = orderReserveLineKey(line);
-      const { reserved, maxReserve } = lineReserveBounds(line);
-      const prev = lineQty[key];
-      if (reserved > 0 || (line.lineKind === 'component' && (Number(line.reservedQty) || 0) > 0)) {
-        const max = lineReserveUnreserveMax(line);
-        next[key] = prev != null ? clampLineQty(prev, 1, max) : 1;
-      } else if (maxReserve > 0) {
-        const max = maxReserve;
-        next[key] = prev != null ? clampLineQty(prev, 1, max) : max;
+    setLineQty((prev) => {
+      const next = { ...prev };
+      let dirty = false;
+      for (const line of detailLines) {
+        const key = orderReserveLineKey(line);
+        const b = lineReserveBounds(line);
+        const hasPieces =
+          (Number(line.reservedQty) || 0) > 0 ||
+          b.reserved > 0 ||
+          (line.lineKind === 'component' && (Number(line.reservedQty) || 0) > 0);
+        const defaultQty = hasPieces
+          ? lineReserveUnreserveMax(line)
+          : b.inputMax > 0
+            ? b.inputMax
+            : 1;
+        if (next[key] == null || next[key] === '') {
+          next[key] = defaultQty;
+          dirty = true;
+        }
       }
-    }
-    setLineQty(next);
-  }, [reserve, detailLines.length]);
+      return dirty ? next : prev;
+    });
+  }, [reserve?.reservedQty, reserve?.needQty, detailLines.length]);
 
   const applyResult = (result) => {
     setReserve(result);
@@ -219,10 +221,10 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
     const pid = line?.productId;
     if (!marketplace || !orderId || !pid || lineLoadingKey) return;
     const key = orderReserveLineKey(line);
-    const { maxReserve } = lineReserveBounds(line);
+    const b = lineReserveBounds(line);
     const act = String(action || '').toLowerCase();
     const isUnreserve = act === 'unreserve';
-    const max = isUnreserve ? lineReserveUnreserveMax(line) : maxReserve;
+    const max = isUnreserve ? lineReserveUnreserveMax(line) : b.inputMax;
     if (max <= 0) return;
     const qty =
       qtyOverride != null
@@ -306,22 +308,28 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             const pid = line.productId;
             const canReserve = pid != null && Number(pid) > 0;
             const key = orderReserveLineKey(line);
+            const bounds = lineReserveBounds(line);
             const {
               reserved: r,
               need: n,
+              reservedPieces,
+              needPieces,
               remaining,
               available,
               availablePieces,
-              maxReserve,
               reserveInKitUnits,
               perKit,
-            } = lineReserveBounds(line);
+            } = bounds;
+            const badgeReserved = reserveInKitUnits ? reservedPieces : r;
+            const badgeNeed = reserveInKitUnits ? needPieces : n;
             const pieceHint = lineReserveDisplayUnits(line).pieceHint;
             const lineHas =
               r > 0 || (reserveInKitUnits && (lineReserveDisplayUnits(line).reservedPieces || 0) > 0);
             const lineCoverage =
               line.reserveCoverage ?? line.reserve_coverage ?? (lineHas ? 'incoming' : 'none');
-            const maxQty = lineHas ? r : maxReserve;
+            const inputMaxPieces = lineHas
+              ? Math.max(0, Number(line.reservedQty) || 0)
+              : bounds.inputMax;
             const title =
               line.label ||
               line.productName ||
@@ -334,7 +342,12 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 : pid
                   ? `Товар #${pid}`
                   : 'Позиция без привязки к товару');
-            const qtyVal = lineQty[key] ?? (lineHas ? 1 : Math.min(1, maxQty || 1));
+            const qtyDefault = lineHas
+              ? Math.max(1, Number(line.reservedQty) || 1)
+              : inputMaxPieces > 0
+                ? inputMaxPieces
+                : 1;
+            const qtyVal = lineQty[key] ?? qtyDefault;
             return (
               <li
                 key={key}
@@ -342,13 +355,13 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
               >
                 <span className="order-reserve-line__title">
                   {title}:{' '}
-                  {r > 0 ? (
+                  {badgeReserved > 0 ? (
                     <span className={reserveBadgeClassName(lineCoverage)} style={{ marginRight: 4 }}>
-                      {r}/{n}
+                      {badgeReserved}/{badgeNeed}
                     </span>
                   ) : (
                     <>
-                      <strong>{r}</strong> из {n}
+                      <strong>{badgeReserved}</strong> из {badgeNeed}
                     </>
                   )}
                   {pieceHint ? (
@@ -375,38 +388,43 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                       type="number"
                       className="form-control form-control-sm"
                       min={1}
-                      max={maxQty > 0 ? maxQty : 1}
-                      value={maxQty > 0 ? qtyVal : 0}
-                      disabled={loading || lineLoadingKey === key || maxQty <= 0 || !canReserve}
-                      onChange={(e) =>
+                      max={inputMaxPieces > 0 ? inputMaxPieces : 1}
+                      value={inputMaxPieces > 0 ? qtyVal : 0}
+                      disabled={loading || lineLoadingKey === key || inputMaxPieces <= 0 || !canReserve}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        if (raw === '') {
+                          setLineQty((prev) => ({ ...prev, [key]: '' }));
+                          return;
+                        }
+                        const n = parseInt(raw, 10);
+                        if (!Number.isFinite(n)) return;
                         setLineQty((prev) => ({
                           ...prev,
-                          [key]: clampLineQty(e.target.value, 1, Math.max(1, maxQty))
-                        }))
-                      }
+                          [key]: Math.min(Math.max(1, n), Math.max(1, inputMaxPieces))
+                        }));
+                      }}
                     />
-                    <span className="order-reserve-line__qty-suffix">
-                      {reserveInKitUnits ? 'компл.' : 'шт.'}
-                    </span>
+                    <span className="order-reserve-line__qty-suffix">шт.</span>
                   </label>
                   <Button
                     variant={lineHas ? 'secondary' : 'primary'}
                     size="small"
-                    disabled={loading || lineLoadingKey === key || maxQty <= 0 || !canReserve}
+                    disabled={loading || lineLoadingKey === key || inputMaxPieces <= 0 || !canReserve}
                     onClick={() =>
                       handleLineAction(line, lineHas ? 'unreserve' : 'reserve')
                     }
                   >
                     {lineLoadingKey === key ? '…' : lineHas ? 'Снять' : 'В резерв'}
                   </Button>
-                  {maxQty >= 1 && (lineHas || maxQty > 1) ? (
+                  {inputMaxPieces >= 1 ? (
                     <button
                       type="button"
                       className="order-reserve-line__max-btn"
                       disabled={loading || lineLoadingKey === key}
                       onClick={() => {
-                        setLineQty((prev) => ({ ...prev, [key]: maxQty }));
-                        handleLineAction(line, lineHas ? 'unreserve' : 'reserve', maxQty);
+                        setLineQty((prev) => ({ ...prev, [key]: inputMaxPieces }));
+                        handleLineAction(line, lineHas ? 'unreserve' : 'reserve', inputMaxPieces);
                       }}
                     >
                       {lineHas ? 'Снять всё' : 'Весь заказ'}

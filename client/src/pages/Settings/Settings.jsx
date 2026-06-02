@@ -31,6 +31,7 @@ export function Settings() {
     allow_private_orders: false,
     require_reserved_stock_for_assembly: false,
     allow_manual_warehouse_stock_edit: false,
+    allow_stock_history_reset: false,
   });
 
   const loadAccount = useCallback(async () => {
@@ -48,6 +49,7 @@ export function Settings() {
           allow_private_orders: p.allow_private_orders === true,
           require_reserved_stock_for_assembly: p.require_reserved_stock_for_assembly === true,
           allow_manual_warehouse_stock_edit: p.allow_manual_warehouse_stock_edit === true,
+          allow_stock_history_reset: p.allow_stock_history_reset === true,
         });
       }
     } catch (err) {
@@ -77,6 +79,7 @@ export function Settings() {
         allow_private_orders: form.allow_private_orders,
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
         allow_manual_warehouse_stock_edit: form.allow_manual_warehouse_stock_edit,
+        allow_stock_history_reset: form.allow_stock_history_reset,
       });
       await refreshUser();
       alert('Сохранено');
@@ -313,6 +316,22 @@ export function Settings() {
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
                     В списке остатков можно вручную задать количество «Наличие» и сохранить галочкой. При выключении
                     остаток меняется только приёмкой, списанием, отгрузкой, инвентаризацией и другими документами.
+                  </span>
+                </span>
+              </label>
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.allow_stock_history_reset === true}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, allow_stock_history_reset: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Сброс истории остатков по товару</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    В таблице остатков администратор аккаунта может очистить историю движений по товару и задать
+                    текущие значения «В пути», «Наличие» и «Резерв». При выключении кнопка скрыта.
                   </span>
                 </span>
               </label>

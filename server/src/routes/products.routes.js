@@ -7,7 +7,7 @@ import express from 'express';
 import productsController from '../controllers/products.controller.js';
 import stockMovementsController from '../controllers/stockMovements.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireProfileAdmin } from '../middleware/auth.js';
 import { createProductImageUpload, createProductExcelImportUpload } from '../middleware/uploads.js';
 import {
   validateCreateProduct,
@@ -198,6 +198,14 @@ router.post(
   requireAuth,
   validateProductId,
   wrapAsync(stockMovementsController.transfer.bind(stockMovementsController))
+);
+
+router.post(
+  '/:id/stock-history-reset',
+  requireAuth,
+  requireProfileAdmin,
+  validateProductId,
+  wrapAsync(stockMovementsController.resetStockHistory.bind(stockMovementsController))
 );
 
 // Удалить товар (с валидацией ID) - должен быть ПОСЛЕ всех специфических маршрутов

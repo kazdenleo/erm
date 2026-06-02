@@ -111,6 +111,13 @@ class ProfilesRepositoryPG {
       const v = updates.allow_manual_warehouse_stock_edit ?? updates.allowManualWarehouseStockEdit;
       set('allow_manual_warehouse_stock_edit', v === true || v === '1' || v === 'true');
     }
+    if (
+      updates.allow_stock_history_reset !== undefined ||
+      updates.allowStockHistoryReset !== undefined
+    ) {
+      const v = updates.allow_stock_history_reset ?? updates.allowStockHistoryReset;
+      set('allow_stock_history_reset', v === true || v === '1' || v === 'true');
+    }
 
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

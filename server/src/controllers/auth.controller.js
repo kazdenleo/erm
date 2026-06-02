@@ -241,6 +241,7 @@ export const authController = {
                   profile.require_reserved_stock_for_assembly === true,
                 allow_manual_warehouse_stock_edit:
                   profile.allow_manual_warehouse_stock_edit === true,
+                allow_stock_history_reset: profile.allow_stock_history_reset === true,
                 supplier_sync_enabled: profile.supplier_sync_enabled !== false,
               }
             : null,

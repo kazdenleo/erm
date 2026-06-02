@@ -473,3 +473,56 @@
   text-decoration: underline;
 }
 
+.stock-history-reset-cell {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.stock-history-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  color: var(--muted, #6b7280);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stock-history-reset-btn:hover {
+  color: var(--danger, #ef4444);
+  border-color: var(--danger, #ef4444);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.stock-history-reset-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.stock-history-reset-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.stock-history-reset-field span {
+  color: var(--muted, #6b7280);
+}
+
+.stock-history-reset-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+

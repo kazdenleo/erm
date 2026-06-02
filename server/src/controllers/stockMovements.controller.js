@@ -206,6 +206,43 @@ class StockMovementsController {
       next(error);
     }
   }
+
+  /** Сброс истории остатков и установка текущих значений (администратор аккаунта). */
+  async resetStockHistory(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа' });
+      }
+      const { id } = req.params;
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const warehouseId = body.warehouseId ?? body.warehouse_id;
+      if (warehouseId == null || String(warehouseId).trim() === '') {
+        return res.status(400).json({ ok: false, message: 'warehouseId обязателен' });
+      }
+
+      const product = await stockMovementsService.productsRepository.findById(id);
+      if (!product) {
+        return res.status(404).json({ ok: false, message: 'Товар не найден' });
+      }
+      const pPid = productProfileId(product);
+      if (pPid == null || String(pPid) !== String(tid)) {
+        return res.status(403).json({ ok: false, message: 'Нет доступа к товару' });
+      }
+
+      const result = await stockMovementsService.resetProductStockHistoryAndSetValues(id, {
+        warehouseId,
+        incoming: body.incoming,
+        onHand: body.onHand ?? body.on_hand ?? body.quantity,
+        reserved: body.reserved,
+        profileId: tid,
+        reason: body.reason || null,
+      });
+      return res.status(200).json({ ok: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default new StockMovementsController();

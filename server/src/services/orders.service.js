@@ -17,6 +17,8 @@ import {
   releaseAllReservesForOrder,
   findKitProductIdForMarketplaceOrder,
   getKitComponents,
+  batchPiecesPerKitUnitMap,
+  batchKitIdByComponentMap,
   getNetReservedForOrderProduct,
   readKitPhysicalOnHandFromDb,
   sumKitComponentQtyPerKit,
@@ -1523,9 +1525,30 @@ class OrdersService {
     const coverageFifoMap = await buildReserveCoverageFifoMap(supplyPids);
 
     if (light) {
+      const pids = orders
+        .map((o) => Number(o.productId ?? o.product_id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      const kitPiecesMap = await batchPiecesPerKitUnitMap(pids);
+      const componentOnlyPids = pids.filter((pid) => !kitPiecesMap.has(pid));
+      const componentKitMap = await batchKitIdByComponentMap(componentOnlyPids);
+      const extraKitIds = [...new Set(componentKitMap.values())].filter((kid) => !kitPiecesMap.has(kid));
+      if (extraKitIds.length) {
+        const extra = await batchPiecesPerKitUnitMap(extraKitIds);
+        for (const [kid, pieces] of extra) kitPiecesMap.set(kid, pieces);
+      }
+      const orderReserveNeedQty = (row) => {
+        const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
+        const pid = Number(row.productId ?? row.product_id);
+        if (!Number.isFinite(pid) || pid < 1) return qty;
+        let piecesPerKit = kitPiecesMap.get(pid) || 0;
+        if (piecesPerKit < 1 && componentKitMap.has(pid)) {
+          piecesPerKit = kitPiecesMap.get(componentKitMap.get(pid)) || 0;
+        }
+        return piecesPerKit > 0 ? qty * piecesPerKit : qty;
+      };
       for (const o of orders) {
-        const need = Math.max(1, parseInt(o.quantity, 10) || 1);
         const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+        const need = orderReserveNeedQty(o);
         o.reservedQty = reserved;
         o.reserved_qty = reserved;
         o.needQty = need;
@@ -1572,7 +1595,10 @@ class OrdersService {
     const rows = orders.filter((o) => {
       const st = String(o.status || '').trim().toLowerCase();
       if (!['new', 'in_procurement', 'in_assembly'].includes(st)) return false;
-      const need = Math.max(1, parseInt(o.quantity, 10) || 1);
+      const need = Math.max(
+        1,
+        Number(o.needQty ?? o.need_qty ?? o.quantity) || parseInt(o.quantity, 10) || 1
+      );
       const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
       return reserved < need;
     });

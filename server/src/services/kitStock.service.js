@@ -243,6 +243,62 @@ export async function getKitComponents(kitProductId) {
   }));
 }
 
+/** Всего штук (комплектующих) в одном комплекте — сумма quantity по составу. */
+export function totalPiecesPerKitUnit(components) {
+  let sum = 0;
+  for (const c of components || []) {
+    sum += Math.max(1, parseInt(c.quantity, 10) || 1);
+  }
+  return sum > 0 ? sum : 1;
+}
+
+/**
+ * kit_product_id → сколько штук в одном комплекте (батч для списка заказов).
+ * @returns {Promise<Map<number, number>>}
+ */
+export async function batchPiecesPerKitUnitMap(kitProductIds) {
+  const ids = [...new Set((kitProductIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const map = new Map();
+  if (!ids.length) return map;
+  const r = await query(
+    `SELECT kit_product_id,
+            COALESCE(SUM(GREATEST(1, quantity)), 0)::int AS pieces_per_kit
+     FROM kit_components
+     WHERE kit_product_id = ANY($1::int[])
+     GROUP BY kit_product_id`,
+    [ids]
+  );
+  for (const row of r.rows || []) {
+    const kid = Number(row.kit_product_id);
+    const pieces = Math.max(1, Number(row.pieces_per_kit) || 1);
+    if (kid > 0) map.set(kid, pieces);
+  }
+  return map;
+}
+
+/**
+ * component_product_id → kit_product_id (для строк заказа, привязанных к комплектующей).
+ * @returns {Promise<Map<number, number>>}
+ */
+export async function batchKitIdByComponentMap(componentProductIds) {
+  const ids = [...new Set((componentProductIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const map = new Map();
+  if (!ids.length) return map;
+  const r = await query(
+    `SELECT DISTINCT ON (component_product_id) component_product_id, kit_product_id
+     FROM kit_components
+     WHERE component_product_id = ANY($1::int[])
+     ORDER BY component_product_id, kit_product_id`,
+    [ids]
+  );
+  for (const row of r.rows || []) {
+    const cid = Number(row.component_product_id);
+    const kid = Number(row.kit_product_id);
+    if (cid > 0 && kid > 0 && !map.has(cid)) map.set(cid, kid);
+  }
+  return map;
+}
+
 /** Сумма quantity в составе комплекта для одного component_product_id (несколько строк — один товар). */
 export function sumKitComponentQtyPerKit(components, componentProductId) {
   const pid = Number(componentProductId);
@@ -1293,6 +1349,9 @@ export default {
   isKitProductId,
   findKitProductIdForMarketplaceOrder,
   getKitComponents,
+  totalPiecesPerKitUnit,
+  batchPiecesPerKitUnitMap,
+  batchKitIdByComponentMap,
   sumKitComponentQtyPerKit,
   buildKitComponentQtyMap,
   computeKitMetricsFromComponents,

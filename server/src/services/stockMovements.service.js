@@ -107,6 +107,29 @@ class StockMovementsService {
     }
   }
 
+  /** Настройка аккаунта: сброс истории остатков и задание текущих значений. */
+  async assertStockHistoryResetAllowed(profileId) {
+    const pid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : NaN;
+    if (!Number.isFinite(pid) || pid < 1) {
+      const error = new Error('Нет привязки к аккаунту');
+      error.statusCode = 403;
+      throw error;
+    }
+    const profile = await this.profilesRepository.findById(pid);
+    if (!profile || profile.allow_stock_history_reset !== true) {
+      const error = new Error(
+        'Сброс истории остатков отключён в настройках аккаунта'
+      );
+      error.statusCode = 403;
+      throw error;
+    }
+  }
+
   /**
    * Склад для списания/отгрузки: предпочтительный → где есть остаток → последний резерв → склад по умолчанию.
    */
@@ -1488,6 +1511,178 @@ class StockMovementsService {
         /* ignore */
       }
     }
+  }
+
+  /**
+   * Очистить историю движений по товару и задать текущие: в пути, наличие на складе, резерв.
+   * Доступно пересчитывается на клиенте (наличие + в пути − резерв).
+   */
+  async resetProductStockHistoryAndSetValues(
+    productId,
+    { warehouseId, incoming, onHand, reserved, profileId, reason = null } = {}
+  ) {
+    const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      const error = new Error('Некорректный ID товара');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    await this.assertStockHistoryResetAllowed(profileId);
+
+    const product = await this.productsRepository.findById(pid);
+    if (!product) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const productProfileId = product.profile_id ?? product.profileId ?? null;
+    if (profileId != null && productProfileId != null && String(productProfileId) !== String(profileId)) {
+      const error = new Error('Нет доступа к товару');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
+    if (pt === 'kit') {
+      const error = new Error('Для комплектов сброс истории недоступен');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const whId = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
+    if (!whId) {
+      const error = new Error('Укажите склад для установки наличия');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const incomingN = Math.max(0, Math.floor(Number(incoming) || 0));
+    const onHandN = Math.max(0, Math.floor(Number(onHand) || 0));
+    const reservedN = Math.max(0, Math.floor(Number(reserved) || 0));
+    const profId = productProfileId;
+    const resetReason = reason || 'Сброс истории остатков администратором аккаунта';
+
+    return runWithProductStockLock(pid, async () => {
+      const client = await getClient();
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
+
+        await client.query('DELETE FROM stock_movements WHERE product_id = $1', [pid]);
+        await client.query('DELETE FROM product_warehouse_stock WHERE product_id = $1', [pid]);
+        await client.query(
+          `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
+          [pid, whId, onHandN]
+        );
+        await client.query(
+          `UPDATE products
+           SET quantity = $1,
+               incoming_quantity = $2,
+               reserved_quantity = 0,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [onHandN, incomingN, pid]
+        );
+
+        const metaBase = {
+          stock_history_reset: true,
+          warehouse_id: whId,
+          admin_set: { incoming: incomingN, onHand: onHandN, reserved: reservedN },
+        };
+
+        if (onHandN > 0) {
+          await this.repository.insertSnapshotAfterProduct(client, {
+            productId: pid,
+            type: 'opening_balance',
+            quantityChange: onHandN,
+            reason: resetReason,
+            meta: metaBase,
+            warehouseId: whId,
+            profileId: profId,
+          });
+        }
+
+        if (incomingN > 0) {
+          await this.repository.insertSnapshotAfterProduct(client, {
+            productId: pid,
+            type: 'incoming',
+            quantityChange: incomingN,
+            reason: `${resetReason}: в пути`,
+            meta: metaBase,
+            warehouseId: null,
+            profileId: profId,
+          });
+        }
+
+        if (reservedN > 0) {
+          const reserveMovement = await this.repository.insertSnapshotAfterProduct(client, {
+            productId: pid,
+            type: 'reserve',
+            quantityChange: -reservedN,
+            reason: `${resetReason}: резерв`,
+            meta: { ...metaBase, journal_reconcile: true },
+            warehouseId: whId,
+            profileId: profId,
+          });
+          const movementId = reserveMovement?.id ?? reserveMovement?.movement_id;
+          if (movementId != null) {
+            await client.query(
+              `UPDATE stock_movements sm
+               SET reserved_after = COALESCE((
+                 SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+                 FROM stock_movements
+                 WHERE product_id = $1 AND type IN ('reserve', 'unreserve')
+               ), 0)
+               WHERE sm.id = $2`,
+              [pid, movementId]
+            );
+          }
+          await client.query(
+            `UPDATE products p
+             SET reserved_quantity = COALESCE((
+               SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+               FROM stock_movements sm
+               WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+             ), 0),
+             updated_at = CURRENT_TIMESTAMP
+             WHERE p.id = $1::bigint`,
+            [pid]
+          );
+        }
+
+        await client.query('COMMIT');
+
+        const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+        const netReserved = await syncProductReservedQuantityFromJournal(pid);
+
+        const orgId = product.organization_id ?? product.organizationId ?? null;
+        scheduleStockMovementMarketplaceSync(pid, {
+          source: 'stock_history_reset',
+          warehouseId: whId,
+          organizationId: orgId,
+        });
+
+        const available = Math.max(0, onHandN + incomingN - (netReserved || reservedN));
+
+        return {
+          productId: pid,
+          warehouseId: whId,
+          incoming: incomingN,
+          onHand: onHandN,
+          reserved: netReserved || reservedN,
+          available,
+        };
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
+    });
   }
 }
 

@@ -23,6 +23,8 @@ import {
 } from '../../utils/kitStockMetrics';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { profilesApi } from '../../services/profiles.api.js';
+import { authApi } from '../../services/auth.api.js';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
 import './StockLevels.css';
@@ -30,6 +32,10 @@ import './StockLevels.css';
 const STOCK_LIST_PAGE_SIZES = [50, 100, 200];
 const STOCK_LIST_PAGE_SIZE_LS = 'stockListPageSize';
 const STOCK_IN_STOCK_ONLY_LS = 'stockListInStockOnly';
+
+function isStockResetFlagEnabled(value) {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
 
 const MOVEMENT_TYPE_LABELS = {
   receipt: 'Поступление',
@@ -40,6 +46,7 @@ const MOVEMENT_TYPE_LABELS = {
   unreserve: 'Снятие резерва',
   inventory: 'Инвентаризация',
   manual: 'Ручное изменение',
+  opening_balance: 'Начальный остаток',
   transfer: 'Перемещение',
   return_to_supplier: 'Возврат поставщику',
   customer_return: 'Возврат от клиента'
@@ -886,9 +893,49 @@ function ManualOnHandCell({ productId, currentOnHand, warehouseId, disabledReaso
 }
 
 export function WarehouseStocks() {
-  const { profile } = useAuth();
+  const { profile, isProfileAdmin, isAccountAdmin, accountRole, profileId } = useAuth();
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const allowManualStockEdit = profile?.allow_manual_warehouse_stock_edit === true;
+  const canManageAccountStockReset =
+    Boolean(profileId) &&
+    (isProfileAdmin ||
+      isAccountAdmin ||
+      String(accountRole || '').toLowerCase() === 'admin');
+  const [stockResetSettingOn, setStockResetSettingOn] = useState(false);
+
+  const loadStockResetSetting = useCallback(async () => {
+    if (!canManageAccountStockReset) {
+      setStockResetSettingOn(false);
+      return;
+    }
+    if (isStockResetFlagEnabled(profile?.allow_stock_history_reset)) {
+      setStockResetSettingOn(true);
+      return;
+    }
+    try {
+      const authRes = await authApi.me();
+      const authProfile = authRes?.data?.profile;
+      if (isStockResetFlagEnabled(authProfile?.allow_stock_history_reset)) {
+        setStockResetSettingOn(true);
+        return;
+      }
+    } catch {
+      /* fallback profiles/me */
+    }
+    try {
+      const res = await profilesApi.getMe();
+      const p = res?.data ?? res;
+      setStockResetSettingOn(isStockResetFlagEnabled(p?.allow_stock_history_reset));
+    } catch {
+      setStockResetSettingOn(false);
+    }
+  }, [canManageAccountStockReset, profile?.allow_stock_history_reset]);
+
+  useEffect(() => {
+    void loadStockResetSetting();
+  }, [loadStockResetSetting]);
+
+  const allowStockHistoryReset = canManageAccountStockReset && stockResetSettingOn;
   const {
     products,
     meta,
@@ -962,6 +1009,16 @@ export function WarehouseStocks() {
   const [mpStockPushBanner, setMpStockPushBanner] = useState(null);
   /** error | confirm | force | working | result — панель на странице (не window.alert) */
   const [mpPushPanel, setMpPushPanel] = useState(null);
+  const [stockResetOpen, setStockResetOpen] = useState(false);
+  const [stockResetProduct, setStockResetProduct] = useState(null);
+  const [stockResetForm, setStockResetForm] = useState({ incoming: 0, onHand: 0, reserved: 0 });
+  const [stockResetSaving, setStockResetSaving] = useState(false);
+  const [stockResetError, setStockResetError] = useState('');
+
+  useEffect(() => {
+    if (historyProduct?.id) void loadStockResetSetting();
+  }, [historyProduct?.id, loadStockResetSetting]);
+
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = useMemo(
@@ -1572,6 +1629,90 @@ export function WarehouseStocks() {
     setReserveUnreserveKey(null);
   }, []);
 
+  const openStockResetModal = useCallback((row) => {
+    if (!row?.product?.id || isKitProduct(row.product)) return;
+    setStockResetProduct(row.product);
+    setStockResetForm({
+      incoming: Number(row.incoming) || 0,
+      onHand: Number(row.onHand) || 0,
+      reserved: Number(row.reserved) || 0,
+    });
+    setStockResetError('');
+    setStockResetOpen(true);
+  }, []);
+
+  const openStockResetFromHistory = useCallback(() => {
+    if (!historyProduct?.id || isKitProduct(historyProduct)) return;
+    const incoming =
+      Number(historyProduct.incoming_quantity ?? historyProduct.incomingQuantity) || 0;
+    const onHand = Number(historyProduct.quantity) || 0;
+    const reserved =
+      historyNetReserved != null
+        ? Number(historyNetReserved) || 0
+        : Number(
+            historyProduct.net_reserved_quantity ??
+              historyProduct.reserved_quantity ??
+              historyProduct.reservedQuantity
+          ) || 0;
+    setStockResetProduct(historyProduct);
+    setStockResetForm({ incoming, onHand, reserved });
+    setStockResetError('');
+    setStockResetOpen(true);
+  }, [historyProduct, historyNetReserved]);
+
+  const closeStockResetModal = useCallback(() => {
+    setStockResetOpen(false);
+    setStockResetProduct(null);
+    setStockResetError('');
+    setStockResetSaving(false);
+  }, []);
+
+  const submitStockReset = useCallback(async () => {
+    if (!stockResetProduct?.id) return;
+    if (!stockWarehouseId) {
+      setStockResetError('Выберите склад в фильтре над таблицей');
+      return;
+    }
+    setStockResetSaving(true);
+    setStockResetError('');
+    try {
+      await stockMovementsApi.resetStockHistory(stockResetProduct.id, {
+        warehouseId: stockWarehouseId,
+        incoming: Math.max(0, Math.floor(Number(stockResetForm.incoming) || 0)),
+        onHand: Math.max(0, Math.floor(Number(stockResetForm.onHand) || 0)),
+        reserved: Math.max(0, Math.floor(Number(stockResetForm.reserved) || 0)),
+      });
+      if (historyProduct?.id === stockResetProduct.id) {
+        setHistoryProduct(null);
+        setHistoryList([]);
+      }
+      closeStockResetModal();
+      loadListRef.current?.({ page: currentPage, silent: true });
+    } catch (err) {
+      setStockResetError(err?.response?.data?.message || err?.message || 'Ошибка сброса');
+    } finally {
+      setStockResetSaving(false);
+    }
+  }, [
+    stockResetProduct,
+    stockWarehouseId,
+    stockResetForm,
+    historyProduct?.id,
+    currentPage,
+    closeStockResetModal,
+  ]);
+
+  const stockResetAvailablePreview = useMemo(
+    () =>
+      stockTableAvailable({
+        onHand: Number(stockResetForm.onHand) || 0,
+        incoming: Number(stockResetForm.incoming) || 0,
+        reserved: Number(stockResetForm.reserved) || 0,
+        suppliers: 0,
+      }),
+    [stockResetForm]
+  );
+
   const reloadReserveOrdersList = useCallback(async () => {
     const pid = reserveModalProduct?.id;
     if (!pid) return [];
@@ -1905,6 +2046,7 @@ export function WarehouseStocks() {
                   <th>Резерв</th>
                   {supplierSyncEnabled ? <th>Поставщики</th> : null}
                   <th>Доступно</th>
+                  {allowStockHistoryReset ? <th style={{ width: 88 }}>Сброс</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -1914,7 +2056,7 @@ export function WarehouseStocks() {
                     className="stock-levels-row-clickable"
                     onClick={onNavigationClick(() => setHistoryProduct(row.product), {
                       ignoreClosest:
-                        'input, textarea, select, label, button, .supplier-stock-cell, .stock-levels-reserved-btn, .stock-manual-onhand-edit, [data-no-nav-click]',
+                        'input, textarea, select, label, button, .supplier-stock-cell, .stock-levels-reserved-btn, .stock-manual-onhand-edit, .stock-history-reset-btn, [data-no-nav-click]',
                     })}
                     role="button"
                     tabIndex={0}
@@ -1986,6 +2128,22 @@ export function WarehouseStocks() {
                     >
                       {row.availableDisplay ?? row.available}
                     </td>
+                    {allowStockHistoryReset ? (
+                      <td className="stock-history-reset-cell" onClick={(e) => e.stopPropagation()}>
+                        {isKitProduct(row.product) ? (
+                          <span className="text-muted" title="Для комплектов недоступно">—</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="stock-history-reset-btn"
+                            title="Очистить историю и задать текущие остатки"
+                            onClick={() => openStockResetModal(row)}
+                          >
+                            ⟲
+                          </button>
+                        )}
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>
@@ -1999,6 +2157,12 @@ export function WarehouseStocks() {
               <>
                 {' '}
                 В колонке «Наличие» можно задать количество и нажать кнопку с галочкой (нужен выбранный склад в фильтре).
+              </>
+            ) : null}
+            {allowStockHistoryReset ? (
+              <>
+                {' '}
+                Кнопка «⟲» очищает историю движений по товару и задаёт текущие «В пути», «Наличие» и «Резерв» (нужен выбранный склад).
               </>
             ) : null}
           </p>
@@ -2160,6 +2324,23 @@ export function WarehouseStocks() {
         }
         size="large"
       >
+        {allowStockHistoryReset && historyProduct && !isKitProduct(historyProduct) ? (
+          <div className="stock-history-reset-toolbar">
+            <Button
+              type="button"
+              variant="outline-danger"
+              size="small"
+              onClick={openStockResetFromHistory}
+            >
+              Сбросить историю и задать остатки
+            </Button>
+            {!stockWarehouseId ? (
+              <span className="text-muted small">
+                Для сброса выберите склад в фильтре над таблицей.
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         {historyLoading ? (
           <div className="loading">Загрузка истории…</div>
         ) : historyList.length === 0 ? (
@@ -2507,6 +2688,94 @@ export function WarehouseStocks() {
             ) : null}
           </>
         )}
+      </Modal>
+
+      <Modal
+        isOpen={stockResetOpen}
+        onClose={closeStockResetModal}
+        title={
+          stockResetProduct
+            ? `Сброс истории: ${stockResetProduct.name || stockResetProduct.sku || '—'}`
+            : 'Сброс истории остатков'
+        }
+        size="small"
+      >
+        <p className="text-muted small">
+          Будет удалена <strong>вся</strong> история движений по этому товару. Затем будут установлены указанные
+          значения. Операция необратима.
+        </p>
+        {!stockWarehouseId ? (
+          <p className="text-danger small">Выберите склад в фильтре «Склад (остаток)» над таблицей.</p>
+        ) : (
+          <p className="text-muted small mb-2">
+            Склад:{' '}
+            <strong>
+              {ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId))?.address ||
+                ownWarehouses.find((w) => String(w.id) === String(stockWarehouseId))?.name ||
+                `#${stockWarehouseId}`}
+            </strong>
+          </p>
+        )}
+        <div className="stock-history-reset-form">
+          <label className="stock-history-reset-field">
+            <span>В пути</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              className="form-control form-control-sm"
+              value={stockResetForm.incoming}
+              onChange={(e) =>
+                setStockResetForm((f) => ({ ...f, incoming: e.target.value }))
+              }
+            />
+          </label>
+          <label className="stock-history-reset-field">
+            <span>Наличие</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              className="form-control form-control-sm"
+              value={stockResetForm.onHand}
+              onChange={(e) =>
+                setStockResetForm((f) => ({ ...f, onHand: e.target.value }))
+              }
+            />
+          </label>
+          <label className="stock-history-reset-field">
+            <span>Резерв</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              className="form-control form-control-sm"
+              value={stockResetForm.reserved}
+              onChange={(e) =>
+                setStockResetForm((f) => ({ ...f, reserved: e.target.value }))
+              }
+            />
+          </label>
+          <p className="mb-0 mt-2">
+            Доступно: <strong>{stockResetAvailablePreview}</strong> шт.
+          </p>
+        </div>
+        {stockResetError ? (
+          <p className="text-danger small mt-2 mb-0">{stockResetError}</p>
+        ) : null}
+        <div className="d-flex gap-2 justify-content-end mt-3">
+          <Button type="button" variant="secondary" onClick={closeStockResetModal} disabled={stockResetSaving}>
+            Отмена
+          </Button>
+          <Button
+            type="button"
+            variant="danger"
+            onClick={() => void submitStockReset()}
+            disabled={stockResetSaving || !stockWarehouseId}
+          >
+            {stockResetSaving ? 'Сохранение…' : 'Очистить и сохранить'}
+          </Button>
+        </div>
       </Modal>
     </>
   );
