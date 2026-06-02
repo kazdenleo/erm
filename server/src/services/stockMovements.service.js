@@ -81,6 +81,30 @@ class StockMovementsService {
   constructor() {
     this.repository = repositoryFactory.getStockMovementsRepository();
     this.productsRepository = repositoryFactory.getProductsRepository();
+    this.profilesRepository = repositoryFactory.getProfilesRepository();
+  }
+
+  /** Настройка аккаунта: ручная корректировка наличия в списке остатков. */
+  async assertManualWarehouseStockEditAllowed(profileId) {
+    const pid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : NaN;
+    if (!Number.isFinite(pid) || pid < 1) {
+      const error = new Error('Нет привязки к аккаунту');
+      error.statusCode = 403;
+      throw error;
+    }
+    const profile = await this.profilesRepository.findById(pid);
+    if (!profile || profile.allow_manual_warehouse_stock_edit !== true) {
+      const error = new Error(
+        'Ручное изменение наличия на складе отключено в настройках аккаунта'
+      );
+      error.statusCode = 403;
+      throw error;
+    }
   }
 
   /**

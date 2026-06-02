@@ -104,6 +104,13 @@ class ProfilesRepositoryPG {
       const v = updates.supplier_sync_enabled ?? updates.supplierSyncEnabled;
       set('supplier_sync_enabled', v === true || v === '1' || v === 'true');
     }
+    if (
+      updates.allow_manual_warehouse_stock_edit !== undefined ||
+      updates.allowManualWarehouseStockEdit !== undefined
+    ) {
+      const v = updates.allow_manual_warehouse_stock_edit ?? updates.allowManualWarehouseStockEdit;
+      set('allow_manual_warehouse_stock_edit', v === true || v === '1' || v === 'true');
+    }
 
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

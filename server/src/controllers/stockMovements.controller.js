@@ -6,6 +6,13 @@
 import stockMovementsService from '../services/stockMovements.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
+function productProfileId(product) {
+  const raw = product?.profile_id ?? product?.profileId ?? null;
+  if (raw == null || raw === '') return null;
+  const n = typeof raw === 'string' ? parseInt(raw, 10) : Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 class StockMovementsController {
   async applyChange(req, res, next) {
     try {
@@ -19,9 +26,42 @@ class StockMovementsController {
         return res.status(400).json({ ok: false, message: 'type (тип операции) обязателен' });
       }
 
+      const typeNorm = String(type).trim().toLowerCase();
+      if (typeNorm === 'manual') {
+        const tid = tenantListProfileId(req);
+        if (tid === TENANT_LIST_EMPTY) {
+          return res.status(403).json({ ok: false, message: 'Нет доступа' });
+        }
+        await stockMovementsService.assertManualWarehouseStockEditAllowed(tid);
+
+        const metaObj = meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {};
+        const whRaw = metaObj.warehouse_id ?? metaObj.warehouseId;
+        if (whRaw == null || String(whRaw).trim() === '') {
+          return res.status(400).json({ ok: false, message: 'warehouse_id в meta обязателен' });
+        }
+
+        const product = await stockMovementsService.productsRepository.findById(id);
+        if (!product) {
+          return res.status(404).json({ ok: false, message: 'Товар не найден' });
+        }
+        if (tid != null) {
+          const pPid = productProfileId(product);
+          if (pPid == null || String(pPid) !== String(tid)) {
+            return res.status(403).json({ ok: false, message: 'Нет доступа к товару' });
+          }
+        }
+        const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
+        if (pt === 'kit') {
+          return res.status(400).json({
+            ok: false,
+            message: 'Для комплектов наличие задаётся через комплектующие, не вручную'
+          });
+        }
+      }
+
       const result = await stockMovementsService.applyChange(id, {
         delta: Number(delta),
-        type,
+        type: typeNorm,
         reason: reason || null,
         meta: meta || null
       });

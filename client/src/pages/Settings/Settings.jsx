@@ -30,6 +30,7 @@ export function Settings() {
     contact_phone: '',
     allow_private_orders: false,
     require_reserved_stock_for_assembly: false,
+    allow_manual_warehouse_stock_edit: false,
   });
 
   const loadAccount = useCallback(async () => {
@@ -46,6 +47,7 @@ export function Settings() {
           contact_phone: p.contact_phone ?? '',
           allow_private_orders: p.allow_private_orders === true,
           require_reserved_stock_for_assembly: p.require_reserved_stock_for_assembly === true,
+          allow_manual_warehouse_stock_edit: p.allow_manual_warehouse_stock_edit === true,
         });
       }
     } catch (err) {
@@ -74,6 +76,7 @@ export function Settings() {
         contact_phone: form.contact_phone.trim() || null,
         allow_private_orders: form.allow_private_orders,
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
+        allow_manual_warehouse_stock_edit: form.allow_manual_warehouse_stock_edit,
       });
       await refreshUser();
       alert('Сохранено');
@@ -294,6 +297,22 @@ export function Settings() {
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
                     Разрешить создание заказов вручную и фильтр «Ручной» в списке заказов. При выключении частные заказы
                     не отображаются в списке.
+                  </span>
+                </span>
+              </label>
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.allow_manual_warehouse_stock_edit === true}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, allow_manual_warehouse_stock_edit: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Ручное изменение наличия на складе</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    В списке остатков можно вручную задать количество «Наличие» и сохранить галочкой. При выключении
+                    остаток меняется только приёмкой, списанием, отгрузкой, инвентаризацией и другими документами.
                   </span>
                 </span>
               </label>
