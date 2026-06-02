@@ -63,6 +63,9 @@ async function applyIncomingDeltasAfterCommit(deltas) {
      WHERE p.id = v.product_id`,
     [batchIds, batchQtys]
   );
+  scheduleProcurementReserveReapply(batchIds, {
+    label: 'background reserve after incoming batch update',
+  });
 }
 
 // Anti-duplicate scans (in-memory): receiptId|barcode -> ts.
@@ -1433,6 +1436,11 @@ class PurchasesService {
     });
     if (lightIncoming && incomingDeltas?.size) {
       await applyIncomingDeltasAfterCommit(incomingDeltas);
+    } else {
+      scheduleProcurementReserveReapply(
+        normalized.map((it) => it.productId),
+        { label: 'background reserve after purchase create' }
+      );
     }
     return result;
   }
@@ -1494,6 +1502,11 @@ class PurchasesService {
     });
     if (lightIncoming && incomingDeltas?.size) {
       await applyIncomingDeltasAfterCommit(incomingDeltas);
+    } else {
+      scheduleProcurementReserveReapply(
+        normalized.map((it) => it.productId),
+        { label: 'background reserve after purchase append items' }
+      );
     }
     return result;
   }
