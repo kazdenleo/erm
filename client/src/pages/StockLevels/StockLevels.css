@@ -142,20 +142,37 @@
   border-radius: 4px;
 }
 
-.stock-manual-onhand-save {
+.stock-manual-onhand-save-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
   margin: 0;
-  font-size: 0.8rem;
-  font-weight: 500;
+  padding: 0;
+  border: 1px solid var(--primary, #0d6efd);
+  border-radius: 4px;
+  background: var(--primary, #0d6efd);
+  color: #fff;
   cursor: pointer;
-  user-select: none;
+  flex-shrink: 0;
 }
 
-.stock-manual-onhand-save input {
-  margin: 0;
-  cursor: pointer;
+.stock-manual-onhand-save-btn:hover:not(:disabled) {
+  background: var(--primary-hover, #0b5ed7);
+  border-color: var(--primary-hover, #0b5ed7);
+}
+
+.stock-manual-onhand-save-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--border, #dee2e6);
+  border-color: var(--border, #dee2e6);
+  color: var(--muted, #6c757d);
+}
+
+.stock-manual-onhand-save-icon {
+  display: block;
 }
 
 .stock-manual-onhand-error {

@@ -806,14 +806,12 @@ function ManualOnHandCell({ productId, currentOnHand, warehouseId, disabledReaso
   const parsed = Math.max(0, parseInt(String(value).trim(), 10) || 0);
   const unchanged = parsed === (Number(currentOnHand) || 0);
 
-  const handleSaveCheck = async (e) => {
-    if (!e.target.checked) return;
-    e.target.checked = false;
+  const handleSave = async () => {
     if (disabledReason) {
       setError(disabledReason);
       return;
     }
-    if (unchanged) return;
+    if (unchanged || saving) return;
     setSaving(true);
     setError(null);
     try {
@@ -853,15 +851,31 @@ function ManualOnHandCell({ productId, currentOnHand, warehouseId, disabledReaso
         title="Новое количество на выбранном складе"
         onClick={(ev) => ev.stopPropagation()}
       />
-      <label className="stock-manual-onhand-save" title="Сохранить новое наличие">
-        <input
-          type="checkbox"
-          disabled={saving || unchanged}
-          onChange={handleSaveCheck}
-          onClick={(ev) => ev.stopPropagation()}
-        />
-        <span>Сохр.</span>
-      </label>
+      <button
+        type="button"
+        className="stock-manual-onhand-save-btn"
+        disabled={saving || unchanged}
+        title="Сохранить новое наличие"
+        aria-label="Сохранить наличие"
+        onClick={(ev) => {
+          ev.stopPropagation();
+          void handleSave();
+        }}
+      >
+        <svg
+          className="stock-manual-onhand-save-icon"
+          width="16"
+          height="16"
+          viewBox="0 0 16 16"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            fill="currentColor"
+            d="M13.485 3.515a1 1 0 0 1 0 1.414l-7.07 7.071a1 1 0 0 1-1.415 0L2.515 8.515a1 1 0 1 1 1.414-1.414L5.5 8.672l6.364-6.364a1 1 0 0 1 1.414 0z"
+          />
+        </svg>
+      </button>
       {error ? (
         <span className="stock-manual-onhand-error" title={error} aria-label={error}>
           !
@@ -1900,7 +1914,7 @@ export function WarehouseStocks() {
                     className="stock-levels-row-clickable"
                     onClick={onNavigationClick(() => setHistoryProduct(row.product), {
                       ignoreClosest:
-                        'input, textarea, select, label, .supplier-stock-cell, .stock-levels-reserved-btn, .stock-manual-onhand-edit, [data-no-nav-click]',
+                        'input, textarea, select, label, button, .supplier-stock-cell, .stock-levels-reserved-btn, .stock-manual-onhand-edit, [data-no-nav-click]',
                     })}
                     role="button"
                     tabIndex={0}
@@ -1984,7 +1998,7 @@ export function WarehouseStocks() {
             {allowManualStockEdit ? (
               <>
                 {' '}
-                В колонке «Наличие» можно задать количество и отметить «Сохр.» (нужен выбранный склад в фильтре).
+                В колонке «Наличие» можно задать количество и нажать кнопку с галочкой (нужен выбранный склад в фильтре).
               </>
             ) : null}
           </p>
