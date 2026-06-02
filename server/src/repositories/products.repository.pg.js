@@ -161,6 +161,44 @@ async function applyMarketplaceSkusPatch(client, productId, mus, { ozonProductId
   }
 }
 
+function parseWbDraftColumn(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(String(raw));
+  } catch {
+    return null;
+  }
+}
+
+/** nmId WB хранится в wb_draft; product_skus.wb — vendorCode (артикул продавца). */
+function applyWbListingFields(product) {
+  if (!product) return;
+  const draft = parseWbDraftColumn(product.wb_draft);
+  const nmFromDraft = draft?.nmId ?? draft?.nmID ?? draft?.nm_id ?? null;
+  const wbSkuRow = product.sku_wb != null ? String(product.sku_wb).trim() : '';
+
+  if (nmFromDraft != null && String(nmFromDraft).trim() !== '') {
+    product.sku_wb = String(nmFromDraft).trim();
+    return;
+  }
+
+  if (!wbSkuRow) {
+    product.sku_wb = null;
+    return;
+  }
+
+  if (/^\d+$/.test(wbSkuRow)) {
+    product.sku_wb = wbSkuRow;
+    return;
+  }
+
+  if (!product.mp_wb_vendor_code || String(product.mp_wb_vendor_code).trim() === '') {
+    product.mp_wb_vendor_code = wbSkuRow;
+  }
+  product.sku_wb = null;
+}
+
 /** Значение фильтра «без ERP-категории» с фронта; в SQL только IS NULL, не подставляем в bigint. */
 const FILTER_CATEGORY_NONE = '__no_category__';
 
@@ -1242,6 +1280,7 @@ class ProductsRepositoryPG {
       } else if (row.marketplace === 'wb') product.sku_wb = row.sku;
       else if (row.marketplace === 'ym') product.sku_ym = row.sku;
     });
+    applyWbListingFields(product);
     await this._reconcileReservedQuantityFromMovements([product]);
     const { isKitCatalogProduct, attachKitDisplayMetrics, buildKitListStockContext } =
       await import('../services/kitStock.service.js');

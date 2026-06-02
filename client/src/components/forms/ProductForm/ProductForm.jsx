@@ -1822,19 +1822,22 @@ export function ProductForm({
     }
   };
 
+  const mergeMpField = (prev, updated, key) =>
+    Object.prototype.hasOwnProperty.call(updated, key) ? (updated[key] ?? '') : prev[key];
+
   const handleMarketplaceLinked = (updatedProduct) => {
     if (!updatedProduct) return;
     setCurrentProduct(updatedProduct);
     setFormData((prev) => ({
       ...prev,
-      sku_ozon: updatedProduct.sku_ozon ?? prev.sku_ozon,
+      sku_ozon: mergeMpField(prev, updatedProduct, 'sku_ozon'),
       ozon_product_id:
         updatedProduct.ozon_product_id != null && updatedProduct.ozon_product_id !== ''
           ? String(updatedProduct.ozon_product_id)
-          : prev.ozon_product_id,
-      sku_wb: updatedProduct.sku_wb ?? prev.sku_wb,
-      mp_wb_vendor_code: updatedProduct.mp_wb_vendor_code ?? prev.mp_wb_vendor_code,
-      sku_ym: updatedProduct.sku_ym ?? prev.sku_ym,
+          : mergeMpField(prev, updatedProduct, 'ozon_product_id'),
+      sku_wb: mergeMpField(prev, updatedProduct, 'sku_wb'),
+      mp_wb_vendor_code: mergeMpField(prev, updatedProduct, 'mp_wb_vendor_code'),
+      sku_ym: mergeMpField(prev, updatedProduct, 'sku_ym'),
     }));
     onProductUpdate?.(updatedProduct);
   };

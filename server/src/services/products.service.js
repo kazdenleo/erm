@@ -38,6 +38,32 @@ import { barcodeStringsFromProduct, normalizeBarcodeRows } from '../utils/produc
 
 const MAX_EXPORT_PRODUCTS = 25000;
 
+function parseWbDraftColumn(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(String(raw));
+  } catch {
+    return null;
+  }
+}
+
+function patchWbNmIdDraft(existingDraft, nmId) {
+  const draft = existingDraft && typeof existingDraft === 'object' ? { ...existingDraft } : {};
+  const nm = nmId != null && String(nmId).trim() !== '' && /^\d+$/.test(String(nmId).trim())
+    ? String(nmId).trim()
+    : null;
+  if (nm) {
+    draft.nmId = nm;
+    draft.nmID = nm;
+  } else {
+    delete draft.nmId;
+    delete draft.nmID;
+    delete draft.nm_id;
+  }
+  return Object.keys(draft).length > 0 ? draft : null;
+}
+
 /** camelCase с фронта → snake_case для PostgreSQL */
 function normalizeMarketplaceCardTextFields(obj) {
   if (!obj || typeof obj !== 'object') return;
@@ -1115,11 +1141,22 @@ class ProductsService {
       if (Object.prototype.hasOwnProperty.call(updates, 'sku_ozon')) {
         updates.marketplace_skus.ozon = toStr(updates.sku_ozon);
       }
-      if (Object.prototype.hasOwnProperty.call(updates, 'sku_wb')) {
-        updates.marketplace_skus.wb = toStr(updates.sku_wb);
-      }
       if (Object.prototype.hasOwnProperty.call(updates, 'sku_ym')) {
         updates.marketplace_skus.ym = toStr(updates.sku_ym);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'sku_wb')) {
+        const nmRaw = toStr(updates.sku_wb);
+        const vendorExplicit = Object.prototype.hasOwnProperty.call(updates, 'mp_wb_vendor_code');
+        const vendor = vendorExplicit ? toStr(updates.mp_wb_vendor_code) : undefined;
+        let existing = null;
+        if (!vendorExplicit || nmRaw == null) {
+          existing = await this.getById(id);
+        }
+        const vendorForSkus =
+          vendor !== undefined ? vendor : toStr(existing?.mp_wb_vendor_code);
+        updates.marketplace_skus.wb = vendorForSkus;
+        updates.wb_draft = patchWbNmIdDraft(parseWbDraftColumn(existing?.wb_draft), nmRaw);
+        updates.sku_wb = nmRaw;
       }
       if (updates.marketplace_skus.ozon) {
         const explicit = updates.marketplace_ozon_product_id;
@@ -1400,8 +1437,11 @@ class ProductsService {
       updates.sku_ozon = resolved.sku_ozon;
       updates.marketplace_ozon_product_id = resolved.marketplace_ozon_product_id;
     } else if (resolved.marketplace === 'wb') {
+      const vendor = resolved.mp_wb_vendor_code ? String(resolved.mp_wb_vendor_code).trim() : null;
+      updates.mp_wb_vendor_code = vendor;
       updates.sku_wb = resolved.sku_wb;
-      if (resolved.mp_wb_vendor_code) updates.mp_wb_vendor_code = resolved.mp_wb_vendor_code;
+      updates.marketplace_skus = { wb: vendor };
+      updates.wb_draft = patchWbNmIdDraft(parseWbDraftColumn(product.wb_draft), resolved.sku_wb);
     } else if (resolved.marketplace === 'ym') {
       updates.sku_ym = resolved.sku_ym;
     }
