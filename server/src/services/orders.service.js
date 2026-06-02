@@ -1510,6 +1510,39 @@ class OrdersService {
    * reserveLines — разбивка для подсказки «артикул: зарезервировано/нужно».
    */
   /**
+   * needQty для списка заказов: комплект по SKU заказа, если product_id не указывает на kit_components.
+   */
+  async _resolveOrderReserveNeedQtyForLight(orderRow, kitPiecesMap, componentKitMap) {
+    const qty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
+    const pid = Number(orderRow.productId ?? orderRow.product_id);
+
+    const piecesFromMaps = () => {
+      if (!Number.isFinite(pid) || pid < 1) return 0;
+      let pieces = kitPiecesMap.get(pid) || 0;
+      if (pieces < 1 && componentKitMap.has(pid)) {
+        pieces = kitPiecesMap.get(componentKitMap.get(pid)) || 0;
+      }
+      return pieces;
+    };
+
+    let piecesPerKit = piecesFromMaps();
+    if (piecesPerKit < 1) {
+      const kitId = await findKitProductIdForMarketplaceOrder(
+        Number.isFinite(pid) && pid > 0 ? pid : 0,
+        orderRow
+      );
+      if (kitId) {
+        if (!kitPiecesMap.has(kitId)) {
+          const extra = await batchPiecesPerKitUnitMap([kitId]);
+          for (const [kid, pieces] of extra) kitPiecesMap.set(kid, pieces);
+        }
+        piecesPerKit = kitPiecesMap.get(kitId) || 0;
+      }
+    }
+    return piecesPerKit > 0 ? qty * piecesPerKit : qty;
+  }
+
+  /**
    * @param {{ light?: boolean }} enrichOpts — light=true: только reserved_qty из SQL (список заказов, без N+1).
    */
   async enrichOrdersReserveMetrics(orders, enrichOpts = {}) {
@@ -1548,7 +1581,10 @@ class OrdersService {
       };
       for (const o of orders) {
         const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
-        const need = orderReserveNeedQty(o);
+        let need = orderReserveNeedQty(o);
+        if (reserved > need) {
+          need = await this._resolveOrderReserveNeedQtyForLight(o, kitPiecesMap, componentKitMap);
+        }
         o.reservedQty = reserved;
         o.reserved_qty = reserved;
         o.needQty = need;

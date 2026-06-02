@@ -38,6 +38,7 @@ import {
 import {
   groupReserveCoverageKind,
   reserveBadgeClassName,
+  orderReserveBadgeCounts,
   formatOrderReserveBadgeTitle
 } from '../../utils/orderReserveBadge.js';
 import {
@@ -76,10 +77,11 @@ function OrderQuantityWithReserve({
   groupOrders,
   isGroup,
 }) {
-  const q = Number(qty);
-  const displayQty = Number.isFinite(q) && q > 0 ? q : 1;
-  const r = Number(reservedQty) || 0;
-  const n = Number(needQty) || displayQty;
+  const { reserved: r, need: n, displayQty } = orderReserveBadgeCounts({
+    qty,
+    reservedQty,
+    needQty,
+  });
   if (r <= 0) {
     return <span className="orders-qty-value">{displayQty}</span>;
   }
