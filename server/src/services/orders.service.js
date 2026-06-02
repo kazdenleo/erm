@@ -110,6 +110,72 @@ async function buildReserveCoverageFifoMap(productIds) {
   return map;
 }
 
+/**
+ * Покрытие резерва по заказам: все product_id в движениях (в т.ч. комплектующие комплекта).
+ * @returns {Map<number, 'on_hand'|'incoming'>}
+ */
+async function buildReserveCoverageByOrderIds(orderDbIds) {
+  const ids = [...new Set((orderDbIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const map = new Map();
+  if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
+
+  const r = await query(
+    `SELECT (sm.meta->>'order_id')::bigint AS order_db_id,
+            sm.product_id,
+            GREATEST(0, COALESCE(SUM(
+              CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change
+                   WHEN sm.type = 'unreserve' THEN sm.quantity_change
+                   ELSE 0 END
+            ), 0))::int AS reserved_qty
+     FROM stock_movements sm
+     WHERE sm.type IN ('reserve', 'unreserve')
+       AND sm.meta ? 'order_id'
+       AND (sm.meta->>'order_id') ~ '^[0-9]+$'
+       AND (sm.meta->>'order_id')::bigint = ANY($1::bigint[])
+     GROUP BY order_db_id, sm.product_id
+     HAVING GREATEST(0, COALESCE(SUM(
+       CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change
+            WHEN sm.type = 'unreserve' THEN sm.quantity_change
+            ELSE 0 END
+     ), 0)) > 0`,
+    [ids]
+  );
+
+  const movementPids = [];
+  const byOrder = new Map();
+  for (const row of r.rows || []) {
+    const oid = Number(row.order_db_id);
+    const pid = Number(row.product_id);
+    const reserved = Number(row.reserved_qty) || 0;
+    if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1 || reserved <= 0) continue;
+    movementPids.push(pid);
+    if (!byOrder.has(oid)) byOrder.set(oid, []);
+    byOrder.get(oid).push({ pid, reserved });
+  }
+  if (!byOrder.size) return map;
+
+  const supplyMap = await batchProductReserveSupplyMap(movementPids);
+  const fifoMap = await buildReserveCoverageFifoMap(movementPids);
+
+  for (const [oid, lines] of byOrder) {
+    let anyIncoming = false;
+    let anyOnHand = false;
+    for (const { pid, reserved } of lines) {
+      const fifoKey = `${oid}:${pid}`;
+      const kind = fifoMap.has(fifoKey)
+        ? fifoMap.get(fifoKey)
+        : (() => {
+            const sup = supplyMap.get(pid);
+            return sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
+          })();
+      if (kind === 'on_hand') anyOnHand = true;
+      if (kind === 'incoming') anyIncoming = true;
+    }
+    map.set(oid, anyIncoming ? 'incoming' : anyOnHand ? 'on_hand' : 'incoming');
+  }
+  return map;
+}
+
 async function batchProductReserveSupplyMap(productIds) {
   const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
   const map = new Map();
@@ -1579,6 +1645,13 @@ class OrdersService {
         }
         return piecesPerKit > 0 ? qty * piecesPerKit : qty;
       };
+      const orderIdsWithReserve = orders
+        .map((row) => {
+          const reserved = Number(row.reservedQty ?? row.reserved_qty) || 0;
+          return reserved > 0 ? orderRowDbId(row) : null;
+        })
+        .filter(Boolean);
+      const coverageByOrderId = await buildReserveCoverageByOrderIds(orderIdsWithReserve);
       for (const o of orders) {
         const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
         let need = orderReserveNeedQty(o);
@@ -1591,7 +1664,13 @@ class OrdersService {
         o.need_qty = need;
         o.hasReserve = o.hasReserve === true || o.has_reserve === true || reserved > 0;
         o.fullyReserved = need > 0 && reserved >= need;
-        applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
+        const oid = orderRowDbId(o);
+        if (oid && coverageByOrderId.has(oid)) {
+          o.reserveCoverage = coverageByOrderId.get(oid);
+          o.reserve_coverage = o.reserveCoverage;
+        } else {
+          applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
+        }
       }
       return orders;
     }

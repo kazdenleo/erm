@@ -2794,6 +2794,11 @@ export function Orders() {
                 const reserveCoverageKind = isGroup
                   ? groupReserveCoverageKind(groupOrders)
                   : groupReserveCoverageKind([first]);
+                const orderFullyReserved = needQty > 0 && reservedQty >= needQty;
+                const reserveActionVariant =
+                  showReserveCell && reserveCoverageKind === 'on_hand' && orderFullyReserved
+                    ? 'success'
+                    : 'secondary';
                 const stickerDisplay = (() => {
                   if (isGroup) {
                     const asmLines = groupOrders.filter((o) => isAssemblyLikeStatus(o.status));
@@ -2956,16 +2961,20 @@ export function Orders() {
                     <div className="orders-actions">
                       {showReserveCell && reservedQty > 0 && (
                         <Button
-                          variant="secondary"
+                          variant={reserveActionVariant}
                           size="small"
-                          className="orders-action-icon"
+                          className="orders-action-icon orders-action-icon--reserve"
                           onClick={() => handleReleaseReserve(first.marketplace, first.orderId, row.key)}
                           disabled={
                             releaseReserveLoadingKey === row.key ||
                             procurementLoadingKey === row.key ||
                             cancelOrderLoadingKey === row.key
                           }
-                          title="Снять весь резерв по заказу"
+                          title={
+                            reserveCoverageKind === 'on_hand' && orderFullyReserved
+                              ? 'Резерв со склада (полностью). Снять резерв'
+                              : 'Снять весь резерв по заказу'
+                          }
                           aria-label="Снять резерв"
                         >
                           {releaseReserveLoadingKey === row.key ? (
