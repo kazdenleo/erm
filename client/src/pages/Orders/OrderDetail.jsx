@@ -24,33 +24,76 @@ function orderReserveLineKey(line) {
 function lineReserveDisplayUnits(line) {
   const perKit = Math.max(1, Number(line.perKitQty ?? line.per_kit_qty) || 1);
   if (line.lineKind === 'component' && perKit > 1) {
-    const reserved = Math.max(0, Number(line.reservedQty) || 0);
+    const reservedPieces = Math.max(0, Number(line.reservedQty) || 0);
+    const needPieces = Math.max(0, Number(line.needQty) || 0);
     const need =
       line.needKitUnits != null
         ? Math.max(0, Number(line.needKitUnits) || 0)
-        : Math.max(0, Math.floor((Number(line.needQty) || 0) / perKit));
+        : Math.max(0, Math.ceil(needPieces / perKit));
     return {
-      reserved: Math.floor(reserved / perKit),
+      perKit,
+      reserveInKitUnits: true,
+      reserved: Math.floor(reservedPieces / perKit),
       need,
-      pieceHint: `${reserved} шт`,
+      reservedPieces,
+      needPieces,
+      pieceHint: `${reservedPieces} шт`,
     };
   }
   return {
+    perKit: 1,
+    reserveInKitUnits: false,
     reserved: Math.max(0, Number(line.reservedQty) || 0),
     need: Math.max(0, Number(line.needQty) || 0),
+    reservedPieces: Math.max(0, Number(line.reservedQty) || 0),
+    needPieces: Math.max(0, Number(line.needQty) || 0),
     pieceHint: null,
   };
 }
 
 function lineReserveBounds(line) {
-  const { reserved, need } = lineReserveDisplayUnits(line);
+  const units = lineReserveDisplayUnits(line);
+  const { reserved, need, reserveInKitUnits, perKit } = units;
   const remaining = Math.max(0, need - reserved);
-  const available =
+  const availablePieces =
     line.availableQty != null && !Number.isNaN(Number(line.availableQty))
       ? Math.max(0, Number(line.availableQty))
-      : remaining;
+      : reserveInKitUnits
+        ? remaining * perKit
+        : remaining;
+  const available = reserveInKitUnits
+    ? Math.floor(availablePieces / perKit)
+    : availablePieces;
   const maxReserve = Math.min(remaining, available);
-  return { reserved, need, remaining, available, maxReserve };
+  return {
+    ...units,
+    remaining,
+    available,
+    availablePieces,
+    maxReserve,
+  };
+}
+
+function lineReserveUnreserveMax(line) {
+  const b = lineReserveBounds(line);
+  if (b.reserveInKitUnits) {
+    const pieces = Math.max(0, Number(b.reservedPieces) || 0);
+    if (pieces <= 0) return 0;
+    return Math.max(1, Math.ceil(pieces / b.perKit));
+  }
+  return Math.max(0, b.reserved);
+}
+
+/** Количество для API: резерв хранится по штукам комплектующей. */
+function lineReserveApiQuantity(line, uiQty, { unreserve = false } = {}) {
+  const q = Math.max(1, parseInt(uiQty, 10) || 1);
+  const { reserveInKitUnits, perKit, reservedPieces } = lineReserveBounds(line);
+  if (!reserveInKitUnits) return q;
+  if (unreserve) {
+    const capPieces = Math.max(0, Number(reservedPieces) || 0);
+    return Math.min(q * perKit, capPieces);
+  }
+  return q * perKit;
 }
 
 function clampLineQty(raw, min, max) {
@@ -132,8 +175,8 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
       const key = orderReserveLineKey(line);
       const { reserved, maxReserve } = lineReserveBounds(line);
       const prev = lineQty[key];
-      if (reserved > 0) {
-        const max = reserved;
+      if (reserved > 0 || (line.lineKind === 'component' && (Number(line.reservedQty) || 0) > 0)) {
+        const max = lineReserveUnreserveMax(line);
         next[key] = prev != null ? clampLineQty(prev, 1, max) : 1;
       } else if (maxReserve > 0) {
         const max = maxReserve;
@@ -170,15 +213,16 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
     const pid = line?.productId;
     if (!marketplace || !orderId || !pid || lineLoadingKey) return;
     const key = orderReserveLineKey(line);
-    const { reserved, maxReserve } = lineReserveBounds(line);
+    const { maxReserve } = lineReserveBounds(line);
     const act = String(action || '').toLowerCase();
     const isUnreserve = act === 'unreserve';
-    const max = isUnreserve ? reserved : maxReserve;
+    const max = isUnreserve ? lineReserveUnreserveMax(line) : maxReserve;
     if (max <= 0) return;
     const qty =
       qtyOverride != null
         ? clampLineQty(qtyOverride, 1, max)
         : clampLineQty(lineQty[key], 1, max);
+    const apiQty = lineReserveApiQuantity(line, qty, { unreserve: isUnreserve });
 
     setLineLoadingKey(key);
     setError(null);
@@ -187,7 +231,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
       const result = await ordersApi.setOrderReserve(marketplace, orderId, {
         action: isUnreserve ? 'unreserve' : 'reserve',
         productId: pid,
-        quantity: qty
+        quantity: apiQty
       });
       applyResult(result);
     } catch (e) {
@@ -256,9 +300,19 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             const pid = line.productId;
             const canReserve = pid != null && Number(pid) > 0;
             const key = orderReserveLineKey(line);
-            const { reserved: r, need: n, remaining, available, maxReserve } = lineReserveBounds(line);
+            const {
+              reserved: r,
+              need: n,
+              remaining,
+              available,
+              availablePieces,
+              maxReserve,
+              reserveInKitUnits,
+              perKit,
+            } = lineReserveBounds(line);
             const pieceHint = lineReserveDisplayUnits(line).pieceHint;
-            const lineHas = r > 0;
+            const lineHas =
+              r > 0 || (reserveInKitUnits && (lineReserveDisplayUnits(line).reservedPieces || 0) > 0);
             const lineCoverage =
               line.reserveCoverage ?? line.reserve_coverage ?? (lineHas ? 'incoming' : 'none');
             const maxQty = lineHas ? r : maxReserve;
@@ -297,7 +351,11 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                   {!lineHas && remaining > 0 ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                       {' '}
-                      (доступно к резерву: {available})
+                      (доступно к резерву:{' '}
+                      {reserveInKitUnits
+                        ? `${available} компл.${availablePieces > 0 ? ` / ${availablePieces} шт` : ''}`
+                        : available}
+                      )
                     </span>
                   ) : null}
                   {!canReserve ? (
@@ -321,7 +379,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                         }))
                       }
                     />
-                    <span className="order-reserve-line__qty-suffix">шт.</span>
+                    <span className="order-reserve-line__qty-suffix">
+                      {reserveInKitUnits ? 'компл.' : 'шт.'}
+                    </span>
                   </label>
                   <Button
                     variant={lineHas ? 'secondary' : 'primary'}
