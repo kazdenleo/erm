@@ -255,7 +255,7 @@ class IntegrationsController {
         if (cardVc && cardVc !== vc.toLowerCase()) {
           return res.status(404).json({
             ok: false,
-            error: `Карточка nmId ${resolvedNmId} в кабинете WB имеет vendorCode «${data.vendorCode ?? data.vendor_code}», ожидался «${vc}».`
+            error: `Товар с vendorCode «${vc}» не найден в кабинете Wildberries (поиск вернул чужую карточку nmId ${resolvedNmId}).`
           });
         }
       }

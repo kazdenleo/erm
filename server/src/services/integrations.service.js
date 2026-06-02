@@ -1640,14 +1640,35 @@ class IntegrationsService {
     const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
     if (!Array.isArray(cards) || cards.length === 0) return null;
     const norm = (s) => String(s || '').trim().toLowerCase();
-    const exact = cards.find((c) => norm(c?.vendorCode ?? c?.vendor_code) === norm(vc));
-    if (!exact) return null;
-    const nm = exact.nmID ?? exact.nmId ?? null;
-    if (nm == null) return null;
-    return {
-      nmId: Number(nm),
-      vendorCode: String(exact.vendorCode ?? exact.vendor_code ?? vc).trim()
-    };
+    const want = norm(vc);
+    const candidates = cards.filter((c) => norm(c?.vendorCode ?? c?.vendor_code) === want);
+    if (candidates.length === 0) return null;
+
+    // textSearch иногда отдаёт неверный vendorCode в кратком ответе — проверяем карточку по nmId.
+    for (const hit of candidates.slice(0, 15)) {
+      const nm = hit.nmID ?? hit.nmId ?? null;
+      if (nm == null) continue;
+      let full = null;
+      try {
+        full = await this.getWildberriesProductInfo({
+          nm_id: nm,
+          profileId: opts.profileId ?? opts.profile_id ?? null,
+          organizationId: opts.organizationId ?? opts.organization_id ?? null,
+          wbOverride: opts.wbOverride
+        });
+      } catch {
+        full = null;
+      }
+      if (!full) continue;
+      const fullVc = norm(full.vendorCode ?? full.vendor_code);
+      if (fullVc === want) {
+        return {
+          nmId: Number(nm),
+          vendorCode: String(full.vendorCode ?? full.vendor_code ?? vc).trim()
+        };
+      }
+    }
+    return null;
   }
 
   /**
