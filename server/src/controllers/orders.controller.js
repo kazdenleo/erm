@@ -603,7 +603,7 @@ class OrdersController {
   }
 
   /**
-   * Перевести заказ в статус «В закупке». Только для заказов в статусе «Новый».
+   * Перевести заказ в статус «В закупке» («Новый», «На сборке»; у WB — также pending/unknown).
    * PUT /orders/:marketplace/:orderId/to-procurement
    */
   async setToProcurement(req, res, next) {
@@ -624,7 +624,7 @@ class OrdersController {
         return res.status(400).json({
           ok: false,
           message:
-            'В статус «В закупке» можно перевести заказ в статусе «Новый» (для Wildberries также — пока статус заказа ещё не получен из API).',
+            'В статус «В закупке» можно перевести заказ в статусе «Новый» или «На сборке» (для Wildberries также — пока статус заказа ещё не получен из API).',
           currentStatus: order.status ?? null
         });
       }

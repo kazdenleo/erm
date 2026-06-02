@@ -192,11 +192,11 @@ function marketplaceFromOrdersDb(dbMarketplace) {
   return m === 'ozon' ? 'ozon' : m;
 }
 
-/** Перевод в «В закупке»: не только strict `new` — у WB допускаем pending/unknown до резолва статуса. */
+/** Перевод в «В закупке»: «Новый», «На сборке»; у WB также pending/unknown до резолва статуса. */
 export function orderEligibleForProcurement(order) {
   if (!order) return false;
   const sNorm = String(order.status ?? '').trim().toLowerCase();
-  if (sNorm === 'new') return true;
+  if (sNorm === 'new' || sNorm === 'in_assembly' || sNorm === 'wb_assembly') return true;
   const sRaw = String(order.status ?? '').trim();
   const mp = String(order.marketplace ?? '').toLowerCase();
   if (mp === 'wildberries' || mp === 'wb') {
@@ -2235,7 +2235,7 @@ class OrdersService {
   }
 
   /**
-   * Перевести заказ в статус «В закупке» (in_procurement). Разрешено только для заказов в статусе «Новый».
+   * Перевести заказ в статус «В закупке» (in_procurement). Из «Новый» или «На сборке».
    * Если у заказа есть orderGroupId — обновляются все заказы группы.
    */
   _scheduleReapplyReserveAfterProcurement({ orderGroupId, marketplace, orderId, profileId }) {
@@ -2310,7 +2310,7 @@ class OrdersService {
    */
   async _bulkSetToProcurementPg(items, profileId = null, { skipReserveReapply = false } = {}) {
     const eligibleStatusSql = `(
-      o.status = 'new'
+      o.status IN ('new', 'in_assembly', 'wb_assembly')
       OR (
         o.marketplace = 'wb'
         AND (

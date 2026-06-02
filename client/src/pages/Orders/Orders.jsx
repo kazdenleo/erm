@@ -15,6 +15,8 @@ import { purchasesApi } from '../../services/purchases.api';
 import { suppliersApi } from '../../services/suppliers.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
+import { formatProductOptionLabel } from '../../utils/productSearch';
 import {
   getOrderStatusLabel,
   isOrderStatusEligibleForProcurement,
@@ -64,6 +66,40 @@ function buildOrdersSyncDoneMessage(lastStatus, { forceImport = false } = {}) {
 function orderKey(o) {
   const mp = normalizeMarketplaceForUI(o.marketplace);
   return `${mp}|${o.orderId ?? ''}`;
+}
+
+function OrderQuantityWithReserve({
+  qty,
+  reservedQty,
+  needQty,
+  coverageKind,
+  groupOrders,
+  isGroup,
+}) {
+  const q = Number(qty);
+  const displayQty = Number.isFinite(q) && q > 0 ? q : 1;
+  const r = Number(reservedQty) || 0;
+  const n = Number(needQty) || displayQty;
+  if (r <= 0) {
+    return <span className="orders-qty-value">{displayQty}</span>;
+  }
+  return (
+    <span className="orders-qty-with-reserve">
+      <span className="orders-qty-value">{displayQty}</span>
+      <span
+        className={reserveBadgeClassName(coverageKind)}
+        title={formatOrderReserveBadgeTitle({
+          reservedQty: r,
+          needQty: n,
+          orders: groupOrders,
+          isGroup,
+          coverageKind,
+        })}
+      >
+        {r}/{n}
+      </span>
+    </span>
+  );
 }
 
 /** Сообщение «на сборку», если поставка WB заведена только в ERM без ключа API */
@@ -429,7 +465,9 @@ export function Orders() {
   const [addOrderOpen, setAddOrderOpen] = useState(false);
   const [addOrderCustomerName, setAddOrderCustomerName] = useState('');
   const [addOrderCustomerPhone, setAddOrderCustomerPhone] = useState('');
-  const [addOrderItems, setAddOrderItems] = useState([{ productId: '', quantity: 1, price: '' }]);
+  const [addOrderItems, setAddOrderItems] = useState([
+    { productId: '', productLabel: '', searchText: '', quantity: 1, price: '' },
+  ]);
   const [addOrderLoading, setAddOrderLoading] = useState(false);
   const [addOrderError, setAddOrderError] = useState(null);
   const [productsList, setProductsList] = useState([]);
@@ -610,13 +648,15 @@ export function Orders() {
   }, [allowPrivateOrders]);
 
   useEffect(() => {
-    if (addOrderOpen && productsList.length === 0) {
-      productsApi.getAll({ limit: 500 }).then((data) => {
+    if (!addOrderOpen) return;
+    productsApi
+      .getAll({ limit: 400, listView: 'full' })
+      .then((data) => {
         const list = Array.isArray(data) ? data : data?.data ?? data?.products ?? [];
-        setProductsList(list);
-      }).catch(() => setProductsList([]));
-    }
-  }, [addOrderOpen, productsList.length]);
+        setProductsList(list.filter((p) => p?.id != null));
+      })
+      .catch(() => setProductsList([]));
+  }, [addOrderOpen]);
 
   const buildOrdersListParams = useCallback(
     (page = currentPage) => {
@@ -1238,12 +1278,15 @@ export function Orders() {
     setAddOrderError(null);
     setAddOrderCustomerName('');
     setAddOrderCustomerPhone('');
-    setAddOrderItems([{ productId: '', quantity: 1, price: '' }]);
+    setAddOrderItems([{ productId: '', productLabel: '', searchText: '', quantity: 1, price: '' }]);
     setAddOrderOpen(true);
   };
 
   const addOrderAddRow = () => {
-    setAddOrderItems((prev) => [...prev, { productId: '', quantity: 1, price: '' }]);
+    setAddOrderItems((prev) => [
+      ...prev,
+      { productId: '', productLabel: '', searchText: '', quantity: 1, price: '' },
+    ]);
   };
 
   const addOrderRemoveRow = (index) => {
@@ -1259,21 +1302,37 @@ export function Orders() {
     );
   };
 
-  const addOrderProductChange = (index, rawProductId) => {
-    const productId = rawProductId === '' || rawProductId == null ? '' : Number(rawProductId);
+  const addOrderSelectProduct = (index, product) => {
+    if (!product?.id) return;
+    const productId = Number(product.id);
+    if (!Number.isFinite(productId) || productId < 1) return;
+    setProductsList((prev) => {
+      if (prev.some((x) => Number(x.id) === productId)) return prev;
+      return [...prev, product];
+    });
     setAddOrderItems((prev) =>
       prev.map((row, i) => {
         if (i !== index) return row;
-        const next = { ...row, productId: productId === '' ? '' : productId };
-        if (productId !== '' && Number.isFinite(productId)) {
-          const p = productsList.find((x) => Number(x.id) === Number(productId));
-          if (p) {
-            const def = defaultPriceFromProduct(p);
-            if (def !== '') next.price = def;
-          }
-        }
+        const next = {
+          ...row,
+          productId,
+          productLabel: formatProductOptionLabel(product),
+          searchText: '',
+        };
+        const def = defaultPriceFromProduct(product);
+        if (def !== '') next.price = def;
         return next;
       })
+    );
+  };
+
+  const addOrderClearProduct = (index) => {
+    setAddOrderItems((prev) =>
+      prev.map((row, i) =>
+        i === index
+          ? { ...row, productId: '', productLabel: '', searchText: '' }
+          : row
+      )
     );
   };
 
@@ -1773,7 +1832,7 @@ export function Orders() {
     const rows = bulkProcurementSelectedRows;
     if (rows.length === 0) {
       setAssemblyMessage(
-        'Отметьте чекбоксами целые строки заказов, доступных к закупке (статус «Новый» или у WB — пока статус не получен), затем снова нажмите «В закупку».'
+        'Отметьте чекбоксами целые строки заказов, доступных к закупке («Новый», «На сборке» или у WB — пока статус не получен), затем снова нажмите «В закупку».'
       );
       return;
     }
@@ -2001,7 +2060,7 @@ export function Orders() {
             <div className="error" style={{ marginBottom: '12px' }}>{addOrderError}</div>
           )}
           <p className="form-hint" style={{ marginBottom: '12px' }}>
-            Укажите покупателя и позиции: для каждой — товар, количество и цену за единицу.
+            Укажите покупателя и позиции. Поиск товара — по артикулу, штрихкоду или названию.
           </p>
           <div
             style={{
@@ -2037,25 +2096,40 @@ export function Orders() {
           </div>
           {addOrderItems.map((row, index) => (
             <div key={index} className="orders-add-row" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', marginBottom: '12px', flexWrap: 'wrap' }}>
-              <div className="form-group" style={{ flex: '1 1 180px' }}>
+              <div className="form-group" style={{ flex: '1 1 240px', minWidth: 200 }}>
                 <label className="label">Товар</label>
-                <select
-                  value={row.productId === '' ? '' : row.productId}
-                  onChange={(e) => addOrderProductChange(index, e.target.value)}
-                  className="form-control"
-                >
-                  <option value="">— Выберите товар —</option>
-                  {productsList
-                    .filter((p) => {
-                      const n = Number(p.id);
-                      return !Number.isNaN(n) && n >= 1;
-                    })
-                    .map((p) => (
-                      <option key={p.id} value={Number(p.id)}>
-                        {p.name || p.sku || `ID ${p.id}`}
-                      </option>
-                    ))}
-                </select>
+                {row.productId ? (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      marginBottom: 6,
+                      fontSize: 13,
+                    }}
+                  >
+                    <span style={{ fontWeight: 600 }}>{row.productLabel || `Товар #${row.productId}`}</span>
+                    <button
+                      type="button"
+                      className="btn btn-link btn-sm p-0"
+                      onClick={() => addOrderClearProduct(index)}
+                    >
+                      Сменить
+                    </button>
+                  </div>
+                ) : (
+                  <ProductSearchInput
+                    id={`manual-order-product-${index}`}
+                    className="form-control"
+                    value={row.searchText || ''}
+                    onChange={(v) => addOrderUpdateRow(index, 'searchText', v)}
+                    onSelect={(p) => addOrderSelectProduct(index, p)}
+                    products={productsList}
+                    organizationId={contextOrganizationId}
+                    placeholder="Артикул, штрихкод или название"
+                    disabled={addOrderLoading}
+                  />
+                )}
               </div>
               <div className="form-group" style={{ width: '88px' }}>
                 <label className="label">Кол-во</label>
@@ -2622,7 +2696,6 @@ export function Orders() {
                 </th>
                 <th>Количество</th>
                 <th>Цена</th>
-                <th>Резерв</th>
                 {showStickerColumn ? <th>Стикер</th> : null}
                 {showShipmentColumn ? <th>Поставка</th> : null}
                 <th>Действия</th>
@@ -2801,34 +2874,41 @@ export function Orders() {
                   </td>
                   <td className="orders-col-qty">
                     {isGroup ? (
-                      <div className="orders-stacked-lines orders-stacked-lines--qty">
-                        {mergedGroupLines.map((o, i) => (
-                          <div key={i} className="orders-stacked-line">{o.quantity}</div>
-                        ))}
-                      </div>
+                      <>
+                        <div className="orders-stacked-lines orders-stacked-lines--qty">
+                          {mergedGroupLines.map((o, i) => (
+                            <div key={i} className="orders-stacked-line">{o.quantity}</div>
+                          ))}
+                        </div>
+                        {showReserveCell ? (
+                          <div className="orders-qty-reserve-footer">
+                            <span
+                              className={reserveBadgeClassName(reserveCoverageKind)}
+                              title={formatOrderReserveBadgeTitle({
+                                reservedQty,
+                                needQty,
+                                orders: groupOrders,
+                                isGroup,
+                                coverageKind: reserveCoverageKind,
+                              })}
+                            >
+                              рез. {reservedQty}/{needQty}
+                            </span>
+                          </div>
+                        ) : null}
+                      </>
                     ) : (
-                      singleQty
+                      <OrderQuantityWithReserve
+                        qty={singleQty}
+                        reservedQty={reservedQty}
+                        needQty={needQty}
+                        coverageKind={reserveCoverageKind}
+                        groupOrders={groupOrders}
+                        isGroup={isGroup}
+                      />
                     )}
                   </td>
                   <td>{priceDisplay}</td>
-                  <td className="orders-col-reserve">
-                    {showReserveCell ? (
-                      <span
-                        className={reserveBadgeClassName(reserveCoverageKind)}
-                        title={formatOrderReserveBadgeTitle({
-                          reservedQty,
-                          needQty,
-                          orders: groupOrders,
-                          isGroup,
-                          coverageKind: reserveCoverageKind,
-                        })}
-                      >
-                        {reservedQty}/{needQty}
-                      </span>
-                    ) : (
-                      <span className="text-muted">—</span>
-                    )}
-                  </td>
                   {showStickerColumn ? (
                     <td className="orders-col-sticker" title={stickerDisplay !== '—' ? stickerDisplay : ''}>
                       {stickerDisplay}

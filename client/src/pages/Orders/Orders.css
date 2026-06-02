@@ -33,9 +33,19 @@
   font-variant-numeric: tabular-nums;
 }
 
-.orders-col-reserve {
-  white-space: nowrap;
-  text-align: center;
+.orders-qty-with-reserve {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.orders-qty-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.orders-qty-reserve-footer {
+  margin-top: 4px;
 }
 
 .orders-reserve-badge {
