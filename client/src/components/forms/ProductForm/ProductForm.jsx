@@ -1321,12 +1321,15 @@ export function ProductForm({
       String(formData.ozon_product_id || '').trim() ||
       (currentProduct?.ozon_product_id != null ? String(currentProduct.ozon_product_id) : '');
     const productId = productIdRaw ? Number(productIdRaw.replace(/\D/g, '')) : null;
-    const offerId =
-      (formData.sku_ozon != null && String(formData.sku_ozon).trim() !== ''
-        ? String(formData.sku_ozon).trim()
-        : null) ||
-      (formData.sku != null && String(formData.sku).trim() !== '' ? String(formData.sku).trim() : null);
-    if (!productId && !offerId) {
+    const offerCandidates = [
+      formData.sku_ozon,
+      currentProduct?.sku_ozon,
+      formData.sku
+    ]
+      .map((v) => (v != null && String(v).trim() !== '' ? String(v).trim() : ''))
+      .filter(Boolean);
+    const offerIds = [...new Set(offerCandidates)];
+    if (!productId && offerIds.length === 0) {
       setOzonSyncError('Укажите артикул Ozon (offer_id), product_id карточки Ozon или артикул ERP.');
       return;
     }
@@ -1340,14 +1343,29 @@ export function ProductForm({
     try {
       const apiBase = { organizationId };
       let data = null;
+      let lastErr = null;
       if (productId && productId > 0) {
-        data = await integrationsApi.getOzonProductInfo({ ...apiBase, product_id: productId });
+        try {
+          data = await integrationsApi.getOzonProductInfo({ ...apiBase, product_id: productId });
+        } catch (e) {
+          lastErr = e;
+        }
       }
-      if (!data && offerId) {
-        data = await integrationsApi.getOzonProductInfo({ ...apiBase, offer_id: offerId });
+      for (const offerId of offerIds) {
+        if (data) break;
+        try {
+          data = await integrationsApi.getOzonProductInfo({ ...apiBase, offer_id: offerId });
+        } catch (e) {
+          lastErr = e;
+        }
       }
       if (!data) {
-        setOzonSyncError('Товар не найден в кабинете Ozon выбранной организации.');
+        if (lastErr) throw lastErr;
+        const hint =
+          offerIds.length > 1 && offerIds[0] !== offerIds[offerIds.length - 1]
+            ? ` Проверьте offer_id Ozon (например «${offerIds.find((o) => o !== formData.sku) || offerIds[0]}»), он может отличаться от артикула ERP.`
+            : '';
+        setOzonSyncError(`Товар не найден в кабинете Ozon выбранной организации.${hint}`);
         return;
       }
       setSyncedOzonProductId(data.id != null ? Number(data.id) : null);
@@ -1392,6 +1410,8 @@ export function ProductForm({
     }
   }, [
     currentProduct?.ozon_product_id,
+    currentProduct?.sku_ozon,
+    formData.sku,
     formData.sku_ozon,
     formData.ozon_product_id,
     formData.organizationId,
