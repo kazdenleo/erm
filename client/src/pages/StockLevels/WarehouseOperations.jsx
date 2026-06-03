@@ -2099,7 +2099,7 @@ export function WarehouseOperations({
       }
       await joinInventoryLiveSessionFromUrl(sid);
     } catch (e) {
-      setLookupError(ex?.response?.data?.message || ex?.message || 'Сессия не найдена');
+      setLookupError(e?.response?.data?.message || e?.message || 'Сессия не найдена');
       clearInventoryLiveDraft();
       setInventoryLiveDraft(null);
     } finally {
