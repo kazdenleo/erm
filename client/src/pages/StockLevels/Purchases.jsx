@@ -211,6 +211,7 @@ export function Purchases() {
   const { warehouses } = useWarehouses();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
+  const [showArchived, setShowArchived] = useState(false);
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
@@ -249,6 +250,7 @@ export function Purchases() {
   const [extrasToResolve, setExtrasToResolve] = useState(null);
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
   const [receiptSupplierId, setReceiptSupplierId] = useState('');
+  const [receiptOrganizationId, setReceiptOrganizationId] = useState('');
   /** null | 'asc' | 'desc' — сортировка позиций закупки по «Ожидалось» */
   const [detailExpectedQtySort, setDetailExpectedQtySort] = useState(null);
   const [lineActionBusy, setLineActionBusy] = useState(null);
@@ -304,11 +306,15 @@ export function Purchases() {
     setReceiptScannedQtySort(null);
   }, [receipt?.receipt?.id]);
 
-  const reload = async () => {
+  const reload = async (opts = {}) => {
+    const includeArchived = opts.includeArchived ?? showArchived;
     setLoading(true);
     setErr(null);
     try {
-      const data = await purchasesApi.list({ limit: 200 });
+      const data = await purchasesApi.list({
+        limit: 200,
+        ...(includeArchived ? { includeArchived: true } : {}),
+      });
       setList(Array.isArray(data) ? data : []);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить закупки');
@@ -318,8 +324,9 @@ export function Purchases() {
   };
 
   useEffect(() => {
-    reload();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    reload({ includeArchived: showArchived });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showArchived]);
 
   const productOptions = useMemo(() => {
     return (products || []).map((p) => ({
@@ -491,9 +498,29 @@ export function Purchases() {
       setReceipt(data);
       setScanMsg(null);
       setLastScanLine(null);
-      // Приёмка ведётся по реквизитам закупки (поставщик/организация/склад назначения).
-      setReceiptWarehouseId(data?.purchase?.warehouseId != null ? String(data.purchase.warehouseId) : '');
-      setReceiptSupplierId(data?.purchase?.supplierId != null ? String(data.purchase.supplierId) : '');
+      const p = data?.purchase || {};
+      const dp = detail?.purchase;
+      setReceiptWarehouseId(
+        p.warehouseId != null
+          ? String(p.warehouseId)
+          : dp?.warehouse_id != null
+            ? String(dp.warehouse_id)
+            : ''
+      );
+      setReceiptSupplierId(
+        p.supplierId != null
+          ? String(p.supplierId)
+          : dp?.supplier_id != null
+            ? String(dp.supplier_id)
+            : ''
+      );
+      setReceiptOrganizationId(
+        p.organizationId != null
+          ? String(p.organizationId)
+          : dp?.organization_id != null
+            ? String(dp.organization_id)
+            : ''
+      );
       setTimeout(() => scanRef.current?.focus(), 80);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось открыть приёмку');
@@ -783,11 +810,19 @@ export function Purchases() {
           {importOk}
         </p>
       )}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
         <Button onClick={() => setCreateOpen(true)}>Новая закупка</Button>
-        <Button variant="secondary" onClick={reload} disabled={loading}>
+        <Button variant="secondary" onClick={() => reload()} disabled={loading}>
           {loading ? '...' : 'Обновить'}
         </Button>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', margin: 0 }}>
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Показать архив
+        </label>
       </div>
 
       {loading ? (
@@ -824,7 +859,11 @@ export function Purchases() {
                   <td>{qtyCell(p.expected_total ?? p.expectedTotal)}</td>
                   <td>{qtyCell(p.received_total ?? p.receivedTotal)}</td>
                   <td>
-                    <span className="muted">Подробнее →</span>
+                    {String(p.status || '') === 'archived' ? (
+                      <span className="muted" style={{ fontSize: 12 }}>Архив</span>
+                    ) : (
+                      <span className="muted">Подробнее →</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1022,6 +1061,13 @@ export function Purchases() {
             <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
               Создана: {fmtDt(detail.purchase.created_at)}. Ожидание (incoming) и резервы по заказам формируются при добавлении
               позиций; при приёмке товар уходит из ожидания на склад.
+              {String(detail.purchase.status || '') === 'archived' && (
+                <>
+                  {' '}
+                  <strong>В архиве</strong> (всё принято
+                  {detail.purchase.completed_at ? ` · ${fmtDt(detail.purchase.completed_at)}` : ''}).
+                </>
+              )}
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
               <span className="muted" style={{ fontSize: 13 }}>Поставщик</span>
@@ -1110,6 +1156,10 @@ export function Purchases() {
               <Button
                 onClick={async () => {
                   if (createReceiptBusy) return;
+                  if (String(detail?.purchase?.status || '') === 'archived') {
+                    setErr('Закупка в архиве — всё принято. Создайте новую закупку для следующей поставки.');
+                    return;
+                  }
                   setCreateReceiptBusy(true);
                   try {
                     setErr(null);
@@ -1387,6 +1437,34 @@ export function Purchases() {
                 {(suppliers || []).map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name || `Поставщик #${s.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+              <span className="muted" style={{ fontSize: 13 }}>Получатель</span>
+              <select
+                className="warehouse-ops-select"
+                value={receiptOrganizationId}
+                onChange={async (e) => {
+                  const v = e.target.value;
+                  setReceiptOrganizationId(v);
+                  try {
+                    setErr(null);
+                    await purchasesApi.updatePurchase(receipt.receipt.purchase_id, {
+                      organizationId: v === '' ? null : Number(v),
+                    });
+                    if (detail?.purchase?.id) await openDetail(detail.purchase.id);
+                    await openReceipt(receipt.receipt.id);
+                  } catch (ex) {
+                    setErr(ex.response?.data?.message || ex.message || 'Не удалось обновить организацию');
+                  }
+                }}
+              >
+                <option value="">— Не указан —</option>
+                {(organizations || []).map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name || `Организация #${o.id}`}
                   </option>
                 ))}
               </select>

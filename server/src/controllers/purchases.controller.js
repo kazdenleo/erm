@@ -16,8 +16,14 @@ class PurchasesController {
       }
       const limit = req.query.limit ? parseInt(req.query.limit, 10) : 200;
       const status = req.query.status != null && String(req.query.status).trim() !== '' ? String(req.query.status).trim() : null;
+      const activeOnly =
+        req.query.activeOnly === '1' ||
+        req.query.activeOnly === 'true' ||
+        (req.query.includeArchived !== '1' &&
+          req.query.includeArchived !== 'true' &&
+          status == null);
       const profileId = tid;
-      const data = await purchasesService.list({ profileId, limit, status });
+      const data = await purchasesService.list({ profileId, limit, status, activeOnly });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       next(e);

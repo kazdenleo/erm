@@ -1070,7 +1070,7 @@ export function Orders() {
     setProcurementModalLoading(true);
     try {
       const [drafts, supRes] = await Promise.all([
-        purchasesApi.list({ status: 'open', limit: 50 }),
+        purchasesApi.list({ activeOnly: true, limit: 50 }),
         suppliersApi.getAll(),
       ]);
       const listDrafts = Array.isArray(drafts) ? drafts : [];
@@ -1852,7 +1852,7 @@ export function Orders() {
     setProcurementModalLoading(true);
     try {
       const [drafts, supRes] = await Promise.all([
-        purchasesApi.list({ status: 'open', limit: 50 }),
+        purchasesApi.list({ activeOnly: true, limit: 50 }),
         suppliersApi.getAll(),
       ]);
       const listDrafts = Array.isArray(drafts) ? drafts : [];

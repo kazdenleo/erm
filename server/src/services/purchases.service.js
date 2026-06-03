@@ -818,8 +818,57 @@ async function deleteScanningReceiptItemsForPurchaseProductInTx(client, purchase
   );
 }
 
+/** Есть ли по закупке непринятые позиции. */
+async function purchaseHasUnreceivedItemsInTx(client, purchaseId) {
+  const r = await client.query(
+    `SELECT EXISTS (
+       SELECT 1 FROM purchase_items
+       WHERE purchase_id = $1
+         AND expected_quantity > COALESCE(received_quantity, 0)
+     ) AS v`,
+    [purchaseId]
+  );
+  return !!r.rows?.[0]?.v;
+}
+
+async function assertPurchaseNotArchivedInTx(client, purchaseId) {
+  const r = await client.query(`SELECT status FROM purchases WHERE id = $1`, [purchaseId]);
+  if (String(r.rows?.[0]?.status || '') === 'archived') {
+    const err = new Error('Закупка в архиве (всё принято). Выберите другую закупку или создайте новую.');
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+/** После приёмки/отката: open пока есть непринятое, archived когда всё принято. */
 async function recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId) {
+  const hasUnreceived = await purchaseHasUnreceivedItemsInTx(client, purchaseId);
+  if (hasUnreceived) {
+    await client.query(
+      `UPDATE purchases
+       SET status = 'open', completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [purchaseId]
+    );
+    return 'open';
+  }
+  const hasItems = await client.query(
+    `SELECT EXISTS (SELECT 1 FROM purchase_items WHERE purchase_id = $1) AS v`,
+    [purchaseId]
+  );
+  if (hasItems.rows?.[0]?.v) {
+    await client.query(
+      `UPDATE purchases
+       SET status = 'archived',
+           completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [purchaseId]
+    );
+    return 'archived';
+  }
   await client.query(`UPDATE purchases SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [purchaseId]);
+  return 'open';
 }
 
 /** Снять ожидание (incoming), которое осталось по строкам закупки (после отката приёмок). */
@@ -885,6 +934,7 @@ async function orderHasActivePurchaseReferenceExceptPurchase(
      FROM purchase_items pi
      INNER JOIN purchases p ON p.id = pi.purchase_id
      WHERE p.profile_id = $1
+       AND p.status = 'open'
        AND ($2::bigint IS NULL OR p.id IS DISTINCT FROM $2::bigint)
        AND EXISTS (
          SELECT 1 FROM purchase_items x
@@ -1122,7 +1172,7 @@ class PurchasesService {
     });
   }
 
-  async list({ profileId, limit = 200, status = null } = {}) {
+  async list({ profileId, limit = 200, status = null, activeOnly = false } = {}) {
     const lim = Math.min(Math.max(1, parseInt(limit, 10) || 200), 500);
     const pid = normalizeProfileId(profileId);
     if (pid == null) {
@@ -1133,7 +1183,9 @@ class PurchasesService {
     const st = status != null && String(status).trim() !== '' ? String(status).trim() : null;
     const params = [pid];
     let statusFilter = '';
-    if (st) {
+    if (activeOnly) {
+      statusFilter = ` AND p.status = 'open'`;
+    } else if (st) {
       params.push(st);
       statusFilter = ` AND p.status = $${params.length}`;
     }
@@ -1345,6 +1397,11 @@ class PurchasesService {
       let purchaseId;
       if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
         purchaseId = parseInt(existingPurchaseId, 10);
+        const prof = normalizeProfileId(profileId);
+        await transaction(async (client) => {
+          await assertPurchaseInProfile(client, purchaseId, prof);
+          await assertPurchaseNotArchivedInTx(client, purchaseId);
+        });
         await this.appendDraftItems(purchaseId, { items }, { profileId, lightIncoming: true });
       } else {
         const created = await this.create(
@@ -1494,10 +1551,7 @@ class PurchasesService {
         deferIncomingUpdate: lightIncoming,
       });
 
-      await client.query(
-        `UPDATE purchases SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
-        [id]
-      );
+      await recalcPurchaseStatusAfterReceiptChangeInTx(client, id);
       return { ok: true, id };
     });
     if (lightIncoming && incomingDeltas?.size) {
@@ -1754,6 +1808,7 @@ class PurchasesService {
 
     return transaction(async (client) => {
       await assertPurchaseInProfile(client, id, pid);
+      await assertPurchaseNotArchivedInTx(client, id);
 
       // Не плодим "пустые" scanning-приёмки: если уже есть активная — переиспользуем её.
       const existing = await client.query(
@@ -1800,11 +1855,14 @@ class PurchasesService {
               p.supplier_id,
               s.name AS supplier_name,
               p.organization_id,
-              o.name AS organization_name
+              o.name AS organization_name,
+              p.warehouse_id,
+              COALESCE(w.address, '') AS warehouse_name
        FROM purchase_receipts r
        JOIN purchases p ON p.id = r.purchase_id
        LEFT JOIN suppliers s ON s.id = p.supplier_id
        LEFT JOIN organizations o ON o.id = p.organization_id
+       LEFT JOIN warehouses w ON w.id = p.warehouse_id
        WHERE r.id = $1 AND p.profile_id = $2`,
       [rid, pid]
     );
@@ -1851,6 +1909,8 @@ class PurchasesService {
         supplierName: receipt.supplier_name,
         organizationId: receipt.organization_id,
         organizationName: receipt.organization_name,
+        warehouseId: receipt.warehouse_id,
+        warehouseName: receipt.warehouse_name,
       },
       items: lines.rows || [],
     };
@@ -2085,6 +2145,7 @@ class PurchasesService {
 
       const purchaseId = Number(receipt.purchase_id);
       await assertPurchaseInProfile(client, purchaseId, pid);
+      await assertPurchaseNotArchivedInTx(client, purchaseId);
 
       // lock purchase
       const pHead = await client.query('SELECT id FROM purchases WHERE id = $1 FOR UPDATE', [purchaseId]);
@@ -2107,7 +2168,13 @@ class PurchasesService {
         byProduct.set(productId, qty);
       }
 
-      const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, warehouseId);
+      const pWh = await client.query(`SELECT warehouse_id FROM purchases WHERE id = $1`, [purchaseId]);
+      const purchaseWarehouseId = pWh.rows?.[0]?.warehouse_id ?? null;
+      let whArg = warehouseId;
+      if (whArg == null || whArg === '') {
+        whArg = purchaseWarehouseId;
+      }
+      const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, whArg);
 
       // apply per product
       const deltas = [];
@@ -2241,7 +2308,8 @@ class PurchasesService {
         }
       }
 
-      await client.query(`UPDATE purchases SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [purchaseId]);
+      let purchaseStatus = 'open';
+      purchaseStatus = await recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId);
 
       await client.query(
         `UPDATE purchase_receipts
@@ -2337,7 +2405,7 @@ class PurchasesService {
       return {
         ok: true,
         purchaseId,
-        purchaseStatus: 'open',
+        purchaseStatus,
         receiptId: rid,
         warehouseReceiptId,
         applied: deltas,
