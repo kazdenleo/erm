@@ -5,6 +5,7 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import stockMovementsService from '../services/stockMovements.service.js';
 import { jsonSafeRow } from '../utils/profileId.js';
 
 const repo = repositoryFactory.getProfilesRepository();
@@ -106,6 +107,20 @@ export const profilesController = {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
       res.json({ ok: true, data: jsonSafeRow(item) });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /** Массовый сброс истории остатков по всем товарам аккаунта. */
+  async resetAllStockHistory(req, res, next) {
+    try {
+      const id = req.user.profileId;
+      if (id == null || id === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const result = await stockMovementsService.resetAllStockHistoryForProfile(id);
+      res.json({ ok: true, data: result });
     } catch (error) {
       next(error);
     }

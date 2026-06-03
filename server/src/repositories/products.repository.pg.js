@@ -40,6 +40,14 @@ function isKitProductType(raw) {
   return String(raw || '').toLowerCase() === 'kit';
 }
 
+/** SQL: товар-комплект (product_type=kit или есть состав). */
+function kitCatalogProductSql(alias = 'p') {
+  return `(
+    LOWER(TRIM(COALESCE(${alias}.product_type::text, ''))) = 'kit'
+    OR EXISTS (SELECT 1 FROM kit_components kc WHERE kc.kit_product_id = ${alias}.id)
+  )`;
+}
+
 /** Поля для listView=stock — без images, mp_* текстов и прочих тяжёлых колонок. */
 const STOCK_LIST_SELECT = `
   p.id,
@@ -1373,8 +1381,94 @@ class ProductsRepositoryPG {
     return result.rows[0]?.product_id ?? null;
   }
 
+  /** Комплект по штрихкоду / артикулу SKU комплекта (products.sku, product_skus, barcodes на карточке комплекта). */
+  async _findKitProductIdByScanCode(trimmed, digitsOnly) {
+    const hasDigits = digitsOnly.length > 0;
+    const ozonMpId =
+      hasDigits && /^[0-9]+$/.test(String(trimmed).replace(/\D/g, ''))
+        ? Number(String(trimmed).replace(/\D/g, ''))
+        : null;
+    const params = [trimmed];
+    let n = 2;
+    let digitClause = '';
+    if (hasDigits) {
+      digitClause = `
+        OR REGEXP_REPLACE(COALESCE(p.sku, ''), '\\D', '', 'g') = $${n}
+        OR REGEXP_REPLACE(COALESCE(ps.sku, ''), '\\D', '', 'g') = $${n}`;
+      params.push(digitsOnly);
+      n += 1;
+    }
+    let ozonClause = '';
+    if (ozonMpId != null && Number.isFinite(ozonMpId)) {
+      ozonClause = `OR (ps.marketplace = 'ozon' AND ps.marketplace_product_id = $${n}::bigint)`;
+      params.push(ozonMpId);
+    }
+    const r = await query(
+      `SELECT p.id
+       FROM products p
+       LEFT JOIN product_skus ps ON ps.product_id = p.id
+       WHERE ${kitCatalogProductSql('p')}
+         AND COALESCE(p.is_archived, false) = false
+         AND (
+           LOWER(TRIM(COALESCE(p.sku, ''))) = LOWER(TRIM($1))
+           OR LOWER(TRIM(COALESCE(ps.sku, ''))) = LOWER(TRIM($1))
+           OR EXISTS (
+             SELECT 1 FROM barcodes b
+             WHERE b.product_id = p.id
+               AND (
+                 TRIM(b.barcode) = TRIM($1)
+                 ${hasDigits ? "OR REGEXP_REPLACE(b.barcode, '\\D', '', 'g') = $2" : ''}
+               )
+           )
+           ${digitClause}
+           ${ozonClause}
+         )
+       ORDER BY p.id
+       LIMIT 1`,
+      params
+    );
+    return r.rows[0]?.id ?? null;
+  }
+
+  /** Товар по артикулу в product_skus (маркетплейсы); при нескольких совпадениях — комплект в приоритете. */
+  async _findProductIdByProductSkus(trimmed, digitsOnly) {
+    const hasDigits = digitsOnly.length > 0;
+    const ozonMpId =
+      hasDigits && /^[0-9]+$/.test(String(trimmed).replace(/\D/g, ''))
+        ? Number(String(trimmed).replace(/\D/g, ''))
+        : null;
+    const params = [trimmed];
+    let n = 2;
+    let matchClause = `
+      LOWER(TRIM(ps.sku)) = LOWER(TRIM($1))
+      OR LOWER(TRIM(COALESCE(p.sku, ''))) = LOWER(TRIM($1))`;
+    if (hasDigits) {
+      matchClause += `
+        OR REGEXP_REPLACE(COALESCE(ps.sku, ''), '\\D', '', 'g') = $${n}
+        OR REGEXP_REPLACE(COALESCE(p.sku, ''), '\\D', '', 'g') = $${n}`;
+      params.push(digitsOnly);
+      n += 1;
+    }
+    let ozonClause = '';
+    if (ozonMpId != null && Number.isFinite(ozonMpId)) {
+      ozonClause = `OR (ps.marketplace = 'ozon' AND ps.marketplace_product_id = $${n}::bigint)`;
+      params.push(ozonMpId);
+    }
+    const r = await query(
+      `SELECT p.id
+       FROM products p
+       LEFT JOIN product_skus ps ON ps.product_id = p.id
+       WHERE COALESCE(p.is_archived, false) = false
+         AND (${matchClause} ${ozonClause})
+       ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 0 ELSE 1 END, p.id
+       LIMIT 1`,
+      params
+    );
+    return r.rows[0]?.id ?? null;
+  }
+
   /**
-   * Получить товар по штрихкоду (id товара из таблицы barcodes)
+   * Получить товар по штрихкоду (barcodes, SKU, product_skus; комплекты — в приоритете).
    */
   async findByBarcode(barcode) {
     const trimmed = typeof barcode === 'string' ? barcode.trim() : String(barcode || '');
@@ -1389,6 +1483,15 @@ class ProductsRepositoryPG {
       }
     }
 
+    for (const key of [...new Set(lookupKeys)]) {
+      const d = key.replace(/\D/g, '');
+      const kitId = await this._findKitProductIdByScanCode(key, d);
+      if (kitId != null) {
+        const kit = await this.findById(kitId);
+        if (kit) return kit;
+      }
+    }
+
     let productId = null;
     for (const key of lookupKeys) {
       const d = key.replace(/\D/g, '');
@@ -1396,39 +1499,65 @@ class ProductsRepositoryPG {
       if (productId != null) break;
     }
 
+    const skuKeys = [trimmed];
+    if (hasDigits) {
+      for (const v of this._barcodeDigitVariants(digits)) skuKeys.push(v);
+    }
     if (productId == null) {
-      const skuKeys = [trimmed];
-      if (hasDigits) {
-        for (const v of this._barcodeDigitVariants(digits)) skuKeys.push(v);
-      }
       for (const key of [...new Set(skuKeys)]) {
         const bySku = await query(
-          `SELECT id FROM products
-           WHERE LOWER(TRIM(sku)) = LOWER(TRIM($1))
-             AND COALESCE(is_archived, false) = false
+          `SELECT p.id FROM products p
+           WHERE LOWER(TRIM(p.sku)) = LOWER(TRIM($1))
+             AND COALESCE(p.is_archived, false) = false
+           ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 0 ELSE 1 END, p.id
            LIMIT 1`,
           [key]
         );
         if (bySku.rows[0]?.id != null) {
-          return await this.findById(bySku.rows[0].id);
+          productId = bySku.rows[0].id;
+          break;
         }
         const d = key.replace(/\D/g, '');
         if (d.length >= 6) {
           const bySkuDigits = await query(
-            `SELECT id FROM products
-             WHERE REGEXP_REPLACE(COALESCE(sku, ''), '\\D', '', 'g') = $1
-               AND COALESCE(is_archived, false) = false
+            `SELECT p.id FROM products p
+             WHERE REGEXP_REPLACE(COALESCE(p.sku, ''), '\\D', '', 'g') = $1
+               AND COALESCE(p.is_archived, false) = false
+             ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 0 ELSE 1 END, p.id
              LIMIT 1`,
             [d]
           );
           if (bySkuDigits.rows[0]?.id != null) {
-            return await this.findById(bySkuDigits.rows[0].id);
+            productId = bySkuDigits.rows[0].id;
+            break;
           }
         }
       }
-      return null;
     }
-    return await this.findById(productId);
+
+    if (productId == null) {
+      for (const key of [...new Set(skuKeys)]) {
+        const d = key.replace(/\D/g, '');
+        productId = await this._findProductIdByProductSkus(key, d);
+        if (productId != null) break;
+      }
+    }
+
+    if (productId == null) return null;
+
+    const product = await this.findById(productId);
+    if (!product?.id) return null;
+
+    // Штрихкод мог совпасть с комплектующей, а код — с SKU комплекта: отдаём комплект.
+    for (const key of [...new Set(lookupKeys)]) {
+      const d = key.replace(/\D/g, '');
+      const kitId = await this._findKitProductIdByScanCode(key, d);
+      if (kitId != null && Number(kitId) !== Number(product.id)) {
+        const kit = await this.findById(kitId);
+        if (kit) return kit;
+      }
+    }
+    return product;
   }
   
   /**

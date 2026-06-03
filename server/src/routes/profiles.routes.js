@@ -15,6 +15,12 @@ router.use(requireAuth);
 
 router.get('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.getMyProfile));
 router.put('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.updateMyProfile));
+router.post(
+  '/me/stock-history-reset-all',
+  requireProfile,
+  requireProfileAdmin,
+  wrapAsync(profilesController.resetAllStockHistory)
+);
 
 router.use(requireAdmin);
 

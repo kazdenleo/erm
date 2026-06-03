@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
+import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
 import { Button } from '../../components/common/Button/Button';
 import {
   BUILTIN_SOUNDS,
@@ -21,6 +22,8 @@ export function Settings() {
   const { isProfileAdmin, profileId, refreshUser } = useAuth();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [resettingAllStock, setResettingAllStock] = useState(false);
+  const [resetAllStockMessage, setResetAllStockMessage] = useState('');
   const [error, setError] = useState('');
   const [soundForm, setSoundForm] = useState(loadSoundSettings);
   const [soundError, setSoundError] = useState('');
@@ -40,18 +43,8 @@ export function Settings() {
     setError('');
     try {
       const res = await profilesApi.getMe();
-      const p = res?.data;
-      if (p) {
-        setForm({
-          name: p.name ?? '',
-          contact_email: p.contact_email ?? '',
-          contact_phone: p.contact_phone ?? '',
-          allow_private_orders: p.allow_private_orders === true,
-          require_reserved_stock_for_assembly: p.require_reserved_stock_for_assembly === true,
-          allow_manual_warehouse_stock_edit: p.allow_manual_warehouse_stock_edit === true,
-          allow_stock_history_reset: p.allow_stock_history_reset === true,
-        });
-      }
+      const nextForm = accountSettingsFromProfile(res?.data);
+      if (nextForm) setForm(nextForm);
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Не удалось загрузить данные аккаунта');
     } finally {
@@ -72,7 +65,7 @@ export function Settings() {
     setSaving(true);
     setError('');
     try {
-      await profilesApi.updateMe({
+      const payload = {
         name,
         contact_email: form.contact_email.trim() || null,
         contact_phone: form.contact_phone.trim() || null,
@@ -80,13 +73,69 @@ export function Settings() {
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
         allow_manual_warehouse_stock_edit: form.allow_manual_warehouse_stock_edit,
         allow_stock_history_reset: form.allow_stock_history_reset,
-      });
+      };
+      const res = await profilesApi.updateMe(payload);
+      if (!res?.ok) {
+        throw new Error(res?.message || 'Ошибка сохранения');
+      }
+      const saved = accountSettingsFromProfile(res.data);
+      if (saved) setForm(saved);
       await refreshUser();
+
+      const flagChecks = [
+        ['allow_manual_warehouse_stock_edit', 'ручное изменение наличия на складе'],
+        ['allow_stock_history_reset', 'сброс истории остатков'],
+      ];
+      const notSaved = flagChecks
+        .filter(([key]) => !!payload[key] !== !!saved?.[key])
+        .map(([, label]) => label);
+      if (notSaved.length > 0) {
+        setError(
+          `Не удалось сохранить настройки: ${notSaved.join(', ')}. Перезапустите API-сервер (node server.js) и сохраните снова.`
+        );
+        return;
+      }
       alert('Сохранено');
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Ошибка сохранения');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const resetAllStockHistory = async () => {
+    if (!isProfileBoolFlag(form.allow_stock_history_reset)) return;
+    const confirmed = window.confirm(
+      'Будет удалена вся история движений остатков по всем товарам аккаунта (кроме комплектов).\n\n' +
+        'Текущие значения «В пути», «Наличие», «Резерв» и «Доступно» останутся без изменений.\n\n' +
+        'Операция необратима. Продолжить?'
+    );
+    if (!confirmed) return;
+
+    setResettingAllStock(true);
+    setResetAllStockMessage('');
+    setError('');
+    try {
+      const res = await profilesApi.resetAllStockHistory();
+      if (!res?.ok) {
+        throw new Error(res?.message || 'Не удалось выполнить сброс');
+      }
+      const data = res.data || {};
+      const processed = Number(data.productsProcessed) || 0;
+      const total = Number(data.productsTotal) || 0;
+      const errors = Array.isArray(data.errors) ? data.errors : [];
+      if (errors.length > 0) {
+        setResetAllStockMessage(
+          `Обработано ${processed} из ${total} товаров. Ошибки: ${errors.length}. Подробности в консоли.`
+        );
+        console.warn('[Settings] stock history reset errors:', errors);
+      } else {
+        setResetAllStockMessage(`Готово: история остатков сброшена для ${processed} товаров.`);
+      }
+    } catch (err) {
+      setError(err?.response?.data?.message || err?.message || 'Ошибка массового сброса истории остатков');
+    } finally {
+      setResettingAllStock(false);
     }
   };
 
@@ -306,7 +355,7 @@ export function Settings() {
               <label className="settings-account-toggle">
                 <input
                   type="checkbox"
-                  checked={form.allow_manual_warehouse_stock_edit === true}
+                  checked={isProfileBoolFlag(form.allow_manual_warehouse_stock_edit)}
                   onChange={(e) =>
                     setForm((f) => ({ ...f, allow_manual_warehouse_stock_edit: e.target.checked }))
                   }
@@ -322,7 +371,7 @@ export function Settings() {
               <label className="settings-account-toggle">
                 <input
                   type="checkbox"
-                  checked={form.allow_stock_history_reset === true}
+                  checked={isProfileBoolFlag(form.allow_stock_history_reset)}
                   onChange={(e) =>
                     setForm((f) => ({ ...f, allow_stock_history_reset: e.target.checked }))
                   }
@@ -330,11 +379,32 @@ export function Settings() {
                 <span>
                   <strong>Сброс истории остатков по товару</strong>
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
-                    В таблице остатков администратор аккаунта может очистить историю движений по товару и задать
-                    текущие значения «В пути», «Наличие» и «Резерв». При выключении кнопка скрыта.
+                    В таблице остатков можно очистить историю по одному товару. В настройках аккаунта появится
+                    кнопка массового сброса по всем товарам. При выключении функции кнопки скрыты.
                   </span>
                 </span>
               </label>
+              {isProfileBoolFlag(form.allow_stock_history_reset) && (
+                <div className="settings-stock-reset-all">
+                  <p className="text-muted small" style={{ marginBottom: 8 }}>
+                    Удалить всю историю движений остатков по всем товарам аккаунта. Текущие «В пути», «Наличие»,
+                    «Резерв» и «Доступно» сохранятся как начальные значения без прошлых записей журнала.
+                  </p>
+                  {resetAllStockMessage && (
+                    <p className="text-success small" style={{ marginBottom: 8 }}>
+                      {resetAllStockMessage}
+                    </p>
+                  )}
+                  <Button
+                    type="button"
+                    variant="danger"
+                    onClick={resetAllStockHistory}
+                    disabled={resettingAllStock || saving}
+                  >
+                    {resettingAllStock ? 'Сброс истории…' : 'Обнулить все движения остатков'}
+                  </Button>
+                </div>
+              )}
               <div className="settings-account-actions">
                 <Button type="button" variant="primary" onClick={saveAccount} disabled={saving}>
                   {saving ? 'Сохранение…' : 'Сохранить'}

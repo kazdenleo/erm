@@ -16,6 +16,12 @@ export const profilesApi = {
     return response.data;
   },
 
+  /** Массовый сброс истории остатков по всем товарам аккаунта. */
+  async resetAllStockHistory() {
+    const response = await api.post('/profiles/me/stock-history-reset-all');
+    return response.data;
+  },
+
   async getAll() {
     const response = await api.get('/profiles');
     return response.data;

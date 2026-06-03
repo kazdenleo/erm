@@ -90,13 +90,23 @@ class InventorySessionsController {
 
   async createLiveSession(req, res, next) {
     try {
-      const { warehouseId, warehouse_id, zeroUnlisted, zero_unlisted } = req.body || {};
+      const {
+        warehouseId,
+        warehouse_id,
+        zeroUnlisted,
+        zero_unlisted,
+        items,
+        editingSessionId,
+        editing_session_id,
+      } = req.body || {};
       const wh = warehouseId ?? warehouse_id ?? null;
       const zeroRaw = zeroUnlisted ?? zero_unlisted;
       const data = await inventorySessionsLiveService.createSession({
         warehouseId: wh,
         ownerUserId: req.user?.id ?? null,
         zeroUnlisted: zeroRaw !== false,
+        items: items ?? null,
+        editingSessionId: editingSessionId ?? editing_session_id ?? null,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
@@ -177,13 +187,14 @@ class InventorySessionsController {
   async completeLiveSession(req, res, next) {
     try {
       const { id } = req.params;
-      const { zeroUnlisted, zero_unlisted, note } = req.body || {};
+      const { zeroUnlisted, zero_unlisted, note, updateSessionId, update_session_id } = req.body || {};
       const data = await inventorySessionsLiveService.complete({
         sessionId: id,
         userId: req.user?.id ?? null,
         profileId: req.user?.profileId ?? null,
         zeroUnlisted: zeroUnlisted ?? zero_unlisted,
         note: note ?? null,
+        updateSessionId: updateSessionId ?? update_session_id ?? null,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {

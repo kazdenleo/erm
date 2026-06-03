@@ -1,0 +1,17 @@
+/** Булевы флаги профиля из API (PostgreSQL / JSON могут отдавать разные типы). */
+export function isProfileBoolFlag(value) {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+export function accountSettingsFromProfile(profile) {
+  if (!profile || typeof profile !== 'object') return null;
+  return {
+    name: profile.name ?? '',
+    contact_email: profile.contact_email ?? '',
+    contact_phone: profile.contact_phone ?? '',
+    allow_private_orders: isProfileBoolFlag(profile.allow_private_orders),
+    require_reserved_stock_for_assembly: isProfileBoolFlag(profile.require_reserved_stock_for_assembly),
+    allow_manual_warehouse_stock_edit: isProfileBoolFlag(profile.allow_manual_warehouse_stock_edit),
+    allow_stock_history_reset: isProfileBoolFlag(profile.allow_stock_history_reset),
+  };
+}

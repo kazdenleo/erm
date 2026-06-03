@@ -445,6 +445,74 @@
   margin: 8px 0 12px;
 }
 
+.warehouse-ops-live-invite-panel {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--primary);
+  border-radius: 12px;
+  background: var(--primary-50, rgba(33, 150, 243, 0.08));
+}
+
+.warehouse-ops-live-invite-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.warehouse-ops-live-invite-lead {
+  margin-bottom: 12px;
+}
+
+.warehouse-ops-live-invite-warn {
+  color: #c62828;
+  margin-bottom: 10px;
+}
+
+.warehouse-ops-live-invite-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.warehouse-ops-live-invite-active {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.warehouse-ops-live-invite-code-row,
+.warehouse-ops-live-invite-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.warehouse-ops-live-invite-label {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 140px;
+}
+
+.warehouse-ops-live-invite-code {
+  font-size: 15px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.warehouse-ops-live-invite-url {
+  flex: 1 1 280px;
+  min-width: 200px;
+  font-size: 13px;
+}
+
 .warehouse-ops-receipt-list-actions {
   display: flex;
   gap: 12px;

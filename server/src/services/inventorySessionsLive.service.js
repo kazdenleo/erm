@@ -67,6 +67,7 @@ class InventorySessionsLiveService {
       sessionId: s.id,
       warehouseId: s.warehouseId,
       ownerUserId: s.ownerUserId ?? null,
+      editingSessionId: s.editingSessionId ?? null,
       zeroUnlisted: s.zeroUnlisted !== false,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
@@ -75,7 +76,38 @@ class InventorySessionsLiveService {
     };
   }
 
-  async createSession({ warehouseId, ownerUserId, zeroUnlisted = true }) {
+  _seedItems(s, itemsInput) {
+    if (!Array.isArray(itemsInput)) return;
+    for (const it of itemsInput) {
+      const pid = Number(it?.productId ?? it?.product_id);
+      if (!Number.isFinite(pid) || pid < 1) continue;
+      const fact = Math.max(0, clampInt(it?.fact ?? it?.quantityAfter ?? it?.quantity_after, 0, 1000000));
+      const currentRaw = it?.current ?? it?.quantity_before ?? it?.quantityBefore;
+      const current =
+        currentRaw != null && currentRaw !== '' && Number.isFinite(Number(currentRaw))
+          ? Math.max(0, Number(currentRaw))
+          : 0;
+      const costRaw = it?.cost ?? it?.product_cost ?? it?.productCost;
+      const cost =
+        costRaw != null && costRaw !== '' && Number.isFinite(Number(costRaw)) ? Number(costRaw) : null;
+      s.items.set(pid, {
+        productId: pid,
+        sku: it?.sku || it?.product_sku || '—',
+        name: it?.name || it?.product_name || 'Без названия',
+        current,
+        fact,
+        cost,
+      });
+    }
+  }
+
+  async createSession({
+    warehouseId,
+    ownerUserId,
+    zeroUnlisted = true,
+    items = null,
+    editingSessionId = null,
+  }) {
     const wid = warehouseId != null ? Number(warehouseId) : null;
     if (!wid || Number.isNaN(wid)) {
       const err = new Error('Укажите склад инвентаризации');
@@ -88,18 +120,26 @@ class InventorySessionsLiveService {
       err.statusCode = 400;
       throw err;
     }
+    const editSidRaw = editingSessionId ?? null;
+    const editSid =
+      editSidRaw != null && editSidRaw !== '' && Number.isFinite(Number(editSidRaw))
+        ? Number(editSidRaw)
+        : null;
+
     const id = makeId();
     const t = nowMs();
     const s = {
       id,
       warehouseId: wid,
       ownerUserId: ouid,
+      editingSessionId: editSid,
       zeroUnlisted: zeroUnlisted !== false,
       createdAt: t,
       updatedAt: t,
       expiresAt: t + SESSION_TTL_MS,
       items: new Map(),
     };
+    this._seedItems(s, items);
     this._sessions.set(id, s);
     return this._serialize(s);
   }
@@ -200,6 +240,7 @@ class InventorySessionsLiveService {
     profileId = null,
     zeroUnlisted = null,
     note = null,
+    updateSessionId = null,
   } = {}) {
     const s = this._getSessionStrict(sessionId);
     const uid = userId != null && userId !== '' ? Number(userId) : null;
@@ -228,13 +269,27 @@ class InventorySessionsLiveService {
     }
 
     const zeroFlag = zeroUnlisted != null ? zeroUnlisted !== false : s.zeroUnlisted !== false;
-    const result = await inventorySessionsService.apply(lines, {
-      userId: uid,
-      profileId,
-      note: note || null,
-      warehouseId: s.warehouseId,
-      zeroUnlisted: zeroFlag,
-    });
+    const updateIdRaw = updateSessionId ?? s.editingSessionId ?? null;
+    const updateId =
+      updateIdRaw != null && updateIdRaw !== '' && Number.isFinite(Number(updateIdRaw))
+        ? Number(updateIdRaw)
+        : null;
+
+    let result;
+    if (updateId) {
+      result = await inventorySessionsService.updateSession(updateId, lines, {
+        profileId,
+        zeroUnlisted: zeroFlag,
+      });
+    } else {
+      result = await inventorySessionsService.apply(lines, {
+        userId: uid,
+        profileId,
+        note: note || null,
+        warehouseId: s.warehouseId,
+        zeroUnlisted: zeroFlag,
+      });
+    }
     this._sessions.delete(s.id);
     return result;
   }

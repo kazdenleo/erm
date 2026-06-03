@@ -1545,7 +1545,7 @@ class StockMovementsService {
     }
 
     const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
-    if (pt === 'kit') {
+    if (pt === 'kit' || product.is_kit_catalog === true) {
       const error = new Error('Для комплектов сброс истории недоступен');
       error.statusCode = 400;
       throw error;
@@ -1561,8 +1561,181 @@ class StockMovementsService {
     const incomingN = Math.max(0, Math.floor(Number(incoming) || 0));
     const onHandN = Math.max(0, Math.floor(Number(onHand) || 0));
     const reservedN = Math.max(0, Math.floor(Number(reserved) || 0));
-    const profId = productProfileId;
     const resetReason = reason || 'Сброс истории остатков администратором аккаунта';
+
+    return this._executeStockHistoryReset(pid, {
+      product,
+      profileId: productProfileId,
+      incomingN,
+      reservedN,
+      resetReason,
+      warehouseStocks: [{ warehouseId: whId, quantity: onHandN }],
+    });
+  }
+
+  /**
+   * Сброс истории с сохранением текущих остатков (в пути, наличие по складам, резерв).
+   */
+  async resetProductStockHistoryPreserveCurrent(productId, { profileId, reason = null } = {}) {
+    const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      const error = new Error('Некорректный ID товара');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    await this.assertStockHistoryResetAllowed(profileId);
+
+    const product = await this.productsRepository.findById(pid);
+    if (!product) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const productProfileId = product.profile_id ?? product.profileId ?? null;
+    if (profileId != null && productProfileId != null && String(productProfileId) !== String(profileId)) {
+      const error = new Error('Нет доступа к товару');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
+    if (pt === 'kit' || product.is_kit_catalog === true) {
+      const error = new Error('Для комплектов сброс истории недоступен');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const pwsRes = await query(
+      `SELECT warehouse_id, COALESCE(quantity, 0)::int AS quantity
+       FROM product_warehouse_stock
+       WHERE product_id = $1::bigint
+       ORDER BY quantity DESC, warehouse_id ASC`,
+      [pid]
+    );
+
+    const reservedRes = await query(
+      `SELECT COALESCE((
+         SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+         FROM stock_movements sm
+         WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
+       ), COALESCE(p.reserved_quantity, 0), 0)::int AS reserved,
+       COALESCE(p.incoming_quantity, 0)::int AS incoming,
+       COALESCE(p.quantity, 0)::int AS quantity
+       FROM products p
+       WHERE p.id = $1::bigint`,
+      [pid]
+    );
+    const metrics = reservedRes.rows[0] || {};
+    const incomingN = Math.max(0, Number(metrics.incoming) || 0);
+    const reservedN = Math.max(0, Number(metrics.reserved) || 0);
+
+    let warehouseStocks = (pwsRes.rows || [])
+      .map((row) => ({
+        warehouseId: row.warehouse_id,
+        quantity: Math.max(0, Math.floor(Number(row.quantity) || 0)),
+      }))
+      .filter((row) => row.warehouseId != null);
+
+    const totalPws = warehouseStocks.reduce((sum, row) => sum + row.quantity, 0);
+    const productQty = Math.max(0, Number(metrics.quantity) || 0);
+    if (warehouseStocks.length === 0 && productQty > 0) {
+      const whId = await this.productsRepository.resolveOwnWarehouseId(null);
+      if (whId) {
+        warehouseStocks = [{ warehouseId: whId, quantity: productQty }];
+      }
+    } else if (totalPws <= 0 && productQty > 0 && warehouseStocks.length > 0) {
+      warehouseStocks[0] = { ...warehouseStocks[0], quantity: productQty };
+    }
+
+    const resetReason = reason || 'Сброс истории остатков администратором аккаунта';
+
+    return this._executeStockHistoryReset(pid, {
+      product,
+      profileId: productProfileId,
+      incomingN,
+      reservedN,
+      resetReason,
+      warehouseStocks,
+    });
+  }
+
+  /** Массовый сброс истории остатков по всем товарам аккаунта (кроме комплектов). */
+  async resetAllStockHistoryForProfile(profileId) {
+    await this.assertStockHistoryResetAllowed(profileId);
+
+    const pid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : NaN;
+    if (!Number.isFinite(pid) || pid < 1) {
+      const error = new Error('Нет привязки к аккаунту');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    const productsRes = await query(
+      `SELECT p.id
+       FROM products p
+       WHERE p.profile_id = $1::bigint
+         AND LOWER(TRIM(COALESCE(p.product_type::text, ''))) <> 'kit'
+       ORDER BY p.id ASC`,
+      [pid]
+    );
+
+    const reason = 'Массовый сброс истории остатков (настройки аккаунта)';
+    const result = {
+      productsTotal: productsRes.rows.length,
+      productsProcessed: 0,
+      productsSkipped: 0,
+      errors: [],
+    };
+
+    for (const row of productsRes.rows) {
+      const productId = Number(row.id);
+      if (!Number.isFinite(productId) || productId < 1) {
+        result.productsSkipped += 1;
+        continue;
+      }
+      try {
+        await this.resetProductStockHistoryPreserveCurrent(productId, { profileId: pid, reason });
+        result.productsProcessed += 1;
+      } catch (e) {
+        result.errors.push({
+          productId,
+          message: e?.message || 'Ошибка сброса',
+        });
+      }
+    }
+
+    return result;
+  }
+
+  async _executeStockHistoryReset(
+    pid,
+    { product, profileId: profId, incomingN, reservedN, resetReason, warehouseStocks = [] } = {}
+  ) {
+    const stocks = Array.isArray(warehouseStocks) ? warehouseStocks : [];
+    const onHandN = stocks.reduce((sum, row) => sum + Math.max(0, Math.floor(Number(row.quantity) || 0)), 0);
+    const orgId = product.organization_id ?? product.organizationId ?? null;
+
+    const primaryWarehouseId =
+      stocks.length > 0
+        ? stocks.reduce((best, row) =>
+            Math.max(0, Math.floor(Number(row.quantity) || 0)) >
+            Math.max(0, Math.floor(Number(best.quantity) || 0))
+              ? row
+              : best
+          ).warehouseId
+        : await this.productsRepository.resolveOwnWarehouseId(null);
+
+    const metaBase = {
+      stock_history_reset: true,
+      admin_set: { incoming: incomingN, onHand: onHandN, reserved: reservedN },
+    };
 
     return runWithProductStockLock(pid, async () => {
       const client = await getClient();
@@ -1572,12 +1745,19 @@ class StockMovementsService {
 
         await client.query('DELETE FROM stock_movements WHERE product_id = $1', [pid]);
         await client.query('DELETE FROM product_warehouse_stock WHERE product_id = $1', [pid]);
-        await client.query(
-          `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
-          [pid, whId, onHandN]
-        );
+
+        for (const row of stocks) {
+          const wh = row.warehouseId;
+          const qty = Math.max(0, Math.floor(Number(row.quantity) || 0));
+          if (wh == null || qty <= 0) continue;
+          await client.query(
+            `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
+            [pid, wh, qty]
+          );
+        }
+
         await client.query(
           `UPDATE products
            SET quantity = $1,
@@ -1588,20 +1768,17 @@ class StockMovementsService {
           [onHandN, incomingN, pid]
         );
 
-        const metaBase = {
-          stock_history_reset: true,
-          warehouse_id: whId,
-          admin_set: { incoming: incomingN, onHand: onHandN, reserved: reservedN },
-        };
-
-        if (onHandN > 0) {
+        for (const row of stocks) {
+          const wh = row.warehouseId;
+          const qty = Math.max(0, Math.floor(Number(row.quantity) || 0));
+          if (wh == null || qty <= 0) continue;
           await this.repository.insertSnapshotAfterProduct(client, {
             productId: pid,
             type: 'opening_balance',
-            quantityChange: onHandN,
+            quantityChange: qty,
             reason: resetReason,
-            meta: metaBase,
-            warehouseId: whId,
+            meta: { ...metaBase, warehouse_id: wh },
+            warehouseId: wh,
             profileId: profId,
           });
         }
@@ -1619,13 +1796,14 @@ class StockMovementsService {
         }
 
         if (reservedN > 0) {
+          const reserveWarehouseId = primaryWarehouseId;
           const reserveMovement = await this.repository.insertSnapshotAfterProduct(client, {
             productId: pid,
             type: 'reserve',
             quantityChange: -reservedN,
             reason: `${resetReason}: резерв`,
             meta: { ...metaBase, journal_reconcile: true },
-            warehouseId: whId,
+            warehouseId: reserveWarehouseId,
             profileId: profId,
           });
           const movementId = reserveMovement?.id ?? reserveMovement?.movement_id;
@@ -1659,10 +1837,9 @@ class StockMovementsService {
         const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
         const netReserved = await syncProductReservedQuantityFromJournal(pid);
 
-        const orgId = product.organization_id ?? product.organizationId ?? null;
         scheduleStockMovementMarketplaceSync(pid, {
           source: 'stock_history_reset',
-          warehouseId: whId,
+          warehouseId: primaryWarehouseId,
           organizationId: orgId,
         });
 
@@ -1670,7 +1847,7 @@ class StockMovementsService {
 
         return {
           productId: pid,
-          warehouseId: whId,
+          warehouseId: primaryWarehouseId,
           incoming: incomingN,
           onHand: onHandN,
           reserved: netReserved || reservedN,
