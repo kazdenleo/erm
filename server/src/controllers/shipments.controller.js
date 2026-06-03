@@ -228,12 +228,16 @@ class ShipmentsController {
     try {
       const sp = shipmentsProfileOpts(req);
       if (sp.blocked) {
-        return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
+        return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена.' });
       }
       const { id } = req.params;
       const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: sp.profileId, organizationId: sp.organizationId });
       if (!filePath) {
-        return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
+        return res.status(404).json({
+          ok: false,
+          message:
+            'Не удалось получить этикетку WB. Проверьте ключ API в «Интеграции» и что поставка создана на маркетплейсе.'
+        });
       }
       const stickerUrl = wbSupplyQrStickerImagePath(id);
       const html = `<!DOCTYPE html>
@@ -297,7 +301,11 @@ class ShipmentsController {
       const { id } = req.params;
       const filePath = await shipmentsService.getQrStickerFilePath(id, { profileId: null });
       if (!filePath) {
-        return res.status(404).json({ ok: false, message: 'Этикетка поставки не найдена. Закройте поставку WB — этикетка запросится автоматически.' });
+        return res.status(404).json({
+          ok: false,
+          message:
+            'Не удалось получить этикетку WB. Проверьте ключ API и что поставка закрыта на маркетплейсе.'
+        });
       }
       const stickerUrl = wbSupplyQrStickerImagePath(id);
       const html = `<!DOCTYPE html>

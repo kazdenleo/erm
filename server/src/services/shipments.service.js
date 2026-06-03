@@ -773,31 +773,36 @@ async function closeShipment(
           : { ok: true, added: 0 };
 
       if (!push.ok) {
-        shipToClose.localWbOnly = true;
         shipToClose.wbLastSyncError = push.message || 'Заказы не добавлены в поставку WB';
-        logger.warn(
-          `[Shipments] Закрытие ${shipmentId}: пропуск deliver WB — ${shipToClose.wbLastSyncError}`
-        );
+        shipToClose.localWbOnly = !shipToClose.externalId;
+        logger.warn(`[Shipments] Закрытие ${shipmentId}: WB push — ${shipToClose.wbLastSyncError}`);
       } else {
         shipToClose.localWbOnly = false;
         delete shipToClose.wbLastSyncError;
-        const wbConfig = await getWildberriesConfigForScope(shipToClose.profileId, { organizationId });
-        if (wbConfig?.api_key && shipToClose.externalId) {
-          try {
-            const stickerOk = await applyWbSupplyQrSticker(shipToClose, wbConfig);
-            if (!stickerOk) {
-              shipToClose.wbLastSyncError =
-                'Поставка передана на WB, но этикетка не получена — нажмите «Синхронизировать с WB»';
-            }
-          } catch (e) {
-            shipToClose.wbLastSyncError = `Этикетка WB: ${e.message}`;
-            logger.warn('[Shipments] WB deliver/barcode:', e.message);
+      }
+
+      const wbConfig = await getWildberriesConfigForScope(shipToClose.profileId, { organizationId });
+      if (wbConfig?.api_key && shipToClose.externalId) {
+        try {
+          const stickerOk = await applyWbSupplyQrSticker(shipToClose, wbConfig);
+          if (stickerOk) {
+            shipToClose.localWbOnly = false;
+            delete shipToClose.wbLastSyncError;
+          } else if (!shipToClose.wbLastSyncError) {
+            shipToClose.wbLastSyncError =
+              'Поставка передана на WB, этикетка пока недоступна — откройте «Печать этикетки»';
           }
+        } catch (e) {
+          shipToClose.wbLastSyncError = shipToClose.wbLastSyncError || `Этикетка WB: ${e.message}`;
+          logger.warn('[Shipments] WB deliver/barcode:', e.message);
         }
+      } else if (orderIdsForWb.length > 0 && !wbConfig?.api_key) {
+        shipToClose.wbLastSyncError = shipToClose.wbLastSyncError || 'Wildberries API не настроен';
+        if (!shipToClose.externalId) shipToClose.localWbOnly = true;
       }
     } catch (e) {
-      shipToClose.localWbOnly = true;
-      shipToClose.wbLastSyncError = e.message || 'Ошибка синхронизации с WB';
+      shipToClose.localWbOnly = !shipToClose.externalId;
+      shipToClose.wbLastSyncError = e.message || 'Ошибка передачи поставки на WB';
       logger.warn('[Shipments] WB sync before close:', e.message);
     }
   }
@@ -1394,14 +1399,56 @@ async function removeOrdersFromWBSupply(config, supplyId, orderIds) {
 }
 
 /**
+ * Закрытая WB-поставка: deliver на маркетплейсе + сохранение QR, если файла ещё нет.
+ * @returns {Promise<boolean>}
+ */
+async function ensureWbSupplyQrStickerForShipment(shipmentId, { profileId = null, organizationId = null } = {}) {
+  const shipments = await getLocalShipments();
+  const ship = shipments.find((s) => s.id === shipmentId);
+  if (!ship || !shipmentVisibleForScope(ship, profileId, organizationId)) return false;
+  const mp = ship.marketplace;
+  if (mp !== 'wildberries' && mp !== 'wb') return false;
+  if (!ship.closed || !ship.externalId) return false;
+
+  if (ship.qrStickerPath) {
+    const absExisting = join(DATA_DIR, ship.qrStickerPath);
+    if (fs.existsSync(absExisting)) return true;
+  }
+
+  const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
+  if (!wbConfig?.api_key) return false;
+
+  try {
+    const ok = await applyWbSupplyQrSticker(ship, wbConfig);
+    if (ok) {
+      ship.localWbOnly = false;
+      delete ship.wbLastSyncError;
+      await saveLocalShipments(shipments);
+    }
+    return ok;
+  } catch (e) {
+    ship.wbLastSyncError = `Этикетка WB: ${e.message}`;
+    await saveLocalShipments(shipments);
+    logger.warn(`[Shipments WB] ensure sticker ${shipmentId}:`, e.message);
+    return false;
+  }
+}
+
+/**
  * Вернуть абсолютный путь к файлу QR-стикера поставки (для отдачи в HTTP). Если нет — null.
  */
 async function getQrStickerFilePath(shipmentId, { profileId = null, organizationId = null } = {}) {
   const shipments = await getLocalShipments();
-  const ship = shipments.find(s => s.id === shipmentId);
-  if (!ship?.qrStickerPath) return null;
-  if (!shipmentVisibleForScope(ship, profileId, organizationId)) return null;
-  const abs = join(DATA_DIR, ship.qrStickerPath);
+  const ship = shipments.find((s) => s.id === shipmentId);
+  if (!ship || !shipmentVisibleForScope(ship, profileId, organizationId)) return null;
+
+  if (!ship.qrStickerPath || !fs.existsSync(join(DATA_DIR, ship.qrStickerPath))) {
+    await ensureWbSupplyQrStickerForShipment(shipmentId, { profileId, organizationId });
+  }
+
+  const fresh = (await getLocalShipments()).find((s) => s.id === shipmentId);
+  if (!fresh?.qrStickerPath) return null;
+  const abs = join(DATA_DIR, fresh.qrStickerPath);
   return fs.existsSync(abs) ? abs : null;
 }
 

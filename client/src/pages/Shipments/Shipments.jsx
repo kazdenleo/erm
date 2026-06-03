@@ -19,8 +19,6 @@ export function Shipments() {
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState(null);
   const [closeLoadingId, setCloseLoadingId] = useState(null);
-  const [reapplyLoadingId, setReapplyLoadingId] = useState(null);
-  const [syncWbLoadingId, setSyncWbLoadingId] = useState(null);
   const [openShipmentDetail, setOpenShipmentDetail] = useState(null);
   const [openDetailError, setOpenDetailError] = useState(null);
   const [removingOrderId, setRemovingOrderId] = useState(null);
@@ -68,11 +66,12 @@ export function Shipments() {
     return shipment.id && String(shipment.id).startsWith('ship-');
   };
 
-  const showWbSyncButton = (item) => {
-    if (!item?.closed || item.marketplace !== 'wildberries') return false;
-    const count = item.productsCount ?? item.orderIds?.length ?? 0;
-    if (count <= 0) return false;
-    return !!(item.localWbOnly || !item.qrStickerPath || item.wbLastSyncError);
+  const canPrintShipmentSticker = (item) => {
+    if (!item?.closed) return false;
+    if (item.marketplace === 'wildberries') {
+      return !!(item.externalId || item.qrStickerPath);
+    }
+    return !!item.qrStickerPath;
   };
 
   const openShipmentDetailModal = (shipment) => {
@@ -91,49 +90,6 @@ export function Shipments() {
       setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка удаления заказа из поставки');
     } finally {
       setRemovingOrderId(null);
-    }
-  };
-
-  const handleSyncWb = async (shipment) => {
-    if (!shipment?.id || shipment.marketplace !== 'wildberries') return;
-    setSyncWbLoadingId(shipment.id);
-    setOpenDetailError(null);
-    try {
-      const data = await shipmentsApi.syncWb(shipment.id);
-      const updated = data?.shipment;
-      if (updated?.qrStickerPath) {
-        window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
-      }
-      await loadShipments();
-      if (openShipmentDetail?.id === shipment.id && updated) {
-        setOpenShipmentDetail(updated);
-      }
-    } catch (e) {
-      setOpenDetailError(
-        e.response?.data?.message || e.message || 'Не удалось синхронизировать поставку с WB'
-      );
-    } finally {
-      setSyncWbLoadingId(null);
-    }
-  };
-
-  const handleReapplyStock = async (shipment) => {
-    if (!shipment?.id || !isLocalShipment(shipment) || !shipment.closed) return;
-    setReapplyLoadingId(shipment.id);
-    setOpenDetailError(null);
-    try {
-      const data = await shipmentsApi.reapplyStock(shipment.id);
-      const updated = data?.shipment ?? data?.wbSync?.shipment;
-      if (updated?.qrStickerPath) {
-        window.open(getQrStickerPrintUrl(shipment.id), '_blank', 'noopener,noreferrer');
-      }
-      await loadShipments();
-    } catch (e) {
-      setOpenDetailError(
-        e.response?.data?.message || e.message || 'Не удалось повторить списание остатков'
-      );
-    } finally {
-      setReapplyLoadingId(null);
     }
   };
 
@@ -304,40 +260,17 @@ export function Shipments() {
                                 {closeLoadingId === item.id ? 'Закрытие...' : 'Закрыть поставку'}
                               </Button>
                             )}
-                            {showWbSyncButton(item) && (
-                                <Button
-                                  variant="primary"
-                                  size="small"
-                                  onClick={() => handleSyncWb(item)}
-                                  disabled={syncWbLoadingId === item.id}
-                                  title={
-                                    item.wbLastSyncError
-                                      ? item.wbLastSyncError
-                                      : 'Добавить заказы в поставку WB и получить этикетку'
-                                  }
-                                >
-                                  {syncWbLoadingId === item.id ? 'Синхронизация…' : 'Синхронизировать с WB'}
-                                </Button>
-                              )}
-                            {item.closed && isLocalShipment(item) && (
-                              <Button
-                                variant="secondary"
-                                size="small"
-                                onClick={() => handleReapplyStock(item)}
-                                disabled={reapplyLoadingId === item.id}
-                                title="Повторить списание и перевести «Собран» → «Отгружен»"
-                              >
-                                {reapplyLoadingId === item.id
-                                  ? 'Обработка…'
-                                  : 'Повторить отгрузку'}
-                              </Button>
-                            )}
-                            {item.closed && item.qrStickerPath && (
+                            {canPrintShipmentSticker(item) && (
                               <a
                                 href={getQrStickerPrintUrl(item.id)}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="shipments-qr-link"
+                                title={
+                                  item.wbLastSyncError
+                                    ? `${item.wbLastSyncError}. При открытии повторим передачу на WB и загрузку этикетки.`
+                                    : 'Печать этикетки поставки WB'
+                                }
                               >
                                 🖨️ Печать этикетки
                               </a>
