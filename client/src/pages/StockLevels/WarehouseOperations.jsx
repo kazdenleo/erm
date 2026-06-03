@@ -2859,7 +2859,7 @@ export function WarehouseOperations({
 
       {mode === MODE_INVENTORY && (
         <div className="warehouse-ops-panel inventory-panel">
-          {!inventoryNewSession ? (
+          {!inventoryNewSession && (
             <>
               <div className="warehouse-ops-inventory-header-row">
                 <div>
