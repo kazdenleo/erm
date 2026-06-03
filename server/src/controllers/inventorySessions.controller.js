@@ -120,7 +120,7 @@ class InventorySessionsController {
   async getLiveSession(req, res, next) {
     try {
       const { id } = req.params;
-      const data = inventorySessionsLiveService.getSession(id);
+      const data = inventorySessionsLiveService.getSession(id, { sortUserId: req.user?.id ?? null });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 404 || e.statusCode === 400) {
@@ -139,6 +139,7 @@ class InventorySessionsController {
         sessionId: id,
         code: c,
         quantity,
+        userId: req.user?.id ?? null,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
@@ -228,7 +229,7 @@ class InventorySessionsController {
         type: 'inventory_session_invite',
         severity: 'info',
         title: 'Приглашение в общую инвентаризацию',
-        message: `${from} приглашает вас в общую инвентаризацию. Нажмите «Открыть» или перейдите по ссылке: ${url}`,
+        message: `${from} приглашает вас в общую инвентаризацию. Нажмите кнопку «Открыть инвентаризацию» в этом уведомлении.`,
         meta: {
           target_user_id: targetUserId,
           url,

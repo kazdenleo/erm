@@ -57,12 +57,37 @@ class InventorySessionsLiveService {
     s.expiresAt = t + SESSION_TTL_MS;
   }
 
-  _serialize(s) {
+  _touchUserScan(row, userId) {
+    const uid =
+      userId != null && userId !== '' && Number.isFinite(Number(userId)) ? String(Number(userId)) : null;
+    if (!uid || !row) return;
+    if (!row.scanAtByUser || typeof row.scanAtByUser !== 'object') {
+      row.scanAtByUser = {};
+    }
+    row.scanAtByUser[uid] = nowMs();
+  }
+
+  _serialize(s, { sortUserId = null } = {}) {
+    const sortUid =
+      sortUserId != null && sortUserId !== '' && Number.isFinite(Number(sortUserId))
+        ? String(Number(sortUserId))
+        : null;
     const items = [];
     for (const row of s.items.values()) {
-      items.push({ ...row });
+      const out = { ...row };
+      if (out.scanAtByUser && typeof out.scanAtByUser === 'object') {
+        out.scanAtByUser = { ...out.scanAtByUser };
+      }
+      items.push(out);
     }
-    items.sort((a, b) => String(a.sku || '').localeCompare(String(b.sku || ''), 'ru', { numeric: true }));
+    items.sort((a, b) => {
+      if (sortUid) {
+        const ta = Number(a.scanAtByUser?.[sortUid]) || 0;
+        const tb = Number(b.scanAtByUser?.[sortUid]) || 0;
+        if (tb !== ta) return tb - ta;
+      }
+      return String(a.sku || '').localeCompare(String(b.sku || ''), 'ru', { numeric: true });
+    });
     return {
       sessionId: s.id,
       warehouseId: s.warehouseId,
@@ -144,9 +169,9 @@ class InventorySessionsLiveService {
     return this._serialize(s);
   }
 
-  getSession(sessionId) {
+  getSession(sessionId, { sortUserId = null } = {}) {
     const s = this._getSessionStrict(sessionId);
-    return this._serialize(s);
+    return this._serialize(s, { sortUserId });
   }
 
   async _resolveProduct(code) {
@@ -171,7 +196,7 @@ class InventorySessionsLiveService {
     }
   }
 
-  async addScan({ sessionId, code, quantity = 1 }) {
+  async addScan({ sessionId, code, quantity = 1, userId = null }) {
     const s = this._getSessionStrict(sessionId);
     const q = clampInt(quantity, 1, 1000000);
     const product = await this._resolveProduct(code);
@@ -187,8 +212,9 @@ class InventorySessionsLiveService {
     if (prev) {
       prev.fact = Math.max(0, Number(prev.fact) || 0) + q;
       prev.current = current;
+      this._touchUserScan(prev, userId);
     } else {
-      s.items.set(pid, {
+      const row = {
         productId: pid,
         sku: product.sku || '—',
         name: product.name || 'Без названия',
@@ -198,11 +224,13 @@ class InventorySessionsLiveService {
           product.cost != null && product.cost !== '' && Number.isFinite(Number(product.cost))
             ? Number(product.cost)
             : null,
-      });
+      };
+      this._touchUserScan(row, userId);
+      s.items.set(pid, row);
     }
 
     this._touch(s);
-    return this._serialize(s);
+    return this._serialize(s, { sortUserId: userId });
   }
 
   async removeItem({ sessionId, productId }) {

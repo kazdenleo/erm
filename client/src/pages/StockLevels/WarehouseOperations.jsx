@@ -845,16 +845,23 @@ export function WarehouseOperations({
       setInventoryEditingSessionId(Number(editSidRaw));
     }
     setInventoryNewRows(
-      items.map((it) => ({
-        product: {
-          id: it.productId,
-          sku: it.sku || '—',
-          name: it.name || 'Без названия',
-          cost: it.cost,
-        },
-        current: Math.max(0, Number(it.current) || 0),
-        fact: Math.max(0, Number(it.fact) || 0),
-      }))
+      items.map((it) => {
+        const scanAt =
+          me != null && it.scanAtByUser && it.scanAtByUser[String(me)] != null
+            ? Number(it.scanAtByUser[String(me)])
+            : null;
+        return {
+          product: {
+            id: it.productId,
+            sku: it.sku || '—',
+            name: it.name || 'Без названия',
+            cost: it.cost,
+          },
+          current: Math.max(0, Number(it.current) || 0),
+          fact: Math.max(0, Number(it.fact) || 0),
+          scannedAt: Number.isFinite(scanAt) && scanAt > 0 ? scanAt : null,
+        };
+      })
     );
   }, [user?.id, user?.userId]);
 
@@ -1849,12 +1856,14 @@ export function WarehouseOperations({
     if (!product?.id) return;
     product = resolveProductForInventory(product);
     const current = await warehouseQtyForProduct(product, inventorySessionWarehouseId);
+    const now = Date.now();
     setInventoryNewRows((prev) => {
       const idx = prev.findIndex((r) => r.product.id === product.id);
       if (idx === -1) {
-        return [...prev, { product, current, fact: 1 }];
+        return [{ product, current, fact: 1, scannedAt: now }, ...prev];
       }
-      return prev.map((r, i) => (i === idx ? { ...r, fact: r.fact + 1, current } : r));
+      const row = { ...prev[idx], fact: prev[idx].fact + 1, current, scannedAt: now };
+      return [row, ...prev.filter((_, i) => i !== idx)];
     });
   };
 

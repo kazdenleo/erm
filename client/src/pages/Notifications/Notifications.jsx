@@ -6,16 +6,19 @@
 import React, { useEffect, useState } from 'react';
 import { integrationsApi } from '../../services/integrations.api';
 import { Button } from '../../components/common/Button/Button';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 
 function notificationOpenUrl(n) {
   const direct = String(n?.meta?.url || n?.meta?.link || '').trim();
-  if (direct) return direct;
   const sid = n?.meta?.session_id ?? n?.meta?.sessionId ?? null;
+  if (n?.type === 'inventory_session_invite' && sid != null && String(sid).trim() !== '') {
+    return `/stock-levels/warehouse?op=inventory&inv_session=${encodeURIComponent(String(sid).trim())}`;
+  }
+  if (n?.type === 'receipt_session_invite' && sid != null && String(sid).trim() !== '') {
+    return `/stock-levels/warehouse?op=receipts_list&session=${encodeURIComponent(String(sid).trim())}`;
+  }
+  if (direct) return direct;
   if (sid != null && String(sid).trim() !== '') {
-    if (n?.type === 'inventory_session_invite') {
-      return `/stock-levels/warehouse?op=inventory&inv_session=${encodeURIComponent(String(sid).trim())}`;
-    }
     return `/stock-levels/warehouse?op=receipts_list&session=${encodeURIComponent(String(sid).trim())}`;
   }
   return '';
@@ -23,7 +26,8 @@ function notificationOpenUrl(n) {
 
 function notificationOpenLabel(n) {
   if (n?.type === 'inventory_session_invite') return 'Открыть инвентаризацию';
-  return 'Открыть приёмку';
+  if (n?.type === 'receipt_session_invite') return 'Открыть приёмку';
+  return 'Открыть';
 }
 
 export function Notifications() {
@@ -120,17 +124,10 @@ export function Notifications() {
                 {n.message}
               </div>
               {openUrl ? (
-                <div style={{ marginTop: '10px', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => navigate(openUrl)}
-                  >
+                <div style={{ marginTop: '10px' }}>
+                  <Button type="button" onClick={() => navigate(openUrl)}>
                     {notificationOpenLabel(n)}
                   </Button>
-                  <Link to={openUrl} style={{ fontSize: 12 }}>
-                    {openUrl}
-                  </Link>
                 </div>
               ) : null}
               {(n.expires_at || n.checked_at) && (
