@@ -39,21 +39,30 @@ const MODE_RETURN_CUSTOMER = 'return_customer';
 const MODE_TRANSFER = 'transfer';
 
 const RECEIPTS_SCANNER_ID_LS = 'warehouse_ops_receipts_scanner_id';
+const INVENTORY_SCANNER_ID_LS = 'warehouse_ops_inventory_scanner_id';
 
-function getOrCreateReceiptsScannerId() {
+function getOrCreateScannerId(storageKey, prefix = 'scn') {
   try {
-    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(RECEIPTS_SCANNER_ID_LS) : null;
+    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null;
     if (v && String(v).trim()) return String(v).trim();
   } catch {
     /* ignore */
   }
-  const id = `scn-${Math.random().toString(16).slice(2, 10)}`;
+  const id = `${prefix}-${Math.random().toString(16).slice(2, 10)}`;
   try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPTS_SCANNER_ID_LS, id);
+    if (typeof localStorage !== 'undefined') localStorage.setItem(storageKey, id);
   } catch {
     /* ignore */
   }
   return id;
+}
+
+function getOrCreateReceiptsScannerId() {
+  return getOrCreateScannerId(RECEIPTS_SCANNER_ID_LS, 'scn');
+}
+
+function getOrCreateInventoryScannerId() {
+  return getOrCreateScannerId(INVENTORY_SCANNER_ID_LS, 'inv');
 }
 
 function parseScannerPrefixedCode(raw) {
@@ -372,6 +381,11 @@ export function WarehouseOperations({
   const [inventoryZeroUnlisted, setInventoryZeroUnlisted] = useState(true);
   /** Редактирование существующего документа (id) */
   const [inventoryEditingSessionId, setInventoryEditingSessionId] = useState(null);
+  const [inventoryLiveEnabled, setInventoryLiveEnabled] = useState(false);
+  const [inventoryLiveSessionId, setInventoryLiveSessionId] = useState('');
+  const [inventoryLiveOwnerUserId, setInventoryLiveOwnerUserId] = useState(null);
+  const [inventoryScannerId, setInventoryScannerId] = useState(() => getOrCreateInventoryScannerId());
+  const inventorySetFactDebounceRef = useRef({});
 
   const loadReceiptsList = useCallback(() => {
     setReceiptsLoading(true);
@@ -723,6 +737,70 @@ export function WarehouseOperations({
     return Number(receiptSessionOwnerUserId) !== Number(currentUserId);
   }, [receiptSessionEnabled, receiptSessionId, receiptSessionOwnerUserId, currentUserId]);
 
+  const isInventoryLiveGuest = useMemo(() => {
+    if (!inventoryLiveEnabled || !String(inventoryLiveSessionId || '').trim()) return false;
+    if (inventoryLiveOwnerUserId == null || currentUserId == null) return false;
+    return Number(inventoryLiveOwnerUserId) !== Number(currentUserId);
+  }, [inventoryLiveEnabled, inventoryLiveSessionId, inventoryLiveOwnerUserId, currentUserId]);
+
+  const applyInventoryLiveStateToRows = useCallback((sessionData) => {
+    const d = sessionData?.data ?? sessionData;
+    const items = Array.isArray(d?.items) ? d.items : [];
+    const ownerIdRaw = d?.ownerUserId ?? d?.owner_user_id ?? null;
+    const ownerId =
+      ownerIdRaw != null && ownerIdRaw !== '' && Number.isFinite(Number(ownerIdRaw)) ? Number(ownerIdRaw) : null;
+    const widRaw = d?.warehouseId ?? d?.warehouse_id ?? null;
+    if (widRaw != null && widRaw !== '') {
+      setInventorySessionWarehouseId(String(widRaw));
+    }
+    if (d?.zeroUnlisted === false) {
+      setInventoryZeroUnlisted(false);
+    } else if (d?.zeroUnlisted === true) {
+      setInventoryZeroUnlisted(true);
+    }
+    setInventoryLiveOwnerUserId(ownerId);
+    setInventoryNewRows(
+      items.map((it) => ({
+        product: {
+          id: it.productId,
+          sku: it.sku || '—',
+          name: it.name || 'Без названия',
+          cost: it.cost,
+        },
+        current: Math.max(0, Number(it.current) || 0),
+        fact: Math.max(0, Number(it.fact) || 0),
+      }))
+    );
+  }, []);
+
+  const leaveInventoryLiveSession = useCallback(() => {
+    setInventoryLiveEnabled(false);
+    setInventoryLiveSessionId('');
+    setInventoryLiveOwnerUserId(null);
+  }, []);
+
+  const joinInventoryLiveSessionFromUrl = useCallback(
+    async (sid) => {
+      const sessionId = String(sid || '').trim();
+      if (!sessionId) return;
+      setInventoryNewSession(true);
+      setInventoryLiveEnabled(true);
+      setInventoryLiveSessionId(sessionId);
+      setLookupError(null);
+      setMode(MODE_INVENTORY);
+      try {
+        const res = await inventorySessionsApi.getSession(sessionId);
+        applyInventoryLiveStateToRows(res);
+      } catch (ex) {
+        setLookupError(
+          ex?.response?.data?.message || ex?.message || 'Сессия инвентаризации не найдена или истекла'
+        );
+        leaveInventoryLiveSession();
+      }
+    },
+    [applyInventoryLiveStateToRows, leaveInventoryLiveSession]
+  );
+
   const receiptWarehouseLabel = useMemo(() => {
     if (!receiptWarehouseId) return '';
     const w = ownWarehouses.find((x) => String(x.id) === String(receiptWarehouseId));
@@ -759,6 +837,59 @@ export function WarehouseOperations({
     if (!sid) return;
     joinReceiptSessionFromUrl(sid);
   }, [location.search, joinReceiptSessionFromUrl]);
+
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search || '');
+    const invSid = String(sp.get('inv_session') || '').trim();
+    if (!invSid) return;
+    joinInventoryLiveSessionFromUrl(invSid);
+  }, [location.search, joinInventoryLiveSessionFromUrl]);
+
+  useEffect(() => {
+    if (!inventoryNewSession || !inventoryLiveEnabled) return undefined;
+    const sid = String(inventoryLiveSessionId || '').trim();
+    if (!sid) return undefined;
+    let mounted = true;
+    const t = setInterval(() => {
+      if (!mounted) return;
+      inventorySessionsApi.getSession(sid).then(applyInventoryLiveStateToRows).catch(() => {});
+    }, 1200);
+    return () => {
+      mounted = false;
+      clearInterval(t);
+    };
+  }, [inventoryNewSession, inventoryLiveEnabled, inventoryLiveSessionId, applyInventoryLiveStateToRows]);
+
+  useEffect(() => {
+    if (!inventoryNewSession || !inventoryLiveEnabled) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await usersApi.getInviteCandidates();
+        const rows = res?.data ?? [];
+        const meIdRaw = user?.id ?? user?.userId ?? null;
+        const meId =
+          meIdRaw != null && meIdRaw !== '' && Number.isFinite(Number(meIdRaw)) ? Number(meIdRaw) : null;
+        const meEmail = user?.email ? String(user.email).trim().toLowerCase() : null;
+        if (cancelled) return;
+        const filtered = (Array.isArray(rows) ? rows : []).filter((u) => {
+          if (!u) return false;
+          const uidRaw = u.id ?? u.user_id ?? u.userId ?? null;
+          const uid = uidRaw != null && uidRaw !== '' && Number.isFinite(Number(uidRaw)) ? Number(uidRaw) : null;
+          if (meId != null && uid != null && uid === meId) return false;
+          const em = u.email ? String(u.email).trim().toLowerCase() : null;
+          if (meEmail && em && em === meEmail) return false;
+          return true;
+        });
+        setInviteUsers(filtered);
+      } catch {
+        if (!cancelled) setInviteUsers([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [inventoryNewSession, inventoryLiveEnabled, user?.id, user?.userId, user?.email]);
 
   // Подтягиваем состояние сессии периодически (чтобы видеть сканы с других устройств).
   useEffect(() => {
@@ -1559,8 +1690,24 @@ export function WarehouseOperations({
     });
   };
 
+  const scanInventoryLive = async (code) => {
+    const sid = String(inventoryLiveSessionId || '').trim();
+    if (!sid) return;
+    const res = await inventorySessionsApi.scanSession(sid, { code: String(code || '').trim() });
+    applyInventoryLiveStateToRows(res);
+  };
+
   const lookupByBarcodeOrSkuThenInventoryNewOne = async (value) => {
-    const v = String(value || '').trim();
+    const parsed = parseScannerPrefixedCode(value);
+    const v = String(parsed.code || '').trim();
+    if (parsed.scannerId) {
+      setInventoryScannerId(parsed.scannerId);
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(INVENTORY_SCANNER_ID_LS, parsed.scannerId);
+      } catch {
+        /* ignore */
+      }
+    }
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
       playEventSound(SOUND_EVENTS.scan_error);
@@ -1573,14 +1720,21 @@ export function WarehouseOperations({
     }
     setLookupError(null);
     try {
+      if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
+        await scanInventoryLive(v);
+        setOpMessage(`Сканер ${inventoryScannerId || '—'} · пересчёт: +1 шт`);
+        playEventSound(SOUND_EVENTS.scan_ok);
+        setInventoryNewScanValue('');
+        inventoryNewScanValueRef.current = '';
+        inventoryNewScanInputRef.current?.focus();
+        return;
+      }
       if (typeof reloadProductsWithWarehouse === 'function') {
         await reloadProductsWithWarehouse(inventorySessionWarehouseId);
       }
       const product = await lookupProductByAny(v, {
         title: 'Выберите товар для инвентаризации',
-        // В инвентаризации скан часто первым делом — новый штрихкод.
-        // Если товара нет, предложим сразу привязать штрихкод к товару.
-        allowLinkBarcode: isLikelyBarcodeScan(v)
+        allowLinkBarcode: isLikelyBarcodeScan(v),
       });
       await addOneToInventoryNewRow(product);
       setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
@@ -1646,9 +1800,18 @@ export function WarehouseOperations({
       setOpMessage('Товар не найден');
       return;
     }
-    await addOneToInventoryNewRow(product);
-    setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
-    inventoryNewScanInputRef.current?.focus();
+    try {
+      if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
+        await scanInventoryLive(String(product.id));
+        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+      } else {
+        await addOneToInventoryNewRow(product);
+        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+      }
+      inventoryNewScanInputRef.current?.focus();
+    } catch (e) {
+      setOpMessage('Ошибка: ' + (e?.message || 'не удалось добавить'));
+    }
   };
 
   const setInventoryNewFact = (productId, value) => {
@@ -1657,13 +1820,36 @@ export function WarehouseOperations({
     setInventoryNewRows((prev) =>
       prev.map((r) => (r.product.id === productId ? { ...r, fact } : r))
     );
+    if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
+      const sid = String(inventoryLiveSessionId || '').trim();
+      const pid = Number(productId);
+      if (inventorySetFactDebounceRef.current[pid]) {
+        clearTimeout(inventorySetFactDebounceRef.current[pid]);
+      }
+      inventorySetFactDebounceRef.current[pid] = setTimeout(() => {
+        delete inventorySetFactDebounceRef.current[pid];
+        inventorySessionsApi
+          .setSessionFact(sid, { productId: pid, fact })
+          .then(applyInventoryLiveStateToRows)
+          .catch(() => {});
+      }, 400);
+    }
   };
 
   const removeInventoryNewRow = (productId) => {
+    if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
+      const sid = String(inventoryLiveSessionId || '').trim();
+      inventorySessionsApi
+        .removeSessionItem(sid, { productId: Number(productId) })
+        .then(applyInventoryLiveStateToRows)
+        .catch(() => {});
+      return;
+    }
     setInventoryNewRows((prev) => prev.filter((r) => r.product.id !== productId));
   };
 
   const resetInventoryNewForm = () => {
+    leaveInventoryLiveSession();
     setInventoryNewSession(false);
     setInventoryNewRows([]);
     setInventorySessionWarehouseId('');
@@ -1741,6 +1927,28 @@ export function WarehouseOperations({
       zeroUnlisted: inventoryZeroUnlisted,
     };
     try {
+      if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim() && !inventoryEditingSessionId) {
+        if (isInventoryLiveGuest) {
+          setOpMessage('Применить инвентаризацию может только создатель общей сессии');
+          setOpLoading(false);
+          return;
+        }
+        const r = await inventorySessionsApi.completeSession(String(inventoryLiveSessionId || '').trim(), {
+          zeroUnlisted: inventoryZeroUnlisted,
+        });
+        const res = r?.data ?? r;
+        const sid = res?.sessionId;
+        setOpMessage(
+          sid
+            ? `Инвентаризация №${sid} сохранена. Обновлено позиций: ${res.linesApplied ?? 0}`
+            : res?.message || 'Изменений не зафиксировано'
+        );
+        onRefresh?.();
+        loadInventorySessions();
+        resetInventoryNewForm();
+        setOpLoading(false);
+        return;
+      }
       const res = inventoryEditingSessionId
         ? await inventorySessionsApi.update(inventoryEditingSessionId, payload)
         : await inventorySessionsApi.apply({
@@ -1773,6 +1981,10 @@ export function WarehouseOperations({
   };
 
   const clearInventoryNewRows = () => {
+    if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
+      setOpMessage('В общей инвентаризации удаляйте строки по одной — общий список на сервере.');
+      return;
+    }
     setInventoryNewRows([]);
     setOpMessage('Список пересчёта очищен');
   };
@@ -2516,20 +2728,180 @@ export function WarehouseOperations({
                 <label>
                   Склад инвентаризации <span className="warehouse-ops-required-star">*</span>
                 </label>
-                <select
-                  value={inventorySessionWarehouseId}
-                  onChange={handleInventorySessionWarehouseChange}
-                  className="warehouse-ops-select"
-                  disabled={!!inventoryEditingSessionId}
-                >
-                  <option value="">— Выберите склад —</option>
-                  {ownWarehouses.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.address || w.name || `Склад #${w.id}`}
-                    </option>
-                  ))}
-                </select>
+                {inventoryLiveEnabled && inventoryLiveSessionId ? (
+                  <div className="warehouse-ops-select" style={{ padding: '8px 0', fontSize: 14 }}>
+                    {ownWarehouses.find((w) => String(w.id) === String(inventorySessionWarehouseId))?.address ||
+                      ownWarehouses.find((w) => String(w.id) === String(inventorySessionWarehouseId))?.name ||
+                      (inventorySessionWarehouseId ? `Склад #${inventorySessionWarehouseId}` : 'Загрузка…')}
+                    {isInventoryLiveGuest ? (
+                      <span className="muted" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+                        Склад задан создателем общей инвентаризации
+                      </span>
+                    ) : null}
+                  </div>
+                ) : (
+                  <select
+                    value={inventorySessionWarehouseId}
+                    onChange={handleInventorySessionWarehouseChange}
+                    className="warehouse-ops-select"
+                    disabled={!!inventoryEditingSessionId}
+                  >
+                    <option value="">— Выберите склад —</option>
+                    {ownWarehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.address || w.name || `Склад #${w.id}`}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
+
+              {isInventoryLiveGuest && (
+                <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
+                  Вы приглашены в общую инвентаризацию: сканируйте товары — они попадут в общий список пересчёта.
+                  Применить документ может только создатель.
+                </p>
+              )}
+
+              {!inventoryEditingSessionId && !isInventoryLiveGuest && (
+                <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+                  <label className="warehouse-ops-radio" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={inventoryLiveEnabled}
+                      onChange={async (e) => {
+                        const on = !!e.target.checked;
+                        setLookupError(null);
+                        setOpMessage(null);
+                        setInventoryLiveEnabled(on);
+                        if (!on) {
+                          leaveInventoryLiveSession();
+                          return;
+                        }
+                        if (!inventorySessionWarehouseId) {
+                          setLookupError('Сначала выберите склад инвентаризации');
+                          setInventoryLiveEnabled(false);
+                          return;
+                        }
+                        try {
+                          const created = await inventorySessionsApi.createSession({
+                            warehouseId: Number(inventorySessionWarehouseId),
+                            zeroUnlisted: inventoryZeroUnlisted,
+                          });
+                          const d = created?.data ?? created;
+                          const sid = String(d?.sessionId || '').trim();
+                          if (sid) {
+                            setInventoryLiveSessionId(sid);
+                            applyInventoryLiveStateToRows(created);
+                          }
+                        } catch (ex) {
+                          setLookupError(
+                            ex.response?.data?.message || ex.message || 'Не удалось создать общую инвентаризацию'
+                          );
+                          setInventoryLiveEnabled(false);
+                          setInventoryLiveSessionId('');
+                        }
+                      }}
+                    />
+                    <span>Общая инвентаризация (несколько устройств / сканеров)</span>
+                  </label>
+                  {inventoryLiveEnabled && inventoryLiveSessionId && (
+                    <span className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
+                      Код: <code>{inventoryLiveSessionId}</code> · ссылка:{' '}
+                      <code>?op=inventory&amp;inv_session={inventoryLiveSessionId}</code>
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {inventoryLiveEnabled && inventoryLiveSessionId && (
+                <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 6 }}>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      leaveInventoryLiveSession();
+                      setInventoryNewRows([]);
+                    }}
+                  >
+                    Выйти из общей инвентаризации
+                  </Button>
+                </div>
+              )}
+
+              {inventoryLiveEnabled && inventoryLiveSessionId && !isInventoryLiveGuest && (
+                <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+                  <label>Пригласить пользователя</label>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <select
+                      className="warehouse-ops-select"
+                      value={inviteUserId}
+                      onChange={(e) => setInviteUserId(e.target.value)}
+                      style={{ minWidth: 260 }}
+                    >
+                      <option value="">— Выберите пользователя —</option>
+                      {(inviteUsers || []).map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {(u.full_name ||
+                            [u.last_name, u.first_name].filter(Boolean).join(' ') ||
+                            u.email ||
+                            `User #${u.id}`) + (u.email ? ` (${u.email})` : '')}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={inviteBusy || !inviteUserId}
+                      onClick={async () => {
+                        const sid = String(inventoryLiveSessionId || '').trim();
+                        const uid = inviteUserId ? Number(inviteUserId) : null;
+                        if (!sid || !uid || Number.isNaN(uid) || inviteBusy) return;
+                        try {
+                          setInviteBusy(true);
+                          await inventorySessionsApi.inviteToSession(sid, { userId: uid });
+                          setOpMessage('Приглашение отправлено в уведомления.');
+                        } catch (ex) {
+                          setLookupError(
+                            ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение'
+                          );
+                        } finally {
+                          setInviteBusy(false);
+                        }
+                      }}
+                    >
+                      {inviteBusy ? 'Отправляю…' : 'Отправить'}
+                    </Button>
+                  </div>
+                  <p className="warehouse-ops-hint" style={{ marginTop: 6 }}>
+                    Приглашённый увидит уведомление и перейдёт в общую инвентаризацию для сканирования.
+                  </p>
+                </div>
+              )}
+
+              <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+                <label>ID сканера</label>
+                <input
+                  type="text"
+                  className="warehouse-ops-input"
+                  style={{ maxWidth: 220 }}
+                  value={inventoryScannerId}
+                  onChange={(e) => {
+                    const v = String(e.target.value || '').trim();
+                    setInventoryScannerId(v);
+                    try {
+                      if (typeof localStorage !== 'undefined') localStorage.setItem(INVENTORY_SCANNER_ID_LS, v);
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                  placeholder="A, B, S1…"
+                />
+                <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
+                  Префикс в штрихкоде: <code>A:460…</code>, <code>B-460…</code>
+                </span>
+              </div>
+
               <label className="warehouse-ops-checkbox-row" style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
                   type="checkbox"
@@ -2689,7 +3061,11 @@ export function WarehouseOperations({
                     </table>
                   </div>
                   <div className="warehouse-ops-receipt-list-actions">
-                    <Button onClick={applyInventoryNew} disabled={opLoading}>
+                    <Button
+                      onClick={applyInventoryNew}
+                      disabled={opLoading || isInventoryLiveGuest}
+                      title={isInventoryLiveGuest ? 'Применить может только создатель общей инвентаризации' : undefined}
+                    >
                       {opLoading
                         ? 'Сохранение…'
                         : inventoryEditingSessionId

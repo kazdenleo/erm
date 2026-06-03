@@ -331,6 +331,41 @@ router.post(
   requireAuth,
   wrapAsync(inventorySessionsController.apply.bind(inventorySessionsController))
 );
+router.post(
+  '/inventory-sessions/sessions',
+  requireAuth,
+  wrapAsync(inventorySessionsController.createLiveSession.bind(inventorySessionsController))
+);
+router.get(
+  '/inventory-sessions/sessions/:id',
+  requireAuth,
+  wrapAsync(inventorySessionsController.getLiveSession.bind(inventorySessionsController))
+);
+router.post(
+  '/inventory-sessions/sessions/:id/scan',
+  requireAuth,
+  wrapAsync(inventorySessionsController.liveSessionScan.bind(inventorySessionsController))
+);
+router.post(
+  '/inventory-sessions/sessions/:id/set-fact',
+  requireAuth,
+  wrapAsync(inventorySessionsController.liveSessionSetFact.bind(inventorySessionsController))
+);
+router.post(
+  '/inventory-sessions/sessions/:id/remove-item',
+  requireAuth,
+  wrapAsync(inventorySessionsController.liveSessionRemoveItem.bind(inventorySessionsController))
+);
+router.post(
+  '/inventory-sessions/sessions/:id/complete',
+  requireAuth,
+  wrapAsync(inventorySessionsController.completeLiveSession.bind(inventorySessionsController))
+);
+router.post(
+  '/inventory-sessions/sessions/:id/invite',
+  requireAuth,
+  wrapAsync(inventorySessionsController.inviteToLiveSession.bind(inventorySessionsController))
+);
 router.get(
   '/inventory-sessions/:id',
   requireAuth,

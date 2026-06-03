@@ -13,9 +13,17 @@ function notificationOpenUrl(n) {
   if (direct) return direct;
   const sid = n?.meta?.session_id ?? n?.meta?.sessionId ?? null;
   if (sid != null && String(sid).trim() !== '') {
+    if (n?.type === 'inventory_session_invite') {
+      return `/stock-levels/warehouse?op=inventory&inv_session=${encodeURIComponent(String(sid).trim())}`;
+    }
     return `/stock-levels/warehouse?op=receipts_list&session=${encodeURIComponent(String(sid).trim())}`;
   }
   return '';
+}
+
+function notificationOpenLabel(n) {
+  if (n?.type === 'inventory_session_invite') return 'Открыть инвентаризацию';
+  return 'Открыть приёмку';
 }
 
 export function Notifications() {
@@ -118,7 +126,7 @@ export function Notifications() {
                     variant="secondary"
                     onClick={() => navigate(openUrl)}
                   >
-                    Открыть приёмку
+                    {notificationOpenLabel(n)}
                   </Button>
                   <Link to={openUrl} style={{ fontSize: 12 }}>
                     {openUrl}
