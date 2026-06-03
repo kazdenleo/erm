@@ -58,16 +58,4 @@ export const shipmentsApi = {
     return response.data?.data ?? response.data;
   },
 
-  /** Повторно снять резерв и списать по заказам закрытой поставки (если при закрытии не сработало). */
-  reapplyStock: async (shipmentId) => {
-    const response = await api.post(
-      `/shipments/${encodeURIComponent(shipmentId)}/reapply-stock`
-    );
-    return response.data?.data ?? response.data;
-  },
-
-  syncWb: async (shipmentId) => {
-    const response = await api.post(`/shipments/${encodeURIComponent(shipmentId)}/sync-wb`);
-    return response.data?.data ?? response.data;
-  },
 };

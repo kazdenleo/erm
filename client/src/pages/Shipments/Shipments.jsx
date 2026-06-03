@@ -67,9 +67,9 @@ export function Shipments() {
   };
 
   const canPrintShipmentSticker = (item) => {
-    if (!item?.closed) return false;
+    if (!item?.closed || !isLocalShipment(item)) return false;
     if (item.marketplace === 'wildberries') {
-      return !!(item.externalId || item.qrStickerPath);
+      return (item.orderIds?.length ?? item.productsCount ?? 0) > 0 || !!item.externalId || !!item.qrStickerPath;
     }
     return !!item.qrStickerPath;
   };
@@ -203,7 +203,9 @@ export function Shipments() {
       <div className="shipments-page-header">
         <div>
           <h1 className="title">📤 Поставки (FBS)</h1>
-          <p className="subtitle">Ozon и Яндекс — локальные. WB — создание на маркетплейсе и добавление заказов.</p>
+          <p className="subtitle">
+            Ozon и Яндекс — локальные. WB — при закрытии поставка передаётся на маркетплейс; этикетка — по кнопке «Печать этикетки».
+          </p>
         </div>
         <Button variant="primary" onClick={() => setCreateOpen(true)}>
           + Создать поставку
@@ -268,8 +270,8 @@ export function Shipments() {
                                 className="shipments-qr-link"
                                 title={
                                   item.wbLastSyncError
-                                    ? `${item.wbLastSyncError}. При открытии повторим передачу на WB и загрузку этикетки.`
-                                    : 'Печать этикетки поставки WB'
+                                    ? `${item.wbLastSyncError}. При открытии выполним передачу на WB и загрузку этикетки.`
+                                    : 'Печать этикетки поставки (передача на WB при необходимости)'
                                 }
                               >
                                 🖨️ Печать этикетки

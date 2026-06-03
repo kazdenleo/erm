@@ -1408,7 +1408,22 @@ async function ensureWbSupplyQrStickerForShipment(shipmentId, { profileId = null
   if (!ship || !shipmentVisibleForScope(ship, profileId, organizationId)) return false;
   const mp = ship.marketplace;
   if (mp !== 'wildberries' && mp !== 'wb') return false;
-  if (!ship.closed || !ship.externalId) return false;
+  if (!ship.closed) return false;
+
+  const orderIds = Array.isArray(ship.orderIds) ? ship.orderIds : [];
+  if (!ship.externalId) {
+    if (!orderIds.length) return false;
+    const push = await pushOrdersToWildberriesSupply(ship, orderIds, { organizationId });
+    if (!push.ok) {
+      ship.wbLastSyncError = push.message || 'Не удалось создать поставку на WB';
+      ship.localWbOnly = true;
+      await saveLocalShipments(shipments);
+      return false;
+    }
+    ship.localWbOnly = false;
+    delete ship.wbLastSyncError;
+    await saveLocalShipments(shipments);
+  }
 
   if (ship.qrStickerPath) {
     const absExisting = join(DATA_DIR, ship.qrStickerPath);
