@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Button } from '../../common/Button/Button';
+import { TAX_SYSTEM_OPTIONS } from '../../../utils/organizationTaxRates.js';
 
 export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = false, profiles = [] }) {
   const [formData, setFormData] = useState({
@@ -19,15 +20,7 @@ export function OrganizationForm({ organization, onSubmit, onCancel, isAdmin = f
   });
   const [errors, setErrors] = useState({});
 
-  const taxSystemOptions = [
-    { value: '', label: '— Не указано —' },
-    { value: 'OSN', label: 'ОСН (общая)' },
-    { value: 'USN_INCOME', label: 'УСН (доходы)' },
-    { value: 'USN_INCOME_OUTCOME', label: 'УСН (доходы минус расходы)' },
-    { value: 'PSN', label: 'ПСН' },
-    { value: 'ESHN', label: 'ЕСХН' },
-    { value: 'OTHER', label: 'Иное' }
-  ];
+  const taxSystemOptions = TAX_SYSTEM_OPTIONS;
 
   const vatOptions = [
     { value: '', label: 'Не указано' },

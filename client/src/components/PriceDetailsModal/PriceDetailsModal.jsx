@@ -384,9 +384,12 @@ export function PriceDetailsModal({
   const netProfit = taxBreakdown.netProfit;
   const netProfitPercent = calculatedPrice > 0 ? (netProfit / calculatedPrice) * 100 : 0;
   const vatPctLabel = profile.vatRate > 0 ? `${(profile.vatRate * 100).toFixed(0)}%` : '0%';
-  const incomeTaxPctLabel = profile.incomeTaxOnRevenue
-    ? `${(profile.incomeTaxRate * 100).toFixed(0)}% с выручки`
-    : `${(profile.incomeTaxRate * 100).toFixed(0)}% с прибыли`;
+  const incomeTaxPctLabel =
+    profile.incomeTaxRate > 0
+      ? profile.incomeTaxOnRevenue
+        ? `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с выручки (мин. цена)`
+        : `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с прибыли`
+      : 'не указан в организации';
 
   const isEstimatedTariffs = marketplace === 'wb' && calculatorData._estimatedTariffs;
 
@@ -693,7 +696,7 @@ export function PriceDetailsModal({
                 <span className="price-breakdown-value negative">
                   -{vatAmount.toFixed(2)} ₽
                   <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    из цены с НДС: {calculatedPrice.toFixed(2)} × {vatPctLabel} / (1 + {vatPctLabel})
+                    = {calculatedPrice.toFixed(2)} × {vatPctLabel} = {vatAmount.toFixed(2)} ₽
                   </div>
                 </span>
               </div>

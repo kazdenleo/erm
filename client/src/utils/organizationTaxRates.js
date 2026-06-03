@@ -1,6 +1,29 @@
 /**
- * Ставки НДС и налога по организации (дублирует server/src/utils/organizationTaxRates.js).
+ * Ставки НДС и налога по организации (синхронно с server/src/utils/organizationTaxRates.js).
  */
+
+export const TAX_SYSTEM_OPTIONS = [
+  { value: '', label: '— Не указано —' },
+  { value: 'USN_INCOME_OUTCOME', label: 'УСН (доходы − расходы) — 15%' },
+  { value: 'USN_INCOME', label: 'УСН (доходы) — 6%' },
+  { value: 'OSN', label: 'ОСН (общая) — 20% с прибыли' },
+  { value: 'PSN', label: 'ПСН' },
+  { value: 'ESHN', label: 'ЕСХН' },
+  { value: 'OTHER', label: 'Иное' },
+];
+
+export function normalizeTaxSystemCode(taxSystem) {
+  const raw = String(taxSystem || '').trim();
+  if (!raw) return '';
+  const u = raw.toUpperCase().replace(/\s+/g, '_');
+  if (u === 'USN_INCOME' || u === 'USN_6') return 'USN_INCOME';
+  if (u === 'USN_INCOME_OUTCOME' || u === 'USN_15') return 'USN_INCOME_OUTCOME';
+  if (u === 'OSN') return 'OSN';
+  if (/ДОХОД.*(МИНУС|РАСХОД)|РАСХОД.*ДОХОД|INCOME.*OUTCOME/i.test(raw)) return 'USN_INCOME_OUTCOME';
+  if (/УСН|USN/.test(raw) && /ДОХОД|INCOME/.test(raw) && !/РАСХОД|OUTCOME|МИНУС/i.test(raw)) return 'USN_INCOME';
+  if (/ОСН|OSN/.test(raw)) return 'OSN';
+  return u;
+}
 
 export function vatRateFromOrganizationCode(vatCode) {
   const c = String(vatCode || '').trim().toUpperCase();
@@ -16,11 +39,12 @@ export function vatRateFromOrganizationCode(vatCode) {
 }
 
 export function incomeTaxFromOrganization(taxSystem) {
-  const ts = String(taxSystem || '').trim().toUpperCase();
-  if (ts === 'USN_INCOME') return { rate: 0.06, onRevenue: true };
-  if (ts === 'USN_INCOME_OUTCOME') return { rate: 0.15, onRevenue: false };
-  if (ts === 'OSN') return { rate: 0.2, onRevenue: false };
-  return { rate: 0.15, onRevenue: false };
+  const ts = normalizeTaxSystemCode(taxSystem);
+  if (!ts) return { rate: 0, onRevenue: false, code: '' };
+  if (ts === 'USN_INCOME') return { rate: 0.06, onRevenue: true, code: 'USN_INCOME' };
+  if (ts === 'USN_INCOME_OUTCOME') return { rate: 0.15, onRevenue: false, code: 'USN_INCOME_OUTCOME' };
+  if (ts === 'OSN') return { rate: 0.2, onRevenue: false, code: 'OSN' };
+  return { rate: 0, onRevenue: false, code: ts };
 }
 
 export function resolveOrganizationTaxProfile(org) {
@@ -29,27 +53,34 @@ export function resolveOrganizationTaxProfile(org) {
     vatRate: vatRateFromOrganizationCode(org?.vat),
     incomeTaxRate: income.rate,
     incomeTaxOnRevenue: income.onRevenue,
+    taxSystemCode: income.code,
   };
 }
 
-export function vatAmountFromGrossPrice(grossPrice, vatRate) {
+/** НДС = минимальная цена × ставка из настроек организации. */
+export function vatAmountFromPrice(price, vatRate) {
   const rate = Number(vatRate) || 0;
   if (rate <= 0) return 0;
-  const p = Number(grossPrice) || 0;
-  return (p * rate) / (1 + rate);
+  return (Number(price) || 0) * rate;
+}
+
+export function vatAmountFromGrossPrice(price, vatRate) {
+  return vatAmountFromPrice(price, vatRate);
 }
 
 export function computeTaxesAndNetProfit({ price, totalExpenses, taxProfile }) {
   const profile = taxProfile || resolveOrganizationTaxProfile(null);
   const priceNum = Number(price) || 0;
   const expenses = Number(totalExpenses) || 0;
-  const vat = vatAmountFromGrossPrice(priceNum, profile.vatRate);
+  const vat = vatAmountFromPrice(priceNum, profile.vatRate);
   const profitBeforeIncomeTax = priceNum - expenses - vat;
   let incomeTax = 0;
-  if (profile.incomeTaxOnRevenue) {
-    incomeTax = Math.max(0, priceNum * profile.incomeTaxRate);
-  } else {
-    incomeTax = Math.max(0, profitBeforeIncomeTax * profile.incomeTaxRate);
+  if (profile.incomeTaxRate > 0) {
+    if (profile.incomeTaxOnRevenue) {
+      incomeTax = Math.max(0, priceNum * profile.incomeTaxRate);
+    } else {
+      incomeTax = Math.max(0, profitBeforeIncomeTax * profile.incomeTaxRate);
+    }
   }
   const netProfit = profitBeforeIncomeTax - incomeTax;
   return { vat, incomeTax, netProfit, profitBeforeIncomeTax };
@@ -77,14 +108,15 @@ export function formatVatLabel(vatCode) {
   return map[c] || (c ? c : '—');
 }
 
+export function formatTaxSystemLabel(taxSystem) {
+  const code = normalizeTaxSystemCode(taxSystem);
+  const opt = TAX_SYSTEM_OPTIONS.find((o) => o.value === code);
+  return opt?.label || (code || '—');
+}
+
 export function formatIncomeTaxLabel(taxSystem) {
-  const ts = String(taxSystem || '').trim().toUpperCase();
-  const map = {
-    OSN: 'ОСН',
-    USN_INCOME: 'УСН 6%',
-    USN_INCOME_OUTCOME: 'УСН 15%',
-    PSN: 'ПСН',
-    ESHN: 'ЕСХН',
-  };
-  return map[ts] || (ts ? ts : 'УСН 15% (по умолчанию)');
+  const income = incomeTaxFromOrganization(taxSystem);
+  if (!income.code || income.rate <= 0) return 'не указан';
+  if (income.onRevenue) return `УСН ${(income.rate * 100).toFixed(0)}% с выручки`;
+  return `УСН ${(income.rate * 100).toFixed(0)}% с прибыли`;
 }

@@ -10,6 +10,7 @@ import { profilesApi } from '../../services/profiles.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { OrganizationForm } from '../../components/forms/OrganizationForm/OrganizationForm';
+import { formatTaxSystemLabel } from '../../utils/organizationTaxRates.js';
 import './Organizations.css';
 
 export function Organizations() {
@@ -50,10 +51,7 @@ export function Organizations() {
     }
   };
 
-  const taxSystemLabel = (code) => {
-    const map = { OSN: 'ОСН (общая)', USN_INCOME: 'УСН (доходы)', USN_INCOME_OUTCOME: 'УСН (доходы минус расходы)', PSN: 'ПСН', ESHN: 'ЕСХН', OTHER: 'Иное' };
-    return code ? (map[code] || code) : null;
-  };
+  const taxSystemLabel = (code) => (code ? formatTaxSystemLabel(code) : null);
   const vatLabel = (code) => {
     const map = { NO_VAT: 'Без НДС', VAT_22: 'НДС 22%', VAT_10: 'НДС 10%', VAT_7: 'НДС 7%', VAT_5: 'НДС 5%' };
     return code ? (map[code] || code) : null;
