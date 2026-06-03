@@ -5,9 +5,20 @@
 
 import React from 'react';
 import { Modal } from '../common/Modal/Modal';
+import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile } from '../../utils/organizationTaxRates.js';
 import './PriceDetailsModal.css';
 
-export function PriceDetailsModal({ isOpen, onClose, product, marketplace, priceData, calculatorData, wbAcquiringPercent = null, wbGemServicesPercent = null }) {
+export function PriceDetailsModal({
+  isOpen,
+  onClose,
+  product,
+  marketplace,
+  priceData,
+  calculatorData,
+  wbAcquiringPercent = null,
+  wbGemServicesPercent = null,
+  taxProfile = null,
+}) {
   if (!isOpen || !product || !marketplace) {
     return null;
   }
@@ -356,11 +367,26 @@ export function PriceDetailsModal({ isOpen, onClose, product, marketplace, price
     totalExpenses: totalExpenses.toFixed(2)
   });
   
-  // Налоги (15%)
-  const taxRate = 0.15;
-  const taxes = profit * taxRate;
-  const netProfit = profit - taxes;
+  const profile = taxProfile || resolveOrganizationTaxProfile(null);
+  const mpExpensesWithoutBase =
+    commissionAmount +
+    effectiveAcquiringAmount +
+    brandPromotionAmount +
+    gemServicesAmount +
+    fixedExpenses;
+  const taxBreakdown = computeTaxesAndNetProfit({
+    price: calculatedPrice,
+    totalExpenses: basePrice + mpExpensesWithoutBase,
+    taxProfile: profile,
+  });
+  const vatAmount = taxBreakdown.vat;
+  const incomeTaxAmount = taxBreakdown.incomeTax;
+  const netProfit = taxBreakdown.netProfit;
   const netProfitPercent = calculatedPrice > 0 ? (netProfit / calculatedPrice) * 100 : 0;
+  const vatPctLabel = profile.vatRate > 0 ? `${(profile.vatRate * 100).toFixed(0)}%` : '0%';
+  const incomeTaxPctLabel = profile.incomeTaxOnRevenue
+    ? `${(profile.incomeTaxRate * 100).toFixed(0)}% с выручки`
+    : `${(profile.incomeTaxRate * 100).toFixed(0)}% с прибыли`;
 
   const isEstimatedTariffs = marketplace === 'wb' && calculatorData._estimatedTariffs;
 
@@ -661,22 +687,31 @@ export function PriceDetailsModal({ isOpen, onClose, product, marketplace, price
               </span>
             </div>
             
+            {vatAmount > 0 && (
+              <div className="price-breakdown-item">
+                <span className="price-breakdown-label">НДС ({vatPctLabel}):</span>
+                <span className="price-breakdown-value negative">
+                  -{vatAmount.toFixed(2)} ₽
+                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
+                    из цены с НДС: {calculatedPrice.toFixed(2)} × {vatPctLabel} / (1 + {vatPctLabel})
+                  </div>
+                </span>
+              </div>
+            )}
+
             <div className="price-breakdown-item">
-              <span className="price-breakdown-label">Налоги (15%):</span>
+              <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
               <span className="price-breakdown-value negative">
-                -{taxes.toFixed(2)} ₽
-                <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {profit > 0 ? `${profit.toFixed(2)} × 15% = ${taxes.toFixed(2)} ₽` : '0 ₽ (прибыль отрицательная)'}
-                </div>
+                -{incomeTaxAmount.toFixed(2)} ₽
               </span>
             </div>
-            
+
             <div className="price-breakdown-item price-breakdown-total">
               <span className="price-breakdown-label">Чистая прибыль:</span>
               <span className="price-breakdown-value positive large">
                 {netProfit.toFixed(2)} ₽ ({netProfitPercent.toFixed(2)}%)
                 <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {profit.toFixed(2)} - {taxes.toFixed(2)} = {netProfit.toFixed(2)} ₽
+                  после НДС и налога по настройкам организации
                 </div>
               </span>
             </div>
