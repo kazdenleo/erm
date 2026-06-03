@@ -387,9 +387,22 @@ export function PriceDetailsModal({
   const incomeTaxPctLabel =
     profile.incomeTaxRate > 0
       ? profile.incomeTaxOnRevenue
-        ? `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с выручки (мин. цена)`
+        ? `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с выручки`
         : `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с прибыли`
       : 'не указан в организации';
+  const incomeTaxPct = profile.incomeTaxRate > 0 ? `${(profile.incomeTaxRate * 100).toFixed(0)}%` : '0%';
+  const profitBeforeIncomeTax = taxBreakdown.profitBeforeIncomeTax;
+  const incomeTaxFormulaHint = (() => {
+    if (profile.incomeTaxRate <= 0) return null;
+    if (profile.incomeTaxOnRevenue) {
+      return `= ${calculatedPrice.toFixed(2)} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽`;
+    }
+    const base = profitBeforeIncomeTax.toFixed(2);
+    if (profitBeforeIncomeTax <= 0) {
+      return `= ${base} × ${incomeTaxPct} = 0 ₽ (прибыль до налога не положительная)`;
+    }
+    return `= ${base} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (прибыль до налога: цена − расходы − НДС)`;
+  })();
 
   const isEstimatedTariffs = marketplace === 'wb' && calculatorData._estimatedTariffs;
 
@@ -702,19 +715,26 @@ export function PriceDetailsModal({
               </div>
             )}
 
-            <div className="price-breakdown-item">
-              <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
-              <span className="price-breakdown-value negative">
-                -{incomeTaxAmount.toFixed(2)} ₽
-              </span>
-            </div>
+            {profile.incomeTaxRate > 0 && (
+              <div className="price-breakdown-item">
+                <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
+                <span className="price-breakdown-value negative">
+                  -{incomeTaxAmount.toFixed(2)} ₽
+                  {incomeTaxFormulaHint && (
+                    <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
+                      {incomeTaxFormulaHint}
+                    </div>
+                  )}
+                </span>
+              </div>
+            )}
 
             <div className="price-breakdown-item price-breakdown-total">
               <span className="price-breakdown-label">Чистая прибыль:</span>
               <span className="price-breakdown-value positive large">
                 {netProfit.toFixed(2)} ₽ ({netProfitPercent.toFixed(2)}%)
                 <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  после НДС и налога по настройкам организации
+                  = {profitBeforeIncomeTax.toFixed(2)} − {incomeTaxAmount.toFixed(2)} (налог) = {netProfit.toFixed(2)} ₽
                 </div>
               </span>
             </div>
