@@ -507,6 +507,33 @@
   background: rgba(0, 0, 0, 0.2);
 }
 
+.warehouse-ops-inventory-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.warehouse-ops-inventory-workspace .warehouse-ops-receipt-list-wrap {
+  max-height: min(52vh, 560px);
+  overflow: auto;
+}
+
+.warehouse-ops-inventory-scanner-details {
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.warehouse-ops-inventory-scanner-details summary {
+  list-style: none;
+}
+
+.warehouse-ops-inventory-scanner-details summary::-webkit-details-marker {
+  display: none;
+}
+
 .warehouse-ops-live-invite-url {
   flex: 1 1 280px;
   min-width: 200px;

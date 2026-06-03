@@ -2027,6 +2027,32 @@ export function WarehouseOperations({
     setInventoryLiveDraft(readInventoryLiveDraft());
   };
 
+  const enableInventoryLiveSession = useCallback(async () => {
+    if (!inventorySessionWarehouseId) {
+      setLookupError('Сначала выберите склад инвентаризации');
+      return false;
+    }
+    setLookupError(null);
+    setOpMessage(null);
+    setInventoryLiveEnabled(true);
+    const ok = await startInventoryLiveSession();
+    if (!ok) {
+      setInventoryLiveEnabled(false);
+      setInventoryLiveSessionId('');
+    }
+    return ok;
+  }, [inventorySessionWarehouseId, startInventoryLiveSession]);
+
+  const handleCloseInventoryWorkspace = useCallback(() => {
+    if (inventoryNewRows.length > 0) {
+      const ok = window.confirm(
+        'Закрыть пересчёт? Несохранённые изменения в списке будут потеряны (кроме общей сессии, если она включена).'
+      );
+      if (!ok) return;
+    }
+    resetInventoryNewForm();
+  }, [inventoryNewRows.length]);
+
   const beginInventoryEditFromData = useCallback(
     async (detail) => {
       const session = detail?.session ?? detail;
@@ -2147,7 +2173,7 @@ export function WarehouseOperations({
       zeroUnlisted: inventoryZeroUnlisted,
     };
     try {
-      if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim() && !inventoryEditingSessionId) {
+      if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
         if (isInventoryLiveGuest) {
           setOpMessage('Применить инвентаризацию может только создатель общей сессии');
           setOpLoading(false);
@@ -2964,25 +2990,27 @@ export function WarehouseOperations({
                 </div>
               )}
             </>
-          ) : (
-            <>
-              <div className="warehouse-ops-inventory-header-row">
-                <div>
-                  <h3 className="warehouse-ops-panel-title">
-                    {inventoryEditingSessionId
-                      ? `Редактирование инвентаризации №${inventoryEditingSessionId}`
-                      : 'Новая инвентаризация'}
-                  </h3>
-                  <p className="warehouse-ops-hint">
-                    Каждое сканирование штрихкода — плюс 1 шт к фактическому количеству по этой позиции. Либо найдите товар по артикулу/названию и нажмите «Добавить 1 шт».
-                    В документ попадают все позиции из списка пересчёта; при включённой опции ниже остаток обнуляется по товарам на складе, которые не попали в список.
-                    Колонки «Излишек» и «Недостача» в ₽ считаются по себестоимости из карточки товара; без себестоимости суммы не показываются.
-                  </p>
-                </div>
-                <Button type="button" variant="secondary" onClick={resetInventoryNewForm}>
-                  К списку инвентаризаций
-                </Button>
-              </div>
+          )}
+        </div>
+      )}
+
+      <Modal
+        isOpen={mode === MODE_INVENTORY && inventoryNewSession}
+        onClose={handleCloseInventoryWorkspace}
+        title={
+          inventoryEditingSessionId
+            ? `Редактирование инвентаризации №${inventoryEditingSessionId}`
+            : 'Новая инвентаризация'
+        }
+        size="full"
+        closeOnEscape={false}
+        closeOnBackdropClick={false}
+      >
+        <div className="warehouse-ops-inventory-workspace">
+          <p className="warehouse-ops-hint">
+            Каждое сканирование штрихкода — плюс 1 шт к фактическому количеству. Чтобы пригласить коллег с других
+            устройств — включите «Совместный пересчёт» ниже.
+          </p>
 
               <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
                 <label>
@@ -3025,40 +3053,25 @@ export function WarehouseOperations({
 
               {!isInventoryLiveGuest && (
                 <div className="warehouse-ops-live-invite-panel">
-                  <h4 className="warehouse-ops-live-invite-title">Подключить другое устройство или сканер</h4>
+                  <h4 className="warehouse-ops-live-invite-title">Пригласить коллег / подключить другое устройство</h4>
                   <p className="warehouse-ops-hint warehouse-ops-live-invite-lead">
                     {inventoryEditingSessionId
-                      ? `Редактируется документ №${inventoryEditingSessionId}. Включите общую сессию — участники смогут сканировать в тот же список; сохранение обновит этот документ.`
-                      : 'Включите общую инвентаризацию — появится код и ссылка для второго телефона, ПК или сканера. Сканы с разных устройств попадут в один список пересчёта.'}
+                      ? `Редактируется документ №${inventoryEditingSessionId}. Совместный пересчёт синхронизирует строки между участниками; сохранение обновит этот документ.`
+                      : 'Несколько человек могут сканировать в один список с телефонов, планшетов или других компьютеров.'}
                   </p>
                   {!inventorySessionWarehouseId ? (
                     <p className="warehouse-ops-hint warehouse-ops-live-invite-warn">
                       Сначала выберите склад инвентаризации выше.
                     </p>
+                  ) : !inventoryLiveEnabled || !inventoryLiveSessionId ? (
+                    <Button
+                      type="button"
+                      onClick={enableInventoryLiveSession}
+                      disabled={!inventorySessionWarehouseId || opLoading}
+                    >
+                      Включить совместный пересчёт
+                    </Button>
                   ) : null}
-                  <label className="warehouse-ops-radio warehouse-ops-live-invite-toggle">
-                    <input
-                      type="checkbox"
-                      checked={inventoryLiveEnabled}
-                      disabled={!inventorySessionWarehouseId}
-                      onChange={async (e) => {
-                        const on = !!e.target.checked;
-                        setLookupError(null);
-                        setOpMessage(null);
-                        if (!on) {
-                          leaveInventoryLiveSession();
-                          return;
-                        }
-                        setInventoryLiveEnabled(true);
-                        const ok = await startInventoryLiveSession();
-                        if (!ok) {
-                          setInventoryLiveEnabled(false);
-                          setInventoryLiveSessionId('');
-                        }
-                      }}
-                    />
-                    <span>Общая инвентаризация (несколько устройств / сканеров)</span>
-                  </label>
 
                   {inventoryLiveEnabled && inventoryLiveSessionId ? (
                     <div className="warehouse-ops-live-invite-active">
@@ -3080,9 +3093,61 @@ export function WarehouseOperations({
                         </Button>
                       </div>
                       <p className="warehouse-ops-hint" style={{ marginTop: 8, marginBottom: 0 }}>
-                        Откройте ссылку на втором устройстве (войдите в тот же профиль) или отправьте приглашение
-                        пользователю ниже. На одном ПК можно использовать разные префиксы сканера (A:, B-).
+                        Откройте ссылку на другом устройстве (тот же профиль ERP) или выберите пользователя ниже —
+                        придёт уведомление с кнопкой «Открыть инвентаризацию».
                       </p>
+                      <div className="warehouse-ops-live-invite-users" style={{ marginTop: 16 }}>
+                        <label>Пригласить пользователя</label>
+                        <div
+                          style={{
+                            display: 'flex',
+                            gap: 10,
+                            flexWrap: 'wrap',
+                            alignItems: 'center',
+                            marginTop: 8,
+                          }}
+                        >
+                          <select
+                            className="warehouse-ops-select"
+                            value={inventoryInviteUserId}
+                            onChange={(e) => setInventoryInviteUserId(e.target.value)}
+                            style={{ minWidth: 260 }}
+                          >
+                            <option value="">— Выберите пользователя —</option>
+                            {(inviteUsers || []).map((u) => (
+                              <option key={u.id} value={u.id}>
+                                {(u.full_name ||
+                                  [u.last_name, u.first_name].filter(Boolean).join(' ') ||
+                                  u.email ||
+                                  `User #${u.id}`) + (u.email ? ` (${u.email})` : '')}
+                              </option>
+                            ))}
+                          </select>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={inviteBusy || !inventoryInviteUserId}
+                            onClick={async () => {
+                              const sid = String(inventoryLiveSessionId || '').trim();
+                              const uid = inventoryInviteUserId ? Number(inventoryInviteUserId) : null;
+                              if (!sid || !uid || Number.isNaN(uid) || inviteBusy) return;
+                              try {
+                                setInviteBusy(true);
+                                await inventorySessionsApi.inviteToSession(sid, { userId: uid });
+                                setOpMessage('Приглашение отправлено в уведомления.');
+                              } catch (ex) {
+                                setLookupError(
+                                  ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение'
+                                );
+                              } finally {
+                                setInviteBusy(false);
+                              }
+                            }}
+                          >
+                            {inviteBusy ? 'Отправляю…' : 'Отправить приглашение'}
+                          </Button>
+                        </div>
+                      </div>
                       <div style={{ marginTop: 12 }}>
                         <Button
                           type="button"
@@ -3094,54 +3159,7 @@ export function WarehouseOperations({
                             }
                           }}
                         >
-                          Выйти из общей инвентаризации
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {inventoryLiveEnabled && inventoryLiveSessionId ? (
-                    <div className="warehouse-ops-live-invite-users" style={{ marginTop: 16 }}>
-                      <label>Пригласить пользователя (уведомление в ERP)</label>
-                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
-                        <select
-                          className="warehouse-ops-select"
-                          value={inventoryInviteUserId}
-                          onChange={(e) => setInventoryInviteUserId(e.target.value)}
-                          style={{ minWidth: 260 }}
-                        >
-                          <option value="">— Выберите пользователя —</option>
-                          {(inviteUsers || []).map((u) => (
-                            <option key={u.id} value={u.id}>
-                              {(u.full_name ||
-                                [u.last_name, u.first_name].filter(Boolean).join(' ') ||
-                                u.email ||
-                                `User #${u.id}`) + (u.email ? ` (${u.email})` : '')}
-                            </option>
-                          ))}
-                        </select>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          disabled={inviteBusy || !inventoryInviteUserId}
-                          onClick={async () => {
-                            const sid = String(inventoryLiveSessionId || '').trim();
-                            const uid = inventoryInviteUserId ? Number(inventoryInviteUserId) : null;
-                            if (!sid || !uid || Number.isNaN(uid) || inviteBusy) return;
-                            try {
-                              setInviteBusy(true);
-                              await inventorySessionsApi.inviteToSession(sid, { userId: uid });
-                              setOpMessage('Приглашение отправлено в уведомления.');
-                            } catch (ex) {
-                              setLookupError(
-                                ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение'
-                              );
-                            } finally {
-                              setInviteBusy(false);
-                            }
-                          }}
-                        >
-                          {inviteBusy ? 'Отправляю…' : 'Отправить приглашение'}
+                          Выйти из совместного пересчёта
                         </Button>
                       </div>
                     </div>
@@ -3149,28 +3167,40 @@ export function WarehouseOperations({
                 </div>
               )}
 
-              <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
-                <label>ID сканера</label>
-                <input
-                  type="text"
-                  className="warehouse-ops-input"
-                  style={{ maxWidth: 220 }}
-                  value={inventoryScannerId}
-                  onChange={(e) => {
-                    const v = String(e.target.value || '').trim();
-                    setInventoryScannerId(v);
-                    try {
-                      if (typeof localStorage !== 'undefined') localStorage.setItem(INVENTORY_SCANNER_ID_LS, v);
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                  placeholder="A, B, S1…"
-                />
-                <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
-                  Префикс в штрихкоде: <code>A:460…</code>, <code>B-460…</code>
-                </span>
-              </div>
+              {!inventoryLiveEnabled ? (
+                <details className="warehouse-ops-inventory-scanner-details" style={{ marginTop: 12 }}>
+                  <summary className="warehouse-ops-hint" style={{ cursor: 'pointer', marginBottom: 8 }}>
+                    Несколько сканеров на одном компьютере (необязательно)
+                  </summary>
+                  <div className="warehouse-ops-receipt-supplier-row">
+                    <label>ID сканера</label>
+                    <input
+                      type="text"
+                      className="warehouse-ops-input"
+                      style={{ maxWidth: 220 }}
+                      value={inventoryScannerId}
+                      onChange={(e) => {
+                        const v = String(e.target.value || '').trim();
+                        setInventoryScannerId(v);
+                        try {
+                          if (typeof localStorage !== 'undefined') localStorage.setItem(INVENTORY_SCANNER_ID_LS, v);
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                      placeholder="A, B, S1…"
+                    />
+                    <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
+                      Префикс в штрихкоде: <code>A:460…</code>, <code>B-460…</code>
+                    </span>
+                  </div>
+                </details>
+              ) : (
+                <p className="warehouse-ops-hint" style={{ marginTop: 12 }}>
+                  При совместном пересчёте с разных устройств ID сканера не нужен — каждый участник сканирует со своего
+                  ПК или телефона по ссылке / приглашению.
+                </p>
+              )}
 
               <label className="warehouse-ops-checkbox-row" style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
@@ -3348,10 +3378,8 @@ export function WarehouseOperations({
                   </div>
                 </>
               )}
-            </>
-          )}
         </div>
-      )}
+      </Modal>
 
       {mode === MODE_TRANSFER && (
         <div className="warehouse-ops-panel transfer-panel">
