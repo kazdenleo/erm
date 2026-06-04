@@ -4054,6 +4054,20 @@ class OrdersService {
   /**
    * Строки заказа из локальной БД для карточки заказа (product_id → ссылка на каталог).
    */
+  /** Статус заказа в ERM для карточки (первая строка группы). */
+  async getErmStatusForOrder(marketplace, orderId, { profileId = null } = {}) {
+    let rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
+    if (!rows.length) {
+      rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    }
+    const st = rows?.[0]?.status ?? rows?.[0]?.order_status;
+    if (st != null && String(st).trim() !== '') {
+      return String(st).trim().toLowerCase();
+    }
+    const one = await this.getByMarketplaceAndOrderId(marketplace, orderId, { profileId });
+    return one?.status != null ? String(one.status).trim().toLowerCase() : null;
+  }
+
   async getLocalLinesForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
     let rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {

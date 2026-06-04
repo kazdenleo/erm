@@ -671,16 +671,12 @@ class OrdersController {
   }
 
   /**
-   * Удалить заказ (только ручные заказы). Если заказ в группе — удаляется вся группа.
+   * Удалить заказ из ERM (без отмены на МП). Если заказ в группе — удаляется вся группа.
    * DELETE /orders/:marketplace/:orderId
    */
   async deleteOrder(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
-      const mp = (marketplace || '').toLowerCase();
-      if (mp !== 'manual') {
-        return res.status(403).json({ ok: false, message: 'Удаление разрешено только для ручных заказов' });
-      }
       const order = await ordersService.getByMarketplaceAndOrderId(marketplace, orderId, { profileId: req.user?.profileId ?? null });
       if (!order) {
         return res.status(404).json({ ok: false, message: 'Заказ не найден' });
@@ -751,6 +747,13 @@ class OrdersController {
       let assembly = null;
       let localLines = [];
       let reserve = null;
+      let ermStatus = null;
+
+      try {
+        ermStatus = await ordersService.getErmStatusForOrder(marketplace, orderId, { profileId });
+      } catch {
+        ermStatus = null;
+      }
 
       try {
         assembly = await ordersService.getAssemblyInfoForOrder(marketplace, orderId, { profileId });
@@ -785,6 +788,7 @@ class OrdersController {
           data: {
             ...localPack,
             orderId: String(orderId),
+            ermStatus,
             assembly,
             localLines,
             reserve
@@ -831,6 +835,7 @@ class OrdersController {
         data: {
           ...result,
           orderId: String(orderId),
+          ermStatus,
           assembly,
           localLines,
           reserve

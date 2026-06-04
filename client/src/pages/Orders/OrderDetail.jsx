@@ -14,6 +14,7 @@ import {
   groupReserveCoverageKind,
   reserveBadgeClassName
 } from '../../utils/orderReserveBadge.js';
+import { orderCanShowCancel, orderDeleteConfirmMessage } from '../../utils/orderActions.js';
 import './OrderDetail.css';
 
 function orderReserveLineKey(line) {
@@ -110,6 +111,67 @@ function shouldShowOrderAssemblySection(assembly) {
       assembly.assembledByEmail ||
       assembly.assembledByFullName ||
       assembly.assemblyStickerNumber
+  );
+}
+
+/** Отмена на МП + удаление записи из ERM (без отмены на МП). */
+export function OrderCardActions({ marketplace, orderId, status, onDeleted, onCancelled, onError }) {
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const busy = cancelLoading || deleteLoading;
+  const showCancel = orderCanShowCancel(marketplace, status);
+
+  const handleCancel = async () => {
+    if (
+      !window.confirm(
+        'Отменить заказ? В системе статус станет «Отменён»; для Ozon, Wildberries и Яндекс.Маркета будет отправлен запрос отмены продавца в API маркетплейса (если статус допускает отмену).'
+      )
+    ) {
+      return;
+    }
+    setCancelLoading(true);
+    try {
+      await ordersApi.cancelOrder(marketplace, orderId);
+      onCancelled?.();
+    } catch (e) {
+      onError?.(e.response?.data?.message || e.message || 'Не удалось отменить заказ');
+    } finally {
+      setCancelLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!window.confirm(orderDeleteConfirmMessage(marketplace))) return;
+    setDeleteLoading(true);
+    try {
+      await ordersApi.deleteOrder(marketplace, orderId);
+      onDeleted?.();
+    } catch (e) {
+      onError?.(e.response?.data?.message || e.message || 'Не удалось удалить заказ');
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  if (!marketplace || !orderId) return null;
+
+  return (
+    <section className="order-detail-actions" aria-label="Действия с заказом">
+      <div className="order-detail-actions__buttons">
+        {showCancel ? (
+          <Button variant="danger" size="small" onClick={handleCancel} disabled={busy}>
+            {cancelLoading ? 'Отмена…' : 'Отменить заказ'}
+          </Button>
+        ) : null}
+        <Button variant="secondary" size="small" onClick={handleDelete} disabled={busy}>
+          {deleteLoading ? 'Удаление…' : 'Удалить из системы'}
+        </Button>
+      </div>
+      <p className="order-detail-actions-hint">
+        «Удалить из системы» убирает заказ из ERM и не отменяет его на маркетплейсе. «Отменить» — отмена в
+        системе и запрос отмены на МП (если доступно).
+      </p>
+    </section>
   );
 }
 
@@ -611,6 +673,20 @@ export function OrderDetail() {
           <span className="order-detail-marketplace"> ({mpName})</span>
         </h1>
       </div>
+
+      <OrderCardActions
+        marketplace={marketplace}
+        orderId={orderId}
+        status={data?.ermStatus}
+        onDeleted={() => navigate('/orders')}
+        onCancelled={() => {
+          ordersApi
+            .getOrderDetail(marketplace, orderId)
+            .then((result) => setData(result))
+            .catch((e) => setError(e.response?.data?.message || e.message || 'Ошибка загрузки заказа'));
+        }}
+        onError={(msg) => setError(msg)}
+      />
 
       <OrderReservePanel
         marketplace={marketplace}

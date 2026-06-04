@@ -22,7 +22,7 @@ import {
   getOrderProcurementSupplierName,
   isOrderStatusEligibleForProcurement,
 } from '../../constants/orderStatuses';
-import { OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
+import { OrderCardActions, OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import {
@@ -237,13 +237,6 @@ function formatMarketplaceDate(createdAt) {
   }
 }
 
-/** Отмена на МП + в ERM для этих МП и статусов (до отгрузки) */
-function orderCanShowCancel(marketplace, status) {
-  const mp = normalizeMarketplaceForUI(marketplace);
-  if (!['wildberries', 'ozon', 'yandex', 'manual'].includes(mp)) return false;
-  return ['new', 'in_procurement', 'in_assembly', 'assembled', 'wb_assembly'].includes(status);
-}
-
 function orderSupportsFbsShipment(marketplace) {
   const mp = normalizeMarketplaceForUI(marketplace);
   return ['wildberries', 'ozon', 'yandex'].includes(mp);
@@ -257,7 +250,6 @@ function orderCanAddToOpenShipment(first) {
 
 function orderRowHasAnyAction(first) {
   if (first.status === 'new') return true;
-  if (orderCanShowCancel(first.marketplace, first.status)) return true;
   if (first.status === 'in_procurement') return true;
   if (first.status === 'in_assembly' || first.status === 'assembled') return true;
   if (orderCanAddToOpenShipment(first)) return true;
@@ -450,10 +442,8 @@ export function Orders() {
       setSelectedOrganizationId(String(first.id));
     }
   }, [contextOrganizationId, organizations, setSelectedOrganizationId]);
-  const [deleteLoadingKey, setDeleteLoadingKey] = useState(null);
   const [returnToNewLoadingKey, setReturnToNewLoadingKey] = useState(null);
   const [releaseReserveLoadingKey, setReleaseReserveLoadingKey] = useState(null);
-  const [cancelOrderLoadingKey, setCancelOrderLoadingKey] = useState(null);
   const [procurementLoadingKey, setProcurementLoadingKey] = useState(null);
   /** Сброс нативного select «Статус в системе» после применения */
   const [bulkErmStatusKey, setBulkErmStatusKey] = useState(0);
@@ -1001,21 +991,6 @@ export function Orders() {
     }
   };
 
-  const handleDeleteOrder = async (marketplace, orderId, rowKey) => {
-    if (!window.confirm('Удалить этот заказ? При заказе с несколькими товарами удалится вся группа.')) return;
-    try {
-      setDeleteLoadingKey(rowKey);
-      setRefreshError(null);
-      await ordersApi.deleteOrder(marketplace, orderId);
-      await reloadOrders({ silent: true });
-    } catch (e) {
-      console.error('Ошибка удаления заказа:', e);
-      setRefreshError(e.response?.data?.message || e.message || 'Не удалось удалить заказ');
-    } finally {
-      setDeleteLoadingKey(null);
-    }
-  };
-
   const handleReturnToNew = async (marketplace, orderId, rowKey) => {
     try {
       setReturnToNewLoadingKey(rowKey);
@@ -1042,27 +1017,6 @@ export function Orders() {
       setRefreshError(e.response?.data?.message || e.message || 'Не удалось снять резерв');
     } finally {
       setReleaseReserveLoadingKey(null);
-    }
-  };
-
-  const handleCancelOrder = async (marketplace, orderId, rowKey) => {
-    if (
-      !window.confirm(
-        'Отменить заказ? В системе статус станет «Отменён»; для Ozon, Wildberries и Яндекс.Маркета будет отправлен запрос отмены продавца в API маркетплейса (если статус допускает отмену).'
-      )
-    ) {
-      return;
-    }
-    try {
-      setCancelOrderLoadingKey(rowKey);
-      setRefreshError(null);
-      await ordersApi.cancelOrder(marketplace, orderId);
-      await reloadOrders({ silent: true });
-    } catch (e) {
-      console.error('Ошибка отмены заказа:', e);
-      setRefreshError(e.response?.data?.message || e.message || 'Не удалось отменить заказ');
-    } finally {
-      setCancelOrderLoadingKey(null);
     }
   };
 
@@ -2514,6 +2468,34 @@ export function Orders() {
       >
         {detailModalRow && (
           <div className="order-detail-modal-body">
+            <OrderCardActions
+              marketplace={detailModalRow.first.marketplace}
+              orderId={marketplaceOrderIdForApi(
+                detailModalRow.orders ?? [detailModalRow.first],
+                detailModalRow.first.marketplace
+              )}
+              status={detailModalData?.ermStatus ?? detailModalRow.first.status}
+              onDeleted={() => {
+                setDetailModalRow(null);
+                reloadOrders({ silent: true });
+              }}
+              onCancelled={() => {
+                reloadOrders({ silent: true });
+                const mp = detailModalRow.first.marketplace;
+                const oid = marketplaceOrderIdForApi(
+                  detailModalRow.orders ?? [detailModalRow.first],
+                  mp
+                );
+                ordersApi
+                  .getOrderDetail(mp, oid, { fast: true })
+                  .then((pack) => {
+                    setDetailModalData(pack);
+                    setDetailModalError(null);
+                  })
+                  .catch(() => {});
+              }}
+              onError={(msg) => setDetailModalError(msg)}
+            />
             {detailModalLoading && (
               <div className="loading">Загрузка деталей заказа...</div>
             )}
@@ -3023,9 +3005,7 @@ export function Orders() {
                           className="orders-action-icon orders-action-icon--reserve"
                           onClick={() => handleReleaseReserve(first.marketplace, first.orderId, row.key)}
                           disabled={
-                            releaseReserveLoadingKey === row.key ||
-                            procurementLoadingKey === row.key ||
-                            cancelOrderLoadingKey === row.key
+                            releaseReserveLoadingKey === row.key || procurementLoadingKey === row.key
                           }
                           title={
                             reserveCoverageKind === 'on_hand' && orderFullyReserved
@@ -3050,9 +3030,7 @@ export function Orders() {
                           className="orders-action-icon"
                           onClick={() => handleSetToProcurement(first.marketplace, first.orderId, row.key)}
                           disabled={
-                            procurementLoadingKey === row.key ||
-                            procurementLoadingKey === '__bulk__' ||
-                            cancelOrderLoadingKey === row.key
+                            procurementLoadingKey === row.key || procurementLoadingKey === '__bulk__'
                           }
                           title="Перевести заказ в статус «В закупке»"
                           aria-label="В закупке"
@@ -3061,28 +3039,6 @@ export function Orders() {
                             <span className="orders-action-icon__busy" aria-hidden>…</span>
                           ) : (
                             <i className="pe-7s-cart" aria-hidden />
-                          )}
-                        </Button>
-                      )}
-                      {orderCanShowCancel(first.marketplace, first.status) && (
-                        <Button
-                          variant="danger"
-                          size="small"
-                          className="orders-action-icon"
-                          onClick={() => handleCancelOrder(first.marketplace, first.orderId, row.key)}
-                          disabled={
-                            cancelOrderLoadingKey === row.key ||
-                            returnToNewLoadingKey === row.key ||
-                            procurementLoadingKey === row.key ||
-                            sendToAssemblyRowKey === row.key
-                          }
-                          title="Отменить заказ на маркетплейсе (если доступно по API) и в системе"
-                          aria-label="Отменить заказ"
-                        >
-                          {cancelOrderLoadingKey === row.key ? (
-                            <span className="orders-action-icon__busy" aria-hidden>…</span>
-                          ) : (
-                            <i className="pe-7s-close" aria-hidden />
                           )}
                         </Button>
                       )}
@@ -3161,7 +3117,7 @@ export function Orders() {
                             size="small"
                             className="orders-action-icon"
                             onClick={() => handleMarkShipped(first.marketplace, first.orderId, row.key)}
-                            disabled={markShippedLoadingKey === row.key || deleteLoadingKey === row.key || returnToNewLoadingKey === row.key}
+                            disabled={markShippedLoadingKey === row.key || returnToNewLoadingKey === row.key}
                             title={`Поставить статус «${getOrderStatusLabel('shipped')}» (для тестирования)`}
                             aria-label={getOrderStatusLabel('shipped')}
                           >
@@ -3169,21 +3125,6 @@ export function Orders() {
                               <span className="orders-action-icon__busy" aria-hidden>…</span>
                             ) : (
                               <i className="pe-7s-plane" aria-hidden />
-                            )}
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            size="small"
-                            className="orders-action-icon"
-                            onClick={() => handleDeleteOrder(first.marketplace, first.orderId, row.key)}
-                            disabled={markShippedLoadingKey === row.key || deleteLoadingKey === row.key || returnToNewLoadingKey === row.key}
-                            title="Удалить заказ"
-                            aria-label="Удалить заказ"
-                          >
-                            {deleteLoadingKey === row.key ? (
-                              <span className="orders-action-icon__busy" aria-hidden>…</span>
-                            ) : (
-                              <i className="pe-7s-trash" aria-hidden />
                             )}
                           </Button>
                         </>

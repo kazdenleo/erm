@@ -2,6 +2,28 @@
   margin-bottom: 20px;
 }
 
+.order-detail-actions {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #eee);
+  background: var(--card-bg, #f8f9fa);
+}
+
+.order-detail-actions__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.order-detail-actions-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted, #666);
+  line-height: 1.45;
+}
+
 .order-detail-marketplace {
   font-weight: normal;
   color: var(--muted, #666);
