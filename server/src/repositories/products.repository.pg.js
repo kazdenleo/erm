@@ -8,6 +8,8 @@ import {
   coerceBarcodeString,
   normalizeBarcodeRows,
   parseBarcodesMarketplacesColumn,
+  BARCODES_NOT_CORRUPT_SQL,
+  isCorruptBarcodeString,
 } from '../utils/productBarcodes.js';
 
 function mapBarcodeDbRow(row) {
@@ -20,11 +22,29 @@ function mapBarcodeDbRow(row) {
 async function insertProductBarcodes(client, productId, barcodes) {
   const rows = normalizeBarcodeRows(barcodes);
   for (const row of rows) {
-    if (!row.barcode) continue;
-    await client.query(
-      'INSERT INTO barcodes (product_id, barcode, marketplaces) VALUES ($1, $2, $3::jsonb)',
-      [productId, row.barcode, JSON.stringify(row.marketplaces || [])]
-    );
+    if (!row.barcode || isCorruptBarcodeString(row.barcode)) continue;
+    try {
+      await client.query(
+        'INSERT INTO barcodes (product_id, barcode, marketplaces) VALUES ($1, $2, $3::jsonb)',
+        [productId, row.barcode, JSON.stringify(row.marketplaces || [])]
+      );
+    } catch (e) {
+      if (e?.code === '23505') {
+        const dup = await client.query(
+          'SELECT product_id FROM barcodes WHERE TRIM(barcode) = TRIM($1) LIMIT 1',
+          [row.barcode]
+        );
+        const otherId = dup.rows[0]?.product_id;
+        const err = new Error(
+          otherId != null && String(otherId) !== String(productId)
+            ? `Штрихкод «${row.barcode}» уже привязан к другому товару (ID ${otherId})`
+            : `Штрихкод «${row.barcode}» уже есть в базе`
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+      throw e;
+    }
   }
 }
 
@@ -1367,17 +1387,20 @@ class ProductsRepositoryPG {
   }
 
   async _findProductIdByBarcodeValue(trimmed, digitsOnly) {
+    if (isCorruptBarcodeString(trimmed)) return null;
     const hasDigits = digitsOnly.length > 0;
     const result = await query(
       hasDigits
-        ? `SELECT product_id
-           FROM barcodes
-           WHERE TRIM(barcode) = TRIM($1)
-              OR REGEXP_REPLACE(barcode, '\\D', '', 'g') = $2
+        ? `SELECT bc.product_id
+           FROM barcodes bc
+           WHERE ${BARCODES_NOT_CORRUPT_SQL}
+             AND (TRIM(bc.barcode) = TRIM($1)
+              OR REGEXP_REPLACE(bc.barcode, '\\D', '', 'g') = $2)
            LIMIT 1`
-        : `SELECT product_id
-           FROM barcodes
-           WHERE TRIM(barcode) = TRIM($1)
+        : `SELECT bc.product_id
+           FROM barcodes bc
+           WHERE ${BARCODES_NOT_CORRUPT_SQL}
+             AND TRIM(bc.barcode) = TRIM($1)
            LIMIT 1`,
       hasDigits ? [trimmed, digitsOnly] : [trimmed]
     );
@@ -1474,8 +1497,8 @@ class ProductsRepositoryPG {
    * Получить товар по штрихкоду (barcodes, SKU, product_skus; комплекты — в приоритете).
    */
   async findByBarcode(barcode) {
-    const trimmed = typeof barcode === 'string' ? barcode.trim() : String(barcode || '');
-    if (!trimmed) return null;
+    const trimmed = coerceBarcodeString(barcode);
+    if (!trimmed || isCorruptBarcodeString(trimmed)) return null;
     const digits = trimmed.replace(/\D/g, '');
     const hasDigits = digits.length > 0;
 

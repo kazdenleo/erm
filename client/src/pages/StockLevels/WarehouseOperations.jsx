@@ -10,6 +10,7 @@ import { productsApi } from '../../services/products.api';
 import { stockMovementsApi } from '../../services/stockMovements.api';
 import { receiptsApi } from '../../services/receipts.api';
 import { inventorySessionsApi } from '../../services/inventorySessions.api';
+import { isCorruptBarcodeString } from '../../utils/productBarcodes.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
@@ -78,6 +79,18 @@ function parseScannerPrefixedCode(raw) {
   const scannerId = String(m[1] || '').trim();
   const code = String(m[2] || '').trim();
   return { scannerId: scannerId || null, code };
+}
+
+/** Сначала недавно отсканированные текущим пользователем, затем по артикулу. */
+function sortInventoryNewRows(rows) {
+  return [...(rows || [])].sort((a, b) => {
+    const ta = Number(a?.scannedAt) || 0;
+    const tb = Number(b?.scannedAt) || 0;
+    if (tb !== ta) return tb - ta;
+    return String(a?.product?.sku || '').localeCompare(String(b?.product?.sku || ''), 'ru', {
+      numeric: true,
+    });
+  });
 }
 
 function warehouseScanErrorMessage(e, fallback = 'Товар не найден') {
@@ -391,6 +404,11 @@ export function WarehouseOperations({
       const v = normalizeQuery(value);
       if (!v) {
         throw new Error('Введите штрихкод / артикул / название');
+      }
+      if (isCorruptBarcodeString(v)) {
+        throw new Error(
+          'В карточке товара сохранён битый штрихкод (object). Откройте товар, введите правильный код и сохраните карточку.'
+        );
       }
       // 1) Штрихкод — самый точный (быстро и однозначно).
       try {
@@ -854,23 +872,25 @@ export function WarehouseOperations({
       setInventoryEditingSessionId(Number(editSidRaw));
     }
     setInventoryNewRows(
-      items.map((it) => {
-        const scanAt =
-          me != null && it.scanAtByUser && it.scanAtByUser[String(me)] != null
-            ? Number(it.scanAtByUser[String(me)])
-            : null;
-        return {
-          product: {
-            id: it.productId,
-            sku: it.sku || '—',
-            name: it.name || 'Без названия',
-            cost: it.cost,
-          },
-          current: Math.max(0, Number(it.current) || 0),
-          fact: Math.max(0, Number(it.fact) || 0),
-          scannedAt: Number.isFinite(scanAt) && scanAt > 0 ? scanAt : null,
-        };
-      })
+      sortInventoryNewRows(
+        items.map((it) => {
+          const scanAt =
+            me != null && it.scanAtByUser && it.scanAtByUser[String(me)] != null
+              ? Number(it.scanAtByUser[String(me)])
+              : null;
+          return {
+            product: {
+              id: it.productId,
+              sku: it.sku || '—',
+              name: it.name || 'Без названия',
+              cost: it.cost,
+            },
+            current: Math.max(0, Number(it.current) || 0),
+            fact: Math.max(0, Number(it.fact) || 0),
+            scannedAt: Number.isFinite(scanAt) && scanAt > 0 ? scanAt : null,
+          };
+        })
+      )
     );
   }, [user?.id, user?.userId]);
 
@@ -1810,6 +1830,11 @@ export function WarehouseOperations({
     return formatRub(n);
   };
 
+  const inventoryNewRowsSorted = useMemo(
+    () => sortInventoryNewRows(inventoryNewRows),
+    [inventoryNewRows]
+  );
+
   const inventoryNewMoneyTotals = useMemo(() => {
     let plus = 0;
     let minus = 0;
@@ -1871,10 +1896,10 @@ export function WarehouseOperations({
     setInventoryNewRows((prev) => {
       const idx = prev.findIndex((r) => r.product.id === product.id);
       if (idx === -1) {
-        return [{ product, current, fact: 1, scannedAt: now }, ...prev];
+        return sortInventoryNewRows([{ product, current, fact: 1, scannedAt: now }, ...prev]);
       }
       const row = { ...prev[idx], fact: prev[idx].fact + 1, current, scannedAt: now };
-      return [row, ...prev.filter((_, i) => i !== idx)];
+      return sortInventoryNewRows([row, ...prev.filter((_, i) => i !== idx)]);
     });
   };
 
@@ -3338,7 +3363,7 @@ export function WarehouseOperations({
                         </tr>
                       </thead>
                       <tbody>
-                        {inventoryNewRows.map((row) => {
+                        {inventoryNewRowsSorted.map((row) => {
                           const unit = getInventoryUnitCostRub(row.product);
                           const delta = (row.fact ?? 0) - (row.current ?? 0);
                           let plusRub = null;

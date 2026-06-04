@@ -5,6 +5,21 @@ export const BARCODE_MP_CODES = ['ozon', 'wb', 'ym'];
 const CORRUPT_BARCODE_RE =
   /^\[object(\s+object)?\]$/i;
 
+/** Битые значения из String(object) / WB sizes[].skus и т.п. */
+export function isCorruptBarcodeString(raw) {
+  if (raw == null) return true;
+  if (typeof raw === 'object') {
+    const extracted = coerceBarcodeString(raw);
+    return !extracted;
+  }
+  const s = String(raw).trim();
+  if (!s) return true;
+  if (CORRUPT_BARCODE_RE.test(s)) return true;
+  if (/\[object[\s\]]/i.test(s)) return true;
+  if (/^object$/i.test(s)) return true;
+  return false;
+}
+
 /**
  * Извлечь строку штрихкода из скаляра, объекта WB/Ozon ({ sku, barcode, … }) или массива.
  * @param {unknown} raw
@@ -18,7 +33,7 @@ export function coerceBarcodeString(raw) {
   }
   if (typeof raw === 'string') {
     const s = raw.trim();
-    if (!s || CORRUPT_BARCODE_RE.test(s)) return '';
+    if (!s || CORRUPT_BARCODE_RE.test(s) || /\[object/i.test(s)) return '';
     return s;
   }
   if (Array.isArray(raw)) {
@@ -116,12 +131,19 @@ export function normalizeBarcodeRows(barcodes) {
   const out = [];
   for (const raw of barcodes) {
     const row = normalizeBarcodeRow(raw);
-    if (!row.barcode || seen.has(row.barcode)) continue;
+    if (!row.barcode || isCorruptBarcodeString(row.barcode) || seen.has(row.barcode)) continue;
     seen.add(row.barcode);
     out.push(row);
   }
   return out;
 }
+
+/** SQL-фрагмент: исключить битые штрихкоды в таблице barcodes (alias bc). */
+export const BARCODES_NOT_CORRUPT_SQL = `(
+  TRIM(bc.barcode) <> ''
+  AND TRIM(bc.barcode) !~* '^\\\\[object'
+  AND LOWER(TRIM(bc.barcode)) NOT IN ('object', '[object object]')
+)`;
 
 /**
  * @param {unknown} barcodes

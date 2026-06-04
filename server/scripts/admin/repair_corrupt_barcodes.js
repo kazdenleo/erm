@@ -4,7 +4,7 @@
  */
 
 import { query } from '../../src/config/database.js';
-import { coerceBarcodeString } from '../../src/utils/productBarcodes.js';
+import { coerceBarcodeString, isCorruptBarcodeString } from '../../src/utils/productBarcodes.js';
 
 async function main() {
   const r = await query(`SELECT id, product_id, barcode FROM barcodes ORDER BY id`);
@@ -14,7 +14,7 @@ async function main() {
   for (const row of r.rows || []) {
     const fixed = coerceBarcodeString(row.barcode);
     const raw = String(row.barcode ?? '').trim();
-    if (!fixed) {
+    if (!fixed || isCorruptBarcodeString(raw) || isCorruptBarcodeString(fixed)) {
       toDelete.push(row);
       continue;
     }

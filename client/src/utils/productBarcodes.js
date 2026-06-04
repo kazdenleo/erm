@@ -11,6 +11,21 @@ export const EMPTY_BARCODE_ROW = { barcode: '', marketplaces: [] };
 const CORRUPT_BARCODE_RE =
   /^\[object(\s+object)?\]$/i;
 
+/** Битые значения из String(object) / WB sizes[].skus и т.п. */
+export function isCorruptBarcodeString(raw) {
+  if (raw == null) return true;
+  if (typeof raw === 'object') {
+    const extracted = coerceBarcodeString(raw);
+    return !extracted;
+  }
+  const s = String(raw).trim();
+  if (!s) return true;
+  if (CORRUPT_BARCODE_RE.test(s)) return true;
+  if (/\[object[\s\]]/i.test(s)) return true;
+  if (/^object$/i.test(s)) return true;
+  return false;
+}
+
 /**
  * Извлечь строку штрихкода из скаляра, объекта WB/Ozon или массива.
  * @param {unknown} raw
@@ -24,7 +39,7 @@ export function coerceBarcodeString(raw) {
   }
   if (typeof raw === 'string') {
     const s = raw.trim();
-    if (!s || CORRUPT_BARCODE_RE.test(s)) return '';
+    if (!s || CORRUPT_BARCODE_RE.test(s) || /\[object/i.test(s)) return '';
     return s;
   }
   if (Array.isArray(raw)) {
@@ -125,7 +140,7 @@ export function normalizeBarcodeRows(barcodes, { keepEmpty = false } = {}) {
   const rows = [];
   for (const raw of barcodes) {
     const row = normalizeBarcodeRow(raw);
-    if (!row.barcode) continue;
+    if (!row.barcode || isCorruptBarcodeString(row.barcode)) continue;
     if (seen.has(row.barcode)) continue;
     seen.add(row.barcode);
     rows.push(row);

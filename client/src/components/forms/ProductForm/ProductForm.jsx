@@ -27,6 +27,7 @@ import {
   barcodesForForm,
   barcodesFromWbSizes,
   coerceBarcodeString,
+  isCorruptBarcodeString,
   normalizeBarcodeRows,
 } from '../../../utils/productBarcodes.js';
 import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
@@ -1914,9 +1915,10 @@ export function ProductForm({
   };
 
   const handleBarcodeChange = (index, value) => {
+    const next = coerceBarcodeString(value);
     setFormData((prev) => {
       const newBarcodes = prev.barcodes.map((row, i) =>
-        i === index ? { ...row, barcode: value } : row
+        i === index ? { ...row, barcode: next } : row
       );
       return { ...prev, barcodes: newBarcodes };
     });
@@ -3378,6 +3380,12 @@ export function ProductForm({
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px' }}>
           Отметьте маркетплейс на ШК — он будет использоваться при печати этикеток в поставках FBO.
           Без отметки — внутренний штрихкод.
+          {Array.isArray(currentProduct?.barcodes) &&
+          currentProduct.barcodes.some((b) => isCorruptBarcodeString(b?.barcode ?? b)) ? (
+            <span style={{ display: 'block', marginTop: 6, color: '#f59e0b' }}>
+              В базе есть битая запись штрихкода (object). Введите правильный код и сохраните карточку — битая строка будет удалена.
+            </span>
+          ) : null}
         </div>
         <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
           {formData.barcodes.map((row, index) => (
@@ -3644,8 +3652,8 @@ export function ProductForm({
                   {(ozonFetchedProduct.offer_id ?? ozonFetchedProduct.sku) && (
                     <span><span style={{ color: 'var(--muted)' }}>Артикул:</span> {ozonFetchedProduct.offer_id ?? ozonFetchedProduct.sku}</span>
                   )}
-                  {ozonFetchedProduct.barcode && (
-                    <span><span style={{ color: 'var(--muted)' }}>Штрихкод:</span> {ozonFetchedProduct.barcode}</span>
+                  {coerceBarcodeString(ozonFetchedProduct.barcode) && (
+                    <span><span style={{ color: 'var(--muted)' }}>Штрихкод:</span> {coerceBarcodeString(ozonFetchedProduct.barcode)}</span>
                   )}
                   {ozonFetchedProduct.category_id != null && (
                     <span><span style={{ color: 'var(--muted)' }}>ID категории:</span> {ozonFetchedProduct.category_id}</span>

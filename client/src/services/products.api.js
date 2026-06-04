@@ -4,7 +4,7 @@
  */
 
 import api from './api.js';
-import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
+import { coerceBarcodeString, isCorruptBarcodeString, normalizeBarcodeRows } from '../utils/productBarcodes.js';
 
 export const productsApi = {
   /** Сводка остатков по категориям для главной (лёгкий SQL на сервере). */
@@ -224,8 +224,8 @@ export const productsApi = {
    * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).
    */
   appendBarcode: async (productId, barcode) => {
-    const add = String(barcode || '').trim();
-    if (!add) {
+    const add = coerceBarcodeString(barcode);
+    if (!add || isCorruptBarcodeString(add)) {
       const err = new Error('Пустой штрихкод');
       err.statusCode = 400;
       throw err;
