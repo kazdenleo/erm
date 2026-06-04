@@ -63,6 +63,11 @@ export function formatProcurementSuppliersLabel(suppliers) {
   return list.map(formatProcurementSupplierEntry).join('; ');
 }
 
+/** Одна строка для ячейки заказа (все поставщики из закупки). */
+export function getOrderProcurementSupplierName(order) {
+  return formatProcurementSuppliersLabel(getOrderProcurementSuppliers(order));
+}
+
 export function procurementSuppliersTitle(suppliers) {
   const list = Array.isArray(suppliers) ? suppliers : [];
   if (!list.length) return '';

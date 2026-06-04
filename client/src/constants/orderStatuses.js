@@ -17,6 +17,7 @@ export const orderStatusLabels = {
 
 export {
   getOrderProcurementSuppliers,
+  getOrderProcurementSupplierName,
   formatProcurementSuppliersLabel,
   procurementSuppliersTitle,
   aggregateProcurementSuppliersFromOrders,
