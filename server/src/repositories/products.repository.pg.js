@@ -1394,18 +1394,67 @@ class ProductsRepositoryPG {
       hasDigits
         ? `SELECT bc.product_id
            FROM barcodes bc
+           JOIN products p ON p.id = bc.product_id
            WHERE ${BARCODES_NOT_CORRUPT_SQL}
-             AND (TRIM(bc.barcode) = TRIM($1)
+             AND COALESCE(p.is_archived, false) = false
+             AND (LOWER(TRIM(bc.barcode)) = LOWER(TRIM($1))
               OR REGEXP_REPLACE(bc.barcode, '\\D', '', 'g') = $2)
+           ORDER BY bc.id
            LIMIT 1`
         : `SELECT bc.product_id
            FROM barcodes bc
+           JOIN products p ON p.id = bc.product_id
            WHERE ${BARCODES_NOT_CORRUPT_SQL}
-             AND TRIM(bc.barcode) = TRIM($1)
+             AND COALESCE(p.is_archived, false) = false
+             AND LOWER(TRIM(bc.barcode)) = LOWER(TRIM($1))
+           ORDER BY bc.id
            LIMIT 1`,
       hasDigits ? [trimmed, digitsOnly] : [trimmed]
     );
     return result.rows[0]?.product_id ?? null;
+  }
+
+  /**
+   * Коды с буквами (DT-00230): только точное совпадение, без цифр и без приоритета комплектов.
+   */
+  async _findProductIdByVendorLabelCode(trimmed) {
+    if (!trimmed || isCorruptBarcodeString(trimmed)) return null;
+
+    const byBarcode = await query(
+      `SELECT bc.product_id
+       FROM barcodes bc
+       JOIN products p ON p.id = bc.product_id
+       WHERE ${BARCODES_NOT_CORRUPT_SQL}
+         AND COALESCE(p.is_archived, false) = false
+         AND LOWER(TRIM(bc.barcode)) = LOWER(TRIM($1))
+       ORDER BY bc.id
+       LIMIT 1`,
+      [trimmed]
+    );
+    if (byBarcode.rows[0]?.product_id != null) return byBarcode.rows[0].product_id;
+
+    const bySku = await query(
+      `SELECT p.id
+       FROM products p
+       WHERE COALESCE(p.is_archived, false) = false
+         AND LOWER(TRIM(COALESCE(p.sku, ''))) = LOWER(TRIM($1))
+       ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 1 ELSE 0 END, p.id
+       LIMIT 1`,
+      [trimmed]
+    );
+    if (bySku.rows[0]?.id != null) return bySku.rows[0].id;
+
+    const byMpSku = await query(
+      `SELECT p.id
+       FROM products p
+       JOIN product_skus ps ON ps.product_id = p.id
+       WHERE COALESCE(p.is_archived, false) = false
+         AND LOWER(TRIM(COALESCE(ps.sku::text, ''))) = LOWER(TRIM($1))
+       ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 1 ELSE 0 END, p.id
+       LIMIT 1`,
+      [trimmed]
+    );
+    return byMpSku.rows[0]?.id ?? null;
   }
 
   /** Комплект по штрихкоду / артикулу SKU комплекта (products.sku, product_skus, barcodes на карточке комплекта). */
@@ -1501,23 +1550,22 @@ class ProductsRepositoryPG {
     const trimmed = coerceBarcodeString(barcode);
     if (!trimmed || isCorruptBarcodeString(trimmed)) return null;
     const allowDigitMatch = shouldUseBarcodeDigitFallback(trimmed);
+
+    // DT-00230 и др.: только точный штрихкод / артикул — без комплектов и без цифр 00230.
+    if (!allowDigitMatch) {
+      const vendorId = await this._findProductIdByVendorLabelCode(trimmed);
+      if (vendorId == null) return null;
+      return (await this.findById(vendorId)) || null;
+    }
+
     const digits = trimmed.replace(/\D/g, '');
-    const hasDigits = allowDigitMatch && digits.length > 0;
+    const hasDigits = digits.length > 0;
     const digitOpts = { allowDigitMatch };
 
     const lookupKeys = [trimmed];
     if (hasDigits) {
       for (const v of this._barcodeDigitVariants(digits)) {
         lookupKeys.push(v);
-      }
-    }
-
-    // Артикулы с буквами (DT-00230): сначала точный штрихкод, без поиска комплекта по цифрам.
-    if (!allowDigitMatch) {
-      const exactId = await this._findProductIdByBarcodeValue(trimmed, '', digitOpts);
-      if (exactId != null) {
-        const exact = await this.findById(exactId);
-        if (exact) return exact;
       }
     }
 

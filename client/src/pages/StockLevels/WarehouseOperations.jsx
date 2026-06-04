@@ -1051,7 +1051,7 @@ export function WarehouseOperations({
     if (!sid) return undefined;
     let mounted = true;
     const t = setInterval(() => {
-      if (!mounted) return;
+      if (!mounted || inventoryScanBusyRef.current) return;
       inventorySessionsApi.getSession(sid).then(applyInventoryLiveStateToRows).catch(() => {});
     }, 1200);
     return () => {
@@ -1945,9 +1945,6 @@ export function WarehouseOperations({
         setOpMessage(`Сканер ${inventoryScannerId || '—'} · пересчёт: +1 шт`);
         playEventSound(SOUND_EVENTS.scan_ok);
         return;
-      }
-      if (typeof reloadProductsWithWarehouse === 'function') {
-        await reloadProductsWithWarehouse(inventorySessionWarehouseId);
       }
       const product = await lookupProductByAny(v, {
         title: 'Выберите товар для инвентаризации',
