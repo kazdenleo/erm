@@ -28,7 +28,7 @@ export function isCorruptBarcodeString(raw) {
   const s = String(raw).trim();
   if (!s) return true;
   if (CORRUPT_BARCODE_RE.test(s)) return true;
-  if (/\[object[\s\]]/i.test(s)) return true;
+  if (/\[object/i.test(s)) return true;
   if (/^object$/i.test(s)) return true;
   return false;
 }
