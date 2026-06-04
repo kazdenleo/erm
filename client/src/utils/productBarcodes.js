@@ -1,5 +1,12 @@
 /** @typedef {'ozon'|'wb'|'ym'} MarketplaceCode */
 
+/** Сопоставление только по цифрам (EAN). Для DT-00230 и т.п. — только точная строка. */
+export function shouldUseBarcodeDigitFallback(code) {
+  const s = String(code ?? '').trim();
+  if (!s || !/\d/.test(s)) return false;
+  return !/[a-zA-Z]/.test(s);
+}
+
 export const BARCODE_MP_TOGGLES = [
   { code: 'ozon', label: 'OZ', title: 'Ozon — этикетки FBO', color: '#005bff' },
   { code: 'wb', label: 'WB', title: 'Wildberries — этикетки FBO', color: '#cb11ab' },

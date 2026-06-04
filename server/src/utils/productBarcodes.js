@@ -2,6 +2,17 @@
 
 export const BARCODE_MP_CODES = ['ozon', 'wb', 'ym'];
 
+/**
+ * Сопоставление только по цифрам (EAN/GTIN). Для артикулов вида DT-00230 — только точное совпадение строки.
+ * @param {unknown} code
+ * @returns {boolean}
+ */
+export function shouldUseBarcodeDigitFallback(code) {
+  const s = String(code ?? '').trim();
+  if (!s || !/\d/.test(s)) return false;
+  return !/[a-zA-Z]/.test(s);
+}
+
 const CORRUPT_BARCODE_RE =
   /^\[object(\s+object)?\]$/i;
 

@@ -3,7 +3,7 @@
  */
 
 import { productsApi } from '../services/products.api';
-import { barcodeStringsFromProduct } from './productBarcodes.js';
+import { barcodeStringsFromProduct, shouldUseBarcodeDigitFallback } from './productBarcodes.js';
 
 export function normalizeProductSearchQuery(value) {
   return String(value || '')
@@ -34,16 +34,19 @@ export function matchProductsLocal(products, query, { limit = 30 } = {}) {
   );
   if (exactBarcode.length) return exactBarcode.slice(0, limit);
 
+  const strictCode = !shouldUseBarcodeDigitFallback(q);
   const scored = list
     .map((p) => {
       const sku = String(p?.sku || '').toLowerCase();
       const name = String(p?.name || '').toLowerCase();
-      const barcodes = barcodeStringsFromProduct(p.barcodes)
-        .map((b) => String(b || '').toLowerCase())
-        .join(' ');
-      const hitSku = sku.includes(q);
+      const barcodeList = barcodeStringsFromProduct(p.barcodes).map((b) =>
+        String(b || '').toLowerCase()
+      );
+      const hitSku = strictCode ? sku === q : sku.includes(q);
       const hitName = name.includes(q);
-      const hitBarcode = barcodes.includes(q);
+      const hitBarcode = strictCode
+        ? barcodeList.some((b) => b === q)
+        : barcodeList.some((b) => b.includes(q));
       if (!hitSku && !hitName && !hitBarcode) return null;
       const score =
         (hitSku ? 2 : 0) + (hitName ? 1 : 0) + (hitBarcode ? 2 : 0) + (sku.startsWith(q) ? 1 : 0);

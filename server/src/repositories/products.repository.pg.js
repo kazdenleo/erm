@@ -10,6 +10,7 @@ import {
   parseBarcodesMarketplacesColumn,
   BARCODES_NOT_CORRUPT_SQL,
   isCorruptBarcodeString,
+  shouldUseBarcodeDigitFallback,
 } from '../utils/productBarcodes.js';
 
 function mapBarcodeDbRow(row) {
@@ -1386,9 +1387,9 @@ class ProductsRepositoryPG {
     return [...new Set(out)];
   }
 
-  async _findProductIdByBarcodeValue(trimmed, digitsOnly) {
+  async _findProductIdByBarcodeValue(trimmed, digitsOnly, { allowDigitMatch = true } = {}) {
     if (isCorruptBarcodeString(trimmed)) return null;
-    const hasDigits = digitsOnly.length > 0;
+    const hasDigits = allowDigitMatch && digitsOnly.length > 0;
     const result = await query(
       hasDigits
         ? `SELECT bc.product_id
@@ -1408,8 +1409,8 @@ class ProductsRepositoryPG {
   }
 
   /** Комплект по штрихкоду / артикулу SKU комплекта (products.sku, product_skus, barcodes на карточке комплекта). */
-  async _findKitProductIdByScanCode(trimmed, digitsOnly) {
-    const hasDigits = digitsOnly.length > 0;
+  async _findKitProductIdByScanCode(trimmed, digitsOnly, { allowDigitMatch = true } = {}) {
+    const hasDigits = allowDigitMatch && digitsOnly.length > 0;
     const ozonMpId =
       hasDigits && /^[0-9]+$/.test(String(trimmed).replace(/\D/g, ''))
         ? Number(String(trimmed).replace(/\D/g, ''))
@@ -1457,8 +1458,8 @@ class ProductsRepositoryPG {
   }
 
   /** Товар по артикулу в product_skus (маркетплейсы); при нескольких совпадениях — комплект в приоритете. */
-  async _findProductIdByProductSkus(trimmed, digitsOnly) {
-    const hasDigits = digitsOnly.length > 0;
+  async _findProductIdByProductSkus(trimmed, digitsOnly, { allowDigitMatch = true } = {}) {
+    const hasDigits = allowDigitMatch && digitsOnly.length > 0;
     const ozonMpId =
       hasDigits && /^[0-9]+$/.test(String(trimmed).replace(/\D/g, ''))
         ? Number(String(trimmed).replace(/\D/g, ''))
@@ -1499,8 +1500,10 @@ class ProductsRepositoryPG {
   async findByBarcode(barcode) {
     const trimmed = coerceBarcodeString(barcode);
     if (!trimmed || isCorruptBarcodeString(trimmed)) return null;
+    const allowDigitMatch = shouldUseBarcodeDigitFallback(trimmed);
     const digits = trimmed.replace(/\D/g, '');
-    const hasDigits = digits.length > 0;
+    const hasDigits = allowDigitMatch && digits.length > 0;
+    const digitOpts = { allowDigitMatch };
 
     const lookupKeys = [trimmed];
     if (hasDigits) {
@@ -1510,8 +1513,8 @@ class ProductsRepositoryPG {
     }
 
     for (const key of [...new Set(lookupKeys)]) {
-      const d = key.replace(/\D/g, '');
-      const kitId = await this._findKitProductIdByScanCode(key, d);
+      const d = allowDigitMatch ? key.replace(/\D/g, '') : '';
+      const kitId = await this._findKitProductIdByScanCode(key, d, digitOpts);
       if (kitId != null) {
         const kit = await this.findById(kitId);
         if (kit) return kit;
@@ -1520,8 +1523,8 @@ class ProductsRepositoryPG {
 
     let productId = null;
     for (const key of lookupKeys) {
-      const d = key.replace(/\D/g, '');
-      productId = await this._findProductIdByBarcodeValue(key, d);
+      const d = allowDigitMatch ? key.replace(/\D/g, '') : '';
+      productId = await this._findProductIdByBarcodeValue(key, d, digitOpts);
       if (productId != null) break;
     }
 
@@ -1543,8 +1546,8 @@ class ProductsRepositoryPG {
           productId = bySku.rows[0].id;
           break;
         }
-        const d = key.replace(/\D/g, '');
-        if (d.length >= 6) {
+        const d = allowDigitMatch ? key.replace(/\D/g, '') : '';
+        if (allowDigitMatch && d.length >= 6) {
           const bySkuDigits = await query(
             `SELECT p.id FROM products p
              WHERE REGEXP_REPLACE(COALESCE(p.sku, ''), '\\D', '', 'g') = $1
@@ -1563,8 +1566,8 @@ class ProductsRepositoryPG {
 
     if (productId == null) {
       for (const key of [...new Set(skuKeys)]) {
-        const d = key.replace(/\D/g, '');
-        productId = await this._findProductIdByProductSkus(key, d);
+        const d = allowDigitMatch ? key.replace(/\D/g, '') : '';
+        productId = await this._findProductIdByProductSkus(key, d, digitOpts);
         if (productId != null) break;
       }
     }
