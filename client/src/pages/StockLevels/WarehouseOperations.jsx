@@ -10,7 +10,7 @@ import { productsApi } from '../../services/products.api';
 import { stockMovementsApi } from '../../services/stockMovements.api';
 import { receiptsApi } from '../../services/receipts.api';
 import { inventorySessionsApi } from '../../services/inventorySessions.api';
-import { isCorruptBarcodeString } from '../../utils/productBarcodes.js';
+import { isCorruptBarcodeString, shouldUseBarcodeDigitFallback } from '../../utils/productBarcodes.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
@@ -410,13 +410,14 @@ export function WarehouseOperations({
           'В карточке товара сохранён битый штрихкод (object). Откройте товар, введите правильный код и сохраните карточку.'
         );
       }
-      // 1) Штрихкод — самый точный (быстро и однозначно).
+      // 1) Штрихкод / артикул на этикетке — точный ответ API (без fuzzy для DT-00230 и т.п.).
+      const strictVendorCode = !shouldUseBarcodeDigitFallback(v);
       try {
         const res = await productsApi.getByBarcode(v);
         const product = res?.data ?? res;
         if (product && (product.id || product.sku)) return product;
-      } catch (_) {
-        // ignore → fallback
+      } catch (apiErr) {
+        if (strictVendorCode) throw apiErr;
       }
 
       // 2) Поиск по штрихкоду / артикулу / названию (локально + сервер).

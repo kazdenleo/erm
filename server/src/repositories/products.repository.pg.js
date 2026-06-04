@@ -1512,6 +1512,15 @@ class ProductsRepositoryPG {
       }
     }
 
+    // Артикулы с буквами (DT-00230): сначала точный штрихкод, без поиска комплекта по цифрам.
+    if (!allowDigitMatch) {
+      const exactId = await this._findProductIdByBarcodeValue(trimmed, '', digitOpts);
+      if (exactId != null) {
+        const exact = await this.findById(exactId);
+        if (exact) return exact;
+      }
+    }
+
     for (const key of [...new Set(lookupKeys)]) {
       const d = allowDigitMatch ? key.replace(/\D/g, '') : '';
       const kitId = await this._findKitProductIdByScanCode(key, d, digitOpts);
@@ -1577,13 +1586,15 @@ class ProductsRepositoryPG {
     const product = await this.findById(productId);
     if (!product?.id) return null;
 
-    // Штрихкод мог совпасть с комплектующей, а код — с SKU комплекта: отдаём комплект.
-    for (const key of [...new Set(lookupKeys)]) {
-      const d = key.replace(/\D/g, '');
-      const kitId = await this._findKitProductIdByScanCode(key, d);
-      if (kitId != null && Number(kitId) !== Number(product.id)) {
-        const kit = await this.findById(kitId);
-        if (kit) return kit;
+    // EAN: штрихкод комплектующей → карточка комплекта. Для DT-00230 не подменяем по цифрам.
+    if (allowDigitMatch) {
+      for (const key of [...new Set(lookupKeys)]) {
+        const d = key.replace(/\D/g, '');
+        const kitId = await this._findKitProductIdByScanCode(key, d, digitOpts);
+        if (kitId != null && Number(kitId) !== Number(product.id)) {
+          const kit = await this.findById(kitId);
+          if (kit) return kit;
+        }
       }
     }
     return product;

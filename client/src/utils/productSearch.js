@@ -88,12 +88,14 @@ export async function searchProductsCombined(query, { products = [], organizatio
   const q = normalizeProductSearchQuery(query);
   if (!q) return [];
 
+  const strictVendorCode = !shouldUseBarcodeDigitFallback(q);
   try {
     const res = await productsApi.getByBarcode(q);
     const byBarcode = res?.data ?? res;
     if (byBarcode?.id) return [byBarcode];
-  } catch {
-    /* fallback */
+  } catch (err) {
+    if (strictVendorCode) throw err;
+    /* fallback для чисто цифровых EAN */
   }
 
   const local = matchProductsLocal(products, q, { limit });

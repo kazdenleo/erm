@@ -26,7 +26,7 @@ export function isCorruptBarcodeString(raw) {
   const s = String(raw).trim();
   if (!s) return true;
   if (CORRUPT_BARCODE_RE.test(s)) return true;
-  if (/\[object/i.test(s)) return true;
+  if (s.toLowerCase().includes('[object')) return true;
   if (/^object$/i.test(s)) return true;
   return false;
 }
@@ -44,7 +44,7 @@ export function coerceBarcodeString(raw) {
   }
   if (typeof raw === 'string') {
     const s = raw.trim();
-    if (!s || CORRUPT_BARCODE_RE.test(s) || /\[object/i.test(s)) return '';
+    if (!s || CORRUPT_BARCODE_RE.test(s) || s.toLowerCase().includes('[object')) return '';
     return s;
   }
   if (Array.isArray(raw)) {
@@ -152,7 +152,7 @@ export function normalizeBarcodeRows(barcodes) {
 /** SQL-фрагмент: исключить битые штрихкоды в таблице barcodes (alias bc). */
 export const BARCODES_NOT_CORRUPT_SQL = `(
   TRIM(bc.barcode) <> ''
-  AND TRIM(bc.barcode) !~* '^\\\\[object'
+  AND LOWER(TRIM(bc.barcode)) NOT LIKE '%[object%'
   AND LOWER(TRIM(bc.barcode)) NOT IN ('object', '[object object]')
 )`;
 
