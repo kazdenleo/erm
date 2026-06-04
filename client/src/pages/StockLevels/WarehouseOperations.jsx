@@ -40,46 +40,12 @@ const MODE_RETURN_SUPPLIER = 'return_supplier';
 const MODE_RETURN_CUSTOMER = 'return_customer';
 const MODE_TRANSFER = 'transfer';
 
-const RECEIPTS_SCANNER_ID_LS = 'warehouse_ops_receipts_scanner_id';
-const INVENTORY_SCANNER_ID_LS = 'warehouse_ops_inventory_scanner_id';
 const INVENTORY_LIVE_DRAFT_LS = 'warehouse_ops_inventory_live_draft';
 
-function getOrCreateScannerId(storageKey, prefix = 'scn') {
-  try {
-    const v = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null;
-    if (v && String(v).trim()) return String(v).trim();
-  } catch {
-    /* ignore */
-  }
-  const id = `${prefix}-${Math.random().toString(16).slice(2, 10)}`;
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(storageKey, id);
-  } catch {
-    /* ignore */
-  }
-  return id;
-}
-
-function getOrCreateReceiptsScannerId() {
-  return getOrCreateScannerId(RECEIPTS_SCANNER_ID_LS, 'scn');
-}
-
-function getOrCreateInventoryScannerId() {
-  return getOrCreateScannerId(INVENTORY_SCANNER_ID_LS, 'inv');
-}
-
-function parseScannerPrefixedCode(raw) {
-  const s = String(raw || '')
+function normalizeScanInput(raw) {
+  return String(raw || '')
     .replace(/[\r\n]+/g, '')
     .trim();
-  if (!s) return { scannerId: null, code: '' };
-
-  // Примеры префиксов: "A:123", "B-123", "C_123"
-  const m = s.match(/^([A-Za-z0-9]{1,16})[:\-_](.+)$/);
-  if (!m) return { scannerId: null, code: s };
-  const scannerId = String(m[1] || '').trim();
-  const code = String(m[2] || '').trim();
-  return { scannerId: scannerId || null, code };
 }
 
 /** Сначала недавно отсканированные текущим пользователем, затем по артикулу. */
@@ -274,7 +240,6 @@ export function WarehouseOperations({
   const [receiptsLoading, setReceiptsLoading] = useState(false);
   const [receiptDetail, setReceiptDetail] = useState(null);
   const [addReceiptModalOpen, setAddReceiptModalOpen] = useState(false);
-  const [receiptScannerId, setReceiptScannerId] = useState(() => getOrCreateReceiptsScannerId());
   const [receiptSessionEnabled, setReceiptSessionEnabled] = useState(false);
   const [receiptSessionId, setReceiptSessionId] = useState('');
   const [receiptSessionOwnerUserId, setReceiptSessionOwnerUserId] = useState(null);
@@ -477,7 +442,6 @@ export function WarehouseOperations({
   const [inventoryLiveEnabled, setInventoryLiveEnabled] = useState(false);
   const [inventoryLiveSessionId, setInventoryLiveSessionId] = useState('');
   const [inventoryLiveOwnerUserId, setInventoryLiveOwnerUserId] = useState(null);
-  const [inventoryScannerId, setInventoryScannerId] = useState(() => getOrCreateInventoryScannerId());
   const inventorySetFactDebounceRef = useRef({});
 
   const loadReceiptsList = useCallback(() => {
@@ -1228,16 +1192,7 @@ export function WarehouseOperations({
 
   /** Поступление по скану: 1 скан = +1 шт в список (без сохранения в БД) */
   const lookupByBarcodeOrSkuThenReceiptOne = async (value) => {
-    const parsed = parseScannerPrefixedCode(value);
-    const v = String(parsed.code || '').trim();
-    if (parsed.scannerId) {
-      setReceiptScannerId(parsed.scannerId);
-      try {
-        if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPTS_SCANNER_ID_LS, parsed.scannerId);
-      } catch {
-        /* ignore */
-      }
-    }
+    const v = normalizeScanInput(value);
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
       playEventSound(SOUND_EVENTS.scan_error);
@@ -1256,7 +1211,7 @@ export function WarehouseOperations({
       } else {
         addToReceiptList(product, 1);
       }
-      setOpMessage(`Сканер ${receiptScannerId || '—'} · в список: +1 шт — ${product.name || product.sku}`);
+      setOpMessage(`В список: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
       setScanValue('');
       scanInputRef.current?.focus();
@@ -1907,16 +1862,7 @@ export function WarehouseOperations({
 
   const lookupByBarcodeOrSkuThenInventoryNewOne = async (value) => {
     if (inventoryScanBusyRef.current) return;
-    const parsed = parseScannerPrefixedCode(value);
-    const v = String(parsed.code || '').trim();
-    if (parsed.scannerId) {
-      setInventoryScannerId(parsed.scannerId);
-      try {
-        if (typeof localStorage !== 'undefined') localStorage.setItem(INVENTORY_SCANNER_ID_LS, parsed.scannerId);
-      } catch {
-        /* ignore */
-      }
-    }
+    const v = normalizeScanInput(value);
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
       setOpMessage(null);
@@ -1936,7 +1882,7 @@ export function WarehouseOperations({
       if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
         await scanInventoryLive(v);
         setLookupError(null);
-        setOpMessage(`Сканер ${inventoryScannerId || '—'} · пересчёт: +1 шт`);
+        setOpMessage('Пересчёт: +1 шт');
         playEventSound(SOUND_EVENTS.scan_ok);
         return;
       }
@@ -3218,41 +3164,6 @@ export function WarehouseOperations({
                 </div>
               )}
 
-              {!inventoryLiveEnabled ? (
-                <details className="warehouse-ops-inventory-scanner-details" style={{ marginTop: 12 }}>
-                  <summary className="warehouse-ops-hint" style={{ cursor: 'pointer', marginBottom: 8 }}>
-                    Несколько сканеров на одном компьютере (необязательно)
-                  </summary>
-                  <div className="warehouse-ops-receipt-supplier-row">
-                    <label>ID сканера</label>
-                    <input
-                      type="text"
-                      className="warehouse-ops-input"
-                      style={{ maxWidth: 220 }}
-                      value={inventoryScannerId}
-                      onChange={(e) => {
-                        const v = String(e.target.value || '').trim();
-                        setInventoryScannerId(v);
-                        try {
-                          if (typeof localStorage !== 'undefined') localStorage.setItem(INVENTORY_SCANNER_ID_LS, v);
-                        } catch {
-                          /* ignore */
-                        }
-                      }}
-                      placeholder="A, B, S1…"
-                    />
-                    <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
-                      Префикс в штрихкоде: <code>A:460…</code>, <code>B-460…</code>
-                    </span>
-                  </div>
-                </details>
-              ) : (
-                <p className="warehouse-ops-hint" style={{ marginTop: 12 }}>
-                  При совместном пересчёте с разных устройств ID сканера не нужен — каждый участник сканирует со своего
-                  ПК или телефона по ссылке / приглашению.
-                </p>
-              )}
-
               <label className="warehouse-ops-checkbox-row" style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
                   type="checkbox"
@@ -4279,30 +4190,6 @@ export function WarehouseOperations({
           {receiptMode === 'scan' && (
             <>
               <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список (1 скан = 1 шт).</p>
-              <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
-                <label>ID сканера</label>
-                <input
-                  type="text"
-                  className="warehouse-ops-input"
-                  style={{ maxWidth: 220 }}
-                  value={receiptScannerId}
-                  onChange={(e) => {
-                    const v = String(e.target.value || '').trim();
-                    setReceiptScannerId(v);
-                    try {
-                      if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPTS_SCANNER_ID_LS, v);
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                  placeholder="scn-..."
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                <span className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
-                  Если несколько сканеров на одном ПК — настройте префикс (например <code>A:</code>, <code>B-</code>). ID подставится автоматически.
-                </span>
-              </div>
               <form onSubmit={handleScanSubmit} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
                 <input
                   ref={scanInputRef}
@@ -4334,16 +4221,7 @@ export function WarehouseOperations({
                 const raw = String(boxAddCode || '').trim();
                 const qty = Math.floor(Number(boxAddQty) || 0);
                 if (!raw || qty <= 0) return;
-                const parsed = parseScannerPrefixedCode(raw);
-                const code = String(parsed.code || '').trim();
-                if (parsed.scannerId) {
-                  setReceiptScannerId(parsed.scannerId);
-                  try {
-                    if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPTS_SCANNER_ID_LS, parsed.scannerId);
-                  } catch {
-                    /* ignore */
-                  }
-                }
+                const code = normalizeScanInput(raw);
                 try {
                   setBoxAddBusy(true);
                   setLookupError(null);
@@ -4356,7 +4234,7 @@ export function WarehouseOperations({
                   } else {
                     addToReceiptList(product, qty);
                   }
-                  setOpMessage(`Сканер ${receiptScannerId || '—'} · в список: +${qty} шт — ${product.name || product.sku}`);
+                  setOpMessage(`В список: +${qty} шт — ${product.name || product.sku}`);
                   playEventSound(SOUND_EVENTS.scan_ok);
                   setBoxAddCode('');
                   setBoxAddQty('');

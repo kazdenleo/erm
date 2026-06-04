@@ -45,29 +45,8 @@ function getOrCreateScannerId() {
   return next;
 }
 
-/**
- * Мульти‑сканеры на одном устройстве:
- * если сканер умеет добавлять префикс, можно сделать "канал" без кнопок/горячих клавиш.
- *
- * Примеры:
- * - A:4601234567890  -> scannerId=A, barcode=4601234567890
- * - B-4601234567890  -> scannerId=B, barcode=4601234567890
- * - S1#4601234567890 -> scannerId=S1, barcode=4601234567890
- */
-function parseScannerPrefixedBarcode(raw) {
-  const v = String(raw || '').replace(/[\r\n]+/g, '').trim();
-  if (!v) return { barcode: '', scannerId: null };
-  // Префикс: 1-6 символов (буквы/цифры), затем разделитель :, -, #, |
-  const m = /^([a-z0-9]{1,6})\s*[:#|\-]\s*(.+)$/i.exec(v);
-  if (!m) return { barcode: v, scannerId: null };
-  const prefix = String(m[1] || '').trim();
-  const tail = String(m[2] || '').trim();
-  // Чтобы случайно не отрезать часть SKU/кода, считаем "сканерным" префикс только если хвост похож на штрихкод.
-  const tailDigits = tail.replace(/\D+/g, '');
-  if (tailDigits.length >= 4) {
-    return { barcode: tail, scannerId: prefix || null };
-  }
-  return { barcode: v, scannerId: null };
+function normalizeScanInput(raw) {
+  return String(raw || '').replace(/[\r\n]+/g, '').trim();
 }
 
 function fmtDt(iso) {
@@ -681,11 +660,9 @@ export function Purchases() {
 
   const scan = async (valueOverride) => {
     const rid = receipt?.receipt?.id;
-    const raw = String(valueOverride ?? scanValue ?? '').replace(/[\r\n]+/g, '').trim();
-    if (!rid || !raw) return;
-    const parsed = parseScannerPrefixedBarcode(raw);
-    const v = parsed.barcode;
-    const effectiveScannerId = parsed.scannerId || scannerId || null;
+    const v = normalizeScanInput(valueOverride ?? scanValue ?? '');
+    if (!rid || !v) return;
+    const effectiveScannerId = scannerId || null;
     if (!v) return;
     // Защита от двойного скана: некоторые сканеры шлют и \n, и Enter,
     // из-за чего scan() вызывается два раза почти одновременно.
@@ -781,10 +758,9 @@ export function Purchases() {
       if (pending?.rid && pending?.barcode) {
         try {
           setScanMsg('Сканирую…');
-          const parsed = parseScannerPrefixedBarcode(pending.barcode);
           await purchasesApi.scanReceipt(pending.rid, {
-            barcode: parsed.barcode || pending.barcode,
-            scannerId: parsed.scannerId || scannerId || null
+            barcode: normalizeScanInput(pending.barcode),
+            scannerId: scannerId || null
           });
           scheduleReceiptRefresh(pending.rid);
           setScanMsg('Ок');
@@ -1506,7 +1482,7 @@ export function Purchases() {
                 spellCheck={false}
               />
               <span className="muted" style={{ fontSize: 12 }}>
-                Если несколько сканеров на одном ПК — настройте префикс (например <code>A:</code>, <code>B-</code>). Тогда ID будет подставляться автоматически, без переключений.
+                На каждом устройстве свой ID (сохраняется в браузере). Нужен, если два сканера на одном ПК ведут одну приёмку.
               </span>
             </div>
             <form
@@ -1631,15 +1607,13 @@ export function Purchases() {
                   pendingScansRef.current += 1;
                   setPendingScans(pendingScansRef.current);
 
-                  const parsed = parseScannerPrefixedBarcode(raw);
-                  const effectiveScannerId = parsed?.scannerId || scannerId || null;
-                  const code = String(parsed?.barcode || raw).trim();
+                  const code = normalizeScanInput(raw);
 
                   await purchasesApi.addReceiptQuantity(rid, {
                     quantity: qty,
                     barcode: code,
                     sku: code,
-                    scannerId: effectiveScannerId,
+                    scannerId: scannerId || null,
                   });
 
                   setBoxAddCode('');

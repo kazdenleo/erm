@@ -42,22 +42,10 @@ export async function fetchProductByScanCode(code) {
       'Битый штрихкод (object). Откройте карточку товара, введите правильный код и сохраните.'
     );
   }
-  try {
-    const wrap = await productsApi.getByBarcode(v);
-    const product = unwrapProductFromApiResponse(wrap);
-    if (product?.id) return product;
-  } catch (e) {
-    if (!shouldUseBarcodeDigitFallback(v)) throw e;
-  }
-  if (!shouldUseBarcodeDigitFallback(v)) {
-    throw new Error(`Товар со штрихкодом «${v}» не найден в базе`);
-  }
-  const matches = await searchProductsCombined(v, { products: [], limit: 5 });
-  if (matches.length === 1) return matches[0];
-  if (matches.length > 1) {
-    throw new Error(`Найдено несколько товаров по коду «${v}» — уточните этикетку`);
-  }
-  throw new Error(`Товар со штрихкодом «${v}» не найден`);
+  const wrap = await productsApi.getByBarcode(v);
+  const product = unwrapProductFromApiResponse(wrap);
+  if (product?.id) return product;
+  throw new Error(`Товар со штрихкодом «${v}» не найден в базе`);
 }
 
 /** Скорее всего ввод со сканера (цифры, без букв). */
