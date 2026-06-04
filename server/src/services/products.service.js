@@ -28,6 +28,7 @@ import {
   resolveOzonAttributesDictionaryLabels
 } from './productsImport.service.js';
 import { resolveMarketplaceListingByErpSku } from './productMarketplaceLink.service.js';
+import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import marketplaceProductCardPush from './marketplaceProductCardPush.service.js';
 import {
   getProductParticipation,
@@ -1147,13 +1148,15 @@ class ProductsService {
       if (Object.prototype.hasOwnProperty.call(updates, 'sku_wb')) {
         const nmRaw = toStr(updates.sku_wb);
         const vendorExplicit = Object.prototype.hasOwnProperty.call(updates, 'mp_wb_vendor_code');
-        const vendor = vendorExplicit ? toStr(updates.mp_wb_vendor_code) : undefined;
+        const vendor = vendorExplicit ? sanitizeWbVendorCode(toStr(updates.mp_wb_vendor_code)) : undefined;
         let existing = null;
         if (!vendorExplicit || nmRaw == null) {
           existing = await this.getById(id);
         }
         const vendorForSkus =
-          vendor !== undefined ? vendor : toStr(existing?.mp_wb_vendor_code);
+          vendor !== undefined
+            ? vendor
+            : sanitizeWbVendorCode(toStr(existing?.mp_wb_vendor_code));
         updates.marketplace_skus.wb = vendorForSkus;
         updates.wb_draft = patchWbNmIdDraft(parseWbDraftColumn(existing?.wb_draft), nmRaw);
         updates.sku_wb = nmRaw;
@@ -1437,7 +1440,7 @@ class ProductsService {
       updates.sku_ozon = resolved.sku_ozon;
       updates.marketplace_ozon_product_id = resolved.marketplace_ozon_product_id;
     } else if (resolved.marketplace === 'wb') {
-      const vendor = resolved.mp_wb_vendor_code ? String(resolved.mp_wb_vendor_code).trim() : null;
+      const vendor = resolved.mp_wb_vendor_code ? sanitizeWbVendorCode(resolved.mp_wb_vendor_code) : null;
       updates.mp_wb_vendor_code = vendor;
       updates.sku_wb = resolved.sku_wb;
       updates.marketplace_skus = { wb: vendor };

@@ -12,6 +12,7 @@ import { productsApi } from '../../../services/products.api';
 import { getApiSessionContext } from '../../../services/apiSession.js';
 import { userCategoriesApi } from '../../../services/userCategories.api';
 import { MP_LINK_MAX } from '../../../constants/marketplaceLinks.js';
+import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { ProductMarketplaceLinkSection } from './ProductMarketplaceLinkSection.jsx';
 import {
   canUsePrintHelper,
@@ -1490,13 +1491,13 @@ export function ProductForm({
       currentProduct?.sku_ozon,
       skuWbRaw && !nmId ? skuWbRaw : null
     ]
-      .map((v) => (v != null && String(v).trim() !== '' ? String(v).trim() : ''))
+      .map((v) => sanitizeWbVendorCode(v))
       .filter(Boolean);
     const vendorCodes = [...new Set(vendorCandidates)];
-    const expectedVendor = String(
+    const expectedVendor = sanitizeWbVendorCode(
       formData.mp_wb_vendor_code || currentProduct?.mp_wb_vendor_code || ''
-    ).trim();
-    const normVc = (v) => String(v || '').trim().toLowerCase();
+    );
+    const normVc = (v) => sanitizeWbVendorCode(v).toLowerCase();
     const matchesExpectedVendor = (card) => {
       if (!expectedVendor) return true;
       const loaded = normVc(card?.vendorCode ?? card?.vendor_code);
@@ -2520,7 +2521,7 @@ export function ProductForm({
       mp_ozon_name: trimOrNull(formData.mp_ozon_name),
       mp_ozon_description: trimOrNull(formData.mp_ozon_description),
       mp_ozon_brand: trimOrNull(formData.mp_ozon_brand),
-      mp_wb_vendor_code: trimOrNull(formData.mp_wb_vendor_code),
+      mp_wb_vendor_code: trimOrNull(sanitizeWbVendorCode(formData.mp_wb_vendor_code)),
       mp_wb_name: trimOrNull(formData.mp_wb_name),
       mp_wb_description: trimOrNull(formData.mp_wb_description),
       mp_wb_brand: trimOrNull(formData.mp_wb_brand),

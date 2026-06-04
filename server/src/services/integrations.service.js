@@ -12,6 +12,7 @@ import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-h
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
 import { extractWbWarehouseList, hasWbTariffsWarehouseList } from '../utils/wbTariffs.js';
+import { normWbVendorCode, sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
 
@@ -1777,7 +1778,11 @@ class IntegrationsService {
   }
 
   _wbNormVendor(s) {
-    return String(s || '').trim().toLowerCase();
+    return normWbVendorCode(s);
+  }
+
+  _sanitizeWbVendorCode(s) {
+    return sanitizeWbVendorCode(s);
   }
 
   /**
@@ -1786,7 +1791,7 @@ class IntegrationsService {
    * @param {{ profileId?: number|string|null, organizationId?: number|string|null, wbOverride?: object }} [opts]
    */
   async getWildberriesProductByVendorCode(vendorCode, opts = {}) {
-    const vc = vendorCode != null ? String(vendorCode).trim() : '';
+    const vc = sanitizeWbVendorCode(vendorCode);
     if (!vc) {
       const err = new Error('Укажите артикул продавца (vendorCode).');
       err.statusCode = 400;

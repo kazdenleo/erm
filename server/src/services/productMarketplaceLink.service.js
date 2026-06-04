@@ -3,6 +3,7 @@
  */
 
 import integrationsService from './integrations.service.js';
+import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 
 const MP_CODES = {
   ozon: 'ozon',
@@ -50,15 +51,17 @@ export function collectWbVendorCandidates({ hints = {}, product = null, erpSku =
     .map((v) => (v != null ? String(v).trim() : ''))
     .find(Boolean);
   const nmId = parsePositiveInt(skuWbRaw);
-  return uniqueNonEmpty([
-    h.mp_wb_vendor_code,
-    h.wbVendorCode,
-    product?.mp_wb_vendor_code,
-    product?.marketplace_skus?.wb,
-    h.sku_ozon,
-    product?.sku_ozon,
-    skuWbRaw && !nmId ? skuWbRaw : null
-  ]);
+  return uniqueNonEmpty(
+    [
+      h.mp_wb_vendor_code,
+      h.wbVendorCode,
+      product?.mp_wb_vendor_code,
+      product?.marketplace_skus?.wb,
+      h.sku_ozon,
+      product?.sku_ozon,
+      skuWbRaw && !nmId ? skuWbRaw : null
+    ].map((v) => sanitizeWbVendorCode(v))
+  );
 }
 
 function assertCredentials(mp, cfg) {
@@ -202,7 +205,7 @@ export async function resolveMarketplaceListingByErpSku({
     return {
       marketplace: mp,
       sku_wb: String(card.nmId),
-      mp_wb_vendor_code: card.vendorCode || vendorCandidates[0] || sku,
+      mp_wb_vendor_code: sanitizeWbVendorCode(card.vendorCode || vendorCandidates[0] || sku),
       displaySku: String(card.nmId)
     };
   }

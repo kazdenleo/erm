@@ -5,6 +5,7 @@
 import React, { useState } from 'react';
 import { MP_LINK_MAX, MP_LINK_PANEL_STYLE } from '../../../constants/marketplaceLinks.js';
 import { productsApi } from '../../../services/products.api.js';
+import { sanitizeWbVendorCode } from '../../../utils/wbVendorCode.js';
 import { Button } from '../../common/Button/Button.jsx';
 
 function isMarketplaceLinked(marketplace, formData) {
@@ -42,7 +43,7 @@ export function ProductMarketplaceLinkSection({
   const linked = isMarketplaceLinked(marketplace, formData);
   const skuTrim = erpSku != null ? String(erpSku).trim() : '';
   const orgTrim = organizationId != null ? String(organizationId).trim() : '';
-  const wbVendorTrim = String(formData?.mp_wb_vendor_code || '').trim();
+  const wbVendorTrim = sanitizeWbVendorCode(formData?.mp_wb_vendor_code || '');
   const wbNmTrim = String(formData?.sku_wb || '').trim();
   const ozonOfferTrim = String(formData?.sku_ozon || '').trim();
   const ozonPidTrim = String(formData?.ozon_product_id || '').trim();
@@ -246,7 +247,16 @@ export function ProductMarketplaceLinkSection({
               autoComplete="off"
               value={formData.mp_wb_vendor_code}
               onChange={(e) =>
-                handleChange('mp_wb_vendor_code', e.target.value.slice(0, MP_LINK_MAX.WB_VENDOR_CODE))
+                handleChange(
+                  'mp_wb_vendor_code',
+                  sanitizeWbVendorCode(e.target.value).slice(0, MP_LINK_MAX.WB_VENDOR_CODE)
+                )
+              }
+              onBlur={(e) =>
+                handleChange(
+                  'mp_wb_vendor_code',
+                  sanitizeWbVendorCode(e.target.value).slice(0, MP_LINK_MAX.WB_VENDOR_CODE)
+                )
               }
             />
             {errors.mp_wb_vendor_code && (

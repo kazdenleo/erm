@@ -4,6 +4,7 @@
  */
 
 import integrationsService from '../services/integrations.service.js';
+import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import repositoryFactory from '../config/repository-factory.js';
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 import logger from '../utils/logger.js';
@@ -232,7 +233,7 @@ class IntegrationsController {
           ? String(organizationId).trim()
           : null;
       const scope = { profileId, organizationId: org };
-      const vc = vendor_code != null ? String(vendor_code).trim() : '';
+      const vc = vendor_code != null ? sanitizeWbVendorCode(vendor_code) : '';
       const nmRaw = nm_id != null && String(nm_id).trim() !== '' ? String(nm_id).trim() : null;
       let resolvedNmId = null;
       if (vc) {
