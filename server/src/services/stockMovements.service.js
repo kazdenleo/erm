@@ -9,7 +9,9 @@ import repositoryFactory from '../config/repository-factory.js';
 import {
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL,
-  RAW_RESERVED_SUM_EXPR_SQL
+  RAW_RESERVED_SUM_EXPR_SQL,
+  parseStockMovementWarehouseId,
+  stockMovementWarehouseReserveSql
 } from '../constants/netReservedStockSql.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 
@@ -473,13 +475,20 @@ class StockMovementsService {
       return { movements: [], netReserved: 0 };
     }
 
-    if (await this.hasJournalReserveDrift(idNum, { profileId })) {
-      await this.reconcileJournalReserveForProduct(idNum, { profileId }).catch(() => {});
-    }
-
     let whFilter = null;
     if (warehouseId != null && String(warehouseId).trim() !== '') {
       whFilter = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
+    }
+
+    const summary = await this.getReserveSummaryForProduct(idNum, {
+      profileId,
+      warehouseId: whFilter
+    });
+    if (Number(summary.orphanJournalReserve) > 0) {
+      await this.releaseUnattributedJournalReserve(idNum, {
+        profileId,
+        warehouseId: whFilter
+      }).catch(() => {});
     }
 
     const rows = await this.repository.findByProduct(productId, {
@@ -548,7 +557,22 @@ class StockMovementsService {
    * Формула нетто-резерва совпадает с products.repository / kitStock (unreserve уменьшает резерв).
    * Для комплектов reservedQty — целые комплекты под заказ (SKU + комплектующие), не «сырой» журнал SKU.
    */
-  async listReservedOrdersForProduct(productId, { profileId = null, _skipStaleCleanup = false } = {}) {
+  async resolveWarehouseFilter(warehouseId) {
+    if (warehouseId == null || String(warehouseId).trim() === '') return null;
+    return this.productsRepository.resolveOwnWarehouseId(warehouseId);
+  }
+
+  _movementWarehouseSql(warehouseId, params) {
+    const whId = parseStockMovementWarehouseId(warehouseId);
+    if (whId == null) return '';
+    params.push(whId);
+    return stockMovementWarehouseReserveSql('', whId, params.length);
+  }
+
+  async listReservedOrdersForProduct(
+    productId,
+    { profileId = null, warehouseId = null, _skipStaleCleanup = false } = {}
+  ) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) return [];
 
@@ -574,6 +598,9 @@ class StockMovementsService {
            )`
       : `product_id = $1`;
 
+    const params = [idNum];
+    const whSql = this._movementWarehouseSql(warehouseId, params);
+
     const res = await query(
       `WITH order_ids AS (
          SELECT DISTINCT (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint AS order_row_id
@@ -582,6 +609,7 @@ class StockMovementsService {
            AND type IN ('reserve', 'unreserve')
            AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
            AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint > 0
+           ${whSql}
        ),
        sku_net AS (
          SELECT (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint AS order_row_id,
@@ -590,6 +618,7 @@ class StockMovementsService {
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
            AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
+           ${whSql}
          GROUP BY 1
        )
        SELECT o.id,
@@ -601,11 +630,21 @@ class StockMovementsService {
               order_ids.order_row_id AS movement_order_db_id
        FROM order_ids
        LEFT JOIN sku_net ON sku_net.order_row_id = order_ids.order_row_id
-       LEFT JOIN orders o ON o.id = order_ids.order_row_id
+       LEFT JOIN LATERAL (
+         SELECT o.id, o.marketplace, o.order_id, o.status, o.created_at
+         FROM orders o
+         WHERE o.id = order_ids.order_row_id
+            OR (
+              o.order_id IS NOT NULL
+              AND TRIM(o.order_id) = TRIM(order_ids.order_row_id::text)
+            )
+         ORDER BY CASE WHEN o.id = order_ids.order_row_id THEN 0 ELSE 1 END, o.id DESC
+         LIMIT 1
+       ) o ON true
        WHERE COALESCE(sku_net.sku_net_qty, 0) > 0
        ORDER BY o.created_at DESC NULLS LAST, order_ids.order_row_id DESC
        LIMIT 200`,
-      [idNum]
+      params
     );
 
     if (!_skipStaleCleanup && (res.rows?.length ?? 0) > 0) {
@@ -620,7 +659,11 @@ class StockMovementsService {
         cleaned = true;
       }
       if (cleaned) {
-        return this.listReservedOrdersForProduct(productId, { profileId, _skipStaleCleanup: true });
+        return this.listReservedOrdersForProduct(productId, {
+          profileId,
+          warehouseId,
+          _skipStaleCleanup: true
+        });
       }
     }
 
@@ -742,7 +785,7 @@ class StockMovementsService {
   /**
    * Сводка резерва для модалки остатков (комплект: колонка = только SKU комплекта).
    */
-  async getReserveSummaryForProduct(productId, { profileId = null } = {}) {
+  async getReserveSummaryForProduct(productId, { profileId = null, warehouseId = null } = {}) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) {
       return {
@@ -760,6 +803,7 @@ class StockMovementsService {
 
     const orders = await this.listReservedOrdersForProduct(idNum, {
       profileId,
+      warehouseId,
       _skipStaleCleanup: true
     });
     const ordersReservedQty = orders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
@@ -769,9 +813,13 @@ class StockMovementsService {
     const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
 
     const isKit = await isKitProductId(idNum);
+    const movementOpts =
+      warehouseId != null && parseStockMovementWarehouseId(warehouseId) != null
+        ? { warehouseId: parseStockMovementWarehouseId(warehouseId) }
+        : {};
     const displayReservedQty = isKit
-      ? await readKitDisplayReservedQuantity(idNum)
-      : await getReservedQuantityFromMovements(idNum);
+      ? await readKitDisplayReservedQuantity(idNum, movementOpts)
+      : await getReservedQuantityFromMovements(idNum, movementOpts);
 
     let componentJournalReserve = 0;
     if (isKit) {
@@ -810,33 +858,37 @@ class StockMovementsService {
   }
 
   /** Нетто-резерв FBO по product_id (только строки с fbo_supply_item_id). */
-  async _fboJournalNetForProduct(productId) {
+  async _fboJournalNetForProduct(productId, { warehouseId = null } = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
+    const params = [pid];
+    const whSql = this._movementWarehouseSql(warehouseId, params);
     const r = await query(
       `SELECT GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS rv
        FROM stock_movements
        WHERE product_id = $1
          AND type IN ('reserve', 'unreserve')
          AND meta->>'fbo_supply_item_id' IS NOT NULL
-         AND (meta->>'fbo_supply_item_id') ~ '^[0-9]+$'`,
-      [pid]
+         AND (meta->>'fbo_supply_item_id') ~ '^[0-9]+$'${whSql}`,
+      params
     );
     return Number(r.rows?.[0]?.rv ?? 0) || 0;
   }
 
   /** Нетто и сырое нетто резерва по product_id в журнале. */
-  async _journalNetsForProduct(productId) {
+  async _journalNetsForProduct(productId, { warehouseId = null } = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) {
       return { journalNet: 0, rawNet: 0 };
     }
+    const params = [pid];
+    const whSql = this._movementWarehouseSql(warehouseId, params);
     const r = await query(
       `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net,
               ${RAW_RESERVED_SUM_EXPR_SQL}::numeric AS raw
        FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
-      [pid]
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')${whSql}`,
+      params
     );
     const row = r.rows?.[0];
     return {
@@ -846,20 +898,22 @@ class StockMovementsService {
   }
 
   /** Сумма положительных нетто-резервов по заказам (meta.order_id) для product_id. */
-  async _ordersJournalNetForProduct(productId) {
+  async _ordersJournalNetForProduct(productId, { warehouseId = null } = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
+    const params = [pid];
+    const whSql = this._movementWarehouseSql(warehouseId, params);
     const r = await query(
       `WITH nets AS (
          SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_r
          FROM stock_movements
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
-           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
+           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'${whSql}
          GROUP BY (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint
        )
        SELECT COALESCE(SUM(net_r), 0)::int AS total FROM nets WHERE net_r > 0`,
-      [pid]
+      params
     );
     return Number(r.rows?.[0]?.total ?? 0) || 0;
   }
@@ -961,15 +1015,18 @@ class StockMovementsService {
    * Выровнять нетто журнала с суммой резерва по заказам и FBO для одного product_id.
    * Устраняет «лишние» unreserve без order_id, из‑за которых глобальный нетто = 0 при активных заказах.
    */
-  async _reconcileJournalNetForProductId(productId, { profileId = null, sourceProductId = null } = {}) {
+  async _reconcileJournalNetForProductId(
+    productId,
+    { profileId = null, sourceProductId = null, warehouseId = null } = {}
+  ) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) {
       return { productId: pid, reserveAdded: 0, unreserveAdded: 0, skipped: true };
     }
 
-    const { journalNet, rawNet } = await this._journalNetsForProduct(pid);
-    const ordersNet = await this._ordersJournalNetForProduct(pid);
-    const fboNet = await this._fboJournalNetForProduct(pid);
+    const { journalNet, rawNet } = await this._journalNetsForProduct(pid, { warehouseId });
+    const ordersNet = await this._ordersJournalNetForProduct(pid, { warehouseId });
+    const fboNet = await this._fboJournalNetForProduct(pid, { warehouseId });
     const expectedNet = ordersNet + fboNet;
     const rawDrift = rawNet - expectedNet;
 
@@ -1046,7 +1103,7 @@ class StockMovementsService {
   /**
    * Сверка журнала резерва для товара (комплект + комплектующие).
    */
-  async reconcileJournalReserveForProduct(productId, { profileId = null } = {}) {
+  async reconcileJournalReserveForProduct(productId, { profileId = null, warehouseId = null } = {}) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) {
       return { lines: 0, reserveAdded: 0, unreserveAdded: 0, details: [] };
@@ -1075,7 +1132,8 @@ class StockMovementsService {
     for (const pid of productIds) {
       const row = await this._reconcileJournalNetForProductId(pid, {
         profileId,
-        sourceProductId: idNum
+        sourceProductId: idNum,
+        warehouseId
       });
       if (!row.skipped) {
         lines += 1;
@@ -1104,7 +1162,10 @@ class StockMovementsService {
   /**
    * Снять резерв в журнале без заказа и без FBO (рассинхрон / удалённая запись).
    */
-  async releaseUnattributedJournalReserve(productId, { profileId = null } = {}) {
+  async releaseUnattributedJournalReserve(
+    productId,
+    { profileId = null, warehouseId = null, allowDeficitFix = false } = {}
+  ) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) {
       const error = new Error('Некорректный ID товара');
@@ -1112,12 +1173,12 @@ class StockMovementsService {
       throw error;
     }
 
-    const summary = await this.getReserveSummaryForProduct(idNum, { profileId });
+    const summary = await this.getReserveSummaryForProduct(idNum, { profileId, warehouseId });
     const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);
     if (orphanQty <= 0) {
       const deficit = Math.floor(Number(summary.journalDeficit) || 0);
-      if (deficit > 0) {
-        const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId });
+      if (deficit > 0 && allowDeficitFix) {
+        const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId, warehouseId });
         return {
           releasedProductLines: recon.lines,
           releasedQty: recon.unreserveAdded,
@@ -1128,7 +1189,7 @@ class StockMovementsService {
       return { releasedProductLines: 0, releasedQty: 0, skipped: true };
     }
 
-    const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId });
+    const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId, warehouseId });
     return {
       releasedProductLines: recon.lines,
       releasedQty: recon.unreserveAdded,

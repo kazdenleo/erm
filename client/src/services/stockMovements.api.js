@@ -27,8 +27,12 @@ export const stockMovementsApi = {
   },
 
   /** Заказы с ненулевым резервом по товару (текущее состояние). */
-  getReservedOrders: async (productId) => {
-    const response = await api.get(`/products/${productId}/stock-reserved-orders`);
+  getReservedOrders: async (productId, { warehouseId } = {}) => {
+    const params = {};
+    if (warehouseId != null && String(warehouseId).trim() !== '') {
+      params.warehouseId = warehouseId;
+    }
+    const response = await api.get(`/products/${productId}/stock-reserved-orders`, { params });
     return response.data;
   },
 

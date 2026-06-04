@@ -1716,7 +1716,9 @@ export function WarehouseStocks() {
   const reloadReserveOrdersList = useCallback(async () => {
     const pid = reserveModalProduct?.id;
     if (!pid) return [];
-    const res = await stockMovementsApi.getReservedOrders(pid);
+    const res = await stockMovementsApi.getReservedOrders(pid, {
+      warehouseId: stockWarehouseId || undefined
+    });
     const list = res?.data ?? res ?? [];
     const arr = Array.isArray(list) ? list : [];
     const fbo = Array.isArray(res?.fboSupplies) ? res.fboSupplies : [];
@@ -1724,7 +1726,7 @@ export function WarehouseStocks() {
     setReserveFboSupplies(fbo);
     setReserveSummary(res?.summary ?? null);
     return arr;
-  }, [reserveModalProduct?.id]);
+  }, [reserveModalProduct?.id, stockWarehouseId]);
 
   useEffect(() => {
     if (!reserveModalOpen || !reserveModalProduct?.id) {
@@ -1740,7 +1742,9 @@ export function WarehouseStocks() {
     let cancelled = false;
     setReserveLoading(true);
     stockMovementsApi
-      .getReservedOrders(reserveModalProduct.id)
+      .getReservedOrders(reserveModalProduct.id, {
+        warehouseId: stockWarehouseId || undefined
+      })
       .then((res) => {
         if (cancelled) return;
         const list = res?.data ?? res ?? [];
@@ -1762,7 +1766,7 @@ export function WarehouseStocks() {
     return () => {
       cancelled = true;
     };
-  }, [reserveModalOpen, reserveListOverride, reserveModalProduct?.id]);
+  }, [reserveModalOpen, reserveListOverride, reserveModalProduct?.id, stockWarehouseId]);
 
   const handleUnreserveOrderFromStock = useCallback(
     async (orderRow) => {
@@ -1803,6 +1807,47 @@ export function WarehouseStocks() {
     }
     return reserveOrders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
   }, [reserveListOverride, reserveOrders]);
+
+  const reserveJournalQty = useMemo(
+    () => Math.max(0, Number(reserveSummary?.displayReservedQty) || 0),
+    [reserveSummary?.displayReservedQty]
+  );
+  const reserveOrphanQty = useMemo(
+    () => Math.max(0, Number(reserveSummary?.orphanJournalReserve) || 0),
+    [reserveSummary?.orphanJournalReserve]
+  );
+
+  const handleReleaseOrphanReserveFromStock = useCallback(async () => {
+    const pid = reserveModalProduct?.id;
+    if (!pid || reserveBulkReleasing) return;
+    const qty = reserveOrphanQty > 0 ? reserveOrphanQty : reserveJournalQty;
+    if (qty <= 0) return;
+    if (
+      !window.confirm(
+        `Снять лишний резерв в журнале (${qty} шт.)? Заказы и FBO не будут затронуты, если они есть в списке.`
+      )
+    ) {
+      return;
+    }
+    setReserveBulkReleasing(true);
+    setReserveError(null);
+    try {
+      await stockMovementsApi.releaseAllReserves(pid);
+      await reloadReserveOrdersList();
+      loadListRef.current?.({ page: currentPage, silent: true });
+    } catch (e) {
+      setReserveError(e?.response?.data?.message || e?.message || 'Не удалось снять резерв');
+    } finally {
+      setReserveBulkReleasing(false);
+    }
+  }, [
+    reserveModalProduct?.id,
+    reserveBulkReleasing,
+    reserveOrphanQty,
+    reserveJournalQty,
+    reloadReserveOrdersList,
+    currentPage
+  ]);
 
   const handleReleaseAllReservesFromStock = useCallback(async () => {
     const pid = reserveModalProduct?.id;
@@ -2570,7 +2615,37 @@ export function WarehouseStocks() {
         ) : (
           <>
             {reserveOrders.length === 0 && reserveFboSupplies.length === 0 ? (
-              <p className="text-muted mb-2">Нет активного резерва по заказам и поставкам FBO.</p>
+              reserveJournalQty > 0 ? (
+                <>
+                  <p className="text-warning small mb-2" role="status">
+                    В журнале по выбранному складу: <strong>{reserveJournalQty}</strong> шт., но
+                    заказы и поставки FBO не найдены
+                    {reserveOrphanQty > 0 ? ` (лишний резерв: ${reserveOrphanQty} шт.)` : ''}.
+                    При открытии модалки лишний резерв снимается автоматически; если цифра не
+                    совпадает с колонкой «Резерв», нажмите кнопку ниже.
+                  </p>
+                  {reserveError && (
+                    <p className="text-danger small mb-2" role="alert">
+                      {reserveError}
+                    </p>
+                  )}
+                  <div className="mb-3">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={reserveBulkReleasing}
+                      onClick={handleReleaseOrphanReserveFromStock}
+                    >
+                      {reserveBulkReleasing
+                        ? 'Снимаем резерв…'
+                        : `Снять лишний резерв (${reserveOrphanQty > 0 ? reserveOrphanQty : reserveJournalQty} шт.)`}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-muted mb-2">Нет активного резерва по заказам и поставкам FBO.</p>
+              )
             ) : null}
             {reserveSummary?.isKit &&
               reserveOrders.length === 0 &&
