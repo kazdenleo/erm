@@ -1,6 +1,8 @@
 /**
- * Позиции модалки «В закупку»: остаток на складе и рекомендуемое количество к закупке.
+ * Позиции модалки «В закупку»: доступный остаток и рекомендуемое количество к закупке.
  */
+
+import { stockTableAvailable } from './kitStockMetrics.js';
 
 export function procurementEditableLineKey(line) {
   const pid = line?.productId != null ? Number(line.productId) : NaN;
@@ -23,8 +25,20 @@ function productOnHand(product) {
   return Number.isFinite(q) && q > 0 ? q : 0;
 }
 
+/** Доступно на складе: наличие + в пути − резерв (как в таблице «Остатки»). */
+function productAvailable(product) {
+  if (!product) return 0;
+  const onHand = productOnHand(product);
+  const incoming = Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0;
+  const reserved = Number(
+    product.reserved_quantity ?? product.reservedQuantity ?? product.net_reserved_quantity ?? 0
+  ) || 0;
+  return stockTableAvailable({ onHand, incoming, reserved, suppliers: 0 });
+}
+
 /**
- * Сколько единиц по заказам уже покрыто складом (резерв «со склада» или физический остаток).
+ * Покрытие потребности по заказам: резерв «со склада» по этим заказам + свободный остаток.
+ * Бейдж «На складе» — только если свободного остатка хватает на всю потребность.
  */
 export function computeProcurementStockCover(mergedLine, sourceOrders, product) {
   const pid = mergedLine?.productId != null ? Number(mergedLine.productId) : NaN;
@@ -50,21 +64,24 @@ export function computeProcurementStockCover(mergedLine, sourceOrders, product) 
   }
 
   const onHand = productOnHand(product);
-  const physicalCover = Math.min(orderNeed, onHand);
+  const available = productAvailable(product);
   const reserveCover = Math.min(orderNeed, reservedOnHand);
-  const covered = Math.min(orderNeed, Math.max(physicalCover, reserveCover));
+  const needAfterReserve = Math.max(0, orderNeed - reserveCover);
+  const freeCover = Math.min(needAfterReserve, available);
+  const covered = reserveCover + freeCover;
   const suggestedQty = Math.max(0, orderNeed - covered);
 
   let stockStatus = null;
-  if (orderNeed > 0 && covered >= orderNeed) {
+  if (orderNeed > 0 && available >= orderNeed) {
     stockStatus = 'on_hand';
-  } else if (covered > 0 && suggestedQty > 0) {
+  } else if (available > 0 && suggestedQty > 0) {
     stockStatus = 'partial';
   }
 
   return {
     orderNeed,
     onHand,
+    available,
     reservedOnHand,
     covered,
     suggestedQty,
@@ -97,6 +114,7 @@ export function buildProcurementEditableLines(mergedLines, sourceOrders, product
       orderNeed,
       quantity,
       onHand: stock.onHand,
+      available: stock.available,
       reservedOnHand: stock.reservedOnHand,
       covered: stock.covered,
       stockStatus: stock.stockStatus,

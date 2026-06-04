@@ -498,10 +498,14 @@ class StockMovementsService {
       netReserved = await readKitDisplayReservedQuantity(idNum);
       await syncProductReservedQuantityFromJournal(idNum, { reserved: netReserved });
     } else {
-      netReserved = await syncProductReservedQuantityFromJournal(idNum);
-      if (netReserved <= 0) {
-        const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
-        netReserved = await getReservedQuantityFromMovements(idNum);
+      const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+      if (whFilter != null) {
+        netReserved = await getReservedQuantityFromMovements(idNum, { warehouseId: whFilter });
+      } else {
+        netReserved = await syncProductReservedQuantityFromJournal(idNum);
+        if (netReserved <= 0) {
+          netReserved = await getReservedQuantityFromMovements(idNum);
+        }
       }
       return { movements: rows, netReserved };
     }

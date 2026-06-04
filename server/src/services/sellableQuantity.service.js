@@ -11,6 +11,8 @@ import {
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL,
+  parseStockMovementWarehouseId,
+  stockMovementWarehouseReserveSql,
 } from '../constants/netReservedStockSql.js';
 
 export { NET_RESERVED_MOVEMENT_ROW_CASE_SQL, NET_RESERVED_SUM_EXPR_SQL, RAW_RESERVED_SUM_EXPR_SQL };
@@ -49,15 +51,22 @@ export async function syncProductReservedQuantityFromJournal(productId, opts = {
 }
 
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
-export async function getReservedQuantityFromMovements(productId) {
+export async function getReservedQuantityFromMovements(productId, opts = {}) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
+  const whId = parseStockMovementWarehouseId(opts.warehouseId ?? opts.warehouse_id);
   try {
+    const params = [pid];
+    let whSql = '';
+    if (whId != null) {
+      params.push(whId);
+      whSql = stockMovementWarehouseReserveSql('', whId, params.length);
+    }
     const r = await query(
       `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
-      [pid]
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')${whSql}`,
+      params
     );
     return Number(r.rows[0]?.rv ?? 0) || 0;
   } catch {
@@ -187,16 +196,23 @@ export function computeOwnWarehouseAvailable({ onHand = 0, incoming = 0, reserve
 }
 
 /** Резерв из журнала в рамках открытой транзакции (для проверки перед записью движения). */
-export async function getReservedQuantityFromMovementsWithClient(client, productId) {
+export async function getReservedQuantityFromMovementsWithClient(client, productId, opts = {}) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
   const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
+  const whId = parseStockMovementWarehouseId(opts.warehouseId ?? opts.warehouse_id);
   try {
+    const params = [pid];
+    let whSql = '';
+    if (whId != null) {
+      params.push(whId);
+      whSql = stockMovementWarehouseReserveSql('', whId, params.length);
+    }
     const r = await run(
       `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
-      [pid]
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')${whSql}`,
+      params
     );
     return Number(r.rows[0]?.rv ?? 0) || 0;
   } catch {

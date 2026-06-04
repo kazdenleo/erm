@@ -2258,8 +2258,9 @@ export function Orders() {
                   <>
                     {procurementExcludedOnHandCount > 0 ? (
                       <p className="orders-procurement-stock-hint" style={{ marginBottom: 10 }}>
-                        Позиции с пометкой «На складе» уже покрыты остатком или резервом со склада — по умолчанию
-                        не попадают в закупку. При необходимости верните строку и укажите количество.
+                        Позиции с пометкой «На складе» уже покрыты доступным остатком (без учёта резерва под
+                        заказы) — по умолчанию не попадают в закупку. При необходимости верните строку и укажите
+                        количество.
                       </p>
                     ) : null}
                     <table className="table orders-procurement-lines-table" style={{ marginBottom: 16, fontSize: 14 }}>
@@ -2314,14 +2315,14 @@ export function Orders() {
                                 {line.stockStatus === 'on_hand' ? (
                                   <span
                                     className="orders-procurement-stock-badge orders-procurement-stock-badge--on-hand"
-                                    title={`На складе: ${line.onHand}, по заказу: ${line.orderNeed}`}
+                                    title={`Доступно: ${line.available ?? 0}, по заказу: ${line.orderNeed}`}
                                   >
                                     На складе
                                   </span>
                                 ) : line.stockStatus === 'partial' ? (
                                   <span
                                     className="orders-procurement-stock-badge orders-procurement-stock-badge--partial"
-                                    title={`На складе ${line.onHand}, покрыто ${line.covered} из ${line.orderNeed}`}
+                                    title={`Доступно ${line.available ?? 0}, к закупке ${line.quantity} из ${line.orderNeed}`}
                                   >
                                     Частично
                                   </span>

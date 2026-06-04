@@ -540,7 +540,7 @@ class ProductsRepositoryPG {
            FROM stock_movements
            WHERE product_id = ANY($1::bigint[])
              AND type IN ('reserve', 'unreserve')
-             AND warehouse_id = $2
+             AND (warehouse_id = $2 OR warehouse_id IS NULL)
            GROUP BY product_id`,
           [numericIds, whId]
         );
@@ -596,7 +596,13 @@ class ProductsRepositoryPG {
             : await readKitDisplayReservedQuantity(nid, options);
         }
       } else if (Number.isFinite(nid) && nid > 0) {
-        calc = key && byPid.has(key) ? byPid.get(key) : await getReservedQuantityFromMovements(nid);
+        if (key && byPid.has(key)) {
+          calc = byPid.get(key);
+        } else if (warehouseScoped) {
+          calc = await getReservedQuantityFromMovements(nid, { warehouseId: whId });
+        } else {
+          calc = await getReservedQuantityFromMovements(nid);
+        }
       }
 
       const stored = p.reserved_quantity != null ? Number(p.reserved_quantity) : 0;

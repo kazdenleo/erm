@@ -122,22 +122,14 @@ async function buildReserveCoverageByOrderIds(orderDbIds) {
   const r = await query(
     `SELECT (sm.meta->>'order_id')::bigint AS order_db_id,
             sm.product_id,
-            GREATEST(0, COALESCE(SUM(
-              CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change
-                   WHEN sm.type = 'unreserve' THEN sm.quantity_change
-                   ELSE 0 END
-            ), 0))::int AS reserved_qty
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS reserved_qty
      FROM stock_movements sm
      WHERE sm.type IN ('reserve', 'unreserve')
        AND sm.meta ? 'order_id'
        AND (sm.meta->>'order_id') ~ '^[0-9]+$'
        AND (sm.meta->>'order_id')::bigint = ANY($1::bigint[])
      GROUP BY order_db_id, sm.product_id
-     HAVING GREATEST(0, COALESCE(SUM(
-       CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change
-            WHEN sm.type = 'unreserve' THEN sm.quantity_change
-            ELSE 0 END
-     ), 0)) > 0`,
+     HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
     [ids]
   );
 
@@ -192,7 +184,7 @@ async function batchProductReserveSupplyMap(productIds) {
         ), 0)
       )::int AS on_hand,
       COALESCE((
-        SELECT ${RAW_RESERVED_SUM_EXPR_SQL}::int
+        SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
         FROM stock_movements sm
         WHERE sm.product_id = p.id AND sm.type IN ('reserve', 'unreserve')
       ), 0)::int AS reserved_raw
@@ -258,15 +250,23 @@ async function enrichReserveSummaryCoverage(summary) {
   return summary;
 }
 
-function applyReserveCoverageToOrderRow(orderRow, supplyMap, coverageFifoMap = null) {
+async function applyReserveCoverageToOrderRow(orderRow, supplyMap, coverageFifoMap = null) {
   const reserved = Math.max(0, Number(orderRow.reservedQty ?? orderRow.reserved_qty) || 0);
   if (reserved <= 0) {
     orderRow.reserveCoverage = 'none';
     orderRow.reserve_coverage = 'none';
     return;
   }
-  const pid = Number(orderRow.productId ?? orderRow.product_id);
   const oid = orderRowDbId(orderRow);
+  if (Number.isFinite(oid) && oid > 0) {
+    const byOrder = await buildReserveCoverageByOrderIds([oid]);
+    if (byOrder.has(oid)) {
+      orderRow.reserveCoverage = byOrder.get(oid);
+      orderRow.reserve_coverage = orderRow.reserveCoverage;
+      return;
+    }
+  }
+  const pid = Number(orderRow.productId ?? orderRow.product_id);
   const fifoKey =
     Number.isFinite(pid) && pid > 0 && Number.isFinite(oid) && oid > 0 ? `${oid}:${pid}` : null;
   let kind = 'incoming';
@@ -1740,7 +1740,7 @@ class OrdersService {
           o.reserveCoverage = coverageByOrderId.get(oid);
           o.reserve_coverage = o.reserveCoverage;
         } else {
-          applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
+          await applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
         }
       }
       return orders;
@@ -1761,7 +1761,7 @@ class OrdersService {
         o.reserveCoverage = reserveCoverageFromLines(sum.lines);
         o.reserve_coverage = o.reserveCoverage;
         if (o.reserveCoverage === 'none') {
-          applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
+          await applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
         }
       } catch {
         /* ignore */

@@ -659,7 +659,7 @@ export async function readKitSkuNetReserved(kitProductId, opts = {}) {
          FROM stock_movements
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
-           AND warehouse_id = $2`,
+           AND (warehouse_id = $2 OR warehouse_id IS NULL)`,
         [kitId, whId]
       )
     : await query(
@@ -732,7 +732,7 @@ export async function sumKitComponentsNetReserved(kitProductId, opts = {}) {
                SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
              )
                AND sm.type IN ('reserve', 'unreserve')
-               AND sm.warehouse_id = $2
+               AND (sm.warehouse_id = $2 OR sm.warehouse_id IS NULL)
              GROUP BY sm.product_id
            ) sub`,
           [kitId, whId]
@@ -1121,7 +1121,7 @@ async function batchNetReservedMap(productIds, opts = {}) {
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])
          AND type IN ('reserve', 'unreserve')
-         AND warehouse_id = $2
+         AND (warehouse_id = $2 OR warehouse_id IS NULL)
        GROUP BY product_id`,
         [ids, whId]
       )

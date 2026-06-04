@@ -237,7 +237,9 @@ class ProductsService {
         this.repository.findAll({ ...options, listView: 'stock' }),
         this.repository.countAll(options)
       ]);
-      return { items: await this._attachParticipationFlags(items), total };
+      const withFlags = await this._attachParticipationFlags(items);
+      await this._syncStockListReservedColumn(withFlags, options);
+      return { items: withFlags, total };
     }
     const items = await this.repository.findAll(options);
     const total = await this.repository.countAll(options);
@@ -295,7 +297,47 @@ class ProductsService {
     }
 
     const withFlags = await this._attachParticipationFlags(pageItems);
+    await this._syncStockListReservedColumn(withFlags, options);
     return { items: withFlags, total };
+  }
+
+  /**
+   * Список остатков уже подставляет резерв из журнала в ответ API; здесь выравниваем products.reserved_quantity,
+   * чтобы резерв заказов и прочие проверки не опирались на устаревшую колонку (как после открытия истории).
+   */
+  async _syncStockListReservedColumn(products, options = {}) {
+    if (!Array.isArray(products) || products.length === 0) return;
+    if (!repositoryFactory.isUsingPostgreSQL()) return;
+    const whRaw = options.warehouseId ?? options.warehouse_id ?? null;
+    const warehouseScoped =
+      whRaw != null && String(whRaw).trim() !== '' && Number.isFinite(Number(whRaw)) && Number(whRaw) > 0;
+    if (warehouseScoped) return;
+
+    const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+    const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
+    await Promise.all(
+      products.map(async (p) => {
+        const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+        if (!Number.isFinite(nid) || nid < 1) return;
+        try {
+          if (await isKitProductId(nid)) {
+            const rv = await readKitDisplayReservedQuantity(nid, options);
+            await syncProductReservedQuantityFromJournal(nid, { reserved: rv });
+          } else {
+            const rv =
+              p.net_reserved_quantity ??
+              p.reserved_quantity ??
+              (await syncProductReservedQuantityFromJournal(nid, options));
+            if (rv != null && Number.isFinite(Number(rv))) {
+              p.reserved_quantity = Number(rv);
+              p.net_reserved_quantity = Number(rv);
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      })
+    );
   }
 
   async _attachParticipationFlags(products) {
