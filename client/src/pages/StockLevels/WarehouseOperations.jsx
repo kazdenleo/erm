@@ -10,7 +10,8 @@ import { productsApi } from '../../services/products.api';
 import { stockMovementsApi } from '../../services/stockMovements.api';
 import { receiptsApi } from '../../services/receipts.api';
 import { inventorySessionsApi } from '../../services/inventorySessions.api';
-import { isCorruptBarcodeString, shouldUseBarcodeDigitFallback } from '../../utils/productBarcodes.js';
+import { fetchProductByScanCode } from '../../utils/productSearch.js';
+import { shouldUseBarcodeDigitFallback } from '../../utils/productBarcodes.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
@@ -405,22 +406,15 @@ export function WarehouseOperations({
       if (!v) {
         throw new Error('Введите штрихкод / артикул / название');
       }
-      if (isCorruptBarcodeString(v)) {
-        throw new Error(
-          'В карточке товара сохранён битый штрихкод (object). Откройте товар, введите правильный код и сохраните карточку.'
-        );
-      }
-      // 1) Штрихкод / артикул на этикетке — точный ответ API (без fuzzy для DT-00230 и т.п.).
-      const strictVendorCode = !shouldUseBarcodeDigitFallback(v);
+      // 1) Точный поиск по штрихкоду (инвентаризация использует fetchProductByScanCode отдельно).
       try {
-        const res = await productsApi.getByBarcode(v);
-        const product = res?.data ?? res;
-        if (product && (product.id || product.sku)) return product;
-      } catch (apiErr) {
-        if (strictVendorCode) throw apiErr;
+        const product = await fetchProductByScanCode(v);
+        if (product?.id) return product;
+      } catch (scanErr) {
+        if (!shouldUseBarcodeDigitFallback(v)) throw scanErr;
       }
 
-      // 2) Поиск по штрихкоду / артикулу / названию (локально + сервер).
+      // 2) Поиск по штрихкоду / артикулу / названию (локально + сервер) — только для EAN.
       let matches = findLocalMatches(v);
       const remote = await searchProductsRemote(v, { organizationId, limit: 40 });
       matches = mergeProductLists(matches, remote);
@@ -1946,11 +1940,7 @@ export function WarehouseOperations({
         playEventSound(SOUND_EVENTS.scan_ok);
         return;
       }
-      const product = await lookupProductByAny(v, {
-        title: 'Выберите товар для инвентаризации',
-        allowLinkBarcode: true,
-        useServerSearch: true,
-      });
+      const product = await fetchProductByScanCode(v);
       await addOneToInventoryNewRow(product);
       setLookupError(null);
       setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);

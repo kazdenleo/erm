@@ -153,7 +153,8 @@ export const productsApi = {
   getByBarcode: async (barcode) => {
     const encoded = encodeURIComponent(String(barcode).trim());
     const response = await api.get(`/products/by-barcode/${encoded}`);
-    return response.data;
+    const body = response.data;
+    return body?.data ?? body;
   },
 
   /**

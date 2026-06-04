@@ -3,12 +3,61 @@
  */
 
 import { productsApi } from '../services/products.api';
-import { barcodeStringsFromProduct, shouldUseBarcodeDigitFallback } from './productBarcodes.js';
+import {
+  barcodeStringsFromProduct,
+  isCorruptBarcodeString,
+  shouldUseBarcodeDigitFallback,
+} from './productBarcodes.js';
 
 export function normalizeProductSearchQuery(value) {
   return String(value || '')
     .replace(/[\r\n]+/g, '')
     .trim();
+}
+
+/** Распаковать карточку товара из ответа API (data / data.data / плоский объект). */
+export function unwrapProductFromApiResponse(wrap) {
+  if (wrap == null) return null;
+  if (typeof wrap !== 'object') return null;
+  if (wrap.id != null && String(wrap.id).trim() !== '') return wrap;
+  const inner = wrap.data;
+  if (inner && typeof inner === 'object') {
+    if (inner.id != null && String(inner.id).trim() !== '') return inner;
+    if (inner.data?.id != null) return inner.data;
+  }
+  return null;
+}
+
+/**
+ * Сканер инвентаризации / приёмки: только точный getByBarcode (DT-00229 и EAN).
+ * Без fuzzy-поиска по каталогу — он подставлял чужие товары.
+ */
+export async function fetchProductByScanCode(code) {
+  const v = normalizeProductSearchQuery(code);
+  if (!v) {
+    throw new Error('Введите штрихкод / артикул');
+  }
+  if (isCorruptBarcodeString(v)) {
+    throw new Error(
+      'Битый штрихкод (object). Откройте карточку товара, введите правильный код и сохраните.'
+    );
+  }
+  try {
+    const wrap = await productsApi.getByBarcode(v);
+    const product = unwrapProductFromApiResponse(wrap);
+    if (product?.id) return product;
+  } catch (e) {
+    if (!shouldUseBarcodeDigitFallback(v)) throw e;
+  }
+  if (!shouldUseBarcodeDigitFallback(v)) {
+    throw new Error(`Товар со штрихкодом «${v}» не найден в базе`);
+  }
+  const matches = await searchProductsCombined(v, { products: [], limit: 5 });
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    throw new Error(`Найдено несколько товаров по коду «${v}» — уточните этикетку`);
+  }
+  throw new Error(`Товар со штрихкодом «${v}» не найден`);
 }
 
 /** Скорее всего ввод со сканера (цифры, без букв). */
@@ -90,8 +139,7 @@ export async function searchProductsCombined(query, { products = [], organizatio
 
   const strictVendorCode = !shouldUseBarcodeDigitFallback(q);
   try {
-    const res = await productsApi.getByBarcode(q);
-    const byBarcode = res?.data ?? res;
+    const byBarcode = await fetchProductByScanCode(q);
     if (byBarcode?.id) return [byBarcode];
   } catch (err) {
     if (strictVendorCode) throw err;
