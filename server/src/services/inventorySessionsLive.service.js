@@ -4,6 +4,7 @@
 import crypto from 'crypto';
 import repositoryFactory from '../config/repository-factory.js';
 import inventorySessionsService from './inventorySessions.service.js';
+import productsService from './products.service.js';
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -175,13 +176,18 @@ class InventorySessionsLiveService {
   }
 
   async _resolveProduct(code) {
-    const v = String(code || '').trim();
+    const v = String(code || '')
+      .replace(/[\r\n]+/g, '')
+      .trim();
     if (!v) return null;
     if (/^\d+$/.test(v)) {
       const byId = await this.productsRepo.findById(Number(v));
       if (byId) return byId;
     }
-    return await this.productsRepo.findByBarcode(v);
+    const byBarcode = await productsService.getByBarcode(v);
+    if (byBarcode) return byBarcode;
+    const bySku = await this.productsRepo.findBySku(v);
+    return bySku || null;
   }
 
   async _warehouseQty(productId, warehouseId) {

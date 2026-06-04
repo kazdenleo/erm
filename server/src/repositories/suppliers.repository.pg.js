@@ -210,17 +210,22 @@ class SuppliersRepositoryPG {
     const params = [];
     let paramIndex = 1;
     const pid = normalizeProfileId(profileId);
-    
+
+    const patch = { ...updates };
+    if (patch.apiConfig !== undefined && patch.api_config === undefined) {
+      patch.api_config = patch.apiConfig;
+    }
+
     const allowedFields = ['name', 'code', 'api_config', 'is_active'];
     
     for (const field of allowedFields) {
-      if (updates.hasOwnProperty(field)) {
+      if (Object.prototype.hasOwnProperty.call(patch, field)) {
         if (field === 'api_config') {
           updateFields.push(`${field} = $${paramIndex++}`);
-          params.push(JSON.stringify(updates[field]));
+          params.push(JSON.stringify(patch[field]));
         } else {
           updateFields.push(`${field} = $${paramIndex++}`);
-          params.push(updates[field]);
+          params.push(patch[field]);
         }
       }
     }

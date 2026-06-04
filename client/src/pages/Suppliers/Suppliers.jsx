@@ -8,6 +8,8 @@ import { useSuppliers } from '../../hooks/useSuppliers';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { SupplierForm } from '../../components/forms/SupplierForm/SupplierForm';
+import { autoOrderSettingsFromApiConfig } from '../../utils/supplierAutoOrderSettings';
+import { formatSupplierWarehouseOrderWindow } from '../../utils/supplierWarehouseArrival';
 import './Suppliers.css';
 
 export function Suppliers() {
@@ -87,6 +89,7 @@ export function Suppliers() {
                 <th>ID</th>
                 <th>Название</th>
                 <th>Склады</th>
+                <th>Автозаказ</th>
                 <th>Активен</th>
                 <th style={{textAlign: 'right'}}>Действия</th>
               </tr>
@@ -94,21 +97,41 @@ export function Suppliers() {
             <tbody>
               {suppliers.map(s => {
                 const warehouses = s.apiConfig?.warehouses || [];
+                const auto = autoOrderSettingsFromApiConfig(s.apiConfig);
                 return (
                 <tr key={s.id}>
                   <td>{s.id}</td>
-                  <td>{s.name}</td>
+                  <td>
+                    {s.name}
+                    {auto.isPriority && auto.autoOrdersEnabled ? (
+                      <span className="badge bg-primary ms-1" title="Приоритетный">★</span>
+                    ) : null}
+                  </td>
                   <td>
                     {warehouses.length > 0 ? (
                       <div style={{fontSize: '13px'}}>
                         {warehouses.map((w, idx) => (
                           <div key={idx} style={{marginBottom: '4px'}}>
-                            <strong>{w.name}</strong> — до {w.time || '—'}
+                            <strong>{w.name}</strong> — {formatSupplierWarehouseOrderWindow(w)}
                           </div>
                         ))}
                       </div>
                     ) : (
                       <span style={{color: 'var(--muted)', fontSize: '13px'}}>Нет складов</span>
+                    )}
+                  </td>
+                  <td style={{ fontSize: '13px' }}>
+                    {auto.autoOrdersEnabled ? (
+                      <div>
+                        <span className="text-success">Вкл</span>
+                        {auto.minOrderAmount != null ? (
+                          <div className="text-muted">от {auto.minOrderAmount.toLocaleString('ru-RU')} ₽</div>
+                        ) : (
+                          <div className="text-muted">без мин. суммы</div>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-muted">Выкл</span>
                     )}
                   </td>
                   <td>{s.isActive !== false && s.active !== false ? 'Да' : 'Нет'}</td>

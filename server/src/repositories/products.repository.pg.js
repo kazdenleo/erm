@@ -5,13 +5,14 @@
 
 import { query, transaction } from '../config/database.js';
 import {
+  coerceBarcodeString,
   normalizeBarcodeRows,
   parseBarcodesMarketplacesColumn,
 } from '../utils/productBarcodes.js';
 
 function mapBarcodeDbRow(row) {
   return {
-    barcode: row.barcode,
+    barcode: coerceBarcodeString(row.barcode),
     marketplaces: parseBarcodesMarketplacesColumn(row.marketplaces),
   };
 }
@@ -885,9 +886,11 @@ class ProductsRepositoryPG {
       });
       const barcodesByProduct = {};
       barcodesResult.rows.forEach(row => {
+        const mapped = mapBarcodeDbRow(row);
+        if (!mapped.barcode) return;
         const key = String(row.product_id);
         if (!barcodesByProduct[key]) barcodesByProduct[key] = [];
-        barcodesByProduct[key].push(mapBarcodeDbRow(row));
+        barcodesByProduct[key].push(mapped);
       });
       
       // Создаем мапу остатков и себестоимости по товарам
@@ -1579,7 +1582,7 @@ class ProductsRepositoryPG {
       'SELECT barcode, marketplaces FROM barcodes WHERE product_id = $1 ORDER BY id',
       [numId]
     );
-    product.barcodes = barcodesResult.rows.map(mapBarcodeDbRow);
+    product.barcodes = barcodesResult.rows.map(mapBarcodeDbRow).filter((r) => r.barcode);
     
     // Получаем SKU маркетплейсов и Ozon product_id
     let skusResultDetail;

@@ -33,6 +33,10 @@ router.post(
   '/manual',
   wrapAsync(ordersController.createManual.bind(ordersController))
 );
+router.put(
+  '/manual/:orderId',
+  wrapAsync(ordersController.updateManual.bind(ordersController))
+);
 
 // Синхронизация FBS‑заказов (с strict rate limit)
 router.post(

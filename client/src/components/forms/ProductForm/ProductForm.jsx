@@ -25,6 +25,8 @@ import {
   BARCODE_MP_TOGGLES,
   EMPTY_BARCODE_ROW,
   barcodesForForm,
+  barcodesFromWbSizes,
+  coerceBarcodeString,
   normalizeBarcodeRows,
 } from '../../../utils/productBarcodes.js';
 import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
@@ -1455,8 +1457,7 @@ export function ProductForm({
     const lMm = convertDimsToMm(length, [width, height, length]);
     const wG = convertWeightToG(weightBrutto);
 
-    const skus = Array.isArray(p.sizes) ? (p.sizes.flatMap((s) => (Array.isArray(s?.skus) ? s.skus : []))) : [];
-    const barcodes = [...new Set(skus.map((x) => String(x).trim()).filter(Boolean))];
+    const barcodes = barcodesFromWbSizes(p.sizes);
 
     setFormData((prev) => {
       const next = { ...prev };
@@ -1468,7 +1469,10 @@ export function ProductForm({
       if (lMm != null && (!prev.length || String(prev.length).trim() === '')) next.length = String(lMm);
       if (wMm != null && (!prev.width || String(prev.width).trim() === '')) next.width = String(wMm);
       if (hMm != null && (!prev.height || String(prev.height).trim() === '')) next.height = String(hMm);
-      if (barcodes.length > 0 && (!Array.isArray(prev.barcodes) || prev.barcodes.every((b) => !String((b?.barcode ?? b) || '').trim()))) {
+      const prevEmpty =
+        !Array.isArray(prev.barcodes) ||
+        prev.barcodes.every((b) => !coerceBarcodeString(b?.barcode ?? b));
+      if (barcodes.length > 0 && prevEmpty) {
         next.barcodes = barcodes.map((b) => ({ barcode: b, marketplaces: [] }));
       }
       return next;
@@ -3382,7 +3386,7 @@ export function ProductForm({
                 type="text"
                 className="form-control form-control-sm"
                 placeholder="Введите баркод (EAN, UPC и т.д.)"
-                value={row.barcode ?? ''}
+                value={coerceBarcodeString(row.barcode)}
                 onChange={(e) => handleBarcodeChange(index, e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {

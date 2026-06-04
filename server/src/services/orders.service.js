@@ -359,6 +359,76 @@ function orderRowDbId(row) {
   return n;
 }
 
+function normalizeProfileIdForOrders(v) {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** marketplace в source_orders / API → как в orders.marketplace */
+function orderMarketplaceForProcurementMatch(marketplace) {
+  const m = String(marketplace || '').toLowerCase();
+  if (m === 'wildberries' || m === 'wb') return 'wb';
+  if (m === 'yandex' || m === 'ym' || m === 'yandexmarket') return 'ym';
+  if (m === 'manual') return 'manual';
+  return m === 'ozon' ? 'ozon' : m;
+}
+
+function procurementSupplierMapKey(marketplace, orderId, productId = null) {
+  const mp = orderMarketplaceForProcurementMatch(marketplace);
+  const oid = String(orderId ?? '').trim();
+  if (!mp || !oid) return '';
+  const pidNum = Number(productId);
+  if (Number.isFinite(pidNum) && pidNum > 0) {
+    return `${mp}|${oid}|${pidNum}`;
+  }
+  return `${mp}|${oid}|`;
+}
+
+async function fetchProcurementSupplierLookupMap(profileId) {
+  const pid = normalizeProfileIdForOrders(profileId);
+  if (pid == null) return new Map();
+  const r = await query(
+    `SELECT
+       pi.product_id,
+       s.name AS supplier_name,
+       s.id AS supplier_id,
+       p.id AS purchase_id,
+       elem->>'marketplace' AS src_marketplace,
+       elem->>'orderId' AS src_order_id
+     FROM purchase_items pi
+     INNER JOIN purchases p ON p.id = pi.purchase_id
+     LEFT JOIN suppliers s ON s.id = p.supplier_id
+     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+     WHERE p.profile_id = $1
+       AND p.status = 'open'`,
+    [pid]
+  );
+  const map = new Map();
+  for (const row of r.rows || []) {
+    const supplierName = row.supplier_name != null ? String(row.supplier_name).trim() : '';
+    if (!supplierName) continue;
+    const info = {
+      supplierName,
+      supplierId: row.supplier_id != null ? Number(row.supplier_id) : null,
+      purchaseId: row.purchase_id != null ? Number(row.purchase_id) : null,
+    };
+    const keyWithProduct = procurementSupplierMapKey(
+      row.src_marketplace,
+      row.src_order_id,
+      row.product_id
+    );
+    if (keyWithProduct && !map.has(keyWithProduct)) {
+      map.set(keyWithProduct, info);
+    }
+    const keyOrder = procurementSupplierMapKey(row.src_marketplace, row.src_order_id, null);
+    if (keyOrder && !map.has(keyOrder)) {
+      map.set(keyOrder, info);
+    }
+  }
+  return map;
+}
+
 class OrdersService {
   constructor() {
     this.repository = repositoryFactory.getOrdersRepository();
@@ -1564,6 +1634,7 @@ class OrdersService {
         options.lightReserveEnrich === true ||
         (options.limit != null && Number(options.limit) > 0);
       await this.enrichOrdersReserveMetrics(items, { light });
+      await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       return items;
     } else {
       // Старое хранилище
@@ -1700,6 +1771,40 @@ class OrdersService {
   }
 
   /**
+   * Для заказов «В закупке» — поставщик из открытой закупки (purchase_items.source_orders).
+   */
+  async enrichOrdersProcurementSuppliers(orders, profileId = null) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders) || !orders.length) {
+      return orders;
+    }
+    const hasProcurement = orders.some(
+      (o) => String(o.status || '').trim().toLowerCase() === 'in_procurement'
+    );
+    if (!hasProcurement) return orders;
+
+    const lookup = await fetchProcurementSupplierLookupMap(profileId);
+    if (!lookup.size) return orders;
+
+    for (const o of orders) {
+      if (String(o.status || '').trim().toLowerCase() !== 'in_procurement') continue;
+      const mp = o.marketplace;
+      const oid = o.orderId ?? o.order_id;
+      const pid = o.productId ?? o.product_id;
+      const info =
+        lookup.get(procurementSupplierMapKey(mp, oid, pid)) ||
+        lookup.get(procurementSupplierMapKey(mp, oid, null));
+      if (!info) continue;
+      o.procurementSupplierName = info.supplierName;
+      o.procurement_supplier_name = info.supplierName;
+      o.procurementSupplierId = info.supplierId;
+      o.procurement_supplier_id = info.supplierId;
+      o.procurementPurchaseId = info.purchaseId;
+      o.procurement_purchase_id = info.purchaseId;
+    }
+    return orders;
+  }
+
+  /**
    * Фоново дозарезервировать строки списка заказов, где есть остаток, но резерв неполный.
    * (например после ручной корректировки наличия или если заказ пришёл раньше поступления).
    */
@@ -1733,6 +1838,7 @@ class OrdersService {
           : Promise.resolve(null);
       const [items, total] = await Promise.all([this.repository.findAll(options), countPromise]);
       await this.enrichOrdersReserveMetrics(items, { light: lightReserve });
+      await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       this._scheduleEnsureReservesForUnderReservedOrders(items);
       return { items, total: total ?? items.length };
     }

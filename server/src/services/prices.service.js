@@ -16,7 +16,6 @@ import fs from 'fs';
 import path from 'path';
 import repositoryFactory from '../config/repository-factory.js';
 import { calculateMinPrice } from './min-price-calculator.service.js';
-import { resolveOrganizationTaxProfile } from '../utils/organizationTaxRates.js';
 import { applyOzonV5ItemToCalculator } from './ozon-v5-item-calculator.js';
 import { extractWbWarehouseList } from '../utils/wbTariffs.js';
 
@@ -2409,19 +2408,6 @@ class PricesService {
     };
     const minProfitRaw = (product.min_price != null && product.min_price !== '' && !isNaN(Number(product.min_price))) ? Number(product.min_price) : null;
     const minProfit = minProfitRaw != null ? minProfitRaw : 50;
-
-    let taxProfile = resolveOrganizationTaxProfile(null);
-    const orgId = product.organization_id ?? product.organizationId ?? integrationScope.organizationId;
-    if (orgId != null && orgId !== '') {
-      try {
-        const orgRepo = repositoryFactory.getOrganizationsRepository();
-        const org = await orgRepo.findById(orgId);
-        if (org) taxProfile = resolveOrganizationTaxProfile(org);
-      } catch (e) {
-        logger.warn('[Prices Service] org tax profile for recalc:', e?.message || e);
-      }
-    }
-
     if (basePrice <= 0) {
       errors.wb = 'Нет себестоимости для расчёта минимальной цены WB.';
       return { errors };
@@ -2467,7 +2453,7 @@ class PricesService {
         const ozonResult = await this.getOzonPrices(skuOzon, mpOpts);
         const data = ozonResult?.data ?? ozonResult;
         if (data?.found && data?.calculator) {
-          const price = calculateMinPrice(basePrice, data.calculator, 'ozon', minProfit, product, null, null, taxProfile);
+          const price = calculateMinPrice(basePrice, data.calculator, 'ozon', minProfit, product);
           if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, data.calculator);
         } else if (data?.error) {
           errors.ozon = data.error;
@@ -2493,16 +2479,7 @@ class PricesService {
         const data = wbResult?.data ?? wbResult;
         console.log(`[Prices Service] getWBPrices result product ${productId}: found=${!!data?.found}, hasCalculator=${!!data?.calculator}, error=${data?.error ? String(data.error).slice(0, 80) : 'none'}`);
         if (data?.found && data?.calculator) {
-          const price = calculateMinPrice(
-            basePrice,
-            data.calculator,
-            'wb',
-            minProfit,
-            product,
-            wbAcquiringPercent,
-            wbGemServicesPercent,
-            taxProfile
-          );
+          const price = calculateMinPrice(basePrice, data.calculator, 'wb', minProfit, product, wbAcquiringPercent, wbGemServicesPercent);
           console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: price=${price}`);
           if (price != null) {
             await this.saveProductMarketplacePrice(productId, 'wb', price, data.calculator);
@@ -2533,7 +2510,7 @@ class PricesService {
         const ymResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, mpOpts);
         const data = ymResult?.data ?? ymResult;
         if (data?.found && data?.calculator) {
-          const price = calculateMinPrice(basePrice, data.calculator, 'ym', minProfit, product, null, null, taxProfile);
+          const price = calculateMinPrice(basePrice, data.calculator, 'ym', minProfit, product);
           if (price != null) await this.saveProductMarketplacePrice(productId, 'ym', price, data.calculator);
         } else if (data?.error) {
           errors.ym = data.error;

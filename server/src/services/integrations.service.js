@@ -13,8 +13,22 @@ import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
 import { extractWbWarehouseList, hasWbTariffsWarehouseList } from '../utils/wbTariffs.js';
 import { normWbVendorCode, sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
+import { coerceBarcodeString } from '../utils/productBarcodes.js';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
+
+function normalizeIntegrationOfferBarcodes(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const b of raw) {
+    const s = coerceBarcodeString(b);
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
 
 class IntegrationsService {
   /** Ленивая инициализация — иначе цикл stockMovements/kitStock → integrations при загрузке repository-factory. */
@@ -2050,7 +2064,7 @@ class IntegrationsService {
       name: offer.name != null ? String(offer.name).trim() : null,
       description: offer.description != null ? String(offer.description).trim() : null,
       vendor: offer.vendor != null ? String(offer.vendor).trim() : null,
-      barcodes: Array.isArray(offer.barcodes) ? offer.barcodes.map(String) : [],
+      barcodes: normalizeIntegrationOfferBarcodes(offer.barcodes),
       parameterValues,
       weightDimensions,
       raw: hit

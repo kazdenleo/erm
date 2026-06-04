@@ -10,17 +10,28 @@ export function normalizeMarketplaceForUI(marketplace) {
   return mp;
 }
 
+/** Базовый ID группы ручного заказа: manual-…-2 → manual-…. */
+export function manualOrderGroupKeyFromOrderId(orderId) {
+  const id = String(orderId ?? '').trim();
+  if (!id) return '';
+  if (/^manual-\d+-[a-z0-9]+-\d+$/i.test(id)) {
+    return id.replace(/-\d+$/i, '');
+  }
+  return id;
+}
+
 /**
  * Ключ группы заказа (Яндекс, ручные, WB по orderUid): всегда строка.
  */
 export function orderGroupKey(o) {
   if (!o) return '';
-  const raw = o.orderGroupId ?? o.order_group_id;
-  if (raw == null) return '';
-  const s = String(raw).trim();
-  if (s === '') return '';
-
   const mp = normalizeMarketplaceForUI(o.marketplace);
+  const raw = o.orderGroupId ?? o.order_group_id;
+  let s = raw != null ? String(raw).trim() : '';
+  if (!s && mp === 'manual') {
+    s = manualOrderGroupKeyFromOrderId(o.orderId ?? o.order_id);
+  }
+  if (s === '') return '';
   if (mp === 'wildberries') {
     const unreliableWbGroupUid =
       /^[a-f0-9]{24,}$/i.test(s) ||
@@ -46,6 +57,9 @@ export function singleOrderListGroupKey(o) {
     const i = oid.indexOf(':');
     const base = i >= 0 ? oid.slice(0, i) : oid;
     return `single-${mp}-${base}`;
+  }
+  if (mp === 'manual') {
+    return `single-${mp}-${manualOrderGroupKeyFromOrderId(oid)}`;
   }
   return `single-${mp}-${oid}`;
 }

@@ -16,11 +16,6 @@ import { integrationsApi } from '../../services/integrations.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
-import {
-  computeTaxesAndNetProfit,
-  resolveOrganizationTaxProfile,
-  taxProfileForProduct,
-} from '../../utils/organizationTaxRates.js';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -36,16 +31,7 @@ function getPriceResult(r) {
 }
 
 // Функция расчета минимальной цены на основе комиссий. Только фактические данные, без значений по умолчанию.
-function calculateMinPrice(
-  basePrice,
-  calculator,
-  marketplace,
-  minProfit,
-  product = null,
-  wbAcquiringPercent = null,
-  wbGemServicesPercent = null,
-  taxProfile = null
-) {
+function calculateMinPrice(basePrice, calculator, marketplace, minProfit, product = null, wbAcquiringPercent = null, wbGemServicesPercent = null) {
   const basePriceNum = Number(basePrice) || 0;
   // Минимальная прибыль — только из карточки товара; без значения расчёт не выполняем
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -251,13 +237,7 @@ function calculateMinPrice(
   const fixedExpenses = Number(processingCost) + Number(logisticsCost) + Number(deliveryToCustomer) + Number(returnCost) + Number(returnProcessingCost) + Number(returnLossCost) + (marketplace === 'ym' ? (ymAgencyFixed + ymPaymentTransferFixed) : 0);
 
   const targetProfitAfterTax = Number(minProfitNum);
-  const profile = taxProfile || resolveOrganizationTaxProfile(null);
-  const incomeTaxMult = profile.incomeTaxOnRevenue
-    ? 1
-    : Math.max(0.01, 1 - profile.incomeTaxRate);
-  const targetProfitBeforeTax = profile.incomeTaxOnRevenue
-    ? targetProfitAfterTax
-    : targetProfitAfterTax / incomeTaxMult;
+  const taxRate = 0.15;
 
   const calculateNetProfit = (price) => {
     const priceNum = Number(price) || 0;
@@ -275,22 +255,19 @@ function calculateMinPrice(
     const brandPromotionAmount = priceNum * brandPromotionPercent;
     const gemServicesAmount = priceNum * gemServicesPercent;
     const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
-    const totalExpenses =
-      Number(basePriceNum) +
-      Number(fixedExpenses) +
-      Number(commissionAmount) +
-      Number(acquiringAmount) +
-      Number(deliveryAmountAtPrice) +
-      Number(brandPromotionAmount) +
-      Number(gemServicesAmount);
-    return Number(computeTaxesAndNetProfit({ price: priceNum, totalExpenses, taxProfile: profile }).netProfit);
+    const totalExpenses = Number(basePriceNum) + Number(fixedExpenses) + Number(commissionAmount) + Number(acquiringAmount) + Number(deliveryAmountAtPrice) + Number(brandPromotionAmount) + Number(gemServicesAmount);
+    const profitBeforeTax = priceNum - totalExpenses;
+    const taxes = Math.max(0, profitBeforeTax * taxRate); // Налоги только с положительной прибылью
+    const netProfit = profitBeforeTax - taxes;
+    return Number(netProfit);
   };
-
+  
   const denominator = 1 - marketplaceCommissionPercent - acquiringPercent - brandPromotionPercent - gemServicesPercent - (marketplace === 'ym' ? ymDeliveryPercent : 0);
   if (denominator <= 0) {
     console.warn('[calculateMinPrice] Invalid denominator (commission/acquiring/delivery data)');
     return null;
   }
+  const targetProfitBeforeTax = targetProfitAfterTax / (1 - taxRate);
   let recommendedPrice = Math.round((basePriceNum + fixedExpenses + targetProfitBeforeTax) / denominator);
   
   // Итеративно увеличиваем цену по 1₽ до достижения целевой чистой прибыли.
@@ -324,15 +301,9 @@ function calculateMinPrice(
   // Услуги Джем (только для WB, вычисляется от суммы товара)
   const finalGemServicesAmount = Number(recommendedPriceNum * gemServicesPercent);
   const finalTotalExpenses = Number(basePriceNum) + Number(fixedExpenses) + Number(finalCommissionAmount) + Number(finalAcquiringAmount) + Number(finalBrandPromotionAmount) + Number(finalGemServicesAmount);
-  const finalTaxesBreakdown = computeTaxesAndNetProfit({
-    price: recommendedPriceNum,
-    totalExpenses: finalTotalExpenses,
-    taxProfile: profile,
-  });
-  const finalVat = finalTaxesBreakdown.vat;
-  const finalIncomeTax = finalTaxesBreakdown.incomeTax;
-  const finalNetProfit = finalTaxesBreakdown.netProfit;
-  const finalProfitBeforeTax = finalTaxesBreakdown.profitBeforeIncomeTax;
+  const finalProfitBeforeTax = Number(recommendedPriceNum) - Number(finalTotalExpenses);
+  const finalTaxes = Math.max(0, Number(finalProfitBeforeTax) * taxRate);
+  const finalNetProfit = Number(finalProfitBeforeTax) - Number(finalTaxes);
   
   const buyoutRateForLog = (product && product.buyout_rate != null && product.buyout_rate !== '') ? Number(product.buyout_rate) : null;
   const returnRatePercent = buyoutRateForLog != null ? ((1 - buyoutRateForLog / 100) * 100).toFixed(2) : '—';
@@ -356,12 +327,9 @@ function calculateMinPrice(
     brandPromotionAmount: Number(finalBrandPromotionAmount).toFixed(2),
     gemServicesAmount: Number(finalGemServicesAmount).toFixed(2),
     totalExpenses: Number(finalTotalExpenses).toFixed(2),
-    profitBeforeIncomeTax: Number(finalProfitBeforeTax).toFixed(2),
-    vat: Number(finalVat).toFixed(2),
-    incomeTax: Number(finalIncomeTax).toFixed(2),
+    profitBeforeTax: Number(finalProfitBeforeTax).toFixed(2),
+    taxes: Number(finalTaxes).toFixed(2),
     netProfit: Number(finalNetProfit).toFixed(2),
-    vatRate: `${(profile.vatRate * 100).toFixed(0)}%`,
-    incomeTaxRate: `${(profile.incomeTaxRate * 100).toFixed(0)}%`,
     targetNetProfit: targetProfitAfterTax,
     iterations
   });
@@ -1649,7 +1617,6 @@ export function Prices() {
         })()}
         wbAcquiringPercent={wbAcquiringPercent}
         wbGemServicesPercent={wbGemServicesPercent}
-        taxProfile={priceModal.product ? taxProfileForProduct(organizations, priceModal.product) : null}
       />
 
       {/* Модалка: товары акции Ozon — участвующие и доступные к акции */}

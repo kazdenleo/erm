@@ -2,6 +2,14 @@
  * Warehouse Mappings Validator
  */
 
+export function normalizeWarehouseMappingMarketplace(value) {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (v === 'wildberries' || v === 'wb') return 'wb';
+  if (v === 'yandex' || v === 'ym') return 'ym';
+  if (v === 'ozon') return 'ozon';
+  return v;
+}
+
 export function validateWarehouseMappingId(req, res, next) {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id) || id < 1) {
@@ -17,10 +25,11 @@ export function validateCreateWarehouseMapping(req, res, next) {
   if (warehouseId == null || String(warehouseId).trim() === '') {
     return res.status(400).json({ ok: false, message: 'warehouseId обязателен' });
   }
-  const mp = String(marketplace || '').trim().toLowerCase();
+  const mp = normalizeWarehouseMappingMarketplace(marketplace);
   if (!['ozon', 'wb', 'ym'].includes(mp)) {
-    return res.status(400).json({ ok: false, message: 'marketplace должен быть ozon|wb|ym' });
+    return res.status(400).json({ ok: false, message: 'marketplace: ozon, wb (Wildberries) или ym (Яндекс Маркет)' });
   }
+  req.body.marketplace = mp;
   if (marketplaceWarehouseId == null || String(marketplaceWarehouseId).trim() === '') {
     return res.status(400).json({ ok: false, message: 'marketplaceWarehouseId обязателен' });
   }
@@ -32,6 +41,13 @@ export function validateUpdateWarehouseMapping(req, res, next) {
   if (warehouseId == null && marketplace == null && marketplaceWarehouseId == null &&
       req.body?.warehouse_id == null && req.body?.marketplace_warehouse_id == null) {
     return res.status(400).json({ ok: false, message: 'Нет полей для обновления' });
+  }
+  if (marketplace != null && String(marketplace).trim() !== '') {
+    const mp = normalizeWarehouseMappingMarketplace(marketplace);
+    if (!['ozon', 'wb', 'ym'].includes(mp)) {
+      return res.status(400).json({ ok: false, message: 'marketplace: ozon, wb или ym' });
+    }
+    req.body.marketplace = mp;
   }
   next();
 }

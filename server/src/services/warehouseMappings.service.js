@@ -4,6 +4,7 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { normalizeWarehouseMappingMarketplace } from '../validators/warehouseMappingsValidator.js';
 
 class WarehouseMappingsService {
   constructor() {
@@ -26,9 +27,9 @@ class WarehouseMappingsService {
       err.statusCode = 400;
       throw err;
     }
-    const mp = String(marketplace || '').trim().toLowerCase();
+    const mp = normalizeWarehouseMappingMarketplace(marketplace);
     if (!['ozon', 'wb', 'ym'].includes(mp)) {
-      const err = new Error('Некорректный marketplace (ozon|wb|ym)');
+      const err = new Error('Некорректный marketplace (ozon, wb, ym)');
       err.statusCode = 400;
       throw err;
     }
@@ -97,9 +98,9 @@ class WarehouseMappingsService {
       updates.warehouse_id = wid;
     }
     if (marketplace != null) {
-      const mp = String(marketplace || '').trim().toLowerCase();
+      const mp = normalizeWarehouseMappingMarketplace(marketplace);
       if (!['ozon', 'wb', 'ym'].includes(mp)) {
-        const err = new Error('Некорректный marketplace (ozon|wb|ym)');
+        const err = new Error('Некорректный marketplace (ozon, wb, ym)');
         err.statusCode = 400;
         throw err;
       }

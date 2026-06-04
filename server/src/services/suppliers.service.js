@@ -4,6 +4,7 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { normalizeSupplierApiConfig } from '../utils/supplierWarehouseArrival.js';
 
 class SuppliersService {
   constructor() {
@@ -62,11 +63,7 @@ class SuppliersService {
 
     if (repositoryFactory.isUsingPostgreSQL()) {
       // Объединяем существующий apiConfig с новым, если есть
-      const apiConfig = data.apiConfig || data.api_config || {};
-      // Если переданы warehouses, добавляем их в apiConfig
-      if (data.apiConfig?.warehouses) {
-        apiConfig.warehouses = data.apiConfig.warehouses;
-      }
+      const apiConfig = normalizeSupplierApiConfig(data.apiConfig || data.api_config || {});
       
       console.log('[SuppliersService] Creating supplier with apiConfig:', {
         name,
@@ -109,16 +106,14 @@ class SuppliersService {
         const existingApiConfig = existing.apiConfig || existing.api_config || {};
         
         // Создаем обновленный apiConfig, сохраняя все существующие поля
-        const updatedApiConfig = {
+        const updatedApiConfig = normalizeSupplierApiConfig({
           ...existingApiConfig,
-          ...newApiConfig
-        };
-        
-        // Если warehouses переданы явно, используем их (перезаписываем полностью)
-        if (newApiConfig.warehouses !== undefined) {
-          updatedApiConfig.warehouses = newApiConfig.warehouses;
-        }
-        
+          ...newApiConfig,
+          ...(newApiConfig.warehouses !== undefined
+            ? { warehouses: newApiConfig.warehouses }
+            : {}),
+        });
+
         updates.api_config = updatedApiConfig;
         console.log('[SuppliersService] Updating apiConfig:', {
           existingKeys: Object.keys(existingApiConfig),

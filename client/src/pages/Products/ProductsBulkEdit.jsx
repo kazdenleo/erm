@@ -12,17 +12,10 @@ import { useCategories } from '../../hooks/useCategories';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useBrands } from '../../hooks/useBrands';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
+import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import './ProductsBulkEdit.css';
 import './Products.css';
-
-/** Строки штрихкодов из products.barcodes (без отдельного import — eslint import/first). */
-function barcodeStringsFromProduct(barcodes) {
-  if (!Array.isArray(barcodes)) return [];
-  return barcodes
-    .map((b) => (typeof b === 'string' ? b : String(b?.barcode ?? b?.value ?? '').trim()))
-    .filter(Boolean);
-}
 
 const LOAD_LIMIT_SELECTED = 500;
 const LOAD_LIMIT_ALL = 200;

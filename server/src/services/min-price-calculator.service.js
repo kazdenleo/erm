@@ -3,23 +3,12 @@
  * Дублирует логику клиента (Prices.jsx calculateMinPrice) для пересчёта на сервере.
  */
 
-import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile } from '../utils/organizationTaxRates.js';
-
 function safeExpenseNum(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
 }
 
-export function calculateMinPrice(
-  basePrice,
-  calculator,
-  marketplace,
-  minProfit,
-  product = null,
-  wbAcquiringPercent = null,
-  wbGemServicesPercent = null,
-  taxProfile = null
-) {
+export function calculateMinPrice(basePrice, calculator, marketplace, minProfit, product = null, wbAcquiringPercent = null, wbGemServicesPercent = null) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
   if (minProfitNum == null || minProfitNum < 0) return null;
@@ -111,14 +100,8 @@ export function calculateMinPrice(
     safeExpenseNum(returnProcessingCost) +
     safeExpenseNum(returnLossCost) +
     (marketplace === 'ym' ? safeExpenseNum(ymAgencyFixed) + safeExpenseNum(ymPaymentTransferFixed) : 0);
-  const profile = taxProfile || resolveOrganizationTaxProfile(null);
-  const incomeTaxMult = profile.incomeTaxOnRevenue
-    ? 1
-    : Math.max(0.01, 1 - profile.incomeTaxRate);
-  const targetProfitAfterTax = Number(minProfitNum);
-  const targetProfitBeforeTax = profile.incomeTaxOnRevenue
-    ? targetProfitAfterTax
-    : targetProfitAfterTax / incomeTaxMult;
+  const taxRate = 0.15;
+  const targetProfitBeforeTax = Number(minProfitNum) / (1 - taxRate);
 
   const calculateNetProfit = (price) => {
     const priceNum = Number(price) || 0;
@@ -127,15 +110,10 @@ export function calculateMinPrice(
     if (marketplace === 'ym') acquiringAmount = ymAgencyFixed + ymPaymentTransferFixed + priceNum * ymPaymentTransferPercent;
     else if (marketplace === 'ozon') acquiringAmount = Math.ceil(acquiringAmount);
     const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
-    const totalExpenses =
-      basePriceNum +
-      fixedExpenses +
-      commissionAmount +
-      acquiringAmount +
-      deliveryAmountAtPrice +
-      priceNum * brandPromotionPercent +
-      priceNum * gemServicesPercent;
-    return computeTaxesAndNetProfit({ price: priceNum, totalExpenses, taxProfile: profile }).netProfit;
+    const totalExpenses = basePriceNum + fixedExpenses + commissionAmount + acquiringAmount + deliveryAmountAtPrice + priceNum * brandPromotionPercent + priceNum * gemServicesPercent;
+    const profitBeforeTax = priceNum - totalExpenses;
+    const taxes = Math.max(0, profitBeforeTax * taxRate);
+    return profitBeforeTax - taxes;
   };
 
   const denominator = 1 - marketplaceCommissionPercent - acquiringPercent - brandPromotionPercent - gemServicesPercent - (marketplace === 'ym' ? ymDeliveryPercent : 0);

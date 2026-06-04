@@ -67,7 +67,9 @@ function getOrCreateInventoryScannerId() {
 }
 
 function parseScannerPrefixedCode(raw) {
-  const s = String(raw || '').trim();
+  const s = String(raw || '')
+    .replace(/[\r\n]+/g, '')
+    .trim();
   if (!s) return { scannerId: null, code: '' };
 
   // Примеры префиксов: "A:123", "B-123", "C_123"
@@ -76,6 +78,12 @@ function parseScannerPrefixedCode(raw) {
   const scannerId = String(m[1] || '').trim();
   const code = String(m[2] || '').trim();
   return { scannerId: scannerId || null, code };
+}
+
+function warehouseScanErrorMessage(e, fallback = 'Товар не найден') {
+  const m = e?.response?.data?.message ?? e?.response?.data?.error ?? e?.message;
+  const s = String(m || fallback).trim();
+  return s || fallback;
 }
 
 function buildInventoryLiveSessionUrl(sessionId) {
@@ -446,6 +454,7 @@ export function WarehouseOperations({
   const inventoryNewScanDebounceRef = useRef(null);
   const inventoryNewScanValueRef = useRef('');
   const inventoryNewScanInputRef = useRef(null);
+  const inventoryScanBusyRef = useRef(false);
   /** Склад, по которому ведётся новая инвентаризация (обязателен до сохранения) */
   const [inventorySessionWarehouseId, setInventorySessionWarehouseId] = useState('');
   /** Обнулить остаток по позициям на складе, не попавшим в список пересчёта */
@@ -1853,7 +1862,9 @@ export function WarehouseOperations({
   };
 
   const addOneToInventoryNewRow = async (product) => {
-    if (!product?.id) return;
+    if (!product?.id) {
+      throw new Error('Товар не найден в каталоге (нет ID)');
+    }
     product = resolveProductForInventory(product);
     const current = await warehouseQtyForProduct(product, inventorySessionWarehouseId);
     const now = Date.now();
@@ -1875,6 +1886,7 @@ export function WarehouseOperations({
   };
 
   const lookupByBarcodeOrSkuThenInventoryNewOne = async (value) => {
+    if (inventoryScanBusyRef.current) return;
     const parsed = parseScannerPrefixedCode(value);
     const v = String(parsed.code || '').trim();
     if (parsed.scannerId) {
@@ -1887,23 +1899,25 @@ export function WarehouseOperations({
     }
     if (!v) {
       setLookupError('Введите штрихкод / артикул / название');
+      setOpMessage(null);
       playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
     if (!inventorySessionWarehouseId) {
       setLookupError('Сначала выберите склад инвентаризации');
+      setOpMessage(null);
       playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
+    inventoryScanBusyRef.current = true;
     setLookupError(null);
+    setOpMessage('Поиск товара…');
     try {
       if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
         await scanInventoryLive(v);
+        setLookupError(null);
         setOpMessage(`Сканер ${inventoryScannerId || '—'} · пересчёт: +1 шт`);
         playEventSound(SOUND_EVENTS.scan_ok);
-        setInventoryNewScanValue('');
-        inventoryNewScanValueRef.current = '';
-        inventoryNewScanInputRef.current?.focus();
         return;
       }
       if (typeof reloadProductsWithWarehouse === 'function') {
@@ -1911,24 +1925,31 @@ export function WarehouseOperations({
       }
       const product = await lookupProductByAny(v, {
         title: 'Выберите товар для инвентаризации',
-        allowLinkBarcode: isLikelyBarcodeScan(v),
+        allowLinkBarcode: true,
+        useServerSearch: true,
       });
       await addOneToInventoryNewRow(product);
+      setLookupError(null);
       setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
+    } catch (e) {
+      const msg = warehouseScanErrorMessage(
+        e,
+        'Штрихкод не найден. Проверьте штрихкод в карточке товара или привяжите его к товару.'
+      );
+      setLookupError(msg);
+      setOpMessage(null);
+      playEventSound(SOUND_EVENTS.scan_error);
+    } finally {
+      inventoryScanBusyRef.current = false;
       setInventoryNewScanValue('');
       inventoryNewScanValueRef.current = '';
       inventoryNewScanInputRef.current?.focus();
-    } catch (e) {
-      const msg = String(e?.message || 'поиск не удался');
-      setOpMessage('Ошибка: ' + msg);
-      setLookupError(msg);
-      playEventSound(SOUND_EVENTS.scan_error);
     }
   };
 
   const handleInventoryNewScanChange = (e) => {
-    const value = e.target.value;
+    const value = String(e.target.value || '').replace(/[\r\n]+/g, '');
     inventoryNewScanValueRef.current = value;
     setInventoryNewScanValue(value);
     setLookupError(null);
@@ -1937,27 +1958,32 @@ export function WarehouseOperations({
       inventoryNewScanDebounceRef.current = null;
     }
     if (!value.trim()) return;
-    const SCAN_DELAY_MS = 200;
+    const SCAN_DELAY_MS = 160;
     inventoryNewScanDebounceRef.current = setTimeout(() => {
       inventoryNewScanDebounceRef.current = null;
       const toProcess = inventoryNewScanValueRef.current.trim();
       if (!toProcess) return;
       lookupByBarcodeOrSkuThenInventoryNewOne(toProcess);
-      setInventoryNewScanValue('');
-      inventoryNewScanValueRef.current = '';
-      inventoryNewScanInputRef.current?.focus();
     }, SCAN_DELAY_MS);
   };
 
-  /** Сканеры часто шлют Enter в конце: и debounce, и submit формы давали двойной +1. Enter обрабатываем один раз и сбрасываем таймер. */
+  /** Сканеры часто шлют Enter в конце: сбрасываем debounce и обрабатываем один раз. */
   const handleInventoryNewScanKeyDown = (e) => {
     if (e.key !== 'Enter') return;
     e.preventDefault();
+    if (!inventorySessionWarehouseId) {
+      setLookupError('Сначала выберите склад инвентаризации');
+      setOpMessage(null);
+      playEventSound(SOUND_EVENTS.scan_error);
+      return;
+    }
     if (inventoryNewScanDebounceRef.current) {
       clearTimeout(inventoryNewScanDebounceRef.current);
       inventoryNewScanDebounceRef.current = null;
     }
-    const v = String(inventoryNewScanValueRef.current || '').trim();
+    const v = String(inventoryNewScanValueRef.current || '')
+      .replace(/[\r\n]+/g, '')
+      .trim();
     if (!v) return;
     lookupByBarcodeOrSkuThenInventoryNewOne(v);
   };
@@ -1987,7 +2013,10 @@ export function WarehouseOperations({
       }
       inventoryNewScanInputRef.current?.focus();
     } catch (e) {
-      setOpMessage('Ошибка: ' + (e?.message || 'не удалось добавить'));
+      const msg = warehouseScanErrorMessage(e, 'Не удалось добавить');
+      setLookupError(msg);
+      setOpMessage(null);
+      playEventSound(SOUND_EVENTS.scan_error);
     }
   };
 
@@ -3230,6 +3259,7 @@ export function WarehouseOperations({
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
+                  handleInventoryNewScanKeyDown({ key: 'Enter', preventDefault: () => {} });
                 }}
                 className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
               >
@@ -3245,6 +3275,17 @@ export function WarehouseOperations({
                   disabled={!inventorySessionWarehouseId}
                 />
               </form>
+              {!inventorySessionWarehouseId ? (
+                <p className="warehouse-ops-hint" style={{ color: 'var(--danger, #ef4444)', marginTop: 8 }}>
+                  Выберите склад выше — без склада сканирование недоступно.
+                </p>
+              ) : null}
+              {lookupError ? (
+                <div className="warehouse-ops-error" role="alert" style={{ marginTop: 10 }}>
+                  {lookupError}
+                </div>
+              ) : null}
+              {opMessage ? <div className="warehouse-ops-msg success" style={{ marginTop: 8 }}>{opMessage}</div> : null}
 
               <div className="warehouse-ops-list-form" style={{ marginTop: 16 }}>
                 <div className="warehouse-ops-list-row warehouse-ops-list-row--search">
@@ -3274,9 +3315,6 @@ export function WarehouseOperations({
                   </Button>
                 </div>
               </div>
-
-              {lookupError && <div className="warehouse-ops-error">{lookupError}</div>}
-              {opMessage && <div className="warehouse-ops-msg success">{opMessage}</div>}
 
               <h4 className="warehouse-ops-receipt-list-title" style={{ marginTop: 20 }}>
                 Список пересчёта

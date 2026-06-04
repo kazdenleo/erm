@@ -19,6 +19,7 @@ import { ProductSearchInput } from '../../components/common/ProductSearchInput/P
 import { formatProductOptionLabel } from '../../utils/productSearch';
 import {
   getOrderStatusLabel,
+  getOrderProcurementSupplierName,
   isOrderStatusEligibleForProcurement,
 } from '../../constants/orderStatuses';
 import { OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
@@ -546,7 +547,7 @@ export function Orders() {
   ]);
 
   const procurementDisplayLines = useMemo(() => {
-    const lines = procurementEditableLines.filter((l) => !l.excluded);
+    const lines = procurementEditableLines;
     if (procurementPreviewQtySort == null) return lines;
     const dir = procurementPreviewQtySort === 'asc' ? 1 : -1;
     const q = (l) => {
@@ -554,11 +555,17 @@ export function Orders() {
       return Number.isFinite(n) && n > 0 ? n : 0;
     };
     return [...lines].sort((a, b) => {
+      if (a.excluded !== b.excluded) return a.excluded ? 1 : -1;
       const d = q(a) - q(b);
       if (d !== 0) return d * dir;
       return String(a.article || '').localeCompare(String(b.article || ''), 'ru', { numeric: true });
     });
   }, [procurementEditableLines, procurementPreviewQtySort]);
+
+  const procurementActiveLineCount = useMemo(
+    () => procurementEditableLines.filter((l) => !l.excluded).length,
+    [procurementEditableLines]
+  );
 
   const procurementExcludedOnHandCount = useMemo(
     () => procurementEditableLines.filter((l) => l.excluded && l.stockStatus === 'on_hand').length,
@@ -2290,7 +2297,7 @@ export function Orders() {
                         </tr>
                       </thead>
                       <tbody>
-                        {procurementEditableLines.map((line) => {
+                        {procurementDisplayLines.map((line) => {
                           const dimmed = line.excluded;
                           const rowClass = [
                             dimmed ? 'orders-procurement-line--excluded' : '',
@@ -2364,7 +2371,7 @@ export function Orders() {
                         })}
                       </tbody>
                     </table>
-                    {procurementDisplayLines.length === 0 && procurementLinesReady ? (
+                    {procurementActiveLineCount === 0 && procurementLinesReady ? (
                       <p className="muted" style={{ marginBottom: 12 }}>
                         Нет активных позиций для закупки. Верните строку из списка или измените количество.
                       </p>
@@ -2778,6 +2785,21 @@ export function Orders() {
                       .join('\n')
                   : undefined;
                 const priceDisplay = isGroup ? '—' : first.price;
+                const showProcurementSupplier = first.status === 'in_procurement';
+                const procurementSupplierForOrders = (orderRows) => {
+                  for (const o of orderRows || []) {
+                    const n = getOrderProcurementSupplierName(o);
+                    if (n) return n;
+                  }
+                  return '';
+                };
+                const procurementPurchaseIdForOrders = (orderRows) => {
+                  for (const o of orderRows || []) {
+                    const pid = o.procurementPurchaseId ?? o.procurement_purchase_id;
+                    if (pid != null && String(pid).trim() !== '') return pid;
+                  }
+                  return null;
+                };
                 // Раньше показывали "✓ Есть на складе" по hasReserve, но это вводило в заблуждение:
                 // резерв может быть за счёт incoming (в пути) или быть частичным.
                 // Для "Новый" показываем только прогресс резерва X/Y.
@@ -2873,18 +2895,52 @@ export function Orders() {
                   >
                     {isGroup ? (
                       <div className="orders-stacked-lines">
-                        {mergedGroupLines.map((o, i) => (
+                        {mergedGroupLines.map((o, i) => {
+                          const supplierName = showProcurementSupplier
+                            ? procurementSupplierForOrders(o.orders)
+                            : '';
+                          const purchaseId = showProcurementSupplier
+                            ? procurementPurchaseIdForOrders(o.orders)
+                            : null;
+                          return (
                           <div key={i} className="orders-stacked-line orders-stacked-line--product">
                             <span className="orders-product-cell-text" title={o.name || '—'}>
                               {o.name || '—'}
                             </span>
+                            {supplierName ? (
+                              <span
+                                className="orders-procurement-supplier"
+                                title={
+                                  purchaseId != null
+                                    ? `Закупка №${purchaseId}`
+                                    : 'Поставщик из закупки'
+                                }
+                              >
+                                Поставщик: {supplierName}
+                              </span>
+                            ) : null}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
-                      <span className="orders-product-cell-text" title={String(productsDisplay || '')}>
-                        {productsDisplay}
-                      </span>
+                      <div className="orders-product-single-cell">
+                        <span className="orders-product-cell-text" title={String(productsDisplay || '')}>
+                          {productsDisplay}
+                        </span>
+                        {showProcurementSupplier && getOrderProcurementSupplierName(first) ? (
+                          <span
+                            className="orders-procurement-supplier"
+                            title={
+                              first.procurementPurchaseId ?? first.procurement_purchase_id
+                                ? `Закупка №${first.procurementPurchaseId ?? first.procurement_purchase_id}`
+                                : 'Поставщик из закупки'
+                            }
+                          >
+                            Поставщик: {getOrderProcurementSupplierName(first)}
+                          </span>
+                        ) : null}
+                      </div>
                     )}
                   </td>
                   <td className="orders-col-article">

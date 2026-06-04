@@ -11,6 +11,13 @@ import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { WarehouseForm } from '../../components/forms/WarehouseForm/WarehouseForm';
 import { warehouseMappingsApi } from '../../services/warehouseMappings.api';
+import { integrationsApi } from '../../services/integrations.api';
+import {
+  normalizeWarehouseMappingMarketplace,
+  warehouseMappingMarketplaceHint,
+  warehouseMappingMarketplaceLabel,
+  WAREHOUSE_MAPPING_MARKETPLACES,
+} from '../../utils/warehouseMappingMarketplaces';
 import './Warehouses.css';
 
 export function Warehouses() {
@@ -26,7 +33,14 @@ export function Warehouses() {
   const [mappingsError, setMappingsError] = useState(null);
   const [mappingModalOpen, setMappingModalOpen] = useState(false);
   const [editingMapping, setEditingMapping] = useState(null);
-  const [mappingForm, setMappingForm] = useState({ warehouseId: '', marketplace: 'ozon', marketplaceWarehouseId: '' });
+  const [mappingForm, setMappingForm] = useState({
+    warehouseId: '',
+    marketplace: 'ozon',
+    marketplaceWarehouseId: '',
+  });
+  const [mpSuggestions, setMpSuggestions] = useState([]);
+  const [mpSuggestionsLoading, setMpSuggestionsLoading] = useState(false);
+  const [mpSuggestionsError, setMpSuggestionsError] = useState(null);
 
   // Логирование для отладки
   useEffect(() => {
@@ -51,6 +65,94 @@ export function Warehouses() {
   useEffect(() => {
     loadMappings();
   }, []);
+
+  const selectedMappingWarehouse = warehouses.find(
+    (w) => String(w.id) === String(mappingForm.warehouseId)
+  );
+  const mappingOrgId =
+    selectedMappingWarehouse?.organizationId ??
+    selectedMappingWarehouse?.organization_id ??
+    '';
+
+  useEffect(() => {
+    if (!mappingModalOpen) return;
+    const orgId = String(mappingOrgId || '').trim();
+    const mp = normalizeWarehouseMappingMarketplace(mappingForm.marketplace);
+    if (!orgId) {
+      setMpSuggestions([]);
+      setMpSuggestionsError(null);
+      setMpSuggestionsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const load = async () => {
+      setMpSuggestionsLoading(true);
+      setMpSuggestionsError(null);
+      try {
+        let items = [];
+        if (mp === 'ozon') {
+          const response = await integrationsApi.getOzonWarehouses({ organizationId: orgId });
+          const payload = response?.data ?? response;
+          const list = payload?.result ?? payload?.warehouses ?? payload?.data ?? [];
+          items = (Array.isArray(list) ? list : []).map((x) => {
+            const id = x.warehouse_id ?? x.warehouseId ?? x.id ?? null;
+            const name = x.name ?? x.warehouse_name ?? '';
+            const idStr = id != null ? String(id).trim() : '';
+            const nameStr = String(name || '').trim();
+            const bindValue =
+              idStr && nameStr ? `${idStr} — ${nameStr}` : nameStr || idStr;
+            return { value: bindValue, label: bindValue || nameStr || idStr };
+          });
+        } else if (mp === 'wb') {
+          const response = await integrationsApi.getWildberriesSellerWarehouses({
+            organizationId: orgId,
+          });
+          const payload = response?.data ?? response;
+          const list = payload?.warehouses ?? payload?.data ?? payload ?? [];
+          items = (Array.isArray(list) ? list : []).map((o) => {
+            const id = o.id ?? o.warehouseId ?? null;
+            const name = o.name ?? o.warehouseName ?? '';
+            const idStr = id != null ? String(id).trim() : '';
+            const nameStr = String(name || '').trim();
+            const bindValue = idStr || nameStr;
+            const label =
+              idStr && nameStr ? `${idStr} — ${nameStr}` : nameStr || idStr;
+            return { value: bindValue, label };
+          });
+        } else if (mp === 'ym') {
+          const response = await integrationsApi.getYandexCampaigns({ organizationId: orgId });
+          const payload = response?.data ?? response;
+          const list = payload?.campaigns ?? payload?.result?.campaigns ?? payload?.data ?? [];
+          items = (Array.isArray(list) ? list : []).map((c) => {
+            const id = c.id ?? c.campaignId ?? null;
+            const name = c.domain ?? c.clientId ?? c.name ?? c.business?.name ?? '';
+            const idStr = id != null ? String(id).trim() : '';
+            return {
+              value: idStr,
+              label: idStr ? `${idStr}${name ? ` · ${name}` : ''}` : '',
+            };
+          });
+        }
+        items = items.filter((x) => String(x.value || '').trim() !== '');
+        items.sort((a, b) => String(a.label).localeCompare(String(b.label), 'ru'));
+        if (!cancelled) setMpSuggestions(items);
+      } catch (e) {
+        if (!cancelled) {
+          setMpSuggestions([]);
+          setMpSuggestionsError(
+            e.response?.data?.message || e.message || 'Не удалось загрузить список'
+          );
+        }
+      } finally {
+        if (!cancelled) setMpSuggestionsLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [mappingModalOpen, mappingForm.marketplace, mappingOrgId]);
 
   const handleCreate = () => {
     setEditingWarehouse(null);
@@ -99,7 +201,7 @@ export function Warehouses() {
     setEditingMapping(m);
     setMappingForm({
       warehouseId: String(m.warehouse_id ?? m.warehouseId ?? ''),
-      marketplace: String(m.marketplace ?? 'ozon'),
+      marketplace: normalizeWarehouseMappingMarketplace(m.marketplace ?? 'ozon'),
       marketplaceWarehouseId: String(m.marketplace_warehouse_id ?? m.marketplaceWarehouseId ?? ''),
     });
     setMappingModalOpen(true);
@@ -110,8 +212,8 @@ export function Warehouses() {
     try {
       const payload = {
         warehouseId: mappingForm.warehouseId,
-        marketplace: mappingForm.marketplace,
-        marketplaceWarehouseId: mappingForm.marketplaceWarehouseId,
+        marketplace: normalizeWarehouseMappingMarketplace(mappingForm.marketplace),
+        marketplaceWarehouseId: String(mappingForm.marketplaceWarehouseId || '').trim(),
       };
       if (editingMapping?.id) {
         await warehouseMappingsApi.update(editingMapping.id, payload);
@@ -258,7 +360,7 @@ export function Warehouses() {
                 <tr key={m.id}>
                   <td>{m.id}</td>
                   <td>{wh?.address || `Склад #${wid}`}</td>
-                  <td>{String(m.marketplace || '').toUpperCase()}</td>
+                  <td>{warehouseMappingMarketplaceLabel(m.marketplace)}</td>
                   <td>{m.marketplace_warehouse_id ?? m.marketplaceWarehouseId}</td>
                   <td>
                     <div style={{display: 'flex', gap: '6px', justifyContent: 'flex-end'}}>
@@ -304,7 +406,7 @@ export function Warehouses() {
         isOpen={mappingModalOpen}
         onClose={() => { setMappingModalOpen(false); setEditingMapping(null); }}
         title={editingMapping ? 'Редактировать привязку' : 'Добавить привязку'}
-        size="medium"
+        size="large"
       >
         <form onSubmit={submitMapping} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="form-group">
@@ -312,39 +414,88 @@ export function Warehouses() {
             <select
               className="form-control"
               value={mappingForm.warehouseId}
-              onChange={(e) => setMappingForm(prev => ({ ...prev, warehouseId: e.target.value }))}
+              onChange={(e) => setMappingForm((prev) => ({ ...prev, warehouseId: e.target.value }))}
               required
             >
               <option value="">Выберите склад</option>
-              {warehouses.filter(w => w.type === 'warehouse' && !w.supplierId).map(w => (
-                <option key={w.id} value={String(w.id)}>{w.address || `Склад #${w.id}`}</option>
+              {warehouses.filter((w) => w.type === 'warehouse' && !w.supplierId).map((w) => (
+                <option key={w.id} value={String(w.id)}>
+                  {w.address || `Склад #${w.id}`}
+                </option>
               ))}
             </select>
+            {!mappingOrgId && mappingForm.warehouseId ? (
+              <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                У склада не указана организация — список складов МП из API недоступен, введите значение вручную.
+              </div>
+            ) : null}
           </div>
           <div className="form-group">
             <label className="label">Маркетплейс</label>
             <select
               className="form-control"
-              value={mappingForm.marketplace}
-              onChange={(e) => setMappingForm(prev => ({ ...prev, marketplace: e.target.value }))}
+              value={normalizeWarehouseMappingMarketplace(mappingForm.marketplace)}
+              onChange={(e) =>
+                setMappingForm((prev) => ({
+                  ...prev,
+                  marketplace: e.target.value,
+                  marketplaceWarehouseId: '',
+                }))
+              }
               required
             >
-              <option value="ozon">Ozon</option>
-              <option value="wb">Wildberries</option>
-              <option value="ym">Яндекс Маркет</option>
+              {WAREHOUSE_MAPPING_MARKETPLACES.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
             </select>
+            <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+              На один фактический склад можно привязать по одной записи для Ozon, Wildberries и Яндекс.Маркет.
+            </div>
           </div>
           <div className="form-group">
             <label className="label">Склад маркетплейса (точно как в заказе)</label>
+            {mappingOrgId && mpSuggestionsLoading ? (
+              <div className="alert alert-secondary py-2 mb-2">Загрузка списка из интеграции…</div>
+            ) : null}
+            {mappingOrgId && mpSuggestionsError ? (
+              <div className="alert alert-warning py-2 mb-2">{mpSuggestionsError}</div>
+            ) : null}
+            {mappingOrgId && mpSuggestions.length > 0 ? (
+              <select
+                className="form-control mb-2"
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v) setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: v }));
+                }}
+              >
+                <option value="">— Выберите из API (необязательно) —</option>
+                {mpSuggestions.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <input
               className="form-control"
               value={mappingForm.marketplaceWarehouseId}
-              onChange={(e) => setMappingForm(prev => ({ ...prev, marketplaceWarehouseId: e.target.value }))}
-              placeholder="Напр. 'Москва (FBS)' или ID склада"
+              onChange={(e) =>
+                setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: e.target.value }))
+              }
+              placeholder={
+                normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'wb'
+                  ? 'Напр. «Теплый Стан» или id склада FBS'
+                  : normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'ym'
+                    ? 'Напр. campaignId: 12345678'
+                    : "Напр. 'Москва (FBS)' или id — название"
+              }
               required
             />
             <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
-              Для Ozon это обычно значение из заказа: <code>delivery_method.warehouse_name</code>.
+              {warehouseMappingMarketplaceHint(mappingForm.marketplace)}
             </div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>

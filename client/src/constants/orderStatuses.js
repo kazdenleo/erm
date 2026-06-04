@@ -15,6 +15,13 @@ export const orderStatusLabels = {
   cancelled: 'Отменён'
 };
 
+export {
+  getOrderProcurementSuppliers,
+  formatProcurementSuppliersLabel,
+  procurementSuppliersTitle,
+  aggregateProcurementSuppliersFromOrders,
+} from '../utils/orderProcurementSuppliers.js';
+
 export function getOrderStatusLabel(status) {
   if (status === 'wb_status_unknown') {
     return orderStatusLabels.wb_status_unknown;
