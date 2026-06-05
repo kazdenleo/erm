@@ -30,6 +30,7 @@ import {
   RAW_RESERVED_SUM_EXPR_SQL,
   getProductSupplySnapshotWithClient
 } from './sellableQuantity.service.js';
+import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
@@ -957,13 +958,17 @@ class OrdersService {
     if (!orderDbId || !repositoryFactory.isUsingPostgreSQL()) return false;
     const oid = Number(orderDbId);
     if (!Number.isFinite(oid) || oid < 1) return false;
+    const or = await query(`SELECT order_id FROM orders WHERE id = $1 LIMIT 1`, [oid]);
+    const mpLabel =
+      or.rows?.[0]?.order_id != null && String(or.rows[0].order_id).trim() !== ''
+        ? String(or.rows[0].order_id).trim()
+        : null;
     const r = await query(
       `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
        WHERE type IN ('reserve', 'unreserve')
-         AND (meta->>'order_id') ~ '^[0-9]+$'
-         AND (meta->>'order_id')::bigint = $1::bigint`,
-      [oid]
+         AND ${orderReserveMovementMatchSql('', 1, 2)}`,
+      [oid, mpLabel]
     );
     return (Number(r.rows?.[0]?.rv ?? 0) || 0) > 0;
   }
@@ -973,20 +978,31 @@ class OrdersService {
     if (!orderDbId || !repositoryFactory.isUsingPostgreSQL()) return 0;
     const oid = Number(orderDbId);
     if (!Number.isFinite(oid) || oid < 1) return 0;
+    const or = await query(`SELECT order_id FROM orders WHERE id = $1 LIMIT 1`, [oid]);
+    const mpLabel =
+      or.rows?.[0]?.order_id != null && String(or.rows[0].order_id).trim() !== ''
+        ? String(or.rows[0].order_id).trim()
+        : null;
     const r = await query(
       `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
        WHERE type IN ('reserve', 'unreserve')
-         AND (meta->>'order_id') ~ '^[0-9]+$'
-         AND (meta->>'order_id')::bigint = $1::bigint`,
-      [oid]
+         AND ${orderReserveMovementMatchSql('', 1, 2)}`,
+      [oid, mpLabel]
     );
     return Number(r.rows?.[0]?.rv ?? 0) || 0;
   }
 
   /** Нетто-резерв под заказ по товару (orders.id + product_id). */
   async _getReservedQtyForOrderProduct(orderDbId, productId) {
-    return getNetReservedForOrderProduct(orderDbId, productId);
+    const oid = Number(orderDbId);
+    if (!Number.isFinite(oid) || oid < 1) return 0;
+    const or = await query(`SELECT order_id FROM orders WHERE id = $1 LIMIT 1`, [oid]);
+    const mpLabel =
+      or.rows?.[0]?.order_id != null && String(or.rows[0].order_id).trim() !== ''
+        ? String(or.rows[0].order_id).trim()
+        : null;
+    return getNetReservedForOrderProduct(oid, productId, mpLabel);
   }
 
   /**
@@ -2163,13 +2179,14 @@ class OrdersService {
         const pid = await this._resolveProductIdForOrderStock(row);
         const pnum = Number(pid);
         if (Number.isFinite(pnum) && pnum > 0) {
-          const snapRow = await getProductSupplySnapshotWithClient(null, pnum);
-          if (Math.floor(snapRow.available) <= 0) continue;
           if (await isKitProductId(pnum)) {
             const wh = await this._resolveOwnWarehouseIdForOrder(row);
             const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(pnum, wh);
             const maxKits = await this._computeMaxKitUnitsReservableForOrder(pnum, warehouseId);
             if (maxKits <= 0) continue;
+          } else {
+            const snapRow = await getProductSupplySnapshotWithClient(null, pnum);
+            if (Math.floor(snapRow.available) <= 0) continue;
           }
         }
         await this._applyReserveForOrderIfAbsent(row);

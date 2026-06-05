@@ -6,7 +6,10 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import { NET_RESERVED_SUM_EXPR_SQL } from '../constants/netReservedStockSql.js';
+import {
+  NET_RESERVED_SUM_EXPR_SQL,
+  orderReserveMovementMatchSql
+} from '../constants/netReservedStockSql.js';
 import {
   computeAvailableQuantity,
   getReservedQuantityFromMovements,
@@ -765,17 +768,22 @@ export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
   return sumKitComponentsNetReserved(kitId, opts);
 }
 
-export async function getNetReservedForOrderProduct(orderDbId, productId) {
+export async function getNetReservedForOrderProduct(orderDbId, productId, marketplaceOrderId = null) {
   const oid = Number(orderDbId);
   const pid = Number(productId);
-  if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
+  const mpLabel =
+    marketplaceOrderId != null && String(marketplaceOrderId).trim() !== ''
+      ? String(marketplaceOrderId).trim()
+      : null;
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+  if ((!Number.isFinite(oid) || oid < 1) && !mpLabel) return 0;
   const r = await query(
     `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
      FROM stock_movements
      WHERE product_id = $1
        AND type IN ('reserve', 'unreserve')
-       AND (meta->>'order_id')::bigint = $2::bigint`,
-    [pid, oid]
+       AND ${orderReserveMovementMatchSql('', 2, 3)}`,
+    [pid, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel]
   );
   return Number(r.rows?.[0]?.rv ?? 0) || 0;
 }
@@ -1000,15 +1008,18 @@ export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unrese
   const oid = Number(orderDbId);
   if (!Number.isFinite(oid) || oid < 1) return [];
 
+  const mpLabel =
+    orderIdLabel != null && String(orderIdLabel).trim() !== '' ? String(orderIdLabel).trim() : null;
+
   const r = await query(
     `SELECT product_id,
             ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_reserved
      FROM stock_movements
-     WHERE (meta->>'order_id')::bigint = $1::bigint
-       AND type IN ('reserve', 'unreserve')
+     WHERE type IN ('reserve', 'unreserve')
+       AND ${orderReserveMovementMatchSql('', 1, 2)}
      GROUP BY product_id
      HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
-    [oid]
+    [oid, mpLabel]
   );
 
   const affected = [];

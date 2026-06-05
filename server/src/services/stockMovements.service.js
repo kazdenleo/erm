@@ -10,6 +10,7 @@ import {
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL,
+  orderReserveMovementMatchSql,
   parseStockMovementWarehouseId,
   stockMovementWarehouseReserveSql
 } from '../constants/netReservedStockSql.js';
@@ -321,11 +322,19 @@ class StockMovementsService {
         getProductSupplySnapshotWithClient,
         getRawReservedQuantityFromMovementsWithClient
       } = await import('./sellableQuantity.service.js');
-      const orderDbIdRaw = metaOut.order_id ?? metaOut.orderId ?? null;
+      const orderDbIdNum = metaOut.order_id != null ? Number(metaOut.order_id) : NaN;
+      const mpOrderId =
+        metaOut.orderId != null && String(metaOut.orderId).trim() !== ''
+          ? String(metaOut.orderId).trim()
+          : null;
       let netForOrder = null;
-      if (orderDbIdRaw != null && String(orderDbIdRaw).trim() !== '') {
+      if ((Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) || mpOrderId) {
         const { getNetReservedForOrderProduct } = await import('./kitStock.service.js');
-        netForOrder = await getNetReservedForOrderProduct(orderDbIdRaw, idNum);
+        netForOrder = await getNetReservedForOrderProduct(
+          Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : 0,
+          idNum,
+          mpOrderId
+        );
       }
 
       const journalReconcile =
@@ -648,14 +657,16 @@ class StockMovementsService {
     );
 
     if (!_skipStaleCleanup && (res.rows?.length ?? 0) > 0) {
-      const { default: ordersService, isOrderTerminalNoReserve } = await import('./orders.service.js');
+      const { isOrderTerminalNoReserve } = await import('./orders.service.js');
       let cleaned = false;
       for (const r of res.rows || []) {
         if (r.order_missing === true) continue;
         if (!isOrderTerminalNoReserve(r.status)) continue;
-        const clientMp =
-          r.marketplace === 'wb' ? 'wildberries' : r.marketplace === 'ym' ? 'yandex' : 'ozon';
-        await ordersService.releaseReserveIfExistsForOrder(clientMp, r.order_id);
+        try {
+          await this.releaseOrderReserveForProduct(idNum, r.id, { profileId });
+        } catch (_) {
+          /* stale cleanup — не блокируем список */
+        }
         cleaned = true;
       }
       if (cleaned) {
@@ -1242,18 +1253,22 @@ class StockMovementsService {
     return { releasedProductLines, skipped: false };
   }
 
-  async _netReservedForOrderProduct(orderDbId, productId) {
+  async _netReservedForOrderProduct(orderDbId, productId, { marketplaceOrderId = null } = {}) {
     const oid = Number(orderDbId);
     const pid = Number(productId);
-    if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
+    const mpLabel =
+      marketplaceOrderId != null && String(marketplaceOrderId).trim() !== ''
+        ? String(marketplaceOrderId).trim()
+        : null;
+    if (!Number.isFinite(pid) || pid < 1) return 0;
+    if ((!Number.isFinite(oid) || oid < 1) && !mpLabel) return 0;
     const r = await query(
       `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
        WHERE product_id = $1
          AND type IN ('reserve', 'unreserve')
-         AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
-         AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint = $2::bigint`,
-      [pid, oid]
+         AND ${orderReserveMovementMatchSql('', 2, 3)}`,
+      [pid, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel]
     );
     return Number(r.rows?.[0]?.rv ?? 0) || 0;
   }
@@ -1290,9 +1305,17 @@ class StockMovementsService {
 
     if (!list.length) {
       const orphan = await this.releaseOrphanNetReserveForProduct(idNum, { profileId });
+      const lines = orphan.releasedProductLines || 0;
+      if (lines === 0) {
+        const error = new Error(
+          'Не удалось снять резерв: по товару не найдено записей в журнале для снятия'
+        );
+        error.statusCode = 400;
+        throw error;
+      }
       return {
         releasedOrders: 0,
-        releasedProductLines: orphan.releasedProductLines || 0,
+        releasedProductLines: lines,
         ordersChecked: 0,
         orphanCleanup: true
       };
@@ -1305,7 +1328,9 @@ class StockMovementsService {
       const label = String(row.orderId ?? '');
       let touched = false;
       for (const pid of productIds) {
-        const net = await this._netReservedForOrderProduct(orderDbId, pid);
+        const net = await this._netReservedForOrderProduct(orderDbId, pid, {
+          marketplaceOrderId: label
+        });
         if (net <= 0) continue;
         await this.applyChange(pid, {
           delta: net,
@@ -1323,6 +1348,14 @@ class StockMovementsService {
         touched = true;
       }
       if (touched) releasedOrders += 1;
+    }
+
+    if (releasedProductLines === 0) {
+      const error = new Error(
+        'Не удалось снять резерв: по товару не найдено записей в журнале для снятия'
+      );
+      error.statusCode = 400;
+      throw error;
     }
 
     return {
@@ -1373,7 +1406,7 @@ class StockMovementsService {
     const productIds = await this._productIdsForReserveRelease(idNum);
     let releasedProductLines = 0;
     for (const pid of productIds) {
-      const net = await this._netReservedForOrderProduct(oid, pid);
+      const net = await this._netReservedForOrderProduct(oid, pid, { marketplaceOrderId: label });
       if (net <= 0) continue;
       await this.applyChange(pid, {
         delta: net,
@@ -1387,6 +1420,14 @@ class StockMovementsService {
         }
       });
       releasedProductLines += 1;
+    }
+
+    if (releasedProductLines === 0) {
+      const error = new Error(
+        `Не удалось снять резерв по заказу ${label || oid}: в журнале нет записей для снятия`
+      );
+      error.statusCode = 400;
+      throw error;
     }
 
     return { releasedProductLines, orderDbId: oid, orderId: label };

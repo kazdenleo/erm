@@ -525,14 +525,22 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
       }
     }
     if (t === 'inventory') {
-      const dbInc = movementNum(m, 'incoming_after');
-      const dbRes = movementNum(m, 'reserved_after');
       const dbBal = movementNum(m, 'balance_after');
-      if (dbInc != null) out.inc = dbInc;
-      if (dbRes != null) out.res = dbRes;
-      else if (out.res == null) out.res = 0;
       if (dbBal != null) out.bal = dbBal;
-      if (out.inc == null) out.inc = 0;
+      // Инвентаризация меняет только наличие — резерв и «в пути» в истории не двигаем.
+      if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+        out.inc = Number(prevLineBelow.inc);
+      } else {
+        const dbInc = movementNum(m, 'incoming_after');
+        out.inc = dbInc != null ? dbInc : 0;
+      }
+      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        out.res = Number(prevLineBelow.res);
+      } else {
+        const dbRes = movementNum(m, 'reserved_after');
+        out.res = dbRes != null ? dbRes : 0;
+      }
+      return out;
     }
     if (t === 'reserve' || t === 'unreserve') {
       const dbRes = movementNum(m, 'reserved_after');
@@ -561,9 +569,14 @@ function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null) {
     currentNetReserved != null && Number.isFinite(Number(currentNetReserved))
       ? Math.max(0, Math.floor(Number(currentNetReserved)))
       : null;
-  // Верхняя строка — актуальный нетто-резерв с API (reserved_after в движении может быть неточным после сверки).
+  // Верхняя строка — актуальный нетто-резерв с API, кроме инвентаризации (она резерв не меняет).
   if (net != null && enriched[0]) {
-    enriched[0].res = net;
+    const topItem = displayRows[0];
+    const topType =
+      topItem?.kind === 'single' && topItem.m ? movementTypeLower(topItem.m) : null;
+    if (topType !== 'inventory') {
+      enriched[0].res = net;
+    }
   }
   return enriched;
 }
@@ -1771,14 +1784,22 @@ export function WarehouseStocks() {
   const handleUnreserveOrderFromStock = useCallback(
     async (orderRow) => {
       if (orderRow?.orderDbId == null) return;
-      if (!orderRow.deletedOrderReserve && (!orderRow?.marketplace || !orderRow?.orderId)) return;
       const key = orderRow.deletedOrderReserve
         ? `deleted-${orderRow.orderDbId}`
-        : `${orderRow.marketplace}|${orderRow.orderId}`;
+        : `${orderRow.marketplace || 'order'}|${orderRow.orderId || orderRow.orderDbId}`;
       setReserveUnreserveKey(key);
       setReserveError(null);
       try {
-        await stockMovementsApi.releaseOrderReserve(reserveModalProduct.id, orderRow.orderDbId);
+        const summary = await stockMovementsApi.releaseOrderReserve(
+          reserveModalProduct.id,
+          orderRow.orderDbId
+        );
+        if ((Number(summary?.releasedProductLines) || 0) === 0) {
+          setReserveError(
+            'Не удалось снять резерв: в журнале нет записей для снятия (обновите страницу)'
+          );
+          return;
+        }
         await reloadReserveOrdersList();
         loadListRef.current?.({ page: currentPage, silent: true });
         if (historyProduct?.id === reserveModalProduct?.id) {

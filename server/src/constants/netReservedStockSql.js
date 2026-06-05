@@ -42,3 +42,17 @@ export function stockMovementWarehouseReserveSql(alias = '', whId, paramIndex) {
   const a = alias ? `${alias}` : '';
   return ` AND (${a}warehouse_id = $${paramIndex} OR ${a}warehouse_id IS NULL)`;
 }
+
+/**
+ * SQL-фрагмент: движения резерва по заказу (orders.id и/или номер на МП в meta).
+ * @param {string} [alias=''] — префикс таблицы, например `sm.`
+ * @param {number} orderDbIdParam — индекс $N для orders.id
+ * @param {number} mpOrderIdParam — индекс $N для marketplace order_id (nullable)
+ */
+export function orderReserveMovementMatchSql(alias = '', orderDbIdParam, mpOrderIdParam) {
+  const a = alias ? `${alias}` : '';
+  const metaOrderExpr = `COALESCE(NULLIF(TRIM(${a}meta->>'order_id'), ''), NULLIF(TRIM(${a}meta->>'orderId'), ''))`;
+  const numericMatch = `(${metaOrderExpr} ~ '^[0-9]+$' AND (${metaOrderExpr})::bigint = $${orderDbIdParam}::bigint)`;
+  const mpMatch = `($${mpOrderIdParam}::text IS NOT NULL AND TRIM($${mpOrderIdParam}::text) <> '' AND TRIM(${metaOrderExpr}) = TRIM($${mpOrderIdParam}::text))`;
+  return `(${numericMatch} OR ${mpMatch})`;
+}
