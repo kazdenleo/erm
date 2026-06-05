@@ -677,6 +677,7 @@ class StockMovementsService {
     }
 
     const { isOrderTerminalNoReserve } = await import('./orders.service.js');
+    const { getOrderStatusLabel } = await import('../constants/orderStatuses.js');
 
     const out = [];
     for (const r of res.rows || []) {
@@ -691,11 +692,13 @@ class StockMovementsService {
           if (kitUnits > 0) reservedQty = kitUnits;
         }
         if (reservedQty <= 0) continue;
+        const deletedStatus = 'заказ удалён';
         out.push({
           orderDbId: Number.isFinite(movementOrderDbId) ? movementOrderDbId : null,
           marketplace: 'ozon',
           orderId: `удалён #${movementOrderDbId}`,
-          status: 'заказ удалён',
+          status: deletedStatus,
+          statusLabel: deletedStatus,
           reservedQty,
           staleReserve: true,
           deletedOrderReserve: true
@@ -718,6 +721,7 @@ class StockMovementsService {
           r.marketplace === 'wb' ? 'wildberries' : r.marketplace === 'ym' ? 'yandex' : 'ozon',
         orderId: r.order_id,
         status,
+        statusLabel: getOrderStatusLabel(status),
         reservedQty,
         staleReserve: isOrderTerminalNoReserve(status),
         ...(isKit ? { kitSkuNetQty: Number(r.sku_net_qty) || 0 } : {})

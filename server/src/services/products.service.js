@@ -302,14 +302,20 @@ class ProductsService {
       ...scanFilters
     } = options;
 
+    const whRaw = scanFilters.warehouseId ?? scanFilters.warehouse_id ?? null;
+    const warehouseScoped =
+      whRaw != null && String(whRaw).trim() !== '' && Number.isFinite(Number(whRaw)) && Number(whRaw) > 0;
+    /** При выбранном складе «только в наличии» можно отсечь пустые строки в SQL, не обходя весь каталог. */
+    const sqlInStockOnly = warehouseScoped && this._isStockListInStockOnly(options);
+
     while (true) {
       const batch = await this.repository.findAll({
         ...scanFilters,
         listView: 'stock',
         limit: sqlBatch,
         offset: sqlOffset,
-        inStockOnly: false,
-        deferInStockPostFilter: true,
+        inStockOnly: sqlInStockOnly,
+        deferInStockPostFilter: !sqlInStockOnly,
       });
       if (batch.length === 0) break;
 

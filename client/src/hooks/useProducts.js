@@ -27,22 +27,22 @@ export function useProducts(options = {}) {
 
   const loadProducts = async (options = {}) => {
     const opts = typeof options === 'object' && options !== null ? options : { organizationId: options };
-    const silent = opts.silent === true;
     if (loadAbortRef.current) {
       loadAbortRef.current.abort();
     }
     const controller = new AbortController();
     loadAbortRef.current = controller;
     const gen = ++loadGenerationRef.current;
+    const silent = opts.silent === true;
     try {
       if (!silent) {
         setLoading(true);
       } else {
         setListRefreshing(true);
+        // Смена фильтра (склад и т.д.) — не блокируем страницу из‑за зависшего loading от отменённого запроса.
+        setLoading(false);
       }
-      if (!silent) {
-        setError(null);
-      }
+      setError(null);
       const params = { cacheBust: true };
       if (opts.organizationId != null && opts.organizationId !== '') params.organizationId = opts.organizationId;
       if (opts.brandId != null && opts.brandId !== '') params.brandId = String(opts.brandId);
@@ -93,9 +93,8 @@ export function useProducts(options = {}) {
       if (gen !== loadGenerationRef.current || controller.signal.aborted) return;
       if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
       console.error('Error loading products:', err);
-      if (!silent) {
-        setError(err.message || 'Ошибка загрузки товаров');
-      }
+      const msg = err.response?.data?.message || err.message || 'Ошибка загрузки товаров';
+      setError(msg);
     } finally {
       if (loadAbortRef.current === controller) {
         loadAbortRef.current = null;

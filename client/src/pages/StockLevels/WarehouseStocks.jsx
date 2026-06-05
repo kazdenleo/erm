@@ -28,6 +28,7 @@ import { profilesApi } from '../../services/profiles.api.js';
 import { authApi } from '../../services/auth.api.js';
 import { WarehouseOperations } from './WarehouseOperations';
 import { warehouseOpFromSearch, WAREHOUSE_VALID_OPS } from './warehouseTabs';
+import { getOrderStatusLabel } from '../../constants/orderStatuses';
 import './StockLevels.css';
 
 const STOCK_LIST_PAGE_SIZES = [50, 100, 200];
@@ -1564,6 +1565,19 @@ export function WarehouseStocks() {
     [warehouses]
   );
 
+  /** Сброс устаревшего склада из localStorage (удалённый или склад поставщика). */
+  useEffect(() => {
+    if (warehousesLoading || !stockWarehouseId) return;
+    if (!ownWarehouses.some((w) => String(w.id) === String(stockWarehouseId))) {
+      setStockWarehouseId('');
+      try {
+        localStorage.removeItem(STOCK_WAREHOUSE_LS);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [stockWarehouseId, ownWarehouses, warehousesLoading]);
+
   const handleStockWarehouseChange = (e) => {
     const v = e.target.value;
     setStockWarehouseId(v);
@@ -2100,10 +2114,12 @@ export function WarehouseStocks() {
     );
   };
 
-  if ((productsLoading && products.length === 0) || warehousesLoading) {
+  const showInitialLoader =
+    (productsLoading && products.length === 0 && !listRefreshing) || warehousesLoading;
+  if (showInitialLoader) {
     return <div className="loading">Загрузка остатков на складе...</div>;
   }
-  if (productsError) {
+  if (productsError && products.length === 0) {
     return <div className="error">Ошибка загрузки товаров: {productsError}</div>;
   }
   if (warehousesError) {
@@ -2118,6 +2134,11 @@ export function WarehouseStocks() {
 
       {activeTab === 'table' && (
         <>
+          {productsError && products.length > 0 ? (
+            <div className="error" style={{ marginBottom: 12 }} role="alert">
+              Не удалось обновить остатки: {productsError}
+            </div>
+          ) : null}
           <div className="stock-levels-filters">
             <label className="stock-levels-filter-label">
               <span>Склад (остаток):</span>
@@ -2907,9 +2928,9 @@ export function WarehouseStocks() {
                           {o.marketplace} · {o.orderId}
                         </Link>
                       )}
-                      {o.status ? (
+                      {o.status || o.statusLabel ? (
                         <span className={`small ${o.staleReserve ? 'text-warning' : 'text-muted'}`}>
-                          {o.status}
+                          {o.statusLabel || getOrderStatusLabel(o.status)}
                           {o.staleReserve ? ' · залипший резерв' : ''}
                         </span>
                       ) : null}

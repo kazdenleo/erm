@@ -1018,7 +1018,10 @@ export function YandexDetail({ detail, localLines }) {
           <dt>Номер заказа</dt>
           <dd>{detail.id ?? detail.orderId ?? '—'}</dd>
           <dt>Статус</dt>
-          <dd>{detail.status ?? '—'}{detail.substatus ? ` / ${detail.substatus}` : ''}</dd>
+          <dd>
+            {getOrderStatusLabel(detail.status)}
+            {detail.substatus ? ` / ${detail.substatus}` : ''}
+          </dd>
           <dt>Создан</dt>
           <dd>{formatYandexApiDate(detail.creationDate)}</dd>
           <dt>Обновлён</dt>
