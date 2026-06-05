@@ -1819,20 +1819,11 @@ export function WarehouseOperations({
     if (!product?.id) return 0;
     const wid = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId) : '';
     if (!wid) return product.quantity ?? 0;
-    const fromList = products.find((p) => String(p.id) === String(product.id));
-    if (
-      fromList &&
-      inventoryWarehouseId &&
-      String(inventoryWarehouseId) === wid &&
-      fromList.quantity != null
-    ) {
-      return Number(fromList.quantity) || 0;
-    }
     try {
       const data = await stockMovementsApi.getWarehouseStock(product.id, wid);
       return Math.max(0, Number(data?.quantity) || 0);
     } catch {
-      return product.quantity ?? 0;
+      return 0;
     }
   };
 
