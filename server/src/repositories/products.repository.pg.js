@@ -261,6 +261,57 @@ export function stockListOnHandQuantity(product) {
   return Math.max(0, Number(product.quantity) || 0);
 }
 
+/** Резерв в таблице остатков (колонка «Резерв»). */
+export function stockListReservedQuantity(product) {
+  if (!product) return 0;
+  const raw =
+    product.net_reserved_quantity ??
+    product.netReservedQuantity ??
+    product.reserved_quantity ??
+    product.reservedQuantity ??
+    0;
+  return Math.max(0, Number(raw) || 0);
+}
+
+/** Доступно в таблице остатков (колонка «Доступно»), без поставщиков. */
+export function stockListAvailableQuantity(product) {
+  if (!product) return 0;
+  const kit = product.kit_display ?? product.kitDisplay;
+  if (kit && typeof kit === 'object') {
+    if (kit.available_total != null || kit.availableTotal != null) {
+      return Math.max(0, Number(kit.available_total ?? kit.availableTotal) || 0);
+    }
+    const a = Math.max(0, Number(kit.assemblable_from_components ?? kit.assemblableFromComponents) || 0);
+    const w = Math.max(0, Number(kit.whole_on_hand ?? kit.wholeOnHand) || 0);
+    return Math.max(0, a + w);
+  }
+  const onHand = stockListOnHandQuantity(product);
+  const incoming = Math.max(0, Number(product.incoming_quantity ?? product.incomingQuantity) || 0);
+  const reserved = stockListReservedQuantity(product);
+  return Math.max(0, onHand + incoming - reserved);
+}
+
+/** Фильтр по бренду: brand_id и совпадение по mp_*_brand для legacy-карточек. */
+function appendBrandIdFilter(whereSql, params, paramIndex, brandId) {
+  const bRaw = String(brandId).trim();
+  if (!/^\d+$/.test(bRaw)) {
+    return { whereSql, params, paramIndex };
+  }
+  whereSql += ` AND (
+    p.brand_id = $${paramIndex}
+    OR EXISTS (
+      SELECT 1 FROM brands b_br
+      WHERE b_br.id = $${paramIndex}
+        AND (
+          LOWER(TRIM(COALESCE(p.mp_ozon_brand, ''))) = LOWER(TRIM(b_br.name))
+          OR LOWER(TRIM(COALESCE(p.mp_wb_brand, ''))) = LOWER(TRIM(b_br.name))
+        )
+    )
+  )`;
+  params.push(bRaw);
+  return { whereSql, params, paramIndex: paramIndex + 1 };
+}
+
 function buildFindAllFilters(options = {}) {
   const {
     brandId,
@@ -290,11 +341,7 @@ function buildFindAllFilters(options = {}) {
   }
 
   if (brandId) {
-    const bRaw = String(brandId).trim();
-    if (/^\d+$/.test(bRaw)) {
-      whereSql += ` AND p.brand_id = $${paramIndex++}`;
-      params.push(bRaw);
-    }
+    ({ whereSql, params, paramIndex } = appendBrandIdFilter(whereSql, params, paramIndex, brandId));
   }
 
   const categoryIdRaw = normalizeListCategoryId(categoryId);

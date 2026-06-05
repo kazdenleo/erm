@@ -72,6 +72,12 @@ export function useProducts(options = {}) {
       if (opts.inStockOnly === true || opts.inStockOnly === '1' || opts.inStockOnly === 1) {
         params.inStockOnly = '1';
       }
+      if (opts.reservedOnly === true || opts.reservedOnly === '1' || opts.reservedOnly === 1) {
+        params.reservedOnly = '1';
+      }
+      if (opts.availableOnly === true || opts.availableOnly === '1' || opts.availableOnly === 1) {
+        params.availableOnly = '1';
+      }
       const response = await productsApi.getAll(params, { signal: controller.signal });
       if (gen !== loadGenerationRef.current || controller.signal.aborted) return;
       const list = Array.isArray(response?.data) ? response.data : (response?.data?.data ?? response ?? []);

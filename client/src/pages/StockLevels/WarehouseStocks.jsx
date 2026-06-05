@@ -8,6 +8,7 @@ import { useProducts } from '../../hooks/useProducts';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useCategories } from '../../hooks/useCategories';
+import { useBrands } from '../../hooks/useBrands';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { stockMovementsApi } from '../../services/stockMovements.api';
@@ -32,6 +33,8 @@ import './StockLevels.css';
 const STOCK_LIST_PAGE_SIZES = [50, 100, 200];
 const STOCK_LIST_PAGE_SIZE_LS = 'stockListPageSize';
 const STOCK_IN_STOCK_ONLY_LS = 'stockListInStockOnly';
+const STOCK_RESERVED_ONLY_LS = 'stockListReservedOnly';
+const STOCK_AVAILABLE_ONLY_LS = 'stockListAvailableOnly';
 
 function isStockResetFlagEnabled(value) {
   return value === true || value === 'true' || value === 1 || value === '1';
@@ -967,6 +970,7 @@ export function WarehouseStocks() {
   });
   const { organizations = [] } = useOrganizations();
   const { categories = [] } = useCategories();
+  const { brands = [] } = useBrands();
   const [filterOrganizationId, setFilterOrganizationId] = useState(() => {
     try {
       const raw =
@@ -987,6 +991,21 @@ export function WarehouseStocks() {
       return false;
     }
   });
+  const [filterReservedOnly, setFilterReservedOnly] = useState(() => {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem(STOCK_RESERVED_ONLY_LS) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [filterAvailableOnly, setFilterAvailableOnly] = useState(() => {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem(STOCK_AVAILABLE_ONLY_LS) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [filterBrandId, setFilterBrandId] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
     try {
@@ -1067,27 +1086,46 @@ export function WarehouseStocks() {
     (extra = {}) => {
       const search = (extra.search !== undefined ? extra.search : filterSearchDebounced).trim();
       const productType = extra.productType !== undefined ? extra.productType : filterProductType;
-      const { page: _page, silent: _silent, limit: _limit, offset: _offset, inStockOnly: inStockFlag, ...rest } =
-        extra;
+      const brandId = extra.brandId !== undefined ? extra.brandId : filterBrandId;
+      const {
+        page: _page,
+        silent: _silent,
+        limit: _limit,
+        offset: _offset,
+        inStockOnly: inStockFlag,
+        reservedOnly: reservedFlag,
+        availableOnly: availableFlag,
+        ...rest
+      } = extra;
       const wantInStock =
         inStockFlag === true || (inStockFlag !== false && filterInStockOnly);
+      const wantReserved =
+        reservedFlag === true || (reservedFlag !== false && filterReservedOnly);
+      const wantAvailable =
+        availableFlag === true || (availableFlag !== false && filterAvailableOnly);
       return {
         ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
         ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
+        ...(brandId ? { brandId } : {}),
         ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
         ...(productType ? { productType } : {}),
         ...(search ? { search } : {}),
         ...rest,
-        ...(wantInStock ? { inStockOnly: true } : {})
+        ...(wantInStock ? { inStockOnly: true } : {}),
+        ...(wantReserved ? { reservedOnly: true } : {}),
+        ...(wantAvailable ? { availableOnly: true } : {})
       };
     },
     [
       filterOrganizationId,
       filterCategoryId,
+      filterBrandId,
       stockWarehouseId,
       filterProductType,
       filterSearchDebounced,
-      filterInStockOnly
+      filterInStockOnly,
+      filterReservedOnly,
+      filterAvailableOnly
     ]
   );
 
@@ -1101,9 +1139,17 @@ export function WarehouseStocks() {
       const wantInStock =
         partial.inStockOnly === true ||
         (partial.inStockOnly !== false && filterInStockOnly);
+      const wantReserved =
+        partial.reservedOnly === true ||
+        (partial.reservedOnly !== false && filterReservedOnly);
+      const wantAvailable =
+        partial.availableOnly === true ||
+        (partial.availableOnly !== false && filterAvailableOnly);
       return loadProducts({
         ...listParams,
         ...(wantInStock ? { inStockOnly: true } : {}),
+        ...(wantReserved ? { reservedOnly: true } : {}),
+        ...(wantAvailable ? { availableOnly: true } : {}),
         page,
         limit,
         offset: Math.max(0, (page - 1) * limit),
@@ -1111,7 +1157,15 @@ export function WarehouseStocks() {
         silent
       });
     },
-    [currentPage, pageSize, buildListParams, loadProducts, filterInStockOnly]
+    [
+      currentPage,
+      pageSize,
+      buildListParams,
+      loadProducts,
+      filterInStockOnly,
+      filterReservedOnly,
+      filterAvailableOnly
+    ]
   );
 
   loadListRef.current = loadStockList;
@@ -1168,12 +1222,18 @@ export function WarehouseStocks() {
     loadListRef.current({
       page: 1,
       inStockOnly: filterInStockOnly,
+      reservedOnly: filterReservedOnly,
+      availableOnly: filterAvailableOnly,
+      brandId: filterBrandId || undefined,
       silent: !isFirstLoad
     });
   }, [
     filterSearchDebounced,
     filterProductType,
     filterInStockOnly,
+    filterReservedOnly,
+    filterAvailableOnly,
+    filterBrandId,
     filterCategoryId,
     filterOrganizationId,
     stockWarehouseId
@@ -1279,9 +1339,25 @@ export function WarehouseStocks() {
       filterParts.push(`тип: ${filterProductType === 'kit' ? 'комплект' : 'товар'}`);
     }
     if (filterSearchDebounced) filterParts.push(`поиск: «${filterSearchDebounced}»`);
-    if (filterInStockOnly) filterParts.push('только в наличии');
+    if (filterBrandId) {
+      const brand = brands.find((b) => String(b.id) === String(filterBrandId));
+      filterParts.push(`бренд: ${brand?.name || filterBrandId}`);
+    }
+    if (filterInStockOnly) filterParts.push('наличие');
+    if (filterReservedOnly) filterParts.push('резерв');
+    if (filterAvailableOnly) filterParts.push('доступно');
     return filterParts.length > 0 ? filterParts.join('; ') : '';
-  }, [filterCategoryId, filterProductType, filterSearchDebounced, filterInStockOnly, categories]);
+  }, [
+    filterCategoryId,
+    filterProductType,
+    filterSearchDebounced,
+    filterBrandId,
+    filterInStockOnly,
+    filterReservedOnly,
+    filterAvailableOnly,
+    categories,
+    brands
+  ]);
 
   const formatMpPushResultDetails = useCallback((data) => {
     const pushed = data?.pushed ?? 0;
@@ -1444,19 +1520,41 @@ export function WarehouseStocks() {
     setCurrentPage(1);
   };
 
-  const handleInStockOnlyChange = (e) => {
+  const handleBrandFilterChange = (e) => {
+    setFilterBrandId(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const handleStockToggleFilterChange = (key, lsKey, setter) => (e) => {
     const on = e.target.checked;
-    setFilterInStockOnly(on);
+    setter(on);
     try {
-      if (on) localStorage.setItem(STOCK_IN_STOCK_ONLY_LS, '1');
-      else localStorage.removeItem(STOCK_IN_STOCK_ONLY_LS);
+      if (on) localStorage.setItem(lsKey, '1');
+      else localStorage.removeItem(lsKey);
     } catch {
       /* ignore */
     }
     setCurrentPage(1);
-    // Сразу грузим с новым флагом: иначе ответ начальной загрузки без inStockOnly может перезаписать список.
-    loadStockList({ inStockOnly: on, page: 1, silent: false });
+    loadStockList({ [key]: on, page: 1, silent: false });
   };
+
+  const handleInStockOnlyChange = handleStockToggleFilterChange(
+    'inStockOnly',
+    STOCK_IN_STOCK_ONLY_LS,
+    setFilterInStockOnly
+  );
+
+  const handleReservedOnlyChange = handleStockToggleFilterChange(
+    'reservedOnly',
+    STOCK_RESERVED_ONLY_LS,
+    setFilterReservedOnly
+  );
+
+  const handleAvailableOnlyChange = handleStockToggleFilterChange(
+    'availableOnly',
+    STOCK_AVAILABLE_ONLY_LS,
+    setFilterAvailableOnly
+  );
 
   const ownWarehouses = useMemo(
     () =>
@@ -2050,6 +2148,24 @@ export function WarehouseStocks() {
               </select>
             </label>
             <label className="stock-levels-filter-label">
+              <span>Бренд:</span>
+              <select
+                value={filterBrandId}
+                onChange={handleBrandFilterChange}
+                className="stock-levels-filter-select"
+              >
+                <option value="">Все</option>
+                {[...brands]
+                  .filter((b) => b && b.name)
+                  .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'))
+                  .map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="stock-levels-filter-label">
               <span>Категория:</span>
               <select
                 value={filterCategoryId}
@@ -2096,10 +2212,38 @@ export function WarehouseStocks() {
                   checked={filterInStockOnly}
                   onChange={handleInStockOnlyChange}
                   disabled={listRefreshing}
+                  aria-label="Наличие"
                 />
-                <label className="form-check-label" htmlFor="stock-filter-in-stock-only">
-                  Только в наличии
-                </label>
+              </span>
+            </label>
+            <label className="stock-levels-filter-label stock-levels-filter-toggle">
+              <span>Резерв:</span>
+              <span className="form-check form-switch mb-0 stock-levels-filter-switch">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  role="switch"
+                  id="stock-filter-reserved-only"
+                  checked={filterReservedOnly}
+                  onChange={handleReservedOnlyChange}
+                  disabled={listRefreshing}
+                  aria-label="Резерв"
+                />
+              </span>
+            </label>
+            <label className="stock-levels-filter-label stock-levels-filter-toggle">
+              <span>Доступно:</span>
+              <span className="form-check form-switch mb-0 stock-levels-filter-switch">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  role="switch"
+                  id="stock-filter-available-only"
+                  checked={filterAvailableOnly}
+                  onChange={handleAvailableOnlyChange}
+                  disabled={listRefreshing}
+                  aria-label="Доступно"
+                />
               </span>
             </label>
           </div>

@@ -54,6 +54,20 @@ export const productsApi = {
     ) {
       params.inStockOnly = '1';
     }
+    if (
+      options.reservedOnly === true ||
+      options.reservedOnly === '1' ||
+      options.reservedOnly === 1
+    ) {
+      params.reservedOnly = '1';
+    }
+    if (
+      options.availableOnly === true ||
+      options.availableOnly === '1' ||
+      options.availableOnly === 1
+    ) {
+      params.availableOnly = '1';
+    }
     const response = await api.get('/products', {
       params: Object.keys(params).length ? params : undefined,
       ...axiosConfig

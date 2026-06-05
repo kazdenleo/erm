@@ -119,6 +119,8 @@ class ProductsController {
       }
       const cat = parseProductListCategoryId(req.query.categoryId);
       if (cat != null) filters.categoryId = cat;
+      const brandParsed = parseProductListBrandId(req.query.brandId);
+      if (brandParsed != null) filters.brandId = brandParsed;
       if (req.query.search != null && String(req.query.search).trim() !== '') {
         filters.search = String(req.query.search).trim();
       }
@@ -228,6 +230,14 @@ class ProductsController {
       const inStockQuery = firstQueryParam(req.query?.inStockOnly);
       if (inStockQuery === 'true' || inStockQuery === '1' || inStockQuery === 1) {
         options.inStockOnly = true;
+      }
+      const reservedOnlyQuery = firstQueryParam(req.query?.reservedOnly);
+      if (reservedOnlyQuery === 'true' || reservedOnlyQuery === '1' || reservedOnlyQuery === 1) {
+        options.reservedOnly = true;
+      }
+      const availableOnlyQuery = firstQueryParam(req.query?.availableOnly);
+      if (availableOnlyQuery === 'true' || availableOnlyQuery === '1' || availableOnlyQuery === 1) {
+        options.availableOnly = true;
       }
       if (req.query.includeArchived === 'true' || req.query.includeArchived === '1') {
         options.includeArchived = true;

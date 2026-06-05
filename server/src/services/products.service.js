@@ -4,7 +4,11 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
-import { stockListOnHandQuantity } from '../repositories/products.repository.pg.js';
+import {
+  stockListOnHandQuantity,
+  stockListReservedQuantity,
+  stockListAvailableQuantity
+} from '../repositories/products.repository.pg.js';
 import { query } from '../config/database.js';
 import pricesService from './prices.service.js';
 import integrationsService from './integrations.service.js';
@@ -215,23 +219,47 @@ class ProductsService {
     return this.repository.getHomeStockSummary(profileId);
   }
 
+  _isTruthyFlag(value) {
+    return value === true || value === 'true' || value === '1' || value === 1;
+  }
+
   _isStockListInStockOnly(options = {}) {
+    return this._isTruthyFlag(options.inStockOnly);
+  }
+
+  _isStockListReservedOnly(options = {}) {
+    return this._isTruthyFlag(options.reservedOnly);
+  }
+
+  _isStockListAvailableOnly(options = {}) {
+    return this._isTruthyFlag(options.availableOnly);
+  }
+
+  _needsStockListPostFilter(options = {}) {
     return (
-      options.inStockOnly === true ||
-      options.inStockOnly === 'true' ||
-      options.inStockOnly === '1' ||
-      options.inStockOnly === 1
+      this._isStockListInStockOnly(options) ||
+      this._isStockListReservedOnly(options) ||
+      this._isStockListAvailableOnly(options)
     );
+  }
+
+  _passesStockListPostFilter(product, options = {}) {
+    if (this._isStockListInStockOnly(options) && stockListOnHandQuantity(product) <= 0) {
+      return false;
+    }
+    if (this._isStockListReservedOnly(options) && stockListReservedQuantity(product) <= 0) {
+      return false;
+    }
+    if (this._isStockListAvailableOnly(options) && stockListAvailableQuantity(product) <= 0) {
+      return false;
+    }
+    return true;
   }
 
   async getPage(options = {}) {
     if (options.listView === 'stock') {
-      if (
-        this._isStockListInStockOnly(options) ||
-        options.inStockOnly === '1' ||
-        String(options.inStockOnly || '').toLowerCase() === 'true'
-      ) {
-        return this._getStockListInStockPage({ ...options, inStockOnly: true });
+      if (this._needsStockListPostFilter(options)) {
+        return this._getStockListPostFilterPage(options);
       }
       const [items, total] = await Promise.all([
         this.repository.findAll({ ...options, listView: 'stock' }),
@@ -248,11 +276,10 @@ class ProductsService {
   }
 
   /**
-   * Список остатков с «только в наличии»: обход всего каталога с SQL-фильтрами
-   * (категория, поиск, тип, организация, склад), затем отбор по stockListOnHandQuantity
-   * и пагинация — не по LIMIT текущей «страницы» SQL.
+   * Список остатков с пост-фильтром по колонкам (наличие / резерв / доступно):
+   * обход каталога с SQL-фильтрами, затем отбор по метрикам таблицы и пагинация.
    */
-  async _getStockListInStockPage(options = {}) {
+  async _getStockListPostFilterPage(options = {}) {
     const limit = Math.max(1, Math.min(200, Number(options.limit) || 50));
     let page = Math.max(1, Number(options.page) || 0);
     if (!Number.isFinite(page) || page < 1) {
@@ -270,6 +297,8 @@ class ProductsService {
       limit: _limit,
       offset: _offset,
       inStockOnly: _inStockOnly,
+      reservedOnly: _reservedOnly,
+      availableOnly: _availableOnly,
       ...scanFilters
     } = options;
 
@@ -285,7 +314,7 @@ class ProductsService {
       if (batch.length === 0) break;
 
       for (const product of batch) {
-        if (stockListOnHandQuantity(product) <= 0) continue;
+        if (!this._passesStockListPostFilter(product, options)) continue;
         if (total >= targetOffset && pageItems.length < limit) {
           pageItems.push(product);
         }
@@ -945,6 +974,25 @@ class ProductsService {
     return products.find((p) => barcodeStringsFromProduct(p.barcodes).includes(b)) || null;
   }
 
+  /** brand (строка) → brand_id в рамках profile_id товара. */
+  async _resolveBrandIdFromName(target) {
+    if (!target?.brand || target.brand_id) return;
+    const brandName = String(target.brand).trim();
+    if (!brandName) return;
+    const profileId = target.profile_id ?? target.profileId ?? null;
+    const brandOpts = profileId != null && profileId !== '' ? { profileId } : {};
+    const brands = await this.brandsRepository.findAll(brandOpts);
+    let brand = brands.find(
+      (b) => b.name && b.name.trim().toLowerCase() === brandName.toLowerCase()
+    );
+    if (!brand) {
+      brand = await this.brandsRepository.create({ name: brandName, ...brandOpts }, brandOpts);
+    }
+    if (brand?.id != null) {
+      target.brand_id = brand.id;
+    }
+  }
+
   async create(productData) {
     if (!productData || !productData.name || !productData.sku) {
       const error = new Error('Название и артикул обязательны');
@@ -968,18 +1016,7 @@ class ProductsService {
       throw error;
     }
     
-    // Обрабатываем brand: если передан brand (строка), находим или создаем бренд
-    if (productData.brand && !productData.brand_id) {
-      const brandName = productData.brand.trim();
-      if (brandName) {
-        const brands = await this.brandsRepository.findAll();
-        let brand = brands.find(b => b.name && b.name.trim().toLowerCase() === brandName.toLowerCase());
-        if (!brand) {
-          brand = await this.brandsRepository.create(brandName);
-        }
-        productData.brand_id = brand.id;
-      }
-    }
+    await this._resolveBrandIdFromName(productData);
 
     // Маппинг артикулов маркетплейсов: фронт отправляет sku_ozon, sku_wb, sku_ym (и может только marketplace_ozon_product_id без offer_id)
     if (
@@ -1150,22 +1187,7 @@ class ProductsService {
     if (updates.organizationId !== undefined) {
       updates.organization_id = updates.organizationId !== '' && updates.organizationId != null ? updates.organizationId : null;
     }
-    // Обрабатываем brand: если передан brand (строка), находим или создаем бренд
-    if (updates.brand && !updates.brand_id) {
-      const brandName = updates.brand.trim();
-      if (brandName) {
-        // Ищем существующий бренд
-        const brands = await this.brandsRepository.findAll();
-        let brand = brands.find(b => b.name && b.name.trim().toLowerCase() === brandName.toLowerCase());
-        
-        // Если не найден, создаем новый
-        if (!brand) {
-          brand = await this.brandsRepository.create(brandName);
-        }
-        
-        updates.brand_id = brand.id;
-      }
-    }
+    await this._resolveBrandIdFromName(updates);
     
     if (updates.buyout_rate !== undefined && updates.buyout_rate !== null) {
       if (typeof updates.buyout_rate === 'string') {
