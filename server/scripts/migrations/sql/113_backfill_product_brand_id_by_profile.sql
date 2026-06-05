@@ -3,11 +3,10 @@
 
 UPDATE products p
 SET brand_id = b_tgt.id
-FROM brands b_src
-JOIN brands b_tgt
-  ON b_tgt.profile_id = p.profile_id
- AND LOWER(TRIM(b_tgt.name)) = LOWER(TRIM(b_src.name))
+FROM brands b_src, brands b_tgt
 WHERE p.brand_id = b_src.id
+  AND b_tgt.profile_id = p.profile_id
+  AND LOWER(TRIM(b_tgt.name)) = LOWER(TRIM(b_src.name))
   AND p.profile_id IS NOT NULL
   AND b_tgt.profile_id IS NOT NULL
   AND p.brand_id <> b_tgt.id
