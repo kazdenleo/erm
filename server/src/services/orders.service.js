@@ -30,8 +30,22 @@ import {
 import {
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL,
+  computeAvailableQuantity,
   getProductSupplySnapshotWithClient
 } from './sellableQuantity.service.js';
+
+/** Заказ FBS с маркетплейса (не ручной) — резерв только со склада из warehouse_mappings. */
+export function isMarketplaceFbsOrderRow(orderRow) {
+  const mp = String(orderRow?.marketplace || '').toLowerCase();
+  return (
+    mp === 'wb' ||
+    mp === 'wildberries' ||
+    mp === 'ozon' ||
+    mp === 'ym' ||
+    mp === 'yandex' ||
+    mp === 'yandexmarket'
+  );
+}
 import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
@@ -1820,31 +1834,53 @@ class OrdersService {
         }
         return piecesPerKit > 0 ? qty * piecesPerKit : qty;
       };
-      const orderIdsWithReserve = orders
-        .map((row) => {
-          const reserved = Number(row.reservedQty ?? row.reserved_qty) || 0;
-          return reserved > 0 ? orderRowDbId(row) : null;
-        })
-        .filter(Boolean);
-      const coverageByOrderId = await buildReserveCoverageByOrderIds(orderIdsWithReserve);
+      const kitIdByOrderDbId = new Map();
+      for (const row of orders) {
+        const oid = orderRowDbId(row);
+        if (!oid) continue;
+        const pid = Number(row.productId ?? row.product_id) || 0;
+        const kitId = await findKitProductIdForMarketplaceOrder(pid, row);
+        if (kitId != null && (await isKitProductId(kitId))) {
+          kitIdByOrderDbId.set(oid, Number(kitId));
+        }
+      }
+
+      const correctedRows = [];
       for (const o of orders) {
-        const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+        const oid = orderRowDbId(o);
+        let reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
         let need = orderReserveNeedQty(o);
-        if (reserved > need) {
+        const kitId = oid ? kitIdByOrderDbId.get(oid) : null;
+        if (oid && kitId) {
+          reserved = await getReservedKitUnitsForOrder(kitId, oid);
+          need = Math.max(1, parseInt(o.quantity, 10) || 1);
+        } else if (reserved > need) {
           need = await this._resolveOrderReserveNeedQtyForLight(o, kitPiecesMap, componentKitMap);
         }
+        correctedRows.push({ o, reserved, need, oid });
+      }
+
+      const orderIdsWithReserve = correctedRows
+        .filter((x) => x.reserved > 0 && x.oid)
+        .map((x) => x.oid);
+      const coverageByOrderId = await buildReserveCoverageByOrderIds(orderIdsWithReserve);
+
+      for (const { o, reserved, need, oid } of correctedRows) {
         o.reservedQty = reserved;
         o.reserved_qty = reserved;
         o.needQty = need;
         o.need_qty = need;
-        o.hasReserve = o.hasReserve === true || o.has_reserve === true || reserved > 0;
+        o.hasReserve = reserved > 0;
+        o.has_reserve = reserved > 0;
         o.fullyReserved = need > 0 && reserved >= need;
-        const oid = orderRowDbId(o);
         if (oid && coverageByOrderId.has(oid)) {
           o.reserveCoverage = coverageByOrderId.get(oid);
           o.reserve_coverage = o.reserveCoverage;
-        } else {
+        } else if (reserved > 0) {
           await applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
+        } else {
+          o.reserveCoverage = 'none';
+          o.reserve_coverage = 'none';
         }
       }
       return orders;
