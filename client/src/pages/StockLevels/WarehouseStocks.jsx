@@ -1951,7 +1951,7 @@ export function WarehouseStocks() {
     setReserveBulkReleasing(true);
     setReserveError(null);
     try {
-      await stockMovementsApi.releaseAllReserves(pid, {
+      await stockMovementsApi.releaseOrphanReserve(pid, {
         warehouseId: stockWarehouseId || undefined
       });
       await reloadReserveOrdersList();

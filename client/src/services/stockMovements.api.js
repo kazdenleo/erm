@@ -36,6 +36,16 @@ export const stockMovementsApi = {
     return response.data;
   },
 
+  /** Снять лишний резерв в журнале (без заказов и FBO). */
+  releaseOrphanReserve: async (productId, { warehouseId } = {}) => {
+    const payload = {};
+    if (warehouseId != null && String(warehouseId).trim() !== '') {
+      payload.warehouseId = warehouseId;
+    }
+    const response = await api.post(`/products/${productId}/stock-reserve-release-orphan`, payload);
+    return response.data?.data ?? response.data;
+  },
+
   /** Снять весь резерв по товару (все заказы из модалки). */
   releaseAllReserves: async (productId, { warehouseId } = {}) => {
     const payload = {};

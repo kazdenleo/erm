@@ -107,6 +107,12 @@ router.post(
 );
 
 router.post(
+  '/:id/stock-reserve-release-orphan',
+  validateProductId,
+  wrapAsync(stockMovementsController.releaseOrphanReserve.bind(stockMovementsController))
+);
+
+router.post(
   '/:id/stock-reserve-release-order',
   validateProductId,
   wrapAsync(stockMovementsController.releaseOrderReserve.bind(stockMovementsController))

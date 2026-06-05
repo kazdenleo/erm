@@ -173,6 +173,34 @@ class StockMovementsController {
     }
   }
 
+  /** Снять лишний резерв в журнале (без заказов и FBO). */
+  async releaseOrphanReserve(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: { releasedProductLines: 0, releasedQty: 0, skipped: true } });
+      }
+      const { id } = req.params;
+      const warehouseRaw =
+        req.body?.warehouseId ?? req.body?.warehouse_id ?? req.query?.warehouseId ?? req.query?.warehouse_id ?? null;
+      const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw);
+      const summary = await stockMovementsService.releaseUnattributedJournalReserve(id, {
+        profileId: tid,
+        warehouseId: whFilter
+      });
+      if (summary.skipped && (summary.releasedProductLines || 0) === 0 && (summary.releasedQty || 0) === 0) {
+        const error = new Error(
+          'Не удалось снять резерв: по товару не найдено записей в журнале для снятия'
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+      return res.status(200).json({ ok: true, data: summary });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   /** Снять весь резерв по товару (все заказы из модалки остатков). */
   async releaseAllReserves(req, res, next) {
     try {

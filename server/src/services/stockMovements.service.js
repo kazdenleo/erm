@@ -649,7 +649,6 @@ class StockMovementsService {
          ORDER BY CASE WHEN o.id = order_ids.order_row_id THEN 0 ELSE 1 END, o.id DESC
          LIMIT 1
        ) o ON true
-       WHERE COALESCE(sku_net.sku_net_qty, 0) > 0
        ORDER BY o.created_at DESC NULLS LAST, order_ids.order_row_id DESC
        LIMIT 200`,
       params
@@ -686,7 +685,11 @@ class StockMovementsService {
       const orderMissing = r.order_missing === true;
 
       if (orderMissing) {
-        const reservedQty = Number(r.sku_net_qty) || 0;
+        let reservedQty = Number(r.sku_net_qty) || 0;
+        if (isKit && Number.isFinite(movementOrderDbId) && movementOrderDbId > 0) {
+          const kitUnits = await getReservedKitUnitsForOrder(idNum, movementOrderDbId);
+          if (kitUnits > 0) reservedQty = kitUnits;
+        }
         if (reservedQty <= 0) continue;
         out.push({
           orderDbId: Number.isFinite(movementOrderDbId) ? movementOrderDbId : null,
@@ -1168,6 +1171,94 @@ class StockMovementsService {
   }
 
   /**
+   * Прямое снятие лишнего нетто-резерва в журнале (если сверка rawNet не сработала).
+   */
+  async _directUnreserveExcessJournal(
+    productId,
+    { profileId = null, warehouseId = null, maxQty = null } = {}
+  ) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) {
+      return { releasedProductLines: 0, releasedQty: 0, skipped: true };
+    }
+
+    const tid =
+      profileId != null && profileId !== ''
+        ? typeof profileId === 'string'
+          ? parseInt(profileId, 10)
+          : Number(profileId)
+        : null;
+    if (tid != null && Number.isFinite(tid) && tid > 0) {
+      const pr = await query(`SELECT profile_id FROM products WHERE id = $1`, [idNum]);
+      const own = pr.rows?.[0]?.profile_id;
+      if (own != null && String(own) !== String(tid)) {
+        return { releasedProductLines: 0, releasedQty: 0, skipped: true };
+      }
+    }
+
+    const whFilter =
+      warehouseId != null && String(warehouseId).trim() !== ''
+        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId)
+        : null;
+    const movementOpts =
+      whFilter != null ? { warehouseId: whFilter } : {};
+
+    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+    const productIds = await this._productIdsForReserveRelease(idNum);
+    let remaining =
+      maxQty != null && Number.isFinite(Number(maxQty)) ? Math.floor(Number(maxQty)) : Infinity;
+    let releasedProductLines = 0;
+    let releasedQty = 0;
+
+    for (const pid of productIds) {
+      const net = await getReservedQuantityFromMovements(pid, movementOpts);
+      if (net <= 0) continue;
+      const release = remaining === Infinity ? net : Math.min(net, remaining);
+      if (release < 1) continue;
+
+      const meta = {
+        manual_unreserve: true,
+        orphan_cleanup: true,
+        source_product_id: idNum,
+        direct_orphan_release: true
+      };
+      if (whFilter != null) meta.warehouse_id = whFilter;
+
+      await this.applyChange(pid, {
+        delta: release,
+        type: 'unreserve',
+        reason: 'Снятие лишнего резерва без заказа и FBO',
+        meta
+      });
+      releasedProductLines += 1;
+      releasedQty += release;
+      if (remaining !== Infinity) {
+        remaining -= release;
+        if (remaining <= 0) break;
+      }
+    }
+
+    const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+    const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
+    try {
+      if (await isKitProductId(idNum)) {
+        const net = await readKitDisplayReservedQuantity(idNum, movementOpts);
+        await syncProductReservedQuantityFromJournal(idNum, { reserved: net });
+      } else {
+        await syncProductReservedQuantityFromJournal(idNum);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    return {
+      releasedProductLines,
+      releasedQty,
+      skipped: releasedProductLines === 0
+    };
+  }
+
+  /**
    * Снять резерв в журнале без заказа и без FBO (рассинхрон / удалённая запись).
    */
   async releaseUnattributedJournalReserve(
@@ -1181,12 +1272,17 @@ class StockMovementsService {
       throw error;
     }
 
-    const summary = await this.getReserveSummaryForProduct(idNum, { profileId, warehouseId });
+    const whFilter =
+      warehouseId != null && String(warehouseId).trim() !== ''
+        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId)
+        : null;
+
+    const summary = await this.getReserveSummaryForProduct(idNum, { profileId, warehouseId: whFilter });
     const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);
     if (orphanQty <= 0) {
       const deficit = Math.floor(Number(summary.journalDeficit) || 0);
       if (deficit > 0 && allowDeficitFix) {
-        const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId, warehouseId });
+        const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId, warehouseId: whFilter });
         return {
           releasedProductLines: recon.lines,
           releasedQty: recon.unreserveAdded,
@@ -1197,12 +1293,25 @@ class StockMovementsService {
       return { releasedProductLines: 0, releasedQty: 0, skipped: true };
     }
 
-    const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId, warehouseId });
+    const recon = await this.reconcileJournalReserveForProduct(idNum, { profileId, warehouseId: whFilter });
+    if (recon.lines > 0) {
+      return {
+        releasedProductLines: recon.lines,
+        releasedQty: recon.unreserveAdded,
+        reserveAdded: recon.reserveAdded,
+        skipped: false
+      };
+    }
+
+    const direct = await this._directUnreserveExcessJournal(idNum, {
+      profileId,
+      warehouseId: whFilter,
+      maxQty: orphanQty
+    });
     return {
-      releasedProductLines: recon.lines,
-      releasedQty: recon.unreserveAdded,
-      reserveAdded: recon.reserveAdded,
-      skipped: recon.lines === 0
+      releasedProductLines: direct.releasedProductLines,
+      releasedQty: direct.releasedQty,
+      skipped: direct.skipped
     };
   }
 
@@ -1239,23 +1348,28 @@ class StockMovementsService {
       return { releasedProductLines: 0, skipped: true };
     }
 
+    const movementOpts = whFilter != null ? { warehouseId: whFilter } : {};
     const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
     const productIds = await this._productIdsForReserveRelease(idNum);
     let releasedProductLines = 0;
+    let releasedQty = 0;
 
     for (const pid of productIds) {
-      const net = await getReservedQuantityFromMovements(pid);
+      const net = await getReservedQuantityFromMovements(pid, movementOpts);
       if (net <= 0) continue;
+      const meta = { manual_unreserve: true, orphan_cleanup: true, source_product_id: idNum };
+      if (whFilter != null) meta.warehouse_id = whFilter;
       await this.applyChange(pid, {
         delta: net,
         type: 'unreserve',
         reason: 'Снятие резерва без активного заказа',
-        meta: { manual_unreserve: true, orphan_cleanup: true, source_product_id: idNum }
+        meta
       });
       releasedProductLines += 1;
+      releasedQty += net;
     }
 
-    return { releasedProductLines, skipped: false };
+    return { releasedProductLines, releasedQty, skipped: releasedProductLines === 0 };
   }
 
   async _netReservedForOrderProduct(orderDbId, productId, { marketplaceOrderId = null } = {}) {
@@ -1375,7 +1489,8 @@ class StockMovementsService {
     if (!list.length) {
       const orphan = await this.releaseOrphanNetReserveForProduct(idNum, { profileId, warehouseId });
       const lines = orphan.releasedProductLines || 0;
-      if (lines === 0) {
+      const qty = orphan.releasedQty || 0;
+      if (lines === 0 && qty === 0) {
         const error = new Error(
           'Не удалось снять резерв: по товару не найдено записей в журнале для снятия'
         );
