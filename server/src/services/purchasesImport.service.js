@@ -83,6 +83,7 @@ function cellLooksLikeImportHeaderLabel(value) {
   if (!v) return false;
   if (v === 'sku' || v === 'qty') return true;
   if (/^(артикул|article|количество|quantity)$/.test(v)) return true;
+  if (/^(себестоимость|себ-?сть|cost|purchase_price|purchaseprice|цена)$/.test(v)) return true;
   if (/^кол\.?$/.test(v)) return true;
   return false;
 }
@@ -102,6 +103,40 @@ function findHeaderRow(worksheet) {
     if (rowHasImportHeaders(worksheet, r)) {
       return worksheet.getRow(r);
     }
+  }
+  return null;
+}
+
+/** Себестоимость из ячейки (руб., допускаются копейки). */
+function parseCost(val) {
+  if (val == null || val === '') return null;
+  if (typeof val === 'number' && Number.isFinite(val) && val >= 0) {
+    return Math.round(val * 100) / 100;
+  }
+  const s = String(val)
+    .trim()
+    .replace(/^[''`\u2019]+/, '')
+    .replace(/\u00a0/g, '')
+    .replace(/\s/g, '')
+    .replace(',', '.');
+  const n = parseFloat(s);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * 100) / 100;
+}
+
+function parseCostFromCell(cell) {
+  if (!cell) return null;
+  if (cell.value != null && typeof cell.value === 'object' && cell.value.result != null) {
+    const c = parseCost(cell.value.result);
+    if (c != null) return c;
+  }
+  if (typeof cell.value === 'number' && Number.isFinite(cell.value)) {
+    return parseCost(cell.value);
+  }
+  const fromValue = parseCost(normalizeCellValue(cell));
+  if (fromValue != null) return fromValue;
+  if (cell.text != null && String(cell.text).trim() !== '') {
+    return parseCost(cell.text);
   }
   return null;
 }
@@ -149,8 +184,8 @@ function parseQuantityFromCell(cell) {
 }
 
 /**
- * Строка импорта: A — артикул, B (и далее) — количество.
- * Суммирует все числовые ячейки справа от артикула.
+ * Строка импорта: A — артикул, B — количество, C — себестоимость (опционально).
+ * Без колонки C — как раньше: количество только из B.
  */
 function parseImportRowCells(row) {
   let rawArticle = normalizeRawArticle(String(normalizeCellValue(row.getCell(1))).trim());
@@ -158,12 +193,9 @@ function parseImportRowCells(row) {
     rawArticle = '';
   }
 
-  let qty = 0;
+  let qty = parseQuantityFromCell(row.getCell(2));
+  const cost = parseCostFromCell(row.getCell(3));
   const maxCol = Math.max(row.cellCount || 0, 6, row.actualCellCount || 0);
-  for (let c = 2; c <= maxCol; c++) {
-    const q = parseQuantityFromCell(row.getCell(c));
-    if (q > 0) qty += q;
-  }
 
   if (!rawArticle) {
     for (let c = 1; c <= maxCol; c++) {
@@ -175,10 +207,10 @@ function parseImportRowCells(row) {
     }
   }
 
-  return { rawArticle, qty };
+  return { rawArticle, qty, cost };
 }
 
-export const PURCHASE_IMPORT_PARSER_VERSION = 'v3-sum-by-file-article';
+export const PURCHASE_IMPORT_PARSER_VERSION = 'v4-article-qty-cost';
 
 function getWorksheetScanEndRow(worksheet, startRow) {
   const bottom = Math.max(
@@ -198,7 +230,7 @@ function collectPurchaseImportSourceRows(ws, startRow, keyRow, prefixes) {
 
   for (let rowNumber = startRow; rowNumber <= endRow; rowNumber++) {
     const row = ws.getRow(rowNumber);
-    let { rawArticle, qty } = keyRow
+    let { rawArticle, qty, cost } = keyRow
       ? articleAndQtyFromHeaderRow(ws, rowNumber, keyRow)
       : parseImportRowCells(row);
 
@@ -213,10 +245,25 @@ function collectPurchaseImportSourceRows(ws, startRow, keyRow, prefixes) {
     const cleanSku = stripSupplierArticlePrefixes(rawArticle, prefixes);
     if (!cleanSku) continue;
 
-    sourceRows.push({ rowNumber, rawArticle, qty, cleanSku });
+    sourceRows.push({ rowNumber, rawArticle, qty, cost: cost ?? null, cleanSku });
   }
 
   return sourceRows;
+}
+
+function mergeImportCost(prev, prevQty, nextCost, nextQty) {
+  const pq = Math.max(0, Number(prevQty) || 0);
+  const nq = Math.max(0, Number(nextQty) || 0);
+  const pc = prev?.purchasePrice;
+  const nc = nextCost;
+  const hasPrev = pc != null && Number.isFinite(Number(pc)) && pq > 0;
+  const hasNext = nc != null && Number.isFinite(Number(nc)) && nq > 0;
+  if (!hasPrev && !hasNext) return null;
+  if (!hasPrev) return nc;
+  if (!hasNext) return pc;
+  const totalQty = pq + nq;
+  if (totalQty <= 0) return null;
+  return Math.round((Number(pc) * pq + Number(nc) * nq) / totalQty * 100) / 100;
 }
 
 /** Суммирование дублей только по артикулу из файла (до сопоставления с каталогом). */
@@ -227,17 +274,20 @@ function aggregatePurchaseImportSourceRows(sourceRows) {
     const rawNorm = normalizeImportArticleKey(sr.rawArticle);
     const prev = aggregated.get(rawNorm);
     if (prev) {
-      prev.quantity += sr.qty;
+      const nextQty = prev.quantity + sr.qty;
+      prev.purchasePrice = mergeImportCost(prev, prev.quantity, sr.cost, sr.qty);
+      prev.quantity = nextQty;
       prev.rawArticles.add(sr.rawArticle);
       prev.cleanSkus.add(sr.cleanSku);
-      prev.excelLines.push({ row: sr.rowNumber, qty: sr.qty });
+      prev.excelLines.push({ row: sr.rowNumber, qty: sr.qty, cost: sr.cost ?? null });
     } else {
       aggregated.set(rawNorm, {
         quantity: sr.qty,
+        purchasePrice: sr.cost ?? null,
         rawArticles: new Set([sr.rawArticle]),
         cleanSkus: new Set([sr.cleanSku]),
         displaySku: sr.cleanSku,
-        excelLines: [{ row: sr.rowNumber, qty: sr.qty }],
+        excelLines: [{ row: sr.rowNumber, qty: sr.qty, cost: sr.cost ?? null }],
       });
     }
   }
@@ -247,20 +297,30 @@ function aggregatePurchaseImportSourceRows(sourceRows) {
 
 function articleAndQtyFromHeaderRow(worksheet, rowNum, keyRow) {
   const raw = rowToObject(worksheet, rowNum, keyRow);
+  const row = worksheet.getRow(rowNum);
   const rawArticle = String(raw.sku || raw.артикул || raw.article || '').trim();
   let qty = parseQuantity(raw.quantity ?? raw.количество ?? raw.qty);
   if (qty <= 0) {
-    qty = parseQuantityFromCell(worksheet.getRow(rowNum).getCell(2));
+    qty = parseQuantityFromCell(row.getCell(2));
+  }
+  let cost = parseCost(
+    raw.себестоимость ?? raw.себ_сть ?? raw.cost ?? raw.purchase_price ?? raw.цена ?? ''
+  );
+  if (cost == null) {
+    cost = parseCostFromCell(row.getCell(3));
   }
   if (!rawArticle) {
-    const row = worksheet.getRow(rowNum);
     const fallbackArticle = String(normalizeCellValue(row.getCell(1))).trim();
     const fallbackQty = parseQuantityFromCell(row.getCell(2));
     if (fallbackArticle) {
-      return { rawArticle: fallbackArticle, qty: fallbackQty || qty };
+      return {
+        rawArticle: fallbackArticle,
+        qty: fallbackQty || qty,
+        cost: cost ?? parseCostFromCell(row.getCell(3)),
+      };
     }
   }
-  return { rawArticle, qty };
+  return { rawArticle, qty, cost };
 }
 
 /** Нормализация списка префиксов: уникальные, без пустых, длинные первыми. */
@@ -454,6 +514,7 @@ class PurchasesImportService {
     const preview = [...aggregated.values()].map((data) => ({
       cleanSku: data.displaySku,
       quantity: data.quantity,
+      purchasePrice: data.purchasePrice ?? null,
       excelLines: data.excelLines,
     }));
     return { sourceRows, preview, parserVersion: PURCHASE_IMPORT_PARSER_VERSION };
@@ -490,7 +551,7 @@ class PurchasesImportService {
 
     if (aggregated.size === 0) {
       const err = new Error(
-        'В файле нет строк с артикулом и количеством. Ожидается: столбец A — артикул, столбец B — количество (можно без заголовка), либо колонки «артикул» и «количество».'
+        'В файле нет строк с артикулом и количеством. Ожидается: A — артикул, B — количество, C — себестоимость (третий столбец опционален), либо колонки «артикул», «количество», «себестоимость».'
       );
       err.statusCode = 400;
       throw err;
@@ -511,16 +572,26 @@ class PurchasesImportService {
         excelLines: data.excelLines || [],
       };
       if (productId) {
-        const prev = itemsByProduct.get(productId) || 0;
-        itemsByProduct.set(productId, prev + data.quantity);
+        const prev = itemsByProduct.get(productId);
+        if (prev) {
+          const oldQty = prev.quantity;
+          prev.purchasePrice = mergeImportCost(prev, oldQty, data.purchasePrice, data.quantity);
+          prev.quantity = oldQty + data.quantity;
+        } else {
+          itemsByProduct.set(productId, {
+            quantity: data.quantity,
+            purchasePrice: data.purchasePrice ?? null,
+          });
+        }
       } else {
         unresolved.push(row);
       }
     }
 
-    const items = [...itemsByProduct.entries()].map(([productId, quantity]) => ({
+    const items = [...itemsByProduct.entries()].map(([productId, row]) => ({
       productId,
-      quantity,
+      quantity: row.quantity,
+      purchasePrice: row.purchasePrice ?? null,
     }));
 
     if (unresolved.length > 0) {
@@ -540,6 +611,7 @@ class PurchasesImportService {
     const preview = [...aggregated.values()].map((data) => ({
       cleanSku: data.displaySku,
       quantity: data.quantity,
+      purchasePrice: data.purchasePrice ?? null,
       rawArticles: [...data.rawArticles],
       excelLines: data.excelLines || [],
     }));

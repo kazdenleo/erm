@@ -301,6 +301,26 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizePurchasePrice(raw) {
+  if (raw == null || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : parseFloat(String(raw).replace(',', '.'));
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * 100) / 100;
+}
+
+function mergePurchaseLinePrices(prevPrice, prevQty, nextPrice, nextQty) {
+  const pq = Math.max(0, Number(prevQty) || 0);
+  const nq = Math.max(0, Number(nextQty) || 0);
+  const hasPrev = prevPrice != null && pq > 0;
+  const hasNext = nextPrice != null && nq > 0;
+  if (!hasPrev && !hasNext) return null;
+  if (!hasPrev) return nextPrice;
+  if (!hasNext) return prevPrice;
+  const totalQty = pq + nq;
+  if (totalQty <= 0) return null;
+  return Math.round((Number(prevPrice) * pq + Number(nextPrice) * nq) / totalQty * 100) / 100;
+}
+
 /** Увеличить incoming на дельту по операции закупки (создание / добавление количества). */
 async function addIncomingDeltaForPurchaseInTx(
   client,
@@ -355,10 +375,18 @@ async function mergeNormalizedPurchaseLines(normalized) {
         productId: pid,
         qty: 0,
         sourceOrders: [],
+        purchasePrice: null,
       });
     }
     const row = byProduct.get(pid);
+    const oldQty = row.qty;
     row.qty += it.qty;
+    row.purchasePrice = mergePurchaseLinePrices(
+      row.purchasePrice,
+      oldQty,
+      it.purchasePrice ?? null,
+      it.qty
+    );
     row.sourceOrders = normalizeSourceOrderList([...row.sourceOrders, ...it.sourceOrders]);
   }
   return [...byProduct.values()];
@@ -413,10 +441,11 @@ async function applyPurchaseLineItemsInTx(
     const sourceJson = JSON.stringify(normalizeSourceOrderList(it.sourceOrders));
     if (insertOnly) {
       if (hasPrice) {
+        const pp = normalizePurchasePrice(it.purchasePrice);
         await client.query(
           `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
-           VALUES ($1, $2, $3, 0, $4::jsonb, (SELECT cost FROM products WHERE id = $2))`,
-          [purchaseId, it.productId, it.qty, sourceJson]
+           VALUES ($1, $2, $3, 0, $4::jsonb, COALESCE($5::numeric, (SELECT cost FROM products WHERE id = $2)))`,
+          [purchaseId, it.productId, it.qty, sourceJson, pp]
         );
       } else {
         await client.query(
@@ -426,14 +455,16 @@ async function applyPurchaseLineItemsInTx(
         );
       }
     } else if (hasPrice) {
+      const pp = normalizePurchasePrice(it.purchasePrice);
       await client.query(
         `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
-         VALUES ($1, $2, $3, 0, $4::jsonb, (SELECT cost FROM products WHERE id = $2))
+         VALUES ($1, $2, $3, 0, $4::jsonb, COALESCE($5::numeric, (SELECT cost FROM products WHERE id = $2)))
          ON CONFLICT (purchase_id, product_id)
          DO UPDATE SET
            expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
+           purchase_price = COALESCE(EXCLUDED.purchase_price, purchase_items.purchase_price),
            updated_at = CURRENT_TIMESTAMP`,
-        [purchaseId, it.productId, it.qty, sourceJson]
+        [purchaseId, it.productId, it.qty, sourceJson, pp]
       );
       await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
     } else {
@@ -1465,6 +1496,7 @@ class PurchasesService {
         productId: parseInt(it?.productId, 10),
         qty: Math.max(1, parseInt(it?.quantity ?? it?.qty, 10) || 1),
         sourceOrders: normalizeSourceOrderList(it?.sourceOrders),
+        purchasePrice: normalizePurchasePrice(it?.purchasePrice ?? it?.purchase_price),
       }))
       .filter((it) => it.productId && !Number.isNaN(it.productId));
     if (normalized.length === 0) {
@@ -1526,6 +1558,7 @@ class PurchasesService {
         productId: parseInt(it?.productId, 10),
         qty: Math.max(1, parseInt(it?.quantity ?? it?.qty, 10) || 1),
         sourceOrders: normalizeSourceOrderList(it?.sourceOrders),
+        purchasePrice: normalizePurchasePrice(it?.purchasePrice ?? it?.purchase_price),
       }))
       .filter((it) => it.productId && !Number.isNaN(it.productId));
     if (normalized.length === 0) {
@@ -2175,6 +2208,7 @@ class PurchasesService {
         whArg = purchaseWarehouseId;
       }
       const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, whArg);
+      const hasPriceCol = await hasPurchasePriceColumn((sql) => client.query(sql));
 
       // apply per product
       const deltas = [];
@@ -2281,6 +2315,21 @@ class PurchasesService {
             'UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
             [newIncoming, productId]
           );
+        }
+
+        if (moveQty > 0 && hasPriceCol) {
+          const prc = await client.query(
+            `SELECT purchase_price FROM purchase_items WHERE purchase_id = $1 AND product_id = $2`,
+            [purchaseId, productId]
+          );
+          const unitCost =
+            prc.rows?.[0]?.purchase_price != null ? Number(prc.rows[0].purchase_price) : NaN;
+          if (Number.isFinite(unitCost) && unitCost >= 0) {
+            await client.query(
+              'UPDATE products SET cost = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+              [unitCost, productId]
+            );
+          }
         }
 
         // update purchase item received

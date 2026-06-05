@@ -15,6 +15,7 @@ async function buildBuffer(rows) {
     const row = ws.getRow(i + 1);
     row.getCell(1).value = r[0];
     row.getCell(2).value = r[1];
+    if (r[2] != null) row.getCell(3).value = r[2];
   });
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
@@ -22,9 +23,9 @@ async function buildBuffer(rows) {
 async function main() {
   const prefixes = normalizeSupplierPrefixes(['xnfl', 'xmil']);
   const buffer = await buildBuffer([
-    ['xmil-e400058', 1],
-    ['xnfl-kn1034k', 3],
-    ['xnfl-kn1034k', '4'],
+    ['xmil-e400058', 1, 100.5],
+    ['xnfl-kn1034k', 3, 50],
+    ['xnfl-kn1034k', '4', 60],
   ]);
 
   const result = await purchasesImportService.parseWorksheetOnly(buffer, prefixes);
@@ -37,7 +38,12 @@ async function main() {
     console.error('FAIL: expected kn1034k qty 7 (3+4), got', kn);
     process.exit(1);
   }
-  console.log('OK: duplicate rows summed to', kn.quantity);
+  const expectedCost = Math.round(((50 * 3 + 60 * 4) / 7) * 100) / 100;
+  if (kn.purchasePrice !== expectedCost) {
+    console.error('FAIL: expected kn1034k cost', expectedCost, 'got', kn.purchasePrice);
+    process.exit(1);
+  }
+  console.log('OK: duplicate rows summed to', kn.quantity, 'cost', kn.purchasePrice);
 }
 
 main().catch((e) => {

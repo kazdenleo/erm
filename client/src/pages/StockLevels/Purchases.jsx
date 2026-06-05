@@ -573,7 +573,7 @@ export function Purchases() {
       formData.append('warehouseId', String(createWarehouseId));
       const res = await purchasesApi.importFromExcel(formData);
       const summary = res?.importSummary;
-      if (summary?.parserVersion && summary.parserVersion !== 'v3-sum-by-file-article') {
+      if (summary?.parserVersion && summary.parserVersion !== 'v4-article-qty-cost') {
         setErr(
           `На сервере старая версия импорта (${summary.parserVersion}). Нужны git pull и pm2 restart erm-api.`
         );
@@ -908,7 +908,7 @@ export function Purchases() {
           style={{ marginBottom: 14, borderTop: '1px solid var(--border, #e8e8e8)', paddingTop: 12 }}
         >
           <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
-            Импорт из Excel: столбец A — артикул, столбец B — количество (заголовок не обязателен), либо колонки «артикул» и «количество». Одинаковые артикулы суммируются. Если хотя бы один артикул не найден в каталоге, закупка не создаётся.
+            Импорт из Excel: A — артикул, B — количество, C — себестоимость (заголовок не обязателен), либо колонки «артикул», «количество», «себестоимость». Одинаковые артикулы суммируются. Себестоимость из файла попадёт в закупку и обновит cost товара при приёмке на склад. Если хотя бы один артикул не найден в каталоге, закупка не создаётся.
           </p>
           <div style={{ marginBottom: 12 }}>
             <Button
