@@ -13,10 +13,20 @@ class BrandsRepositoryPG {
     const profileId = options.profileId ?? options.profile_id;
     if (profileId != null && profileId !== '') {
       const result = await query(
-        `SELECT b.*
-         FROM brands b
-         WHERE b.profile_id = $1::bigint
-         ORDER BY b.name`,
+        `SELECT DISTINCT ON (LOWER(TRIM(b.name))) b.*
+         FROM (
+           SELECT b1.*
+           FROM brands b1
+           WHERE b1.profile_id = $1::bigint
+           UNION
+           SELECT b2.*
+           FROM brands b2
+           INNER JOIN products p ON p.brand_id = b2.id
+           WHERE p.profile_id = $1::bigint
+         ) b
+         ORDER BY LOWER(TRIM(b.name)),
+           CASE WHEN b.profile_id = $1::bigint THEN 0 ELSE 1 END,
+           b.id`,
         [profileId]
       );
       return result.rows;

@@ -291,22 +291,27 @@ export function stockListAvailableQuantity(product) {
   return Math.max(0, onHand + incoming - reserved);
 }
 
-/** Фильтр по бренду: brand_id и совпадение по mp_*_brand для legacy-карточек. */
+/**
+ * Фильтр по бренду: по имени выбранного бренда (id из справочника аккаунта).
+ * Учитывает legacy brand_id без profile_id и mp_*_brand, когда у товара другой id с тем же именем.
+ */
 function appendBrandIdFilter(whereSql, params, paramIndex, brandId) {
   const bRaw = String(brandId).trim();
   if (!/^\d+$/.test(bRaw)) {
     return { whereSql, params, paramIndex };
   }
-  whereSql += ` AND (
-    p.brand_id = $${paramIndex}
-    OR EXISTS (
-      SELECT 1 FROM brands b_br
-      WHERE b_br.id = $${paramIndex}
-        AND (
-          LOWER(TRIM(COALESCE(p.mp_ozon_brand, ''))) = LOWER(TRIM(b_br.name))
-          OR LOWER(TRIM(COALESCE(p.mp_wb_brand, ''))) = LOWER(TRIM(b_br.name))
+  whereSql += ` AND EXISTS (
+    SELECT 1 FROM brands b_sel
+    WHERE b_sel.id = $${paramIndex}
+      AND (
+        EXISTS (
+          SELECT 1 FROM brands b_p
+          WHERE b_p.id = p.brand_id
+            AND LOWER(TRIM(b_p.name)) = LOWER(TRIM(b_sel.name))
         )
-    )
+        OR LOWER(TRIM(COALESCE(p.mp_ozon_brand, ''))) = LOWER(TRIM(b_sel.name))
+        OR LOWER(TRIM(COALESCE(p.mp_wb_brand, ''))) = LOWER(TRIM(b_sel.name))
+      )
   )`;
   params.push(bRaw);
   return { whereSql, params, paramIndex: paramIndex + 1 };
@@ -2465,17 +2470,19 @@ class ProductsRepositoryPG {
    */
   async count(options = {}) {
     const { profileId } = options;
-    let sql = 'SELECT COUNT(*) as total FROM products WHERE 1=1';
+    let whereSql = ' WHERE 1=1';
     const params = [];
     let paramIndex = 1;
-    
+
     if (options.brandId) {
-      const bRaw = String(options.brandId).trim();
-      if (/^\d+$/.test(bRaw)) {
-        sql += ` AND brand_id = $${paramIndex++}`;
-        params.push(bRaw);
-      }
+      ({ whereSql, params, paramIndex } = appendBrandIdFilter(
+        whereSql,
+        params,
+        paramIndex,
+        options.brandId
+      ));
     }
+    let sql = `SELECT COUNT(*) as total FROM products p${whereSql}`;
 
     const catRaw = normalizeListCategoryId(options.categoryId);
     if (catRaw === FILTER_CATEGORY_NONE) {

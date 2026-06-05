@@ -975,11 +975,16 @@ class ProductsService {
   }
 
   /** brand (строка) → brand_id в рамках profile_id товара. */
-  async _resolveBrandIdFromName(target) {
+  async _resolveBrandIdFromName(target, existingProduct = null) {
     if (!target?.brand || target.brand_id) return;
     const brandName = String(target.brand).trim();
     if (!brandName) return;
-    const profileId = target.profile_id ?? target.profileId ?? null;
+    const profileId =
+      target.profile_id ??
+      target.profileId ??
+      existingProduct?.profile_id ??
+      existingProduct?.profileId ??
+      null;
     const brandOpts = profileId != null && profileId !== '' ? { profileId } : {};
     const brands = await this.brandsRepository.findAll(brandOpts);
     let brand = brands.find(
@@ -1187,8 +1192,12 @@ class ProductsService {
     if (updates.organizationId !== undefined) {
       updates.organization_id = updates.organizationId !== '' && updates.organizationId != null ? updates.organizationId : null;
     }
-    await this._resolveBrandIdFromName(updates);
-    
+    let existingForBrand = null;
+    if (updates.brand && !updates.brand_id) {
+      existingForBrand = await this.repository.findById(id);
+    }
+    await this._resolveBrandIdFromName(updates, existingForBrand);
+
     if (updates.buyout_rate !== undefined && updates.buyout_rate !== null) {
       if (typeof updates.buyout_rate === 'string') {
         updates.buyout_rate = parseFloat(updates.buyout_rate);
