@@ -241,6 +241,9 @@ class StockMovementsService {
     const resAfter =
       productAfter?.reserved_quantity != null ? Number(productAfter.reserved_quantity) : 0;
 
+    metaOut.warehouse_balance_before = currentWh;
+    metaOut.warehouse_balance_after = newWh;
+
     const movement = await this.repository.create({
       productId: idNum,
       type,

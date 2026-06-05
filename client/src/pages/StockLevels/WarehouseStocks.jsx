@@ -92,10 +92,22 @@ function movementNum(m, snakeKey) {
 }
 
 /** Снимок «в пути / резерв / наличие» из строки журнала (учёт старых записей без incoming_after). */
-function snapshotFromMovement(m) {
+function warehouseBalanceFromMovement(m, warehouseFilterId) {
+  if (!m || warehouseFilterId == null || String(warehouseFilterId).trim() === '') return null;
+  const meta = parseMovementMeta(m);
+  const whRaw = m.warehouse_id ?? m.warehouseId ?? meta.warehouse_id ?? meta.warehouseId;
+  if (whRaw == null || String(whRaw) !== String(warehouseFilterId)) return null;
+  const after = meta.warehouse_balance_after ?? meta.warehouseBalanceAfter;
+  if (after == null || after === '') return null;
+  const n = Number(after);
+  return Number.isFinite(n) ? n : null;
+}
+
+function snapshotFromMovement(m, warehouseFilterId = null) {
   const incDb = movementNum(m, 'incoming_after');
   const resDb = movementNum(m, 'reserved_after');
   const balDb = movementNum(m, 'balance_after');
+  const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
   const hasNew = incDb != null || resDb != null;
   const t = movementTypeLower(m);
 
@@ -104,7 +116,7 @@ function snapshotFromMovement(m) {
     inc = balDb;
   }
   let res = resDb;
-  let bal = balDb;
+  let bal = whBal != null ? whBal : balDb;
 
   if (t === 'incoming' && !hasNew) {
     return { inc, res: res != null ? res : null, bal: null };
@@ -411,15 +423,15 @@ function buildHistoryDisplayRows(list) {
 }
 
 /** Снимок после отображаемой строки (список журнала в DESC). */
-function snapshotAfterDisplayItem(item) {
+function snapshotAfterDisplayItem(item, warehouseFilterId = null) {
   if (
     item.kind === 'reserveGroup' ||
     item.kind === 'unreserveGroup' ||
     item.kind === 'outboundGroup'
   ) {
-    return snapshotFromMovement(item.movements[0]);
+    return snapshotFromMovement(item.movements[0], warehouseFilterId);
   }
-  return snapshotFromMovement(item.m);
+  return snapshotFromMovement(item.m, warehouseFilterId);
 }
 
 function sumMovementsQuantityChange(movements) {
@@ -559,13 +571,13 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
 }
 
 /** Снимки строк истории с enrich; индекс 0 — самая новая строка, prev для строки i = enriched[i+1]. */
-function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null) {
+function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null, warehouseFilterId = null) {
   if (!Array.isArray(displayRows) || displayRows.length === 0) return [];
   const n = displayRows.length;
   const enriched = new Array(n);
   for (let i = n - 1; i >= 0; i--) {
     const item = displayRows[i];
-    const raw = snapshotAfterDisplayItem(item);
+    const raw = snapshotAfterDisplayItem(item, warehouseFilterId);
     const prevLineBelow = i + 1 < n ? enriched[i + 1] : null;
     enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow);
   }
@@ -1733,8 +1745,8 @@ export function WarehouseStocks() {
   }, [historyList, historyProduct]);
 
   const historyDisplaySnapshots = useMemo(
-    () => buildHistoryDisplaySnapshots(displayHistoryRows, historyNetReserved),
-    [displayHistoryRows, historyNetReserved]
+    () => buildHistoryDisplaySnapshots(displayHistoryRows, historyNetReserved, stockWarehouseId),
+    [displayHistoryRows, historyNetReserved, stockWarehouseId]
   );
 
   const openReserveModalForProduct = useCallback((product, { pinnedList = null } = {}) => {
@@ -2587,6 +2599,10 @@ export function WarehouseStocks() {
             {historyWarehouseFilterIgnored ? (
               <p className="text-muted small mb-2" role="status">
                 История показана по <strong>всем складам</strong>, т.к. по выбранному складу записей не найдено.
+              </p>
+            ) : stockWarehouseId ? (
+              <p className="text-muted small mb-2" role="status">
+                Колонка «Наличие» — по выбранному складу в фильтре таблицы (не сумма по всем складам).
               </p>
             ) : null}
             {historyNetReserved != null && (
