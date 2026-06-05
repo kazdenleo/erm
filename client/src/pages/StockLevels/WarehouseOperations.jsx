@@ -28,6 +28,7 @@ import {
   normalizeProductSearchQuery,
   searchProductsRemote,
   formatProductOptionLabel,
+  searchProductsCombined,
 } from '../../utils/productSearch';
 import './WarehouseOperations.css';
 
@@ -300,7 +301,7 @@ export function WarehouseOperations({
   const [inventoryNewSession, setInventoryNewSession] = useState(false);
   const [inventoryNewRows, setInventoryNewRows] = useState([]);
   const [inventoryNewScanValue, setInventoryNewScanValue] = useState('');
-  const [inventoryNewSelectedProductId, setInventoryNewSelectedProductId] = useState('');
+  const [inventoryNewPickedProduct, setInventoryNewPickedProduct] = useState(null);
   const [inventoryNewSearch, setInventoryNewSearch] = useState('');
   const [linkBarcodeModalOpen, setLinkBarcodeModalOpen] = useState(false);
   const [linkBarcodeScanned, setLinkBarcodeScanned] = useState('');
@@ -1938,36 +1939,66 @@ export function WarehouseOperations({
     lookupByBarcodeOrSkuThenInventoryNewOne(v);
   };
 
-  const handleInventoryNewAddFromSelect = async () => {
+  const addInventoryProductFromPick = async (product) => {
     if (!inventorySessionWarehouseId) {
       setOpMessage('Выберите склад инвентаризации');
-      return;
+      return false;
     }
-    const id = String(inventoryNewSelectedProductId || '').trim();
-    if (!id) {
-      setOpMessage('Выберите товар');
-      return;
-    }
-    const product = products.find((p) => String(p.id) === id);
-    if (!product) {
-      setOpMessage('Товар не найден');
-      return;
+    if (!product?.id) {
+      setOpMessage('Выберите товар из списка или введите точный артикул / штрихкод');
+      return false;
     }
     try {
       if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
         await scanInventoryLive(String(product.id));
-        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       } else {
         await addOneToInventoryNewRow(product);
-        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       }
+      setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+      setInventoryNewPickedProduct(null);
+      setInventoryNewSearch('');
+      setLookupError(null);
       inventoryNewScanInputRef.current?.focus();
+      return true;
     } catch (e) {
       const msg = warehouseScanErrorMessage(e, 'Не удалось добавить');
       setLookupError(msg);
       setOpMessage(null);
       playEventSound(SOUND_EVENTS.scan_error);
+      return false;
     }
+  };
+
+  const resolveInventoryPickedProduct = async () => {
+    if (inventoryNewPickedProduct?.id) return inventoryNewPickedProduct;
+    const q = normalizeProductSearchQuery(inventoryNewSearch);
+    if (!q) return null;
+    const matches = await searchProductsCombined(q, { products, limit: 40 });
+    if (matches.length === 1) return matches[0];
+    const ql = q.toLowerCase();
+    return (
+      matches.find((p) => {
+        const sku = String(p?.sku || '').trim().toLowerCase();
+        if (sku === ql) return true;
+        return false;
+      }) || null
+    );
+  };
+
+  const handleInventoryNewAddFromSelect = async () => {
+    let product = inventoryNewPickedProduct;
+    if (!product?.id) {
+      try {
+        product = await resolveInventoryPickedProduct();
+      } catch {
+        product = null;
+      }
+    }
+    if (!product?.id) {
+      setOpMessage('Выберите товар из списка или введите точный артикул / штрихкод');
+      return;
+    }
+    await addInventoryProductFromPick(product);
   };
 
   const setInventoryNewFact = (productId, value) => {
@@ -3203,32 +3234,43 @@ export function WarehouseOperations({
               {opMessage ? <div className="warehouse-ops-msg success" style={{ marginTop: 8 }}>{opMessage}</div> : null}
 
               <div className="warehouse-ops-list-form" style={{ marginTop: 16 }}>
-                <div className="warehouse-ops-list-row warehouse-ops-list-row--search">
+                <form
+                  className="warehouse-ops-list-row warehouse-ops-list-row--search"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleInventoryNewAddFromSelect();
+                  }}
+                >
                   <label htmlFor="inventory-new-product-search">Товар:</label>
                   <ProductSearchInput
                     id="inventory-new-product-search"
                     value={inventoryNewSearch}
                     onChange={(v) => {
                       setInventoryNewSearch(v);
-                      setInventoryNewSelectedProductId('');
+                      setInventoryNewPickedProduct(null);
                     }}
                     products={products}
                     placeholder="Штрихкод, артикул или название"
                     disabled={!inventorySessionWarehouseId}
                     onSelect={(p) => {
                       if (!p?.id) return;
-                      setInventoryNewSelectedProductId(String(p.id));
+                      setInventoryNewPickedProduct(p);
                       setInventoryNewSearch(formatProductOptionLabel(p));
+                      addInventoryProductFromPick(p);
                     }}
                   />
                   <Button
                     type="button"
                     onClick={handleInventoryNewAddFromSelect}
-                    disabled={!inventoryNewSelectedProductId || !inventorySessionWarehouseId}
+                    disabled={
+                      (!inventoryNewPickedProduct?.id &&
+                        !normalizeProductSearchQuery(inventoryNewSearch)) ||
+                      !inventorySessionWarehouseId
+                    }
                   >
                     Добавить 1 шт
                   </Button>
-                </div>
+                </form>
               </div>
 
               <h4 className="warehouse-ops-receipt-list-title" style={{ marginTop: 20 }}>

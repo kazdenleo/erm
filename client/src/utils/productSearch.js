@@ -125,13 +125,11 @@ export async function searchProductsCombined(query, { products = [], organizatio
   const q = normalizeProductSearchQuery(query);
   if (!q) return [];
 
-  const strictVendorCode = !shouldUseBarcodeDigitFallback(q);
   try {
     const byBarcode = await fetchProductByScanCode(q);
     if (byBarcode?.id) return [byBarcode];
-  } catch (err) {
-    if (strictVendorCode) throw err;
-    /* fallback для чисто цифровых EAN */
+  } catch {
+    /* не точный ШК — продолжаем поиск по артикулу и названию */
   }
 
   const local = matchProductsLocal(products, q, { limit });

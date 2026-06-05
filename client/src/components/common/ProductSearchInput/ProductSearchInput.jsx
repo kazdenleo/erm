@@ -3,6 +3,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { barcodeStringsFromProduct } from '../../../utils/productBarcodes.js';
 import {
   formatProductOptionLabel,
   normalizeProductSearchQuery,
@@ -95,6 +96,21 @@ export function ProductSearchInput({
           if (results.length === 1) {
             onSelect?.(results[0]);
             setOpen(false);
+            return;
+          }
+          if (results.length > 1) {
+            const ql = q.toLowerCase();
+            const exact = results.find((p) => {
+              const sku = String(p?.sku || '').trim().toLowerCase();
+              if (sku === ql) return true;
+              return barcodeStringsFromProduct(p?.barcodes).some(
+                (b) => String(b || '').trim().toLowerCase() === ql
+              );
+            });
+            if (exact) {
+              onSelect?.(exact);
+              setOpen(false);
+            }
           }
         }}
       />
