@@ -13,9 +13,11 @@ import {
   computeMaxKitUnitsReservable,
   computeKitReservableBreakdown,
   allocateKitReservePriority,
+  reconcileMisplacedKitWholeReserve,
   getReservedKitUnitsForOrder,
   releaseAllReservesForOrder,
   findKitProductIdForMarketplaceOrder,
+  collectOrderSkuCandidates,
   getKitComponents,
   batchPiecesPerKitUnitMap,
   batchKitIdByComponentMap,
@@ -932,14 +934,28 @@ class OrdersService {
     }
 
     const snapBeforeReserve = await getProductSupplySnapshotWithClient(null, productId);
-    qty = Math.min(qty, Math.floor(snapBeforeReserve.available));
-    if (qty <= 0) return;
-
-    const reserveFromOnHand = Math.min(
-      qty,
-      onHandHeadroomBeforeReserve(snapBeforeReserve)
-    );
-    const reserveFromIncoming = Math.max(0, qty - reserveFromOnHand);
+    let reserveFromOnHand;
+    let reserveFromIncoming;
+    if (hasKitPrealloc) {
+      const breakdown = await computeKitReservableBreakdown(productId, {
+        warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+      });
+      const wholePool = Math.max(
+        0,
+        breakdown.wholeReserveAvail != null
+          ? Number(breakdown.wholeReserveAvail) || 0
+          : Number(breakdown.physicalOnHand) || 0
+      );
+      qty = Math.min(qty, wholePool);
+      if (qty <= 0) return;
+      reserveFromOnHand = qty;
+      reserveFromIncoming = 0;
+    } else {
+      qty = Math.min(qty, Math.floor(snapBeforeReserve.available));
+      if (qty <= 0) return;
+      reserveFromOnHand = Math.min(qty, onHandHeadroomBeforeReserve(snapBeforeReserve));
+      reserveFromIncoming = Math.max(0, qty - reserveFromOnHand);
+    }
 
     await stockMovementsService.applyChange(productId, {
       delta: -qty,
@@ -1083,21 +1099,59 @@ class OrdersService {
       .filter((n) => Number.isFinite(n) && n > 0);
   }
 
-  async _assemblyMetaForOrderRow(orderRow) {
+  async _resolveWarehouseIdForOrderProductAssembly(orderRow, productId) {
+    const orderDbId = orderRowDbId(orderRow);
+    const pid = Number(productId);
+    if (orderDbId && Number.isFinite(pid) && pid >= 1) {
+      const whRows = await query(
+        `SELECT warehouse_id,
+                GREATEST(0, COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
+                  WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0))::int AS net
+         FROM stock_movements
+         WHERE product_id = $2
+           AND type IN ('reserve', 'unreserve')
+           AND warehouse_id IS NOT NULL
+           AND (meta->>'order_id')::bigint = $1
+         GROUP BY warehouse_id
+         HAVING COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
+           WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0) > 0
+         ORDER BY net DESC, warehouse_id ASC`,
+        [orderDbId, pid]
+      );
+      if (whRows.rows?.[0]?.warehouse_id != null) {
+        return Number(whRows.rows[0].warehouse_id);
+      }
+      const shipRow = await query(
+        `SELECT warehouse_id FROM stock_movements
+         WHERE product_id = $2 AND type = 'shipment' AND warehouse_id IS NOT NULL
+           AND (meta->>'order_id')::bigint = $1
+         ORDER BY id DESC LIMIT 1`,
+        [orderDbId, pid]
+      );
+      if (shipRow.rows?.[0]?.warehouse_id != null) {
+        return Number(shipRow.rows[0].warehouse_id);
+      }
+    }
+    const preferredWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    return stockMovementsService.resolveWarehouseIdForProductStock(productId, preferredWh);
+  }
+
+  async _assemblyMetaForOrderProduct(orderRow, productId) {
     const orderDbId = orderRowDbId(orderRow);
     const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
-    const preferredWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
-    const productId = await this._resolveProductIdForOrderStock(orderRow);
-    const warehouseId =
-      productId != null
-        ? await stockMovementsService.resolveWarehouseIdForProductStock(productId, preferredWh)
-        : preferredWh;
+    const warehouseId = await this._resolveWarehouseIdForOrderProductAssembly(orderRow, productId);
     return {
       order_id: orderDbId,
       orderId: orderIdStr,
       assembled: true,
       warehouse_id: warehouseId || null
     };
+  }
+
+  /** @deprecated используйте _assemblyMetaForOrderProduct(orderRow, productId) */
+  async _assemblyMetaForOrderRow(orderRow) {
+    const productId = await this._resolveProductIdForOrderStock(orderRow);
+    return this._assemblyMetaForOrderProduct(orderRow, productId);
   }
 
   /**
@@ -1147,7 +1201,7 @@ class OrdersService {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
 
-    const metaBase = await this._assemblyMetaForOrderRow(orderRow);
+    const metaBase = await this._assemblyMetaForOrderProduct(orderRow, pid);
     const orderIdStr = metaBase.orderId || '';
     const lineQty =
       targetQty != null
@@ -1155,7 +1209,12 @@ class OrdersService {
         : await this._resolveShipmentQtyForOrderProduct(orderRow, pid);
     if (lineQty <= 0) return;
 
-    const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
+    const net = await getNetReservedForOrderProduct(
+      orderDbId,
+      pid,
+      orderIdStr || null,
+      metaBase.warehouse_id
+    );
     const alreadyShipped = await this._getShippedQtyForOrderProduct(orderDbId, pid);
     const shipQty = Math.max(0, lineQty - alreadyShipped);
 
@@ -1191,10 +1250,15 @@ class OrdersService {
     if (!orderDbId) return;
 
     const kitQty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
-    const metaBase = await this._assemblyMetaForOrderRow(orderRow);
+    const metaBase = await this._assemblyMetaForOrderProduct(orderRow, kitId);
     const warehouseId = metaBase.warehouse_id ?? null;
 
-    const kitNet = await this._getReservedQtyForOrderProduct(orderDbId, kitId);
+    const kitNet = await getNetReservedForOrderProduct(
+      orderDbId,
+      kitId,
+      metaBase.orderId || null,
+      warehouseId
+    );
     const kitShipped = await this._getShippedQtyForOrderProduct(orderDbId, kitId);
     const kitsToFulfill = Math.max(0, kitQty - kitShipped);
 
@@ -1406,6 +1470,30 @@ class OrdersService {
     // - резервируем только то, что уже есть (факт + ожидается - уже зарезервировано)
     // - если пришла часть товара, резервируем эту часть, даже если до количества заказа не хватает
     if (await isKitProductId(productId)) {
+      try {
+        await reconcileMisplacedKitWholeReserve(
+          productId,
+          id,
+          orderIdStr || String(id),
+          { warehouse_id: warehouseId, order_id: id, orderId: orderIdStr },
+          {
+            unreserveProduct: (pid, net, oid, m) =>
+              stockMovementsService.applyChange(pid, {
+                delta: net,
+                type: 'unreserve',
+                reason: `Перенос резерва комплекта на комплектующие (заказ ${oid})`.trim(),
+                meta: m
+              }),
+            applyKitReserve: (kitId, kits, oid, m) =>
+              applyKitOrderReserve(kitId, kits, oid, m, (compId, compQty, o, mm) =>
+                this._applyReserveForOrderComponent(compId, compQty, o, mm)
+              )
+          }
+        );
+      } catch (e) {
+        if (e?.statusCode !== 400) throw e;
+      }
+
       const alreadyReservedKits = await getReservedKitUnitsForOrder(productId, id);
       const need = Math.max(0, qty - alreadyReservedKits);
       if (need <= 0) return;
@@ -2231,6 +2319,7 @@ class OrdersService {
     const mp = marketplaceForProductSkus(orderRow.marketplace);
     const offer = String(orderRow.offerId ?? orderRow.offer_id ?? '').trim();
     const msku = String(orderRow.sku ?? orderRow.marketplace_sku ?? '').trim();
+    const skuCandidates = collectOrderSkuCandidates(orderRow);
     const trySku = async skuVal => {
       if (!skuVal) return null;
       try {
@@ -2243,7 +2332,12 @@ class OrdersService {
         return null;
       }
     };
-    let found = await trySku(offer);
+    let found = null;
+    for (const candidate of skuCandidates) {
+      found = await trySku(candidate);
+      if (found != null) return found;
+    }
+    found = await trySku(offer);
     if (found != null) return found;
     found = await trySku(msku);
     if (found != null) return found;
@@ -2296,6 +2390,10 @@ class OrdersService {
         return null;
       }
     };
+    for (const candidate of skuCandidates) {
+      found = await tryProductTable(candidate);
+      if (found != null) return found;
+    }
     found = await tryProductTable(offer);
     if (found != null) return found;
     found = await tryProductTable(msku);
@@ -3668,6 +3766,8 @@ class OrdersService {
 
   async _summarizeReserveForRows(rows) {
     const lines = [];
+    let totalNeed = 0;
+    let totalReserved = 0;
     for (const row of rows || []) {
       const id = orderRowDbId(row);
       const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
@@ -3682,59 +3782,58 @@ class OrdersService {
 
       if (id && Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
         reserved = await getReservedKitUnitsForOrder(pid, id);
+        totalNeed += qty;
+        totalReserved += reserved;
         const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
         const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
           pid,
           preferredWh
         );
         const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
-        if (onKitRes > 0) {
-          lineEntries.push({
-            productId: pid,
-            reservedQty: onKitRes,
-            needQty: qty,
-            availableQty: await this._getAvailableUnitsForOrderReserveLine(pid, row, {
-              warehouseId
-            }),
-            lineKind: 'kit_whole',
-            label: orderLineLabel || 'Комплект (целым SKU)'
-          });
-        }
-        const components = await getKitComponents(pid);
-        for (const c of components) {
-          const compId = Number(c.component_product_id);
-          if (!Number.isFinite(compId) || compId < 1) continue;
-          const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
-          const compRes = await this._getReservedQtyForOrderProduct(id, compId);
-          if (compRes <= 0 && onKitRes > 0) continue;
-          const compLabel = (await this._productDisplayLabelById(compId)) || 'Комплектующая';
-          lineEntries.push({
-            productId: compId,
-            reservedQty: compRes,
-            needQty: qty * perKit,
-            perKitQty: perKit,
-            reservedKitUnits: Math.floor(compRes / perKit),
-            needKitUnits: qty,
-            availableQty: await this._getAvailableUnitsForOrderReserveLine(compId, row, {
-              warehouseId,
-              kitProductId: pid
-            }),
-            lineKind: 'component',
-            kitProductId: pid,
-            label: `${compLabel} (×${perKit} в комплекте)`
-          });
-        }
-        if (lineEntries.length === 0 && reserved > 0) {
-          lineEntries.push({
-            productId: pid,
-            reservedQty: reserved,
-            needQty: qty,
-            lineKind: 'kit',
-            label: orderLineLabel || 'Комплект'
-          });
+        const maxKitsAvail = await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId);
+        const breakdown = await computeKitReservableBreakdown(pid, { warehouseId });
+        lineEntries.push({
+          productId: pid,
+          reservedQty: reserved,
+          needQty: qty,
+          availableQty: maxKitsAvail,
+          lineKind: onKitRes > 0 ? 'kit_whole' : 'kit',
+          kitReserveFromComponents:
+            onKitRes <= 0 && (breakdown.fromComponents || 0) > 0 && (breakdown.wholeReserveAvail || 0) <= 0,
+          label: orderLineLabel || 'Комплект'
+        });
+        const showComponentLines =
+          onKitRes > 0 || reserved > 0 || (breakdown.fromComponents || 0) > 0;
+        if (showComponentLines) {
+          const components = await getKitComponents(pid);
+          for (const c of components) {
+            const compId = Number(c.component_product_id);
+            if (!Number.isFinite(compId) || compId < 1) continue;
+            const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+            const compRes = await this._getReservedQtyForOrderProduct(id, compId);
+            if (compRes <= 0 && onKitRes > 0) continue;
+            const compLabel = (await this._productDisplayLabelById(compId)) || 'Комплектующая';
+            lineEntries.push({
+              productId: compId,
+              reservedQty: compRes,
+              needQty: qty * perKit,
+              perKitQty: perKit,
+              reservedKitUnits: Math.floor(compRes / perKit),
+              needKitUnits: qty,
+              availableQty: await this._getAvailableUnitsForOrderReserveLine(compId, row, {
+                warehouseId,
+                kitProductId: pid
+              }),
+              lineKind: 'component',
+              kitProductId: pid,
+              label: `${compLabel} (×${perKit} в комплекте)`
+            });
+          }
         }
       } else if (id && Number.isFinite(pid) && pid > 0) {
+        totalNeed += qty;
         reserved = await this._getReservedQtyForOrderProduct(id, pid);
+        totalReserved += reserved;
         const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
         const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
           pid,
@@ -3748,8 +3847,11 @@ class OrdersService {
           lineKind: 'product',
           label: orderLineLabel || (await this._productDisplayLabelById(pid))
         });
+        totalNeed += qty;
       } else if (id) {
         reserved = await this._getReservedQtyForOrder(id);
+        totalNeed += qty;
+        totalReserved += reserved;
         lineEntries.push({
           productId: row.productId ?? row.product_id ?? null,
           reservedQty: reserved,
@@ -3760,6 +3862,8 @@ class OrdersService {
       }
 
       if (lineEntries.length === 0) {
+        totalNeed += qty;
+        totalReserved += reserved;
         lineEntries.push({
           productId: Number.isFinite(pid) && pid > 0 ? pid : null,
           reservedQty: reserved,
@@ -3779,8 +3883,11 @@ class OrdersService {
         });
       }
     }
-    const needQty = lines.reduce((s, l) => s + (Number(l.needQty) || 0), 0);
-    const reservedQty = lines.reduce((s, l) => s + (Number(l.reservedQty) || 0), 0);
+    const needQty = totalNeed > 0 ? totalNeed : lines.reduce((s, l) => s + (Number(l.needQty) || 0), 0);
+    const reservedQty =
+      totalReserved > 0 || totalNeed > 0
+        ? totalReserved
+        : lines.reduce((s, l) => s + (Number(l.reservedQty) || 0), 0);
     return {
       hasReserve: reservedQty > 0,
       reservedQty,
@@ -3917,8 +4024,13 @@ class OrdersService {
     } else {
       const qtyWanted =
         quantity != null ? Math.max(1, parseInt(quantity, 10) || 1) : null;
-      const already = net;
-      const perNeed = await this._resolveShipmentQtyForOrderProduct(row, pid);
+      const orderQty = Math.max(1, parseInt(row.quantity, 10) || 1);
+      let already = net;
+      let perNeed = await this._resolveShipmentQtyForOrderProduct(row, pid);
+      if (await isKitProductId(pid)) {
+        already = await getReservedKitUnitsForOrder(pid, orderDbId);
+        perNeed = orderQty;
+      }
       const headroom = Math.max(0, perNeed - already);
       let toAdd;
       if (qtyWanted != null) {
@@ -3933,13 +4045,14 @@ class OrdersService {
           ? Number(kitId)
           : null;
       const snapManual = await getProductSupplySnapshotWithClient(null, pid);
-      const available = Math.min(
-        await this._getAvailableUnitsForOrderReserveLine(pid, row, {
-          warehouseId,
-          kitProductId
-        }),
-        Math.floor(snapManual.available)
-      );
+      let available = await this._getAvailableUnitsForOrderReserveLine(pid, row, {
+        warehouseId,
+        kitProductId
+      });
+      const reserveAsWholeKit = (await isKitProductId(pid)) && kitProductId == null;
+      if (!reserveAsWholeKit) {
+        available = Math.min(available, Math.floor(snapManual.available));
+      }
       toAdd = Math.min(toAdd, available);
       if (toAdd <= 0) {
         if (qtyWanted != null && qtyWanted > 0) {
@@ -3967,10 +4080,21 @@ class OrdersService {
             meta.kit_units = Math.floor(toAdd / perKit) || 1;
           }
         }
-        await this._applyReserveForOrderComponent(pid, toAdd, orderIdStr, {
-          ...meta,
-          order_row: row
-        });
+        if ((await isKitProductId(pid)) && kitProductId == null) {
+          await applyKitOrderReserve(
+            pid,
+            toAdd,
+            orderIdStr,
+            { ...meta, order_row: row, partial_line: true },
+            (compId, compQty, oid, m) =>
+              this._applyReserveForOrderComponent(compId, compQty, oid, m)
+          );
+        } else {
+          await this._applyReserveForOrderComponent(pid, toAdd, orderIdStr, {
+            ...meta,
+            order_row: row
+          });
+        }
       }
     }
 
