@@ -181,7 +181,13 @@ class StockMovementsController {
         return res.status(200).json({ ok: true, data: { releasedOrders: 0, releasedProductLines: 0, ordersChecked: 0 } });
       }
       const { id } = req.params;
-      const summary = await stockMovementsService.releaseAllReservesForProduct(id, { profileId: tid });
+      const warehouseRaw =
+        req.body?.warehouseId ?? req.body?.warehouse_id ?? req.query?.warehouseId ?? req.query?.warehouse_id ?? null;
+      const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw);
+      const summary = await stockMovementsService.releaseAllReservesForProduct(id, {
+        profileId: tid,
+        warehouseId: whFilter
+      });
       return res.status(200).json({ ok: true, data: summary });
     } catch (error) {
       next(error);

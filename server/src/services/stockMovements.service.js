@@ -330,10 +330,12 @@ class StockMovementsService {
       let netForOrder = null;
       if ((Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) || mpOrderId) {
         const { getNetReservedForOrderProduct } = await import('./kitStock.service.js');
+        const whCap = parseStockMovementWarehouseId(metaOut.warehouse_id);
         netForOrder = await getNetReservedForOrderProduct(
           Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : 0,
           idNum,
-          mpOrderId
+          mpOrderId,
+          whCap
         );
       }
 
@@ -608,7 +610,6 @@ class StockMovementsService {
       : `product_id = $1`;
 
     const params = [idNum];
-    const whSql = this._movementWarehouseSql(warehouseId, params);
 
     const res = await query(
       `WITH order_ids AS (
@@ -618,7 +619,6 @@ class StockMovementsService {
            AND type IN ('reserve', 'unreserve')
            AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
            AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint > 0
-           ${whSql}
        ),
        sku_net AS (
          SELECT (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint AS order_row_id,
@@ -627,7 +627,6 @@ class StockMovementsService {
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
            AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
-           ${whSql}
          GROUP BY 1
        )
        SELECT o.id,
@@ -909,22 +908,20 @@ class StockMovementsService {
   }
 
   /** Сумма положительных нетто-резервов по заказам (meta.order_id) для product_id. */
-  async _ordersJournalNetForProduct(productId, { warehouseId = null } = {}) {
+  async _ordersJournalNetForProduct(productId) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
-    const params = [pid];
-    const whSql = this._movementWarehouseSql(warehouseId, params);
     const r = await query(
       `WITH nets AS (
          SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_r
          FROM stock_movements
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
-           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'${whSql}
+           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
          GROUP BY (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint
        )
        SELECT COALESCE(SUM(net_r), 0)::int AS total FROM nets WHERE net_r > 0`,
-      params
+      [pid]
     );
     return Number(r.rows?.[0]?.total ?? 0) || 0;
   }
@@ -1036,7 +1033,7 @@ class StockMovementsService {
     }
 
     const { journalNet, rawNet } = await this._journalNetsForProduct(pid, { warehouseId });
-    const ordersNet = await this._ordersJournalNetForProduct(pid, { warehouseId });
+    const ordersNet = await this._ordersJournalNetForProduct(pid);
     const fboNet = await this._fboJournalNetForProduct(pid, { warehouseId });
     const expectedNet = ordersNet + fboNet;
     const rawDrift = rawNet - expectedNet;
@@ -1212,7 +1209,7 @@ class StockMovementsService {
   /**
    * Снять весь нетто-резерв, если нет ни заказов, ни FBO (ручная очистка со страницы остатков).
    */
-  async releaseOrphanNetReserveForProduct(productId, { profileId = null } = {}) {
+  async releaseOrphanNetReserveForProduct(productId, { profileId = null, warehouseId = null } = {}) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) {
       const error = new Error('Некорректный ID товара');
@@ -1220,9 +1217,17 @@ class StockMovementsService {
       throw error;
     }
 
-    const summary = await this.getReserveSummaryForProduct(idNum, { profileId });
+    const whFilter =
+      warehouseId != null && String(warehouseId).trim() !== ''
+        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId)
+        : null;
+
+    const summary = await this.getReserveSummaryForProduct(idNum, {
+      profileId,
+      warehouseId: whFilter
+    });
     if (Number(summary.orphanJournalReserve) > 0) {
-      return this.releaseUnattributedJournalReserve(idNum, { profileId });
+      return this.releaseUnattributedJournalReserve(idNum, { profileId, warehouseId: whFilter });
     }
 
     const orders = await this.listReservedOrdersForProduct(idNum, {
@@ -1273,6 +1278,70 @@ class StockMovementsService {
     return Number(r.rows?.[0]?.rv ?? 0) || 0;
   }
 
+  /**
+   * Порции резерва под заказ для снятия: сначала глобальный нетто, иначе — остатки по складам
+   * (когда reserve на одном складе, а unreserve при инвентаризации — на другом).
+   */
+  async _orderReserveReleaseChunks(orderDbId, productId, { marketplaceOrderId = null } = {}) {
+    const oid = Number(orderDbId);
+    const pid = Number(productId);
+    const mpLabel =
+      marketplaceOrderId != null && String(marketplaceOrderId).trim() !== ''
+        ? String(marketplaceOrderId).trim()
+        : null;
+    if (!Number.isFinite(pid) || pid < 1) return [];
+    if ((!Number.isFinite(oid) || oid < 1) && !mpLabel) return [];
+
+    const globalNet = await this._netReservedForOrderProduct(oid, pid, { marketplaceOrderId: mpLabel });
+    if (globalNet > 0) {
+      return [{ productId: pid, warehouseId: null, net: globalNet }];
+    }
+
+    const r = await query(
+      `SELECT warehouse_id,
+              ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1
+         AND type IN ('reserve', 'unreserve')
+         AND ${orderReserveMovementMatchSql('', 2, 3)}
+       GROUP BY warehouse_id
+       HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
+      [pid, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel]
+    );
+    return (r.rows || [])
+      .map((row) => ({
+        productId: pid,
+        warehouseId: row.warehouse_id != null ? Number(row.warehouse_id) : null,
+        net: Number(row.rv) || 0
+      }))
+      .filter((chunk) => chunk.net > 0);
+  }
+
+  async _applyOrderReserveReleaseChunks(chunks, { orderDbId, label, sourceProductId, reasonPrefix, extraMeta = {} }) {
+    let releasedProductLines = 0;
+    for (const chunk of chunks || []) {
+      const meta = {
+        order_id: orderDbId,
+        orderId: label,
+        manual_unreserve: true,
+        source_product_id: sourceProductId,
+        ...extraMeta
+      };
+      if (chunk.warehouseId != null && Number.isFinite(chunk.warehouseId) && chunk.warehouseId > 0) {
+        meta.warehouse_id = chunk.warehouseId;
+        meta.warehouse_split_cleanup = true;
+      }
+      await this.applyChange(chunk.productId, {
+        delta: chunk.net,
+        type: 'unreserve',
+        reason: `${reasonPrefix} ${label}`.trim(),
+        meta
+      });
+      releasedProductLines += 1;
+    }
+    return releasedProductLines;
+  }
+
   async _productIdsForReserveRelease(productId) {
     const pid = Number(productId);
     const ids = new Set([pid]);
@@ -1291,7 +1360,7 @@ class StockMovementsService {
    * Снять весь нетто-резерв по товару (комплект + комплектующие) по всем заказам из журнала.
    * Не блокируется статусом заказа — ручная очистка со страницы остатков.
    */
-  async releaseAllReservesForProduct(productId, { profileId = null } = {}) {
+  async releaseAllReservesForProduct(productId, { profileId = null, warehouseId = null } = {}) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) {
       const error = new Error('Некорректный ID товара');
@@ -1304,7 +1373,7 @@ class StockMovementsService {
     let releasedProductLines = 0;
 
     if (!list.length) {
-      const orphan = await this.releaseOrphanNetReserveForProduct(idNum, { profileId });
+      const orphan = await this.releaseOrphanNetReserveForProduct(idNum, { profileId, warehouseId });
       const lines = orphan.releasedProductLines || 0;
       if (lines === 0) {
         const error = new Error(
@@ -1328,24 +1397,19 @@ class StockMovementsService {
       const label = String(row.orderId ?? '');
       let touched = false;
       for (const pid of productIds) {
-        const net = await this._netReservedForOrderProduct(orderDbId, pid, {
+        const chunks = await this._orderReserveReleaseChunks(orderDbId, pid, {
           marketplaceOrderId: label
         });
-        if (net <= 0) continue;
-        await this.applyChange(pid, {
-          delta: net,
-          type: 'unreserve',
-          reason: `Снятие резерва: очистка по товару, заказ ${label}`.trim(),
-          meta: {
-            order_id: orderDbId,
-            orderId: label,
-            manual_unreserve: true,
-            bulk_product_release: true,
-            source_product_id: idNum
-          }
+        if (!chunks.length) continue;
+        const lines = await this._applyOrderReserveReleaseChunks(chunks, {
+          orderDbId,
+          label,
+          sourceProductId: idNum,
+          reasonPrefix: 'Снятие резерва: очистка по товару, заказ',
+          extraMeta: { bulk_product_release: true }
         });
-        releasedProductLines += 1;
-        touched = true;
+        releasedProductLines += lines;
+        if (lines > 0) touched = true;
       }
       if (touched) releasedOrders += 1;
     }
@@ -1406,20 +1470,14 @@ class StockMovementsService {
     const productIds = await this._productIdsForReserveRelease(idNum);
     let releasedProductLines = 0;
     for (const pid of productIds) {
-      const net = await this._netReservedForOrderProduct(oid, pid, { marketplaceOrderId: label });
-      if (net <= 0) continue;
-      await this.applyChange(pid, {
-        delta: net,
-        type: 'unreserve',
-        reason: `Снятие резерва: заказ ${label}`.trim(),
-        meta: {
-          order_id: oid,
-          orderId: label,
-          manual_unreserve: true,
-          source_product_id: idNum
-        }
+      const chunks = await this._orderReserveReleaseChunks(oid, pid, { marketplaceOrderId: label });
+      if (!chunks.length) continue;
+      releasedProductLines += await this._applyOrderReserveReleaseChunks(chunks, {
+        orderDbId: oid,
+        label,
+        sourceProductId: idNum,
+        reasonPrefix: 'Снятие резерва: заказ'
       });
-      releasedProductLines += 1;
     }
 
     if (releasedProductLines === 0) {

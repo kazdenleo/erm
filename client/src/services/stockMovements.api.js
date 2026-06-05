@@ -37,8 +37,12 @@ export const stockMovementsApi = {
   },
 
   /** Снять весь резерв по товару (все заказы из модалки). */
-  releaseAllReserves: async (productId) => {
-    const response = await api.post(`/products/${productId}/stock-reserve-release-all`);
+  releaseAllReserves: async (productId, { warehouseId } = {}) => {
+    const payload = {};
+    if (warehouseId != null && String(warehouseId).trim() !== '') {
+      payload.warehouseId = warehouseId;
+    }
+    const response = await api.post(`/products/${productId}/stock-reserve-release-all`, payload);
     return response.data?.data ?? response.data;
   },
 

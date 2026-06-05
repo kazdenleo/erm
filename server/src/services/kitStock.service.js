@@ -8,7 +8,8 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import {
   NET_RESERVED_SUM_EXPR_SQL,
-  orderReserveMovementMatchSql
+  orderReserveMovementMatchSql,
+  parseStockMovementWarehouseId
 } from '../constants/netReservedStockSql.js';
 import {
   computeAvailableQuantity,
@@ -768,22 +769,34 @@ export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
   return sumKitComponentsNetReserved(kitId, opts);
 }
 
-export async function getNetReservedForOrderProduct(orderDbId, productId, marketplaceOrderId = null) {
+export async function getNetReservedForOrderProduct(
+  orderDbId,
+  productId,
+  marketplaceOrderId = null,
+  warehouseId = null
+) {
   const oid = Number(orderDbId);
   const pid = Number(productId);
   const mpLabel =
     marketplaceOrderId != null && String(marketplaceOrderId).trim() !== ''
       ? String(marketplaceOrderId).trim()
       : null;
+  const whId = parseStockMovementWarehouseId(warehouseId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
   if ((!Number.isFinite(oid) || oid < 1) && !mpLabel) return 0;
+  const params = [pid, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel];
+  let whSql = '';
+  if (whId != null) {
+    params.push(whId);
+    whSql = ` AND warehouse_id = $${params.length}`;
+  }
   const r = await query(
     `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
      FROM stock_movements
      WHERE product_id = $1
        AND type IN ('reserve', 'unreserve')
-       AND ${orderReserveMovementMatchSql('', 2, 3)}`,
-    [pid, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel]
+       AND ${orderReserveMovementMatchSql('', 2, 3)}${whSql}`,
+    params
   );
   return Number(r.rows?.[0]?.rv ?? 0) || 0;
 }

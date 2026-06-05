@@ -1853,7 +1853,9 @@ export function WarehouseStocks() {
     setReserveBulkReleasing(true);
     setReserveError(null);
     try {
-      await stockMovementsApi.releaseAllReserves(pid);
+      await stockMovementsApi.releaseAllReserves(pid, {
+        warehouseId: stockWarehouseId || undefined
+      });
       await reloadReserveOrdersList();
       loadListRef.current?.({ page: currentPage, silent: true });
     } catch (e) {
@@ -1867,7 +1869,8 @@ export function WarehouseStocks() {
     reserveOrphanQty,
     reserveJournalQty,
     reloadReserveOrdersList,
-    currentPage
+    currentPage,
+    stockWarehouseId
   ]);
 
   const handleReleaseAllReservesFromStock = useCallback(async () => {
@@ -1880,7 +1883,9 @@ export function WarehouseStocks() {
     setReserveBulkReleasing(true);
     setReserveError(null);
     try {
-      await stockMovementsApi.releaseAllReserves(pid);
+      await stockMovementsApi.releaseAllReserves(pid, {
+        warehouseId: stockWarehouseId || undefined
+      });
       await reloadReserveOrdersList();
       loadListRef.current?.({ page: currentPage, silent: true });
     } catch (e) {
@@ -1894,7 +1899,8 @@ export function WarehouseStocks() {
     reserveOrders.length,
     reserveModalTotalQty,
     reloadReserveOrdersList,
-    currentPage
+    currentPage,
+    stockWarehouseId
   ]);
 
   const selectedWarehouse = stockWarehouseId
