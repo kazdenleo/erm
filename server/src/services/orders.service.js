@@ -33,6 +33,11 @@ import {
   computeAvailableQuantity,
   getProductSupplySnapshotWithClient
 } from './sellableQuantity.service.js';
+import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
+import integrationsService from './integrations.service.js';
+import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
+import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
+import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 
 /** Заказ FBS с маркетплейса (не ручной) — резерв только со склада из warehouse_mappings. */
 export function isMarketplaceFbsOrderRow(orderRow) {
@@ -46,11 +51,6 @@ export function isMarketplaceFbsOrderRow(orderRow) {
     mp === 'yandexmarket'
   );
 }
-import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
-import integrationsService from './integrations.service.js';
-import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
-import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
-import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
 
 /**
  * Покрытие резерва по заказу: только со склада (on_hand) или с участием «в пути» (incoming).
@@ -192,14 +192,15 @@ async function batchProductReserveSupplyMap(productIds) {
   const r = await query(
     `SELECT p.id,
       COALESCE(p.incoming_quantity, 0)::int AS incoming,
-      GREATEST(
-        COALESCE(p.quantity, 0),
-        COALESCE((
+      CASE
+        WHEN EXISTS (SELECT 1 FROM product_warehouse_stock pws WHERE pws.product_id = p.id)
+        THEN COALESCE((
           SELECT SUM(COALESCE(pws.quantity, 0))::int
           FROM product_warehouse_stock pws
           WHERE pws.product_id = p.id
         ), 0)
-      )::int AS on_hand,
+        ELSE COALESCE(p.quantity, 0)
+      END::int AS on_hand,
       COALESCE((
         SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
         FROM stock_movements sm
@@ -816,18 +817,83 @@ class OrdersService {
   async _resolveOwnWarehouseIdForOrder(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return null;
     const mpRaw = String(orderRow.marketplace || '').toLowerCase();
-    const mp = mpRaw === 'wildberries' ? 'wb' : (mpRaw === 'yandex' ? 'ym' : mpRaw);
+    const mp = mpRaw === 'wildberries' ? 'wb' : mpRaw === 'yandex' ? 'ym' : mpRaw;
+    const isMpOrder = isMarketplaceFbsOrderRow(orderRow);
     const mpWarehouseId = String(orderRow.deliveryAddress ?? orderRow.delivery_address ?? '').trim();
     if (mp && mpWarehouseId) {
       try {
         const repo = repositoryFactory.getRepository('warehouse_mappings');
-        const wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(mp, mpWarehouseId);
+        let wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(mp, mpWarehouseId);
         if (wid) return wid;
+
+        const numMatch = mpWarehouseId.match(/^(\d+)/);
+        if (numMatch) {
+          wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(mp, numMatch[1]);
+          if (wid) return wid;
+        }
+
+        const namePart = mpWarehouseId.includes('—')
+          ? mpWarehouseId
+              .split('—')
+              .slice(1)
+              .join('—')
+              .trim()
+          : mpWarehouseId;
+        if (namePart && repo?.findByMarketplace) {
+          const mappings = await repo.findByMarketplace(mp);
+          for (const m of mappings || []) {
+            const mid = String(m.marketplace_warehouse_id || '').trim();
+            if (!mid) continue;
+            const midName = mid.includes('—') ? mid.split('—').slice(1).join('—').trim() : mid;
+            if (
+              mid.includes(namePart) ||
+              namePart.includes(midName) ||
+              midName.includes(namePart)
+            ) {
+              return m.warehouse_id;
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (isMpOrder && mp) {
+      try {
+        const repo = repositoryFactory.getRepository('warehouse_mappings');
+        const primary = await repo?.findPrimaryOwnWarehouseIdForMarketplace?.(mp);
+        if (primary) return primary;
       } catch {
         // ignore
       }
     }
     return await stockMovementsService.productsRepository.resolveOwnWarehouseId(null);
+  }
+
+  /**
+   * Склад для резерва/отгрузки заказа.
+   * FBS с маркетплейса — только привязка из warehouse_mappings (без поиска «где есть остаток»).
+   */
+  async _resolveWarehouseIdForOrderReserve(orderRow, productId = null) {
+    const mappedWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
+    if (isMarketplaceFbsOrderRow(orderRow)) {
+      return mappedWh;
+    }
+    if (productId != null) {
+      return stockMovementsService.resolveWarehouseIdForProductStock(productId, mappedWh);
+    }
+    return mappedWh;
+  }
+
+  async _availableUnitsForOrderReserve(productId, orderRow, warehouseId) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return 0;
+    if (isMarketplaceFbsOrderRow(orderRow) && warehouseId != null) {
+      const scoped = await computeAvailableQuantity(pid, { warehouseId });
+      return Math.max(0, Math.floor(scoped.available));
+    }
+    const snap = await getProductSupplySnapshotWithClient(null, pid);
+    return Math.max(0, Math.floor(snap.available));
   }
 
   /**
@@ -1146,8 +1212,7 @@ class OrdersService {
         return Number(shipRow.rows[0].warehouse_id);
       }
     }
-    const preferredWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
-    return stockMovementsService.resolveWarehouseIdForProductStock(productId, preferredWh);
+    return this._resolveWarehouseIdForOrderReserve(orderRow, productId);
   }
 
   async _assemblyMetaForOrderProduct(orderRow, productId) {
@@ -1465,18 +1530,17 @@ class OrdersService {
     const productId = await this._resolveProductIdForOrderStock(orderRow);
     if (!productId) return;
 
-    const preferredWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
-    const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
-      productId,
-      preferredWh
-    );
+    const warehouseId = await this._resolveWarehouseIdForOrderReserve(orderRow, productId);
+    const strictWh = isMarketplaceFbsOrderRow(orderRow);
 
     const { getProductSupplySnapshotWithClient } = await import('./sellableQuantity.service.js');
     if (!(await isKitProductId(productId))) {
-      const snapGate = await getProductSupplySnapshotWithClient(null, productId);
-      if (Math.floor(snapGate.available) <= 0) return;
+      const avail = await this._availableUnitsForOrderReserve(productId, orderRow, warehouseId);
+      if (avail <= 0) return;
     } else {
-      const maxKitsGate = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId);
+      const maxKitsGate = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId, {
+        orderRow
+      });
       if (maxKitsGate <= 0) return;
     }
 
@@ -1489,7 +1553,7 @@ class OrdersService {
           productId,
           id,
           orderIdStr || String(id),
-          { warehouse_id: warehouseId, order_id: id, orderId: orderIdStr },
+          { warehouse_id: warehouseId, order_id: id, orderId: orderIdStr, strict_warehouse: strictWh },
           {
             unreserveProduct: (pid, net, oid, m) =>
               stockMovementsService.applyChange(pid, {
@@ -1511,7 +1575,9 @@ class OrdersService {
       const alreadyReservedKits = await getReservedKitUnitsForOrder(productId, id);
       const need = Math.max(0, qty - alreadyReservedKits);
       if (need <= 0) return;
-      const maxKits = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId);
+      const maxKits = await this._computeMaxKitUnitsReservableForOrder(productId, warehouseId, {
+        orderRow
+      });
       const reserveKits = Math.min(need, maxKits);
       if (reserveKits <= 0) return;
       try {
@@ -1523,6 +1589,7 @@ class OrdersService {
             order_id: id,
             orderId: orderIdStr,
             warehouse_id: warehouseId,
+            strict_warehouse: strictWh,
             partial: reserveKits < need
           },
           (compId, compQty, oid, m) =>
@@ -1539,20 +1606,23 @@ class OrdersService {
     const need = Math.max(0, qty - alreadyReservedForOrder);
     if (need <= 0) return;
 
-    const snapAvail = await getProductSupplySnapshotWithClient(null, productId);
-    if (Math.floor(snapAvail.available) <= 0) return;
+    const snapAvail = await this._availableUnitsForOrderReserve(productId, orderRow, warehouseId);
+    if (snapAvail <= 0) return;
 
-    const reserveNow = Math.min(need, Math.floor(snapAvail.available));
+    const reserveNow = Math.min(need, snapAvail);
     if (reserveNow <= 0) return;
 
-    const snapFinal = await getProductSupplySnapshotWithClient(null, productId);
-    if (Math.floor(snapFinal.available) < reserveNow) return;
+    if (!isMarketplaceFbsOrderRow(orderRow)) {
+      const snapFinal = await getProductSupplySnapshotWithClient(null, productId);
+      if (Math.floor(snapFinal.available) < reserveNow) return;
+    }
 
     try {
       await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
         order_id: id,
         orderId: orderIdStr,
         warehouse_id: warehouseId,
+        strict_warehouse: strictWh,
         partial: reserveNow < need
       });
     } catch (e) {
@@ -2244,16 +2314,20 @@ class OrdersService {
     return productId;
   }
 
-  /** Сколько комплектов можно зарезервировать: сначала по складу заказа, при 0 — по всем складам. */
-  async _computeMaxKitUnitsReservableForOrder(kitProductId, warehouseId) {
+  /** Сколько комплектов можно зарезервировать на складе заказа; для FBS — без fallback на другие склады. */
+  async _computeMaxKitUnitsReservableForOrder(kitProductId, warehouseId, opts = {}) {
     const kitId = Number(kitProductId);
     if (!Number.isFinite(kitId) || kitId < 1) return 0;
+    const strict =
+      opts.strictWarehouse === true ||
+      (opts.orderRow != null && isMarketplaceFbsOrderRow(opts.orderRow));
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
     if (wh != null) {
       const scoped = await computeMaxKitUnitsReservable(kitId, { warehouseId: wh });
-      if (scoped > 0) return scoped;
+      if (scoped > 0 || strict) return scoped;
     }
+    if (strict) return 0;
     return computeMaxKitUnitsReservable(kitId, { warehouseId: null });
   }
 
@@ -2274,14 +2348,28 @@ class OrdersService {
       const components = await getKitComponents(kitId);
       const comp = components.find((c) => Number(c.component_product_id) === pid);
       const perKit = comp ? Math.max(1, parseInt(comp.quantity, 10) || 1) : 1;
-      const snap = await getProductSupplySnapshotWithClient(null, pid);
-      const compAvail = snap.available;
-      const maxKits = await this._computeMaxKitUnitsReservableForOrder(kitId, warehouseId);
+      let compAvail;
+      if (orderRow != null && isMarketplaceFbsOrderRow(orderRow) && warehouseId != null) {
+        compAvail = (await computeAvailableQuantity(pid, { warehouseId })).available;
+      } else {
+        const snap = await getProductSupplySnapshotWithClient(null, pid);
+        compAvail = snap.available;
+      }
+      const maxKits = await this._computeMaxKitUnitsReservableForOrder(kitId, warehouseId, {
+        orderRow
+      });
       return Math.min(Math.floor(compAvail), Math.floor(maxKits) * perKit);
     }
 
     if (await isKitProductId(pid)) {
-      return Math.floor(await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId));
+      return Math.floor(
+        await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId, { orderRow })
+      );
+    }
+
+    if (orderRow != null && isMarketplaceFbsOrderRow(orderRow) && warehouseId != null) {
+      const scoped = await computeAvailableQuantity(pid, { warehouseId });
+      return Math.floor(scoped.available);
     }
 
     const snap = await getProductSupplySnapshotWithClient(null, pid);
@@ -2304,13 +2392,15 @@ class OrdersService {
         const pnum = Number(pid);
         if (Number.isFinite(pnum) && pnum > 0) {
           if (await isKitProductId(pnum)) {
-            const wh = await this._resolveOwnWarehouseIdForOrder(row);
-            const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(pnum, wh);
-            const maxKits = await this._computeMaxKitUnitsReservableForOrder(pnum, warehouseId);
+            const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, pnum);
+            const maxKits = await this._computeMaxKitUnitsReservableForOrder(pnum, warehouseId, {
+              orderRow: row
+            });
             if (maxKits <= 0) continue;
           } else {
-            const snapRow = await getProductSupplySnapshotWithClient(null, pnum);
-            if (Math.floor(snapRow.available) <= 0) continue;
+            const wh = await this._resolveWarehouseIdForOrderReserve(row, pnum);
+            const avail = await this._availableUnitsForOrderReserve(pnum, row, wh);
+            if (avail <= 0) continue;
           }
         }
         await this._applyReserveForOrderIfAbsent(row);
@@ -3820,14 +3910,13 @@ class OrdersService {
         reserved = await getReservedKitUnitsForOrder(pid, id);
         totalNeed += qty;
         totalReserved += reserved;
-        const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
-        const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
-          pid,
-          preferredWh
-        );
-        const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
-        const maxKitsAvail = await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId);
+        const preferredWh = await this._resolveWarehouseIdForOrderReserve(row, pid);
+        const warehouseId = preferredWh;
+        const maxKitsAvail = await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId, {
+          orderRow: row
+        });
         const breakdown = await computeKitReservableBreakdown(pid, { warehouseId });
+        const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
         lineEntries.push({
           productId: pid,
           reservedQty: reserved,
@@ -3870,11 +3959,7 @@ class OrdersService {
         totalNeed += qty;
         reserved = await this._getReservedQtyForOrderProduct(id, pid);
         totalReserved += reserved;
-        const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
-        const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(
-          pid,
-          preferredWh
-        );
+        const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, pid);
         lineEntries.push({
           productId: pid,
           reservedQty: reserved,
@@ -3883,7 +3968,6 @@ class OrdersService {
           lineKind: 'product',
           label: orderLineLabel || (await this._productDisplayLabelById(pid))
         });
-        totalNeed += qty;
       } else if (id) {
         reserved = await this._getReservedQtyForOrder(id);
         totalNeed += qty;
@@ -3957,6 +4041,82 @@ class OrdersService {
     return `Резерв частично установлен: ${after.reservedQty} из ${after.needQty}`;
   }
 
+  /**
+   * Перед сводкой резерва в карточке заказа: перенос ошибочного резерва комплекта,
+   * синхронизация products.quantity с PWS и снятие резерва без покрытия остатком.
+   */
+  async _reconcileReserveBeforeOrderSummary(rows) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(rows) || !rows.length) return;
+
+    const { syncProductQuantityFromWarehouseStock } = await import(
+      './productWarehouseQuantity.service.js'
+    );
+    const touchedProducts = new Set();
+    const stockHooks = {
+      unreserveProduct: (pid, net, oid, m) =>
+        stockMovementsService.applyChange(pid, {
+          delta: net,
+          type: 'unreserve',
+          reason: `Перенос резерва комплекта на комплектующие (заказ ${oid})`.trim(),
+          meta: m
+        }),
+      applyKitReserve: (kitId, kits, oid, m) =>
+        applyKitOrderReserve(kitId, kits, oid, m, (compId, compQty, o, mm) =>
+          this._applyReserveForOrderComponent(compId, compQty, o, mm)
+        )
+    };
+
+    for (const row of rows) {
+      const id = orderRowDbId(row);
+      if (!id) continue;
+      const orderIdStr = String(row.orderId ?? row.order_id ?? '').trim();
+      const productId = await this._resolveProductIdForOrderStock(row).catch(() => null);
+      const pid = Number(productId);
+      if (!Number.isFinite(pid) || pid < 1) continue;
+
+      const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, pid);
+      const metaBase = {
+        warehouse_id: warehouseId,
+        order_id: id,
+        orderId: orderIdStr,
+        strict_warehouse: isMarketplaceFbsOrderRow(row),
+        source: 'order_reserve_summary'
+      };
+
+      const productIds = [pid];
+      if (await isKitProductId(pid)) {
+        try {
+          await reconcileMisplacedKitWholeReserve(
+            pid,
+            id,
+            orderIdStr || String(id),
+            metaBase,
+            stockHooks
+          );
+        } catch (e) {
+          if (e?.statusCode !== 400) {
+            console.warn('[Orders] reconcileReserveBeforeOrderSummary:', e?.message || e);
+          }
+        }
+        const components = await getKitComponents(pid);
+        for (const c of components) {
+          const cid = Number(c.component_product_id);
+          if (Number.isFinite(cid) && cid > 0) productIds.push(cid);
+        }
+      }
+
+      for (const p of productIds) {
+        if (touchedProducts.has(p)) continue;
+        touchedProducts.add(p);
+        await syncProductQuantityFromWarehouseStock(p).catch(() => {});
+        await this.trimExcessReservesForProduct(p, {
+          reason: 'Снятие избыточного резерва при открытии карточки заказа',
+          meta: { source: 'order_reserve_summary' }
+        }).catch(() => {});
+      }
+    }
+  }
+
   async getOrderReserveSummary(
     marketplace,
     orderId,
@@ -3968,6 +4128,7 @@ class OrdersService {
       err.statusCode = 404;
       throw err;
     }
+    await this._reconcileReserveBeforeOrderSummary(rows);
     let summary = await this._summarizeReserveForRows(rows);
     if (!skipDetailAugment) {
       summary = await this._augmentReserveFromDetailItems(summary, marketplace, orderId, rows, {
@@ -4033,8 +4194,8 @@ class OrdersService {
       doUnreserve = net > 0 || before.hasReserve === true;
     }
     const orderIdStr = String(row.orderId ?? row.order_id ?? orderId);
-    const preferredWh = await this._resolveOwnWarehouseIdForOrder(row);
-    const warehouseId = await stockMovementsService.resolveWarehouseIdForProductStock(pid, preferredWh);
+    const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, pid);
+    const strictWh = isMarketplaceFbsOrderRow(row);
     if (doUnreserve) {
       const release =
         quantity != null
@@ -4080,14 +4241,14 @@ class OrdersService {
         kitId != null && (await isKitProductId(kitId)) && pid !== Number(kitId)
           ? Number(kitId)
           : null;
-      const snapManual = await getProductSupplySnapshotWithClient(null, pid);
+      const snapManual = await this._availableUnitsForOrderReserve(pid, row, warehouseId);
       let available = await this._getAvailableUnitsForOrderReserveLine(pid, row, {
         warehouseId,
         kitProductId
       });
       const reserveAsWholeKit = (await isKitProductId(pid)) && kitProductId == null;
       if (!reserveAsWholeKit) {
-        available = Math.min(available, Math.floor(snapManual.available));
+        available = Math.min(available, snapManual);
       }
       toAdd = Math.min(toAdd, available);
       if (toAdd <= 0) {
@@ -4105,6 +4266,7 @@ class OrdersService {
           order_id: orderDbId,
           orderId: orderIdStr,
           warehouse_id: warehouseId,
+          strict_warehouse: strictWh,
           partial_line: true
         };
         if (kitProductId != null) {
