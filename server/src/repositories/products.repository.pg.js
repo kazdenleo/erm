@@ -293,7 +293,7 @@ export function stockListAvailableQuantity(product) {
 
 /**
  * Фильтр по бренду: по имени выбранного бренда (id из справочника аккаунта).
- * Учитывает legacy brand_id без profile_id и mp_*_brand, когда у товара другой id с тем же именем.
+ * Учитывает legacy brand_id без profile_id, дубликаты id с тем же именем и mp_*_brand.
  */
 function appendBrandIdFilter(whereSql, params, paramIndex, brandId) {
   const bRaw = String(brandId).trim();
@@ -304,10 +304,10 @@ function appendBrandIdFilter(whereSql, params, paramIndex, brandId) {
     SELECT 1 FROM brands b_sel
     WHERE b_sel.id = $${paramIndex}
       AND (
-        EXISTS (
-          SELECT 1 FROM brands b_p
-          WHERE b_p.id = p.brand_id
-            AND LOWER(TRIM(b_p.name)) = LOWER(TRIM(b_sel.name))
+        p.brand_id = b_sel.id
+        OR p.brand_id IN (
+          SELECT b2.id FROM brands b2
+          WHERE LOWER(TRIM(b2.name)) = LOWER(TRIM(b_sel.name))
         )
         OR LOWER(TRIM(COALESCE(p.mp_ozon_brand, ''))) = LOWER(TRIM(b_sel.name))
         OR LOWER(TRIM(COALESCE(p.mp_wb_brand, ''))) = LOWER(TRIM(b_sel.name))
@@ -805,6 +805,16 @@ class ProductsRepositoryPG {
           })
           .filter((n) => Number.isFinite(n));
         if (productIds.length > 0) {
+          const { reconcileLegacyProductQuantityToPws } = await import(
+            '../services/productWarehouseQuantity.service.js'
+          );
+          const legacyCandidates = products.filter((p) => Math.max(0, Number(p.quantity) || 0) > 0);
+          for (const p of legacyCandidates) {
+            const pid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+            if (Number.isFinite(pid)) {
+              await reconcileLegacyProductQuantityToPws(pid, wid).catch(() => {});
+            }
+          }
           const pwsRes = await query(
             `SELECT product_id, quantity FROM product_warehouse_stock WHERE warehouse_id = $1 AND product_id = ANY($2::bigint[])`,
             [wid, productIds]
@@ -812,9 +822,29 @@ class ProductsRepositoryPG {
           const map = new Map(
             pwsRes.rows.map((r) => [String(r.product_id), Math.max(0, parseInt(r.quantity, 10) || 0)])
           );
+          const pwsSumRes = await query(
+            `SELECT product_id, COALESCE(SUM(COALESCE(quantity, 0)), 0)::int AS quantity
+             FROM product_warehouse_stock
+             WHERE product_id = ANY($1::bigint[])
+             GROUP BY product_id`,
+            [productIds]
+          );
+          const sumByProduct = new Map(
+            pwsSumRes.rows.map((r) => [String(r.product_id), Math.max(0, parseInt(r.quantity, 10) || 0)])
+          );
           products.forEach((p) => {
-            p.quantity_total_all_warehouses = p.quantity != null ? Number(p.quantity) : 0;
-            p.quantity = map.get(String(p.id)) ?? 0;
+            const key = String(p.id);
+            const legacy = Math.max(0, Number(p.quantity) || 0);
+            p.quantity_total_all_warehouses = legacy;
+            const whQty = map.has(key) ? map.get(key) : null;
+            const globalSum = sumByProduct.has(key) ? sumByProduct.get(key) : 0;
+            if (whQty != null) {
+              p.quantity = whQty;
+            } else if (globalSum <= 0 && legacy > 0) {
+              p.quantity = legacy;
+            } else {
+              p.quantity = 0;
+            }
             p.quantity_warehouse_id = wid;
           });
         }

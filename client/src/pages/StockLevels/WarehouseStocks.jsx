@@ -2319,7 +2319,7 @@ export function WarehouseStocks() {
                         isKitProduct(row.product) ? (
                           <span
                             className="stock-manual-onhand-readonly"
-                            title="Для комплектов наличие задаётся через комплектующие"
+                            title="Целых комплектов (1 SKU) на складе. Резерв по комплектующим — в колонке «Резерв», доступность — в «Доступно»."
                           >
                             {row.onHand}
                           </span>

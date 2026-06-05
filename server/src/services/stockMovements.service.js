@@ -494,6 +494,11 @@ class StockMovementsService {
       whFilter = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
     }
 
+    const { reconcileLegacyProductQuantityToPws } = await import(
+      './productWarehouseQuantity.service.js'
+    );
+    await reconcileLegacyProductQuantityToPws(idNum, whFilter).catch(() => {});
+
     const summary = await this.getReserveSummaryForProduct(idNum, {
       profileId,
       warehouseId: whFilter
@@ -539,6 +544,7 @@ class StockMovementsService {
     for (const c of comps || []) {
       const cid = Number(c.component_product_id);
       if (!Number.isFinite(cid) || cid < 1) continue;
+      await reconcileLegacyProductQuantityToPws(cid, whFilter).catch(() => {});
       const compRows = await this.repository.findByProduct(cid, {
         limit: Math.min(cap, 80),
         profileId,

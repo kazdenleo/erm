@@ -133,6 +133,53 @@ function kitProductSql(alias = 'p') {
   )`;
 }
 
+/** Все возможные артикулы из строки заказа (offer, sku, шаблоны в названии). */
+export function collectOrderSkuCandidates(orderRow = {}) {
+  const out = [];
+  const seen = new Set();
+  const add = (v) => {
+    const s = String(v ?? '').trim();
+    if (!s) return;
+    const key = s.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(s);
+  };
+  add(orderRow.offerId ?? orderRow.offer_id);
+  add(orderRow.sku ?? orderRow.marketplace_sku ?? orderRow.marketplaceSku);
+  const name = String(orderRow.productName ?? orderRow.product_name ?? '').trim();
+  if (name) {
+    for (const m of name.matchAll(/\b([A-Z]{2,}[A-Z0-9]*(?:-[A-Z0-9][A-Z0-9-]*)+)\b/gi)) {
+      add(m[1]);
+    }
+    for (const m of name.matchAll(/\b([A-Z]{2,}\d+[A-Z0-9-]{3,})\b/gi)) {
+      add(m[1]);
+    }
+  }
+  return out;
+}
+
+/** Найти комплект по артикулу без привязки к маркетплейсу (products.sku / product_skus.sku). */
+async function findKitProductIdBySkuAnyMarketplace(sku) {
+  const val = String(sku ?? '').trim();
+  if (!val) return null;
+  const r = await query(
+    `SELECT p.id AS kit_id
+     FROM products p
+     LEFT JOIN product_skus ps ON ps.product_id = p.id
+     WHERE ${kitProductSql('p')}
+       AND (
+         TRIM(COALESCE(p.sku, '')) = TRIM($1)
+         OR TRIM(COALESCE(ps.sku, '')) = TRIM($1)
+       )
+     ORDER BY p.id
+     LIMIT 1`,
+    [val]
+  );
+  const kid = r.rows[0]?.kit_id;
+  return kid != null ? Number(kid) : null;
+}
+
 /**
  * Найти id комплекта по артикулу в заказе (offer_id / marketplace_sku), напр. DTST4333RL.
  */
@@ -171,7 +218,13 @@ async function findKitProductIdByOrderSku(marketplace, offer, msku) {
     params
   );
   const kid = r.rows[0]?.kit_id;
-  return kid != null ? Number(kid) : null;
+  if (kid != null) return Number(kid);
+
+  for (const candidate of [off, sku].filter(Boolean)) {
+    const anyMp = await findKitProductIdBySkuAnyMarketplace(candidate);
+    if (anyMp != null) return anyMp;
+  }
+  return null;
 }
 
 /**
@@ -181,6 +234,12 @@ async function findKitProductIdByOrderSku(marketplace, offer, msku) {
 export async function findKitProductIdForMarketplaceOrder(productId, orderRow = {}) {
   let offer = String(orderRow.offerId ?? orderRow.offer_id ?? '').trim();
   const msku = String(orderRow.marketplace_sku ?? orderRow.sku ?? '').trim();
+
+  const candidates = collectOrderSkuCandidates(orderRow);
+  for (const c of candidates) {
+    const byCandidate = await findKitProductIdByOrderSku(orderRow.marketplace, c, c);
+    if (byCandidate) return byCandidate;
+  }
 
   const bySku = await findKitProductIdByOrderSku(orderRow.marketplace, offer, msku);
   if (bySku) return bySku;
@@ -888,21 +947,22 @@ export async function computeKitReservableBreakdown(kitProductId, opts = {}) {
   }
   const fromComponents = await computeAssemblableFromComponents(kitId, opts);
   const whole = await readKitStockFromDb(kitId, opts);
+  const physicalOnHand = whole.onHand || 0;
   const onSkuReserved = await readKitSkuNetReserved(kitId);
-  const wholeAvail = Math.max(
-    0,
-    (whole.onHand || 0) + (whole.incoming || 0) - onSkuReserved
-  );
+  const wholeReserveAvail = Math.max(0, physicalOnHand - onSkuReserved);
+  const wholeAvail = Math.max(0, physicalOnHand + (whole.incoming || 0) - onSkuReserved);
   const allocCap = allocateKitReservePriority(9999, {
     wholeAvail,
+    wholeReserveAvail,
     fromComponents,
-    physicalOnHand: whole.onHand || 0
+    physicalOnHand
   });
   return {
     wholeAvail,
+    wholeReserveAvail,
     fromComponents,
     total: allocCap.kitsToReserve,
-    physicalOnHand: whole.onHand || 0
+    physicalOnHand
   };
 }
 
@@ -918,11 +978,12 @@ export async function computeMaxKitUnitsReservable(kitProductId, opts = {}) {
 export function allocateKitReservePriority(kitsWanted, breakdown) {
   const wanted = Math.max(0, parseInt(kitsWanted, 10) || 0);
   const physicalOnHand = Math.max(0, Number(breakdown?.physicalOnHand) || 0);
-  const wholeAvail = Math.max(0, Number(breakdown?.wholeAvail) || 0);
   const fromComponents = Math.max(0, Number(breakdown?.fromComponents) || 0);
-  // Целый комплект: наличие + «в пути» на SKU комплекта (не только физический остаток).
-  const wholePool = wholeAvail;
-  const fromWhole = Math.min(wanted, wholePool);
+  const wholeReserveAvail =
+    breakdown?.wholeReserveAvail != null
+      ? Math.max(0, Number(breakdown.wholeReserveAvail) || 0)
+      : Math.max(0, physicalOnHand);
+  const fromWhole = Math.min(wanted, wholeReserveAvail);
   const fromComp = Math.min(Math.max(0, wanted - fromWhole), fromComponents);
   return {
     kitsToReserve: fromWhole + fromComp,
@@ -1015,6 +1076,48 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   });
 
   return alloc.kitsToReserve;
+}
+
+/**
+ * Резерв на SKU комплекта без целого комплекта на складе — снять с комплекта и поставить на комплектующие.
+ * @returns {Promise<number>} сколько комплектов перенесено
+ */
+export async function reconcileMisplacedKitWholeReserve(
+  kitProductId,
+  orderDbId,
+  orderIdLabel,
+  meta,
+  { unreserveProduct, applyKitReserve }
+) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
+  if (typeof unreserveProduct !== 'function' || typeof applyKitReserve !== 'function') return 0;
+
+  const onKit = await getNetReservedForOrderProduct(oid, kitId);
+  if (onKit <= 0) return 0;
+
+  const reserveOpts = {
+    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+  };
+  const breakdown = await computeKitReservableBreakdown(kitId, reserveOpts);
+  if ((breakdown.physicalOnHand || 0) > 0) return 0;
+
+  await unreserveProduct(kitId, onKit, orderIdLabel, {
+    ...meta,
+    order_id: oid,
+    orderId: orderIdLabel,
+    kit_reserve_scope: 'whole',
+    reconcile_kit_to_components: true
+  });
+
+  await applyKitReserve(kitId, onKit, orderIdLabel, {
+    ...meta,
+    order_id: oid,
+    orderId: orderIdLabel,
+    reconcile_kit_to_components: true
+  });
+  return onKit;
 }
 
 export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unreserveFn) {
@@ -1371,6 +1474,7 @@ export default {
   isKitProductType,
   isKitCatalogProduct,
   isKitProductId,
+  collectOrderSkuCandidates,
   findKitProductIdForMarketplaceOrder,
   getKitComponents,
   totalPiecesPerKitUnit,
@@ -1384,6 +1488,7 @@ export default {
   computeMaxKitUnitsReservable,
   computeKitReservableBreakdown,
   allocateKitReservePriority,
+  reconcileMisplacedKitWholeReserve,
   getReservedKitUnitsForOrder,
   computeKitMarketplaceStock,
   readKitStockFromDb,

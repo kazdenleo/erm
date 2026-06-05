@@ -429,18 +429,25 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                   {pieceHint ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}> ({pieceHint})</span>
                   ) : null}
-                  {!lineHas && remaining > 0 ? (
+                  {!canReserve ? (
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+                      {' '}
+                      — привяжите товар в каталоге (артикул в карточке товара или сопоставление МП)
+                    </span>
+                  ) : !lineHas && remaining > 0 && available > 0 ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                       {' '}
                       (доступно к резерву:{' '}
                       {reserveInKitUnits
                         ? `${available} компл.${availablePieces > 0 ? ` / ${availablePieces} шт` : ''}`
                         : available}
+                      {line.lineKind === 'kit' && line.kitReserveFromComponents
+                        ? ', из комплектующих'
+                        : ''}
                       )
                     </span>
-                  ) : null}
-                  {!canReserve ? (
-                    <span style={{ color: 'var(--muted)', fontSize: 12 }}> — привяжите товар в каталоге</span>
+                  ) : !lineHas && remaining > 0 && available <= 0 ? (
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}> — нет доступного остатка</span>
                   ) : null}
                 </span>
                 <div className="order-reserve-line__actions">
