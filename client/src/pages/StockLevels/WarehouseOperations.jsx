@@ -730,7 +730,7 @@ export function WarehouseOperations({
       setInventoryNewRows([]);
       setInventoryNewScanValue('');
       setInventoryNewSearch('');
-      setInventoryNewSelectedProductId('');
+      setInventoryNewPickedProduct(null);
       setInventoryDetailView(null);
     }
   }, [mode]);
@@ -2897,7 +2897,7 @@ export function WarehouseOperations({
                     setLookupError(null);
                     setInventoryNewScanValue('');
                     setInventoryNewSearch('');
-                    setInventoryNewSelectedProductId('');
+                    setInventoryNewPickedProduct(null);
                     const initWh = inventoryWarehouseId || '';
                     setInventorySessionWarehouseId(initWh);
                     if (initWh && typeof reloadProductsWithWarehouse === 'function') {
