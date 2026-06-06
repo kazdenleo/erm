@@ -3,12 +3,12 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal } from '../common/Modal/Modal';
-import { Button } from '../common/Button/Button';
-import { ordersApi } from '../../services/orders.api';
-import { purchasesApi } from '../../services/purchases.api';
-import { suppliersApi } from '../../services/suppliers.api';
-import { getApiErrorMessage } from '../../utils/apiErrorMessage';
+import { Modal } from '../../common/Modal/Modal';
+import { Button } from '../../common/Button/Button';
+import { ordersApi } from '../../../services/orders.api';
+import { purchasesApi } from '../../../services/purchases.api';
+import { suppliersApi } from '../../../services/suppliers.api';
+import { getApiErrorMessage } from '../../../utils/apiErrorMessage.js';
 
 function lineLabel(line) {
   const sku = line?.productSku || line?.product_sku;
