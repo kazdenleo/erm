@@ -129,7 +129,29 @@ const OZON_SUPPLY_LIST_STATES = [
   'OVERDUE',
 ];
 
-function buildOzonSupplyListBody(daysBack, lastId = '') {
+const OZON_SUPPLY_TERMINAL_STATES = new Set([
+  'COMPLETED',
+  'CANCELLED',
+  'REJECTED_AT_SUPPLY_WAREHOUSE',
+]);
+
+function effectiveOzonDaysBack(requestedDays, lastImportedAt, hasImports) {
+  const requested = Math.max(1, Math.min(365, Number(requestedDays) || 90));
+  if (!hasImports || !lastImportedAt) return requested;
+  const since = new Date(lastImportedAt);
+  since.setDate(since.getDate() - 7);
+  const daysSince = Math.ceil((Date.now() - since.getTime()) / 86400000);
+  return Math.max(7, Math.min(requested, daysSince + 1));
+}
+
+function ozonSupplyAlreadyImported(imported, externalNumber, externalSupplyId, supplyOrderId) {
+  if (imported.shipmentNumbers.has(`ozon:${externalNumber}`)) return true;
+  if (externalSupplyId != null && imported.supplyIds.has(String(externalSupplyId))) return true;
+  if (supplyOrderId != null && imported.supplyIds.has(String(supplyOrderId))) return true;
+  return false;
+}
+
+function buildOzonSupplyListBody(daysBack, lastId = '', states = OZON_SUPPLY_LIST_STATES) {
   const days = Math.max(1, Math.min(365, Number(daysBack) || 90));
   const since = new Date();
   since.setDate(since.getDate() - days);
@@ -139,7 +161,7 @@ function buildOzonSupplyListBody(daysBack, lastId = '') {
     sort_by: 'ORDER_CREATION',
     sort_dir: 'DESC',
     filter: {
-      states: OZON_SUPPLY_LIST_STATES,
+      states,
       timeslot_from_range: {
         from: since.toISOString(),
         to: till.toISOString(),
@@ -177,13 +199,14 @@ function flattenOzonSupplyOrders(orders) {
   return rows;
 }
 
-async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts) {
+async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states } = {}) {
   const ids = [];
   let lastId = '';
+  const listStates = states?.length ? states : OZON_SUPPLY_LIST_STATES;
   for (let page = 0; page < 30; page++) {
     const listData = await integrationsService._ozonApiPost(
       '/v3/supply-order/list',
-      buildOzonSupplyListBody(daysBack, lastId),
+      buildOzonSupplyListBody(daysBack, lastId, listStates),
       ozonApiOpts
     );
     const batch = parseOzonListOrderIds(listData);
@@ -524,9 +547,16 @@ class FboSuppliesImportService {
 
     const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
 
+    const imported = await fboSuppliesService.listImportedExternalKeys('ozon', { profileId });
+    const hasImports = imported.count > 0;
+    const effectiveDays = effectiveOzonDaysBack(daysBack, imported.lastImportedAt, hasImports);
+    const listStates = hasImports
+      ? OZON_SUPPLY_LIST_STATES.filter((s) => !OZON_SUPPLY_TERMINAL_STATES.has(s))
+      : OZON_SUPPLY_LIST_STATES;
+
     let orderIds;
     try {
-      orderIds = await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts);
+      orderIds = await fetchOzonSupplyOrderIds(effectiveDays, ozonApiOpts, { states: listStates });
     } catch (e) {
       const err = new Error(e?.message || 'Не удалось получить список поставок Ozon');
       err.statusCode = 400;
@@ -554,6 +584,10 @@ class FboSuppliesImportService {
       const externalNumber =
         baseNumber && supplyId != null ? `${baseNumber}-${supplyId}` : baseNumber || String(supplyId ?? '');
       if (!externalNumber) continue;
+
+      if (ozonSupplyAlreadyImported(imported, externalNumber, supplyId, supplyOrderId)) {
+        continue;
+      }
 
       let items = [];
       const bundleId = supply?.bundle_id ?? order.bundle_id ?? order.bundle_ids?.[0];
@@ -628,14 +662,6 @@ class FboSuppliesImportService {
         itemCount: sumSupplyItemsQuantity(items),
         alreadyImported: false,
       });
-    }
-
-    const existing = await fboSuppliesService.findExistingExternalNumbers(
-      candidates.map((c) => ({ marketplace: c.marketplace, externalShipmentNumber: c.externalShipmentNumber })),
-      { profileId }
-    );
-    for (const c of candidates) {
-      c.alreadyImported = existing.has(`${c.marketplace}:${c.externalShipmentNumber}`);
     }
 
     return candidates;

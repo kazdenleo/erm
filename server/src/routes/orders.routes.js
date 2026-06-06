@@ -115,6 +115,13 @@ router.put(
   wrapAsync(ordersController.setToProcurement.bind(ordersController))
 );
 
+// Тест: отправить заказ поставщику (открытая закупка + будущий API)
+router.post(
+  '/:marketplace/:orderId/order-at-supplier',
+  validateOrderDetailParams,
+  wrapAsync(ordersController.orderAtSupplier.bind(ordersController))
+);
+
 // Отменить заказ Wildberries через API маркетплейса
 router.put(
   '/:marketplace/:orderId/cancel-marketplace',

@@ -21,6 +21,7 @@ import {
   getOrderStatusLabel,
   getOrderProcurementSupplierName,
   isOrderStatusEligibleForProcurement,
+  isOrderStatusEligibleForSupplierOrder,
 } from '../../constants/orderStatuses';
 import { OrderCardActions, OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
 import { onNavigationClick } from '../../utils/navigationClick.js';
@@ -397,6 +398,7 @@ export function Orders() {
   const navigate = useNavigate();
   const { profile, selectedOrganizationId: contextOrganizationId, setSelectedOrganizationId } = useAuth();
   const allowPrivateOrders = profile?.allow_private_orders === true;
+  const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const { warehouses, loadWarehouses } = useWarehouses();
   const { organizations } = useOrganizations();
   const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
@@ -445,6 +447,8 @@ export function Orders() {
   const [returnToNewLoadingKey, setReturnToNewLoadingKey] = useState(null);
   const [releaseReserveLoadingKey, setReleaseReserveLoadingKey] = useState(null);
   const [procurementLoadingKey, setProcurementLoadingKey] = useState(null);
+  const [supplierOrderLoadingKey, setSupplierOrderLoadingKey] = useState(null);
+  const [supplierOrderMessage, setSupplierOrderMessage] = useState(null);
   /** Сброс нативного select «Статус в системе» после применения */
   const [bulkErmStatusKey, setBulkErmStatusKey] = useState(0);
   const [bulkLocalErmStatusLoading, setBulkLocalErmStatusLoading] = useState(false);
@@ -1212,6 +1216,33 @@ export function Orders() {
       setAssemblyMessage(e.response?.data?.message || e.message || 'Ошибка отправки на сборку');
     } finally {
       setSendToAssemblyRowKey(null);
+    }
+  };
+
+  const handleOrderAtSupplier = async (row) => {
+    const toSend = row.orders || [row.first];
+    const first = toSend[0];
+    if (!first?.marketplace || !first?.orderId) return;
+    try {
+      setSupplierOrderLoadingKey(row.key);
+      setSupplierOrderMessage(null);
+      setRefreshError(null);
+      const result = await ordersApi.orderAtSupplier(first.marketplace, first.orderId);
+      let msg = result?.message || 'Заказ отправлен поставщику';
+      if (result?.purchaseId) {
+        msg += `. Закупка №${result.purchaseId}`;
+      }
+      if (result?.supplierApi?.message && !result?.supplierApi?.submitted) {
+        msg += `. ${result.supplierApi.message}`;
+      }
+      setSupplierOrderMessage(msg);
+      await reloadOrders({ silent: true });
+    } catch (e) {
+      const msg = getApiErrorMessage(e, 'Не удалось отправить заказ поставщику');
+      setSupplierOrderMessage(msg);
+      setRefreshError(msg);
+    } finally {
+      setSupplierOrderLoadingKey(null);
     }
   };
 
@@ -2497,6 +2528,24 @@ export function Orders() {
                   .catch(() => {});
               }}
               onError={(msg) => setDetailModalError(msg)}
+              onSupplierOrdered={(result) => {
+                let msg = result?.message || 'Заказ отправлен поставщику';
+                if (result?.purchaseId) msg += ` (закупка №${result.purchaseId})`;
+                setSupplierOrderMessage(msg);
+                reloadOrders({ silent: true });
+                const mp = detailModalRow.first.marketplace;
+                const oid = marketplaceOrderIdForApi(
+                  detailModalRow.orders ?? [detailModalRow.first],
+                  mp
+                );
+                ordersApi
+                  .getOrderDetail(mp, oid, { fast: true })
+                  .then((pack) => {
+                    setDetailModalData(pack);
+                    setDetailModalError(null);
+                  })
+                  .catch(() => {});
+              }}
             />
             {detailModalLoading && (
               <div className="loading">Загрузка деталей заказа...</div>
@@ -2553,6 +2602,20 @@ export function Orders() {
       {assemblyMessage && (
         <div className={assemblyMessage.startsWith('Ошибка') ? 'error' : 'info'} style={{marginBottom: '16px'}}>
           {assemblyMessage}
+        </div>
+      )}
+      {supplierOrderMessage && (
+        <div
+          className={
+            supplierOrderMessage.includes('Не удалось') ||
+            supplierOrderMessage.includes('нет ') ||
+            supplierOrderMessage.includes('Нет ')
+              ? 'error'
+              : 'info'
+          }
+          style={{ marginBottom: '16px' }}
+        >
+          {supplierOrderMessage}
         </div>
       )}
 
@@ -3044,6 +3107,30 @@ export function Orders() {
                           )}
                         </Button>
                       )}
+                      {supplierSyncEnabled &&
+                        groupOrders.some((o) =>
+                          isOrderStatusEligibleForSupplierOrder(o.marketplace, o.status)
+                        ) && (
+                          <Button
+                            variant="secondary"
+                            size="small"
+                            className="orders-action-icon orders-action-icon--supplier-order"
+                            onClick={() => handleOrderAtSupplier(row)}
+                            disabled={
+                              supplierOrderLoadingKey === row.key ||
+                              procurementLoadingKey === row.key ||
+                              releaseReserveLoadingKey === row.key
+                            }
+                            title="Заказать у поставщика (тест)"
+                            aria-label="Заказать"
+                          >
+                            {supplierOrderLoadingKey === row.key ? (
+                              <span className="orders-action-icon__busy" aria-hidden>…</span>
+                            ) : (
+                              <i className="pe-7s-upload" aria-hidden />
+                            )}
+                          </Button>
+                        )}
                       {first.status === 'in_procurement' && (
                         <>
                           <Button

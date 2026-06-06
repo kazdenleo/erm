@@ -5,10 +5,14 @@
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
 import { ordersApi } from '../../services/orders.api';
 import { Button } from '../../components/common/Button/Button';
-import { getOrderStatusLabel } from '../../constants/orderStatuses';
+import {
+  getOrderStatusLabel,
+  isOrderStatusEligibleForSupplierOrder,
+} from '../../constants/orderStatuses';
 import { marketplaceOrderIdForApi } from '../../utils/orderListGroupKey';
 import {
   groupReserveCoverageKind,
@@ -115,11 +119,43 @@ function shouldShowOrderAssemblySection(assembly) {
 }
 
 /** Отмена на МП + удаление записи из ERM (без отмены на МП). */
-export function OrderCardActions({ marketplace, orderId, status, onDeleted, onCancelled, onError }) {
+export function OrderCardActions({
+  marketplace,
+  orderId,
+  status,
+  onDeleted,
+  onCancelled,
+  onError,
+  onSupplierOrdered,
+}) {
+  const { profile } = useAuth();
+  const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const [cancelLoading, setCancelLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
-  const busy = cancelLoading || deleteLoading;
+  const [supplierOrderLoading, setSupplierOrderLoading] = useState(false);
+  const busy = cancelLoading || deleteLoading || supplierOrderLoading;
   const showCancel = orderCanShowCancel(marketplace, status);
+  const showSupplierOrder =
+    supplierSyncEnabled && isOrderStatusEligibleForSupplierOrder(marketplace, status);
+
+  const handleSupplierOrder = async () => {
+    if (
+      !window.confirm(
+        'Отправить заказ поставщику? Будет создана или дополнена открытая закупка (тестовый режим).'
+      )
+    ) {
+      return;
+    }
+    setSupplierOrderLoading(true);
+    try {
+      const result = await ordersApi.orderAtSupplier(marketplace, orderId);
+      onSupplierOrdered?.(result);
+    } catch (e) {
+      onError?.(e.response?.data?.message || e.message || 'Не удалось отправить заказ поставщику');
+    } finally {
+      setSupplierOrderLoading(false);
+    }
+  };
 
   const handleCancel = async () => {
     if (
@@ -158,6 +194,11 @@ export function OrderCardActions({ marketplace, orderId, status, onDeleted, onCa
   return (
     <section className="order-detail-actions" aria-label="Действия с заказом">
       <div className="order-detail-actions__buttons">
+        {showSupplierOrder ? (
+          <Button variant="primary" size="small" onClick={handleSupplierOrder} disabled={busy}>
+            {supplierOrderLoading ? 'Заказ…' : 'Заказать'}
+          </Button>
+        ) : null}
         {showCancel ? (
           <Button variant="danger" size="small" onClick={handleCancel} disabled={busy}>
             {cancelLoading ? 'Отмена…' : 'Отменить заказ'}
@@ -168,6 +209,9 @@ export function OrderCardActions({ marketplace, orderId, status, onDeleted, onCa
         </Button>
       </div>
       <p className="order-detail-actions-hint">
+        {showSupplierOrder
+          ? '«Заказать» — тестовая отправка поставщику: открытая закупка и перевод в «В закупке». '
+          : ''}
         «Удалить из системы» убирает заказ из ERM и не отменяет его на маркетплейсе. «Отменить» — отмена в
         системе и запрос отмены на МП (если доступно).
       </p>

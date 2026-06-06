@@ -17,6 +17,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import { readData } from '../utils/storage.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import logger from '../utils/logger.js';
+import orderSupplierOrderService from '../services/orderSupplierOrder.service.js';
 
 const profilesRepo = repositoryFactory.getProfilesRepository();
 
@@ -953,6 +954,39 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
       await ordersLabelsService.preloadLabels(orders);
       return res.status(200).json({ ok: true, data: { processed: orders.length } });
     } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Тест: отправить заказ поставщику (создать/дополнить открытую закупку).
+   * POST /orders/:marketplace/:orderId/order-at-supplier
+   */
+  async orderAtSupplier(req, res, next) {
+    try {
+      const { marketplace, orderId } = req.params;
+      const tid = tenantListProfileId(req);
+      const profileId = tid === TENANT_LIST_EMPTY ? null : tid;
+      const data = await orderSupplierOrderService.placeOrderForMarketplaceOrder(
+        marketplace,
+        orderId,
+        { profileId, userId: req.user?.id ?? null }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      if (
+        error.statusCode === 400 ||
+        error.statusCode === 403 ||
+        error.statusCode === 404 ||
+        error.statusCode === 409 ||
+        error.statusCode === 501
+      ) {
+        return res.status(error.statusCode).json({
+          ok: false,
+          message: error.message,
+          details: error.details ?? null,
+        });
+      }
       next(error);
     }
   }

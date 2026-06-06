@@ -97,9 +97,9 @@ async function findOpenAutoPurchaseId(client, { profileId, supplierId, arrivalBu
   return Number(row.id);
 }
 
-async function loadAutoSuppliers(profileId) {
+async function loadActiveSuppliers(profileId, { requireAutoOrdersEnabled = false } = {}) {
   const r = await query(
-    `SELECT id, name, api_config
+    `SELECT id, name, code, api_config
      FROM suppliers
      WHERE profile_id = $1
        AND COALESCE(is_active, true) = true`,
@@ -109,15 +109,20 @@ async function loadAutoSuppliers(profileId) {
   for (const row of r.rows || []) {
     const apiConfig = parseApiConfig(row.api_config);
     const auto = autoOrderSettingsFromApiConfig(apiConfig);
-    if (!auto.autoOrdersEnabled) continue;
+    if (requireAutoOrdersEnabled && !auto.autoOrdersEnabled) continue;
     out.push({
       id: Number(row.id),
       name: row.name,
+      code: row.code,
       apiConfig,
       ...auto,
     });
   }
   return out;
+}
+
+async function loadAutoSuppliers(profileId) {
+  return loadActiveSuppliers(profileId, { requireAutoOrdersEnabled: true });
 }
 
 async function pickSupplierForProduct(productId, autoSuppliers) {
@@ -167,6 +172,113 @@ async function resolveDefaultOrgAndWarehouse(profileId) {
 
 function groupKey(supplierId, arrivalBucket) {
   return `${supplierId}|${arrivalBucket}`;
+}
+
+async function loadOrderRowsForSupplierOrder(profileId, marketplace, orderId) {
+  const dbMp = orderMarketplaceToDb(marketplace);
+  const oid = String(orderId ?? '').trim();
+  if (!dbMp || !oid) return [];
+
+  const head = await query(
+    `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status
+     FROM orders o
+     WHERE o.profile_id = $1
+       AND o.marketplace = $2
+       AND o.order_id = $3
+     LIMIT 1`,
+    [profileId, dbMp, oid]
+  );
+  const row = head.rows?.[0];
+  if (!row) return [];
+
+  const gid = row.order_group_id != null ? String(row.order_group_id).trim() : '';
+  if (gid) {
+    const group = await query(
+      `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status
+       FROM orders o
+       WHERE o.profile_id = $1
+         AND o.order_group_id = $2
+       ORDER BY o.id ASC`,
+      [profileId, gid]
+    );
+    return group.rows || [];
+  }
+  return [row];
+}
+
+async function procureGroupForSupplierOrder(
+  g,
+  { profileId, userId, organizationId, warehouseId, manualTest = false, now = new Date() }
+) {
+  if (!g?.items?.length) {
+    return { ok: false, error: 'no_items', message: 'Нет позиций для закупки' };
+  }
+
+  let purchaseId = await transaction(async (client) =>
+    findOpenAutoPurchaseId(client, {
+      profileId,
+      supplierId: g.supplierId,
+      arrivalBucket: g.arrivalBucket,
+    })
+  );
+
+  if (!manualTest && !purchaseId && g.minOrderAmount != null) {
+    const est = await transaction(async (client) => {
+      let sum = 0;
+      for (const it of g.items) {
+        const pr = await client.query(
+          `SELECT price FROM supplier_stocks WHERE supplier_id = $1 AND product_id = $2`,
+          [g.supplierId, it.productId]
+        );
+        const price = pr.rows?.[0]?.price != null ? Number(pr.rows[0].price) : 0;
+        if (price > 0) sum += price * it.quantity;
+      }
+      return sum;
+    });
+    if (est < g.minOrderAmount) {
+      return {
+        ok: false,
+        error: 'below_min_order_amount',
+        message: `Сумма заказа (${Math.round(est)} ₽) ниже минимальной для поставщика (${g.minOrderAmount} ₽)`,
+        estimatedTotal: est,
+        minOrderAmount: g.minOrderAmount,
+      };
+    }
+  }
+
+  const note = manualTest
+    ? `${autoArrivalNoteText(g.arrivalBucket)} · тест «Заказать»`
+    : autoArrivalNoteText(g.arrivalBucket);
+  const payload = {
+    procurementItems: g.procurementItems,
+    items: g.items.map((it) => ({
+      productId: it.productId,
+      quantity: it.quantity,
+      sourceOrders: it.sourceOrders,
+    })),
+    note,
+  };
+
+  if (purchaseId) {
+    payload.existingPurchaseId = purchaseId;
+  } else {
+    payload.supplierId = g.supplierId;
+    payload.organizationId = organizationId;
+    payload.warehouseId = warehouseId;
+  }
+
+  const result = await purchasesService.procureFromOrders(payload, {
+    userId,
+    profileId,
+  });
+
+  return {
+    ok: true,
+    purchaseId: result?.purchaseId ?? purchaseId ?? null,
+    procurement: result?.procurement ?? null,
+    appendedToExisting: Boolean(purchaseId),
+    arrivalBucket: g.arrivalBucket,
+  };
 }
 
 class AutoProcurementService {
@@ -342,6 +454,175 @@ class AutoProcurementService {
       items: itemsAdded,
       skipped,
       suppliers: autoSuppliers.length,
+    };
+  }
+
+  /**
+   * Ручной тест: один заказ (или группа WB) → открытая закупка у поставщика.
+   * @returns {Promise<object>}
+   */
+  async runForMarketplaceOrder(
+    marketplace,
+    orderId,
+    { profileId, userId = null, now = new Date(), manualTest = true } = {}
+  ) {
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      return { ok: false, error: 'no_profile', message: 'Профиль не определён' };
+    }
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { ok: false, error: 'not_pg', message: 'Доступно только с PostgreSQL' };
+    }
+
+    const suppliers = await loadActiveSuppliers(pid, {
+      requireAutoOrdersEnabled: !manualTest,
+    });
+    if (!suppliers.length) {
+      return {
+        ok: false,
+        error: 'no_suppliers',
+        message: manualTest
+          ? 'Нет активных поставщиков в аккаунте'
+          : 'Нет поставщиков с включённым автозаказом',
+      };
+    }
+
+    const { organizationId, warehouseId } = await resolveDefaultOrgAndWarehouse(pid);
+    if (!organizationId || !warehouseId) {
+      return {
+        ok: false,
+        error: 'no_org_warehouse',
+        message: 'Укажите организацию и склад (хотя бы по одному на аккаунт)',
+      };
+    }
+
+    const orderRows = await loadOrderRowsForSupplierOrder(pid, marketplace, orderId);
+    if (!orderRows.length) {
+      return { ok: false, error: 'order_not_found', message: 'Заказ не найден' };
+    }
+
+    const ineligible = orderRows.filter((row) => {
+      const st = String(row.status ?? '').trim().toLowerCase();
+      const mp = String(row.marketplace ?? '').toLowerCase();
+      if (st === 'in_procurement') return false;
+      if (['new', 'in_assembly', 'wb_assembly'].includes(st)) return false;
+      if (mp === 'wb' && (row.status === '__wb_status_pending__' || st === 'wb_status_unknown')) {
+        return false;
+      }
+      return true;
+    });
+    if (ineligible.length === orderRows.length) {
+      return {
+        ok: false,
+        error: 'ineligible_status',
+        message:
+          'Заказать у поставщика можно для «Новый», «На сборке», «В закупке» или у WB — пока статус не получен',
+        status: orderRows[0]?.status ?? null,
+      };
+    }
+
+    let supplier = null;
+    let supplierRow = null;
+    const items = [];
+    const procurementItems = [];
+    const seenProc = new Set();
+    let skippedAlreadyInPurchase = 0;
+    let skippedNoProduct = 0;
+    let skippedNoSupplierStock = 0;
+
+    await transaction(async (client) => {
+      for (const row of orderRows) {
+        const productId = Number(row.product_id);
+        if (!Number.isFinite(productId) || productId < 1) {
+          skippedNoProduct += 1;
+          continue;
+        }
+        const mp = row.marketplace;
+        const oid = row.order_id;
+        if (await orderAlreadyInOpenPurchase(client, pid, mp, oid)) {
+          skippedAlreadyInPurchase += 1;
+          continue;
+        }
+
+        const picked = await pickSupplierForProduct(productId, suppliers);
+        if (!picked) {
+          skippedNoSupplierStock += 1;
+          continue;
+        }
+        if (!supplier) {
+          supplier = picked;
+          supplierRow = suppliers.find((s) => s.id === picked.id) || picked;
+        } else if (picked.id !== supplier.id) {
+          skippedNoSupplierStock += 1;
+          continue;
+        }
+
+        const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
+        const procKey = `${mp}|${oid}`;
+        if (!seenProc.has(procKey)) {
+          seenProc.add(procKey);
+          procurementItems.push({ marketplace: mp, orderId: oid });
+        }
+        const existing = items.find((it) => it.productId === productId);
+        if (existing) {
+          existing.quantity += qty;
+          existing.sourceOrders.push({ marketplace: mp, orderId: oid });
+        } else {
+          items.push({
+            productId,
+            quantity: qty,
+            sourceOrders: [{ marketplace: mp, orderId: oid }],
+          });
+        }
+      }
+    });
+
+    if (!supplier || !items.length) {
+      if (skippedAlreadyInPurchase > 0 && skippedNoSupplierStock === 0 && skippedNoProduct === 0) {
+        return {
+          ok: false,
+          error: 'already_in_purchase',
+          message: 'Заказ уже добавлен в открытую закупку',
+        };
+      }
+      return {
+        ok: false,
+        error: 'no_supplier_stock',
+        message:
+          skippedNoSupplierStock > 0
+            ? 'Нет остатка у поставщиков по товарам заказа (обновите остатки поставщиков)'
+            : 'Не удалось собрать позиции для закупки',
+        skippedAlreadyInPurchase,
+        skippedNoProduct,
+        skippedNoSupplierStock,
+      };
+    }
+
+    const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(supplierRow.apiConfig, now);
+    const procResult = await procureGroupForSupplierOrder(
+      {
+        supplierId: supplier.id,
+        arrivalBucket,
+        minOrderAmount: supplierRow.minOrderAmount,
+        items,
+        procurementItems,
+      },
+      { profileId: pid, userId, organizationId, warehouseId, manualTest, now }
+    );
+
+    if (!procResult.ok) return { ok: false, ...procResult };
+
+    return {
+      ok: true,
+      purchaseId: procResult.purchaseId,
+      supplierId: supplier.id,
+      supplierName: supplierRow.name || null,
+      supplierCode: supplierRow.code || null,
+      arrivalBucket: procResult.arrivalBucket,
+      procurement: procResult.procurement,
+      appendedToExisting: procResult.appendedToExisting,
+      itemsCount: items.length,
+      skippedAlreadyInPurchase,
     };
   }
 

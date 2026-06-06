@@ -133,6 +133,14 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Тест: отправить заказ поставщику (открытая закупка). */
+  orderAtSupplier: async (marketplace, orderId) => {
+    const mp = encodeURIComponent(marketplace);
+    const id = encodeURIComponent(orderId);
+    const response = await api.post(`/orders/${mp}/${id}/order-at-supplier`);
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Отправить выбранные заказы на сборку
    * @param {Array<{ marketplace: string, orderId: string }>} items

@@ -244,6 +244,37 @@ class FboSuppliesService {
     };
   }
 
+  /** Уже импортированные ключи поставок (для инкрементальной синхронизации с маркетплейса). */
+  async listImportedExternalKeys(marketplace, { profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const mp = normalizeMarketplace(marketplace);
+    const r = await query(
+      `SELECT external_shipment_number, external_supply_id, created_at
+       FROM fbo_supplies
+       WHERE ($1::bigint IS NULL OR profile_id = $1) AND marketplace = $2`,
+      [pid, mp]
+    );
+    const shipmentNumbers = new Set();
+    const supplyIds = new Set();
+    let lastImportedAt = null;
+    for (const row of r.rows || []) {
+      const ext = row.external_shipment_number != null ? String(row.external_shipment_number).trim() : '';
+      if (ext) shipmentNumbers.add(`${mp}:${ext}`);
+      const sid = row.external_supply_id != null ? String(row.external_supply_id).trim() : '';
+      if (sid) supplyIds.add(sid);
+      const created = row.created_at ? new Date(row.created_at) : null;
+      if (created && (!lastImportedAt || created > lastImportedAt)) {
+        lastImportedAt = created;
+      }
+    }
+    return {
+      shipmentNumbers,
+      supplyIds,
+      lastImportedAt,
+      count: (r.rows || []).length,
+    };
+  }
+
   async findExistingExternalNumbers(pairs, { profileId } = {}) {
     const pid = normalizeProfileId(profileId);
     const set = new Set();

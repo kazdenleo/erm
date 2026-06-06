@@ -2309,21 +2309,7 @@ class ProductsRepositoryPG {
       [productId, warehouseId]
     );
     if (!r.rows?.length) {
-      // Если складской учёт включён, но строка по складу ещё не создана (например, после миграции),
-      // то резерв/свободный остаток начинают считаться как 0. Делам безопасный backfill из products.quantity.
-      const pr = await query(`SELECT quantity FROM products WHERE id = $1`, [productId]);
-      const q = pr.rows?.[0]?.quantity != null ? Math.max(0, parseInt(pr.rows[0].quantity, 10) || 0) : 0;
-      try {
-        await query(
-          `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (product_id, warehouse_id) DO NOTHING`,
-          [productId, warehouseId, q]
-        );
-      } catch {
-        // ignore
-      }
-      return q;
+      return 0;
     }
     return Math.max(0, parseInt(r.rows[0].quantity, 10) || 0);
   }

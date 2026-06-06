@@ -1813,7 +1813,7 @@ class StockMovementsService {
           quantityChange: delta,
           reason: reason || null,
           meta: metaMove,
-          warehouseId,
+            warehouseId,
           profileId: prodProfileId,
         });
       };

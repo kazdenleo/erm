@@ -6,8 +6,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
 import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
+import {
+  matchProductsLocal,
+  mergeProductLists,
+  normalizeProductSearchQuery,
+  searchProductsRemote,
+} from '../../utils/productSearch';
 import { useNavigate } from 'react-router-dom';
 import { purchasesApi } from '../../services/purchases.api';
+import { productsApi } from '../../services/products.api';
 import { useProducts } from '../../hooks/useProducts';
 import './WarehouseOperations.css';
 import { useWarehouses } from '../../hooks/useWarehouses';
@@ -195,7 +202,8 @@ export function Purchases() {
   const [createWarehouseId, setCreateWarehouseId] = useState('');
   const [createItems, setCreateItems] = useState([{ productId: '', quantity: 1 }]);
   const [createProductSearch, setCreateProductSearch] = useState('');
-  const [createKnownProducts, setCreateKnownProducts] = useState({});
+  const [createSearchResults, setCreateSearchResults] = useState([]);
+  const [createSearchLoading, setCreateSearchLoading] = useState(false);
   const [excelImportLoading, setExcelImportLoading] = useState(false);
   const excelInputRef = useRef(null);
   const [detail, setDetail] = useState(null);
@@ -299,10 +307,30 @@ export function Purchases() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showArchived]);
 
+  const productOptions = useMemo(() => {
+    return (products || []).map((p) => ({
+      id: p.id,
+      label: `${p.sku || p.id} — ${p.name || 'Без названия'}`,
+    }));
+  }, [products]);
+
+  const createFilteredProductOptions = useMemo(() => {
+    const q = normalizeProductSearchQuery(createProductSearch);
+    if (!q) return productOptions;
+    const ids = new Set(
+      (createSearchResults.length ? createSearchResults : matchProductsLocal(products, q)).map((p) =>
+        String(p.id)
+      )
+    );
+    if (ids.size === 0) return productOptions;
+    return productOptions.filter((o) => ids.has(String(o.id)));
+  }, [productOptions, createProductSearch, createSearchResults, products]);
+
   const closeCreateModal = useCallback(() => {
     setCreateOpen(false);
     setCreateProductSearch('');
-    setCreateKnownProducts({});
+    setCreateSearchResults([]);
+    setCreateSearchLoading(false);
     setExcelImportLoading(false);
   }, []);
 
@@ -314,21 +342,16 @@ export function Purchases() {
 
   const createProductLabelById = useMemo(() => {
     const m = new Map();
-    for (const p of Object.values(createKnownProducts)) {
+    for (const p of createSearchResults) {
       if (p?.id != null) m.set(String(p.id), `${p.sku || '—'} — ${p.name || 'Без названия'}`);
     }
-    for (const p of products || []) {
-      if (p?.id != null && !m.has(String(p.id))) {
-        m.set(String(p.id), `${p.sku || '—'} — ${p.name || 'Без названия'}`);
-      }
-    }
     return m;
-  }, [createKnownProducts, products]);
+  }, [createSearchResults]);
 
   const addProductToCreateItems = useCallback((product, addQty = 1) => {
     const id = product?.id;
     if (id == null || id === '') return;
-    setCreateKnownProducts((prev) => ({ ...prev, [String(id)]: product }));
+    setCreateSearchResults((prev) => mergeProductLists(prev, [product]));
     const add = Math.max(1, parseInt(addQty, 10) || 1);
     const idStr = String(id);
     setCreateItems((prev) => {
@@ -344,6 +367,89 @@ export function Purchases() {
       return [...prev, { productId: idStr, quantity: add }];
     });
   }, []);
+
+  useEffect(() => {
+    if (!createOpen) return undefined;
+    const q = normalizeProductSearchQuery(createProductSearch);
+    if (!q) {
+      setCreateSearchResults([]);
+      setCreateSearchLoading(false);
+      return undefined;
+    }
+    const local = matchProductsLocal(products, q);
+    if (local.length) setCreateSearchResults(local);
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setCreateSearchLoading(true);
+      try {
+        const res = await productsApi.getAll({ search: q, limit: 40 });
+        const remote = Array.isArray(res?.data) ? res.data : [];
+        if (!cancelled) setCreateSearchResults(mergeProductLists(local, remote));
+      } catch {
+        if (!cancelled) setCreateSearchResults(local);
+      } finally {
+        if (!cancelled) setCreateSearchLoading(false);
+      }
+    }, 320);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [createOpen, createProductSearch, products]);
+
+  const resolveProductForCreate = useCallback(
+    async (raw) => {
+      const v = normalizeProductSearchQuery(raw);
+      if (!v) return null;
+      try {
+        const res = await productsApi.getByBarcode(v);
+        const byBarcode = res?.data ?? res;
+        if (byBarcode?.id) return byBarcode;
+      } catch {
+        /* fallback */
+      }
+      const local = matchProductsLocal(products, v);
+      if (local.length === 1) return local[0];
+      const fromResults = createSearchResults.length ? createSearchResults : local;
+      if (fromResults.length === 1) return fromResults[0];
+      try {
+        const res = await productsApi.getAll({ search: v, limit: 5 });
+        const list = Array.isArray(res?.data) ? res.data : [];
+        if (list.length === 1) return list[0];
+      } catch {
+        /* ignore */
+      }
+      return null;
+    },
+    [products, createSearchResults]
+  );
+
+  const handleCreateSearchSubmit = useCallback(
+    async (e) => {
+      e?.preventDefault?.();
+      const q = normalizeProductSearchQuery(createProductSearch);
+      if (!q) return;
+      setErr(null);
+      const matches =
+        createSearchResults.length > 0 ? createSearchResults : matchProductsLocal(products, q);
+      if (matches.length > 1) return;
+      const product = matches.length === 1 ? matches[0] : await resolveProductForCreate(q);
+      if (!product?.id) {
+        setErr('Товар не найден. Уточните артикул, название или штрихкод.');
+        return;
+      }
+      addProductToCreateItems(product, 1);
+      setCreateProductSearch('');
+      setCreateSearchResults([]);
+    },
+    [
+      createProductSearch,
+      createSearchResults,
+      products,
+      resolveProductForCreate,
+      addProductToCreateItems
+    ]
+  );
 
   useEffect(() => {
     if (err && detail && detailErrRef.current) {
@@ -829,10 +935,50 @@ export function Purchases() {
               onSelect={(p) => {
                 addProductToCreateItems(p, 1);
                 setCreateProductSearch('');
+                setCreateSearchResults([]);
                 setErr(null);
               }}
             />
           </div>
+          {createSearchLoading && (
+            <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+              Поиск…
+            </p>
+          )}
+          {!createSearchLoading &&
+            normalizeProductSearchQuery(createProductSearch) &&
+            createSearchResults.length > 1 && (
+              <div style={{ marginBottom: 8, maxHeight: 220, overflowY: 'auto', border: '1px solid var(--border, #e8e8e8)', borderRadius: 6 }}>
+                <div className="muted" style={{ fontSize: 12, padding: '6px 10px', borderBottom: '1px solid var(--border, #eee)' }}>
+                  Выберите товар
+                </div>
+                {createSearchResults.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      border: 'none',
+                      borderBottom: '1px solid var(--border, #f0f0f0)',
+                      background: 'transparent',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      addProductToCreateItems(p, 1);
+                      setCreateProductSearch('');
+                      setCreateSearchResults([]);
+                      setErr(null);
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.sku || '—'}</div>
+                    <div style={{ fontSize: 12, opacity: 0.85 }}>{p.name || 'Без названия'}</div>
+                  </button>
+                ))}
+              </div>
+            )}
         </div>
         {createItems.map((it, idx) => (
           <div key={idx} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
