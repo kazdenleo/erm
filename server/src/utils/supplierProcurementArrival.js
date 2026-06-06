@@ -100,3 +100,54 @@ export function resolveProcurementArrivalBucketFromApiConfig(apiConfig, now = ne
   const cfg = apiConfig && typeof apiConfig === 'object' ? apiConfig : {};
   return resolveProcurementArrivalBucket(cfg.warehouses, now);
 }
+
+/** Дата в Europe/Moscow как YYYY-MM-DD. */
+export function formatMoscowDate(now = new Date(), dayOffset = 0) {
+  const d = new Date(now.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return fmt.format(d);
+}
+
+/** Склад поставщика, определивший bucket (для ship_date / planned_delivery). */
+export function pickActiveSupplierWarehouse(apiConfig, now = new Date()) {
+  const cfg = apiConfig && typeof apiConfig === 'object' ? apiConfig : {};
+  const rows = normalizeSupplierConfigWarehouses(Array.isArray(cfg.warehouses) ? cfg.warehouses : []);
+  if (!rows.length) return { warehouse: null, bucket: SUPPLIER_ARRIVAL_TODAY };
+
+  const mins = getMoscowMinutesOfDay(now);
+  for (const w of rows) {
+    const after = w.timeAfter || '00:00';
+    if (isMinutesInWarehouseWindow(mins, after, w.time)) {
+      return {
+        warehouse: w,
+        bucket: normalizeSupplierWarehouseArrivalDay(w.arrivalDay),
+      };
+    }
+  }
+
+  const bucket = resolveProcurementArrivalBucket(rows, now);
+  const todayRows = rows.filter(
+    (w) => normalizeSupplierWarehouseArrivalDay(w.arrivalDay) === SUPPLIER_ARRIVAL_TODAY
+  );
+  const pool = bucket === SUPPLIER_ARRIVAL_TODAY && todayRows.length ? todayRows : rows;
+  return { warehouse: pool[0] || rows[0] || null, bucket };
+}
+
+/**
+ * @param {number} [deliveryDays] delivery_days из supplier_stocks
+ * @returns {{ shipDate: string, plannedDeliveryDate: string, arrivalBucket: string, supplierWarehouseName: string|null }}
+ */
+export function computeProcurementDates(apiConfig, now = new Date(), deliveryDays = 0) {
+  const { warehouse, bucket } = pickActiveSupplierWarehouse(apiConfig, now);
+  const offset = bucket === SUPPLIER_ARRIVAL_TOMORROW ? 1 : 0;
+  const shipDate = formatMoscowDate(now, offset);
+  const lead = Math.max(0, Math.floor(Number(deliveryDays) || 0));
+  const plannedDeliveryDate = formatMoscowDate(now, offset + lead);
+  const supplierWarehouseName = warehouse?.name ? String(warehouse.name).trim() : null;
+  return { shipDate, plannedDeliveryDate, arrivalBucket: bucket, supplierWarehouseName };
+}

@@ -959,19 +959,18 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
   }
 
   /**
-   * Тест: отправить заказ поставщику (создать/дополнить открытую закупку).
-   * POST /orders/:marketplace/:orderId/order-at-supplier
+   * Отправить заказ в закупку: резерв + закупка дефицита у поставщика.
+   * POST /orders/:marketplace/:orderId/send-to-procurement
    */
-  async orderAtSupplier(req, res, next) {
+  async sendToProcurement(req, res, next) {
     try {
       const { marketplace, orderId } = req.params;
       const tid = tenantListProfileId(req);
       const profileId = tid === TENANT_LIST_EMPTY ? null : tid;
-      const data = await orderSupplierOrderService.placeOrderForMarketplaceOrder(
-        marketplace,
-        orderId,
-        { profileId, userId: req.user?.id ?? null }
-      );
+      const data = await orderSupplierOrderService.sendToProcurement(marketplace, orderId, {
+        profileId,
+        userId: req.user?.id ?? null,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (error) {
       if (
@@ -979,6 +978,66 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         error.statusCode === 403 ||
         error.statusCode === 404 ||
         error.statusCode === 409 ||
+        error.statusCode === 422 ||
+        error.statusCode === 501
+      ) {
+        return res.status(error.statusCode).json({
+          ok: false,
+          message: error.message,
+          details: error.details ?? null,
+        });
+      }
+      next(error);
+    }
+  }
+
+  /**
+   * @deprecated POST /orders/:marketplace/:orderId/order-at-supplier — алиас send-to-procurement
+   */
+  async orderAtSupplier(req, res, next) {
+    return this.sendToProcurement(req, res, next);
+  }
+
+  /** GET /orders/:marketplace/:orderId/procurement-lines */
+  async getProcurementLines(req, res, next) {
+    try {
+      const { marketplace, orderId } = req.params;
+      const tid = tenantListProfileId(req);
+      const profileId = tid === TENANT_LIST_EMPTY ? null : tid;
+      const data = await orderSupplierOrderService.getProcurementLines(marketplace, orderId, {
+        profileId,
+      });
+      if (!data?.ok && data?.error === 'order_not_found') {
+        return res.status(404).json({ ok: false, message: data.message });
+      }
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** POST /orders/:marketplace/:orderId/manual-procurement */
+  async manualProcure(req, res, next) {
+    try {
+      const { marketplace, orderId } = req.params;
+      const tid = tenantListProfileId(req);
+      const profileId = tid === TENANT_LIST_EMPTY ? null : tid;
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const data = await orderSupplierOrderService.manualProcure(marketplace, orderId, {
+        profileId,
+        userId: req.user?.id ?? null,
+        supplierId: body.supplierId,
+        existingPurchaseId: body.existingPurchaseId,
+        organizationId: body.organizationId,
+        warehouseId: body.warehouseId,
+        items: body.items,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      if (
+        error.statusCode === 400 ||
+        error.statusCode === 403 ||
+        error.statusCode === 404 ||
         error.statusCode === 501
       ) {
         return res.status(error.statusCode).json({

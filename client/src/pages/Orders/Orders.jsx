@@ -24,6 +24,7 @@ import {
   isOrderStatusEligibleForSupplierOrder,
 } from '../../constants/orderStatuses';
 import { OrderCardActions, OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
+import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import {
@@ -449,6 +450,7 @@ export function Orders() {
   const [procurementLoadingKey, setProcurementLoadingKey] = useState(null);
   const [supplierOrderLoadingKey, setSupplierOrderLoadingKey] = useState(null);
   const [supplierOrderMessage, setSupplierOrderMessage] = useState(null);
+  const [manualProcurementTarget, setManualProcurementTarget] = useState(null);
   /** Сброс нативного select «Статус в системе» после применения */
   const [bulkErmStatusKey, setBulkErmStatusKey] = useState(0);
   const [bulkLocalErmStatusLoading, setBulkLocalErmStatusLoading] = useState(false);
@@ -1219,7 +1221,12 @@ export function Orders() {
     }
   };
 
-  const handleOrderAtSupplier = async (row) => {
+  const openManualProcurement = (marketplace, orderId) => {
+    if (!marketplace || !orderId) return;
+    setManualProcurementTarget({ marketplace, orderId: String(orderId) });
+  };
+
+  const handleSendToProcurement = async (row) => {
     const toSend = row.orders || [row.first];
     const first = toSend[0];
     if (!first?.marketplace || !first?.orderId) return;
@@ -1227,20 +1234,26 @@ export function Orders() {
       setSupplierOrderLoadingKey(row.key);
       setSupplierOrderMessage(null);
       setRefreshError(null);
-      const result = await ordersApi.orderAtSupplier(first.marketplace, first.orderId);
-      let msg = result?.message || 'Заказ отправлен поставщику';
-      if (result?.purchaseId) {
-        msg += `. Закупка №${result.purchaseId}`;
+      const result = await ordersApi.sendToProcurement(first.marketplace, first.orderId);
+      let msg = result?.message || 'Заказ отправлен в закупку';
+      if (result?.purchases?.length) {
+        const ids = result.purchases.map((p) => p.purchaseId).filter(Boolean);
+        if (ids.length) msg += `. Закупки: №${ids.join(', №')}`;
       }
-      if (result?.supplierApi?.message && !result?.supplierApi?.submitted) {
-        msg += `. ${result.supplierApi.message}`;
+      if (result?.manualLines?.length) {
+        msg += `. Ручной выбор: ${result.manualLines.length} поз.`;
+        openManualProcurement(first.marketplace, first.orderId);
       }
       setSupplierOrderMessage(msg);
       await reloadOrders({ silent: true });
     } catch (e) {
-      const msg = getApiErrorMessage(e, 'Не удалось отправить заказ поставщику');
+      const details = e.response?.data?.details;
+      const msg = getApiErrorMessage(e, 'Не удалось отправить заказ в закупку');
       setSupplierOrderMessage(msg);
       setRefreshError(msg);
+      if (details?.manualLines?.length || e.response?.status === 422) {
+        openManualProcurement(first.marketplace, first.orderId);
+      }
     } finally {
       setSupplierOrderLoadingKey(null);
     }
@@ -2528,9 +2541,29 @@ export function Orders() {
                   .catch(() => {});
               }}
               onError={(msg) => setDetailModalError(msg)}
+              onOpenManualProcurement={() => {
+                const mp = detailModalRow.first.marketplace;
+                const oid = marketplaceOrderIdForApi(
+                  detailModalRow.orders ?? [detailModalRow.first],
+                  mp
+                );
+                openManualProcurement(mp, oid);
+              }}
               onSupplierOrdered={(result) => {
-                let msg = result?.message || 'Заказ отправлен поставщику';
-                if (result?.purchaseId) msg += ` (закупка №${result.purchaseId})`;
+                let msg = result?.message || 'Заказ отправлен в закупку';
+                if (result?.purchases?.length) {
+                  const ids = result.purchases.map((p) => p.purchaseId).filter(Boolean);
+                  if (ids.length) msg += ` (закупка №${ids.join(', №')})`;
+                }
+                if (result?.manualLines?.length) {
+                  msg += `. Ручной выбор: ${result.manualLines.length} поз.`;
+                  const mp = detailModalRow.first.marketplace;
+                  const oid = marketplaceOrderIdForApi(
+                    detailModalRow.orders ?? [detailModalRow.first],
+                    mp
+                  );
+                  openManualProcurement(mp, oid);
+                }
                 setSupplierOrderMessage(msg);
                 reloadOrders({ silent: true });
                 const mp = detailModalRow.first.marketplace;
@@ -2578,6 +2611,21 @@ export function Orders() {
           </div>
         )}
       </Modal>
+
+      <ManualProcurementModal
+        isOpen={Boolean(manualProcurementTarget)}
+        onClose={() => setManualProcurementTarget(null)}
+        marketplace={manualProcurementTarget?.marketplace}
+        orderId={manualProcurementTarget?.orderId}
+        contextOrganizationId={contextOrganizationId}
+        organizations={organizations}
+        warehouses={warehouses}
+        loadWarehouses={loadWarehouses}
+        onSuccess={(msg) => {
+          setSupplierOrderMessage(msg);
+          reloadOrders({ silent: true });
+        }}
+      />
 
       {syncError && (
         <div className="error" style={{marginBottom: '16px'}}>
@@ -3111,18 +3159,19 @@ export function Orders() {
                         groupOrders.some((o) =>
                           isOrderStatusEligibleForSupplierOrder(o.marketplace, o.status)
                         ) && (
+                          <>
                           <Button
                             variant="secondary"
                             size="small"
                             className="orders-action-icon orders-action-icon--supplier-order"
-                            onClick={() => handleOrderAtSupplier(row)}
+                            onClick={() => handleSendToProcurement(row)}
                             disabled={
                               supplierOrderLoadingKey === row.key ||
                               procurementLoadingKey === row.key ||
                               releaseReserveLoadingKey === row.key
                             }
-                            title="Заказать у поставщика (тест)"
-                            aria-label="Заказать"
+                            title="Отправить в закупку (резерв + закупка дефицита)"
+                            aria-label="Отправить в закупку"
                           >
                             {supplierOrderLoadingKey === row.key ? (
                               <span className="orders-action-icon__busy" aria-hidden>…</span>
@@ -3130,6 +3179,26 @@ export function Orders() {
                               <i className="pe-7s-upload" aria-hidden />
                             )}
                           </Button>
+                          <Button
+                            variant="secondary"
+                            size="small"
+                            className="orders-action-icon orders-action-icon--manual-procurement"
+                            onClick={() =>
+                              openManualProcurement(
+                                groupOrders[0]?.marketplace || first.marketplace,
+                                groupOrders[0]?.orderId || first.orderId
+                              )
+                            }
+                            disabled={
+                              supplierOrderLoadingKey === row.key ||
+                              procurementLoadingKey === row.key
+                            }
+                            title="Выбрать поставщика вручную"
+                            aria-label="Выбрать поставщика"
+                          >
+                            <i className="pe-7s-id" aria-hidden />
+                          </Button>
+                          </>
                         )}
                       {first.status === 'in_procurement' && (
                         <>

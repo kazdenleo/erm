@@ -133,11 +133,35 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
-  /** Тест: отправить заказ поставщику (открытая закупка). */
+  /** Отправить заказ в закупку: резерв + закупка дефицита. */
+  sendToProcurement: async (marketplace, orderId) => {
+    const mp = encodeURIComponent(marketplace);
+    const id = encodeURIComponent(orderId);
+    const response = await api.post(`/orders/${mp}/${id}/send-to-procurement`);
+    return response.data?.data ?? response.data;
+  },
+
+  /** Строки покрытия заказа (дефицит / manual_required). */
+  getProcurementLines: async (marketplace, orderId) => {
+    const mp = encodeURIComponent(marketplace);
+    const id = encodeURIComponent(orderId);
+    const response = await api.get(`/orders/${mp}/${id}/procurement-lines`);
+    return response.data?.data ?? response.data;
+  },
+
+  /** Ручная закупка с выбором поставщика. */
+  manualProcure: async (marketplace, orderId, body) => {
+    const mp = encodeURIComponent(marketplace);
+    const id = encodeURIComponent(orderId);
+    const response = await api.post(`/orders/${mp}/${id}/manual-procurement`, body);
+    return response.data?.data ?? response.data;
+  },
+
+  /** @deprecated — алиас sendToProcurement */
   orderAtSupplier: async (marketplace, orderId) => {
     const mp = encodeURIComponent(marketplace);
     const id = encodeURIComponent(orderId);
-    const response = await api.post(`/orders/${mp}/${id}/order-at-supplier`);
+    const response = await api.post(`/orders/${mp}/${id}/send-to-procurement`);
     return response.data?.data ?? response.data;
   },
 

@@ -9,6 +9,9 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
 import { ordersApi } from '../../services/orders.api';
 import { Button } from '../../components/common/Button/Button';
+import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
+import { useWarehouses } from '../../hooks/useWarehouses';
+import { useOrganizations } from '../../hooks/useOrganizations';
 import {
   getOrderStatusLabel,
   isOrderStatusEligibleForSupplierOrder,
@@ -127,6 +130,7 @@ export function OrderCardActions({
   onCancelled,
   onError,
   onSupplierOrdered,
+  onOpenManualProcurement,
 }) {
   const { profile } = useAuth();
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
@@ -138,20 +142,27 @@ export function OrderCardActions({
   const showSupplierOrder =
     supplierSyncEnabled && isOrderStatusEligibleForSupplierOrder(marketplace, status);
 
-  const handleSupplierOrder = async () => {
+  const handleSendToProcurement = async () => {
     if (
       !window.confirm(
-        'Отправить заказ поставщику? Будет создана или дополнена открытая закупка (тестовый режим).'
+        'Отправить заказ в закупку? Сначала будет зарезервировано доступное количество (склад и «в пути»), затем создана закупка только на недостающее.'
       )
     ) {
       return;
     }
     setSupplierOrderLoading(true);
     try {
-      const result = await ordersApi.orderAtSupplier(marketplace, orderId);
+      const result = await ordersApi.sendToProcurement(marketplace, orderId);
       onSupplierOrdered?.(result);
+      if (result?.manualLines?.length) {
+        onOpenManualProcurement?.();
+      }
     } catch (e) {
-      onError?.(e.response?.data?.message || e.message || 'Не удалось отправить заказ поставщику');
+      const msg = e.response?.data?.message || e.message || 'Не удалось отправить заказ в закупку';
+      onError?.(msg);
+      if (e.response?.status === 422 || e.response?.data?.details?.manualLines?.length) {
+        onOpenManualProcurement?.();
+      }
     } finally {
       setSupplierOrderLoading(false);
     }
@@ -195,9 +206,19 @@ export function OrderCardActions({
     <section className="order-detail-actions" aria-label="Действия с заказом">
       <div className="order-detail-actions__buttons">
         {showSupplierOrder ? (
-          <Button variant="primary" size="small" onClick={handleSupplierOrder} disabled={busy}>
-            {supplierOrderLoading ? 'Заказ…' : 'Заказать'}
-          </Button>
+          <>
+            <Button variant="primary" size="small" onClick={handleSendToProcurement} disabled={busy}>
+              {supplierOrderLoading ? 'Отправка…' : 'Отправить в закупку'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="small"
+              onClick={() => onOpenManualProcurement?.()}
+              disabled={busy}
+            >
+              Выбрать поставщика
+            </Button>
+          </>
         ) : null}
         {showCancel ? (
           <Button variant="danger" size="small" onClick={handleCancel} disabled={busy}>
@@ -210,7 +231,7 @@ export function OrderCardActions({
       </div>
       <p className="order-detail-actions-hint">
         {showSupplierOrder
-          ? '«Заказать» — тестовая отправка поставщику: открытая закупка и перевод в «В закупке». '
+          ? '«Отправить в закупку» — резерв со склада и «в пути», закупка только на недостающее количество. '
           : ''}
         «Удалить из системы» убирает заказ из ERM и не отменяет его на маркетплейсе. «Отменить» — отмена в
         системе и запрос отмены на МП (если доступно).
@@ -663,9 +684,14 @@ function erpProductIdForYandexLine(localLines, it) {
 export function OrderDetail() {
   const { marketplace, orderId } = useParams();
   const navigate = useNavigate();
+  const { selectedOrganizationId: contextOrganizationId } = useAuth();
+  const { warehouses, loadWarehouses } = useWarehouses();
+  const { organizations } = useOrganizations();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [manualProcOpen, setManualProcOpen] = useState(false);
+  const [procMessage, setProcMessage] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -737,6 +763,38 @@ export function OrderDetail() {
             .catch((e) => setError(e.response?.data?.message || e.message || 'Ошибка загрузки заказа'));
         }}
         onError={(msg) => setError(msg)}
+        onOpenManualProcurement={() => setManualProcOpen(true)}
+        onSupplierOrdered={(result) => {
+          setProcMessage(result?.message || null);
+          ordersApi
+            .getOrderDetail(marketplace, orderId)
+            .then((result) => setData(result))
+            .catch(() => {});
+        }}
+      />
+
+      {procMessage ? (
+        <div className="info" style={{ marginBottom: 12 }}>
+          {procMessage}
+        </div>
+      ) : null}
+
+      <ManualProcurementModal
+        isOpen={manualProcOpen}
+        onClose={() => setManualProcOpen(false)}
+        marketplace={marketplace}
+        orderId={orderId}
+        contextOrganizationId={contextOrganizationId}
+        organizations={organizations}
+        warehouses={warehouses}
+        loadWarehouses={loadWarehouses}
+        onSuccess={(msg) => {
+          setProcMessage(msg);
+          ordersApi
+            .getOrderDetail(marketplace, orderId)
+            .then((result) => setData(result))
+            .catch(() => {});
+        }}
       />
 
       <OrderReservePanel

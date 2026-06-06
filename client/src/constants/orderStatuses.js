@@ -54,7 +54,7 @@ export function isOrderStatusEligibleForProcurement(marketplace, status) {
   return false;
 }
 
-/** Кнопка «Заказать у поставщика» — те же статусы, что автозакупка, плюс «В закупке». */
+/** Кнопка «Отправить в закупку» — те же статусы, что автозакупка, плюс «В закупке». */
 export function isOrderStatusEligibleForSupplierOrder(marketplace, status) {
   if (isOrderStatusEligibleForProcurement(marketplace, status)) return true;
   return String(status ?? '').trim().toLowerCase() === 'in_procurement';

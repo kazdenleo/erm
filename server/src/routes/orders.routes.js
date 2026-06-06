@@ -115,7 +115,28 @@ router.put(
   wrapAsync(ordersController.setToProcurement.bind(ordersController))
 );
 
-// Тест: отправить заказ поставщику (открытая закупка + будущий API)
+// Отправить заказ в закупку (резерв + закупка дефицита)
+router.post(
+  '/:marketplace/:orderId/send-to-procurement',
+  validateOrderDetailParams,
+  wrapAsync(ordersController.sendToProcurement.bind(ordersController))
+);
+
+// Строки покрытия заказа (дефicit / manual_required)
+router.get(
+  '/:marketplace/:orderId/procurement-lines',
+  validateOrderDetailParams,
+  wrapAsync(ordersController.getProcurementLines.bind(ordersController))
+);
+
+// Ручная закупка с выбором поставщика
+router.post(
+  '/:marketplace/:orderId/manual-procurement',
+  validateOrderDetailParams,
+  wrapAsync(ordersController.manualProcure.bind(ordersController))
+);
+
+// @deprecated — алиас send-to-procurement
 router.post(
   '/:marketplace/:orderId/order-at-supplier',
   validateOrderDetailParams,

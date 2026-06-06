@@ -1,10 +1,9 @@
 /**
- * Ручная отправка заказа поставщику (тестовая кнопка «Заказать» в списке заказов).
+ * Ручная отправка заказа в закупку (кнопка «Отправить в закупку»).
  */
 
 import repositoryFactory from '../config/repository-factory.js';
-import autoProcurementService from './autoProcurement.service.js';
-import { trySubmitPurchaseToSupplier } from './supplierOrderPlacement.service.js';
+import orderProcurementPlanner from './orderProcurementPlanner.service.js';
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 
 function normalizeProfileId(v) {
@@ -14,7 +13,12 @@ function normalizeProfileId(v) {
 }
 
 class OrderSupplierOrderService {
-  async placeOrderForMarketplaceOrder(marketplace, orderId, { profileId, userId = null } = {}) {
+  /** @deprecated Используйте sendToProcurement — оставлено для совместимости. */
+  async placeOrderForMarketplaceOrder(marketplace, orderId, opts = {}) {
+    return this.sendToProcurement(marketplace, orderId, opts);
+  }
+
+  async sendToProcurement(marketplace, orderId, { profileId, userId = null } = {}) {
     const pid = normalizeProfileId(profileId);
     if (pid == null) {
       const err = new Error('Профиль не определён');
@@ -22,7 +26,7 @@ class OrderSupplierOrderService {
       throw err;
     }
     if (!repositoryFactory.isUsingPostgreSQL()) {
-      const err = new Error('Отправка поставщику доступна только при PostgreSQL');
+      const err = new Error('Отправка в закупку доступна только при PostgreSQL');
       err.statusCode = 501;
       throw err;
     }
@@ -38,37 +42,77 @@ class OrderSupplierOrderService {
       throw err;
     }
 
-    const proc = await autoProcurementService.runForMarketplaceOrder(marketplace, orderId, {
+    const proc = await orderProcurementPlanner.runForMarketplaceOrder(marketplace, orderId, {
       profileId: pid,
       userId,
-      manualTest: true,
     });
 
     if (!proc?.ok) {
-      const err = new Error(proc?.message || 'Не удалось оформить заказ у поставщика');
+      const err = new Error(proc?.message || 'Не удалось отправить заказ в закупку');
       err.statusCode =
         proc?.error === 'order_not_found'
           ? 404
           : proc?.error === 'already_in_purchase'
             ? 409
-            : 400;
+            : proc?.error === 'manual_required'
+              ? 422
+              : 400;
       err.details = proc;
       throw err;
     }
 
-    const supplierApi = await trySubmitPurchaseToSupplier({
-      purchaseId: proc.purchaseId,
-      supplierId: proc.supplierId,
-      profileId: pid,
-    });
+    return proc;
+  }
 
-    return {
-      ...proc,
-      supplierApi,
-      message: proc.appendedToExisting
-        ? `Позиции добавлены в открытую закупку №${proc.purchaseId} (${proc.supplierName || 'поставщик'})`
-        : `Создана закупка №${proc.purchaseId} у ${proc.supplierName || 'поставщика'}`,
-    };
+  async getProcurementLines(marketplace, orderId, { profileId } = {}) {
+    return orderProcurementPlanner.listFulfillmentLinesForMarketplaceOrder(marketplace, orderId, {
+      profileId: normalizeProfileId(profileId),
+    });
+  }
+
+  async manualProcure(marketplace, orderId, opts = {}) {
+    const pid = normalizeProfileId(opts.profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const err = new Error('Ручная закупка доступна только при PostgreSQL');
+      err.statusCode = 501;
+      throw err;
+    }
+
+    const profilesRepo = repositoryFactory.getProfilesRepository?.();
+    const profileRow =
+      profilesRepo && typeof profilesRepo.findById === 'function'
+        ? await profilesRepo.findById(pid)
+        : null;
+    if (!isProfileSupplierSyncEnabled(profileRow)) {
+      const err = new Error('Работа с поставщиками отключена для этого аккаунта');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const result = await orderProcurementPlanner.manualProcureForMarketplaceOrder(
+      marketplace,
+      orderId,
+      { ...opts, profileId: pid }
+    );
+
+    if (!result?.ok) {
+      const err = new Error(result?.message || 'Не удалось оформить ручную закупку');
+      err.statusCode =
+        result?.error === 'order_not_found'
+          ? 404
+          : result?.error === 'line_not_found' || result?.error === 'qty_exceeds_deficit'
+            ? 400
+            : 400;
+      err.details = result;
+      throw err;
+    }
+
+    return result;
   }
 }
 
