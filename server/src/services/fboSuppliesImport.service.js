@@ -138,15 +138,6 @@ const OZON_SUPPLY_TERMINAL_STATES = new Set([
   'REJECTED_AT_SUPPLY_WAREHOUSE',
 ]);
 
-function effectiveOzonDaysBack(requestedDays, lastImportedAt, hasImports) {
-  const requested = Math.max(1, Math.min(365, Number(requestedDays) || 90));
-  if (!hasImports || !lastImportedAt) return requested;
-  const since = new Date(lastImportedAt);
-  since.setDate(since.getDate() - 7);
-  const daysSince = Math.ceil((Date.now() - since.getTime()) / 86400000);
-  return Math.max(7, Math.min(requested, daysSince + 1));
-}
-
 function ozonSupplyAlreadyImported(imported, externalNumber, externalSupplyId, supplyOrderId) {
   if (imported.shipmentNumbers.has(`ozon:${externalNumber}`)) return true;
   if (externalSupplyId != null && imported.supplyIds.has(String(externalSupplyId))) return true;
@@ -154,24 +145,28 @@ function ozonSupplyAlreadyImported(imported, externalNumber, externalSupplyId, s
   return false;
 }
 
-function buildOzonSupplyListBody(daysBack, lastId = '', states = OZON_SUPPLY_LIST_STATES) {
+function buildOzonSupplyListBody(daysBack, lastId = '', states = OZON_SUPPLY_LIST_STATES, { useTimeslotFilter = true } = {}) {
   const days = Math.max(1, Math.min(365, Number(daysBack) || 90));
   const since = new Date();
   since.setDate(since.getDate() - days);
   const till = new Date();
+  // Будущие слоты отгрузки (в ЛК часто дата отгрузки через несколько дней).
+  till.setDate(till.getDate() + days);
   const body = {
     limit: 100,
     sort_by: 'ORDER_CREATION',
     sort_dir: 'DESC',
     filter: {
       states,
-      timeslot_from_range: {
-        from: since.toISOString(),
-        to: till.toISOString(),
-        timeslot_filter_type: 'BY_UTC_TIME',
-      },
     },
   };
+  if (useTimeslotFilter) {
+    body.filter.timeslot_from_range = {
+      from: since.toISOString(),
+      to: till.toISOString(),
+      timeslot_filter_type: 'BY_UTC_TIME',
+    };
+  }
   if (lastId) body.last_id = String(lastId);
   return body;
 }
@@ -254,14 +249,14 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
   return items;
 }
 
-async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states } = {}) {
+async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states, useTimeslotFilter = true } = {}) {
   const ids = [];
   let lastId = '';
   const listStates = states?.length ? states : OZON_SUPPLY_LIST_STATES;
   for (let page = 0; page < 30; page++) {
     const listData = await integrationsService._ozonApiPost(
       '/v3/supply-order/list',
-      buildOzonSupplyListBody(daysBack, lastId, listStates),
+      buildOzonSupplyListBody(daysBack, lastId, listStates, { useTimeslotFilter }),
       ozonApiOpts
     );
     const batch = parseOzonListOrderIds(listData);
@@ -271,6 +266,14 @@ async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states } = {}) {
     lastId = next;
   }
   return [...new Set(ids)];
+}
+
+async function fetchOzonSupplyOrderIdsForImport(daysBack, ozonApiOpts, { states } = {}) {
+  let ids = await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states, useTimeslotFilter: true });
+  if (!ids.length) {
+    ids = await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states, useTimeslotFilter: false });
+  }
+  return ids;
 }
 
 async function fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts) {
@@ -664,12 +667,11 @@ class FboSuppliesImportService {
     const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
 
     const imported = await fboSuppliesService.listImportedExternalKeys('ozon', { profileId });
-    const hasImports = imported.count > 0;
-    const effectiveDays = effectiveOzonDaysBack(daysBack, imported.lastImportedAt, hasImports);
+    const listDaysBack = Math.max(1, Math.min(365, Number(daysBack) || 90));
 
     let orderIds;
     try {
-      orderIds = await fetchOzonSupplyOrderIds(effectiveDays, ozonApiOpts, {
+      orderIds = await fetchOzonSupplyOrderIdsForImport(listDaysBack, ozonApiOpts, {
         states: OZON_SUPPLY_IMPORT_STATES,
       });
     } catch (e) {
