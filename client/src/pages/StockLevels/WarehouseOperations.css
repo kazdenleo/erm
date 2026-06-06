@@ -293,6 +293,26 @@
   margin: 0;
 }
 
+.warehouse-ops-list-row--search .product-search-input {
+  flex: 1;
+  max-width: none;
+}
+
+.warehouse-ops-list-row--search .product-search-input .warehouse-ops-scan-input {
+  max-width: none;
+  width: 100%;
+}
+
+.warehouse-ops-scan-form .product-search-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.warehouse-ops-scan-form .product-search-input .warehouse-ops-scan-input {
+  max-width: none;
+  width: 100%;
+}
+
 .warehouse-ops-list-form {
   display: flex;
   flex-direction: column;
