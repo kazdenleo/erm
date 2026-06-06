@@ -2259,7 +2259,7 @@ export function WarehouseOperations({
   };
 
   return (
-    <div className="warehouse-operations">
+    <div className={`warehouse-operations${hideTabs ? ' warehouse-operations--embedded' : ''}`}>
       {!hideTabs ? (
         <div className="warehouse-ops-tabs">
           <button

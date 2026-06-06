@@ -7,12 +7,12 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .erp-filter-row--search {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 
 .erp-filter-btn {
@@ -21,7 +21,7 @@
   justify-content: center;
   gap: 6px;
   margin: 0;
-  padding: 6px 10px;
+  padding: 8px 12px;
   font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
@@ -74,9 +74,14 @@
 .erp-filter-search-wrap {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-left: auto;
   flex: 1 1 260px;
   min-width: 0;
   justify-content: flex-end;
+}
+
+.erp-filter-search-wrap .form-control {
+  padding: 8px 12px;
+  min-height: 38px;
 }

@@ -396,7 +396,11 @@
   font-size: 14px;
   color: var(--muted);
   margin: 0 0 18px;
-  line-height: 1.5;
+  line-height: 1.55;
+}
+
+.stock-levels-page-section {
+  margin-top: 4px;
 }
 
 .stock-levels-row-clickable td {

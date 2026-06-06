@@ -1,5 +1,70 @@
 /* Общие стили наследуются из tables.css и pages.css */
 
+.orders-page.card {
+  padding: 24px 24px 22px;
+}
+
+.orders-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px 24px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+.orders-page-header__main {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.orders-page-header__main .title {
+  margin-bottom: 8px;
+}
+
+.orders-page-header__main .subtitle {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.orders-page-header__actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 1 1 320px;
+}
+
+.orders-page-filters {
+  margin-top: 4px;
+}
+
+.orders-page-filters .erp-filter-row {
+  margin-bottom: 14px;
+}
+
+.orders-page-filters .erp-filter-row--search {
+  margin-bottom: 16px;
+}
+
+.orders-page .orders-list {
+  margin-top: 18px;
+}
+
+.orders-page .orders-table th,
+.orders-page .orders-table td {
+  padding: 12px 14px;
+}
+
+.orders-page .orders-list-pager {
+  margin-top: 4px;
+  margin-bottom: 16px;
+  padding: 8px 2px;
+}
+
 .order-detail-row-link {
   color: var(--primary, #0d6efd);
   text-decoration: none;
@@ -254,7 +319,7 @@
 .orders-actions {
   display: flex;
   flex-wrap: nowrap;
-  gap: 3px;
+  gap: 6px;
   align-items: center;
   min-width: 0;
   overflow-x: auto;

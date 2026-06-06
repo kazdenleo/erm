@@ -1544,8 +1544,8 @@ export function Orders() {
     const idSuffix = placement === 'top' ? 'top' : 'bottom';
     return (
       <div
-        className={`d-flex justify-content-between align-items-center flex-wrap gap-2 ${
-          placement === 'top' ? 'mb-3' : 'mt-3'
+        className={`orders-list-pager d-flex justify-content-between align-items-center flex-wrap gap-2 ${
+          placement === 'top' ? 'mb-0' : 'mt-0'
         }`}
       >
         <div className="d-flex flex-wrap align-items-center gap-3 text-muted small">
@@ -1847,7 +1847,7 @@ export function Orders() {
   }
 
   return (
-    <div className="card">
+    <div className="card orders-page">
       {ordersAutoSyncPaused && (
         <div
           role="status"
@@ -1880,9 +1880,12 @@ export function Orders() {
           {ordersAutoSyncPauseError}
         </p>
       )}
-      <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap'}}>
-        <h1 className="title" style={{margin: 0}}>📋 Заказы</h1>
-        <div style={{display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap'}}>
+      <div className="orders-page-header">
+        <div className="orders-page-header__main">
+          <h1 className="title">📋 Заказы</h1>
+          <p className="subtitle">Управление заказами с маркетплейсов</p>
+        </div>
+        <div className="orders-page-header__actions">
           {!ordersAutoSyncPaused ? (
             <Button
               variant="secondary"
@@ -2010,7 +2013,6 @@ export function Orders() {
           )}
         </div>
       </div>
-      <p className="subtitle">Управление заказами с маркетплейсов</p>
 
       <Modal
         isOpen={addOrderOpen && allowPrivateOrders}
@@ -2554,7 +2556,7 @@ export function Orders() {
         </div>
       )}
 
-      <div style={{marginTop: '20px'}}>
+      <div className="orders-page-filters">
         <div className="erp-filter-row erp-filter-row--search" role="group" aria-label="Фильтр по маркетплейсу">
           <button
             type="button"
@@ -2629,7 +2631,7 @@ export function Orders() {
 
         {renderOrdersListPager('top')}
 
-        <div className="orders-list" style={{marginTop: '16px'}}>
+        <div className="orders-list">
         {!loading && sortedGroupedDisplayRows.length === 0 ? (
           <div className="empty-state">
             <p>Заказы не найдены</p>

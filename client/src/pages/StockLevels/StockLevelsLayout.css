@@ -1,6 +1,18 @@
 /* Табы склада + панели операций не обрезаем overflow:hidden у глобального .card */
 .stock-levels-layout.card {
   overflow: visible;
+  padding: 24px 24px 22px;
+}
+
+.stock-levels-layout .title {
+  margin-bottom: 10px;
+}
+
+.stock-levels-layout .subtitle {
+  margin: 0;
+  padding-bottom: 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  line-height: 1.55;
 }
 
 .stock-levels-layout .stock-levels-subnav {
@@ -38,5 +50,5 @@
 }
 
 .stock-levels-content {
-  margin-top: 0;
+  margin-top: 22px;
 }

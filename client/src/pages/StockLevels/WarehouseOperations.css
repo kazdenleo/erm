@@ -2,6 +2,10 @@
   margin-bottom: 24px;
 }
 
+.warehouse-operations--embedded {
+  margin-top: 0;
+}
+
 .warehouse-ops-required-star {
   color: #c62828;
   font-weight: 600;
@@ -39,8 +43,8 @@
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 16px;
+  padding: 22px 24px;
+  margin-bottom: 20px;
 }
 
 .warehouse-ops-receipts-list-header {
@@ -48,12 +52,12 @@
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 16px 20px;
+  margin-bottom: 20px;
 }
 
 .warehouse-ops-receipts-list-header .warehouse-ops-panel-title {
-  margin: 0 0 4px;
+  margin: 0 0 10px;
 }
 
 .warehouse-ops-receipts-list-header .warehouse-ops-hint {
@@ -61,14 +65,16 @@
 }
 
 .warehouse-ops-panel-title {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   font-size: 18px;
+  line-height: 1.35;
 }
 
 .warehouse-ops-hint {
   font-size: 13px;
   color: var(--muted);
-  margin-bottom: 16px;
+  margin: 0 0 18px;
+  line-height: 1.55;
 }
 
 .warehouse-ops-scan-form {
@@ -245,16 +251,17 @@
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 8px;
+  gap: 16px 20px;
+  margin-bottom: 20px;
 }
 
 .warehouse-ops-inventory-header-row .warehouse-ops-panel-title {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
 }
 
 .warehouse-ops-inventory-header-row .warehouse-ops-hint {
   margin-bottom: 0;
+  max-width: 52rem;
 }
 
 .warehouse-ops-inventory-search-row {
