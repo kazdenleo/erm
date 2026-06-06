@@ -129,6 +129,9 @@ const OZON_SUPPLY_LIST_STATES = [
   'OVERDUE',
 ];
 
+/** Вкладка Ozon «Подготовка к поставке»: только эти статусы выгружаем в ERM. */
+const OZON_SUPPLY_IMPORT_STATES = ['DATA_FILLING', 'READY_TO_SUPPLY'];
+
 const OZON_SUPPLY_TERMINAL_STATES = new Set([
   'COMPLETED',
   'CANCELLED',
@@ -197,6 +200,58 @@ function flattenOzonSupplyOrders(orders) {
     }
   }
   return rows;
+}
+
+function ozonSupplyRowState(order, supply) {
+  return String(supply?.state ?? order?.state ?? order?.status ?? '').toUpperCase();
+}
+
+function isOzonSupplyImportable(order, supply) {
+  return OZON_SUPPLY_IMPORT_STATES.includes(ozonSupplyRowState(order, supply));
+}
+
+async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
+  const items = [];
+  let lastId = '';
+  for (let page = 0; page < 20; page++) {
+    const body = { bundle_ids: [String(bundleId)], limit: 100 };
+    if (lastId) body.last_id = lastId;
+    const bundleData = await integrationsService._ozonApiPost(
+      '/v1/supply-order/bundle',
+      body,
+      ozonApiOpts
+    );
+    const rows =
+      bundleData?.result?.items ||
+      bundleData?.items ||
+      bundleData?.result?.products ||
+      [];
+    for (const row of rows) {
+      const qty = parseInt(row.quantity ?? row.count ?? row.amount ?? 0, 10);
+      if (!qty || qty <= 0) continue;
+      const offerId = row.offer_id ?? row.sku ?? null;
+      const barcode = row.barcode ?? row.bar_code ?? null;
+      const productId = await resolveProductId({
+        sku: offerId,
+        barcode,
+        profileId,
+      });
+      items.push({
+        productId,
+        quantity: qty,
+        sku: offerId,
+        barcode,
+        mpOfferId: offerId,
+        mpProductId: row.product_id != null ? String(row.product_id) : null,
+        name: row.name ?? row.product_name ?? null,
+        unresolved: productId == null,
+      });
+    }
+    const next = bundleData?.result?.last_id ?? bundleData?.last_id ?? '';
+    if (!next || !Array.isArray(rows) || rows.length === 0) break;
+    lastId = String(next);
+  }
+  return items;
 }
 
 async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states } = {}) {
@@ -550,13 +605,12 @@ class FboSuppliesImportService {
     const imported = await fboSuppliesService.listImportedExternalKeys('ozon', { profileId });
     const hasImports = imported.count > 0;
     const effectiveDays = effectiveOzonDaysBack(daysBack, imported.lastImportedAt, hasImports);
-    const listStates = hasImports
-      ? OZON_SUPPLY_LIST_STATES.filter((s) => !OZON_SUPPLY_TERMINAL_STATES.has(s))
-      : OZON_SUPPLY_LIST_STATES;
 
     let orderIds;
     try {
-      orderIds = await fetchOzonSupplyOrderIds(effectiveDays, ozonApiOpts, { states: listStates });
+      orderIds = await fetchOzonSupplyOrderIds(effectiveDays, ozonApiOpts, {
+        states: OZON_SUPPLY_IMPORT_STATES,
+      });
     } catch (e) {
       const err = new Error(e?.message || 'Не удалось получить список поставок Ozon');
       err.statusCode = 400;
@@ -576,6 +630,8 @@ class FboSuppliesImportService {
 
     const candidates = [];
     for (const { order, supply } of flattenOzonSupplyOrders(ozonOrders)) {
+      if (!isOzonSupplyImportable(order, supply)) continue;
+
       const supplyOrderId = order.order_id ?? order.supply_order_id ?? order.id;
       const supplyId = supply?.supply_id ?? supply?.id;
       const baseNumber = String(
@@ -593,37 +649,7 @@ class FboSuppliesImportService {
       const bundleId = supply?.bundle_id ?? order.bundle_id ?? order.bundle_ids?.[0];
       if (bundleId) {
         try {
-          const bundleData = await integrationsService._ozonApiPost(
-            '/v1/supply-order/bundle',
-            { bundle_ids: [String(bundleId)], limit: 500 },
-            ozonApiOpts
-          );
-          const rows =
-            bundleData?.result?.items ||
-            bundleData?.items ||
-            bundleData?.result?.products ||
-            [];
-          for (const row of rows) {
-            const qty = parseInt(row.quantity ?? row.count ?? row.amount ?? 0, 10);
-            if (!qty || qty <= 0) continue;
-            const offerId = row.offer_id ?? row.sku ?? null;
-            const barcode = row.barcode ?? row.bar_code ?? null;
-            const productId = await resolveProductId({
-              sku: offerId,
-              barcode,
-              profileId,
-            });
-            items.push({
-              productId,
-              quantity: qty,
-              sku: offerId,
-              barcode,
-              mpOfferId: offerId,
-              mpProductId: row.product_id != null ? String(row.product_id) : null,
-              name: row.name ?? row.product_name ?? null,
-              unresolved: productId == null,
-            });
-          }
+          items = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId);
         } catch {
           items = [];
         }
@@ -658,8 +684,19 @@ class FboSuppliesImportService {
         organizationId: organizationId != null ? Number(organizationId) : null,
         deductStock: false,
         status: mapOzonStateToStatus(supply?.state ?? order.state ?? order.status),
+        ozonState: ozonSupplyRowState(order, supply),
         items,
-        itemCount: sumSupplyItemsQuantity(items),
+        itemCount:
+          sumSupplyItemsQuantity(items) ||
+          parseInt(
+            supply?.total_item_count ??
+              supply?.items_count ??
+              order?.total_item_count ??
+              order?.items_count ??
+              0,
+            10
+          ) ||
+          0,
         alreadyImported: false,
       });
     }

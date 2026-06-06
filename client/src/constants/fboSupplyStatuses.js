@@ -56,3 +56,14 @@ export function hasPackingDiscrepancy(supply, packing) {
 export function getMarketplaceLabel(mp) {
   return MARKETPLACE_LABELS[mp] || mp || '—';
 }
+
+/** Статусы заявки Ozon (API) → подпись как в ЛК. */
+export const OZON_SUPPLY_STATE_LABELS = {
+  DATA_FILLING: 'Заполнение данных',
+  READY_TO_SUPPLY: 'Готово к отгрузке',
+};
+
+export function getOzonSupplyStateLabel(ozonState) {
+  const key = String(ozonState || '').toUpperCase();
+  return OZON_SUPPLY_STATE_LABELS[key] || key || '—';
+}

@@ -7,7 +7,7 @@ import { Modal } from '../../components/common/Modal/Modal';
 import { Button } from '../../components/common/Button/Button';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { useAuth } from '../../context/AuthContext';
-import { getMarketplaceLabel } from '../../constants/fboSupplyStatuses';
+import { getMarketplaceLabel, getOzonSupplyStateLabel } from '../../constants/fboSupplyStatuses';
 import './FboSupplies.css';
 
 function fmtDate(v) {
@@ -193,6 +193,12 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
             организации.
           </p>
         ) : null}
+        {mode === 'api' && marketplace === 'ozon' ? (
+          <p className="text-muted small mb-2">
+            Ozon: в списке только заявки из раздела «Подготовка к поставке» — «Заполнение данных» и «Готово
+            к отгрузке». Поставки в пути и архив не показываются.
+          </p>
+        ) : null}
         {mode === 'api' && marketplace === 'wb' ? (
           <p className="text-muted small mb-2">
             Wildberries: поставки на склад WB (FBW). Нужен API-токен категории «Поставки» в разделе
@@ -277,7 +283,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                   onChange={(e) => toggleAll(e.target.checked)}
                   style={{ marginRight: 6 }}
                 />
-                Выбрать все новые ({selectable.length})
+                Выбрать все ({selectable.length})
               </label>
               <span className="muted" style={{ fontSize: 12 }}>
                 Выбрано: {selected.size}
@@ -332,8 +338,12 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                         <td>
                           {disabled ? (
                             <span className="badge bg-secondary">Уже в системе</span>
+                          ) : c.marketplace === 'ozon' && c.ozonState ? (
+                            <span className="badge bg-light text-dark">
+                              {getOzonSupplyStateLabel(c.ozonState)}
+                            </span>
                           ) : (
-                            <span className="badge bg-light text-dark">Новая</span>
+                            <span className="badge bg-light text-dark">К загрузке</span>
                           )}
                         </td>
                       </tr>
