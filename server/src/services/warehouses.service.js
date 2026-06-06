@@ -5,6 +5,7 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
+import { normalizeWeekendDays } from '../utils/warehouseWorkingCalendar.js';
 
 async function applyFboStockExclusive(warehouseId, isFbo, profileId) {
   const wid = Number(warehouseId);
@@ -19,6 +20,18 @@ async function applyFboStockExclusive(warehouseId, isFbo, profileId) {
   } else {
     await query(`UPDATE warehouses SET is_fbo_stock = FALSE WHERE id = $1`, [wid]);
   }
+}
+
+function parseWeekendDaysPayload(data, existing = null) {
+  if (data?.hasOwnProperty('weekendDays') || data?.hasOwnProperty('weekend_days')) {
+    const raw = data.weekendDays ?? data.weekend_days;
+    if (raw == null || (Array.isArray(raw) && raw.length === 0)) return null;
+    const normalized = normalizeWeekendDays(raw);
+    return normalized.length ? normalized : null;
+  }
+  if (existing?.weekend_days != null) return existing.weekend_days;
+  if (existing?.weekendDays != null) return normalizeWeekendDays(existing.weekendDays);
+  return null;
 }
 
 class WarehousesService {
@@ -109,6 +122,9 @@ class WarehousesService {
         data.is_fbo_stock === 'true');
     if (repositoryFactory.isUsingPostgreSQL()) {
       payload.is_fbo_stock = isFbo;
+      if (type === 'warehouse') {
+        payload.weekend_days = parseWeekendDaysPayload(data);
+      }
     }
 
     console.log('[WarehousesService] Create payload:', payload);
@@ -272,6 +288,16 @@ class WarehousesService {
       payload.is_fbo_stock = v === true || v === 'true' || v === '1';
     } else if (type !== 'warehouse' && repositoryFactory.isUsingPostgreSQL()) {
       payload.is_fbo_stock = false;
+    }
+
+    if (type === 'warehouse' && repositoryFactory.isUsingPostgreSQL()) {
+      if (data.hasOwnProperty('weekendDays') || data.hasOwnProperty('weekend_days')) {
+        payload.weekend_days = parseWeekendDaysPayload(data);
+      } else {
+        payload.weekend_days = parseWeekendDaysPayload({}, existing);
+      }
+    } else if (repositoryFactory.isUsingPostgreSQL()) {
+      payload.weekend_days = null;
     }
 
     const updated = await this.repository.update(id, payload, profileId);

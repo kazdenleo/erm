@@ -13,6 +13,7 @@ import {
   parseArrivalBucketFromPurchaseNote,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
+import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -305,6 +306,7 @@ class AutoProcurementService {
       logger.warn('[AutoProcurement] skip profile: no org/warehouse', { profileId: pid });
       return { groups: 0, purchases: 0, items: 0, skipped: 0, error: 'no_org_warehouse' };
     }
+    const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
 
     const ordersRes = await query(
       `SELECT o.id, o.marketplace, o.order_id, o.product_id, o.quantity, o.status
@@ -339,7 +341,11 @@ class AutoProcurementService {
           continue;
         }
 
-        const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(supplier.apiConfig, now);
+        const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
+          supplier.apiConfig,
+          now,
+          warehouseWeekendDays
+        );
         const key = groupKey(supplier.id, arrivalBucket);
         if (!groups.has(key)) {
           groups.set(key, {
@@ -495,6 +501,7 @@ class AutoProcurementService {
         message: 'Укажите организацию и склад (хотя бы по одному на аккаунт)',
       };
     }
+    const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
 
     const orderRows = await loadOrderRowsForSupplierOrder(pid, marketplace, orderId);
     if (!orderRows.length) {
@@ -598,7 +605,11 @@ class AutoProcurementService {
       };
     }
 
-    const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(supplierRow.apiConfig, now);
+    const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
+      supplierRow.apiConfig,
+      now,
+      warehouseWeekendDays
+    );
     const procResult = await procureGroupForSupplierOrder(
       {
         supplierId: supplier.id,

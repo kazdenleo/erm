@@ -1,5 +1,6 @@
 /**
- * Окна складов поставщика → bucket закупки (today | tomorrow) для автозаказов.
+ * Окна складов поставщика → bucket закупки для автозаказов.
+ * Учитывает выходные нашего склада (warehouses.weekend_days).
  */
 
 import {
@@ -9,27 +10,67 @@ import {
   normalizeSupplierWarehouseArrivalDay,
   normalizeWarehouseTime,
 } from './supplierWarehouseArrival.js';
+import {
+  getMoscowDateParts,
+  normalizeWeekendDays,
+  resolveShipDayOffsetFromNaiveBucket,
+} from './warehouseWorkingCalendar.js';
 
 export { SUPPLIER_ARRIVAL_TODAY, SUPPLIER_ARRIVAL_TOMORROW };
 
 const AUTO_ARRIVAL_NOTE_PREFIX = '[auto-arrival:';
+const DATE_BUCKET_PREFIX = 'date:';
+
+export function isDateArrivalBucket(bucket) {
+  return String(bucket || '').startsWith(DATE_BUCKET_PREFIX);
+}
+
+export function arrivalBucketFromShipDate(shipDate) {
+  const d = String(shipDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  return `${DATE_BUCKET_PREFIX}${d}`;
+}
+
+export function shipDateFromArrivalBucket(bucket) {
+  const b = String(bucket || '');
+  if (!b.startsWith(DATE_BUCKET_PREFIX)) return null;
+  const d = b.slice(DATE_BUCKET_PREFIX.length);
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
+}
 
 export function autoArrivalNoteMarker(bucket) {
-  const b = normalizeSupplierWarehouseArrivalDay(bucket);
+  const b = normalizeArrivalBucket(bucket);
   return `${AUTO_ARRIVAL_NOTE_PREFIX}${b}]`;
 }
 
 export function autoArrivalNoteText(bucket) {
-  const b = normalizeSupplierWarehouseArrivalDay(bucket);
-  const label = b === SUPPLIER_ARRIVAL_TOMORROW ? 'завтра' : 'сегодня';
-  return `${autoArrivalNoteMarker(b)} Автозаказ · приедет ${label}`;
+  const b = normalizeArrivalBucket(bucket);
+  const shipDate = shipDateFromArrivalBucket(b);
+  let label;
+  if (shipDate) {
+    label = shipDate;
+  } else if (b === SUPPLIER_ARRIVAL_TOMORROW) {
+    label = 'завтра';
+  } else {
+    label = 'сегодня';
+  }
+  return `${autoArrivalNoteMarker(b)} Автозаказ · отправка ${label}`;
 }
 
 export function parseArrivalBucketFromPurchaseNote(note) {
   const s = String(note ?? '');
-  const m = s.match(/\[auto-arrival:(today|tomorrow)\]/i);
+  const m = s.match(/\[auto-arrival:([^\]]+)\]/i);
   if (!m) return null;
-  return normalizeSupplierWarehouseArrivalDay(m[1]);
+  return normalizeArrivalBucket(m[1]);
+}
+
+export function normalizeArrivalBucket(bucket) {
+  const b = String(bucket ?? '').trim();
+  if (b.startsWith(DATE_BUCKET_PREFIX)) {
+    const d = b.slice(DATE_BUCKET_PREFIX.length);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return `${DATE_BUCKET_PREFIX}${d}`;
+  }
+  return normalizeSupplierWarehouseArrivalDay(b);
 }
 
 function timeToMinutes(value, fallback = 0) {
@@ -66,10 +107,7 @@ export function isMinutesInWarehouseWindow(minutes, timeAfter, timeUntil) {
 }
 
 /**
- * Bucket для новой позиции автозаказа:
- * — в активном окне → arrivalDay окна;
- * — до крайнего времени (time) у окон с приездом «сегодня» → today;
- * — иначе → tomorrow (отдельная закупка).
+ * Bucket по окнам поставщика (без выходных нашего склада): today | tomorrow.
  */
 export function resolveProcurementArrivalBucket(warehouses, now = new Date()) {
   const rows = normalizeSupplierConfigWarehouses(Array.isArray(warehouses) ? warehouses : []);
@@ -96,41 +134,83 @@ export function resolveProcurementArrivalBucket(warehouses, now = new Date()) {
   return SUPPLIER_ARRIVAL_TOMORROW;
 }
 
-export function resolveProcurementArrivalBucketFromApiConfig(apiConfig, now = new Date()) {
+/**
+ * Bucket с учётом выходных нашего склада.
+ * После cutoff в пятницу (выходные сб/вс) → date:YYYY-MM-DD (понедельник), одна закупка на все заказы до него.
+ *
+ * @param {object} [options]
+ * @param {Date} [options.now]
+ * @param {number[]|null} [options.warehouseWeekendDays]
+ */
+export function resolveProcurementArrivalBucketWithCalendar(
+  warehouses,
+  { now = new Date(), warehouseWeekendDays = null } = {}
+) {
+  const naive = resolveProcurementArrivalBucket(warehouses, now);
+  const weekends = normalizeWeekendDays(warehouseWeekendDays);
+  if (!weekends.length) return naive;
+
+  const { shipDayOffset, shipDate } = resolveShipDayOffsetFromNaiveBucket(naive, weekends, now);
+  if (shipDayOffset === 0 && naive === SUPPLIER_ARRIVAL_TODAY) {
+    return SUPPLIER_ARRIVAL_TODAY;
+  }
+  if (shipDayOffset === 1 && naive === SUPPLIER_ARRIVAL_TOMORROW) {
+    const { weekday } = getMoscowDateParts(now, 1);
+    if (!weekends.includes(weekday)) return SUPPLIER_ARRIVAL_TOMORROW;
+  }
+  return arrivalBucketFromShipDate(shipDate) || naive;
+}
+
+export function resolveProcurementArrivalBucketFromApiConfig(
+  apiConfig,
+  now = new Date(),
+  warehouseWeekendDays = null
+) {
   const cfg = apiConfig && typeof apiConfig === 'object' ? apiConfig : {};
-  return resolveProcurementArrivalBucket(cfg.warehouses, now);
+  return resolveProcurementArrivalBucketWithCalendar(cfg.warehouses, {
+    now,
+    warehouseWeekendDays,
+  });
 }
 
 /** Дата в Europe/Moscow как YYYY-MM-DD. */
 export function formatMoscowDate(now = new Date(), dayOffset = 0) {
-  const d = new Date(now.getTime() + dayOffset * 24 * 60 * 60 * 1000);
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Moscow',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  return fmt.format(d);
+  return getMoscowDateParts(now, dayOffset).ymd;
 }
 
 /** Склад поставщика, определивший bucket (для ship_date / planned_delivery). */
-export function pickActiveSupplierWarehouse(apiConfig, now = new Date()) {
+export function pickActiveSupplierWarehouse(
+  apiConfig,
+  now = new Date(),
+  warehouseWeekendDays = null
+) {
   const cfg = apiConfig && typeof apiConfig === 'object' ? apiConfig : {};
   const rows = normalizeSupplierConfigWarehouses(Array.isArray(cfg.warehouses) ? cfg.warehouses : []);
-  if (!rows.length) return { warehouse: null, bucket: SUPPLIER_ARRIVAL_TODAY };
+  if (!rows.length) {
+    const bucket = resolveProcurementArrivalBucketWithCalendar([], {
+      now,
+      warehouseWeekendDays,
+    });
+    return { warehouse: null, bucket };
+  }
 
   const mins = getMoscowMinutesOfDay(now);
   for (const w of rows) {
     const after = w.timeAfter || '00:00';
     if (isMinutesInWarehouseWindow(mins, after, w.time)) {
-      return {
-        warehouse: w,
-        bucket: normalizeSupplierWarehouseArrivalDay(w.arrivalDay),
-      };
+      const naive = normalizeSupplierWarehouseArrivalDay(w.arrivalDay);
+      const bucket = resolveProcurementArrivalBucketWithCalendar(rows, {
+        now,
+        warehouseWeekendDays,
+      });
+      return { warehouse: w, bucket: bucket || naive };
     }
   }
 
-  const bucket = resolveProcurementArrivalBucket(rows, now);
+  const bucket = resolveProcurementArrivalBucketWithCalendar(rows, {
+    now,
+    warehouseWeekendDays,
+  });
   const todayRows = rows.filter(
     (w) => normalizeSupplierWarehouseArrivalDay(w.arrivalDay) === SUPPLIER_ARRIVAL_TODAY
   );
@@ -140,14 +220,34 @@ export function pickActiveSupplierWarehouse(apiConfig, now = new Date()) {
 
 /**
  * @param {number} [deliveryDays] delivery_days из supplier_stocks
+ * @param {number[]|null} [warehouseWeekendDays] warehouses.weekend_days
  * @returns {{ shipDate: string, plannedDeliveryDate: string, arrivalBucket: string, supplierWarehouseName: string|null }}
  */
-export function computeProcurementDates(apiConfig, now = new Date(), deliveryDays = 0) {
-  const { warehouse, bucket } = pickActiveSupplierWarehouse(apiConfig, now);
-  const offset = bucket === SUPPLIER_ARRIVAL_TOMORROW ? 1 : 0;
-  const shipDate = formatMoscowDate(now, offset);
+export function computeProcurementDates(
+  apiConfig,
+  now = new Date(),
+  deliveryDays = 0,
+  warehouseWeekendDays = null
+) {
+  const { warehouse, bucket } = pickActiveSupplierWarehouse(apiConfig, now, warehouseWeekendDays);
+
+  let shipDayOffset = 0;
+  const shipFromBucket = shipDateFromArrivalBucket(bucket);
+  if (shipFromBucket) {
+    for (let off = 0; off <= 14; off += 1) {
+      if (formatMoscowDate(now, off) === shipFromBucket) {
+        shipDayOffset = off;
+        break;
+      }
+    }
+  } else if (bucket === SUPPLIER_ARRIVAL_TOMORROW) {
+    shipDayOffset = 1;
+  }
+
+  const shipDate = formatMoscowDate(now, shipDayOffset);
   const lead = Math.max(0, Math.floor(Number(deliveryDays) || 0));
-  const plannedDeliveryDate = formatMoscowDate(now, offset + lead);
+  const plannedDeliveryDate = formatMoscowDate(now, shipDayOffset + lead);
   const supplierWarehouseName = warehouse?.name ? String(warehouse.name).trim() : null;
+
   return { shipDate, plannedDeliveryDate, arrivalBucket: bucket, supplierWarehouseName };
 }

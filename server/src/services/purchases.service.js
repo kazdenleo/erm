@@ -13,6 +13,7 @@ import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 import ordersService from './orders.service.js';
+import { trySubmitPurchaseToSupplier } from './supplierOrderPlacement.service.js';
 import logger from '../utils/logger.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
 import { enqueueProcurementReserveJob } from '../utils/procurementReserveQueue.js';
@@ -211,6 +212,80 @@ function collectProductIdsFromPurchaseItems(items) {
     if (Number.isFinite(pid) && pid > 0) ids.add(pid);
   }
   return ids;
+}
+
+function collectSourceOrdersFromPurchaseItems(items) {
+  const map = new Map();
+  for (const it of items || []) {
+    for (const o of normalizeSourceOrderList(it?.sourceOrders)) {
+      const dbMp = orderMarketplaceToDb(o.marketplace);
+      const oid = String(o.orderId ?? '').trim();
+      if (!dbMp || !oid) continue;
+      map.set(`${dbMp}|${oid}`, { marketplace: dbMp, orderId: oid });
+    }
+  }
+  return [...map.values()];
+}
+
+async function loadOrderRowsForSourceOrders(sourceOrders) {
+  const rows = [];
+  for (const ref of sourceOrders || []) {
+    const r = await query(
+      `SELECT id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
+              product_name, quantity, price, status, delivery_address, created_at
+       FROM orders
+       WHERE marketplace = $1 AND order_id = $2
+       LIMIT 1`,
+      [ref.marketplace, ref.orderId]
+    );
+    const row = r.rows?.[0];
+    if (!row) continue;
+    rows.push({
+      id: row.id,
+      marketplace: row.marketplace,
+      orderId: row.order_id,
+      order_id: row.order_id,
+      productId: row.product_id,
+      product_id: row.product_id,
+      offerId: row.offer_id,
+      offer_id: row.offer_id,
+      marketplaceSku: row.marketplace_sku,
+      marketplace_sku: row.marketplace_sku,
+      productName: row.product_name,
+      product_name: row.product_name,
+      quantity: row.quantity,
+      status: row.status,
+      deliveryAddress: row.delivery_address,
+      delivery_address: row.delivery_address,
+      createdAt: row.created_at,
+    });
+  }
+  return rows;
+}
+
+/**
+ * После закупки — дозарезервировать заказы из source_orders (не только FIFO по product_id).
+ */
+function scheduleReapplyReserveForPurchaseSourceOrders(items, { label = 'purchase-source-reserve' } = {}) {
+  const refs = collectSourceOrdersFromPurchaseItems(items);
+  if (!refs.length) return;
+  setImmediate(() => {
+    enqueueProcurementReserveJob(async () => {
+      const rows = await runWithDbRetry(() => loadOrderRowsForSourceOrders(refs), {
+        label: `${label}-load`,
+        attempts: 3,
+        delayMs: 2000,
+      });
+      if (!rows.length) return;
+      await runWithDbRetry(() => ordersService._reapplyReserveForOrderRows(rows), {
+        label,
+        attempts: 3,
+        delayMs: 2000,
+      }).catch((e) => {
+        logger.warn(`[Purchases] ${label}`, { message: e?.message || String(e) });
+      });
+    }, { label });
+  });
 }
 
 /**
@@ -1419,13 +1494,15 @@ class PurchasesService {
       items = [],
       note = null,
     } = {},
-    { userId, profileId } = {}
+    { userId, profileId, submitToSupplier = true } = {}
   ) {
     return runWithLockRetry(async () => {
       const refs = Array.isArray(procurementItems) ? procurementItems : [];
 
       // Сначала закупка — иначе при таймауте заказы уже «В закупке», а документа нет.
       let purchaseId;
+      let resolvedSupplierId =
+        supplierId != null && supplierId !== '' ? Number(supplierId) : null;
       if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
         purchaseId = parseInt(existingPurchaseId, 10);
         const prof = normalizeProfileId(profileId);
@@ -1456,8 +1533,33 @@ class PurchasesService {
           label: 'background reserve after procure-from-orders',
         });
       }
+      scheduleReapplyReserveForPurchaseSourceOrders(items, {
+        label: 'reapply reserve for linked orders after procure-from-orders',
+      });
 
-      return { purchaseId, procurement };
+      let supplierSubmit = null;
+      if (submitToSupplier && purchaseId) {
+        if (!Number.isFinite(resolvedSupplierId) || resolvedSupplierId < 1) {
+          const head = await query(`SELECT supplier_id FROM purchases WHERE id = $1 LIMIT 1`, [
+            purchaseId,
+          ]);
+          resolvedSupplierId =
+            head.rows?.[0]?.supplier_id != null ? Number(head.rows[0].supplier_id) : null;
+        }
+        if (Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0) {
+          supplierSubmit = await trySubmitPurchaseToSupplier({
+            purchaseId,
+            supplierId: resolvedSupplierId,
+            profileId,
+          }).catch((e) => ({
+            submitted: false,
+            reason: 'submit_error',
+            message: e?.message || String(e),
+          }));
+        }
+      }
+
+      return { purchaseId, procurement, supplierSubmit };
     });
   }
 
@@ -1525,11 +1627,17 @@ class PurchasesService {
     });
     if (lightIncoming && incomingDeltas?.size) {
       await applyIncomingDeltasAfterCommit(incomingDeltas);
+      scheduleReapplyReserveForPurchaseSourceOrders(normalized, {
+        label: 'reapply reserve for linked orders after purchase create',
+      });
     } else {
       scheduleProcurementReserveReapply(
         normalized.map((it) => it.productId),
         { label: 'background reserve after purchase create' }
       );
+      scheduleReapplyReserveForPurchaseSourceOrders(normalized, {
+        label: 'reapply reserve for linked orders after purchase create',
+      });
     }
     return result;
   }
@@ -1589,11 +1697,17 @@ class PurchasesService {
     });
     if (lightIncoming && incomingDeltas?.size) {
       await applyIncomingDeltasAfterCommit(incomingDeltas);
+      scheduleReapplyReserveForPurchaseSourceOrders(normalized, {
+        label: 'reapply reserve for linked orders after purchase append',
+      });
     } else {
       scheduleProcurementReserveReapply(
         normalized.map((it) => it.productId),
         { label: 'background reserve after purchase append items' }
       );
+      scheduleReapplyReserveForPurchaseSourceOrders(normalized, {
+        label: 'reapply reserve for linked orders after purchase append',
+      });
     }
     return result;
   }

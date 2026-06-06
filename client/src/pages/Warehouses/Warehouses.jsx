@@ -7,7 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
-import { Button } from '../../components/common/Button/Button';
+import { formatWeekendDaysLabel } from '../../utils/warehouseWeekendDays.js';
 import { Modal } from '../../components/common/Modal/Modal';
 import { WarehouseForm } from '../../components/forms/WarehouseForm/WarehouseForm';
 import { warehouseMappingsApi } from '../../services/warehouseMappings.api';
@@ -287,6 +287,7 @@ export function Warehouses() {
                 <th>Поставщик</th>
                 <th>Основной склад</th>
                 <th>Склад Wildberries</th>
+                <th>Выходные</th>
                 <th style={{textAlign: 'right'}}>Действия</th>
               </tr>
             </thead>
@@ -299,6 +300,11 @@ export function Warehouses() {
                   <td>{w.supplierId ? suppliers.find(s => s.id === w.supplierId)?.name || w.supplierId : '—'}</td>
                   <td>{w.mainWarehouseId || '—'}</td>
                   <td>{w.type === 'warehouse' && w.wbWarehouseName ? w.wbWarehouseName : '—'}</td>
+                  <td>
+                    {w.type === 'warehouse'
+                      ? formatWeekendDaysLabel(w.weekendDays ?? w.weekend_days)
+                      : '—'}
+                  </td>
                   <td>
                     <div style={{display: 'flex', gap: '6px', justifyContent: 'flex-end'}}>
                       <Button 

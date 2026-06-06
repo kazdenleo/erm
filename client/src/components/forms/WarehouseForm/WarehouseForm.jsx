@@ -7,6 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '../../common/Button/Button';
 import { integrationsApi } from '../../../services/integrations.api';
 import { warehouseMappingsApi } from '../../../services/warehouseMappings.api';
+import { WEEKDAY_OPTIONS, normalizeWeekendDays } from '../../../utils/warehouseWeekendDays.js';
 
 export function WarehouseForm({
   warehouse,
@@ -25,6 +26,7 @@ export function WarehouseForm({
     mainWarehouseId: '',
     wbWarehouseName: '',
     isFboStock: false,
+    weekendDays: [],
   });
   
   const [errors, setErrors] = useState({});
@@ -251,6 +253,7 @@ export function WarehouseForm({
         mainWarehouseId: warehouse.mainWarehouseId ? String(warehouse.mainWarehouseId) : '',
         wbWarehouseName: warehouse.wbWarehouseName || '',
         isFboStock: warehouse.isFboStock === true,
+        weekendDays: normalizeWeekendDays(warehouse.weekendDays ?? warehouse.weekend_days),
       });
       setOzonWarehouseName('');
       setWbWarehouseToBind('');
@@ -266,6 +269,7 @@ export function WarehouseForm({
         mainWarehouseId: '',
         wbWarehouseName: '',
         isFboStock: false,
+        weekendDays: [],
       });
       setOzonWarehouseName('');
       setWbWarehouseToBind('');
@@ -398,6 +402,15 @@ export function WarehouseForm({
     return Object.keys(newErrors).length === 0;
   };
 
+  const toggleWeekendDay = (dayValue) => {
+    setFormData((prev) => {
+      const set = new Set(normalizeWeekendDays(prev.weekendDays));
+      if (set.has(dayValue)) set.delete(dayValue);
+      else set.add(dayValue);
+      return { ...prev, weekendDays: [...set].sort((a, b) => a - b) };
+    });
+  };
+
   const resolveSavedWarehouseId = (saved) => {
     if (!saved) return warehouse?.id ?? null;
     if (saved.id != null) return saved.id;
@@ -426,6 +439,8 @@ export function WarehouseForm({
             : null
           : null,
       isFboStock: formData.type === 'warehouse' ? !!formData.isFboStock : false,
+      weekendDays:
+        formData.type === 'warehouse' ? normalizeWeekendDays(formData.weekendDays) : [],
     };
 
     setMappingBusy(true);
@@ -499,6 +514,29 @@ export function WarehouseForm({
         ) : null}
       </div>
       </div>
+
+      {formData.type === 'warehouse' && (
+        <div className="col-12 mt-2">
+          <label className="form-label d-block">Выходные дни склада</label>
+          <div className="text-muted small mb-2">
+            Заказы после cutoff поставщика в пятницу (и в выходные) будут собираться в одну закупку до
+            следующего рабочего дня, когда снова возможна отправка «день в день».
+          </div>
+          <div className="d-flex flex-wrap gap-3">
+            {WEEKDAY_OPTIONS.map((opt) => (
+              <label key={opt.value} className="form-check mb-0">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  checked={formData.weekendDays.includes(opt.value)}
+                  onChange={() => toggleWeekendDay(opt.value)}
+                />
+                <span className="form-check-label">{opt.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
 
       {formData.type === 'warehouse' && (
         <div className="col-12 mt-2">

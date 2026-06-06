@@ -73,6 +73,7 @@ class WarehousesRepositoryPG {
       orderAcceptanceTime: row.order_acceptance_time,
       wbWarehouseName: row.wb_warehouse_name,
       isFboStock: row.is_fbo_stock === true,
+      weekendDays: row.weekend_days ?? null,
     }));
   }
   
@@ -120,7 +121,8 @@ class WarehousesRepositoryPG {
       supplierCode: row.supplier_code,
       mainWarehouseAddress: row.main_warehouse_address,
       orderAcceptanceTime: row.order_acceptance_time,
-      wbWarehouseName: row.wb_warehouse_name
+      wbWarehouseName: row.wb_warehouse_name,
+      weekendDays: row.weekend_days ?? null,
     };
   }
   
@@ -159,8 +161,8 @@ class WarehousesRepositoryPG {
     // Пытаемся вставить с полем wb_warehouse_name и organization_id
     try {
       const result = await query(`
-        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id, is_fbo_stock)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO warehouses (type, address, supplier_id, main_warehouse_id, order_acceptance_time, wb_warehouse_name, organization_id, profile_id, is_fbo_stock, weekend_days)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *
       `, [
         warehouseData.type || 'warehouse',
@@ -172,6 +174,7 @@ class WarehousesRepositoryPG {
         orgId,
         profId,
         warehouseData.is_fbo_stock === true,
+        warehouseData.weekend_days ?? null,
       ]);
       
       const row = result.rows[0];
@@ -183,6 +186,7 @@ class WarehousesRepositoryPG {
         orderAcceptanceTime: row.order_acceptance_time,
         wbWarehouseName: row.wb_warehouse_name || null,
         isFboStock: row.is_fbo_stock === true,
+        weekendDays: row.weekend_days ?? null,
       };
     } catch (error) {
       if (error.message && error.message.includes('organization_id')) {
@@ -254,8 +258,8 @@ class WarehousesRepositoryPG {
       let paramIndex = 1;
       
       const allowedFields = includeWbWarehouseName 
-        ? ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'wb_warehouse_name', 'organization_id', 'is_fbo_stock']
-        : ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'organization_id', 'is_fbo_stock'];
+        ? ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'wb_warehouse_name', 'organization_id', 'is_fbo_stock', 'weekend_days']
+        : ['type', 'address', 'supplier_id', 'main_warehouse_id', 'order_acceptance_time', 'organization_id', 'is_fbo_stock', 'weekend_days'];
       
       for (const field of allowedFields) {
         if (updates.hasOwnProperty(field)) {
@@ -327,7 +331,8 @@ class WarehousesRepositoryPG {
         mainWarehouseId: row.main_warehouse_id,
         organizationId: row.organization_id,
         orderAcceptanceTime: row.order_acceptance_time,
-        wbWarehouseName: row.wb_warehouse_name || null
+        wbWarehouseName: row.wb_warehouse_name || null,
+        weekendDays: row.weekend_days ?? null,
       };
       console.log('[WarehousesRepository] Mapped result:', mapped);
       console.log('[WarehousesRepository] Mapped wbWarehouseName:', mapped.wbWarehouseName);

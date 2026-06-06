@@ -14,12 +14,12 @@ import {
   computeProcurementDates,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
+import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
 import {
   computeProcurementDeficit,
   fulfillmentLineStatusFromQuantities,
 } from '../utils/orderProcurementCoverage.js';
 import { isKitProductId, getKitComponents } from './kitStock.service.js';
-
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
   const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
@@ -412,7 +412,7 @@ async function sumOpenPurchaseTotal(client, purchaseId, supplierId) {
   return Number(r.rows?.[0]?.total) || 0;
 }
 
-async function pickSupplierForDeficit(productId, suppliers, qty, { client, profileId, supplierIdForOpen } = {}) {
+async function pickSupplierForDeficit(productId, suppliers, qty, { client, profileId, warehouseWeekendDays = null } = {}) {
   const candidates = await rankSupplierCandidates(productId, suppliers, qty);
   for (const cand of candidates) {
     const price = cand.price != null && cand.price > 0 ? cand.price : 0;
@@ -422,7 +422,11 @@ async function pickSupplierForDeficit(productId, suppliers, qty, { client, profi
     let openPurchaseId = null;
     let openTotal = 0;
     if (client && profileId) {
-      const bucket = resolveProcurementArrivalBucketFromApiConfig(cand.apiConfig);
+      const bucket = resolveProcurementArrivalBucketFromApiConfig(
+        cand.apiConfig,
+        new Date(),
+        warehouseWeekendDays
+      );
       openPurchaseId = await findOpenAutoPurchaseId(client, {
         profileId,
         supplierId: cand.id,
@@ -521,6 +525,7 @@ class OrderProcurementPlannerService {
 
     const orderWarehouseId =
       (await resolveOrderWarehouseId(eligibleRows, defaultWarehouseId)) || defaultWarehouseId;
+    const warehouseWeekendDays = await loadWarehouseWeekendDays(orderWarehouseId, pid);
     const suppliers = await loadSuppliersForWarehouse(pid, orderWarehouseId);
     if (!suppliers.length) {
       return { ok: false, error: 'no_suppliers', message: 'Нет активных поставщиков' };
@@ -601,6 +606,7 @@ class OrderProcurementPlannerService {
           return pickSupplierForDeficit(line.productId, suppliers, coverage.deficit, {
             client,
             profileId: pid,
+            warehouseWeekendDays,
           });
         });
 
@@ -627,7 +633,12 @@ class OrderProcurementPlannerService {
         }
 
         const { supplier, openPurchaseId, price } = pick;
-        const dates = computeProcurementDates(supplier.apiConfig, now, supplier.deliveryDays);
+        const dates = computeProcurementDates(
+          supplier.apiConfig,
+          now,
+          supplier.deliveryDays,
+          warehouseWeekendDays
+        );
         const gKey = groupKey(supplier.id, dates.arrivalBucket);
         if (!purchaseGroups.has(gKey)) {
           purchaseGroups.set(gKey, {
@@ -717,6 +728,7 @@ class OrderProcurementPlannerService {
             supplierId: g.supplierId,
             supplierName: g.supplierName,
             appended: Boolean(g.existingPurchaseId),
+            supplierSubmit: result?.supplierSubmit ?? null,
           });
         }
 
@@ -825,6 +837,9 @@ class OrderProcurementPlannerService {
         totalReserved > 0
           ? `Зарезервировано ${totalReserved} шт., закуплено ${totalPurchased} шт. (закупка №${p.purchaseId})`
           : `Закуплено ${totalPurchased} шт. (закупка №${p.purchaseId})`;
+      if (p.supplierSubmit?.message) {
+        message += `. ${p.supplierSubmit.message}`;
+      }
     } else {
       message = 'Обработка заказа завершена';
     }
@@ -1062,7 +1077,8 @@ class OrderProcurementPlannerService {
       }
     }
 
-    const dates = computeProcurementDates(supplierApiConfig, now, maxDeliveryDays);
+    const warehouseWeekendDays = await loadWarehouseWeekendDays(whId, pid);
+    const dates = computeProcurementDates(supplierApiConfig, now, maxDeliveryDays, warehouseWeekendDays);
     const processedLines = [];
 
     const note = `${autoArrivalNoteText(dates.arrivalBucket)} · ручная закупка (${orderId})`;
@@ -1090,12 +1106,14 @@ class OrderProcurementPlannerService {
     }
 
     let purchaseId;
+    let supplierSubmit = null;
     try {
       const result = await purchasesService.procureFromOrders(payload, {
         userId,
         profileId: pid,
       });
       purchaseId = result?.purchaseId ?? openId;
+      supplierSubmit = result?.supplierSubmit ?? null;
       if (purchaseId) {
         await updatePurchaseDates(purchaseId, {
           shipDate: dates.shipDate,
@@ -1143,12 +1161,18 @@ class OrderProcurementPlannerService {
       });
     }
 
+    let message = `Ручная закупка оформлена (закупка №${purchaseId})`;
+    if (supplierSubmit?.message) {
+      message += `. ${supplierSubmit.message}`;
+    }
+
     return {
       ok: true,
-      message: `Ручная закупка оформлена (закупка №${purchaseId})`,
+      message,
       purchaseId,
       supplierId: sid,
       supplierName: supplierRow.name,
+      supplierSubmit,
       lines: processedLines,
     };
   }

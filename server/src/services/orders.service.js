@@ -37,7 +37,8 @@ import {
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL,
   computeAvailableQuantity,
-  getProductSupplySnapshotWithClient
+  getProductSupplySnapshotWithClient,
+  getReservableSupplyUnits
 } from './sellableQuantity.service.js';
 import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
 import integrationsService from './integrations.service.js';
@@ -980,12 +981,11 @@ class OrdersService {
   async _availableUnitsForOrderReserve(productId, orderRow, warehouseId) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
-    if (isMarketplaceFbsOrderRow(orderRow) && warehouseId != null) {
-      const scoped = await computeAvailableQuantity(pid, { warehouseId });
-      return Math.max(0, Math.floor(scoped.available));
-    }
-    const snap = await getProductSupplySnapshotWithClient(null, pid);
-    return Math.max(0, Math.floor(snap.available));
+    const wh =
+      warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
+    // Только PWS + «в пути» − резерв; остатки поставщиков не резервируются (как в _applyReserveForOrderComponentCore).
+    const units = await getReservableSupplyUnits(pid, { warehouseId: wh });
+    return Math.max(0, Math.floor(units));
   }
 
   /**
@@ -1654,6 +1654,15 @@ class OrdersService {
     if (!id) return;
     const productId = await this._resolveProductIdForOrderStock(orderRow);
     if (!productId) return;
+
+    const rawProductId = orderRow?.productId ?? orderRow?.product_id;
+    if (rawProductId == null || String(rawProductId).trim() === '') {
+      query(
+        `UPDATE orders SET product_id = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2 AND product_id IS NULL`,
+        [productId, id]
+      ).catch(() => {});
+    }
 
     const warehouseId = await this._resolveWarehouseIdForOrderReserve(orderRow, productId);
     const strictWh = isMarketplaceFbsOrderRow(orderRow);
