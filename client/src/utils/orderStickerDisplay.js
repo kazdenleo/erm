@@ -38,3 +38,17 @@ export function orderStickerCellValue(order, { groupOrders = null } = {}) {
     '';
   return String(oid).trim() || '—';
 }
+
+/** Разбивает номер стикера: основная часть + последние 4 цифры крупнее. */
+export function splitStickerEmphasis(text) {
+  const s = String(text ?? '').trim();
+  if (!s) return null;
+  if (s.length <= 4) return { prefix: '', suffix: s };
+  return { prefix: s.slice(0, -4), suffix: s.slice(-4) };
+}
+
+/** Нужно ли выделять последние 4 цифры (только WB-стикеры). */
+export function shouldEmphasizeStickerSuffix(order) {
+  if (!order) return false;
+  return normalizeMarketplaceForUI(order.marketplace) === 'wildberries';
+}

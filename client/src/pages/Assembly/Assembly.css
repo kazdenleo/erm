@@ -245,6 +245,43 @@ button.assembly-label-link {
   opacity: 0.9;
 }
 
+.order-sticker-display {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.order-sticker-value {
+  display: inline;
+  font-variant-numeric: tabular-nums;
+}
+
+.order-sticker-prefix {
+  font-weight: 500;
+}
+
+.order-sticker-suffix {
+  font-weight: 800;
+  font-size: 1.45em;
+  letter-spacing: 0.03em;
+  line-height: 1.1;
+  color: var(--text, #212529);
+}
+
+.text-muted .order-sticker-suffix,
+.assembly-current-sticker .order-sticker-suffix {
+  color: var(--text, #212529);
+}
+
+.assembly-current-sticker .order-sticker-suffix {
+  font-size: 1.65em;
+  font-weight: 800;
+}
+
+.assembly-table td .order-sticker-suffix {
+  font-size: 1.35em;
+  font-weight: 800;
+}
+
 .assembly-row-actions {
   display: flex;
   align-items: center;

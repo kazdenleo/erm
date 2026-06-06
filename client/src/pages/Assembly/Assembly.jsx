@@ -14,6 +14,7 @@ import api from '../../services/api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
+import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import './Assembly.css';
 
 function resolveApiBaseUrl() {
@@ -1072,7 +1073,7 @@ export function Assembly() {
                   ? 'Стикер'
                   : 'Номер заказа'}
                 :{' '}
-                <strong>{orderStickerCellValue(currentOrderData.order)}</strong>
+                <OrderStickerDisplay order={currentOrderData.order} />
               </p>
             ) : null}
             <div className="assembly-composition">
@@ -1148,7 +1149,7 @@ export function Assembly() {
                       {normMarketplace(currentOrderData.order.marketplace) === 'wildberries'
                         ? 'Стикер'
                         : 'Заказ'}
-                      : <strong>{orderStickerCellValue(currentOrderData.order)}</strong>
+                      : <OrderStickerDisplay order={currentOrderData.order} />
                     </>
                   ) : null}
                   {' '}
@@ -1234,7 +1235,6 @@ export function Assembly() {
                   rows.length === 1
                     ? primary.quantity ?? '—'
                     : rows.map((r) => r.quantity ?? 1).join(' + ');
-                const sticker = orderStickerCellValue(primary, { groupOrders: rows });
                 return (
                   <tr key={groupKey}>
                     <td>{mp}</td>
@@ -1289,7 +1289,9 @@ export function Assembly() {
                       </div>
                     </td>
                     <td>{qtyCell}</td>
-                    <td>{sticker}</td>
+                    <td>
+                      <OrderStickerDisplay order={primary} groupOrders={rows} />
+                    </td>
                     <td>
                       <div className="assembly-row-actions">
                         {labelReadyByOrderId?.[String(primary.orderId)] === true && (
@@ -1375,7 +1377,6 @@ export function Assembly() {
                   : '—';
                 const who =
                   [o.assembledByFullName, o.assembledByEmail].filter(Boolean).join(' · ') || '—';
-                const sticker = orderStickerCellValue(o);
                 const erpPidCol = assemblyLineProductId(o);
                 return (
                   <tr key={rowKey}>
@@ -1406,7 +1407,9 @@ export function Assembly() {
                     <td>{o.quantity ?? '—'}</td>
                     <td>{assembledLabel}</td>
                     <td>{who}</td>
-                    <td>{sticker}</td>
+                    <td>
+                      <OrderStickerDisplay order={o} />
+                    </td>
                     <td>
                       <div className="assembly-row-actions">
                         {labelReadyByOrderId?.[String(o.orderId)] === true && (
