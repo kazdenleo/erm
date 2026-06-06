@@ -154,6 +154,27 @@ class WarehouseMappingsRepositoryPG {
     );
     return r.rows?.[0]?.warehouse_id ?? null;
   }
+
+  /**
+   * Основной FBS-склад маркетплейса (если в заказе нет ID склада МП).
+   * Предпочитаем привязки вида «id — название» (FBS), затем меньший warehouse_id.
+   */
+  async findPrimaryOwnWarehouseIdForMarketplace(marketplace) {
+    const mp = String(marketplace || '').toLowerCase();
+    if (!mp) return null;
+    const r = await query(
+      `SELECT warehouse_id
+       FROM warehouse_mappings
+       WHERE marketplace = $1
+       ORDER BY
+         CASE WHEN marketplace_warehouse_id ~ '\\s*[—–-]\\s*' THEN 0 ELSE 1 END,
+         warehouse_id ASC,
+         id ASC
+       LIMIT 1`,
+      [mp]
+    );
+    return r.rows?.[0]?.warehouse_id ?? null;
+  }
   
   /**
    * Создать маппинг

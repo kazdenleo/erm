@@ -118,6 +118,101 @@ export async function isKitProductId(productId) {
   return (kc.rows?.length ?? 0) > 0;
 }
 
+/** Товар используется как комплектующая хотя бы в одном комплекте. */
+export async function isKitComponentProductId(productId) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return false;
+  const r = await query(
+    `SELECT 1 FROM kit_components WHERE component_product_id = $1 LIMIT 1`,
+    [pid]
+  );
+  return (r.rows?.length ?? 0) > 0;
+}
+
+/** kit_product_id из meta резерва комплектующей под заказ. */
+export async function findKitProductIdForOrderComponentReserve(productId, orderDbId) {
+  const pid = Number(productId);
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(oid) || oid < 1) return null;
+  const r = await query(
+    `SELECT DISTINCT (meta->>'kit_product_id')::bigint AS kit_id
+     FROM stock_movements
+     WHERE product_id = $1
+       AND type IN ('reserve', 'unreserve')
+       AND (meta->>'order_id')::bigint = $2
+       AND meta ? 'kit_product_id'
+       AND (meta->>'kit_product_id') ~ '^[0-9]+$'
+     LIMIT 1`,
+    [pid, oid]
+  );
+  const kid = r.rows?.[0]?.kit_id != null ? Number(r.rows[0].kit_id) : null;
+  return Number.isFinite(kid) && kid > 0 ? kid : null;
+}
+
+/**
+ * Снять резерв комплекта под заказ: сначала whole SKU, затем комплектующие по составу.
+ * @returns {Promise<number>} сколько комплектов (единиц) снято
+ */
+export async function releaseKitOrderReserveUnits(
+  kitProductId,
+  orderDbId,
+  kitUnitsToRelease,
+  unreserveFn,
+  baseMeta = {}
+) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  const unitsWanted = Math.max(0, Math.floor(Number(kitUnitsToRelease) || 0));
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1 || unitsWanted <= 0) {
+    return 0;
+  }
+  if (typeof unreserveFn !== 'function') return 0;
+
+  const mpLabel =
+    baseMeta?.orderId != null && String(baseMeta.orderId).trim() !== ''
+      ? String(baseMeta.orderId).trim()
+      : null;
+  const wh = baseMeta?.warehouse_id ?? baseMeta?.warehouseId ?? null;
+
+  let remaining = unitsWanted;
+  const onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel, wh);
+  const fromWhole = Math.min(remaining, onKit);
+  if (fromWhole > 0) {
+    await unreserveFn(kitId, fromWhole, mpLabel, {
+      ...baseMeta,
+      kit_reserve_scope: 'whole',
+      trim_kit_units: fromWhole
+    });
+    remaining -= fromWhole;
+  }
+
+  if (remaining > 0) {
+    const components = await getKitComponents(kitId);
+    const compQtyMap = buildKitComponentQtyMap(components, remaining);
+    const releasedKitUnitsFromComp = [];
+    for (const [compId, compQty] of compQtyMap) {
+      const net = await getNetReservedForOrderProduct(oid, compId, mpLabel, wh);
+      const release = Math.min(compQty, net);
+      if (release <= 0) continue;
+      const comp = components.find((c) => Number(c.component_product_id) === Number(compId));
+      const perKit = comp ? Math.max(1, parseInt(comp.quantity, 10) || 1) : 1;
+      await unreserveFn(compId, release, mpLabel, {
+        ...baseMeta,
+        kit_product_id: kitId,
+        kit_reserve_scope: 'component',
+        kit_units: remaining,
+        trim_kit_units: remaining
+      });
+      releasedKitUnitsFromComp.push(Math.floor(release / perKit));
+    }
+    const fromComp =
+      releasedKitUnitsFromComp.length > 0 ? Math.min(...releasedKitUnitsFromComp) : 0;
+    return fromWhole + fromComp;
+  }
+
+  return fromWhole;
+}
+
 function marketplaceForProductSkus(marketplace) {
   const m = String(marketplace || '').toLowerCase();
   if (m === 'wildberries' || m === 'wb') return 'wb';
@@ -607,14 +702,17 @@ export async function readKitStockFromDb(kitProductId, opts = {}) {
 
 /**
  * Наличие комплекта на складе: только целые комплекты (1 SKU) после приёмки/инвентаризации.
- * Собираемость из комплектующих сюда не входит. Без inbound-движений — всегда 0.
+ * Собираемость из комплектующих сюда не входит. Без inbound-движений — fallback на PWS.
  */
 export async function readKitPhysicalOnHandFromDb(kitProductId, rawOnHand = null, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
 
   const hasInbound = await kitHasWholeKitInboundMovements(kitId);
-  if (!hasInbound) return 0;
+  if (!hasInbound) {
+    const pwsFallback = await readKitWarehouseOnHandRaw(kitId, opts);
+    return Math.max(0, Number(pwsFallback) || 0);
+  }
 
   let onHand = rawOnHand;
   if (onHand == null) {
@@ -754,6 +852,24 @@ function minKitUnitsFromComponentReserves(components, getReserved) {
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
+async function minKitUnitsFromComponentReservesAsync(components, getReservedAsync) {
+  if (!components?.length) return 0;
+  const qtyPerKitByComp = new Map();
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    qtyPerKitByComp.set(pid, (qtyPerKitByComp.get(pid) || 0) + perKit);
+  }
+  if (qtyPerKitByComp.size === 0) return 0;
+  let minKits = Infinity;
+  for (const [pid, perKit] of qtyPerKitByComp) {
+    const compRes = Math.max(0, Number(await getReservedAsync(pid)) || 0);
+    minKits = Math.min(minKits, Math.floor(compRes / perKit));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
 /**
  * Резерв в колонке «Резерв» для комплекта: журнал по SKU комплекта; если там 0 — сумма резерва по комплектующим
  * (как в истории остатков комплекта, куда подмешиваются reserve/unreserve комплектующих).
@@ -769,6 +885,57 @@ function kitTotalDisplayReservedFromContext(kitId, ctx) {
     compSum += Math.max(0, ctx.reservedMap.get(pid) || 0);
   }
   return compSum;
+}
+
+/** Map component_product_id → нетто-резерв (warehouse-scoped, как sumKitComponentsNetReserved). */
+export async function readKitComponentsNetReservedMap(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return new Map();
+
+  const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const whId =
+    whRaw != null && String(whRaw).trim() !== ''
+      ? typeof whRaw === 'string'
+        ? parseInt(whRaw, 10)
+        : Number(whRaw)
+      : null;
+  const warehouseScoped = Number.isFinite(whId) && whId > 0;
+
+  try {
+    const r = warehouseScoped
+      ? await query(
+          `SELECT sm.product_id,
+             ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+           FROM stock_movements sm
+           WHERE sm.product_id IN (
+             SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
+           )
+             AND sm.type IN ('reserve', 'unreserve')
+             AND (sm.warehouse_id = $2 OR sm.warehouse_id IS NULL)
+           GROUP BY sm.product_id`,
+          [kitId, whId]
+        )
+      : await query(
+          `SELECT sm.product_id,
+             ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+           FROM stock_movements sm
+           WHERE sm.product_id IN (
+             SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
+           )
+             AND sm.type IN ('reserve', 'unreserve')
+           GROUP BY sm.product_id`,
+          [kitId]
+        );
+    const map = new Map();
+    for (const row of r.rows || []) {
+      const pid = Number(row.product_id);
+      if (!Number.isFinite(pid) || pid < 1) continue;
+      map.set(pid, Math.max(0, Number(row.rv) || 0));
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
 }
 
 /** Сумма нетто-резерва по всем комплектующим комплекта (отдельно по каждому product_id). */
@@ -825,7 +992,96 @@ export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
   const onSku = await readKitSkuNetReserved(kitId, opts);
   if (onSku > 0) return onSku;
-  return sumKitComponentsNetReserved(kitId, opts);
+  const components = await getKitComponents(kitId);
+  if (components.length === 0) return 0;
+  const compMap = await readKitComponentsNetReservedMap(kitId, opts);
+  return minKitUnitsFromComponentReserves(components, (pid) => compMap.get(pid) ?? 0);
+}
+
+/**
+ * План отгрузки комплекта по заказу: целые SKU и/или комплектующие, без двойного списания.
+ * @returns {Promise<{ wholeUnitsToShip: number, componentKitUnitsToShip: number }>}
+ */
+export async function resolveKitOrderShipmentPlan(kitProductId, orderDbId, opts = {}) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) {
+    return { wholeUnitsToShip: 0, componentKitUnitsToShip: 0 };
+  }
+
+  const kitOrderQty = Math.max(1, parseInt(opts.kitOrderQty, 10) || 1);
+  const marketplaceOrderId = opts.marketplaceOrderId ?? null;
+  const warehouseId = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const getShippedQtyForProduct = opts.getShippedQtyForProduct;
+  if (typeof getShippedQtyForProduct !== 'function') {
+    return { wholeUnitsToShip: 0, componentKitUnitsToShip: 0 };
+  }
+
+  const components = await getKitComponents(kitId);
+
+  const kitNet = await getNetReservedForOrderProduct(oid, kitId, marketplaceOrderId, warehouseId);
+  const wholeShipped = Math.max(0, Number(await getShippedQtyForProduct(oid, kitId)) || 0);
+
+  const kitsShippedViaComp =
+    components.length > 0
+      ? await minKitUnitsFromComponentReservesAsync(components, (pid) =>
+          getShippedQtyForProduct(oid, pid)
+        )
+      : 0;
+
+  const orderKitsRemaining = Math.max(0, kitOrderQty - wholeShipped - kitsShippedViaComp);
+
+  const compKitUnitsReserved =
+    components.length > 0
+      ? await minKitUnitsFromComponentReservesAsync(components, (pid) =>
+          getNetReservedForOrderProduct(oid, pid, marketplaceOrderId, warehouseId)
+        )
+      : 0;
+  const compKitUnitsRemaining = Math.max(0, compKitUnitsReserved - kitsShippedViaComp);
+
+  const physicalWhole = await readKitPhysicalOnHandFromDb(kitId, null, { warehouseId });
+  const wholeUnitsRemaining = Math.max(0, Math.min(kitNet, physicalWhole) - wholeShipped);
+  const wholeUnitsToShip = Math.min(orderKitsRemaining, wholeUnitsRemaining);
+  const orderAfterWhole = orderKitsRemaining - wholeUnitsToShip;
+  let componentKitUnitsToShip = Math.min(orderAfterWhole, compKitUnitsRemaining);
+
+  const totalPlanned = wholeUnitsToShip + componentKitUnitsToShip;
+  if (totalPlanned > orderKitsRemaining) {
+    componentKitUnitsToShip = Math.max(0, orderKitsRemaining - wholeUnitsToShip);
+  }
+
+  return { wholeUnitsToShip, componentKitUnitsToShip };
+}
+
+/** Резерв комплекта по заказу превышает фактическое наличие на складе (без «в пути»). */
+export async function kitOrderReserveExceedsOnHand(
+  kitProductId,
+  orderDbId,
+  warehouseId,
+  marketplaceOrderId = null
+) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  const whId = parseStockMovementWarehouseId(warehouseId);
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return false;
+
+  const kitNet = await getNetReservedForOrderProduct(oid, kitId, marketplaceOrderId, whId);
+  if (kitNet > 0) {
+    const physicalWhole = await readKitPhysicalOnHandFromDb(kitId, null, { warehouseId: whId });
+    if (kitNet > physicalWhole) return true;
+  }
+
+  const components = await getKitComponents(kitId);
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const net = await getNetReservedForOrderProduct(oid, pid, marketplaceOrderId, whId);
+    if (net <= 0) continue;
+    const metrics = await computeAvailableQuantity(pid, { warehouseId: whId });
+    const onHand = Math.max(0, Number(metrics.onHand) || 0);
+    if (net > onHand) return true;
+  }
+  return false;
 }
 
 export async function getNetReservedForOrderProduct(
@@ -860,27 +1116,52 @@ export async function getNetReservedForOrderProduct(
   return Number(r.rows?.[0]?.rv ?? 0) || 0;
 }
 
-/** Сколько комплектов зарезервировано под заказ (целые на SKU комплекта + из комплектующих). */
+/** Нетто-резерв комплектов из комплектующих под заказ (min floor по составу). */
+export async function getReservedKitUnitsFromComponentsForOrder(kitProductId, orderDbId) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
+
+  const components = await getKitComponents(kitId);
+  if (components.length === 0) return 0;
+
+  const nets = new Map();
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1 || nets.has(pid)) continue;
+    nets.set(pid, await getNetReservedForOrderProduct(oid, pid));
+  }
+  return minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0);
+}
+
+/**
+ * Сколько комплектов зарезервировано под заказ (целые на SKU + сборка из комплектующих).
+ * При смешанном резерве на оба пути сумма может завышать факт — для проверок см. validation-вариант.
+ */
 export async function getReservedKitUnitsForOrder(kitProductId, orderDbId) {
   const kitId = Number(kitProductId);
   const oid = Number(orderDbId);
   if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
 
   const onKit = await getNetReservedForOrderProduct(oid, kitId);
-
-  const components = await getKitComponents(kitId);
-  if (components.length === 0) return onKit;
-
-  const fromComp = await (async () => {
-    const nets = new Map();
-    for (const c of components) {
-      const pid = Number(c.component_product_id);
-      if (!Number.isFinite(pid) || pid < 1 || nets.has(pid)) continue;
-      nets.set(pid, await getNetReservedForOrderProduct(oid, pid));
-    }
-    return minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0);
-  })();
+  const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
   return onKit + fromComp;
+}
+
+/**
+ * Консервативная оценка для валидации сборки: max(целые SKU, из комплектующих),
+ * без двойного учёта при ошибочном резерве и на комплект, и на детали.
+ */
+export async function getReservedKitUnitsForOrderValidation(kitProductId, orderDbId) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
+
+  const onKit = await getNetReservedForOrderProduct(oid, kitId);
+  const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
+  if (onKit <= 0) return fromComp;
+  if (fromComp <= 0) return onKit;
+  return Math.max(onKit, fromComp);
 }
 
 /**
@@ -999,13 +1280,42 @@ export function allocateKitReservePriority(kitsWanted, breakdown) {
  */
 export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabel, meta, applyReserveFn) {
   const kitId = Number(kitProductId);
-  const wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
+  let wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
+  const orderDbId = Number(meta?.order_id ?? meta?.orderId);
+  if (Number.isFinite(orderDbId) && orderDbId > 0) {
+    const already = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
+    const orderQtyCap =
+      meta?.order_qty != null
+        ? Math.max(1, parseInt(meta.order_qty, 10) || 1)
+        : null;
+    if (orderQtyCap != null && already >= orderQtyCap) return 0;
+    if (orderQtyCap != null) {
+      wanted = Math.min(wanted, Math.max(0, orderQtyCap - already));
+    }
+    if (wanted <= 0) return 0;
+
+    const onKit = await getNetReservedForOrderProduct(
+      orderDbId,
+      kitId,
+      meta?.orderId != null ? String(meta.orderId).trim() : null,
+      meta?.warehouse_id ?? meta?.warehouseId ?? null
+    );
+    const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId);
+    if (onKit > 0 && fromComp > 0) {
+      /* вызывающий код должен выполнить reconcileMixedKitOrderReservePaths до повторного вызова */
+      return 0;
+    }
+  }
   const whRaw = meta?.warehouse_id ?? meta?.warehouseId ?? null;
+  const strictWarehouse =
+    meta?.strict_warehouse === true ||
+    meta?.strictWarehouse === true ||
+    meta?.fbs_strict_warehouse === true;
   const reserveOpts =
     whRaw != null && String(whRaw).trim() !== '' ? { warehouseId: whRaw } : { warehouseId: null };
   let breakdown = await computeKitReservableBreakdown(kitId, reserveOpts);
   let alloc = allocateKitReservePriority(wanted, breakdown);
-  if (alloc.kitsToReserve <= 0 && reserveOpts.warehouseId != null) {
+  if (alloc.kitsToReserve <= 0 && reserveOpts.warehouseId != null && !strictWarehouse) {
     breakdown = await computeKitReservableBreakdown(kitId, { warehouseId: null });
     alloc = allocateKitReservePriority(wanted, breakdown);
   }
@@ -1118,6 +1428,62 @@ export async function reconcileMisplacedKitWholeReserve(
     reconcile_kit_to_components: true
   });
   return onKit;
+}
+
+/**
+ * На заказе одновременно резерв на SKU комплекта и на комплектующие — оставить один путь.
+ * При наличии целых K1 на складе — whole; иначе — комплектующие.
+ */
+export async function reconcileMixedKitOrderReservePaths(
+  kitProductId,
+  orderDbId,
+  orderIdLabel,
+  meta,
+  unreserveProduct
+) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
+  if (typeof unreserveProduct !== 'function') return 0;
+
+  const mpLabel =
+    orderIdLabel != null && String(orderIdLabel).trim() !== '' ? String(orderIdLabel).trim() : null;
+  const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
+  const onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel, wh);
+  const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
+  if (onKit <= 0 || fromComp <= 0) return 0;
+
+  const physicalWhole = await readKitPhysicalOnHandFromDb(kitId, null, { warehouseId: wh });
+  const keepWhole = physicalWhole >= onKit;
+  let changed = 0;
+
+  if (keepWhole) {
+    const components = await getKitComponents(kitId);
+    for (const c of components) {
+      const pid = Number(c.component_product_id);
+      if (!Number.isFinite(pid) || pid < 1) continue;
+      const net = await getNetReservedForOrderProduct(oid, pid, mpLabel, wh);
+      if (net <= 0) continue;
+      await unreserveProduct(pid, net, orderIdLabel, {
+        ...meta,
+        order_id: oid,
+        orderId: orderIdLabel,
+        reconcile_mixed_kit_reserve: true,
+        kit_reserve_scope: 'component'
+      });
+      changed += 1;
+    }
+  } else if (onKit > 0) {
+    await unreserveProduct(kitId, onKit, orderIdLabel, {
+      ...meta,
+      order_id: oid,
+      orderId: orderIdLabel,
+      reconcile_mixed_kit_reserve: true,
+      kit_reserve_scope: 'whole'
+    });
+    changed += 1;
+  }
+  return changed;
 }
 
 export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unreserveFn) {
@@ -1474,6 +1840,9 @@ export default {
   isKitProductType,
   isKitCatalogProduct,
   isKitProductId,
+  isKitComponentProductId,
+  findKitProductIdForOrderComponentReserve,
+  releaseKitOrderReserveUnits,
   collectOrderSkuCandidates,
   findKitProductIdForMarketplaceOrder,
   getKitComponents,
@@ -1489,7 +1858,10 @@ export default {
   computeKitReservableBreakdown,
   allocateKitReservePriority,
   reconcileMisplacedKitWholeReserve,
+  reconcileMixedKitOrderReservePaths,
   getReservedKitUnitsForOrder,
+  getReservedKitUnitsFromComponentsForOrder,
+  getReservedKitUnitsForOrderValidation,
   computeKitMarketplaceStock,
   readKitStockFromDb,
   readKitMarketplaceStockFromDb,
@@ -1512,6 +1884,9 @@ export default {
   readKitPhysicalOnHandFromDb,
   readKitSkuNetReserved,
   readKitDisplayReservedQuantity,
+  readKitComponentsNetReservedMap,
+  resolveKitOrderShipmentPlan,
+  kitOrderReserveExceedsOnHand,
   sumKitComponentsNetReserved,
   kitHasPhysicalBalanceMovements,
   kitHasWholeKitInboundMovements,

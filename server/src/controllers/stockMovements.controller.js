@@ -57,6 +57,14 @@ class StockMovementsController {
             message: 'Для комплектов наличие задаётся через комплектующие, не вручную'
           });
         }
+        const { isKitComponentProductId } = await import('../services/kitStock.service.js');
+        if (await isKitComponentProductId(id)) {
+          return res.status(400).json({
+            ok: false,
+            message:
+              'Комплектующая входит в состав комплекта — используйте приёмку, инвентаризацию или закупку, не ручную правку'
+          });
+        }
       }
 
       const result = await stockMovementsService.applyChange(id, {

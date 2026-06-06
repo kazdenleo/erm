@@ -223,9 +223,48 @@ class StockMovementsService {
       });
     }
 
+    const typeNormEarly = String(type || '').trim().toLowerCase();
+    if (
+      typeNormEarly === 'manual' &&
+      metaObj.deleted !== true &&
+      metaObj.kit_component_restore !== true &&
+      metaObj.receipt_reversal !== true
+    ) {
+      const { isKitProductId, isKitComponentProductId } = await import('./kitStock.service.js');
+      if (await isKitProductId(idNum)) {
+        const error = new Error('Для комплектов ручное изменение остатка запрещено');
+        error.statusCode = 400;
+        throw error;
+      }
+      if (await isKitComponentProductId(idNum)) {
+        const error = new Error(
+          'Ручное изменение остатка комплектующей запрещено — используйте приёмку или инвентаризацию'
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
     const currentWh = await this.productsRepository.getWarehouseFreeStock(idNum, warehouseId);
-    let newWh = currentWh + safeDelta;
-    if (newWh < 0) newWh = 0;
+    const newWhRaw = currentWh + safeDelta;
+    const typeNorm = String(type || '').trim().toLowerCase();
+    const allowNegativeClamp =
+      metaObj.allow_negative_clamp === true ||
+      typeNorm === 'inventory' ||
+      metaObj.kit_assembly_receipt === true ||
+      metaObj.kit_assembly_receipt_reversal === true ||
+      metaObj.kit_component_restore === true ||
+      metaObj.stock_history_reset === true;
+
+    if (newWhRaw < 0 && !allowNegativeClamp) {
+      const error = new Error(
+        `Недостаточно наличия на складе #${warehouseId}: есть ${currentWh}, ` +
+          `изменение ${safeDelta > 0 ? '+' : ''}${safeDelta}`
+      );
+      error.statusCode = 409;
+      throw error;
+    }
+    const newWh = Math.max(0, newWhRaw);
 
     await this.productsRepository.setWarehouseFreeStock(idNum, warehouseId, newWh);
 
@@ -344,6 +383,12 @@ class StockMovementsService {
 
       const journalReconcile =
         metaOut.journal_reconcile === true || metaOut.journal_reconcile === 'true';
+      const strictWh =
+        metaOut.strict_warehouse === true ||
+        metaOut.strictWarehouse === true ||
+        metaOut.fbs_strict_warehouse === true;
+      const snapshotOpts =
+        strictWh && warehouseId != null ? { warehouseId } : {};
 
       if (type === 'reserve' && safeDelta < 0) {
         const reserveAdd = Math.floor(Math.abs(safeDelta));
@@ -352,21 +397,25 @@ class StockMovementsService {
           err.statusCode = 400;
           throw err;
         }
-        const supply = await getProductSupplySnapshotWithClient(client, idNum);
+        const supply = await getProductSupplySnapshotWithClient(client, idNum, snapshotOpts);
         const journalBeforeRaw = supply.reservedRaw;
         if (!journalReconcile) {
           const availableForReserve = Math.max(0, Math.floor(supply.available));
           if (availableForReserve <= 0) {
+            const whHint =
+              strictWh && warehouseId != null ? ` (склад #${warehouseId})` : '';
             const err = new Error(
-              `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
+              `Недостаточно остатка для резерва${whHint}: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
                 `уже зарезервировано ${journalBeforeRaw} (доступно без поставщиков: 0)`
             );
             err.statusCode = 400;
             throw err;
           }
           if (reserveAdd > availableForReserve) {
+            const whHint =
+              strictWh && warehouseId != null ? ` (склад #${warehouseId})` : '';
             const err = new Error(
-              `Недостаточно остатка для резерва: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
+              `Недостаточно остатка для резерва${whHint}: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
                 `уже зарезервировано ${journalBeforeRaw}, запрошено ${reserveAdd} ` +
                 `(доступно без поставщиков: ${availableForReserve})`
             );
@@ -431,7 +480,7 @@ class StockMovementsService {
       });
 
       if (type === 'reserve' && !journalReconcile) {
-        const snapAfter = await getProductSupplySnapshotWithClient(client, idNum);
+        const snapAfter = await getProductSupplySnapshotWithClient(client, idNum, snapshotOpts);
         if (snapAfter.reservedRaw > snapAfter.supplyCap) {
           const err = new Error(
             `Резерв превышает наличие и «в пути»: зарезервировано ${snapAfter.reservedRaw}, ` +
@@ -608,7 +657,7 @@ class StockMovementsService {
       if (own != null && String(own) !== String(tid)) return [];
     }
 
-    const { isKitProductId, getReservedKitUnitsForOrder } = await import('./kitStock.service.js');
+    const { isKitProductId, getReservedKitUnitsForOrderValidation } = await import('./kitStock.service.js');
     const isKit = await isKitProductId(idNum);
 
     const movementScopeSql = isKit
@@ -697,7 +746,7 @@ class StockMovementsService {
       if (orderMissing) {
         let reservedQty = Number(r.sku_net_qty) || 0;
         if (isKit && Number.isFinite(movementOrderDbId) && movementOrderDbId > 0) {
-          const kitUnits = await getReservedKitUnitsForOrder(idNum, movementOrderDbId);
+          const kitUnits = await getReservedKitUnitsForOrderValidation(idNum, movementOrderDbId);
           if (kitUnits > 0) reservedQty = kitUnits;
         }
         if (reservedQty <= 0) continue;
@@ -719,7 +768,7 @@ class StockMovementsService {
 
       let reservedQty = Number(r.sku_net_qty) || 0;
       if (isKit) {
-        reservedQty = await getReservedKitUnitsForOrder(idNum, orderDbId);
+        reservedQty = await getReservedKitUnitsForOrderValidation(idNum, orderDbId);
       }
       if (reservedQty <= 0) continue;
 
@@ -2152,6 +2201,223 @@ class StockMovementsService {
         client.release();
       }
     });
+  }
+
+  /**
+   * Отгрузка по заказу: снятие резерва и списание on-hand в одной транзакции.
+   * Без достаточного резерва отгрузка не выполняется.
+   */
+  async applyOrderAssemblyShipment(
+    productId,
+    {
+      shipQty: shipQtyRaw,
+      unreserveReason,
+      shipmentReason,
+      meta = {},
+      requireReserve = true
+    } = {}
+  ) {
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    const shipQty = Math.max(0, Math.floor(Number(shipQtyRaw) || 0));
+    if (!idNum || Number.isNaN(idNum) || shipQty <= 0) {
+      return { skipped: true, shipQty: 0, release: 0 };
+    }
+
+    const product = await this.productsRepository.findById(idNum);
+    if (!product) {
+      const error = new Error('Товар не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const metaObj = meta && typeof meta === 'object' && !Array.isArray(meta) ? { ...meta } : {};
+    const whRaw = metaObj.warehouse_id ?? metaObj.warehouseId;
+    const warehouseId = await this.productsRepository.resolveOwnWarehouseId(whRaw);
+    if (!warehouseId) {
+      const error = new Error('Не найден склад для отгрузки по заказу');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const profId = product.profile_id ?? product.profileId ?? null;
+    const orgId = product.organization_id ?? product.organizationId ?? null;
+    const totalBefore = product.quantity != null ? Number(product.quantity) : 0;
+
+    const result = await runWithProductStockLock(idNum, async () => {
+      const client = await getClient();
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [idNum]);
+        await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [idNum]);
+
+        const orderDbIdNum = metaObj.order_id != null ? Number(metaObj.order_id) : NaN;
+        const mpOrderId =
+          metaObj.orderId != null && String(metaObj.orderId).trim() !== ''
+            ? String(metaObj.orderId).trim()
+            : null;
+
+        const { getNetReservedForOrderProduct } = await import('./kitStock.service.js');
+        const { getRawReservedQuantityFromMovementsWithClient } = await import(
+          './sellableQuantity.service.js'
+        );
+
+        let netForOrder = 0;
+        if ((Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) || mpOrderId) {
+          netForOrder = await getNetReservedForOrderProduct(
+            Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : 0,
+            idNum,
+            mpOrderId,
+            warehouseId
+          );
+        }
+        netForOrder = Math.max(0, Math.floor(Number(netForOrder) || 0));
+
+        if (requireReserve && netForOrder < shipQty) {
+          const err = new Error(
+            `Недостаточно резерва для отгрузки: зарезервировано ${netForOrder}, к отгрузке ${shipQty}`
+          );
+          err.statusCode = 409;
+          throw err;
+        }
+
+        const pwsR = await client.query(
+          `SELECT quantity FROM product_warehouse_stock
+           WHERE product_id = $1 AND warehouse_id = $2
+           FOR UPDATE`,
+          [idNum, warehouseId]
+        );
+        let currentWh =
+          pwsR.rows?.length && pwsR.rows[0].quantity != null
+            ? Math.max(0, parseInt(pwsR.rows[0].quantity, 10) || 0)
+            : 0;
+        if (!pwsR.rows?.length) {
+          const pr = await client.query(`SELECT COALESCE(quantity, 0)::int AS q FROM products WHERE id = $1`, [
+            idNum
+          ]);
+          currentWh = Math.max(0, Number(pr.rows[0]?.q ?? 0) || 0);
+          await client.query(
+            `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (product_id, warehouse_id) DO NOTHING`,
+            [idNum, warehouseId, currentWh]
+          );
+        }
+
+        if (currentWh < shipQty) {
+          const err = new Error(
+            `Недостаточно наличия на складе для отгрузки: на складе ${currentWh}, к отгрузке ${shipQty}`
+          );
+          err.statusCode = 409;
+          throw err;
+        }
+
+        const metaOut = { ...metaObj, warehouse_id: warehouseId };
+        const release = Math.min(shipQty, netForOrder);
+        let unreserveMovement = null;
+
+        if (release > 0) {
+          const journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
+          const journalAfter = Math.max(0, journalBeforeRaw - release);
+          await client.query(
+            'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+            [journalAfter, idNum]
+          );
+          unreserveMovement = await this.repository.insertSnapshotAfterProduct(client, {
+            productId: idNum,
+            type: 'unreserve',
+            quantityChange: release,
+            reason: unreserveReason || null,
+            meta: metaOut,
+            warehouseId,
+            profileId: profId
+          });
+        } else if (requireReserve) {
+          const err = new Error('Нет резерва для снятия перед отгрузкой');
+          err.statusCode = 409;
+          throw err;
+        }
+
+        const newWh = currentWh - shipQty;
+        await client.query(
+          `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
+          [idNum, warehouseId, newWh]
+        );
+        await client.query(
+          `UPDATE products
+           SET quantity = COALESCE(
+             (SELECT SUM(quantity)::int FROM product_warehouse_stock WHERE product_id = $1),
+             0
+           ),
+           updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [idNum]
+        );
+
+        const shipMeta = {
+          ...metaOut,
+          warehouse_balance_before: currentWh,
+          warehouse_balance_after: newWh,
+          order_assembly_shipment: true
+        };
+        const shipmentMovement = await this.repository.insertSnapshotAfterProduct(client, {
+          productId: idNum,
+          type: 'shipment',
+          quantityChange: -shipQty,
+          reason: shipmentReason || null,
+          meta: shipMeta,
+          warehouseId,
+          profileId: profId
+        });
+
+        await client.query('COMMIT');
+        return { release, unreserveMovement, shipmentMovement, warehouseId, newWh };
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
+    });
+
+    try {
+      await syncProductQuantityFromWarehouseStock(idNum);
+      const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+      await syncProductReservedQuantityFromJournal(idNum);
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      const { default: ordersService } = await import('./orders.service.js');
+      await ordersService.trimExcessReservesForProduct(idNum, {
+        reason: shipmentReason || undefined,
+        meta: { from_stock_movement_type: 'shipment' }
+      });
+    } catch {
+      /* ignore */
+    }
+
+    scheduleStockMovementMarketplaceSync(idNum, {
+      source: 'order_assembly_shipment',
+      warehouseId: result.warehouseId,
+      organizationId: orgId
+    });
+
+    const productAfter = await this.productsRepository.findById(idNum);
+    const totalAfter = productAfter?.quantity != null ? Number(productAfter.quantity) : 0;
+
+    return {
+      productId: idNum,
+      shipQty,
+      release: result.release,
+      quantityBefore: totalBefore,
+      quantityAfter: totalAfter,
+      warehouseId: result.warehouseId,
+      unreserveMovement: result.unreserveMovement,
+      shipmentMovement: result.shipmentMovement
+    };
   }
 }
 

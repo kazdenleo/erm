@@ -131,6 +131,16 @@ async function applyInventoryLine(client, {
   lineReasonSuffix = null,
 }) {
   await assertProductAllowedInProfile(client, productId, profileId);
+
+  const { isKitProductId } = await import('./kitStock.service.js');
+  if (await isKitProductId(productId)) {
+    const err = new Error(
+      'Инвентаризация SKU комплекта запрещена — оприходуйте через приёмку комплекта или пересчитывайте комплектующие'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
   const before = await getPwsQuantity(client, productId, whId);
 
   await client.query(
@@ -271,6 +281,22 @@ async function afterInventoryTouchBackground(sessionId, productIds) {
       await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
       await fboSupplyReserveService.onSupplyStockEvent(pid, null, { profileId: profId });
       await recalculateKitsForComponent(pid, {});
+    }
+    try {
+      const parents = await query(
+        `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = ANY($1::bigint[])`,
+        [unique]
+      );
+      for (const row of parents.rows || []) {
+        const kid = Number(row.kit_product_id);
+        if (!Number.isFinite(kid) || kid < 1) continue;
+        await ordersService.trimExcessReservesForProduct(kid, {
+          reason: `После инвентаризации №${sessionId} (комплект)`,
+          meta: { inventory_session_id: sessionId, kit_parent_trim: true },
+        });
+      }
+    } catch {
+      /* ignore */
     }
   } catch (e) {
     logger.warn('[Inventory] afterInventoryTouchBackground failed', {

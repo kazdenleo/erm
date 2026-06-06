@@ -4,7 +4,9 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
-import stockMovementsService from './stockMovements.service.js';
+import { query } from '../config/database.js';
+import stockMovementsService, { runWithProductStockLock } from './stockMovements.service.js';
+import { isKitProductId, getKitComponents, buildKitComponentQtyMap } from './kitStock.service.js';
 
 class WarehouseReceiptsService {
   constructor() {
@@ -71,12 +73,23 @@ class WarehouseReceiptsService {
         cost: cost != null && cost >= 0 ? cost : null
       });
 
-      await stockMovementsService.applyChange(productId, {
-        delta: quantity,
-        type: 'receipt',
-        reason,
-        meta: { receipt_id: receipt.id, receipt_number: receiptNumber, warehouse_id: whId }
-      });
+      if (await isKitProductId(productId)) {
+        await this._applyKitReceiptMovements({
+          kitProductId: productId,
+          quantity,
+          reason,
+          receiptId: receipt.id,
+          receiptNumber,
+          warehouseId: whId
+        });
+      } else {
+        await stockMovementsService.applyChange(productId, {
+          delta: quantity,
+          type: 'receipt',
+          reason,
+          meta: { receipt_id: receipt.id, receipt_number: receiptNumber, warehouse_id: whId }
+        });
+      }
 
       if (cost != null && !Number.isNaN(cost) && cost >= 0) {
         await this.productsRepository.update(productId, { cost });
@@ -87,6 +100,177 @@ class WarehouseReceiptsService {
       receipt,
       linesCount: byProduct.size
     };
+  }
+
+  /**
+   * Приёмка собранного комплекта: оприходование K1 и списание комплектующих по составу под блокировками product_id.
+   */
+  async _applyKitReceiptMovements({
+    kitProductId,
+    quantity,
+    reason,
+    receiptId,
+    receiptNumber,
+    warehouseId
+  }) {
+    const kitId = Number(kitProductId);
+    const kits = Math.max(1, parseInt(quantity, 10) || 1);
+    const components = await getKitComponents(kitId);
+    if (!components.length) {
+      const err = new Error('У комплекта не задан состав kit_components');
+      err.statusCode = 400;
+      throw err;
+    }
+    const compQtyMap = buildKitComponentQtyMap(components, kits);
+    const lockIds = [kitId, ...[...compQtyMap.keys()].map((n) => Number(n))]
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+
+    const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
+    for (const [compId, compQty] of compQtyMap) {
+      const metrics = await computeAvailableQuantity(compId, {
+        warehouseId,
+        supplierSyncEnabled: false
+      });
+      const onHand = Math.max(0, Number(metrics.onHand) || 0);
+      if (onHand < compQty) {
+        const err = new Error(
+          `Недостаточно комплектующих для приёмки комплекта: product #${compId}, нужно ${compQty}, на складе ${onHand}`
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+    }
+
+    const metaBase = {
+      receipt_id: receiptId,
+      receipt_number: receiptNumber,
+      warehouse_id: warehouseId,
+      kit_assembly_receipt: true,
+      kit_product_id: kitId,
+      kit_units: kits
+    };
+
+    const applyMoves = async () => {
+      await stockMovementsService.applyChange(kitId, {
+        delta: kits,
+        type: 'receipt',
+        reason,
+        meta: metaBase
+      });
+      for (const [compId, compQty] of compQtyMap) {
+        await stockMovementsService.applyChange(compId, {
+          delta: -compQty,
+          type: 'shipment',
+          reason: `${reason}: комплектующие для сборки комплекта`,
+          meta: { ...metaBase, kit_component_deduct: true }
+        });
+      }
+    };
+
+    const runChain = (idx) => {
+      if (idx >= lockIds.length) return applyMoves();
+      return runWithProductStockLock(lockIds[idx], () => runChain(idx + 1));
+    };
+    await runChain(0);
+  }
+
+  async _resolveReceiptWarehouseId(receiptId) {
+    const rid = Number(receiptId);
+    if (!Number.isFinite(rid) || rid < 1) {
+      return this.productsRepository.resolveOwnWarehouseId(null);
+    }
+    try {
+      const r = await query(
+        `SELECT warehouse_id, meta
+         FROM stock_movements
+         WHERE (meta->>'receipt_id')::bigint = $1
+           AND warehouse_id IS NOT NULL
+         ORDER BY id DESC
+         LIMIT 1`,
+        [rid]
+      );
+      const row = r.rows?.[0];
+      if (row?.warehouse_id != null) {
+        return this.productsRepository.resolveOwnWarehouseId(row.warehouse_id);
+      }
+      const metaWh = row?.meta?.warehouse_id ?? row?.meta?.warehouseId;
+      if (metaWh != null) {
+        return this.productsRepository.resolveOwnWarehouseId(metaWh);
+      }
+    } catch {
+      /* ignore */
+    }
+    return this.productsRepository.resolveOwnWarehouseId(null);
+  }
+
+  /**
+   * Отмена приёмки собранного комплекта: K1− и возврат комплектующих на склад.
+   */
+  async _reverseKitReceiptMovements({
+    kitProductId,
+    quantity,
+    reason,
+    receiptId,
+    receiptNumber,
+    warehouseId
+  }) {
+    const kitId = Number(kitProductId);
+    const kits = Math.max(1, parseInt(quantity, 10) || 1);
+    const components = await getKitComponents(kitId);
+    if (!components.length) {
+      const err = new Error('У комплекта не задан состав kit_components');
+      err.statusCode = 400;
+      throw err;
+    }
+    const whId =
+      warehouseId != null
+        ? await this.productsRepository.resolveStrictOwnWarehouseId(warehouseId)
+        : await this._resolveReceiptWarehouseId(receiptId);
+    if (!whId) {
+      const err = new Error('Не определён склад для отмены приёмки комплекта');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const compQtyMap = buildKitComponentQtyMap(components, kits);
+    const lockIds = [kitId, ...[...compQtyMap.keys()].map((n) => Number(n))]
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+
+    const metaBase = {
+      receipt_id: receiptId,
+      receipt_number: receiptNumber,
+      warehouse_id: whId,
+      kit_assembly_receipt: true,
+      kit_assembly_receipt_reversal: true,
+      kit_product_id: kitId,
+      kit_units: kits,
+      deleted: true
+    };
+
+    const applyMoves = async () => {
+      await stockMovementsService.applyChange(kitId, {
+        delta: -kits,
+        type: 'shipment',
+        reason,
+        meta: metaBase
+      });
+      for (const [compId, compQty] of compQtyMap) {
+        await stockMovementsService.applyChange(compId, {
+          delta: compQty,
+          type: 'receipt',
+          reason: `${reason}: возврат комплектующих при отмене приёмки комплекта`,
+          meta: { ...metaBase, kit_component_restore: true }
+        });
+      }
+    };
+
+    const runChain = (idx) => {
+      if (idx >= lockIds.length) return applyMoves();
+      return runWithProductStockLock(lockIds[idx], () => runChain(idx + 1));
+    };
+    await runChain(0);
   }
 
   /**
@@ -128,6 +312,7 @@ class WarehouseReceiptsService {
 
     for (const [, row] of byProduct) {
       const { productId, quantity } = row;
+      const isKit = await isKitProductId(productId);
 
       await this.receiptsRepo.addLine({
         receiptId: receipt.id,
@@ -135,6 +320,22 @@ class WarehouseReceiptsService {
         quantity,
         cost: null
       });
+
+      if (isKit) {
+        const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
+        const metrics = await computeAvailableQuantity(productId, {
+          warehouseId: whId,
+          supplierSyncEnabled: false
+        });
+        const onHand = Math.max(0, Number(metrics.onHand) || 0);
+        if (onHand < quantity) {
+          const err = new Error(
+            `Недостаточно комплектов на складе для возврата поставщику: нужно ${quantity}, на складе ${onHand}`
+          );
+          err.statusCode = 409;
+          throw err;
+        }
+      }
 
       await stockMovementsService.applyChange(productId, {
         delta: -quantity,
@@ -144,7 +345,8 @@ class WarehouseReceiptsService {
           receipt_id: receipt.id,
           receipt_number: receiptNumber,
           supplier_id: supplierId,
-          warehouse_id: whId
+          warehouse_id: whId,
+          ...(isKit ? { kit_return_to_supplier: true } : {})
         }
       });
     }
@@ -195,6 +397,7 @@ class WarehouseReceiptsService {
 
     for (const [, row] of byProduct) {
       const { productId, quantity, cost } = row;
+      const isKit = await isKitProductId(productId);
 
       await this.receiptsRepo.addLine({
         receiptId: receipt.id,
@@ -207,7 +410,12 @@ class WarehouseReceiptsService {
         delta: quantity,
         type: 'customer_return',
         reason,
-        meta: { receipt_id: receipt.id, receipt_number: receiptNumber, warehouse_id: whId }
+        meta: {
+          receipt_id: receipt.id,
+          receipt_number: receiptNumber,
+          warehouse_id: whId,
+          ...(isKit ? { kit_customer_return: true } : {})
+        }
       });
 
       if (cost != null && !Number.isNaN(cost) && cost >= 0) {
@@ -254,12 +462,26 @@ class WarehouseReceiptsService {
       const productId = line.product_id;
       const quantity = Math.max(0, parseInt(line.quantity, 10) || 0);
       if (!productId || quantity < 1) continue;
+
+      if (!isReturnToSupplier && !isCustomerReturn && (await isKitProductId(productId))) {
+        const whId = await this._resolveReceiptWarehouseId(id);
+        await this._reverseKitReceiptMovements({
+          kitProductId: productId,
+          quantity,
+          reason,
+          receiptId: id,
+          receiptNumber,
+          warehouseId: whId
+        });
+        continue;
+      }
+
       const reverseDelta = isReturnToSupplier ? quantity : -quantity;
       await stockMovementsService.applyChange(productId, {
         delta: reverseDelta,
         type: 'manual',
         reason,
-        meta: { receipt_id: id, receipt_number: receiptNumber, deleted: true }
+        meta: { receipt_id: id, receipt_number: receiptNumber, deleted: true, receipt_reversal: true }
       });
     }
     await this.receiptsRepo.delete(id);

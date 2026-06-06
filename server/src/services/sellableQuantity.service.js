@@ -239,8 +239,9 @@ export async function getRawReservedQuantityFromMovementsWithClient(client, prod
 }
 
 /**
- * Снимок поставки товара: наличие (сумма по всем складам), «в пути», резерв, доступно, потолок резерва.
+ * Снимок поставки товара: наличие (сумма по всем складам или один склад), «в пути», резерв, доступно, потолок резерва.
  * incoming_quantity и резерв в журнале — на уровне product_id, не склада.
+ * @param {{ warehouseId?: number|string|null, reservedMap?: Map }} [opts]
  */
 export async function getProductSupplySnapshotWithClient(client, productId, opts = {}) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
@@ -250,24 +251,43 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
 
   const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
 
-  const onHandR = await run(
-    `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty
-     FROM product_warehouse_stock
-     WHERE product_id = $1`,
-    [pid]
-  );
-  const pwsOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
-  let productQty = 0;
-  try {
-    const pq = await run(`SELECT COALESCE(quantity, 0)::int AS quantity FROM products WHERE id = $1`, [
-      pid
-    ]);
-    productQty = Number(pq.rows[0]?.quantity ?? 0) || 0;
-  } catch {
-    productQty = 0;
+  const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const whId =
+    whRaw != null && String(whRaw).trim() !== ''
+      ? typeof whRaw === 'string'
+        ? parseInt(whRaw, 10)
+        : Number(whRaw)
+      : null;
+  const warehouseScoped = Number.isFinite(whId) && whId > 0;
+
+  let onHand = 0;
+  if (warehouseScoped) {
+    const onHandR = await run(
+      `SELECT COALESCE(quantity, 0)::int AS pws_qty
+       FROM product_warehouse_stock
+       WHERE product_id = $1 AND warehouse_id = $2`,
+      [pid, whId]
+    );
+    onHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
+  } else {
+    const onHandR = await run(
+      `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty
+       FROM product_warehouse_stock
+       WHERE product_id = $1`,
+      [pid]
+    );
+    const pwsOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
+    let productQty = 0;
+    try {
+      const pq = await run(`SELECT COALESCE(quantity, 0)::int AS quantity FROM products WHERE id = $1`, [
+        pid
+      ]);
+      productQty = Number(pq.rows[0]?.quantity ?? 0) || 0;
+    } catch {
+      productQty = 0;
+    }
+    onHand = Math.max(pwsOnHand, productQty);
   }
-  // Как в таблице «Остатки на складе»: max(сумма PWS, products.quantity) — при рассинхроне pws=0.
-  const onHand = Math.max(pwsOnHand, productQty);
 
   let incoming = 0;
   try {
