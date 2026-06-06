@@ -8,6 +8,7 @@ import { useWarehouses } from '../../hooks/useWarehouses';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { formatWeekendDaysLabel } from '../../utils/warehouseWeekendDays.js';
+import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { WarehouseForm } from '../../components/forms/WarehouseForm/WarehouseForm';
 import { warehouseMappingsApi } from '../../services/warehouseMappings.api';
