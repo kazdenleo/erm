@@ -320,6 +320,9 @@ class ProductsController {
         }
       }
       res.setHeader('X-Products-List-View', isStockList ? 'stock' : 'full');
+      if (options.brandId != null && String(options.brandId).trim() !== '') {
+        res.setHeader('X-Products-Brand-Filter', String(options.brandId).trim());
+      }
       if (hasPaging) {
         res.setHeader('X-Products-Total', String(result.total ?? ''));
         res.setHeader('X-Products-Limit', String(options.limit ?? ''));

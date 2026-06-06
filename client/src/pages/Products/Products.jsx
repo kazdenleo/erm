@@ -23,6 +23,10 @@ import {
   useProductLabelPrint,
 } from '../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../services/api.js';
+import {
+  FILTER_CATEGORY_NONE,
+  fetchHasUncategorizedProducts,
+} from '../../utils/uncategorizedCategoryFilter.js';
 import './Products.css';
 
 /** Текст подсказки со составом комплекта (title / native tooltip) */
@@ -43,9 +47,6 @@ function buildKitCompositionTitle(components) {
 }
 
 const PRODUCTS_LIST_PAGE_SIZES = [50, 100, 200];
-
-/** Значение фильтра «товары без ERP-категории»; должно совпадать с `buildFindAllFilters` на сервере. */
-const FILTER_CATEGORY_NONE = '__no_category__';
 
 /** Бейджи МП слева от фото — по сохранённым sku / product_id в product_skus */
 function getProductMarketplaceLinkBadges(product) {
@@ -130,11 +131,12 @@ export function Products() {
   const [filterArchiveMode, setFilterArchiveMode] = useState('');
   /** null — ещё не проверяли; иначе есть ли товары без категории в текущих фильтрах org/бренд/тип/поиск */
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
-  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   /** Поиск по названию / артикулу / штрихкоду (сервер, debounce) */
   const [listSearch, setListSearch] = useState('');
   const listSearchDebounceRef = useRef(null);
   const loadListRef = useRef(() => {});
+  const listBootstrappedRef = useRef(false);
   const [importExcelLoading, setImportExcelLoading] = useState(false);
   const importFileInputRef = useRef(null);
   const [importTemplateModalOpen, setImportTemplateModalOpen] = useState(false);
@@ -323,20 +325,15 @@ export function Products() {
       try {
         const searchTrim = typeof listSearch === 'string' ? listSearch.trim() : '';
         const ptTrim = typeof filterProductType === 'string' ? filterProductType.trim() : '';
-        const res = await productsApi.getAll({
-          cacheBust: true,
+        const has = await fetchHasUncategorizedProducts({
           organizationId: filterOrganizationId || undefined,
           brandId: filterBrandId || undefined,
-          categoryId: FILTER_CATEGORY_NONE,
           productType: ptTrim || undefined,
           search: searchTrim || undefined,
-          limit: 1,
-          offset: 0,
+          includeArchived: filterArchiveMode === 'include' || filterArchiveMode === 'only',
+          archivedOnly: filterArchiveMode === 'only',
         });
         if (cancelled) return;
-        const list = Array.isArray(res?.data) ? res.data : [];
-        const total = Number(res?.meta?.total);
-        const has = list.length > 0 || (Number.isFinite(total) && total > 0);
         setShowUncategorizedCategoryOption(has);
       } catch {
         if (!cancelled) setShowUncategorizedCategoryOption(false);
@@ -346,14 +343,15 @@ export function Products() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [filterOrganizationId, filterBrandId, filterProductType, listSearch]);
+  }, [
+    filterOrganizationId,
+    filterBrandId,
+    filterProductType,
+    filterArchiveMode,
+    listSearch,
+  ]);
 
-  const showNoneCategoryOption = useMemo(
-    () =>
-      showUncategorizedCategoryOption === true ||
-      (filterCategoryId === FILTER_CATEGORY_NONE && showUncategorizedCategoryOption !== false),
-    [showUncategorizedCategoryOption, filterCategoryId]
-  );
+  const showNoneCategoryOption = showUncategorizedCategoryOption === true;
 
   useEffect(() => {
     if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {
@@ -376,9 +374,16 @@ export function Products() {
   };
 
   useEffect(() => {
-    loadListRef.current({ page: currentPage });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- начальная загрузка списка; смена страницы/фильтров вызывает loadList из обработчиков
-  }, []);
+    const isFirstLoad = !listBootstrappedRef.current;
+    listBootstrappedRef.current = true;
+    loadListRef.current({ page: 1, silent: !isFirstLoad });
+  }, [
+    filterOrganizationId,
+    filterBrandId,
+    filterCategoryId,
+    filterProductType,
+    filterArchiveMode
+  ]);
 
   const openProductIdParam = searchParams.get('open');
 
@@ -584,35 +589,30 @@ export function Products() {
     const v = e.target.value;
     setCurrentPage(1);
     setFilterOrganizationId(v);
-    loadList({ organizationId: v, page: 1 });
   };
 
   const handleFilterCategoryChange = (e) => {
     const v = e.target.value;
     setCurrentPage(1);
     setFilterCategoryId(v);
-    loadList({ categoryId: v, page: 1 });
   };
 
   const handleFilterProductTypeChange = (e) => {
     const v = e.target.value;
     setCurrentPage(1);
     setFilterProductType(v);
-    loadList({ productType: v, page: 1 });
   };
 
   const handleFilterArchiveModeChange = (e) => {
     const v = e.target.value;
     setCurrentPage(1);
     setFilterArchiveMode(v);
-    loadList({ archiveMode: v, page: 1 });
   };
 
   const handleFilterBrandChange = (e) => {
     const v = e.target.value;
     setCurrentPage(1);
     setFilterBrandId(v);
-    loadList({ brandId: v, page: 1 });
   };
 
   const openExportModal = () => {
@@ -988,7 +988,7 @@ export function Products() {
                         .filter((b) => b && b.name)
                         .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'))
                         .map((b) => (
-                          <option key={b.id} value={b.id}>
+                          <option key={b.id} value={String(b.id)}>
                             {b.name}
                           </option>
                         ))}

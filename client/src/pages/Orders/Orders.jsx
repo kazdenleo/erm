@@ -2154,7 +2154,7 @@ export function Orders() {
             ? `Закупка: выбрано строк — ${procurementModalBulkSourceRows.length}`
             : 'Закупка по заказу'
         }
-        size="large"
+        size="xl"
       >
         {procurementModalRow && (
           <div className="orders-procurement-modal">

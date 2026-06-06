@@ -19,9 +19,12 @@ import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetai
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
+import {
+  FILTER_CATEGORY_NONE,
+  fetchHasUncategorizedProducts,
+} from '../../utils/uncategorizedCategoryFilter.js';
 
 const PRICES_LIST_PAGE_SIZES = [50, 100, 200];
-const FILTER_CATEGORY_NONE = '__no_category__';
 
 // Нормализация ответа API: сервер возвращает { ok, data: result }, axios даёт response.data = этот объект
 function getPriceResult(r) {
@@ -363,7 +366,7 @@ export function Prices() {
   const [filterProductType, setFilterProductType] = useState('');
   const [filterArchiveMode, setFilterArchiveMode] = useState('');
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
-  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [listSearch, setListSearch] = useState('');
   const listSearchDebounceRef = useRef(null);
   const loadListRef = useRef(() => {});
@@ -535,12 +538,7 @@ export function Prices() {
     loadListRef.current({ page: next });
   };
 
-  const showNoneCategoryOption = useMemo(
-    () =>
-      showUncategorizedCategoryOption === true ||
-      (filterCategoryId === FILTER_CATEGORY_NONE && showUncategorizedCategoryOption !== false),
-    [showUncategorizedCategoryOption, filterCategoryId]
-  );
+  const showNoneCategoryOption = showUncategorizedCategoryOption === true;
 
   useEffect(() => {
     return () => {
@@ -555,20 +553,13 @@ export function Prices() {
       try {
         const searchTrim = typeof listSearch === 'string' ? listSearch.trim() : '';
         const ptTrim = typeof filterProductType === 'string' ? filterProductType.trim() : '';
-        const res = await productsApi.getAll({
-          cacheBust: true,
+        const has = await fetchHasUncategorizedProducts({
           organizationId: filterOrganizationId || undefined,
           brandId: filterBrandId || undefined,
-          categoryId: FILTER_CATEGORY_NONE,
           productType: ptTrim || undefined,
           search: searchTrim || undefined,
-          limit: 1,
-          offset: 0,
         });
         if (cancelled) return;
-        const list = Array.isArray(res?.data) ? res.data : [];
-        const total = Number(res?.meta?.total);
-        const has = list.length > 0 || (Number.isFinite(total) && total > 0);
         setShowUncategorizedCategoryOption(has);
       } catch {
         if (!cancelled) setShowUncategorizedCategoryOption(false);

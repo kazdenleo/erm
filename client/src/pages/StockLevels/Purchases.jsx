@@ -848,7 +848,7 @@ export function Purchases() {
         </div>
       )}
 
-      <Modal isOpen={createOpen} onClose={closeCreateModal} title="Новая закупка" size="large">
+      <Modal isOpen={createOpen} onClose={closeCreateModal} title="Новая закупка" size="xl">
         <p className="muted">Выберите поставщика, организацию и склад назначения, затем добавьте позиции вручную или импортируйте из Excel.</p>
         <input
           ref={excelInputRef}
@@ -1018,7 +1018,7 @@ export function Purchases() {
         isOpen={!!detail}
         onClose={() => setDetail(null)}
         title={detail?.purchase?.id ? `Закупка №${detail.purchase.id}` : 'Закупка'}
-        size="large"
+        size="xl"
       >
         {detailLoading ? (
           <div className="loading">Загрузка…</div>
@@ -1382,7 +1382,7 @@ export function Purchases() {
         isOpen={!!receipt?.receipt?.id}
         onClose={() => setReceipt(null)}
         title={receipt?.receipt?.id ? `Приёмка №${receipt.receipt.id}` : 'Приёмка'}
-        size="large"
+        size="xl"
       >
         {receipt?.receipt ? (
           <>
@@ -1823,7 +1823,7 @@ export function Purchases() {
         isOpen={!!extrasToResolve}
         onClose={() => setExtrasToResolve(null)}
         title="Излишки по приёмке"
-        size="large"
+        size="xl"
       >
         {extrasToResolve ? (
           <>

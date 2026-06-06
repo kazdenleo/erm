@@ -14,6 +14,10 @@ import { useBrands } from '../../hooks/useBrands';
 import { getPrimaryProductImageUrl } from '../../utils/productImage.js';
 import { barcodeStringsFromProduct } from '../../utils/productBarcodes.js';
 import { userCategoriesApi } from '../../services/userCategories.api';
+import {
+  FILTER_CATEGORY_NONE,
+  fetchHasUncategorizedProducts,
+} from '../../utils/uncategorizedCategoryFilter.js';
 import './ProductsBulkEdit.css';
 import './Products.css';
 
@@ -53,8 +57,6 @@ function readMpBucketVisibility() {
     return { ozon: true, wb: true, ym: true };
   }
 }
-/** Значение фильтра «товары без ERP-категории» — как на сервере в buildFindAllFilters */
-const FILTER_CATEGORY_NONE = '__no_category__';
 
 /** Базовые столбцы: порядок — основная карточка (артикулы → названия/бренд → описание → габариты → прочее),
  *  затем Ozon, затем WB, затем Я.Маркет (в каждом блоке: артикулы → название → описание → бренд и т.д.).
@@ -801,24 +803,29 @@ export function ProductsBulkEdit() {
 
       let showUncat = false;
       try {
-        const resU = await productsApi.getAll({
-          organizationId: org || undefined,
-          brandId: brand || undefined,
-          categoryId: FILTER_CATEGORY_NONE,
-          productType: ptTrim || undefined,
-          search: search || undefined,
-          cacheBust: true,
-          limit: selectedIds.length > 0 ? LOAD_LIMIT_SELECTED : 1,
-          offset: 0,
-        });
-        if (gen !== loadGenRef.current) return;
-        const uncat = Array.isArray(resU?.data) ? resU.data.filter(Boolean) : [];
         if (selectedIds.length > 0) {
+          const resU = await productsApi.getAll({
+            organizationId: org || undefined,
+            brandId: brand || undefined,
+            categoryId: FILTER_CATEGORY_NONE,
+            productType: ptTrim || undefined,
+            search: search || undefined,
+            cacheBust: true,
+            limit: LOAD_LIMIT_SELECTED,
+            offset: 0,
+          });
+          if (gen !== loadGenRef.current) return;
+          const uncat = Array.isArray(resU?.data) ? resU.data.filter(Boolean) : [];
           const setSel = new Set(selectedIds.map((x) => str(x)));
           showUncat = uncat.some((p) => p?.id != null && setSel.has(str(p.id)));
         } else {
-          const total = Number(resU?.meta?.total);
-          showUncat = uncat.length > 0 || (Number.isFinite(total) && total > 0);
+          showUncat = await fetchHasUncategorizedProducts({
+            organizationId: org || undefined,
+            brandId: brand || undefined,
+            productType: ptTrim || undefined,
+            search: search || undefined,
+          });
+          if (gen !== loadGenRef.current) return;
         }
       } catch {
         showUncat = false;
@@ -874,12 +881,7 @@ export function ProductsBulkEdit() {
     loadProducts();
   }, [loadProducts]);
 
-  const showNoneCategoryOption = useMemo(
-    () =>
-      showUncategorizedCategoryOption === true ||
-      (filterCategoryId === FILTER_CATEGORY_NONE && showUncategorizedCategoryOption !== false),
-    [showUncategorizedCategoryOption, filterCategoryId]
-  );
+  const showNoneCategoryOption = showUncategorizedCategoryOption === true;
 
   useEffect(() => {
     if (showUncategorizedCategoryOption === false && filterCategoryId === FILTER_CATEGORY_NONE) {

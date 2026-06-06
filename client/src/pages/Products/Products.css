@@ -1,14 +1,16 @@
 /* Стили для страницы товаров */
 .products-list-toolbar {
-  padding: 12px 16px;
+  padding: 16px 20px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   background: var(--bs-light, #f8f9fa);
 }
 
 .products-filters-panel {
-  margin-top: 12px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  margin-top: 14px;
+  padding: 16px 20px 18px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 0 0 8px 8px;
 }
 
 .products-list-search-input {
@@ -28,7 +30,8 @@
 }
 
 .products-list {
-  margin: 16px 0;
+  margin: 0;
+  padding: 16px 20px 20px;
   transition: opacity 0.22s ease;
 }
 

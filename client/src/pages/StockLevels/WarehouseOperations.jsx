@@ -1210,7 +1210,7 @@ export function WarehouseOperations({
       if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
         await addToReceiptSession(product, 1);
       } else {
-        addToReceiptList(product, 1);
+      addToReceiptList(product, 1);
       }
       setOpMessage(`В список: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
@@ -1243,8 +1243,8 @@ export function WarehouseOperations({
         .then(() => setOpMessage(`В список: ${product.name} — ${add} шт`))
         .catch((ex) => setOpMessage('Ошибка: ' + (ex?.message || 'не удалось добавить')));
     } else {
-      addToReceiptList(product, add);
-      setOpMessage(`В список: ${product.name} — ${add} шт`);
+    addToReceiptList(product, add);
+    setOpMessage(`В список: ${product.name} — ${add} шт`);
     }
     setReceiptPickedProduct(null);
     setSelectedProductId('');
@@ -1952,13 +1952,13 @@ export function WarehouseOperations({
       if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
         await scanInventoryLive(String(product.id));
       } else {
-        await addOneToInventoryNewRow(product);
+    await addOneToInventoryNewRow(product);
       }
-      setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
+    setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       setInventoryNewPickedProduct(null);
       setInventoryNewSearch('');
       setLookupError(null);
-      inventoryNewScanInputRef.current?.focus();
+    inventoryNewScanInputRef.current?.focus();
       return true;
     } catch (e) {
       const msg = warehouseScanErrorMessage(e, 'Не удалось добавить');
@@ -2076,11 +2076,11 @@ export function WarehouseOperations({
     async (detail) => {
       const session = detail?.session ?? detail;
       const lines = detail?.lines ?? [];
-      if (!session?.id || !session?.warehouse_id) {
-        setOpMessage('Не удалось открыть редактирование: у документа не указан склад');
+    if (!session?.id || !session?.warehouse_id) {
+      setOpMessage('Не удалось открыть редактирование: у документа не указан склад');
         return false;
-      }
-      const whId = String(session.warehouse_id);
+    }
+    const whId = String(session.warehouse_id);
       leaveInventoryLiveSession();
       const rowTasks = (lines || []).map(async (line) => {
         const product = {
@@ -2099,7 +2099,7 @@ export function WarehouseOperations({
           current,
           fact: Math.max(0, Number(line.quantity_after ?? 0)),
         };
-      });
+        });
       const rows = (await Promise.all(rowTasks)).filter(Boolean);
       setInventoryEditingSessionId(session.id);
       setInventorySessionWarehouseId(whId);
@@ -3018,7 +3018,7 @@ export function WarehouseOperations({
         onClose={handleCloseInventoryWorkspace}
         title={
           inventoryEditingSessionId
-            ? `Редактирование инвентаризации №${inventoryEditingSessionId}`
+                      ? `Редактирование инвентаризации №${inventoryEditingSessionId}`
             : 'Новая инвентаризация'
         }
         size="full"
@@ -3026,10 +3026,10 @@ export function WarehouseOperations({
         closeOnBackdropClick={false}
       >
         <div className="warehouse-ops-inventory-workspace">
-          <p className="warehouse-ops-hint">
+                  <p className="warehouse-ops-hint">
             Каждое сканирование штрихкода — плюс 1 шт к фактическому количеству. Чтобы пригласить коллег с других
             устройств — включите «Совместный пересчёт» ниже.
-          </p>
+                  </p>
 
               <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
                 <label>
@@ -3047,19 +3047,19 @@ export function WarehouseOperations({
                     ) : null}
                   </div>
                 ) : (
-                  <select
-                    value={inventorySessionWarehouseId}
-                    onChange={handleInventorySessionWarehouseChange}
-                    className="warehouse-ops-select"
-                    disabled={!!inventoryEditingSessionId}
-                  >
-                    <option value="">— Выберите склад —</option>
-                    {ownWarehouses.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.address || w.name || `Склад #${w.id}`}
-                      </option>
-                    ))}
-                  </select>
+                <select
+                  value={inventorySessionWarehouseId}
+                  onChange={handleInventorySessionWarehouseChange}
+                  className="warehouse-ops-select"
+                  disabled={!!inventoryEditingSessionId}
+                >
+                  <option value="">— Выберите склад —</option>
+                  {ownWarehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.address || w.name || `Склад #${w.id}`}
+                    </option>
+                  ))}
+                </select>
                 )}
               </div>
 
@@ -3380,8 +3380,8 @@ export function WarehouseOperations({
                       Очистить список
                     </Button>
                   </div>
-                </>
-              )}
+            </>
+          )}
         </div>
       </Modal>
 
@@ -3772,7 +3772,7 @@ export function WarehouseOperations({
         title={receiptDetail
           ? (receiptDetail.document_type === 'return' ? 'Возврат ' : (receiptDetail.document_type === 'customer_return' ? 'Возврат от клиента ' : 'Приёмка ')) + (receiptDetail.receipt_number || receiptDetail.id)
           : 'Документ'}
-        size="large"
+        size="xl"
       >
         {receiptDetail && (
           <>
@@ -3853,7 +3853,7 @@ export function WarehouseOperations({
               }`
             : 'Инвентаризация'
         }
-        size="large"
+        size="xl"
       >
         {inventoryDetailView?.session && (
           <>
@@ -3996,7 +3996,7 @@ export function WarehouseOperations({
         isOpen={productPickOpen}
         onClose={closeProductPick}
         title={productPickTitle || 'Выберите товар'}
-        size="large"
+        size="xl"
       >
         <div className="warehouse-ops-product-pick">
           {Array.isArray(productPickList) && productPickList.length > 0 ? (
@@ -4048,7 +4048,7 @@ export function WarehouseOperations({
         isOpen={addReceiptModalOpen}
         onClose={() => setAddReceiptModalOpen(false)}
         title="Добавить поступление"
-        size="large"
+        size="xl"
         closeOnBackdropClick={false}
         closeOnEscape={false}
       >
@@ -4067,18 +4067,18 @@ export function WarehouseOperations({
                 ) : null}
               </div>
             ) : (
-              <select
-                value={receiptWarehouseId}
-                onChange={(e) => setReceiptWarehouseId(e.target.value)}
-                className="warehouse-ops-select"
-              >
-                <option value="">— Выберите склад —</option>
-                {ownWarehouses.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
-                  </option>
-                ))}
-              </select>
+            <select
+              value={receiptWarehouseId}
+              onChange={(e) => setReceiptWarehouseId(e.target.value)}
+              className="warehouse-ops-select"
+            >
+              <option value="">— Выберите склад —</option>
+              {ownWarehouses.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.address || w.name || `Склад #${w.id}`}
+                </option>
+              ))}
+            </select>
             )}
           </div>
           {isReceiptSessionGuest && (

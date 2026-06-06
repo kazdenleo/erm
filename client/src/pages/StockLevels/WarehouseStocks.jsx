@@ -2153,7 +2153,7 @@ export function WarehouseStocks() {
           ) : null}
           <div className="stock-levels-filters">
             <label className="stock-levels-filter-label">
-              <span>Склад (остаток):</span>
+              <span>Склад:</span>
               <select
                 value={stockWarehouseId}
                 onChange={handleStockWarehouseChange}
@@ -2212,7 +2212,7 @@ export function WarehouseStocks() {
               </select>
             </label>
             <label className="stock-levels-filter-label">
-              <span>Тип товара:</span>
+              <span>Тип:</span>
               <select
                 value={filterProductType}
                 onChange={handleProductTypeFilterChange}
@@ -2234,6 +2234,7 @@ export function WarehouseStocks() {
                 onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
               />
             </label>
+            <div className="stock-levels-filters-toggles">
             <label className="stock-levels-filter-label stock-levels-filter-toggle">
               <span>Наличие:</span>
               <span className="form-check form-switch mb-0 stock-levels-filter-switch">
@@ -2279,6 +2280,7 @@ export function WarehouseStocks() {
                 />
               </span>
             </label>
+            </div>
           </div>
           {renderStockListPager('top')}
           <div

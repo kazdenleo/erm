@@ -195,6 +195,19 @@
   max-width: 100%;
 }
 
+/* Шире стандартные модалки в рабочей области (с учётом сайдбара) */
+.modal-erm[data-erm-size='large'] .modal-dialog.modal-lg {
+  max-width: min(960px, calc(100% - 2rem));
+}
+
+.modal-erm[data-erm-size='xl'] .modal-dialog.modal-xl {
+  max-width: min(1280px, calc(100% - 2rem));
+}
+
+.modal-erm .modal-body {
+  padding: 1.15rem 1.35rem 1.35rem;
+}
+
 /* Подменю сайдбара (Остатки, Настройки): показывать только при классе mm-show */
 .app-sidebar .vertical-nav-menu > li > ul {
   display: none;
