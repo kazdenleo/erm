@@ -129,8 +129,8 @@ const OZON_SUPPLY_LIST_STATES = [
   'OVERDUE',
 ];
 
-/** Вкладка Ozon «Подготовка к поставке»: только эти статусы выгружаем в ERM. */
-const OZON_SUPPLY_IMPORT_STATES = ['DATA_FILLING', 'READY_TO_SUPPLY'];
+/** Вкладка Ozon «Подготовка к поставке» → «Заполнение данных». */
+const OZON_SUPPLY_IMPORT_STATES = ['DATA_FILLING'];
 
 const OZON_SUPPLY_TERMINAL_STATES = new Set([
   'COMPLETED',
@@ -275,6 +275,7 @@ async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states } = {}) {
 
 async function fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts) {
   const orders = [];
+  const warehousesById = new Map();
   const unique = [...new Set((orderIds || []).map((id) => String(id)).filter(Boolean))];
   for (let i = 0; i < unique.length; i += 50) {
     const chunk = unique.slice(i, i + 50);
@@ -285,8 +286,68 @@ async function fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts) {
     );
     const list = data?.result?.orders ?? data?.orders ?? [];
     if (Array.isArray(list)) orders.push(...list);
+    const whList = data?.result?.warehouses ?? data?.warehouses ?? [];
+    for (const wh of whList) {
+      const id = wh?.warehouse_id ?? wh?.id;
+      if (id != null) warehousesById.set(String(id), wh);
+    }
   }
-  return orders;
+  return { orders, warehousesById };
+}
+
+async function fetchOzonStorageWarehouseClusterMap(ozonApiOpts) {
+  const map = new Map();
+  const bodies = [{ cluster_type: 'CLUSTER_TYPE_OZON' }, {}];
+  for (const body of bodies) {
+    try {
+      const data = await integrationsService._ozonApiPost('/v1/cluster/list', body, ozonApiOpts);
+      const clusters = data?.result?.clusters ?? data?.clusters ?? [];
+      for (const cluster of clusters) {
+        const clusterName = String(cluster?.name ?? cluster?.cluster_name ?? '').trim();
+        if (!clusterName) continue;
+        const logistic = cluster?.logistic_clusters ?? cluster?.logisticClusters ?? [];
+        for (const lc of logistic) {
+          for (const wh of lc?.warehouses ?? []) {
+            const id = wh?.warehouse_id ?? wh?.id;
+            if (id != null) map.set(String(id), clusterName);
+          }
+        }
+      }
+      if (map.size) break;
+    } catch {
+      /* try next body */
+    }
+  }
+  return map;
+}
+
+function resolveOzonShippingCluster(order, supply, warehousesById, clusterByWarehouseId) {
+  const direct =
+    supply?.cluster_name ??
+    supply?.cluster?.name ??
+    supply?.placement_cluster_name ??
+    supply?.macrocluster_name ??
+    supply?.storage_warehouse?.cluster_name ??
+    order?.cluster_name ??
+    order?.placement_cluster_name ??
+    order?.macrocluster_name ??
+    null;
+  if (direct != null && String(direct).trim() !== '') return String(direct).trim();
+
+  const whId =
+    supply?.storage_warehouse_id ??
+    supply?.storage_warehouse?.warehouse_id ??
+    supply?.storage_warehouse?.id ??
+    null;
+  if (whId != null) {
+    const fromCluster = clusterByWarehouseId.get(String(whId));
+    if (fromCluster) return fromCluster;
+    const wh = warehousesById?.get?.(String(whId));
+    const whCluster =
+      wh?.cluster_name ?? wh?.macrocluster_name ?? wh?.placement_cluster_name ?? null;
+    if (whCluster != null && String(whCluster).trim() !== '') return String(whCluster).trim();
+  }
+  return null;
 }
 
 function mapOzonStateToStatus(state) {
@@ -620,8 +681,13 @@ class FboSuppliesImportService {
     if (!orderIds.length) return [];
 
     let ozonOrders;
+    let ozonWarehousesById;
+    let ozonClusterByWarehouseId;
     try {
-      ozonOrders = await fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts);
+      const fetched = await fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts);
+      ozonOrders = fetched.orders;
+      ozonWarehousesById = fetched.warehousesById;
+      ozonClusterByWarehouseId = await fetchOzonStorageWarehouseClusterMap(ozonApiOpts);
     } catch (e) {
       const err = new Error(e?.message || 'Не удалось загрузить детали поставок Ozon');
       err.statusCode = 400;
@@ -655,8 +721,26 @@ class FboSuppliesImportService {
         }
       }
 
+      const storageWhId =
+        supply?.storage_warehouse_id ??
+        supply?.storage_warehouse?.warehouse_id ??
+        supply?.storage_warehouse?.id ??
+        null;
+      const whFromGet =
+        storageWhId != null ? ozonWarehousesById.get(String(storageWhId)) : null;
       const wh =
-        supply?.storage_warehouse ?? order.drop_off_warehouse ?? order.warehouse ?? order.warehouse_info ?? {};
+        supply?.storage_warehouse ??
+        whFromGet ??
+        order.drop_off_warehouse ??
+        order.warehouse ??
+        order.warehouse_info ??
+        {};
+      const shippingCluster = resolveOzonShippingCluster(
+        order,
+        supply,
+        ozonWarehousesById,
+        ozonClusterByWarehouseId
+      );
       candidates.push({
         importKey: `ozon:${externalNumber}`,
         marketplace: 'ozon',
@@ -672,11 +756,14 @@ class FboSuppliesImportService {
         ),
         marketplaceWarehouseName: wh.name ?? wh.warehouse_name ?? order.warehouse_name ?? null,
         marketplaceWarehouseId:
-          wh.warehouse_id != null
-            ? String(wh.warehouse_id)
-            : wh.storage_warehouse_id != null
-              ? String(wh.storage_warehouse_id)
-              : null,
+          storageWhId != null
+            ? String(storageWhId)
+            : wh.warehouse_id != null
+              ? String(wh.warehouse_id)
+              : wh.storage_warehouse_id != null
+                ? String(wh.storage_warehouse_id)
+                : null,
+        shippingCluster,
         externalShipmentNumber: externalNumber,
         externalSupplyId:
           supplyId != null ? String(supplyId) : supplyOrderId != null ? String(supplyOrderId) : null,

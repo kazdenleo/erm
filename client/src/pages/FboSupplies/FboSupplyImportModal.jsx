@@ -195,8 +195,8 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
         ) : null}
         {mode === 'api' && marketplace === 'ozon' ? (
           <p className="text-muted small mb-2">
-            Ozon: в списке только заявки из раздела «Подготовка к поставке» — «Заполнение данных» и «Готово
-            к отгрузке». Поставки в пути и архив не показываются.
+            Ozon: в списке только заявки «Заполнение данных» (раздел «Подготовка к поставке»). «Готово к
+            отгрузке», поставки в пути и архив не показываются.
           </p>
         ) : null}
         {mode === 'api' && marketplace === 'wb' ? (
@@ -299,6 +299,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                     <th>Название</th>
                     <th>Дата</th>
                     <th>Склад МП</th>
+                    <th>Кластер отгрузки</th>
                     <th>Кол-во, шт.</th>
                     <th>Статус</th>
                   </tr>
@@ -325,6 +326,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                         <td>{c.name || '—'}</td>
                         <td>{fmtDate(c.readyAt)}</td>
                         <td>{c.marketplaceWarehouseName || '—'}</td>
+                        <td>{c.shippingCluster || '—'}</td>
                         <td>
                           {c.itemCount ??
                             (c.items || []).reduce(
