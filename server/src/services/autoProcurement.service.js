@@ -42,7 +42,7 @@ function parseApiConfig(raw) {
 }
 
 const ELIGIBLE_STATUS_SQL = `(
-  o.status IN ('new', 'in_assembly', 'wb_assembly')
+  o.status IN ('new', 'in_assembly', 'wb_assembly', 'unknown')
   OR (
     o.marketplace = 'wb'
     AND (

@@ -362,7 +362,14 @@ function marketplaceFromOrdersDb(dbMarketplace) {
 export function orderEligibleForProcurement(order) {
   if (!order) return false;
   const sNorm = String(order.status ?? '').trim().toLowerCase();
-  if (sNorm === 'new' || sNorm === 'in_assembly' || sNorm === 'wb_assembly') return true;
+  if (
+    sNorm === 'new' ||
+    sNorm === 'in_assembly' ||
+    sNorm === 'wb_assembly' ||
+    sNorm === 'unknown'
+  ) {
+    return true;
+  }
   const sRaw = String(order.status ?? '').trim();
   const mp = String(order.marketplace ?? '').toLowerCase();
   if (mp === 'wildberries' || mp === 'wb') {
@@ -3068,7 +3075,7 @@ class OrdersService {
    */
   async _bulkSetToProcurementPg(items, profileId = null, { skipReserveReapply = false } = {}) {
     const eligibleStatusSql = `(
-      o.status IN ('new', 'in_assembly', 'wb_assembly')
+      o.status IN ('new', 'in_assembly', 'wb_assembly', 'unknown')
       OR (
         o.marketplace = 'wb'
         AND (

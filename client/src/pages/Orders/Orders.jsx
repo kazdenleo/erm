@@ -1558,12 +1558,6 @@ export function Orders() {
     [groupedDisplayRows, applyArticleSortToGroupedRows]
   );
 
-  /** Те же группы строк, что в таблице, но по всем выбранным заказам (все страницы) — для «В закупку». */
-  const groupedSelectedRowsForBulk = useMemo(
-    () => applyArticleSortToGroupedRows(buildGroupedDisplayRowsFromOrderList(orderPoolForSelection)),
-    [buildGroupedDisplayRowsFromOrderList, orderPoolForSelection, applyArticleSortToGroupedRows]
-  );
-
   const totalOrders = meta?.total ?? orders.length;
   const totalPages = meta?.total != null ? Math.max(1, Math.ceil(meta.total / Math.max(1, pageSize))) : 1;
   const pageOffset = meta?.offset ?? Math.max(0, currentPage - 1) * pageSize;
@@ -1826,25 +1820,40 @@ export function Orders() {
     }
   };
 
-  /** Выбранные целиком строки, готовые к закупке (новый / у WB — pending до резолва статуса). По всем страницам. */
+  /**
+   * Строки для массовой закупки: те же правила, что у «На сборку» / смены статуса —
+   * expand по группе внутри выбранного пула, затем только заказы, доступные к закупке.
+   */
   const bulkProcurementSelectedRows = useMemo(() => {
-    return groupedSelectedRowsForBulk.filter((row) => {
-      const keys = row.orders.map(orderKey);
-      if (!keys.every((k) => selectedKeys.has(k))) return false;
-      return row.orders.every((o) => isOrderStatusEligibleForProcurement(o.marketplace, o.status));
-    });
-  }, [groupedSelectedRowsForBulk, selectedKeys]);
+    const expanded = expandSelectedOrdersForBulkActions(orderPoolForSelection, selectedKeys);
+    const eligible = expanded.filter((o) =>
+      isOrderStatusEligibleForProcurement(o.marketplace, o.status)
+    );
+    if (eligible.length === 0) return [];
+    return applyArticleSortToGroupedRows(buildGroupedDisplayRowsFromOrderList(eligible));
+  }, [
+    orderPoolForSelection,
+    selectedKeys,
+    buildGroupedDisplayRowsFromOrderList,
+    applyArticleSortToGroupedRows,
+  ]);
 
   const openBulkProcurementModal = async () => {
     const rows = bulkProcurementSelectedRows;
     if (rows.length === 0) {
       setAssemblyMessage(
-        'Отметьте чекбоксами целые строки заказов, доступных к закупке («Новый», «На сборке» или у WB — пока статус не получен), затем снова нажмите «В закупку».'
+        selectedCount > 0
+          ? 'Среди отмеченных заказов нет строк, доступных к закупке («Новый», «На сборке» или у WB — пока статус не получен). Снимите выбор с «Собран», «В закупке» и отгруженных.'
+          : 'Отметьте чекбоксами строки заказов, доступных к закупке («Новый», «На сборке» или у WB — пока статус не получен), затем снова нажмите «В закупку».'
       );
       return;
     }
     setProcurementModalErr(null);
     setProcurementModalBulkSourceRows(rows);
+    setProcurementExistingId('');
+    setProcurementSupplierId('');
+    setProcurementOrganizationId('');
+    setProcurementWarehouseId('');
     const synthetic = {
       key: '__bulk__',
       orders: rows.flatMap((r) => ordersArrayForPurchaseRow(r)),
@@ -1997,7 +2006,9 @@ export function Orders() {
               }
               title={
                 bulkProcurementSelectedRows.length === 0
-                  ? 'Отметьте целиком строки заказов в статусе «Новый»'
+                  ? selectedCount > 0
+                    ? 'Среди отмеченных нет заказов в статусе «Новый» / «На сборке» (доступных к закупке)'
+                    : 'Отметьте строки заказов в статусе «Новый» или «На сборке»'
                   : 'Выберите существующую закупку или создайте новую — позиции попадут туда, заказы перейдут в «В закупке»'
               }
             >

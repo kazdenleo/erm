@@ -41,11 +41,18 @@ export function getOrderStatusLabel(status) {
 
 /**
  * Можно ли перевести в «В закупке» (согласовано с сервером orders.service).
- * Допускаются «Новый», «На сборке» и у WB — pending/unknown до резолва статуса.
+ * Допускаются «Новый», «На сборке», `unknown` (в UI тоже «На сборке») и у WB — pending/unknown до резолва статуса.
  */
 export function isOrderStatusEligibleForProcurement(marketplace, status) {
   const sNorm = String(status ?? '').trim().toLowerCase();
-  if (sNorm === 'new' || sNorm === 'in_assembly' || sNorm === 'wb_assembly') return true;
+  if (
+    sNorm === 'new' ||
+    sNorm === 'in_assembly' ||
+    sNorm === 'wb_assembly' ||
+    sNorm === 'unknown'
+  ) {
+    return true;
+  }
   const sRaw = String(status ?? '').trim();
   const mp = String(marketplace || '').toLowerCase();
   if (mp === 'wb' || mp === 'wildberries') {
