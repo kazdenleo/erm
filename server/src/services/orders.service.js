@@ -20,6 +20,7 @@ import {
   releaseAllReservesForOrder,
   findKitProductIdForMarketplaceOrder,
   collectOrderSkuCandidates,
+  isKitComponentProductId,
   getKitComponents,
   batchPiecesPerKitUnitMap,
   batchKitIdByComponentMap,
@@ -2597,6 +2598,11 @@ class OrdersService {
       return resolved;
     }
     if (await isKitProductId(productId)) {
+      // Заказ привязан к SKU комплекта в orders.product_id — резервируем комплект.
+      return productId;
+    }
+    if (await isKitComponentProductId(productId)) {
+      // Комплектующая без совпадения артикула заказа с комплектом — не резервируем как обычный товар.
       return null;
     }
     return productId;
@@ -4735,6 +4741,7 @@ class OrdersService {
       }
       // Не перераспределяем освободившийся остаток на другие заказы сразу после ручного снятия в карточке.
     } else {
+      const reservedBefore = Number(before.reservedQty) || 0;
       for (const row of rows) {
         const productId = await this._resolveProductIdForOrderStock(row);
         if (!productId) {
@@ -4752,6 +4759,18 @@ class OrdersService {
           if (e?.statusCode === 400) throw e;
           /* ignore */
         }
+      }
+      const afterTry = await enrichReserveSummaryCoverage(
+        await this._summarizeReserveForRows(rows),
+        { light: true }
+      );
+      const reservedAfter = Number(afterTry.reservedQty) || 0;
+      if (reservedAfter <= reservedBefore) {
+        const err = new Error(
+          'Не удалось поставить резерв — проверьте остаток на складе FBS и сопоставление товара с каталогом.'
+        );
+        err.statusCode = 400;
+        throw err;
       }
     }
 
