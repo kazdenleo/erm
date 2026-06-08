@@ -1089,15 +1089,13 @@ class OrdersService {
     const qtyWanted = Math.max(1, parseInt(quantity, 10) || 1);
 
     if (await isKitProductId(productId)) {
-      return this._withKitAssemblyStockLocks(productId, () =>
-        applyKitOrderReserve(
-          productId,
-          qtyWanted,
-          orderId,
-          meta,
-          (compId, compQty, oid, m) =>
-            this._applyReserveForOrderComponent(compId, compQty, oid, m)
-        )
+      return applyKitOrderReserve(
+        productId,
+        qtyWanted,
+        orderId,
+        meta,
+        (compId, compQty, oid, m) =>
+          this._applyReserveForOrderComponent(compId, compQty, oid, m)
       );
     }
 
@@ -1495,8 +1493,8 @@ class OrdersService {
   async _withKitAssemblyStockLocks(kitProductId, fn) {
     const kitId = Number(kitProductId);
     if (!Number.isFinite(kitId) || kitId < 1) return fn();
-    // Одна блокировка на SKU комплекта: резерв сериализуется в applyChange (xact_lock по product_id).
-    // Цепочка lock на каждую комплектующую держала N соединений из пула и вызывала очередь HTTP до таймаута.
+    // Только сборка/списание: резерв комплекта сериализуется в applyChange (xact_lock), без session lock —
+    // иначе держится 2 соединения из пула (lock + транзакция) и HTTP зависает до таймаута.
     return runWithProductStockLock(kitId, fn);
   }
 
@@ -1851,23 +1849,21 @@ class OrdersService {
       const reserveKits = Math.min(need, maxKits);
       if (reserveKits <= 0) return;
       try {
-        await this._withKitAssemblyStockLocks(productId, () =>
-          applyKitOrderReserve(
-            productId,
-            reserveKits,
-            orderIdStr || String(id),
-            {
-              order_id: id,
-              orderId: orderIdStr,
-              order_qty: qty,
-              order_row: orderRow,
-              warehouse_id: warehouseId,
-              strict_warehouse: strictWh,
-              partial: reserveKits < need
-            },
-            (compId, compQty, oid, m) =>
-              this._applyReserveForOrderComponent(compId, compQty, oid, m)
-          )
+        await applyKitOrderReserve(
+          productId,
+          reserveKits,
+          orderIdStr || String(id),
+          {
+            order_id: id,
+            orderId: orderIdStr,
+            order_qty: qty,
+            order_row: orderRow,
+            warehouse_id: warehouseId,
+            strict_warehouse: strictWh,
+            partial: reserveKits < need
+          },
+          (compId, compQty, oid, m) =>
+            this._applyReserveForOrderComponent(compId, compQty, oid, m)
         );
       } catch (e) {
         if (e?.statusCode === 400) return;
@@ -4668,20 +4664,18 @@ class OrdersService {
             order_row: row,
             strict_warehouse: strictWh
           });
-          const reservedKits = await this._withKitAssemblyStockLocks(pid, () =>
-            applyKitOrderReserve(
-              pid,
-              toAdd,
-              orderIdStr,
-              {
-                ...meta,
-                order_row: row,
-                order_qty: orderQty,
-                partial_line: true
-              },
-              (compId, compQty, oid, m) =>
-                this._applyReserveForOrderComponent(compId, compQty, oid, m)
-            )
+          const reservedKits = await applyKitOrderReserve(
+            pid,
+            toAdd,
+            orderIdStr,
+            {
+              ...meta,
+              order_row: row,
+              order_qty: orderQty,
+              partial_line: true
+            },
+            (compId, compQty, oid, m) =>
+              this._applyReserveForOrderComponent(compId, compQty, oid, m)
           );
           if (toAdd > 0 && !(Number(reservedKits) > 0)) {
             const err = new Error(
