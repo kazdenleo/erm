@@ -1752,9 +1752,31 @@ export function WarehouseStocks() {
   }, [historyList, historyProduct]);
 
   const historyDisplaySnapshots = useMemo(
-    () => buildHistoryDisplaySnapshots(displayHistoryRows, historyNetReserved, stockWarehouseId),
-    [displayHistoryRows, historyNetReserved, stockWarehouseId]
+    () =>
+      buildHistoryDisplaySnapshots(
+        displayHistoryRows,
+        historyNetReserved,
+        historyWarehouseFilterIgnored ? null : stockWarehouseId
+      ),
+    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyWarehouseFilterIgnored]
   );
+
+  const historyWarehouseScopedAvailable = useMemo(() => {
+    if (!historyProduct || !historyWarehouseFilterIgnored || !stockWarehouseId) return null;
+    const onHand = Number(historyProduct.quantity) || 0;
+    const incoming =
+      Number(historyProduct.incoming_quantity ?? historyProduct.incomingQuantity) || 0;
+    const reserved = Math.max(
+      0,
+      Number(
+        historyProduct.net_reserved_quantity ??
+          historyProduct.netReservedQuantity ??
+          historyProduct.reserved_quantity ??
+          historyProduct.reservedQuantity
+      ) || 0
+    );
+    return stockTableAvailable({ onHand, incoming, reserved, suppliers: 0 });
+  }, [historyProduct, historyWarehouseFilterIgnored, stockWarehouseId]);
 
   const openReserveModalForProduct = useCallback((product, { pinnedList = null } = {}) => {
     if (!product?.id) return;
@@ -2606,7 +2628,16 @@ export function WarehouseStocks() {
           <>
             {historyWarehouseFilterIgnored ? (
               <p className="text-muted small mb-2" role="status">
-                История показана по <strong>всем складам</strong>, т.к. по выбранному складу записей не найдено.
+                История показана по <strong>всем складам</strong>, т.к. по выбранному складу записей не
+                найдено. Колонка «Доступно» в истории — по всем складам; в таблице остатков — только по
+                выбранному складу
+                {historyWarehouseScopedAvailable != null ? (
+                  <>
+                    {' '}
+                    (сейчас: <strong>{historyWarehouseScopedAvailable}</strong>)
+                  </>
+                ) : null}
+                .
               </p>
             ) : stockWarehouseId ? (
               <p className="text-muted small mb-2" role="status">

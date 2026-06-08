@@ -11,8 +11,8 @@ import {
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL,
+  allocateWarehouseScopedReserved,
   parseStockMovementWarehouseId,
-  stockMovementWarehouseReserveSql,
 } from '../constants/netReservedStockSql.js';
 
 export { NET_RESERVED_MOVEMENT_ROW_CASE_SQL, NET_RESERVED_SUM_EXPR_SQL, RAW_RESERVED_SUM_EXPR_SQL };
@@ -50,23 +50,66 @@ export async function syncProductReservedQuantityFromJournal(productId, opts = {
   return rv;
 }
 
+async function queryWarehouseScopedReservedFromMovements(run, productId, whId) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  const [strictR, nullR, onHandR, whOnHandR] = await Promise.all([
+    run(
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id = $2`,
+      [pid, whId]
+    ),
+    run(
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id IS NULL`,
+      [pid]
+    ),
+    run(
+      `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty,
+              (SELECT COALESCE(quantity, 0)::int FROM products WHERE id = $1) AS product_qty
+       FROM product_warehouse_stock
+       WHERE product_id = $1`,
+      [pid]
+    ),
+    run(
+      `SELECT COALESCE(quantity, 0)::int AS qty
+       FROM product_warehouse_stock
+       WHERE product_id = $1 AND warehouse_id = $2`,
+      [pid, whId]
+    )
+  ]);
+  const strict = Number(strictR.rows[0]?.rv ?? 0) || 0;
+  const nullReserve = Number(nullR.rows[0]?.rv ?? 0) || 0;
+  const totalOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
+  const legacyProductQty = Number(onHandR.rows[0]?.product_qty ?? 0) || 0;
+  let whOnHand = Number(whOnHandR.rows[0]?.qty ?? 0) || 0;
+  if (whOnHand <= 0 && totalOnHand <= 0 && legacyProductQty > 0) {
+    whOnHand = legacyProductQty;
+  }
+  return allocateWarehouseScopedReserved({
+    strict,
+    nullReserve,
+    whOnHand,
+    totalOnHand,
+    legacyProductQty
+  });
+}
+
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
 export async function getReservedQuantityFromMovements(productId, opts = {}) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
   const whId = parseStockMovementWarehouseId(opts.warehouseId ?? opts.warehouse_id);
   try {
-    const params = [pid];
-    let whSql = '';
     if (whId != null) {
-      params.push(whId);
-      whSql = stockMovementWarehouseReserveSql('', whId, params.length);
+      return await queryWarehouseScopedReservedFromMovements(query, pid, whId);
     }
     const r = await query(
       `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')${whSql}`,
-      params
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+      [pid]
     );
     return Number(r.rows[0]?.rv ?? 0) || 0;
   } catch {
@@ -202,17 +245,14 @@ export async function getReservedQuantityFromMovementsWithClient(client, product
   const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
   const whId = parseStockMovementWarehouseId(opts.warehouseId ?? opts.warehouse_id);
   try {
-    const params = [pid];
-    let whSql = '';
     if (whId != null) {
-      params.push(whId);
-      whSql = stockMovementWarehouseReserveSql('', whId, params.length);
+      return await queryWarehouseScopedReservedFromMovements(run, pid, whId);
     }
     const r = await run(
       `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
        FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')${whSql}`,
-      params
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+      [pid]
     );
     return Number(r.rows[0]?.rv ?? 0) || 0;
   } catch {

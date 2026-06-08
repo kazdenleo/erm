@@ -529,11 +529,29 @@ class OrdersService {
                o.offer_id,
                o.marketplace_sku,
                o.product_name,
-               o.delivery_address
+               o.delivery_address,
+               pm.matched_product_id
         FROM refs r
         JOIN orders o
           ON o.marketplace = r.marketplace
          AND o.order_id = r.order_id
+        LEFT JOIN LATERAL (
+          SELECT p2.id AS matched_product_id
+          FROM product_skus ps
+          JOIN products p2 ON p2.id = ps.product_id
+          WHERE ps.marketplace = o.marketplace
+            AND (
+              (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
+              OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
+              OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
+                  AND ps.marketplace_product_id = o.marketplace_sku::bigint)
+              OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL
+                  AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
+              OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL
+                  AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
+            )
+          LIMIT 1
+        ) pm ON true
         ${profileFilterSql}
       ),
       res AS (
@@ -555,6 +573,7 @@ class OrdersService {
         COALESCE(o.quantity, 1)::int AS order_qty,
         COALESCE(r.reserved_qty, 0)::int AS reserved_qty,
         o.product_id,
+        o.matched_product_id,
         o.offer_id,
         o.marketplace_sku,
         o.product_name,
@@ -565,7 +584,7 @@ class OrdersService {
         COALESCE(p.reserved_quantity, 0)::int AS product_reserved_qty
       FROM ord o
       LEFT JOIN res r ON r.oid = o.id::bigint
-      LEFT JOIN products p ON p.id = o.product_id
+      LEFT JOIN products p ON p.id = COALESCE(o.product_id, o.matched_product_id)
       `,
       params
     );
@@ -592,7 +611,12 @@ class OrdersService {
       const need = Number(row.order_qty) || 1;
       const resQty = Number(row.reserved_qty) || 0;
       const orderDbId = row.order_db_id != null ? Number(row.order_db_id) : null;
-      let prodId = row.product_id != null ? Number(row.product_id) : null;
+      let prodId =
+        row.product_id != null
+          ? Number(row.product_id)
+          : row.matched_product_id != null
+            ? Number(row.matched_product_id)
+            : null;
       let prodQty = Number(row.product_qty) || 0;
       let prodRes = Number(row.product_reserved_qty) || 0;
 
@@ -618,43 +642,59 @@ class OrdersService {
           blocked.push({ marketplace: o.marketplace, orderId: oid, reason: 'не определён товар (product_id)' });
           continue;
         }
-        if (!prodId || !Number.isFinite(prodId) || prodId < 1) {
-        try {
-          const resolved = await this._resolveProductIdForOrderStock({
-            marketplace: row.marketplace,
-            offerId: row.offer_id,
-            offer_id: row.offer_id,
-            sku: row.marketplace_sku,
-            marketplace_sku: row.marketplace_sku,
-            productName: row.product_name,
-            product_name: row.product_name,
-            productId: row.product_id
-          });
-          const rid = resolved != null ? Number(resolved) : null;
-          if (rid && Number.isFinite(rid) && rid > 0) {
-            prodId = rid;
-            if (productCache.has(prodId)) {
-              const c = productCache.get(prodId);
-              prodQty = c.qty;
-              prodRes = c.reserved;
-            } else {
-              const pr = await query(
-                `SELECT COALESCE(quantity, 0)::int AS quantity,
-                        COALESCE(reserved_quantity, 0)::int AS reserved_quantity
-                 FROM products
-                 WHERE id = $1
-                 LIMIT 1`,
-                [prodId]
-              );
-              const prow = pr.rows?.[0] || {};
-              prodQty = Number(prow.quantity) || 0;
-              prodRes = Number(prow.reserved_quantity) || 0;
-              productCache.set(prodId, { qty: prodQty, reserved: prodRes });
-            }
+        const orderRowForResolve = {
+          marketplace: row.marketplace,
+          offerId: row.offer_id,
+          offer_id: row.offer_id,
+          sku: row.marketplace_sku,
+          marketplace_sku: row.marketplace_sku,
+          productName: row.product_name,
+          product_name: row.product_name,
+          productId: row.product_id
+        };
+        const loadProductStockCache = async (pid) => {
+          if (productCache.has(pid)) {
+            const c = productCache.get(pid);
+            prodQty = c.qty;
+            prodRes = c.reserved;
+            return;
           }
-        } catch {
-          // ignore
+          const pr = await query(
+            `SELECT COALESCE(quantity, 0)::int AS quantity,
+                    COALESCE(reserved_quantity, 0)::int AS reserved_quantity
+             FROM products
+             WHERE id = $1
+             LIMIT 1`,
+            [pid]
+          );
+          const prow = pr.rows?.[0] || {};
+          prodQty = Number(prow.quantity) || 0;
+          prodRes = Number(prow.reserved_quantity) || 0;
+          productCache.set(pid, { qty: prodQty, reserved: prodRes });
+        };
+        if (!prodId || !Number.isFinite(prodId) || prodId < 1) {
+          try {
+            const fromLine = await this.resolveProductIdForAssemblyLine(orderRowForResolve);
+            const lid = fromLine != null ? Number(fromLine) : null;
+            if (lid && Number.isFinite(lid) && lid > 0) {
+              prodId = lid;
+              await loadProductStockCache(prodId);
+            }
+          } catch {
+            /* ignore */
+          }
         }
+        if (!prodId || !Number.isFinite(prodId) || prodId < 1) {
+          try {
+            const resolved = await this._resolveProductIdForOrderStock(orderRowForResolve);
+            const rid = resolved != null ? Number(resolved) : null;
+            if (rid && Number.isFinite(rid) && rid > 0) {
+              prodId = rid;
+              await loadProductStockCache(prodId);
+            }
+          } catch {
+            /* ignore */
+          }
         }
       }
 
@@ -2642,6 +2682,34 @@ class OrdersService {
     return await this.repository.findByOrderGroupId(orderGroupId);
   }
 
+  /** Заказ по артикулу самой карточки товара (products.sku / product_skus), а не по SKU комплекта. */
+  async _orderRowMatchesProductCatalogSku(productId, orderRow) {
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return false;
+    const candidates = collectOrderSkuCandidates(orderRow);
+    if (!candidates.length) return false;
+    const upper = candidates.map((c) => String(c).trim().toUpperCase()).filter(Boolean);
+    if (!upper.length) return false;
+    try {
+      const r = await query(
+        `SELECT TRIM(COALESCE(p.sku, '')) AS sku
+         FROM products p
+         WHERE p.id = $1 AND TRIM(COALESCE(p.sku, '')) <> ''
+         UNION
+         SELECT TRIM(COALESCE(ps.sku, ''))
+         FROM product_skus ps
+         WHERE ps.product_id = $1 AND TRIM(COALESCE(ps.sku, '')) <> ''`,
+        [pid]
+      );
+      const catalog = new Set(
+        (r.rows || []).map((row) => String(row.sku).trim().toUpperCase()).filter(Boolean)
+      );
+      return upper.some((c) => catalog.has(c));
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Уточнить product_id строки заказа для UI сборки, если в orders.product_id пусто
    * (типично Yandex/WB до сопоставления): по offer_id / marketplace_sku и таблице product_skus.
@@ -2674,6 +2742,9 @@ class OrdersService {
       return productId;
     }
     if (await isKitComponentProductId(productId)) {
+      if (await this._orderRowMatchesProductCatalogSku(productId, orderRow)) {
+        return productId;
+      }
       // Комплектующая без совпадения артикула заказа с комплектом — не резервируем как обычный товар.
       return null;
     }

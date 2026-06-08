@@ -582,22 +582,65 @@ class ProductsRepositoryPG {
     const warehouseScoped = Number.isFinite(whId) && whId > 0;
     const persistToDb = options.persistReservedToDb !== false && !warehouseScoped;
 
-    let agg;
+    let byPid = new Map();
+    let strictByPid = new Map();
+    let nullByPid = new Map();
     try {
       const { NET_RESERVED_SUM_EXPR_SQL } = await import('../services/sellableQuantity.service.js');
+      const { allocateWarehouseScopedReserved } = await import('../constants/netReservedStockSql.js');
       if (warehouseScoped) {
-        agg = await query(
-          `SELECT product_id,
-            ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-           FROM stock_movements
-           WHERE product_id = ANY($1::bigint[])
-             AND type IN ('reserve', 'unreserve')
-             AND (warehouse_id = $2 OR warehouse_id IS NULL)
-           GROUP BY product_id`,
-          [numericIds, whId]
-        );
+        const [strictAgg, nullAgg] = await Promise.all([
+          query(
+            `SELECT product_id,
+              ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+             FROM stock_movements
+             WHERE product_id = ANY($1::bigint[])
+               AND type IN ('reserve', 'unreserve')
+               AND warehouse_id = $2
+             GROUP BY product_id`,
+            [numericIds, whId]
+          ),
+          query(
+            `SELECT product_id,
+              ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+             FROM stock_movements
+             WHERE product_id = ANY($1::bigint[])
+               AND type IN ('reserve', 'unreserve')
+               AND warehouse_id IS NULL
+             GROUP BY product_id`,
+            [numericIds]
+          )
+        ]);
+        for (const r of strictAgg.rows || []) {
+          const key = productIdMapKey(r.product_id);
+          if (!key) continue;
+          strictByPid.set(key, Number(r.rv) || 0);
+        }
+        for (const r of nullAgg.rows || []) {
+          const key = productIdMapKey(r.product_id);
+          if (!key) continue;
+          nullByPid.set(key, Number(r.rv) || 0);
+        }
+        for (const p of products) {
+          const key = productIdMapKey(p.id);
+          if (!key) continue;
+          const pwsTotal = Math.max(0, Number(p.quantity_pws_total) || 0);
+          const legacy = Math.max(0, Number(p.quantity_legacy) || 0);
+          const totalOnHand = pwsTotal > 0 ? pwsTotal : legacy;
+          const whOnHand = Math.max(0, Number(p.quantity) || 0);
+          byPid.set(
+            key,
+            allocateWarehouseScopedReserved({
+              strict: strictByPid.get(key) ?? 0,
+              nullReserve: nullByPid.get(key) ?? 0,
+              whOnHand,
+              totalOnHand,
+              legacyProductQty: legacy
+            })
+          );
+        }
       } else {
-        agg = await query(
+        const agg = await query(
           `SELECT product_id,
             ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
            FROM stock_movements
@@ -606,17 +649,15 @@ class ProductsRepositoryPG {
            GROUP BY product_id`,
           [numericIds]
         );
+        for (const r of agg.rows || []) {
+          const key = productIdMapKey(r.product_id);
+          if (!key) continue;
+          byPid.set(key, Number(r.rv) || 0);
+        }
       }
     } catch (e) {
       console.warn('[Products Repository] _reconcileReservedQuantityFromMovements:', e.message);
       return;
-    }
-
-    const byPid = new Map();
-    for (const r of agg.rows || []) {
-      const key = productIdMapKey(r.product_id);
-      if (!key) continue;
-      byPid.set(key, Number(r.rv) || 0);
     }
     const idsToUpdate = [];
     const rvsToUpdate = [];
@@ -836,8 +877,10 @@ class ProductsRepositoryPG {
             const key = String(p.id);
             const legacy = Math.max(0, Number(p.quantity) || 0);
             p.quantity_total_all_warehouses = legacy;
+            p.quantity_legacy = legacy;
             const whQty = map.has(key) ? map.get(key) : null;
             const globalSum = sumByProduct.has(key) ? sumByProduct.get(key) : 0;
+            p.quantity_pws_total = globalSum;
             if (whQty != null) {
               p.quantity = whQty;
             } else if (globalSum <= 0 && legacy > 0) {

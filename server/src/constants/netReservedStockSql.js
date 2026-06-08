@@ -44,6 +44,31 @@ export function stockMovementWarehouseReserveSql(alias = '', whId, paramIndex) {
 }
 
 /**
+ * Резерв по складу: строго по warehouse_id + доля legacy (warehouse_id IS NULL) по наличию на складе.
+ */
+export function allocateWarehouseScopedReserved({
+  strict = 0,
+  nullReserve = 0,
+  whOnHand = 0,
+  totalOnHand = 0,
+  legacyProductQty = 0
+} = {}) {
+  const s = Math.max(0, Math.floor(Number(strict) || 0));
+  const nr = Math.max(0, Math.floor(Number(nullReserve) || 0));
+  const wh = Math.max(0, Math.floor(Number(whOnHand) || 0));
+  const total = Math.max(0, Math.floor(Number(totalOnHand) || 0));
+  const legacy = Math.max(0, Math.floor(Number(legacyProductQty) || 0));
+
+  if (total > 0) {
+    return s + Math.floor(nr * (wh / total));
+  }
+  if (legacy > 0 && wh > 0) {
+    return s + nr;
+  }
+  return s;
+}
+
+/**
  * SQL-фрагмент: движения резерва по заказу (orders.id и/или номер на МП в meta).
  * @param {string} [alias=''] — префикс таблицы, например `sm.`
  * @param {number} orderDbIdParam — индекс $N для orders.id
