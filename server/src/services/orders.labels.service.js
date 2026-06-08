@@ -179,7 +179,8 @@ class OrdersLabelsService {
       setTimeout(async () => {
         const mp = normalizeMarketplaceForLabel(order?.marketplace);
         const isWB = mp === 'wildberries';
-        const maxAttempts = isWB ? 4 : 1;
+        const isOzon = mp === 'ozon';
+        const maxAttempts = isWB ? 4 : isOzon ? 3 : 1;
         const org = normalizeOrgId(organizationId);
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
@@ -204,10 +205,21 @@ class OrdersLabelsService {
             logLabelEvent(
               `Error(status) ${order.marketplace}:${order.orderId}${org ? ` org=${org}` : ''} attempt=${attempt}/${maxAttempts} status=${status || ''} -> ${e?.message || String(e)}`
             );
-            if (!isWB || attempt >= maxAttempts) return;
-            // backoff: 5s, 15s, 30s (для 409/429), иначе не ретраим
-            if (status !== 409 && status !== 429) return;
-            const delayMs = attempt === 1 ? 5000 : attempt === 2 ? 15000 : 30000;
+            if (attempt >= maxAttempts) return;
+            const retryable =
+              status === 409 || status === 429 || (isOzon && (status === 502 || status === 504));
+            if (!retryable) return;
+            const delayMs = isOzon
+              ? attempt === 1
+                ? 2000
+                : attempt === 2
+                  ? 5000
+                  : 10000
+              : attempt === 1
+                ? 5000
+                : attempt === 2
+                  ? 15000
+                  : 30000;
             await new Promise((r) => setTimeout(r, delayMs));
           }
         }
@@ -363,7 +375,7 @@ async function fetchOzonLabel(order, { organizationId = null } = {}) {
           const taskId = task?.task_id;
           if (taskId != null) {
             for (let attempt = 0; attempt < 20; attempt++) {
-              if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
+              if (attempt > 0) await new Promise(r => setTimeout(r, attempt < 3 ? 800 : 1500));
               const getResp = await fetch('https://api-seller.ozon.ru/v1/posting/fbs/package-label/get', {
                 method: 'POST',
                 headers: ozonHeaders,

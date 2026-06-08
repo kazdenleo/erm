@@ -35,10 +35,11 @@ function resolveApiBaseUrl() {
 const API_BASE = resolveApiBaseUrl();
 /** По умолчанию пробуем локальный Print Helper — без настройки сервера достаточно запустить exe */
 const PRINT_HELPER_URL_DEFAULT = process.env.REACT_APP_PRINT_HELPER_URL || 'http://127.0.0.1:9100';
-/** Ожидание печати после сборки; иначе зависший fetch к Print Helper блокирует сканер (printingFlowRef). */
-const ASSEMBLY_PRINT_WAIT_MS = 15000;
 /** Ozon create/get этикетки на сервере может занимать 30+ с — обрыв раньше даёт «не напечаталось». */
 const PRINT_HELPER_FETCH_MS = 90000;
+/** Короткий опрос кэша этикетки перед синхронной загрузкой с МП (если фоновый прогрев почти готов). */
+const LABEL_STATUS_POLL_MS = 10000;
+const LABEL_STATUS_POLL_INTERVAL_MS = 700;
 
 const marketplaceLabels = [
   { code: 'ozon', name: 'Ozon', icon: '🟠' },
@@ -234,8 +235,8 @@ export function Assembly() {
       if (!silent) setLoading(true);
       setError(null);
       const [assemblyResponse, collectedResponse] = await Promise.all([
-        ordersApi.getAll({ status: 'in_assembly', limit: 500, enrichReserve: 'full' }),
-        ordersApi.getAll({ status: 'assembled', limit: 200, enrichReserve: 'full' }),
+        ordersApi.getAll({ status: 'in_assembly', limit: 500 }),
+        ordersApi.getAll({ status: 'assembled', limit: 200 }),
       ]);
       const assemblyList = Array.isArray(assemblyResponse?.data) ? assemblyResponse.data : [];
       const collectedList = Array.isArray(collectedResponse?.data) ? collectedResponse.data : [];
@@ -333,12 +334,21 @@ export function Assembly() {
     return () => { cancelled = true; };
   }, []);
 
-  // Как только заказ открыт на сборке — запускаем подгрузку этикетки, чтобы к моменту печати она была готова
+  // Как только заказ открыт на сборке — прогреваем этикетку в фоне (к завершению скана файл уже в кэше).
   useEffect(() => {
     const orderId = currentOrderData?.order?.orderId;
     if (!orderId) return;
-    // Важно: используем api-клиент, чтобы передавались Authorization / X-Account-Id / X-Organization-Id
+    const id = String(orderId);
     api.get(`/orders/${encodeURIComponent(orderId)}/label/status`, { timeout: 45000 }).catch(() => {});
+    api
+      .get(`/orders/${encodeURIComponent(orderId)}/label`, {
+        responseType: 'blob',
+        timeout: PRINT_HELPER_FETCH_MS,
+      })
+      .then(() => {
+        setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [id]: true }));
+      })
+      .catch(() => {});
   }, [currentOrderData?.order?.orderId]);
 
   // Фоновая проверка: показываем иконку печати только если файл этикетки уже кэширован на сервере.
@@ -398,11 +408,26 @@ export function Assembly() {
     };
   }, [assemblyOrders, collectedOrders, currentOrderData?.order?.orderId, labelReadyByOrderId]);
 
+  const waitLabelCachedOnServer = useCallback(async (orderId) => {
+    const path = `/orders/${encodeURIComponent(orderId)}/label/status`;
+    const deadline = Date.now() + LABEL_STATUS_POLL_MS;
+    while (Date.now() < deadline) {
+      try {
+        const r = await api.get(path, { timeout: 5000 });
+        if (r?.data?.data?.exists === true || r?.data?.exists === true) return true;
+      } catch {
+        /* ignore */
+      }
+      await new Promise((resolve) => setTimeout(resolve, LABEL_STATUS_POLL_INTERVAL_MS));
+    }
+    return false;
+  }, []);
+
   /**
    * Та же логика, что после «заказ собран»: Print Helper (тихая печать) или страница /label/print с window.print().
    * Раньше иконка вела на /label (только файл в вкладке — без диалога печати).
    */
-  const requestLabelPrint = useCallback(async (orderId) => {
+  const requestLabelPrint = useCallback(async (orderId, { labelAlreadyCached = false } = {}) => {
     const id = orderId != null ? String(orderId) : '';
     if (!id) return;
     // Печать через фронтовую страницу: она умеет скачивать этикетку с Authorization: Bearer из localStorage.
@@ -437,78 +462,79 @@ export function Assembly() {
     }
 
     // Дождаться файла на сервере (ensureLabelFile), иначе Print Helper сразу после сборки часто ловит 502.
-    // Если этикетка недоступна (409/429/5xx) — покажем понятную ошибку и не будем дергать Print Helper.
-    try {
-      const warmAc = new AbortController();
-      const warmT = setTimeout(() => warmAc.abort(), PRINT_HELPER_FETCH_MS);
+    // Если этикетка уже в кэше — сразу печатаем (Print Helper сам скачает PDF с сервера).
+    if (!labelAlreadyCached) {
       try {
-        // Важно: используем api-клиент, чтобы передавались Authorization / X-Account-Id / X-Organization-Id
         let status = 0;
         let msg = '';
+        await waitLabelCachedOnServer(id);
+        const warmAc = new AbortController();
+        const warmT = setTimeout(() => warmAc.abort(), PRINT_HELPER_FETCH_MS);
         try {
-          await api.get(labelFilePath, {
-            responseType: 'blob',
-            timeout: PRINT_HELPER_FETCH_MS,
-            headers: { Accept: '*/*' },
-            signal: warmAc.signal
-          });
-          status = 200;
-        } catch (e) {
-          status = e?.response?.status || 0;
-          const data = e?.response?.data;
-          if (typeof Blob !== 'undefined' && data instanceof Blob) {
-            try {
-              const text = await data.text();
-              try {
-                const j = text ? JSON.parse(text) : null;
-                msg = j?.message || j?.error || '';
-              } catch {
-                msg = text || '';
-              }
-              msg = String(msg || '').trim();
-            } catch {
-              msg = '';
-            }
-          }
-          if (!msg) msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || '';
-        }
-
-        if (status !== 200) {
-          const base =
-            status === 409
-              ? 'Этикетка ещё не готова или недоступна для этого заказа.'
-              : status === 429
-                ? 'Слишком много запросов к этикеткам/синхронизации. Подождите и повторите.'
-                : status === 404
-                  ? 'Этикетка для заказа не найдена.'
-                  : status
-                    ? `Не удалось получить этикетку (HTTP ${status}).`
-                    : 'Не удалось получить этикетку (сеть/таймаут).';
-          const detail = msg ? ` ${String(msg).trim()}` : '';
-          setLabelPrintError(`${base}${detail}`);
-          setTimeout(() => setLabelPrintError(null), 12000);
           try {
-            if (printWindow && !printWindow.closed) printWindow.close();
-          } catch {
-            /* ignore */
+            await api.get(labelFilePath, {
+              responseType: 'blob',
+              timeout: PRINT_HELPER_FETCH_MS,
+              headers: { Accept: '*/*' },
+              signal: warmAc.signal
+            });
+            status = 200;
+          } catch (e) {
+            status = e?.response?.status || 0;
+            const data = e?.response?.data;
+            if (typeof Blob !== 'undefined' && data instanceof Blob) {
+              try {
+                const text = await data.text();
+                try {
+                  const j = text ? JSON.parse(text) : null;
+                  msg = j?.message || j?.error || '';
+                } catch {
+                  msg = text || '';
+                }
+                msg = String(msg || '').trim();
+              } catch {
+                msg = '';
+              }
+            }
+            if (!msg) msg = e?.response?.data?.message || e?.response?.data?.error || e?.message || '';
           }
-          return;
+
+          if (status !== 200) {
+            const base =
+              status === 409
+                ? 'Этикетка ещё не готова или недоступна для этого заказа.'
+                : status === 429
+                  ? 'Слишком много запросов к этикеткам/синхронизации. Подождите и повторите.'
+                  : status === 404
+                    ? 'Этикетка для заказа не найдена.'
+                    : status
+                      ? `Не удалось получить этикетку (HTTP ${status}).`
+                      : 'Не удалось получить этикетку (сеть/таймаут).';
+            const detail = msg ? ` ${String(msg).trim()}` : '';
+            setLabelPrintError(`${base}${detail}`);
+            setTimeout(() => setLabelPrintError(null), 12000);
+            try {
+              if (printWindow && !printWindow.closed) printWindow.close();
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
+        } finally {
+          clearTimeout(warmT);
         }
-      } finally {
-        clearTimeout(warmT);
-      }
-    } catch {
-      // При сетевом сбое/таймауте не запускаем Print Helper, иначе он покажет 502.
-      setLabelPrintError(
-        'Таймаут/сбой сети при загрузке этикетки. Подождите и попробуйте ещё раз.'
-      );
-      setTimeout(() => setLabelPrintError(null), 12000);
-      try {
-        if (printWindow && !printWindow.closed) printWindow.close();
       } catch {
-        /* ignore */
+        setLabelPrintError(
+          'Таймаут/сбой сети при загрузке этикетки. Подождите и попробуйте ещё раз.'
+        );
+        setTimeout(() => setLabelPrintError(null), 12000);
+        try {
+          if (printWindow && !printWindow.closed) printWindow.close();
+        } catch {
+          /* ignore */
+        }
+        return;
       }
-      return;
     }
 
     if (!willUseHelper) {
@@ -554,37 +580,25 @@ export function Assembly() {
     } finally {
       clearTimeout(t);
     }
-  }, [printHelperUrl]);
+  }, [printHelperUrl, waitLabelCachedOnServer]);
 
-  const withPrintWait = useCallback(
-    (orderId) =>
-      Promise.race([
-        requestLabelPrint(orderId),
-        new Promise((resolve) => {
-          setTimeout(resolve, ASSEMBLY_PRINT_WAIT_MS);
-        })
-      ]),
-    [requestLabelPrint]
-  );
-
-  /** Отметка «Собран» + фоновая печать этикетки (общая для скана и таблицы). */
+  /** Отметка «Собран» + печать этикетки (общая для скана и таблицы). */
   const runMarkCollectedFlow = useCallback(
     async (marketplace, orderId, stickerRaw = null, { afterSuccess } = {}) => {
       const trimmed = stickerRaw != null ? String(stickerRaw).trim() : '';
+      const oid = orderId != null ? String(orderId) : '';
       printingFlowRef.current = true;
-      const afterPrintDelayMs = 400;
       try {
         await assemblyApi.markCollected(marketplace, orderId, trimmed || null);
-        await loadOrders({ silent: true });
         afterSuccess?.(trimmed || null);
-        try {
-          await withPrintWait(orderId);
-        } finally {
+        void loadOrders({ silent: true });
+        const labelCached = labelReadyByOrderId?.[oid] === true;
+        void requestLabelPrint(orderId, { labelAlreadyCached: labelCached }).finally(() => {
           setTimeout(() => {
             printingFlowRef.current = false;
             setTimeout(() => barcodeInputRef.current?.focus(), 50);
-          }, afterPrintDelayMs);
-        }
+          }, 300);
+        });
         return true;
       } catch (err) {
         printingFlowRef.current = false;
@@ -597,7 +611,7 @@ export function Assembly() {
         return false;
       }
     },
-    [loadOrders, withPrintWait]
+    [loadOrders, requestLabelPrint, labelReadyByOrderId]
   );
 
   useEffect(() => {
