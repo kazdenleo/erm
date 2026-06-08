@@ -4080,6 +4080,7 @@ class OrdersService {
         });
         const breakdown = await computeKitReservableBreakdown(pid, { warehouseId });
         const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
+        const wholeAvail = Math.max(0, Number(breakdown.wholeReserveAvail) || 0);
         lineEntries.push({
           productId: pid,
           reservedQty: reserved,
@@ -4087,11 +4088,11 @@ class OrdersService {
           availableQty: maxKitsAvail,
           lineKind: onKitRes > 0 ? 'kit_whole' : 'kit',
           kitReserveFromComponents:
-            onKitRes <= 0 && (breakdown.fromComponents || 0) > 0 && (breakdown.wholeReserveAvail || 0) <= 0,
+            onKitRes <= 0 && (breakdown.fromComponents || 0) > 0 && wholeAvail <= 0,
           label: orderLineLabel || 'Комплект'
         });
-        const showComponentLines =
-          onKitRes > 0 || reserved > 0 || (breakdown.fromComponents || 0) > 0;
+        // Комплектующие в UI — только если резерв уже на них (снятие/просмотр), не дублируем путь «целый комплект».
+        const showComponentLines = onKitRes <= 0 && reserved > 0;
         if (showComponentLines) {
           const components = await getKitComponents(pid);
           for (const c of components) {
@@ -4099,7 +4100,7 @@ class OrdersService {
             if (!Number.isFinite(compId) || compId < 1) continue;
             const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
             const compRes = await this._getReservedQtyForOrderProduct(id, compId);
-            if (compRes <= 0 && onKitRes > 0) continue;
+            if (compRes <= 0) continue;
             const compLabel = (await this._productDisplayLabelById(compId)) || 'Комплектующая';
             lineEntries.push({
               productId: compId,

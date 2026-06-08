@@ -293,7 +293,12 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
   }, [marketplace, orderId, reserveProp]);
 
   const detailLines = Array.isArray(reserve?.lines)
-    ? reserve.lines.filter((l) => Math.max(0, Number(l.needQty) || 0) > 0)
+    ? reserve.lines.filter((l) => {
+        if (Math.max(0, Number(l.needQty) || 0) <= 0) return false;
+        // Комплектующие — только если резерв уже на них (снятие), не дублируем строку комплекта.
+        if (l.lineKind === 'component' && (Number(l.reservedQty) || 0) <= 0) return false;
+        return true;
+      })
     : [];
 
   useEffect(() => {
