@@ -30,6 +30,14 @@ const wh = await ordersService._resolveWarehouseIdForOrderReserve(
 
 console.log('order_db_id', order.id, 'product', resolved, 'warehouse', wh);
 
+const { getReservedKitUnitsForOrderValidation, getNetReservedForOrderProduct } = await import(
+  '../src/services/kitStock.service.js'
+);
+const oid = Number(order.id);
+const onKit = await getNetReservedForOrderProduct(oid, resolved);
+const kitUnits = await getReservedKitUnitsForOrderValidation(resolved, oid);
+console.log('reserved_on_kit', onKit, 'kit_units_validation', kitUnits);
+
 try {
   const result = await ordersService.setOrderReserveForProduct('wildberries', order.order_id, {
     productId: resolved,
