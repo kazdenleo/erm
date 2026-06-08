@@ -17,11 +17,43 @@ function compositionPart(article, qty) {
   return `${a} - ${q}`;
 }
 
-function articleFromReserveLine(line, rows) {
-  const offer = line?.offerId ?? line?.offer_id;
-  if (offer != null && String(offer).trim() !== '') {
-    return String(offer).trim();
+function skuFromReserveLineLabel(label) {
+  const s = String(label ?? '').trim();
+  if (!s) return '';
+  const noSuffix = s
+    .replace(/\s*\([=×x]\d+[^)]*в комплекте\)\s*$/iu, '')
+    .replace(/\s*\(×\d+[^)]*\)\s*$/u, '')
+    .trim();
+  const dotIdx = noSuffix.lastIndexOf('·');
+  if (dotIdx >= 0) {
+    const tail = noSuffix.slice(dotIdx + 1).trim();
+    if (tail) return tail;
   }
+  return noSuffix;
+}
+
+function articleFromReserveLine(line, rows) {
+  const kind = String(line?.lineKind ?? line?.line_kind ?? '').toLowerCase();
+  const isComponent = kind === 'component';
+
+  const lineSku = line?.productSku ?? line?.product_sku;
+  if (lineSku != null && String(lineSku).trim() !== '') {
+    return String(lineSku).trim();
+  }
+
+  const label = String(line?.label ?? line?.productName ?? line?.product_name ?? '').trim();
+  if (isComponent && label) {
+    const fromLabel = skuFromReserveLineLabel(label);
+    if (fromLabel) return fromLabel;
+  }
+
+  if (!isComponent) {
+    const offer = line?.offerId ?? line?.offer_id;
+    if (offer != null && String(offer).trim() !== '') {
+      return String(offer).trim();
+    }
+  }
+
   const pid = Number(line?.productId ?? line?.product_id);
   if (Number.isFinite(pid) && pid > 0) {
     const row = (rows || []).find((r) => Number(r.productId ?? r.product_id) === pid);
@@ -30,9 +62,12 @@ function articleFromReserveLine(line, rows) {
       if (art !== '—') return art;
     }
   }
-  const label = String(line?.label ?? line?.productName ?? line?.product_name ?? '').trim();
-  const stripped = label.replace(/\s*\(×\d+[^)]*\)\s*$/u, '').trim();
-  return stripped || label || '—';
+
+  if (label) {
+    const fromLabel = skuFromReserveLineLabel(label);
+    if (fromLabel) return fromLabel;
+  }
+  return label || '—';
 }
 
 function reserveLineKey(line) {

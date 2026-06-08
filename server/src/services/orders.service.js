@@ -4303,11 +4303,14 @@ class OrdersService {
       }
 
       for (const le of lineEntries) {
+        const isComponentLine = String(le.lineKind || '').toLowerCase() === 'component';
         lines.push({
           orderLineId: row.orderId ?? row.order_id,
           orderRowDbId: id,
           productName: row.productName ?? row.product_name ?? null,
-          offerId: row.offerId ?? row.offer_id ?? null,
+          ...(isComponentLine
+            ? {}
+            : { offerId: row.offerId ?? row.offer_id ?? null }),
           ...le
         });
       }
