@@ -588,7 +588,17 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
         </ul>
       )}
       {feedback && (
-        <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--success, #2e7d32)' }}>{feedback}</p>
+        <p
+          style={{
+            margin: '8px 0 0',
+            fontSize: 13,
+            color: /недостаточно|не изменён|не снят/i.test(feedback)
+              ? 'var(--danger, #c62828)'
+              : 'var(--success, #2e7d32)',
+          }}
+        >
+          {feedback}
+        </p>
       )}
       {error && (
         <p className="error" style={{ margin: '8px 0 0', fontSize: 13 }}>{error}</p>

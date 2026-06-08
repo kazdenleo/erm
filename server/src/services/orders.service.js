@@ -41,6 +41,14 @@ import {
   getReservableSupplyUnits
 } from './sellableQuantity.service.js';
 import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
+
+function reserveSnapshotOptsFromMeta(meta = {}) {
+  const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
+  if (wh != null && String(wh).trim() !== '') {
+    return { warehouseId: wh };
+  }
+  return {};
+}
 import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
@@ -1047,8 +1055,19 @@ class OrdersService {
       meta?.kit_reserve_preallocated != null &&
       Number(meta.kit_reserve_preallocated) > 0;
     if (!hasKitPrealloc) {
-      const snapGate = await getProductSupplySnapshotWithClient(null, productId);
-      if (Math.floor(snapGate.available) <= 0) return;
+      const supplyOpts = reserveSnapshotOptsFromMeta(meta);
+      if (reserveAsKitComponentEarly && Number(meta?.kit_product_id) > 0) {
+        const orderRow =
+          meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
+        const gateAvail = await this._getAvailableUnitsForOrderReserveLine(productId, orderRow, {
+          warehouseId: supplyOpts.warehouseId ?? null,
+          kitProductId: Number(meta.kit_product_id)
+        });
+        if (Math.floor(gateAvail) <= 0) return;
+      } else {
+        const snapGate = await getProductSupplySnapshotWithClient(null, productId, supplyOpts);
+        if (Math.floor(snapGate.available) <= 0) return;
+      }
     }
 
     let availableSupply;
@@ -1113,7 +1132,11 @@ class OrdersService {
       reason = `${reasonBase} (комплектующие, ${kitUnits} компл.)`;
     }
 
-    const snapBeforeReserve = await getProductSupplySnapshotWithClient(null, productId);
+    const snapBeforeReserve = await getProductSupplySnapshotWithClient(
+      null,
+      productId,
+      reserveSnapshotOptsFromMeta(meta)
+    );
     let reserveFromOnHand;
     let reserveFromIncoming;
     if (hasKitPrealloc) {
@@ -1769,6 +1792,7 @@ class OrdersService {
               order_id: id,
               orderId: orderIdStr,
               order_qty: qty,
+              order_row: orderRow,
               warehouse_id: warehouseId,
               strict_warehouse: strictWh,
               partial: reserveKits < need
@@ -2542,13 +2566,9 @@ class OrdersService {
       const components = await getKitComponents(kitId);
       const comp = components.find((c) => Number(c.component_product_id) === pid);
       const perKit = comp ? Math.max(1, parseInt(comp.quantity, 10) || 1) : 1;
-      let compAvail;
-      if (orderRow != null && isMarketplaceFbsOrderRow(orderRow) && warehouseId != null) {
-        compAvail = (await computeAvailableQuantity(pid, { warehouseId })).available;
-      } else {
-        const snap = await getProductSupplySnapshotWithClient(null, pid);
-        compAvail = snap.available;
-      }
+      const compAvail = await getReservableSupplyUnits(pid, {
+        warehouseId: warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null
+      });
       const maxKits = await this._computeMaxKitUnitsReservableForOrder(kitId, warehouseId, {
         orderRow
       });
@@ -2561,13 +2581,11 @@ class OrdersService {
       );
     }
 
-    if (orderRow != null && isMarketplaceFbsOrderRow(orderRow) && warehouseId != null) {
-      const scoped = await computeAvailableQuantity(pid, { warehouseId });
-      return Math.floor(scoped.available);
-    }
-
-    const snap = await getProductSupplySnapshotWithClient(null, pid);
-    return Math.floor(snap.available);
+    return Math.floor(
+      await getReservableSupplyUnits(pid, {
+        warehouseId: warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null
+      })
+    );
   }
 
   /** Повторная попытка резерва (новый / закупка / после поступления остатка). */
@@ -4542,7 +4560,7 @@ class OrdersService {
           throw err;
         }
         if ((await isKitProductId(pid)) && kitProductId == null) {
-          await this._withKitAssemblyStockLocks(pid, () =>
+          const reservedKits = await this._withKitAssemblyStockLocks(pid, () =>
             applyKitOrderReserve(
               pid,
               toAdd,
@@ -4557,6 +4575,13 @@ class OrdersService {
                 this._applyReserveForOrderComponent(compId, compQty, oid, m)
             )
           );
+          if (toAdd > 0 && !(Number(reservedKits) > 0)) {
+            const err = new Error(
+              `Недостаточно остатка для резерва комплекта (доступно: ${available}, запрошено: ${toAdd})`
+            );
+            err.statusCode = 400;
+            throw err;
+          }
         } else {
           await this._applyReserveForOrderComponent(pid, toAdd, orderIdStr, {
             ...meta,
