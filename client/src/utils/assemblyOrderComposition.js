@@ -99,22 +99,27 @@ function partsFromReserveLines(rows) {
 }
 
 /**
- * Состав заказа для таблицы сборки: «артикул - количество».
+ * Строки состава для таблицы сборки: «артикул - количество» (каждая — отдельная строка в UI).
  * Для комплекта — что забронировано: целый комплект или комплектующие по отдельности.
  */
-export function formatAssemblyOrderComposition(rows) {
+export function getAssemblyOrderCompositionLines(rows) {
   const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
-  if (!list.length) return '—';
+  if (!list.length) return [];
 
   const fromReserve = partsFromReserveLines(list);
-  if (fromReserve) return fromReserve.join(', ');
+  if (fromReserve) return fromReserve;
 
-  const parts = list.map((o) => {
+  return list.map((o) => {
     const article = orderLineArticle(o);
     const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
     const qty = reserved > 0 ? reserved : Math.max(1, Number(o.quantity) || 1);
     const art = article !== '—' ? article : String(o.productName ?? o.product_name ?? '—').trim() || '—';
     return compositionPart(art, qty);
   });
-  return parts.join(', ');
+}
+
+/** Плоский текст для title / подсказки. */
+export function formatAssemblyOrderComposition(rows) {
+  const lines = getAssemblyOrderCompositionLines(rows);
+  return lines.length ? lines.join('\n') : '—';
 }

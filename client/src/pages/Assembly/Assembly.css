@@ -266,9 +266,20 @@ button.assembly-label-link {
 .assembly-col-composition {
   font-size: 13px;
   line-height: 1.45;
-  max-width: 320px;
+  max-width: 200px;
   white-space: normal;
   word-break: break-word;
+  vertical-align: top;
+}
+
+.assembly-composition-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.assembly-composition-line {
+  white-space: nowrap;
 }
 
 .assembly-row-actions {

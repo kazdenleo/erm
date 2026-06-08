@@ -14,7 +14,7 @@ import api from '../../services/api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
-import { formatAssemblyOrderComposition } from '../../utils/assemblyOrderComposition';
+import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import './Assembly.css';
 
@@ -80,6 +80,21 @@ function normMarketplace(o) {
  * Ключ сессии должен быть стабильным — иначе при скане второй позиции приходит другая строка,
  * меняется orderId, фронт сбрасывает счётчики «осталось отсканировать».
  */
+function AssemblyCompositionCell({ rows }) {
+  const lines = getAssemblyOrderCompositionLines(rows);
+  if (!lines.length) return '—';
+  const title = lines.join('\n');
+  return (
+    <div className="assembly-composition-lines" title={title}>
+      {lines.map((line, i) => (
+        <div key={`${line}-${i}`} className="assembly-composition-line">
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function assemblyOrderSessionKey(order) {
   if (!order) return '';
   const mp = normMarketplace(order);
@@ -1237,7 +1252,6 @@ export function Assembly() {
                   rows.length === 1
                     ? primary.quantity ?? '—'
                     : rows.map((r) => r.quantity ?? 1).join(' + ');
-                const compositionText = formatAssemblyOrderComposition(rows);
                 return (
                   <tr key={groupKey}>
                     <td>{mp}</td>
@@ -1292,8 +1306,8 @@ export function Assembly() {
                       </div>
                     </td>
                     <td>{qtyCell}</td>
-                    <td className="assembly-col-composition" title={compositionText}>
-                      {compositionText}
+                    <td className="assembly-col-composition">
+                      <AssemblyCompositionCell rows={rows} />
                     </td>
                     <td className="assembly-col-sticker">
                       <OrderStickerDisplay order={primary} groupOrders={rows} />
@@ -1385,7 +1399,6 @@ export function Assembly() {
                 const who =
                   [o.assembledByFullName, o.assembledByEmail].filter(Boolean).join(' · ') || '—';
                 const erpPidCol = assemblyLineProductId(o);
-                const compositionText = formatAssemblyOrderComposition([o]);
                 return (
                   <tr key={rowKey}>
                     <td>{mpRow ? `${mpRow.icon} ${mpRow.name}` : o.marketplace}</td>
@@ -1413,8 +1426,8 @@ export function Assembly() {
                       )}
                     </td>
                     <td>{o.quantity ?? '—'}</td>
-                    <td className="assembly-col-composition" title={compositionText}>
-                      {compositionText}
+                    <td className="assembly-col-composition">
+                      <AssemblyCompositionCell rows={[o]} />
                     </td>
                     <td>{assembledLabel}</td>
                     <td>{who}</td>
