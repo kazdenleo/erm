@@ -115,7 +115,9 @@ export const ordersApi = {
   getOrderReserve: async (marketplace, orderId) => {
     const mp = encodeURIComponent(marketplace);
     const id = encodeURIComponent(orderId);
-    const response = await api.get(`/orders/${mp}/${id}/reserve`);
+    const response = await api.get(`/orders/${mp}/${id}/reserve`, {
+      params: { fast: '1' }
+    });
     return response.data?.data ?? response.data;
   },
 
@@ -129,7 +131,7 @@ export const ordersApi = {
     const body = { action: options.action ?? 'toggle' };
     if (options.productId != null) body.productId = options.productId;
     if (options.quantity != null) body.quantity = options.quantity;
-    const response = await api.post(`/orders/${mp}/${id}/reserve`, body);
+    const response = await api.post(`/orders/${mp}/${id}/reserve`, body, { timeout: 120000 });
     return response.data?.data ?? response.data;
   },
 

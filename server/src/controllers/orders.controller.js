@@ -702,9 +702,15 @@ class OrdersController {
         req.query.augment_mp === '1' ||
         req.query.augmentMp === '1' ||
         req.query.augment === '1';
+      const fast =
+        req.query.fast === '1' ||
+        req.query.skip_reconcile === '1' ||
+        req.query.skipReconcile === '1';
       const data = await ordersService.getOrderReserveSummary(marketplace, orderId, {
         profileId: req.user?.profileId ?? null,
-        skipDetailAugment: !augmentMp
+        skipDetailAugment: !augmentMp,
+        skipReconcile: fast,
+        lightCoverage: true
       });
       return res.status(200).json({ ok: true, data });
     } catch (error) {

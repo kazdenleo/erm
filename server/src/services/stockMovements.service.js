@@ -25,13 +25,30 @@ const STOCK_LOCK_MAX_CONCURRENT = (() => {
 let stockLockInUse = 0;
 const stockLockWaitQueue = [];
 
+const STOCK_LOCK_WAIT_MS = (() => {
+  const n = Number(process.env.PRODUCT_STOCK_LOCK_WAIT_MS);
+  if (Number.isFinite(n) && n >= 5000) return Math.min(120000, Math.floor(n));
+  return 45000;
+})();
+
 function acquireStockLockSlot() {
   if (stockLockInUse < STOCK_LOCK_MAX_CONCURRENT) {
     stockLockInUse += 1;
     return Promise.resolve();
   }
-  return new Promise((resolve) => {
-    stockLockWaitQueue.push(resolve);
+  return new Promise((resolve, reject) => {
+    const entry = { resolve, reject, timer: null };
+    entry.timer = setTimeout(() => {
+      const idx = stockLockWaitQueue.indexOf(entry);
+      if (idx >= 0) stockLockWaitQueue.splice(idx, 1);
+      const err = new Error(
+        'Операция со складом ожидает освобождения блокировки слишком долго. Повторите через несколько секунд.'
+      );
+      err.statusCode = 503;
+      err.code = 'STOCK_LOCK_TIMEOUT';
+      reject(err);
+    }, STOCK_LOCK_WAIT_MS);
+    stockLockWaitQueue.push(entry);
   }).then(() => {
     stockLockInUse += 1;
   });
@@ -40,7 +57,9 @@ function acquireStockLockSlot() {
 function releaseStockLockSlot() {
   stockLockInUse = Math.max(0, stockLockInUse - 1);
   const next = stockLockWaitQueue.shift();
-  if (next) next();
+  if (!next) return;
+  if (next.timer) clearTimeout(next.timer);
+  next.resolve();
 }
 
 /**

@@ -264,12 +264,12 @@ function reserveCoverageFromLines(lines) {
   return 'none';
 }
 
-async function enrichReserveSummaryCoverage(summary) {
+async function enrichReserveSummaryCoverage(summary, { light = false } = {}) {
   if (!summary || typeof summary !== 'object') return summary;
   const lines = Array.isArray(summary.lines) ? summary.lines : [];
   const pids = lines.map((l) => Number(l.productId)).filter((id) => id > 0);
   const supplyMap = await batchProductReserveSupplyMap(pids);
-  const coverageFifoMap = await buildReserveCoverageFifoMap(pids);
+  const coverageFifoMap = light ? null : await buildReserveCoverageFifoMap(pids);
   enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap);
   summary.reserveCoverage = reserveCoverageFromLines(lines);
   return summary;
@@ -1404,18 +1404,9 @@ class OrdersService {
   async _withKitAssemblyStockLocks(kitProductId, fn) {
     const kitId = Number(kitProductId);
     if (!Number.isFinite(kitId) || kitId < 1) return fn();
-    const components = await getKitComponents(kitId);
-    const lockIds = [
-      kitId,
-      ...(components || []).map((c) => Number(c.component_product_id))
-    ]
-      .filter((n) => Number.isFinite(n) && n > 0)
-      .sort((a, b) => a - b);
-    const runChain = (idx) => {
-      if (idx >= lockIds.length) return fn();
-      return runWithProductStockLock(lockIds[idx], () => runChain(idx + 1));
-    };
-    return runChain(0);
+    // Одна блокировка на SKU комплекта: резерв сериализуется в applyChange (xact_lock по product_id).
+    // Цепочка lock на каждую комплектующую держала N соединений из пула и вызывала очередь HTTP до таймаута.
+    return runWithProductStockLock(kitId, fn);
   }
 
   /**
@@ -4212,10 +4203,6 @@ class OrdersService {
   async _reconcileReserveBeforeOrderSummary(rows) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(rows) || !rows.length) return;
 
-    const { syncProductQuantityFromWarehouseStock } = await import(
-      './productWarehouseQuantity.service.js'
-    );
-    const touchedProducts = new Set();
     const stockHooks = {
       unreserveProduct: (pid, net, oid, m) =>
         stockMovementsService.applyChange(pid, {
@@ -4247,36 +4234,39 @@ class OrdersService {
         source: 'order_reserve_summary'
       };
 
-      const productIds = [pid];
-      if (await isKitProductId(pid)) {
-        try {
-          await reconcileMisplacedKitWholeReserve(
-            pid,
-            id,
-            orderIdStr || String(id),
-            metaBase,
-            stockHooks
-          );
-        } catch (e) {
-          if (e?.statusCode !== 400) {
-            console.warn('[Orders] reconcileReserveBeforeOrderSummary:', e?.message || e);
-          }
-        }
-        const components = await getKitComponents(pid);
-        for (const c of components) {
-          const cid = Number(c.component_product_id);
-          if (Number.isFinite(cid) && cid > 0) productIds.push(cid);
+      if (!(await isKitProductId(pid))) continue;
+
+      try {
+        await reconcileMisplacedKitWholeReserve(
+          pid,
+          id,
+          orderIdStr || String(id),
+          metaBase,
+          stockHooks
+        );
+      } catch (e) {
+        if (e?.statusCode !== 400) {
+          console.warn('[Orders] reconcileReserveBeforeOrderSummary:', e?.message || e);
         }
       }
-
-      for (const p of productIds) {
-        if (touchedProducts.has(p)) continue;
-        touchedProducts.add(p);
-        await syncProductQuantityFromWarehouseStock(p).catch(() => {});
-        await this.trimExcessReservesForProduct(p, {
-          reason: 'Снятие избыточного резерва при открытии карточки заказа',
-          meta: { source: 'order_reserve_summary' }
-        }).catch(() => {});
+      try {
+        await reconcileMixedKitOrderReservePaths(
+          pid,
+          id,
+          orderIdStr || String(id),
+          metaBase,
+          (unreservePid, net, oid, m) =>
+            stockMovementsService.applyChange(unreservePid, {
+              delta: net,
+              type: 'unreserve',
+              reason: `Снятие дублирующего резерва комплекта (заказ ${oid})`.trim(),
+              meta: m
+            })
+        );
+      } catch (e) {
+        if (e?.statusCode !== 400) {
+          console.warn('[Orders] reconcileMixedKitReserve:', e?.message || e);
+        }
       }
     }
   }
@@ -4284,7 +4274,7 @@ class OrdersService {
   async getOrderReserveSummary(
     marketplace,
     orderId,
-    { profileId = null, skipDetailAugment = false } = {}
+    { profileId = null, skipDetailAugment = false, skipReconcile = false, lightCoverage = false } = {}
   ) {
     const rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
     if (!rows.length) {
@@ -4292,14 +4282,16 @@ class OrdersService {
       err.statusCode = 404;
       throw err;
     }
-    await this._reconcileReserveBeforeOrderSummary(rows);
+    if (!skipReconcile) {
+      await this._reconcileReserveBeforeOrderSummary(rows);
+    }
     let summary = await this._summarizeReserveForRows(rows);
     if (!skipDetailAugment) {
       summary = await this._augmentReserveFromDetailItems(summary, marketplace, orderId, rows, {
         profileId
       });
     }
-    return enrichReserveSummaryCoverage(summary);
+    return enrichReserveSummaryCoverage(summary, { light: lightCoverage });
   }
 
   /**
@@ -4512,7 +4504,8 @@ class OrdersService {
     }
 
     const after = await enrichReserveSummaryCoverage(
-      await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row])
+      await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]),
+      { light: true }
     );
     return {
       action: doUnreserve ? 'unreserve' : 'reserve',
@@ -4597,7 +4590,9 @@ class OrdersService {
       }
     }
 
-    const after = await enrichReserveSummaryCoverage(await this._summarizeReserveForRows(rows));
+    const after = await enrichReserveSummaryCoverage(await this._summarizeReserveForRows(rows), {
+      light: true
+    });
     return {
       action: doUnreserve ? 'unreserve' : 'reserve',
       ...after,
