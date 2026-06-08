@@ -16,7 +16,7 @@ import {
   getOrderStatusLabel,
   isOrderStatusEligibleForSupplierOrder,
 } from '../../constants/orderStatuses';
-import { marketplaceOrderIdForApi } from '../../utils/orderListGroupKey';
+import { marketplaceOrderIdForApi, marketplaceRouteSegment } from '../../utils/orderListGroupKey';
 import {
   groupReserveCoverageKind,
   reserveBadgeClassName
@@ -295,8 +295,11 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
   const detailLines = Array.isArray(reserve?.lines)
     ? reserve.lines.filter((l) => {
         if (Math.max(0, Number(l.needQty) || 0) <= 0) return false;
-        // Комплектующие — только если резерв уже на них (снятие), не дублируем строку комплекта.
-        if (l.lineKind === 'component' && (Number(l.reservedQty) || 0) <= 0) return false;
+        if (l.lineKind === 'component') {
+          const hasRes = (Number(l.reservedQty) || 0) > 0;
+          const hasAvail = (Number(l.availableQty) || 0) > 0;
+          return hasRes || hasAvail || l.kitReserveFromComponents === true;
+        }
         return true;
       })
     : [];
@@ -350,26 +353,35 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
   };
 
   const handleLineAction = async (line, action, qtyOverride = null) => {
-    const pid = line?.productId;
+    const isUnreserve = String(action || '').toLowerCase() === 'unreserve';
+    let pid = line?.productId;
+    if (
+      line?.lineKind === 'component' &&
+      line?.kitReserveFromComponents &&
+      !isUnreserve &&
+      line?.kitProductId
+    ) {
+      pid = line.kitProductId;
+    }
     if (!marketplace || !orderId || !pid || lineLoadingKey) return;
     const key = orderReserveLineKey(line);
     const b = lineReserveBounds(line);
     const act = String(action || '').toLowerCase();
-    const isUnreserve = act === 'unreserve';
-    const max = isUnreserve ? lineReserveUnreserveMax(line) : b.inputMax;
+    const isUnreserveAct = act === 'unreserve';
+    const max = isUnreserveAct ? lineReserveUnreserveMax(line) : b.inputMax;
     if (max <= 0) return;
     const qty =
       qtyOverride != null
         ? clampLineQty(qtyOverride, 1, max)
         : clampLineQty(lineQty[key], 1, max);
-    const apiQty = lineReserveApiQuantity(line, qty, { unreserve: isUnreserve });
+    const apiQty = lineReserveApiQuantity(line, qty, { unreserve: isUnreserveAct });
 
     setLineLoadingKey(key);
     setError(null);
     setFeedback(null);
     try {
       const result = await ordersApi.setOrderReserve(marketplace, orderId, {
-        action: isUnreserve ? 'unreserve' : 'reserve',
+        action: isUnreserveAct ? 'unreserve' : 'reserve',
         productId: pid,
         quantity: apiQty
       });
@@ -480,6 +492,12 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 ? inputMaxPieces
                 : 1;
             const qtyVal = lineQty[key] ?? qtyDefault;
+            const componentViewOnly =
+              line.lineKind === 'component' &&
+              line.kitReserveFromComponents === true &&
+              !lineHas;
+            const lineActionsEnabled =
+              canReserve && !componentViewOnly && (lineHas || inputMaxPieces > 0);
             return (
               <li
                 key={key}
@@ -518,6 +536,11 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                     </span>
                   ) : !lineHas && remaining > 0 && available <= 0 ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}> — нет доступного остатка</span>
+                  ) : componentViewOnly ? (
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+                      {' '}
+                      — резерв через кнопку «Поставить резерв на заказ»
+                    </span>
                   ) : null}
                 </span>
                 <div className="order-reserve-line__actions">
@@ -529,7 +552,12 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                       min={1}
                       max={inputMaxPieces > 0 ? inputMaxPieces : 1}
                       value={inputMaxPieces > 0 ? qtyVal : 0}
-                      disabled={loading || lineLoadingKey === key || inputMaxPieces <= 0 || !canReserve}
+                      disabled={
+                        loading ||
+                        lineLoadingKey === key ||
+                        inputMaxPieces <= 0 ||
+                        !lineActionsEnabled
+                      }
                       onChange={(e) => {
                         const raw = e.target.value;
                         if (raw === '') {
@@ -549,14 +577,16 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                   <Button
                     variant={lineHas ? 'secondary' : 'primary'}
                     size="small"
-                    disabled={loading || lineLoadingKey === key || inputMaxPieces <= 0 || !canReserve}
+                    disabled={
+                      loading || lineLoadingKey === key || inputMaxPieces <= 0 || !lineActionsEnabled
+                    }
                     onClick={() =>
                       handleLineAction(line, lineHas ? 'unreserve' : 'reserve')
                     }
                   >
                     {lineLoadingKey === key ? '…' : lineHas ? 'Снять' : 'В резерв'}
                   </Button>
-                  {inputMaxPieces >= 1 ? (
+                  {inputMaxPieces >= 1 && lineActionsEnabled ? (
                     <button
                       type="button"
                       className="order-reserve-line__max-btn"
@@ -704,19 +734,48 @@ export function OrderDetail() {
       setLoading(true);
       setError(null);
       try {
-        const result = await ordersApi.getOrderDetail(marketplace, orderId);
-        if (!cancelled) setData(result);
+        const quick = await ordersApi.getOrderDetail(marketplace, orderId, { fast: true });
+        if (cancelled) return;
+        setData(quick);
+        setLoading(false);
+        const resolvedMp = quick?.marketplace ? marketplaceRouteSegment(quick.marketplace) : '';
+        const urlMp = marketplaceRouteSegment(marketplace);
+        if (resolvedMp && urlMp && resolvedMp !== urlMp) {
+          navigate(`/orders/${resolvedMp}/${encodeURIComponent(orderId)}`, { replace: true });
+          return;
+        }
+        try {
+          const full = await ordersApi.getOrderDetail(marketplace, orderId);
+          if (!cancelled) {
+            setData((prev) => ({ ...(prev || {}), ...full }));
+            const fullMp = full?.marketplace ? marketplaceRouteSegment(full.marketplace) : '';
+            if (fullMp && urlMp && fullMp !== urlMp) {
+              navigate(`/orders/${fullMp}/${encodeURIComponent(orderId)}`, { replace: true });
+            }
+          }
+        } catch (e) {
+          if (cancelled) return;
+          const hasLocal =
+            (quick?.localLines?.length ?? 0) > 0 ||
+            quick?.reserve ||
+            quick?.ermStatus ||
+            quick?.detail;
+          if (!hasLocal) {
+            setError(e.response?.data?.message || e.message || 'Ошибка загрузки заказа');
+          }
+        }
       } catch (e) {
         if (!cancelled) {
           setError(e.response?.data?.message || e.message || 'Ошибка загрузки заказа');
+          setLoading(false);
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     }
     load();
-    return () => { cancelled = true; };
-  }, [marketplace, orderId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [marketplace, orderId, navigate]);
 
   if (loading) {
     return (

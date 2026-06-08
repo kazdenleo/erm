@@ -1642,8 +1642,34 @@ class OrdersService {
     return { updated, skipped, notFound };
   }
 
+  /** Быстрая сводка резерва без построения lines (для toggle до/после setOrderReserve). */
+  async _lightOrderReserveSnapshot(rows) {
+    let totalNeed = 0;
+    let totalReserved = 0;
+    for (const row of rows || []) {
+      const id = orderRowDbId(row);
+      const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
+      totalNeed += qty;
+      if (!id) continue;
+      const productId = await this._resolveProductIdForOrderStock(row).catch(() => null);
+      const pid = Number(productId);
+      if (!Number.isFinite(pid) || pid < 1) continue;
+      if (await isKitProductId(pid)) {
+        totalReserved += await getReservedKitUnitsForOrderValidation(pid, id);
+      } else {
+        totalReserved += await this._getReservedQtyForOrderProduct(id, pid);
+      }
+    }
+    return {
+      hasReserve: totalReserved > 0,
+      reservedQty: totalReserved,
+      needQty: totalNeed,
+      fullyReserved: totalNeed > 0 && totalReserved >= totalNeed
+    };
+  }
+
   /** Резерв для строки заказа из БД: частичный резерв и дозаполнение до qty при появлении остатка. */
-  async _applyReserveForOrderIfAbsent(orderRow) {
+  async _applyReserveForOrderIfAbsent(orderRow, { skipKitReconcile = false } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
     if (isOrderTerminalNoReserve(orderRow.status)) return;
     const id = orderRowDbId(orderRow);
@@ -1681,46 +1707,48 @@ class OrdersService {
     // - резервируем только то, что уже есть (факт + ожидается - уже зарезервировано)
     // - если пришла часть товара, резервируем эту часть, даже если до количества заказа не хватает
     if (await isKitProductId(productId)) {
-      try {
-        await reconcileMisplacedKitWholeReserve(
-          productId,
-          id,
-          orderIdStr || String(id),
-          { warehouse_id: warehouseId, order_id: id, orderId: orderIdStr, strict_warehouse: strictWh },
-          {
-            unreserveProduct: (pid, net, oid, m) =>
+      if (!skipKitReconcile) {
+        try {
+          await reconcileMisplacedKitWholeReserve(
+            productId,
+            id,
+            orderIdStr || String(id),
+            { warehouse_id: warehouseId, order_id: id, orderId: orderIdStr, strict_warehouse: strictWh },
+            {
+              unreserveProduct: (pid, net, oid, m) =>
+                stockMovementsService.applyChange(pid, {
+                  delta: net,
+                  type: 'unreserve',
+                  reason: `Перенос резерва комплекта на комплектующие (заказ ${oid})`.trim(),
+                  meta: m
+                }),
+              applyKitReserve: (kitId, kits, oid, m) =>
+                applyKitOrderReserve(kitId, kits, oid, m, (compId, compQty, o, mm) =>
+                  this._applyReserveForOrderComponent(compId, compQty, o, mm)
+                )
+            }
+          );
+        } catch (e) {
+          if (e?.statusCode !== 400) throw e;
+        }
+
+        try {
+          await reconcileMixedKitOrderReservePaths(
+            productId,
+            id,
+            orderIdStr || String(id),
+            { warehouse_id: warehouseId, order_id: id, orderId: orderIdStr, strict_warehouse: strictWh },
+            (pid, net, oid, m) =>
               stockMovementsService.applyChange(pid, {
                 delta: net,
                 type: 'unreserve',
-                reason: `Перенос резерва комплекта на комплектующие (заказ ${oid})`.trim(),
+                reason: `Снятие дублирующего резерва комплекта (заказ ${oid})`.trim(),
                 meta: m
-              }),
-            applyKitReserve: (kitId, kits, oid, m) =>
-              applyKitOrderReserve(kitId, kits, oid, m, (compId, compQty, o, mm) =>
-                this._applyReserveForOrderComponent(compId, compQty, o, mm)
-              )
-          }
-        );
-      } catch (e) {
-        if (e?.statusCode !== 400) throw e;
-      }
-
-      try {
-        await reconcileMixedKitOrderReservePaths(
-          productId,
-          id,
-          orderIdStr || String(id),
-          { warehouse_id: warehouseId, order_id: id, orderId: orderIdStr, strict_warehouse: strictWh },
-          (pid, net, oid, m) =>
-            stockMovementsService.applyChange(pid, {
-              delta: net,
-              type: 'unreserve',
-              reason: `Снятие дублирующего резерва комплекта (заказ ${oid})`.trim(),
-              meta: m
-            })
-        );
-      } catch (e) {
-        if (e?.statusCode !== 400) throw e;
+              })
+          );
+        } catch (e) {
+          if (e?.statusCode !== 400) throw e;
+        }
       }
 
       const alreadyReservedKits = await getReservedKitUnitsForOrderValidation(productId, id);
@@ -2270,10 +2298,22 @@ class OrdersService {
     }
   }
 
+  /**
+   * Маркетплейс заказа по ID: если в URL неверный mp (частая ошибка wb→ozon в ссылках),
+   * подставляем фактический из БД.
+   */
+  async resolveMarketplaceForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
+    const hinted = await this.getByMarketplaceAndOrderId(marketplace, orderId, { profileId });
+    if (hinted?.marketplace) return hinted.marketplace;
+    const any = await this.getByOrderId(orderId, { profileId });
+    if (any?.marketplace) return any.marketplace;
+    return marketplace;
+  }
+
   /** Найти заказ по order_id (posting number) в любом маркетплейсе — для этикеток и роутов по :orderId */
-  async getByOrderId(orderId) {
+  async getByOrderId(orderId, { profileId = null } = {}) {
     if (repositoryFactory.isUsingPostgreSQL()) {
-      return await this.repository.findAnyByOrderId(orderId);
+      return await this.repository.findAnyByOrderId(orderId, profileId);
     } else {
       const orders = await this.getAll();
       const id = String(orderId ?? '').trim();
@@ -4072,18 +4112,24 @@ class OrdersService {
         const breakdown = await computeKitReservableBreakdown(pid, { warehouseId });
         const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
         const wholeAvail = Math.max(0, Number(breakdown.wholeReserveAvail) || 0);
-        lineEntries.push({
-          productId: pid,
-          reservedQty: reserved,
-          needQty: qty,
-          availableQty: maxKitsAvail,
-          lineKind: onKitRes > 0 ? 'kit_whole' : 'kit',
-          kitReserveFromComponents:
-            onKitRes <= 0 && (breakdown.fromComponents || 0) > 0 && wholeAvail <= 0,
-          label: orderLineLabel || 'Комплект'
-        });
-        // Комплектующие в UI — только если резерв уже на них (снятие/просмотр), не дублируем путь «целый комплект».
-        const showComponentLines = onKitRes <= 0 && reserved > 0;
+        const fromComponents = Math.max(0, Number(breakdown.fromComponents) || 0);
+        const reserveViaComponentsOnly = onKitRes <= 0 && wholeAvail <= 0 && fromComponents > 0;
+
+        // Строка комплекта: только если есть собранные K1 или резерв уже на SKU комплекта.
+        if (!reserveViaComponentsOnly || onKitRes > 0) {
+          lineEntries.push({
+            productId: pid,
+            reservedQty: reserved,
+            needQty: qty,
+            availableQty: wholeAvail > 0 ? Math.min(maxKitsAvail, wholeAvail) : maxKitsAvail,
+            lineKind: onKitRes > 0 ? 'kit_whole' : 'kit',
+            kitReserveFromComponents: false,
+            label: orderLineLabel || 'Комплект'
+          });
+        }
+
+        // Комплектующие: если резерв только из деталей (нет K1) или уже зарезервировано на деталях.
+        const showComponentLines = reserveViaComponentsOnly || (onKitRes <= 0 && reserved > 0);
         if (showComponentLines) {
           const components = await getKitComponents(pid);
           for (const c of components) {
@@ -4091,7 +4137,12 @@ class OrdersService {
             if (!Number.isFinite(compId) || compId < 1) continue;
             const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
             const compRes = await this._getReservedQtyForOrderProduct(id, compId);
-            if (compRes <= 0) continue;
+            const compAvail = await this._getAvailableUnitsForOrderReserveLine(compId, row, {
+              warehouseId,
+              kitProductId: pid
+            });
+            if (!reserveViaComponentsOnly && compRes <= 0) continue;
+            if (reserveViaComponentsOnly && compRes <= 0 && compAvail <= 0) continue;
             const compLabel = (await this._productDisplayLabelById(compId)) || 'Комплектующая';
             lineEntries.push({
               productId: compId,
@@ -4100,13 +4151,23 @@ class OrdersService {
               perKitQty: perKit,
               reservedKitUnits: Math.floor(compRes / perKit),
               needKitUnits: qty,
-              availableQty: await this._getAvailableUnitsForOrderReserveLine(compId, row, {
-                warehouseId,
-                kitProductId: pid
-              }),
+              availableQty: compAvail,
               lineKind: 'component',
               kitProductId: pid,
+              kitReserveFromComponents: reserveViaComponentsOnly,
               label: `${compLabel} (×${perKit} в комплекте)`
+            });
+          }
+          if (reserveViaComponentsOnly && lineEntries.every((le) => le.lineKind !== 'kit')) {
+            lineEntries.unshift({
+              productId: pid,
+              reservedQty: reserved,
+              needQty: qty,
+              availableQty: fromComponents,
+              lineKind: 'kit',
+              kitReserveFromComponents: true,
+              reserveActionOnKit: true,
+              label: `${orderLineLabel || 'Комплект'} (резерв из комплектующих)`
             });
           }
         }
@@ -4338,7 +4399,7 @@ class OrdersService {
     }
 
     const scopeRows = rows.filter((r) => orderRowDbId(r) === orderDbId);
-    const before = await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]);
+    const before = await this._lightOrderReserveSnapshot(scopeRows.length ? scopeRows : [row]);
     const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
     const act = String(action || 'toggle').toLowerCase();
     let doUnreserve = false;
@@ -4549,7 +4610,7 @@ class OrdersService {
       }
     }
 
-    const before = await this._summarizeReserveForRows(rows);
+    const before = await this._lightOrderReserveSnapshot(rows);
     const act = String(action || 'toggle').toLowerCase();
     const doUnreserve = act === 'unreserve' || (act === 'toggle' && before.hasReserve);
 
@@ -4582,7 +4643,7 @@ class OrdersService {
           throw err;
         }
         try {
-          await this._applyReserveForOrderIfAbsent(row);
+          await this._applyReserveForOrderIfAbsent(row, { skipKitReconcile: true });
         } catch (e) {
           if (e?.statusCode === 400) throw e;
           /* ignore */
