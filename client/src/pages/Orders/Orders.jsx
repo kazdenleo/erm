@@ -25,6 +25,7 @@ import {
 } from '../../constants/orderStatuses';
 import { OrderCardActions, OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
 import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
+import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import {
@@ -2928,27 +2929,16 @@ export function Orders() {
                   showReserveCell && reserveCoverageKind === 'on_hand' && orderFullyReserved
                     ? 'success'
                     : 'secondary';
-                const stickerDisplay = (() => {
-                  if (isGroup) {
-                    const asmLines = groupOrders.filter((o) => isAssemblyLikeStatus(o.status));
-                    if (!asmLines.length) return '—';
-                    const mp = normalizeMarketplaceForUI(first.marketplace);
-                    if (mp === 'wildberries') {
-                      return orderStickerCellValue(first, { groupOrders: asmLines });
-                    }
-                    const ids = [
-                      ...new Set(
-                        asmLines
-                          .map((o) =>
-                            String(o.orderGroupId ?? o.order_group_id ?? o.orderId ?? '').trim()
-                          )
-                          .filter(Boolean)
-                      ),
-                    ];
-                    return ids.length ? ids.join(', ') : '—';
-                  }
-                  return orderStickerCellValue(first);
-                })();
+                const stickerAsmOrders = isGroup
+                  ? groupOrders.filter((o) => isAssemblyLikeStatus(o.status))
+                  : null;
+                const stickerOrder =
+                  stickerAsmOrders?.length ? stickerAsmOrders[0] : first;
+                const stickerGroup =
+                  stickerAsmOrders?.length > 1 ? stickerAsmOrders : stickerAsmOrders;
+                const stickerTitle = orderStickerCellValue(stickerOrder, {
+                  groupOrders: stickerGroup,
+                });
                 return (
                 <tr
                   key={row.key + idx}
@@ -3100,8 +3090,8 @@ export function Orders() {
                   </td>
                   <td>{priceDisplay}</td>
                   {showStickerColumn ? (
-                    <td className="orders-col-sticker" title={stickerDisplay !== '—' ? stickerDisplay : ''}>
-                      {stickerDisplay}
+                    <td className="orders-col-sticker" title={stickerTitle !== '—' ? stickerTitle : ''}>
+                      <OrderStickerDisplay order={stickerOrder} groupOrders={stickerGroup} />
                     </td>
                   ) : null}
                   {showShipmentColumn && first.status === 'assembled' ? (

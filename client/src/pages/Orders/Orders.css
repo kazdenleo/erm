@@ -449,3 +449,15 @@
   text-decoration: underline;
   padding: 0;
 }
+
+.orders-col-sticker .order-sticker-display {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.orders-col-sticker .order-sticker-suffix {
+  font-weight: 800;
+  font-size: 1.45em;
+  letter-spacing: 0.03em;
+  line-height: 1.1;
+}
