@@ -37,9 +37,9 @@ const API_BASE = resolveApiBaseUrl();
 const PRINT_HELPER_URL_DEFAULT = process.env.REACT_APP_PRINT_HELPER_URL || 'http://127.0.0.1:9100';
 /** Ozon create/get этикетки на сервере может занимать 30+ с — обрыв раньше даёт «не напечаталось». */
 const PRINT_HELPER_FETCH_MS = 90000;
-/** Короткий опрос кэша этикетки перед синхронной загрузкой с МП (если фоновый прогрев почти готов). */
-const LABEL_STATUS_POLL_MS = 10000;
-const LABEL_STATUS_POLL_INTERVAL_MS = 700;
+/** Опрос кэша этикетки на сервере (fallback, если mark-collected не успел скачать). */
+const LABEL_STATUS_POLL_MS = 45000;
+const LABEL_STATUS_POLL_INTERVAL_MS = 400;
 
 const marketplaceLabels = [
   { code: 'ozon', name: 'Ozon', icon: '🟠' },
@@ -408,9 +408,9 @@ export function Assembly() {
     };
   }, [assemblyOrders, collectedOrders, currentOrderData?.order?.orderId, labelReadyByOrderId]);
 
-  const waitLabelCachedOnServer = useCallback(async (orderId) => {
+  const waitLabelCachedOnServer = useCallback(async (orderId, { maxMs = LABEL_STATUS_POLL_MS } = {}) => {
     const path = `/orders/${encodeURIComponent(orderId)}/label/status`;
-    const deadline = Date.now() + LABEL_STATUS_POLL_MS;
+    const deadline = Date.now() + maxMs;
     while (Date.now() < deadline) {
       try {
         const r = await api.get(path, { timeout: 5000 });
@@ -427,7 +427,7 @@ export function Assembly() {
    * Та же логика, что после «заказ собран»: Print Helper (тихая печать) или страница /label/print с window.print().
    * Раньше иконка вела на /label (только файл в вкладке — без диалога печати).
    */
-  const requestLabelPrint = useCallback(async (orderId, { labelAlreadyCached = false } = {}) => {
+  const requestLabelPrint = useCallback(async (orderId, { labelAlreadyCached = false, skipBrowserWarm = false } = {}) => {
     const id = orderId != null ? String(orderId) : '';
     if (!id) return;
     // Печать через фронтовую страницу: она умеет скачивать этикетку с Authorization: Bearer из localStorage.
@@ -461,9 +461,9 @@ export function Assembly() {
       }
     }
 
-    // Дождаться файла на сервере (ensureLabelFile), иначе Print Helper сразу после сборки часто ловит 502.
-    // Если этикетка уже в кэше — сразу печатаем (Print Helper сам скачает PDF с сервера).
-    if (!labelAlreadyCached) {
+    // Print Helper сам качает PDF с сервера — в браузер blob не тянем (skipBrowserWarm / labelAlreadyCached).
+    const canSkipBrowserWarm = labelAlreadyCached || (skipBrowserWarm && willUseHelper);
+    if (!canSkipBrowserWarm) {
       try {
         let status = 0;
         let msg = '';
@@ -552,6 +552,18 @@ export function Assembly() {
       return;
     }
 
+    if (skipBrowserWarm && willUseHelper && !labelAlreadyCached) {
+      const ready = await waitLabelCachedOnServer(id);
+      if (!ready) {
+        setLabelPrintError(
+          'Этикетка ещё формируется на маркетплейсе. Повторите печать через несколько секунд.'
+        );
+        setTimeout(() => setLabelPrintError(null), 12000);
+        return;
+      }
+      setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [id]: true }));
+    }
+
     setLabelPrintError(null);
     const labelSize = getStoredLabelSize();
     const helperUrl = `${base}/print?orderId=${encodeURIComponent(id)}&labelUrl=${encodeURIComponent(labelFileUrlAbs)}&labelSize=${encodeURIComponent(labelSize)}`;
@@ -589,11 +601,18 @@ export function Assembly() {
       const oid = orderId != null ? String(orderId) : '';
       printingFlowRef.current = true;
       try {
-        await assemblyApi.markCollected(marketplace, orderId, trimmed || null);
+        const collected = await assemblyApi.markCollected(marketplace, orderId, trimmed || null);
         afterSuccess?.(trimmed || null);
         void loadOrders({ silent: true });
-        const labelCached = labelReadyByOrderId?.[oid] === true;
-        void requestLabelPrint(orderId, { labelAlreadyCached: labelCached }).finally(() => {
+        const labelCached =
+          labelReadyByOrderId?.[oid] === true || collected?.labelReady === true;
+        if (collected?.labelReady === true) {
+          setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [oid]: true }));
+        }
+        void requestLabelPrint(orderId, {
+          labelAlreadyCached: labelCached,
+          skipBrowserWarm: true
+        }).finally(() => {
           setTimeout(() => {
             printingFlowRef.current = false;
             setTimeout(() => barcodeInputRef.current?.focus(), 50);
@@ -1144,7 +1163,9 @@ export function Assembly() {
             {showScanStickerFinish && (
               <div className="assembly-sticker-finish">
                 <p className="assembly-ready-text">
-                  Все позиции отсканированы. Этикетка отправляется в печать автоматически…
+                  {finishScanSubmitting
+                    ? 'Все позиции отсканированы. Загружаем этикетку и отправляем на печать…'
+                    : 'Все позиции отсканированы. Этикетка отправляется в печать автоматически…'}
                 </p>
                 <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button

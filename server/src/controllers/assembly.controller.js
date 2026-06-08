@@ -6,6 +6,7 @@
 import config from '../config/index.js';
 import productsService from '../services/products.service.js';
 import ordersService from '../services/orders.service.js';
+import ordersLabelsService from '../services/orders.labels.service.js';
 import {
   buildAssemblyOrderItems,
   buildAssemblyOrderItemsFromGroup
@@ -206,9 +207,21 @@ class AssemblyController {
         req.user?.profileId ?? null,
         stickerNumber
       );
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId =
+        orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      let labelReady = false;
+      if (updated) {
+        try {
+          await ordersLabelsService.ensureLabelFile(updated, { organizationId });
+          labelReady = true;
+        } catch {
+          /* сборка успешна — этикетку догрузит клиент или повторная печать */
+        }
+      }
       return res.status(200).json({
         ok: true,
-        data: { order: updated }
+        data: { order: updated, labelReady }
       });
     } catch (error) {
       next(error);
