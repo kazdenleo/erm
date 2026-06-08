@@ -293,15 +293,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
   }, [marketplace, orderId, reserveProp]);
 
   const detailLines = Array.isArray(reserve?.lines)
-    ? reserve.lines.filter((l) => {
-        if (Math.max(0, Number(l.needQty) || 0) <= 0) return false;
-        if (l.lineKind === 'component') {
-          const hasRes = (Number(l.reservedQty) || 0) > 0;
-          const hasAvail = (Number(l.availableQty) || 0) > 0;
-          return hasRes || hasAvail || l.kitReserveFromComponents === true;
-        }
-        return true;
-      })
+    ? reserve.lines.filter((l) => Math.max(0, Number(l.needQty) || 0) > 0)
     : [];
 
   useEffect(() => {
@@ -492,12 +484,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 ? inputMaxPieces
                 : 1;
             const qtyVal = lineQty[key] ?? qtyDefault;
-            const componentViewOnly =
-              line.lineKind === 'component' &&
-              line.kitReserveFromComponents === true &&
-              !lineHas;
-            const lineActionsEnabled =
-              canReserve && !componentViewOnly && (lineHas || inputMaxPieces > 0);
+            const lineActionsEnabled = canReserve && (lineHas || inputMaxPieces > 0);
             return (
               <li
                 key={key}
@@ -536,11 +523,6 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                     </span>
                   ) : !lineHas && remaining > 0 && available <= 0 ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}> — нет доступного остатка</span>
-                  ) : componentViewOnly ? (
-                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>
-                      {' '}
-                      — резерв через кнопку «Поставить резерв на заказ»
-                    </span>
                   ) : null}
                 </span>
                 <div className="order-reserve-line__actions">

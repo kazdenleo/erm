@@ -4113,24 +4113,31 @@ class OrdersService {
         const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
         const wholeAvail = Math.max(0, Number(breakdown.wholeReserveAvail) || 0);
         const fromComponents = Math.max(0, Number(breakdown.fromComponents) || 0);
-        const reserveViaComponentsOnly = onKitRes <= 0 && wholeAvail <= 0 && fromComponents > 0;
+        const reserveOnWholeSku = onKitRes > 0;
+        const reserveOnComponents = !reserveOnWholeSku && reserved > 0;
+        const canUseWholeSku = wholeAvail > 0;
+        const canUseComponents = fromComponents > 0;
+        // Приоритет: целый комплект (K1). Комплектующие — только если K1 нет и резерв/остаток только на деталях.
+        const showKitLineOnly =
+          canUseWholeSku || reserveOnWholeSku || (!canUseComponents && !reserveOnComponents);
+        const showComponentLinesOnly =
+          !showKitLineOnly && (canUseComponents || reserveOnComponents);
 
-        // Строка комплекта: только если есть собранные K1 или резерв уже на SKU комплекта.
-        if (!reserveViaComponentsOnly || onKitRes > 0) {
+        if (showKitLineOnly) {
+          const remainingKits = Math.max(0, qty - reserved);
+          const kitAvailable = canUseWholeSku
+            ? Math.min(remainingKits, wholeAvail, maxKitsAvail)
+            : 0;
           lineEntries.push({
             productId: pid,
             reservedQty: reserved,
             needQty: qty,
-            availableQty: wholeAvail > 0 ? Math.min(maxKitsAvail, wholeAvail) : maxKitsAvail,
-            lineKind: onKitRes > 0 ? 'kit_whole' : 'kit',
+            availableQty: kitAvailable,
+            lineKind: reserveOnWholeSku ? 'kit_whole' : 'kit',
             kitReserveFromComponents: false,
             label: orderLineLabel || 'Комплект'
           });
-        }
-
-        // Комплектующие: если резерв только из деталей (нет K1) или уже зарезервировано на деталях.
-        const showComponentLines = reserveViaComponentsOnly || (onKitRes <= 0 && reserved > 0);
-        if (showComponentLines) {
+        } else if (showComponentLinesOnly) {
           const components = await getKitComponents(pid);
           for (const c of components) {
             const compId = Number(c.component_product_id);
@@ -4141,8 +4148,8 @@ class OrdersService {
               warehouseId,
               kitProductId: pid
             });
-            if (!reserveViaComponentsOnly && compRes <= 0) continue;
-            if (reserveViaComponentsOnly && compRes <= 0 && compAvail <= 0) continue;
+            if (reserveOnComponents && compRes <= 0) continue;
+            if (!reserveOnComponents && compAvail <= 0) continue;
             const compLabel = (await this._productDisplayLabelById(compId)) || 'Комплектующая';
             lineEntries.push({
               productId: compId,
@@ -4154,20 +4161,8 @@ class OrdersService {
               availableQty: compAvail,
               lineKind: 'component',
               kitProductId: pid,
-              kitReserveFromComponents: reserveViaComponentsOnly,
-              label: `${compLabel} (×${perKit} в комплекте)`
-            });
-          }
-          if (reserveViaComponentsOnly && lineEntries.every((le) => le.lineKind !== 'kit')) {
-            lineEntries.unshift({
-              productId: pid,
-              reservedQty: reserved,
-              needQty: qty,
-              availableQty: fromComponents,
-              lineKind: 'kit',
               kitReserveFromComponents: true,
-              reserveActionOnKit: true,
-              label: `${orderLineLabel || 'Комплект'} (резерв из комплектующих)`
+              label: `${compLabel} (×${perKit} в комплекте)`
             });
           }
         }
