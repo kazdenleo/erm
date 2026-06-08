@@ -2183,10 +2183,24 @@ class OrdersService {
         const oid = orderRowDbId(row);
         if (!oid) continue;
         const pid = Number(row.productId ?? row.product_id) || 0;
-        const kitId = await findKitProductIdForMarketplaceOrder(pid, row);
-        if (kitId != null && (await isKitProductId(kitId))) {
-          kitIdByOrderDbId.set(oid, Number(kitId));
+        const reserved = Number(row.reservedQty ?? row.reserved_qty) || 0;
+
+        if (Number.isFinite(pid) && pid > 0) {
+          if (kitPiecesMap.has(pid)) {
+            kitIdByOrderDbId.set(oid, pid);
+            continue;
+          }
+          if (componentKitMap.has(pid)) {
+            kitIdByOrderDbId.set(oid, componentKitMap.get(pid));
+            continue;
+          }
         }
+
+        // Дорогой поиск по SKU заказа — только при резерве или без product_id (часто WB).
+        if (reserved <= 0 && Number.isFinite(pid) && pid > 0) continue;
+
+        const kitId = await findKitProductIdForMarketplaceOrder(pid, row);
+        if (kitId != null) kitIdByOrderDbId.set(oid, Number(kitId));
       }
 
       const correctedRows = [];
@@ -2221,7 +2235,20 @@ class OrdersService {
           o.reserveCoverage = coverageByOrderId.get(oid);
           o.reserve_coverage = o.reserveCoverage;
         } else if (reserved > 0) {
-          await applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
+          const pid = Number(o.productId ?? o.product_id);
+          const fifoKey =
+            Number.isFinite(pid) && pid > 0 && Number.isFinite(oid) && oid > 0
+              ? `${oid}:${pid}`
+              : null;
+          let kind = 'incoming';
+          if (fifoKey && coverageFifoMap?.has(fifoKey)) {
+            kind = coverageFifoMap.get(fifoKey);
+          } else {
+            const sup = Number.isFinite(pid) && pid > 0 ? supplyMap.get(pid) : null;
+            kind = sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
+          }
+          o.reserveCoverage = kind;
+          o.reserve_coverage = kind;
         } else {
           o.reserveCoverage = 'none';
           o.reserve_coverage = 'none';

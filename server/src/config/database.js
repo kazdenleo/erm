@@ -88,6 +88,16 @@ export async function query(text, params) {
     
     return res;
   } catch (error) {
+    const msg = String(error?.message || '');
+    if (/timeout exceeded when trying to connect|too many clients/i.test(msg)) {
+      logger.warn('Database pool exhausted on query', { ...getPoolStats(), query: text.substring(0, 80) });
+      const err = new Error(
+        'База данных перегружена (нет свободных соединений). Подождите несколько секунд и повторите.'
+      );
+      err.statusCode = 503;
+      err.code = error.code;
+      throw err;
+    }
     logger.error('Database query error', {
       query: text.substring(0, 100),
       error: error.message,

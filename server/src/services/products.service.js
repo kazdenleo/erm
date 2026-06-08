@@ -1393,7 +1393,7 @@ class ProductsService {
 
       const concurrency = Math.max(
         1,
-        Math.min(12, parseInt(process.env.SUPPLIER_STOCKS_REFRESH_CONCURRENCY || '6', 10) || 6)
+        Math.min(12, parseInt(process.env.SUPPLIER_STOCKS_REFRESH_CONCURRENCY || '2', 10) || 2)
       );
       let index = 0;
 
