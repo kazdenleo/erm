@@ -14,6 +14,12 @@ export const ORDER_STATUS_LABELS = {
   'заказ удалён': 'Заказ удалён'
 };
 
+/** Заказ на этапе сборки (в т.ч. WB со статусом wb_assembly). */
+export function isOrderOnAssemblyStatus(status) {
+  const s = String(status ?? '').trim();
+  return s === 'in_assembly' || s === 'wb_assembly';
+}
+
 export function getOrderStatusLabel(status) {
   if (status === 'wb_status_unknown') return ORDER_STATUS_LABELS.wb_status_unknown;
   if (!status || status === 'unknown') return ORDER_STATUS_LABELS.in_assembly;

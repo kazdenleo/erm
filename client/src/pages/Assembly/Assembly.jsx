@@ -1353,9 +1353,21 @@ export function Assembly() {
                           <button
                             type="button"
                             className="assembly-label-link"
-                            title="Печать стикера"
-                            aria-label="Печать этикетки заказа"
-                            onClick={() => requestLabelPrint(primary.orderId)}
+                            title={
+                              isAssemblyLikeStatus(primary.status) && primary.status !== 'assembled'
+                                ? 'Напечатать этикетку и отметить собранным'
+                                : 'Печать стикера'
+                            }
+                            aria-label={
+                              isAssemblyLikeStatus(primary.status) && primary.status !== 'assembled'
+                                ? 'Напечатать этикетку и отметить заказ собранным'
+                                : 'Печать этикетки заказа'
+                            }
+                            onClick={() =>
+                              isAssemblyLikeStatus(primary.status) && primary.status !== 'assembled'
+                                ? handleManualAssembleFromTable(primary)
+                                : requestLabelPrint(primary.orderId)
+                            }
                           >
                             <OrderLabelIcon size={20} />
                           </button>

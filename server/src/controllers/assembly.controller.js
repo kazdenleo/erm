@@ -4,6 +4,7 @@
  */
 
 import config from '../config/index.js';
+import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
 import productsService from '../services/products.service.js';
 import ordersService from '../services/orders.service.js';
 import ordersLabelsService from '../services/orders.labels.service.js';
@@ -189,7 +190,7 @@ class AssemblyController {
           message: 'Заказ не найден'
         });
       }
-      if (order.status !== 'in_assembly') {
+      if (!isOrderOnAssemblyStatus(order.status)) {
         return res.status(400).json({
           ok: false,
           message: 'Заказ не на сборке или уже собран'

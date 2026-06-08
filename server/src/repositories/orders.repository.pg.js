@@ -1223,7 +1223,7 @@ class OrdersRepositoryPG {
   }
 
   /**
-   * Найти первый заказ на сборке (in_assembly), содержащий товар с данным productId.
+   * Найти первый заказ на сборке (in_assembly / wb_assembly для WB), содержащий товар с данным productId.
    * Учитывает как прямую связь (orders.product_id), так и совпадение по product_skus
    * (offer_id, marketplace_sku, для WB — nmId из product_name/offer_id).
    * Нужно для сборки по штрихкоду: заказы WB часто без product_id, но товар совпадает по nmId.
@@ -1257,7 +1257,7 @@ class OrdersRepositoryPG {
                 OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1'))) )
         LIMIT 1
       ) pm ON true
-      WHERE o.status = 'in_assembly'
+      WHERE (o.status = 'in_assembly' OR (o.marketplace = 'wb' AND o.status = 'wb_assembly'))
         AND (
           o.product_id = $1
           OR EXISTS (

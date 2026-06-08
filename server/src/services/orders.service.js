@@ -41,6 +41,7 @@ import {
   getReservableSupplyUnits
 } from './sellableQuantity.service.js';
 import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
+import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
 
 function reserveSnapshotOptsFromMeta(meta = {}) {
   const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
@@ -2845,7 +2846,7 @@ class OrdersService {
     }
     const orders = await this.getAll();
     const found = orders.find(
-      o => o.status === 'in_assembly' && String(o.productId) === String(productId)
+      o => isOrderOnAssemblyStatus(o.status) && String(o.productId) === String(productId)
     );
     return found || null;
   }
@@ -2867,7 +2868,7 @@ class OrdersService {
     }
     const orders = await this.getAll();
     const norm = (s) => String(s || '').trim().toLowerCase();
-    return orders.find(o => o.status === 'in_assembly' && norm(o.productName || o.product_name) === norm(name)) || null;
+    return orders.find(o => isOrderOnAssemblyStatus(o.status) && norm(o.productName || o.product_name) === norm(name)) || null;
   }
 
   /**
