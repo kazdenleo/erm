@@ -131,3 +131,11 @@ export function productsMapFromStockList(products) {
   }
   return map;
 }
+
+/** Склады организации (type=warehouse, не поставщика). */
+export function warehouseOptionsForOrganization(warehouses, organizationId) {
+  const base = (warehouses || []).filter((w) => w?.type === 'warehouse' && !w?.supplier_id);
+  const oid = String(organizationId ?? '').trim();
+  if (!oid) return [];
+  return base.filter((w) => String(w.organizationId ?? w.organization_id ?? '') === oid);
+}

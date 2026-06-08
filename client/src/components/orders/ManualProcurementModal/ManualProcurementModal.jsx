@@ -9,6 +9,7 @@ import { ordersApi } from '../../../services/orders.api';
 import { purchasesApi } from '../../../services/purchases.api';
 import { suppliersApi } from '../../../services/suppliers.api';
 import { getApiErrorMessage } from '../../../utils/apiErrorMessage.js';
+import { warehouseOptionsForOrganization } from '../../../utils/procurementPreview.js';
 
 function lineLabel(line) {
   const sku = line?.productSku || line?.product_sku;
@@ -41,8 +42,8 @@ export function ManualProcurementModal({
   const [warehouseId, setWarehouseId] = useState('');
 
   const warehouseOptions = useMemo(
-    () => (warehouses || []).filter((w) => w?.type === 'warehouse' && !w?.supplier_id),
-    [warehouses]
+    () => warehouseOptionsForOrganization(warehouses, organizationId),
+    [warehouses, organizationId]
   );
 
   const deficitLines = useMemo(
@@ -363,9 +364,12 @@ export function ManualProcurementModal({
                     className="form-control"
                     style={{ maxWidth: 420 }}
                     value={warehouseId}
+                    disabled={!organizationId}
                     onChange={(e) => setWarehouseId(e.target.value)}
                   >
-                    <option value="">— Выберите —</option>
+                    <option value="">
+                      {organizationId ? '— Выберите —' : '— Сначала выберите организацию —'}
+                    </option>
                     {warehouseOptions.map((w) => (
                       <option key={w.id} value={String(w.id)}>
                         {w.name || `Склад №${w.id}`}

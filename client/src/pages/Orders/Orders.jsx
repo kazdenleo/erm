@@ -47,7 +47,8 @@ import {
 } from '../../utils/orderReserveBadge.js';
 import {
   buildProcurementEditableLines,
-  productsMapFromStockList
+  productsMapFromStockList,
+  warehouseOptionsForOrganization,
 } from '../../utils/procurementPreview.js';
 import './Orders.css';
 import './OrderDetail.css';
@@ -494,11 +495,20 @@ export function Orders() {
   /** Редактируемые позиции закупки (кол-во, исключение, подсказка по складу) */
   const [procurementEditableLines, setProcurementEditableLines] = useState([]);
   const [procurementLinesReady, setProcurementLinesReady] = useState(false);
+  const [procurementSubmitting, setProcurementSubmitting] = useState(false);
+  const procurementModalErrRef = useRef(null);
 
   const procurementWarehouseOptions = useMemo(
-    () => (warehouses || []).filter((w) => w?.type === 'warehouse' && !w?.supplier_id),
-    [warehouses]
+    () => warehouseOptionsForOrganization(warehouses, procurementOrganizationId),
+    [warehouses, procurementOrganizationId]
   );
+
+  const showProcurementModalError = useCallback((msg) => {
+    setProcurementModalErr(msg);
+    requestAnimationFrame(() => {
+      procurementModalErrRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    });
+  }, []);
 
   /** Подставить организацию из глобального переключателя (Auth), если в модалке «Новая закупка» и поле пустое */
   useEffect(() => {
@@ -1069,19 +1079,24 @@ export function Orders() {
     setProcurementPreviewQtySort(null);
     setProcurementEditableLines([]);
     setProcurementLinesReady(false);
+    setProcurementSubmitting(false);
     setProcurementOrganizationId('');
     setProcurementWarehouseId('');
   };
 
   const submitProcurementFromOrder = async () => {
     if (!procurementModalRow) return;
+    if (!procurementLinesReady) {
+      showProcurementModalError('Подождите, пока загрузится список позиций для закупки.');
+      return;
+    }
     const activeLines = procurementEditableLines.filter(
       (l) => !l.excluded && l.productId && Number(l.quantity) > 0
     );
     const missingCatalog = procurementEditableLines.filter((l) => !l.excluded && !l.productId);
     if (missingCatalog.length > 0) {
       const names = missingCatalog.map((l) => l.article || l.name || '?').join(', ');
-      setProcurementModalErr(
+      showProcurementModalError(
         `Не удалось определить товар в каталоге для: ${names}. Убедитесь, что в карточке товара указан такой же артикул (SKU), либо добавьте сопоставление SKU маркетплейса в каталоге. Обновите список заказов после правок.`
       );
       return;
@@ -1092,30 +1107,32 @@ export function Orders() {
       sourceOrders: l.sourceOrders ?? [],
     }));
     if (items.length === 0) {
-      setProcurementModalErr(
+      showProcurementModalError(
         procurementExcludedOnHandCount > 0
-          ? 'Все позиции уже на складе или сняты с закупки. Добавьте количество хотя бы для одной строки.'
-          : 'Нет позиций для закупки'
+          ? 'Все позиции уже на складе или сняты с закупки. Верните строку в список или укажите количество хотя бы для одной позиции.'
+          : 'Нет позиций для закупки — добавьте количество хотя бы для одной строки.'
       );
       return;
     }
     if (procurementChoice === 'existing') {
       const pid = parseInt(procurementExistingId, 10);
       if (!Number.isInteger(pid) || pid < 1) {
-        setProcurementModalErr('Выберите существующую закупку');
+        showProcurementModalError('Выберите существующую закупку');
         return;
       }
     } else {
       if (!String(procurementSupplierId || '').trim()) {
-        setProcurementModalErr('Выберите поставщика');
+        showProcurementModalError('Выберите поставщика');
         return;
       }
       if (!String(procurementOrganizationId || '').trim()) {
-        setProcurementModalErr('Выберите организацию');
+        showProcurementModalError(
+          'Выберите организацию (получателя). Без неё закупку создать нельзя — это отдельное поле над складом.'
+        );
         return;
       }
       if (!String(procurementWarehouseId || '').trim()) {
-        setProcurementModalErr('Выберите склад назначения');
+        showProcurementModalError('Выберите склад назначения для выбранной организации');
         return;
       }
     }
@@ -1125,6 +1142,7 @@ export function Orders() {
         : [procurementModalRow];
     const { first } = procurementModalRow;
     setProcurementModalErr(null);
+    setProcurementSubmitting(true);
     setProcurementLoadingKey(procurementModalRow.key);
     setRefreshError(null);
     try {
@@ -1155,8 +1173,20 @@ export function Orders() {
         procurePayload.organizationId = parseInt(String(procurementOrganizationId).trim(), 10);
         procurePayload.warehouseId = parseInt(String(procurementWarehouseId).trim(), 10);
       }
-      await purchasesApi.procureFromOrders(procurePayload);
+      const result = await purchasesApi.procureFromOrders(procurePayload);
       closeProcurementModal();
+      const purchaseId = result?.purchaseId ?? result?.id;
+      const procUpdated = result?.procurement?.updated ?? procurementItems.length;
+      let successMsg = purchaseId
+        ? `Закупка №${purchaseId} создана`
+        : 'Закупка оформлена';
+      if (procUpdated > 0) {
+        successMsg += `, заказов переведено в «В закупке»: ${procUpdated}`;
+      } else if (procurementItems.length === 0) {
+        successMsg += '. Статус заказов не менялся (уже «В закупке» или не подходят под правила)';
+      }
+      successMsg += '.';
+      setAssemblyMessage(successMsg);
       await reloadOrders({ silent: true });
       setSelectedKeys((prev) => {
         const next = new Set(prev);
@@ -1179,9 +1209,10 @@ export function Orders() {
     } catch (e) {
       console.error('Ошибка «В закупку»:', e);
       const msg = getApiErrorMessage(e, 'Не удалось оформить закупку и обновить заказ');
-      setProcurementModalErr(msg);
+      showProcurementModalError(msg);
       setRefreshError(msg);
     } finally {
+      setProcurementSubmitting(false);
       setProcurementLoadingKey(null);
     }
   };
@@ -1874,7 +1905,7 @@ export function Orders() {
       ]);
       const listDrafts = Array.isArray(drafts) ? drafts : [];
       setProcurementDraftPurchases(listDrafts);
-      setProcurementChoice(listDrafts.length > 0 ? 'existing' : 'new');
+      setProcurementChoice('new');
       const rawSup =
         supRes && supRes.ok && Array.isArray(supRes.data)
           ? supRes.data
@@ -2219,7 +2250,7 @@ export function Orders() {
         {procurementModalRow && (
           <div className="orders-procurement-modal">
             {procurementModalErr && (
-              <div className="error" style={{ marginBottom: 12 }}>
+              <div ref={procurementModalErrRef} className="error" style={{ marginBottom: 12 }}>
                 {procurementModalErr}
               </div>
             )}
@@ -2490,24 +2521,47 @@ export function Orders() {
                         className="form-control"
                         style={{ maxWidth: 420 }}
                         value={procurementWarehouseId}
+                        disabled={!procurementOrganizationId}
                         onChange={(e) => setProcurementWarehouseId(e.target.value)}
                       >
-                        <option value="">— Выберите склад —</option>
+                        <option value="">
+                          {procurementOrganizationId
+                            ? '— Выберите склад —'
+                            : '— Сначала выберите организацию —'}
+                        </option>
                         {procurementWarehouseOptions.map((w) => (
                           <option key={w.id} value={String(w.id)}>
                             {w.name || w.address || w.city || `Склад №${w.id}`}
                           </option>
                         ))}
                       </select>
+                      {procurementOrganizationId && procurementWarehouseOptions.length === 0 ? (
+                        <p className="muted" style={{ fontSize: 13, marginTop: 6 }}>
+                          Нет складов для этой организации. Создайте склад в настройках.
+                        </p>
+                      ) : null}
                     </div>
                   </>
                 )}
 
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <Button variant="primary" onClick={submitProcurementFromOrder} disabled={!!procurementLoadingKey}>
-                    {procurementLoadingKey ? '…' : 'Создать / добавить и перевести в закупку'}
+                  <Button
+                    variant="primary"
+                    onClick={() => void submitProcurementFromOrder()}
+                    disabled={
+                      procurementSubmitting ||
+                      procurementModalLoading ||
+                      !procurementLinesReady ||
+                      procurementActiveLineCount === 0
+                    }
+                  >
+                    {procurementSubmitting ? 'Создание…' : 'Создать / добавить и перевести в закупку'}
                   </Button>
-                  <Button variant="secondary" onClick={closeProcurementModal} disabled={!!procurementLoadingKey}>
+                  <Button
+                    variant="secondary"
+                    onClick={closeProcurementModal}
+                    disabled={procurementSubmitting}
+                  >
                     Отмена
                   </Button>
                   <Link to="/stock-levels/purchases" className="order-detail-row-link" style={{ fontSize: 14 }}>
