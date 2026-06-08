@@ -2526,8 +2526,11 @@ class OrdersService {
       return byOrderSku != null ? byOrderSku : null;
     }
     const resolved = await findKitProductIdForMarketplaceOrder(productId, orderRow);
-    if (resolved != null && (await isKitProductId(resolved))) {
+    if (resolved != null) {
       return resolved;
+    }
+    if (await isKitProductId(productId)) {
+      return null;
     }
     return productId;
   }

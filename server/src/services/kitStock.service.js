@@ -231,7 +231,8 @@ function kitProductSql(alias = 'p') {
 
 /** Все возможные артикулы из строки заказа (offer, sku, шаблоны в названии). */
 export function collectOrderSkuCandidates(orderRow = {}) {
-  const out = [];
+  const vendorCodes = [];
+  const numericLike = [];
   const seen = new Set();
   const add = (v) => {
     const s = String(v ?? '').trim();
@@ -239,7 +240,8 @@ export function collectOrderSkuCandidates(orderRow = {}) {
     const key = s.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
-    out.push(s);
+    if (/^\d{5,}$/.test(s)) numericLike.push(s);
+    else vendorCodes.push(s);
   };
   add(orderRow.offerId ?? orderRow.offer_id);
   add(orderRow.sku ?? orderRow.marketplace_sku ?? orderRow.marketplaceSku);
@@ -252,7 +254,56 @@ export function collectOrderSkuCandidates(orderRow = {}) {
       add(m[1]);
     }
   }
-  return out;
+  // Сначала vendorCode (DTTG5127RL), потом nmId — иначе nmId может сопоставиться с чужим комплектом.
+  return [...vendorCodes, ...numericLike];
+}
+
+function expandSkuMatchTokens(sku, marketplace) {
+  const s = String(sku ?? '').trim();
+  if (!s) return [];
+  const tokens = new Set([s, s.toLowerCase()]);
+  const mp = marketplaceForProductSkus(marketplace);
+  if (mp === 'wb') {
+    const m = s.match(/([0-9]{5,})$/);
+    if (m) tokens.add(m[1]);
+  }
+  return [...tokens];
+}
+
+async function loadKitSkuTokens(kitProductId, marketplace) {
+  const mp = marketplaceForProductSkus(marketplace);
+  const tokens = new Set();
+  const r = await query(
+    `SELECT TRIM(COALESCE(p.sku, '')) AS psku,
+            ps.marketplace,
+            TRIM(COALESCE(ps.sku, '')) AS msku
+     FROM products p
+     LEFT JOIN product_skus ps ON ps.product_id = p.id
+     WHERE p.id = $1`,
+    [kitProductId]
+  );
+  for (const row of r.rows || []) {
+    for (const t of expandSkuMatchTokens(row.psku, marketplace)) tokens.add(t.toLowerCase());
+    if (!row.msku) continue;
+    if (!mp || row.marketplace === mp) {
+      for (const t of expandSkuMatchTokens(row.msku, marketplace)) tokens.add(t.toLowerCase());
+    }
+  }
+  return tokens;
+}
+
+/** Совпадает ли комплект с артикулами из заказа (offer / sku / название). */
+async function kitProductMatchesOrderSku(kitProductId, orderRow, candidates = null) {
+  const list = candidates ?? collectOrderSkuCandidates(orderRow);
+  if (!list.length) return true;
+  const kitTokens = await loadKitSkuTokens(kitProductId, orderRow.marketplace);
+  if (!kitTokens.size) return false;
+  for (const c of list) {
+    for (const t of expandSkuMatchTokens(c, orderRow.marketplace)) {
+      if (kitTokens.has(t.toLowerCase())) return true;
+    }
+  }
+  return false;
 }
 
 /** Найти комплект по артикулу без привязки к маркетплейсу (products.sku / product_skus.sku). */
@@ -268,7 +319,9 @@ async function findKitProductIdBySkuAnyMarketplace(sku) {
          TRIM(COALESCE(p.sku, '')) = TRIM($1)
          OR TRIM(COALESCE(ps.sku, '')) = TRIM($1)
        )
-     ORDER BY p.id
+     ORDER BY
+       CASE WHEN TRIM(COALESCE(p.sku, '')) = TRIM($1) THEN 0 ELSE 1 END,
+       p.id
      LIMIT 1`,
     [val]
   );
@@ -309,7 +362,15 @@ async function findKitProductIdByOrderSku(marketplace, offer, msku) {
          OR ($3 <> '' AND TRIM(COALESCE(p.sku, '')) = TRIM($3))
          ${ozonClause}
        )
-     ORDER BY p.id
+     ORDER BY
+       CASE
+         WHEN ($2 <> '' AND TRIM(COALESCE(p.sku, '')) = TRIM($2)) THEN 0
+         WHEN ($3 <> '' AND TRIM(COALESCE(p.sku, '')) = TRIM($3)) THEN 1
+         WHEN ($2 <> '' AND TRIM(COALESCE(ps.sku, '')) = TRIM($2)) THEN 2
+         WHEN ($3 <> '' AND TRIM(COALESCE(ps.sku, '')) = TRIM($3)) THEN 3
+         ELSE 4
+       END,
+       p.id
      LIMIT 1`,
     params
   );
@@ -323,66 +384,76 @@ async function findKitProductIdByOrderSku(marketplace, offer, msku) {
   return null;
 }
 
-/**
- * Заказ на комплект (DTST4333RL): резерв/отгрузка по kit_components (2× DTST4333),
- * даже если в orders.product_id ошибочно указана комплектующая.
- */
-export async function findKitProductIdForMarketplaceOrder(productId, orderRow = {}) {
-  let offer = String(orderRow.offerId ?? orderRow.offer_id ?? '').trim();
-  const msku = String(orderRow.marketplace_sku ?? orderRow.sku ?? '').trim();
-
-  const candidates = collectOrderSkuCandidates(orderRow);
-  for (const c of candidates) {
-    const byCandidate = await findKitProductIdByOrderSku(orderRow.marketplace, c, c);
-    if (byCandidate) return byCandidate;
-  }
-
-  const bySku = await findKitProductIdByOrderSku(orderRow.marketplace, offer, msku);
-  if (bySku) return bySku;
-
-  const pid = Number(productId);
-  if (!Number.isFinite(pid) || pid < 1) return bySku ?? null;
-  if (await isKitProductId(pid)) return pid;
-  const hasComponents = await query(
-    `SELECT 1 FROM kit_components WHERE kit_product_id = $1 LIMIT 1`,
-    [pid]
-  );
-  if (hasComponents.rows?.length) return pid;
-
+/** Комплект по комплектующей — только если артикул заказа совпадает с SKU комплекта. */
+async function findKitProductIdByComponentAndOrderSkus(componentProductId, orderRow, candidates) {
   const mp = marketplaceForProductSkus(orderRow.marketplace);
-  if (!mp) return pid;
+  if (!mp) return null;
+  const compId = Number(componentProductId);
+  if (!Number.isFinite(compId) || compId < 1) return null;
 
-  if (mp === 'wb' && offer) {
-    const m = offer.match(/([0-9]{5,})$/);
-    if (m) offer = m[1];
-  }
-
-  const params = [pid, mp, offer, msku];
-  let ozonClause = '';
-  if (mp === 'ozon' && msku && /^[0-9]+$/.test(msku)) {
-    ozonClause = `OR (ps.marketplace = 'ozon' AND ps.marketplace_product_id = $5::bigint)`;
-    params.push(msku);
-  }
+  const skuList = [
+    ...new Set(
+      (candidates || [])
+        .flatMap((c) => expandSkuMatchTokens(c, orderRow.marketplace))
+        .map((s) => String(s).trim())
+        .filter(Boolean)
+    ),
+  ];
+  if (!skuList.length) return null;
 
   const r = await query(
     `SELECT kc.kit_product_id
      FROM kit_components kc
      INNER JOIN products pk ON pk.id = kc.kit_product_id
-     INNER JOIN product_skus ps ON ps.product_id = kc.kit_product_id AND ps.marketplace = $2
+     LEFT JOIN product_skus ps ON ps.product_id = kc.kit_product_id AND ps.marketplace = $2
      WHERE ${kitProductSql('pk')}
        AND kc.component_product_id = $1
        AND (
-         ($3 <> '' AND TRIM(ps.sku) = TRIM($3))
-         OR ($4 <> '' AND TRIM(ps.sku) = TRIM($4))
-         ${ozonClause}
+         TRIM(COALESCE(pk.sku, '')) = ANY($3::text[])
+         OR TRIM(COALESCE(ps.sku, '')) = ANY($3::text[])
        )
-     ORDER BY kc.kit_product_id
+     ORDER BY
+       CASE WHEN TRIM(COALESCE(pk.sku, '')) = ANY($3::text[]) THEN 0 ELSE 1 END,
+       kc.kit_product_id
      LIMIT 1`,
-    params
+    [compId, mp, skuList]
   );
-
   const kid = r.rows[0]?.kit_product_id;
   return kid != null ? Number(kid) : null;
+}
+
+/**
+ * Заказ на комплект (DTST4333RL): резерв/отгрузка по kit_components (2× DTST4333),
+ * даже если в orders.product_id ошибочно указана комплектующая.
+ */
+export async function findKitProductIdForMarketplaceOrder(productId, orderRow = {}) {
+  const offer = String(orderRow.offerId ?? orderRow.offer_id ?? '').trim();
+  const msku = String(orderRow.marketplace_sku ?? orderRow.sku ?? '').trim();
+  const candidates = collectOrderSkuCandidates(orderRow);
+
+  for (const c of candidates) {
+    const byCandidate = await findKitProductIdByOrderSku(orderRow.marketplace, c, c);
+    if (byCandidate != null && (await kitProductMatchesOrderSku(byCandidate, orderRow, [c]))) {
+      return byCandidate;
+    }
+  }
+
+  const bySku = await findKitProductIdByOrderSku(orderRow.marketplace, offer, msku);
+  if (bySku != null && (await kitProductMatchesOrderSku(bySku, orderRow, candidates))) {
+    return bySku;
+  }
+
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return null;
+
+  if (await isKitProductId(pid)) {
+    if (await kitProductMatchesOrderSku(pid, orderRow, candidates)) return pid;
+  } else {
+    const byComponent = await findKitProductIdByComponentAndOrderSkus(pid, orderRow, candidates);
+    if (byComponent != null) return byComponent;
+  }
+
+  return null;
 }
 
 /** @returns {Promise<Array<{ component_product_id: number, quantity: number }>>} */
