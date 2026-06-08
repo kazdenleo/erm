@@ -520,6 +520,11 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                   {pieceHint ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}> ({pieceHint})</span>
                   ) : null}
+                  {line.compositionHint ? (
+                    <span style={{ display: 'block', color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>
+                      {line.compositionHint}
+                    </span>
+                  ) : null}
                   {!canReserve ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                       {' '}

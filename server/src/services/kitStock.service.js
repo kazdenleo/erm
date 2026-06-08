@@ -1377,8 +1377,14 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
     );
     const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId);
     if (onKit > 0 && fromComp > 0) {
-      /* вызывающий код должен выполнить reconcileMixedKitOrderReservePaths до повторного вызова */
-      return 0;
+      if (meta?.reconcile_kit_to_components || meta?.reconcile_force_mixed) {
+        return 0;
+      }
+      const err = new Error(
+        'На заказе одновременно резерв на SKU комплекта и на комплектующие — обновите страницу и повторите резерв'
+      );
+      err.statusCode = 409;
+      throw err;
     }
   }
   const whRaw = meta?.warehouse_id ?? meta?.warehouseId ?? null;

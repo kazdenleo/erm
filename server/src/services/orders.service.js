@@ -28,6 +28,9 @@ import {
   sumKitComponentQtyPerKit,
   buildKitComponentQtyMap,
   getComponentAssemblableUnits,
+  computeAssemblableFromComponents,
+  getReservedKitUnitsFromComponentsForOrder,
+  readKitPhysicalOnHandFromDb,
   resolveKitOrderShipmentPlan,
   kitOrderReserveExceedsOnHand,
   findKitProductIdForOrderComponentReserve,
@@ -1058,6 +1061,52 @@ class OrdersService {
       );
     } catch (e) {
       if (e?.statusCode !== 400) throw e;
+    }
+
+    const wh = metaBase?.warehouse_id ?? metaBase?.warehouseId ?? null;
+    let onKit = await getNetReservedForOrderProduct(
+      id,
+      pid,
+      orderIdStr || null,
+      wh
+    );
+    let fromComp = await getReservedKitUnitsFromComponentsForOrder(pid, id);
+    if (onKit > 0 && fromComp > 0) {
+      const physicalWhole = await readKitPhysicalOnHandFromDb(pid, null, { warehouseId: wh });
+      if ((physicalWhole || 0) < onKit) {
+        await stockMovementsService.applyChange(pid, {
+          delta: onKit,
+          type: 'unreserve',
+          reason: `Снятие резерва SKU комплекта перед резервом из комплектующих (заказ ${orderIdStr})`,
+          meta: {
+            ...metaBase,
+            order_id: id,
+            orderId: orderIdStr,
+            reconcile_force_mixed: true,
+            kit_reserve_scope: 'whole'
+          }
+        });
+      } else {
+        const components = await getKitComponents(pid);
+        for (const c of components) {
+          const cid = Number(c.component_product_id);
+          if (!Number.isFinite(cid) || cid < 1) continue;
+          const net = await getNetReservedForOrderProduct(id, cid, orderIdStr || null, wh);
+          if (net <= 0) continue;
+          await stockMovementsService.applyChange(cid, {
+            delta: net,
+            type: 'unreserve',
+            reason: `Снятие резерва комплектующей перед резервом целым SKU (заказ ${orderIdStr})`,
+            meta: {
+              ...metaBase,
+              order_id: id,
+              orderId: orderIdStr,
+              reconcile_force_mixed: true,
+              kit_reserve_scope: 'component'
+            }
+          });
+        }
+      }
     }
   }
 
@@ -3205,6 +3254,12 @@ class OrdersService {
           profileId,
         });
       }
+      setImmediate(() => {
+        void this._removeProcurementOrdersFromOpenShipments(
+          [{ marketplace, order_id: String(orderId), profile_id: profileId }],
+          profileId
+        );
+      });
       return { ...order, status: 'in_procurement' };
     }
     const { readData, writeData } = await import('../utils/storage.js');
@@ -3349,8 +3404,33 @@ class OrdersService {
         });
       });
     }
+    if (uniqueRows.length > 0) {
+      setImmediate(() => {
+        void this._removeProcurementOrdersFromOpenShipments(uniqueRows, profileId);
+      });
+    }
 
     return { updated: seedRows.length, skipped, rows: uniqueRows };
+  }
+
+  async _removeProcurementOrdersFromOpenShipments(orderRows, profileId = null) {
+    if (!Array.isArray(orderRows) || orderRows.length === 0) return;
+    const shipmentsService = (await import('./shipments.service.js')).default;
+    const seen = new Set();
+    for (const row of orderRows) {
+      const mp = String(row.marketplace ?? row.marketplace_db ?? '').trim();
+      const oid = String(row.order_id ?? row.orderId ?? '').trim();
+      if (!mp || !oid || seen.has(`${mp}|${oid}`)) continue;
+      seen.add(`${mp}|${oid}`);
+      try {
+        await shipmentsService.removeOrderFromOpenShipments(mp, oid, {
+          profileId: profileId ?? row.profile_id ?? row.profileId ?? null,
+          organizationId: row.organization_id ?? row.organizationId ?? null,
+        });
+      } catch (e) {
+        console.warn('[Orders] remove from shipment on procurement:', oid, e?.message || e);
+      }
+    }
   }
 
   /**
@@ -4280,17 +4360,29 @@ class OrdersService {
             label: orderLineLabel || 'Комплект'
           });
         } else if (componentCandidates.length > 0) {
-          for (const entry of componentCandidates) {
-            if (reserveOnComponents && entry.reservedQty <= 0) continue;
-            if (
-              !reserveOnComponents &&
-              !showAllComponents &&
-              entry.availableQty <= 0 &&
-              entry.reservedQty <= 0
-            ) {
-              continue;
+          if (showAllComponents) {
+            const assemblable = await computeAssemblableFromComponents(pid, { warehouseId });
+            const remainingKits = Math.max(0, qty - reserved);
+            const compLabels = componentCandidates.map((e) => e.label).filter(Boolean);
+            lineEntries.push({
+              productId: pid,
+              reservedQty: reserved,
+              needQty: qty,
+              availableQty: Math.min(remainingKits, assemblable),
+              lineKind: 'kit',
+              kitReserveFromComponents: true,
+              label: orderLineLabel || 'Комплект',
+              compositionHint:
+                compLabels.length > 0 ? `Состав: ${compLabels.join('; ')}` : null
+            });
+          } else {
+            for (const entry of componentCandidates) {
+              if (reserveOnComponents && entry.reservedQty <= 0) continue;
+              if (entry.availableQty <= 0 && entry.reservedQty <= 0) {
+                continue;
+              }
+              lineEntries.push(entry);
             }
-            lineEntries.push(entry);
           }
         }
       } else if (id && Number.isFinite(pid) && pid > 0) {
@@ -4690,8 +4782,19 @@ class OrdersService {
               this._applyReserveForOrderComponent(compId, compQty, oid, m)
           );
           if (toAdd > 0 && !(Number(reservedKits) > 0)) {
+            const wh = warehouseId;
+            const onKit = await getNetReservedForOrderProduct(orderDbId, pid, orderIdStr, wh);
+            const fromComp = await getReservedKitUnitsFromComponentsForOrder(pid, orderDbId);
+            const assemblable = await computeAssemblableFromComponents(pid, { warehouseId: wh });
+            let hint = '';
+            if (onKit > 0 && fromComp > 0) {
+              hint =
+                ' На заказе одновременно резерв на SKU комплекта и на комплектующие — обновите страницу и повторите.';
+            } else if (assemblable < toAdd) {
+              hint = ` Собираемость из комплектующих на складе заказа: ${assemblable} компл.`;
+            }
             const err = new Error(
-              `Недостаточно остатка для резерва комплекта (доступно: ${available}, запрошено: ${toAdd})`
+              `Не удалось зарезервировать комплект (доступно: ${available}, запрошено: ${toAdd}).${hint}`
             );
             err.statusCode = 400;
             throw err;
