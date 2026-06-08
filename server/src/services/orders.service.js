@@ -30,7 +30,6 @@ import {
   getComponentAssemblableUnits,
   resolveKitOrderShipmentPlan,
   kitOrderReserveExceedsOnHand,
-  isKitComponentProductId,
   findKitProductIdForOrderComponentReserve,
   releaseKitOrderReserveUnits
 } from './kitStock.service.js';
