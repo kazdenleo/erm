@@ -1626,6 +1626,57 @@ class OrdersService {
     }
   }
 
+  /** Снять остаточный резерв после отгрузки (если unreserve не прошёл по складу / комплекту). */
+  async _releaseLeftoverOrderReserve(orderRow) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId) return;
+    const label = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
+    await releaseAllReservesForOrder(orderDbId, label, async (pid, net, orderIdLabel, meta) => {
+      await stockMovementsService.applyChange(pid, {
+        delta: net,
+        type: 'unreserve',
+        reason: `Снятие остаточного резерва после отгрузки (заказ ${orderIdLabel})`.trim(),
+        meta: { ...meta, post_shipment_cleanup: true }
+      });
+    });
+  }
+
+  /**
+   * Заказ полностью списан со склада (shipment по строке) — резерв больше не нужен.
+   */
+  async isOrderFullyShipped(orderRow) {
+    if (!orderRow || !repositoryFactory.isUsingPostgreSQL()) return false;
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId) return false;
+
+    const orderQty = Math.max(1, parseInt(orderRow.quantity, 10) || 1);
+    let productId = await this._resolveProductIdForOrderStock(orderRow);
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) return false;
+
+    if (await isKitProductId(pid)) {
+      const components = await getKitComponents(pid);
+      const wholeShipped = Math.max(0, Number(await this._getShippedQtyForOrderProduct(orderDbId, pid)) || 0);
+      let kitsViaComp = 0;
+      if (components.length > 0) {
+        let minKits = Infinity;
+        for (const c of components) {
+          const compId = Number(c.component_product_id);
+          const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+          if (!Number.isFinite(compId) || compId < 1) continue;
+          const shipped = Number(await this._getShippedQtyForOrderProduct(orderDbId, compId)) || 0;
+          minKits = Math.min(minKits, Math.floor(shipped / perKit));
+        }
+        kitsViaComp = Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+      }
+      return wholeShipped + kitsViaComp >= orderQty;
+    }
+
+    const shipped = Number(await this._getShippedQtyForOrderProduct(orderDbId, pid)) || 0;
+    return shipped >= orderQty;
+  }
+
   /**
    * Закрытие поставки / сборка: снять резерв и уменьшить наличие.
    * Комплект — резерв может быть на SKU комплекта и/или на комплектующих; списание — с комплектующих.
@@ -1657,6 +1708,7 @@ class OrdersService {
       for (const kitId of kitIds) {
         await this._applyAssemblyStockForKitOrder(orderRow, kitId);
       }
+      await this._releaseLeftoverOrderReserve(orderRow);
       return;
     }
 
@@ -1665,10 +1717,12 @@ class OrdersService {
 
     if (await isKitProductId(productId)) {
       await this._applyAssemblyStockForKitOrder(orderRow, productId);
+      await this._releaseLeftoverOrderReserve(orderRow);
       return;
     }
 
     await this._applyAssemblyStockForOrderProduct(orderRow, productId);
+    await this._releaseLeftoverOrderReserve(orderRow);
   }
 
   /**

@@ -780,6 +780,8 @@ export async function readKitPhysicalOnHandFromDb(kitProductId, rawOnHand = null
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
 
+  const warehouseScoped = parseWarehouseIdFromOpts(opts) != null;
+
   const hasInbound = await kitHasWholeKitInboundMovements(kitId);
   if (!hasInbound) {
     const pwsFallback = await readKitWarehouseOnHandRaw(kitId, opts);
@@ -792,6 +794,12 @@ export async function readKitPhysicalOnHandFromDb(kitProductId, rawOnHand = null
   }
   onHand = Math.max(0, Number(onHand) || 0);
   if (onHand <= 0) return 0;
+
+  // По складу остаток берём из product_warehouse_stock: balance_after в журнале —
+  // сумма по всем складам и у сборки комплекта часто записывается как 0.
+  if (warehouseScoped) {
+    return onHand;
+  }
 
   const fromJournal = await readKitOnHandFromMovementsBalance(kitId);
   if (fromJournal != null) {
@@ -1185,7 +1193,19 @@ export async function getNetReservedForOrderProduct(
        AND ${orderReserveMovementMatchSql('', 2, 3)}${whSql}`,
     params
   );
-  return Number(r.rows?.[0]?.rv ?? 0) || 0;
+  const scoped = Number(r.rows?.[0]?.rv ?? 0) || 0;
+  if (scoped > 0 || whId == null) return scoped;
+
+  // Резерв без warehouse_id — при отгрузке со склада всё равно должен сниматься.
+  const globalRes = await query(
+    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+     FROM stock_movements
+     WHERE product_id = $1
+       AND type IN ('reserve', 'unreserve')
+       AND ${orderReserveMovementMatchSql('', 2, 3)}`,
+    [pid, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel]
+  );
+  return Number(globalRes.rows?.[0]?.rv ?? 0) || 0;
 }
 
 /** Нетто-резерв комплектов из комплектующих под заказ (min floor по составу). */
@@ -1866,6 +1886,9 @@ export function kitPhysicalOnHandFromContext(kitId, ctx) {
   if (!ctx?.inboundSet?.has(kitId)) return 0;
   let onHand = Math.max(0, ctx.kitOnHandRaw.get(kitId) || 0);
   if (onHand <= 0) return 0;
+  if (ctx.warehouseScoped) {
+    return onHand;
+  }
   const journal = ctx.kitJournal.get(kitId);
   if (journal != null) return Math.min(onHand, journal);
   return onHand;
@@ -1971,7 +1994,8 @@ export async function buildKitListStockContext(products, options = {}) {
     reservedMap,
     compOnHand,
     compIncoming,
-    supplierMap
+    supplierMap,
+    warehouseScoped: parseWarehouseIdFromOpts(options) != null,
   };
 }
 

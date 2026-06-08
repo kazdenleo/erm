@@ -249,16 +249,9 @@ class StockMovementsService {
       metaObj.kit_component_restore !== true &&
       metaObj.receipt_reversal !== true
     ) {
-      const { isKitProductId, isKitComponentProductId } = await import('./kitStock.service.js');
+      const { isKitProductId } = await import('./kitStock.service.js');
       if (await isKitProductId(idNum)) {
         const error = new Error('Для комплектов ручное изменение остатка запрещено');
-        error.statusCode = 400;
-        throw error;
-      }
-      if (await isKitComponentProductId(idNum)) {
-        const error = new Error(
-          'Ручное изменение остатка комплектующей запрещено — используйте приёмку или инвентаризацию'
-        );
         error.statusCode = 400;
         throw error;
       }
@@ -743,13 +736,25 @@ class StockMovementsService {
     );
 
     if (!_skipStaleCleanup && (res.rows?.length ?? 0) > 0) {
-      const { isOrderTerminalNoReserve } = await import('./orders.service.js');
+      const { default: ordersService, isOrderTerminalNoReserve } = await import('./orders.service.js');
       let cleaned = false;
       for (const r of res.rows || []) {
         if (r.order_missing === true) continue;
-        if (!isOrderTerminalNoReserve(r.status)) continue;
+        const status = String(r.status ?? '').trim().toLowerCase();
+        let shouldClear = isOrderTerminalNoReserve(r.status);
+        if (!shouldClear && status === 'assembled' && Number.isFinite(Number(r.id)) && Number(r.id) > 0) {
+          const or = await query(
+            `SELECT id, quantity, product_id, marketplace, order_id, status FROM orders WHERE id = $1 LIMIT 1`,
+            [r.id]
+          );
+          const orderRow = or.rows?.[0];
+          if (orderRow) {
+            shouldClear = await ordersService.isOrderFullyShipped(orderRow);
+          }
+        }
+        if (!shouldClear) continue;
         try {
-          await this.releaseOrderReserveForProduct(idNum, r.id, { profileId });
+          await this.releaseAllStaleReserveForOrder(r.id, r.order_id, { profileId });
         } catch (_) {
           /* stale cleanup — не блокируем список */
         }
@@ -1660,6 +1665,22 @@ class StockMovementsService {
   }
 
   /** Снять резерв по одному заказу (со страницы остатков; без проверки статуса заказа). */
+  async releaseAllStaleReserveForOrder(orderDbId, orderIdLabel, { profileId = null } = {}) {
+    const oid = Number(orderDbId);
+    if (!Number.isFinite(oid) || oid < 1) return { releasedProductLines: 0 };
+
+    const { releaseAllReservesForOrder } = await import('./kitStock.service.js');
+    const affected = await releaseAllReservesForOrder(oid, orderIdLabel, async (pid, net, label, meta) => {
+      await this.applyChange(pid, {
+        delta: net,
+        type: 'unreserve',
+        reason: `Авто-снятие устаревшего резерва (заказ ${label})`.trim(),
+        meta: { ...meta, stale_reserve_cleanup: true, manual_unreserve: true }
+      });
+    });
+    return { releasedProductLines: affected?.length ?? 0, orderDbId: oid };
+  }
+
   async releaseOrderReserveForProduct(productId, orderDbId, { profileId = null } = {}) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     const oid = Number(orderDbId);
