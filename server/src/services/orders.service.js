@@ -4112,58 +4112,65 @@ class OrdersService {
         const breakdown = await computeKitReservableBreakdown(pid, { warehouseId });
         const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
         const wholeAvail = Math.max(0, Number(breakdown.wholeReserveAvail) || 0);
-        const fromComponents = Math.max(0, Number(breakdown.fromComponents) || 0);
         const reserveOnWholeSku = onKitRes > 0;
         const reserveOnComponents = !reserveOnWholeSku && reserved > 0;
-        const canUseWholeSku = wholeAvail > 0;
-        const canUseComponents = fromComponents > 0;
-        // Приоритет: целый комплект (K1). Комплектующие — только если K1 нет и резерв/остаток только на деталях.
-        const showKitLineOnly =
-          canUseWholeSku || reserveOnWholeSku || (!canUseComponents && !reserveOnComponents);
-        const showComponentLinesOnly =
-          !showKitLineOnly && (canUseComponents || reserveOnComponents);
+        const remainingKits = Math.max(0, qty - reserved);
+        const kitReservableQty =
+          wholeAvail > 0 ? Math.min(remainingKits, wholeAvail, maxKitsAvail) : 0;
 
-        if (showKitLineOnly) {
-          const remainingKits = Math.max(0, qty - reserved);
-          const kitAvailable = canUseWholeSku
-            ? Math.min(remainingKits, wholeAvail, maxKitsAvail)
-            : 0;
+        const components = await getKitComponents(pid);
+        const componentCandidates = [];
+        for (const c of components) {
+          const compId = Number(c.component_product_id);
+          if (!Number.isFinite(compId) || compId < 1) continue;
+          const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+          const compRes = await this._getReservedQtyForOrderProduct(id, compId);
+          const compAvail = await this._getAvailableUnitsForOrderReserveLine(compId, row, {
+            warehouseId,
+            kitProductId: pid
+          });
+          const compLabel = (await this._productDisplayLabelById(compId)) || 'Комплектующая';
+          componentCandidates.push({
+            productId: compId,
+            reservedQty: compRes,
+            needQty: qty * perKit,
+            perKitQty: perKit,
+            reservedKitUnits: Math.floor(compRes / perKit),
+            needKitUnits: qty,
+            availableQty: compAvail,
+            lineKind: 'component',
+            kitProductId: pid,
+            kitReserveFromComponents: true,
+            label: `${compLabel} (×${perKit} в комплекте)`
+          });
+        }
+
+        // Приоритет: целый комплект (1 SKU). Комплектующие — если целый комплект недоступен к резерву.
+        const showKitLine = reserveOnWholeSku || kitReservableQty > 0;
+        const showAllComponents = kitReservableQty <= 0 && !reserveOnWholeSku;
+
+        if (showKitLine) {
           lineEntries.push({
             productId: pid,
             reservedQty: reserved,
             needQty: qty,
-            availableQty: kitAvailable,
+            availableQty: kitReservableQty,
             lineKind: reserveOnWholeSku ? 'kit_whole' : 'kit',
             kitReserveFromComponents: false,
             label: orderLineLabel || 'Комплект'
           });
-        } else if (showComponentLinesOnly) {
-          const components = await getKitComponents(pid);
-          for (const c of components) {
-            const compId = Number(c.component_product_id);
-            if (!Number.isFinite(compId) || compId < 1) continue;
-            const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
-            const compRes = await this._getReservedQtyForOrderProduct(id, compId);
-            const compAvail = await this._getAvailableUnitsForOrderReserveLine(compId, row, {
-              warehouseId,
-              kitProductId: pid
-            });
-            if (reserveOnComponents && compRes <= 0) continue;
-            if (!reserveOnComponents && compAvail <= 0) continue;
-            const compLabel = (await this._productDisplayLabelById(compId)) || 'Комплектующая';
-            lineEntries.push({
-              productId: compId,
-              reservedQty: compRes,
-              needQty: qty * perKit,
-              perKitQty: perKit,
-              reservedKitUnits: Math.floor(compRes / perKit),
-              needKitUnits: qty,
-              availableQty: compAvail,
-              lineKind: 'component',
-              kitProductId: pid,
-              kitReserveFromComponents: true,
-              label: `${compLabel} (×${perKit} в комплекте)`
-            });
+        } else if (componentCandidates.length > 0) {
+          for (const entry of componentCandidates) {
+            if (reserveOnComponents && entry.reservedQty <= 0) continue;
+            if (
+              !reserveOnComponents &&
+              !showAllComponents &&
+              entry.availableQty <= 0 &&
+              entry.reservedQty <= 0
+            ) {
+              continue;
+            }
+            lineEntries.push(entry);
           }
         }
       } else if (id && Number.isFinite(pid) && pid > 0) {

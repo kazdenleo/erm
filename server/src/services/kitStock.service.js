@@ -14,6 +14,7 @@ import {
 import {
   computeAvailableQuantity,
   getReservedQuantityFromMovements,
+  getProductSupplySnapshotWithClient,
   getReservableSupplyUnits,
 } from './sellableQuantity.service.js';
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
@@ -1200,7 +1201,8 @@ export async function computeKitSupplierUnitsFromComponents(kitProductId, opts =
  * Остатки поставщиков не учитываются (только для колонки «Доступно» в остатках).
  */
 export async function getComponentAssemblableUnits(componentProductId, opts = {}) {
-  return getReservableSupplyUnits(componentProductId, opts);
+  const snap = await getProductSupplySnapshotWithClient(null, componentProductId, opts);
+  return snap.available;
 }
 
 /** Сколько полных комплектов можно собрать из комплектующих (склад + в пути − резерв). */
