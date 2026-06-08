@@ -606,6 +606,8 @@ class OrdersRepositoryPG {
         price = EXCLUDED.price,
         status = CASE
           WHEN orders.status = 'in_procurement' THEN orders.status
+          WHEN orders.status IN ('in_assembly', 'wb_assembly', 'assembled', 'shipped', 'in_transit', 'delivered')
+            AND EXCLUDED.status = 'in_procurement' THEN orders.status
           WHEN orders.status = 'assembled' AND EXCLUDED.status IN (
             'new', 'in_assembly', 'unknown', 'wb_assembly', 'wb_status_unknown', '__wb_status_pending__'
           ) THEN orders.status
@@ -654,6 +656,8 @@ class OrdersRepositoryPG {
         price = EXCLUDED.price,
         status = CASE
           WHEN orders.status = 'in_procurement' THEN orders.status
+          WHEN orders.status IN ('in_assembly', 'wb_assembly', 'assembled', 'shipped', 'in_transit', 'delivered')
+            AND EXCLUDED.status = 'in_procurement' THEN orders.status
           WHEN orders.status = 'assembled' AND EXCLUDED.status IN (
             'new', 'in_assembly', 'unknown', 'wb_assembly', 'wb_status_unknown', '__wb_status_pending__'
           ) THEN orders.status

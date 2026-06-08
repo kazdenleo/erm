@@ -1102,52 +1102,6 @@ class OrdersService {
     } catch (e) {
       if (e?.statusCode !== 400) throw e;
     }
-
-    const wh = metaBase?.warehouse_id ?? metaBase?.warehouseId ?? null;
-    let onKit = await getNetReservedForOrderProduct(
-      id,
-      pid,
-      orderIdStr || null,
-      wh
-    );
-    let fromComp = await getReservedKitUnitsFromComponentsForOrder(pid, id);
-    if (onKit > 0 && fromComp > 0) {
-      const physicalWhole = await readKitPhysicalOnHandFromDb(pid, null, { warehouseId: wh });
-      if ((physicalWhole || 0) < onKit) {
-        await stockMovementsService.applyChange(pid, {
-          delta: onKit,
-          type: 'unreserve',
-          reason: `Снятие резерва SKU комплекта перед резервом из комплектующих (заказ ${orderIdStr})`,
-          meta: {
-            ...metaBase,
-            order_id: id,
-            orderId: orderIdStr,
-            reconcile_force_mixed: true,
-            kit_reserve_scope: 'whole'
-          }
-        });
-      } else {
-        const components = await getKitComponents(pid);
-        for (const c of components) {
-          const cid = Number(c.component_product_id);
-          if (!Number.isFinite(cid) || cid < 1) continue;
-          const net = await getNetReservedForOrderProduct(id, cid, orderIdStr || null, wh);
-          if (net <= 0) continue;
-          await stockMovementsService.applyChange(cid, {
-            delta: net,
-            type: 'unreserve',
-            reason: `Снятие резерва комплектующей перед резервом целым SKU (заказ ${orderIdStr})`,
-            meta: {
-              ...metaBase,
-              order_id: id,
-              orderId: orderIdStr,
-              reconcile_force_mixed: true,
-              kit_reserve_scope: 'component'
-            }
-          });
-        }
-      }
-    }
   }
 
   async _availableUnitsForOrderReserve(productId, orderRow, warehouseId) {
@@ -4583,38 +4537,55 @@ class OrdersService {
         source: 'order_reserve_summary'
       };
 
-      if (!(await isKitProductId(pid))) continue;
-
-      try {
-        await reconcileMisplacedKitWholeReserve(
-          pid,
-          id,
-          orderIdStr || String(id),
-          metaBase,
-          stockHooks
+      const kitIdsToReconcile = new Set();
+      if (await isKitProductId(pid)) {
+        kitIdsToReconcile.add(pid);
+      } else {
+        const parents = await query(
+          `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+          [pid]
         );
-      } catch (e) {
-        if (e?.statusCode !== 400) {
-          console.warn('[Orders] reconcileReserveBeforeOrderSummary:', e?.message || e);
+        for (const pr of parents.rows || []) {
+          const kid = Number(pr.kit_product_id);
+          if (Number.isFinite(kid) && kid > 0) kitIdsToReconcile.add(kid);
         }
       }
-      try {
-        await reconcileMixedKitOrderReservePaths(
-          pid,
-          id,
-          orderIdStr || String(id),
-          metaBase,
-          (unreservePid, net, oid, m) =>
-            stockMovementsService.applyChange(unreservePid, {
-              delta: net,
-              type: 'unreserve',
-              reason: `Снятие дублирующего резерва комплекта (заказ ${oid})`.trim(),
-              meta: m
-            })
-        );
-      } catch (e) {
-        if (e?.statusCode !== 400) {
-          console.warn('[Orders] reconcileMixedKitReserve:', e?.message || e);
+      if (kitIdsToReconcile.size === 0) continue;
+
+      for (const kitId of kitIdsToReconcile) {
+        if (kitId === pid) {
+          try {
+            await reconcileMisplacedKitWholeReserve(
+              kitId,
+              id,
+              orderIdStr || String(id),
+              metaBase,
+              stockHooks
+            );
+          } catch (e) {
+            if (e?.statusCode !== 400) {
+              console.warn('[Orders] reconcileReserveBeforeOrderSummary:', e?.message || e);
+            }
+          }
+        }
+        try {
+          await reconcileMixedKitOrderReservePaths(
+            kitId,
+            id,
+            orderIdStr || String(id),
+            metaBase,
+            (unreservePid, net, oid, m) =>
+              stockMovementsService.applyChange(unreservePid, {
+                delta: net,
+                type: 'unreserve',
+                reason: `Снятие дублирующего резерва комплекта (заказ ${oid})`.trim(),
+                meta: m
+              })
+          );
+        } catch (e) {
+          if (e?.statusCode !== 400) {
+            console.warn('[Orders] reconcileMixedKitReserve:', e?.message || e);
+          }
         }
       }
     }

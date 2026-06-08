@@ -88,6 +88,13 @@ function incomingMatchesProcurementAnchors(order, anchors) {
   return false;
 }
 
+/** Не тянуть в «В закупке» заказы, уже ушедшие на сборку / отгрузку. */
+function existingAllowsProcurementAnchor(existing) {
+  if (!existing?.status) return true;
+  const st = String(existing.status).toLowerCase();
+  return !['in_assembly', 'wb_assembly', 'assembled', 'shipped', 'in_transit', 'delivered'].includes(st);
+}
+
 /**
  * Ozon/Яндекс: статус «Собран» в ERM — только после отметки в приложении (markCollected).
  * Статусы МП вроде «ждёт отгрузки» не должны откатывать «На сборке» и не подменять локальный прогресс при лаге API.
@@ -689,7 +696,10 @@ class OrdersSyncService {
         nextStatus = String(order.status).toLowerCase();
       } else if (existing?.status === 'in_procurement') {
         nextStatus = existing.status;
-      } else if (incomingMatchesProcurementAnchors(order, procurementAnchors)) {
+      } else if (
+        incomingMatchesProcurementAnchors(order, procurementAnchors) &&
+        existingAllowsProcurementAnchor(existing)
+      ) {
         nextStatus = 'in_procurement';
       } else if (
         existing &&

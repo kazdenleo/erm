@@ -143,6 +143,16 @@ class StockMovementsController {
         })
         .catch(() => {});
 
+      const { reconcileAllMixedKitReservesForProduct } = await import('../services/kitStock.service.js');
+      await reconcileAllMixedKitReservesForProduct(id, (unreservePid, net, oid, m) =>
+        stockMovementsService.applyChange(unreservePid, {
+          delta: net,
+          type: 'unreserve',
+          reason: `Снятие дублирующего резерва комплекта (заказ ${oid})`.trim(),
+          meta: m
+        })
+      ).catch(() => {});
+
       const rows = await stockMovementsService.listReservedOrdersForProduct(id, {
         profileId: tid,
         warehouseId: whFilter

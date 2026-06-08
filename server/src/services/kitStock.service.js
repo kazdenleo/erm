@@ -1326,24 +1326,25 @@ export async function computeMaxKitUnitsReservable(kitProductId, opts = {}) {
 }
 
 /**
- * Сколько комплектов зарезервировать: сначала из наличия 1 SKU, остаток — из комплектующих.
+ * Сколько комплектов зарезервировать: сначала целые на SKU комплекта (если они есть на складе),
+ * иначе — только из комплектующих. На один заказ — один путь, без дубля.
  * @returns {{ kitsToReserve: number, fromWhole: number, fromComponents: number }}
  */
 export function allocateKitReservePriority(kitsWanted, breakdown) {
   const wanted = Math.max(0, parseInt(kitsWanted, 10) || 0);
+  if (wanted <= 0) return { kitsToReserve: 0, fromWhole: 0, fromComponents: 0 };
   const physicalOnHand = Math.max(0, Number(breakdown?.physicalOnHand) || 0);
   const fromComponents = Math.max(0, Number(breakdown?.fromComponents) || 0);
   const wholeReserveAvail =
     breakdown?.wholeReserveAvail != null
       ? Math.max(0, Number(breakdown.wholeReserveAvail) || 0)
-      : Math.max(0, physicalOnHand);
-  const fromWhole = Math.min(wanted, wholeReserveAvail);
-  const fromComp = Math.min(Math.max(0, wanted - fromWhole), fromComponents);
-  return {
-    kitsToReserve: fromWhole + fromComp,
-    fromWhole,
-    fromComponents: fromComp
-  };
+      : physicalOnHand;
+  if (physicalOnHand > 0) {
+    const fromWhole = Math.min(wanted, wholeReserveAvail);
+    return { kitsToReserve: fromWhole, fromWhole, fromComponents: 0 };
+  }
+  const fromComp = Math.min(wanted, fromComponents);
+  return { kitsToReserve: fromComp, fromWhole: 0, fromComponents: fromComp };
 }
 
 /**
@@ -1507,8 +1508,8 @@ export async function reconcileMisplacedKitWholeReserve(
 }
 
 /**
- * На заказе одновременно резерв на SKU комплекта и на комплектующие — оставить один путь.
- * При наличии целых K1 на складе — whole; иначе — комплектующие.
+ * На заказе одновременно резерв на SKU комплекта и на комплектующие — оставить резерв на комплекте.
+ * Резерв на SKU без наличия переносится на комплектующие через reconcileMisplacedKitWholeReserve.
  */
 export async function reconcileMixedKitOrderReservePaths(
   kitProductId,
@@ -1529,35 +1530,74 @@ export async function reconcileMixedKitOrderReservePaths(
   const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
   if (onKit <= 0 || fromComp <= 0) return 0;
 
-  const physicalWhole = await readKitPhysicalOnHandFromDb(kitId, null, { warehouseId: wh });
-  const keepWhole = physicalWhole >= onKit;
   let changed = 0;
-
-  if (keepWhole) {
-    const components = await getKitComponents(kitId);
-    for (const c of components) {
-      const pid = Number(c.component_product_id);
-      if (!Number.isFinite(pid) || pid < 1) continue;
-      const net = await getNetReservedForOrderProduct(oid, pid, mpLabel, wh);
-      if (net <= 0) continue;
-      await unreserveProduct(pid, net, orderIdLabel, {
-        ...meta,
-        order_id: oid,
-        orderId: orderIdLabel,
-        reconcile_mixed_kit_reserve: true,
-        kit_reserve_scope: 'component'
-      });
-      changed += 1;
-    }
-  } else if (onKit > 0) {
-    await unreserveProduct(kitId, onKit, orderIdLabel, {
+  const components = await getKitComponents(kitId);
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const net = await getNetReservedForOrderProduct(oid, pid, mpLabel, wh);
+    if (net <= 0) continue;
+    await unreserveProduct(pid, net, orderIdLabel, {
       ...meta,
       order_id: oid,
       orderId: orderIdLabel,
       reconcile_mixed_kit_reserve: true,
-      kit_reserve_scope: 'whole'
+      kit_reserve_scope: 'component'
     });
     changed += 1;
+  }
+  return changed;
+}
+
+/**
+ * Снять дублирующий резерв (комплект + комплектующие на один заказ) для всех заказов товара.
+ * Вызывается при открытии модалки резерва в остатках.
+ */
+export async function reconcileAllMixedKitReservesForProduct(productId, unreserveProduct) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1 || typeof unreserveProduct !== 'function') return 0;
+
+  const kitIds = new Set();
+  if (await isKitProductId(pid)) kitIds.add(pid);
+  const parents = await query(
+    `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+    [pid]
+  );
+  for (const row of parents.rows || []) {
+    const kid = Number(row.kit_product_id);
+    if (Number.isFinite(kid) && kid > 0) kitIds.add(kid);
+  }
+  if (kitIds.size === 0) return 0;
+
+  let changed = 0;
+  for (const kitId of kitIds) {
+    const compIds = (await getKitComponents(kitId)).map((c) => Number(c.component_product_id));
+    const scopeIds = [kitId, ...compIds.filter((id) => Number.isFinite(id) && id > 0)];
+    const ordersRes = await query(
+      `SELECT DISTINCT (COALESCE(NULLIF(TRIM(meta->>'order_id'), ''), NULLIF(TRIM(meta->>'orderId'), '')))::bigint AS oid
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND type IN ('reserve', 'unreserve')
+         AND (COALESCE(NULLIF(TRIM(meta->>'order_id'), ''), NULLIF(TRIM(meta->>'orderId'), ''))) ~ '^[0-9]+$'
+         AND (COALESCE(NULLIF(TRIM(meta->>'order_id'), ''), NULLIF(TRIM(meta->>'orderId'), '')))::bigint > 0`,
+      [scopeIds]
+    );
+    for (const row of ordersRes.rows || []) {
+      const oid = Number(row.oid);
+      if (!Number.isFinite(oid) || oid < 1) continue;
+      const onKit = await getNetReservedForOrderProduct(oid, kitId);
+      const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
+      if (onKit <= 0 || fromComp <= 0) continue;
+      const ord = await query(`SELECT order_id FROM orders WHERE id = $1 LIMIT 1`, [oid]);
+      const label = ord.rows[0]?.order_id != null ? String(ord.rows[0].order_id) : String(oid);
+      changed += await reconcileMixedKitOrderReservePaths(
+        kitId,
+        oid,
+        label,
+        { source: 'reserve_modal_reconcile' },
+        unreserveProduct
+      );
+    }
   }
   return changed;
 }
@@ -1935,6 +1975,7 @@ export default {
   allocateKitReservePriority,
   reconcileMisplacedKitWholeReserve,
   reconcileMixedKitOrderReservePaths,
+  reconcileAllMixedKitReservesForProduct,
   getReservedKitUnitsForOrder,
   getReservedKitUnitsFromComponentsForOrder,
   getReservedKitUnitsForOrderValidation,
