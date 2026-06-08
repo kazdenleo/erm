@@ -245,27 +245,30 @@ button.assembly-label-link {
   opacity: 0.9;
 }
 
+.assembly-col-sticker .order-sticker-display,
 .order-sticker-display {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.order-sticker-value {
-  display: inline;
-  font-variant-numeric: tabular-nums;
-}
-
-.order-sticker-prefix {
-  font-weight: inherit;
-}
-
-.order-sticker-suffix {
+.assembly-col-sticker .order-sticker-suffix,
+.text-muted .order-sticker-suffix,
+.assembly-current-sticker .order-sticker-suffix {
   font-weight: 600;
+  font-size: inherit;
 }
 
 .text-muted .order-sticker-suffix,
 .assembly-current-sticker .order-sticker-suffix {
   color: var(--text, #212529);
+}
+
+.assembly-col-composition {
+  font-size: 13px;
+  line-height: 1.45;
+  max-width: 320px;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .assembly-row-actions {

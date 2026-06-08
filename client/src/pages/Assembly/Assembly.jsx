@@ -14,6 +14,7 @@ import api from '../../services/api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
+import { formatAssemblyOrderComposition } from '../../utils/assemblyOrderComposition';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import './Assembly.css';
 
@@ -218,8 +219,8 @@ export function Assembly() {
       if (!silent) setLoading(true);
       setError(null);
       const [assemblyResponse, collectedResponse] = await Promise.all([
-        ordersApi.getAll({ status: 'in_assembly', limit: 500 }),
-        ordersApi.getAll({ status: 'assembled', limit: 200 }),
+        ordersApi.getAll({ status: 'in_assembly', limit: 500, enrichReserve: 'full' }),
+        ordersApi.getAll({ status: 'assembled', limit: 200, enrichReserve: 'full' }),
       ]);
       const assemblyList = Array.isArray(assemblyResponse?.data) ? assemblyResponse.data : [];
       const collectedList = Array.isArray(collectedResponse?.data) ? collectedResponse.data : [];
@@ -1221,6 +1222,7 @@ export function Assembly() {
                 <th>ID заказа</th>
                 <th>Товар</th>
                 <th>Кол-во</th>
+                <th>Состав</th>
                 <th>Стикер</th>
                 <th>Действия</th>
               </tr>
@@ -1235,6 +1237,7 @@ export function Assembly() {
                   rows.length === 1
                     ? primary.quantity ?? '—'
                     : rows.map((r) => r.quantity ?? 1).join(' + ');
+                const compositionText = formatAssemblyOrderComposition(rows);
                 return (
                   <tr key={groupKey}>
                     <td>{mp}</td>
@@ -1289,7 +1292,10 @@ export function Assembly() {
                       </div>
                     </td>
                     <td>{qtyCell}</td>
-                    <td>
+                    <td className="assembly-col-composition" title={compositionText}>
+                      {compositionText}
+                    </td>
+                    <td className="assembly-col-sticker">
                       <OrderStickerDisplay order={primary} groupOrders={rows} />
                     </td>
                     <td>
@@ -1362,6 +1368,7 @@ export function Assembly() {
                 <th>ID заказа</th>
                 <th>Товар</th>
                 <th>Кол-во</th>
+                <th>Состав</th>
                 <th>Собран</th>
                 <th>Собрал</th>
                 <th>Стикер</th>
@@ -1378,6 +1385,7 @@ export function Assembly() {
                 const who =
                   [o.assembledByFullName, o.assembledByEmail].filter(Boolean).join(' · ') || '—';
                 const erpPidCol = assemblyLineProductId(o);
+                const compositionText = formatAssemblyOrderComposition([o]);
                 return (
                   <tr key={rowKey}>
                     <td>{mpRow ? `${mpRow.icon} ${mpRow.name}` : o.marketplace}</td>
@@ -1405,9 +1413,12 @@ export function Assembly() {
                       )}
                     </td>
                     <td>{o.quantity ?? '—'}</td>
+                    <td className="assembly-col-composition" title={compositionText}>
+                      {compositionText}
+                    </td>
                     <td>{assembledLabel}</td>
                     <td>{who}</td>
-                    <td>
+                    <td className="assembly-col-sticker">
                       <OrderStickerDisplay order={o} />
                     </td>
                     <td>
