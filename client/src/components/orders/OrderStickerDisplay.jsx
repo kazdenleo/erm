@@ -10,20 +10,20 @@ function WbStickerNumber({ text, className = '' }) {
   if (!parts) return <span className={className}>—</span>;
   if (!parts.prefix) {
     return (
-      <strong className={`order-sticker-suffix ${className}`.trim()}>{parts.suffix}</strong>
+      <span className={`order-sticker-suffix ${className}`.trim()}>{parts.suffix}</span>
     );
   }
   return (
     <span className={`order-sticker-value ${className}`.trim()}>
       <span className="order-sticker-prefix">{parts.prefix}</span>
       {' '}
-      <strong className="order-sticker-suffix">{parts.suffix}</strong>
+      <span className="order-sticker-suffix">{parts.suffix}</span>
     </span>
   );
 }
 
 /**
- * Стикер заказа: для WB последние 4 цифры крупнее; для Ozon/ЯМ — номер заказа как есть.
+ * Стикер заказа: для WB последние 4 цифры полужирные; для Ozon/ЯМ — номер заказа как есть.
  */
 export function OrderStickerDisplay({
   order,
@@ -36,7 +36,7 @@ export function OrderStickerDisplay({
 
   const wbEmphasis = emphasize ?? shouldEmphasizeStickerSuffix(order);
   if (!wbEmphasis) {
-    return <strong className={className}>{value}</strong>;
+    return <span className={className}>{value}</span>;
   }
 
   const stickers = value

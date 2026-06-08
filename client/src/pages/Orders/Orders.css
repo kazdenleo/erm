@@ -456,8 +456,5 @@
 }
 
 .orders-col-sticker .order-sticker-suffix {
-  font-weight: 800;
-  font-size: 1.45em;
-  letter-spacing: 0.03em;
-  line-height: 1.1;
+  font-weight: 600;
 }

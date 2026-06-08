@@ -256,30 +256,16 @@ button.assembly-label-link {
 }
 
 .order-sticker-prefix {
-  font-weight: 500;
+  font-weight: inherit;
 }
 
 .order-sticker-suffix {
-  font-weight: 800;
-  font-size: 1.45em;
-  letter-spacing: 0.03em;
-  line-height: 1.1;
-  color: var(--text, #212529);
+  font-weight: 600;
 }
 
 .text-muted .order-sticker-suffix,
 .assembly-current-sticker .order-sticker-suffix {
   color: var(--text, #212529);
-}
-
-.assembly-current-sticker .order-sticker-suffix {
-  font-size: 1.65em;
-  font-weight: 800;
-}
-
-.assembly-table td .order-sticker-suffix {
-  font-size: 1.35em;
-  font-weight: 800;
 }
 
 .assembly-row-actions {

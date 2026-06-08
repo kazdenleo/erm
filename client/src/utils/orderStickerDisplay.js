@@ -39,7 +39,7 @@ export function orderStickerCellValue(order, { groupOrders = null } = {}) {
   return String(oid).trim() || '—';
 }
 
-/** Разбивает номер стикера: основная часть + последние 4 цифры крупнее. */
+/** Разбивает номер стикера WB: основная часть + последние 4 цифры (полужирные в UI). */
 export function splitStickerEmphasis(text) {
   const s = String(text ?? '').trim();
   if (!s) return null;
