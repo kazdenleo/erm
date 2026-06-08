@@ -467,9 +467,13 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
     const dbRes = movementNum(head, 'reserved_after');
     const dbBal = movementNum(head, 'balance_after');
 
-    if (dbInc != null) out.inc = dbInc;
-    else if (out.inc == null && prevLineBelow?.inc != null && !Number.isNaN(prevLineBelow.inc)) {
+    // Резерв не меняет «в пути» — не показываем ложный +Δ из incoming_after снимка.
+    if (prevLineBelow?.inc != null && !Number.isNaN(prevLineBelow.inc)) {
       out.inc = prevLineBelow.inc;
+    } else if (dbInc != null) {
+      out.inc = dbInc;
+    } else if (out.inc == null) {
+      out.inc = 0;
     }
 
     if (dbRes != null) {
@@ -563,6 +567,9 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
     if (t === 'reserve' || t === 'unreserve') {
       const dbRes = movementNum(m, 'reserved_after');
       if (dbRes != null) out.res = dbRes;
+      if (prevLineBelow?.inc != null && !Number.isNaN(prevLineBelow.inc)) {
+        out.inc = prevLineBelow.inc;
+      }
       if (prevLineBelow?.bal != null && !Number.isNaN(prevLineBelow.bal)) {
         out.bal = prevLineBelow.bal;
       }

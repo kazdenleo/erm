@@ -44,8 +44,29 @@ async function runWithLockRetry(fn, { attempts = 4, delayMs = 2500 } = {}) {
   throw lastErr;
 }
 
+/** Записи журнала «Закупка — ожидание» после увеличения incoming (lightIncoming). */
+async function writePurchaseIncomingJournalEntries(client, purchaseId, incomingDeltas, profileId) {
+  if (!incomingDeltas?.size || purchaseId == null) return;
+  const purId = parseInt(purchaseId, 10);
+  if (!Number.isFinite(purId) || purId < 1) return;
+  for (const [productId, qty] of incomingDeltas.entries()) {
+    const d = Math.max(0, parseInt(qty, 10) || 0);
+    const pid = Number(productId);
+    if (d <= 0 || !Number.isFinite(pid) || pid < 1) continue;
+    await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+      productId: pid,
+      type: 'incoming',
+      quantityChange: d,
+      reason: `Закупка №${purId} — ожидание`,
+      meta: { purchase_id: purId },
+      warehouseId: null,
+      profileId,
+    });
+  }
+}
+
 /** «В пути» после commit — один запрос, одно соединение из пула (без N× advisory lock). */
-async function applyIncomingDeltasAfterCommit(deltas) {
+async function applyIncomingDeltasAfterCommit(deltas, { purchaseId = null, profileId = null } = {}) {
   if (!deltas || deltas.size === 0) return;
   const batchIds = [];
   const batchQtys = [];
@@ -64,6 +85,7 @@ async function applyIncomingDeltasAfterCommit(deltas) {
      WHERE p.id = v.product_id`,
     [batchIds, batchQtys]
   );
+  await writePurchaseIncomingJournalEntries(null, purchaseId, deltas, profileId);
   scheduleProcurementReserveReapply(batchIds, {
     label: 'background reserve after incoming batch update',
   });
@@ -578,6 +600,7 @@ async function applyPurchaseLineItemsInTx(
        WHERE p.id = v.product_id`,
       [batchIds, batchQtys]
     );
+    await writePurchaseIncomingJournalEntries(client, purchaseId, incomingDeltas, profileId);
   }
   return null;
 }
@@ -1626,7 +1649,10 @@ class PurchasesService {
       return { id: purchaseId };
     });
     if (lightIncoming && incomingDeltas?.size) {
-      await applyIncomingDeltasAfterCommit(incomingDeltas);
+      await applyIncomingDeltasAfterCommit(incomingDeltas, {
+        purchaseId: result.id,
+        profileId: pid,
+      });
       scheduleReapplyReserveForPurchaseSourceOrders(normalized, {
         label: 'reapply reserve for linked orders after purchase create',
       });
@@ -1696,7 +1722,10 @@ class PurchasesService {
       return { ok: true, id };
     });
     if (lightIncoming && incomingDeltas?.size) {
-      await applyIncomingDeltasAfterCommit(incomingDeltas);
+      await applyIncomingDeltasAfterCommit(incomingDeltas, {
+        purchaseId: id,
+        profileId: pid,
+      });
       scheduleReapplyReserveForPurchaseSourceOrders(normalized, {
         label: 'reapply reserve for linked orders after purchase append',
       });
