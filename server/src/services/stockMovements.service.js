@@ -391,7 +391,13 @@ class StockMovementsService {
       let netForOrder = null;
       if ((Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) || mpOrderId) {
         const { getNetReservedForOrderProduct } = await import('./kitStock.service.js');
-        const whCap = parseStockMovementWarehouseId(metaOut.warehouse_id);
+        const manualUnreserve =
+          metaOut.manual_unreserve === true ||
+          metaOut.manual_unreserve === 'true' ||
+          metaOut.bulk_product_release === true;
+        const whCap = manualUnreserve
+          ? null
+          : parseStockMovementWarehouseId(metaOut.warehouse_id);
         netForOrder = await getNetReservedForOrderProduct(
           Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : 0,
           idNum,
@@ -676,7 +682,12 @@ class StockMovementsService {
       if (own != null && String(own) !== String(tid)) return [];
     }
 
-    const { isKitProductId, getReservedKitUnitsForOrderValidation } = await import('./kitStock.service.js');
+    const {
+      isKitProductId,
+      getNetReservedForOrderProduct,
+      getReservedKitUnitsFromComponentsForOrder,
+      getReservedKitUnitsForOrderValidation
+    } = await import('./kitStock.service.js');
     const isKit = await isKitProductId(idNum);
 
     const movementScopeSql = isKit
@@ -787,7 +798,9 @@ class StockMovementsService {
 
       let reservedQty = Number(r.sku_net_qty) || 0;
       if (isKit) {
-        reservedQty = await getReservedKitUnitsForOrderValidation(idNum, orderDbId);
+        const onKit = await getNetReservedForOrderProduct(orderDbId, idNum);
+        const fromComp = await getReservedKitUnitsFromComponentsForOrder(idNum, orderDbId);
+        reservedQty = onKit > 0 ? onKit : fromComp;
       }
       if (reservedQty <= 0) continue;
 
@@ -1551,6 +1564,27 @@ class StockMovementsService {
     return [...ids];
   }
 
+  /** Согласование резерва комплекта перед модалкой / ручным снятием. */
+  async _reconcileKitReserveForProductModal(productId) {
+    const { reconcileAllMixedKitReservesForProduct } = await import('./kitStock.service.js');
+    return reconcileAllMixedKitReservesForProduct(productId, {
+      unreserveProduct: (unreservePid, net, orderLabel, m) =>
+        this.applyChange(unreservePid, {
+          delta: net,
+          type: 'unreserve',
+          reason: `Снятие дублирующего резерва комплекта (заказ ${orderLabel})`.trim(),
+          meta: m
+        }),
+      reserveWholeKit: (kitId, units, orderLabel, m) =>
+        this.applyChange(kitId, {
+          delta: -Math.max(1, Math.floor(Number(units) || 0)),
+          type: 'reserve',
+          reason: `Перенос резерва на SKU комплекта (заказ ${orderLabel})`.trim(),
+          meta: m
+        })
+    });
+  }
+
   /**
    * Снять весь нетто-резерв по товару (комплект + комплектующие) по всем заказам из журнала.
    * Не блокируется статусом заказа — ручная очистка со страницы остатков.
@@ -1635,6 +1669,8 @@ class StockMovementsService {
       throw error;
     }
 
+    await this._reconcileKitReserveForProductModal(idNum).catch(() => {});
+
     const tid =
       profileId != null && profileId !== ''
         ? typeof profileId === 'string'
@@ -1668,12 +1704,16 @@ class StockMovementsService {
     for (const pid of productIds) {
       const chunks = await this._orderReserveReleaseChunks(oid, pid, { marketplaceOrderId: label });
       if (!chunks.length) continue;
-      releasedProductLines += await this._applyOrderReserveReleaseChunks(chunks, {
-        orderDbId: oid,
-        label,
-        sourceProductId: idNum,
-        reasonPrefix: 'Снятие резерва: заказ'
-      });
+      try {
+        releasedProductLines += await this._applyOrderReserveReleaseChunks(chunks, {
+          orderDbId: oid,
+          label,
+          sourceProductId: idNum,
+          reasonPrefix: 'Снятие резерва: заказ'
+        });
+      } catch (e) {
+        if (e?.statusCode !== 400) throw e;
+      }
     }
 
     if (releasedProductLines === 0) {

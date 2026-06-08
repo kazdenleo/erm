@@ -1525,8 +1525,7 @@ export async function reconcileMixedKitOrderReservePaths(
 
   const mpLabel =
     orderIdLabel != null && String(orderIdLabel).trim() !== '' ? String(orderIdLabel).trim() : null;
-  const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
-  const onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel, wh);
+  const onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
   const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
   if (onKit <= 0 || fromComp <= 0) return 0;
 
@@ -1535,7 +1534,7 @@ export async function reconcileMixedKitOrderReservePaths(
   for (const c of components) {
     const pid = Number(c.component_product_id);
     if (!Number.isFinite(pid) || pid < 1) continue;
-    const net = await getNetReservedForOrderProduct(oid, pid, mpLabel, wh);
+    const net = await getNetReservedForOrderProduct(oid, pid, mpLabel);
     if (net <= 0) continue;
     await unreserveProduct(pid, net, orderIdLabel, {
       ...meta,
@@ -1550,11 +1549,64 @@ export async function reconcileMixedKitOrderReservePaths(
 }
 
 /**
- * Снять дублирующий резерв (комплект + комплектующие на один заказ) для всех заказов товара.
- * Вызывается при открытии модалки резерва в остатках.
+ * Резерв только на комплектующих при наличии целых комплектов — перенести на SKU комплекта.
  */
-export async function reconcileAllMixedKitReservesForProduct(productId, unreserveProduct) {
+export async function reconcileComponentOnlyKitReserveToWhole(
+  kitProductId,
+  orderDbId,
+  orderIdLabel,
+  meta,
+  { unreserveProduct, reserveWholeKit }
+) {
+  const kitId = Number(kitProductId);
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(kitId) || kitId < 1 || !Number.isFinite(oid) || oid < 1) return 0;
+  if (typeof unreserveProduct !== 'function' || typeof reserveWholeKit !== 'function') return 0;
+
+  const mpLabel =
+    orderIdLabel != null && String(orderIdLabel).trim() !== '' ? String(orderIdLabel).trim() : null;
+  const onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
+  const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
+  if (onKit > 0 || fromComp <= 0) return 0;
+
+  const physical = await readKitPhysicalOnHandFromDb(kitId, null, {
+    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+  });
+  if (physical <= 0) return 0;
+
+  const components = await getKitComponents(kitId);
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const net = await getNetReservedForOrderProduct(oid, pid, mpLabel);
+    if (net <= 0) continue;
+    await unreserveProduct(pid, net, orderIdLabel, {
+      ...meta,
+      order_id: oid,
+      orderId: orderIdLabel,
+      reconcile_to_whole: true,
+      kit_reserve_scope: 'component'
+    });
+  }
+  await reserveWholeKit(kitId, fromComp, orderIdLabel, {
+    ...meta,
+    order_id: oid,
+    orderId: orderIdLabel,
+    reconcile_to_whole: true,
+    kit_reserve_scope: 'whole'
+  });
+  return fromComp;
+}
+
+/**
+ * Согласовать резерв комплектов по всем заказам товара (модалка остатков, ручное снятие).
+ * @param {number} productId
+ * @param {Function|{ unreserveProduct: Function, reserveWholeKit?: Function }} hooks
+ */
+export async function reconcileAllMixedKitReservesForProduct(productId, hooks) {
   const pid = Number(productId);
+  const unreserveProduct = typeof hooks === 'function' ? hooks : hooks?.unreserveProduct;
+  const reserveWholeKit = typeof hooks === 'object' ? hooks?.reserveWholeKit : null;
   if (!Number.isFinite(pid) || pid < 1 || typeof unreserveProduct !== 'function') return 0;
 
   const kitIds = new Set();
@@ -1587,16 +1639,31 @@ export async function reconcileAllMixedKitReservesForProduct(productId, unreserv
       if (!Number.isFinite(oid) || oid < 1) continue;
       const onKit = await getNetReservedForOrderProduct(oid, kitId);
       const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
-      if (onKit <= 0 || fromComp <= 0) continue;
       const ord = await query(`SELECT order_id FROM orders WHERE id = $1 LIMIT 1`, [oid]);
       const label = ord.rows[0]?.order_id != null ? String(ord.rows[0].order_id) : String(oid);
-      changed += await reconcileMixedKitOrderReservePaths(
-        kitId,
-        oid,
-        label,
-        { source: 'reserve_modal_reconcile' },
-        unreserveProduct
-      );
+      const meta = { source: 'reserve_modal_reconcile' };
+
+      if (onKit > 0 && fromComp > 0) {
+        changed += await reconcileMixedKitOrderReservePaths(
+          kitId,
+          oid,
+          label,
+          meta,
+          unreserveProduct
+        );
+      } else if (onKit <= 0 && fromComp > 0 && typeof reserveWholeKit === 'function') {
+        try {
+          changed += await reconcileComponentOnlyKitReserveToWhole(
+            kitId,
+            oid,
+            label,
+            meta,
+            { unreserveProduct, reserveWholeKit }
+          );
+        } catch {
+          /* не блокируем список */
+        }
+      }
     }
   }
   return changed;
@@ -1975,6 +2042,7 @@ export default {
   allocateKitReservePriority,
   reconcileMisplacedKitWholeReserve,
   reconcileMixedKitOrderReservePaths,
+  reconcileComponentOnlyKitReserveToWhole,
   reconcileAllMixedKitReservesForProduct,
   getReservedKitUnitsForOrder,
   getReservedKitUnitsFromComponentsForOrder,
