@@ -4635,6 +4635,18 @@ class OrdersService {
       toAdd = Math.min(toAdd, available);
       if (toAdd <= 0) {
         if (qtyWanted != null && qtyWanted > 0) {
+          if ((await isKitProductId(pid)) && already >= orderQty) {
+            const afterAlready = await enrichReserveSummaryCoverage(
+              await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]),
+              { light: true }
+            );
+            return {
+              action: 'reserve',
+              productId: pid,
+              ...afterAlready,
+              message: 'Резерв по заказу уже установлен'
+            };
+          }
           const snap = await getProductSupplySnapshotWithClient(null, pid);
           const err = new Error(
             `Недостаточно остатка для резерва (доступно без поставщиков: ${available}, запрошено: ${qtyWanted}; ` +
