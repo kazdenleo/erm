@@ -342,6 +342,23 @@ export function Shipments() {
       >
         {closeConfirm && (
           <div className="shipments-close-confirm">
+            {(closeConfirm.preview?.staleInShipment?.length ?? 0) > 0 && (
+              <section className="shipments-close-section">
+                <h3 className="shipments-close-section-title">Заказы вне сборки</h3>
+                <p className="shipments-close-hint">
+                  Эти заказы уже в пути, в закупке или отгружены — при закрытии будут автоматически убраны из поставки:
+                </p>
+                <ul className="shipments-close-order-list">
+                  {closeConfirm.preview.staleInShipment.map((o) => (
+                    <li key={o.orderId}>
+                      <span className="shipments-detail-order-id">{o.orderId}</span>
+                      {o.productName ? <span className="shipments-close-product"> — {o.productName}</span> : null}
+                      <span className="shipments-close-status"> ({o.statusLabel || o.status})</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             {(closeConfirm.preview?.notAssembled?.length ?? 0) > 0 && (
               <section className="shipments-close-section">
                 <h3 className="shipments-close-section-title">Несобранные заказы</h3>

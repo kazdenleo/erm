@@ -54,7 +54,9 @@ export const shipmentsApi = {
     const body = {};
     if (options.notAssembled != null) body.notAssembled = options.notAssembled;
     if (options.cancelled != null) body.cancelled = options.cancelled;
-    const response = await api.post(`/shipments/${encodeURIComponent(shipmentId)}/close`, body);
+    const response = await api.post(`/shipments/${encodeURIComponent(shipmentId)}/close`, body, {
+      timeout: 300000,
+    });
     return response.data?.data ?? response.data;
   },
 

@@ -588,6 +588,14 @@ async function getOrCreateOpenShipment(marketplace, { profileId = null, organiza
 
 const ASSEMBLED_CLOSE_STATUSES = new Set(['assembled', 'shipped']);
 
+/** Уже ушли с этапа сборки — в поставке «застряли», не требуют «Собран». */
+const STALE_SHIPMENT_STATUSES = new Set([
+  'in_transit',
+  'delivered',
+  'in_procurement',
+  'shipped',
+]);
+
 function orderStatusLabel(status) {
   const s = String(status || '').toLowerCase();
   const map = {
@@ -596,10 +604,16 @@ function orderStatusLabel(status) {
     in_assembly: 'На сборке',
     assembled: 'Собран',
     shipped: 'Отгружен',
+    in_transit: 'В пути',
+    delivered: 'Доставлен',
     cancelled: 'Отменён',
     not_found: 'Не найден в ERP'
   };
   return map[s] || s || '—';
+}
+
+function isOrderStaleInShipment(status) {
+  return STALE_SHIPMENT_STATUSES.has(String(status || '').toLowerCase());
 }
 
 function isOrderCancelledForClose(status) {
@@ -617,6 +631,7 @@ async function inspectShipmentOrdersForClose(ship, profileId) {
   const { default: ordersService } = await import('./orders.service.js');
   const mp = ship.marketplace;
   const notAssembled = [];
+  const staleInShipment = [];
   const cancelled = [];
   const ready = [];
 
@@ -635,6 +650,8 @@ async function inspectShipmentOrdersForClose(ship, profileId) {
       notAssembled.push(item);
     } else if (isOrderCancelledForClose(st)) {
       cancelled.push(item);
+    } else if (isOrderStaleInShipment(st)) {
+      staleInShipment.push(item);
     } else if (!isOrderReadyForShipmentClose(st)) {
       notAssembled.push(item);
     } else {
@@ -642,7 +659,19 @@ async function inspectShipmentOrdersForClose(ship, profileId) {
     }
   }
 
-  return { notAssembled, cancelled, ready };
+  return { notAssembled, staleInShipment, cancelled, ready };
+}
+
+async function removeStaleOrdersFromShipment(ship, profileId, organizationId) {
+  const preview = await inspectShipmentOrdersForClose(ship, profileId);
+  const staleIds = (preview.staleInShipment || []).map((i) => i.orderId).filter(Boolean);
+  if (!staleIds.length) return { removed: 0, preview };
+  await removeOrdersFromShipment(ship.id, staleIds, { profileId, organizationId });
+  const refreshed = await getShipmentById(ship.id, { profileId, organizationId });
+  const nextPreview = refreshed
+    ? await inspectShipmentOrdersForClose(refreshed, profileId)
+    : preview;
+  return { removed: staleIds.length, preview: nextPreview, ship: refreshed };
 }
 
 async function getShipmentClosePreview(shipmentId, { profileId = null, organizationId = null } = {}) {
@@ -673,10 +702,58 @@ function shipmentCloseConfirmError(preview) {
   err.details = {
     code: 'SHIPMENT_CLOSE_CONFIRM_REQUIRED',
     notAssembled: preview.notAssembled,
+    staleInShipment: preview.staleInShipment || [],
     cancelled: preview.cancelled,
     ready: preview.ready
   };
   return err;
+}
+
+/** WB: push, deliver и QR после локального закрытия (не блокирует HTTP). */
+async function finalizeWildberriesShipmentClose({ shipmentId, profileId, organizationId, orderIds }) {
+  const shipments = await getLocalShipments();
+  const ship = shipments.find((s) => s.id === shipmentId);
+  if (!ship || ship.marketplace !== 'wildberries') return;
+
+  const ids = Array.isArray(orderIds) ? orderIds : ship.orderIds || [];
+  try {
+    const push = ids.length > 0 ? await pushOrdersToWildberriesSupply(ship, ids, { organizationId }) : { ok: true, added: 0 };
+
+    if (!push.ok) {
+      ship.wbLastSyncError = push.message || 'Заказы не добавлены в поставку WB';
+      ship.localWbOnly = !ship.externalId;
+      logger.warn(`[Shipments] Закрытие ${shipmentId}: WB push — ${ship.wbLastSyncError}`);
+    } else {
+      ship.localWbOnly = false;
+      delete ship.wbLastSyncError;
+    }
+
+    const wbConfig = await getWildberriesConfigForScope(ship.profileId ?? profileId, { organizationId });
+    if (wbConfig?.api_key && ship.externalId) {
+      try {
+        const stickerOk = await applyWbSupplyQrSticker(ship, wbConfig);
+        if (stickerOk) {
+          ship.localWbOnly = false;
+          delete ship.wbLastSyncError;
+        } else if (!ship.wbLastSyncError) {
+          ship.wbLastSyncError =
+            'Поставка передана на WB, этикетка пока недоступна — откройте «Печать этикетки»';
+        }
+      } catch (e) {
+        ship.wbLastSyncError = ship.wbLastSyncError || `Этикетка WB: ${e.message}`;
+        logger.warn('[Shipments] WB deliver/barcode:', e.message);
+      }
+    } else if (ids.length > 0 && !wbConfig?.api_key) {
+      ship.wbLastSyncError = ship.wbLastSyncError || 'Wildberries API не настроен';
+      if (!ship.externalId) ship.localWbOnly = true;
+    }
+  } catch (e) {
+    ship.localWbOnly = !ship.externalId;
+    ship.wbLastSyncError = e.message || 'Ошибка передачи поставки на WB';
+    logger.warn('[Shipments] WB sync on close:', e.message);
+  }
+
+  await saveLocalShipments(shipments);
 }
 
 /**
@@ -705,7 +782,11 @@ async function closeShipment(
     throw err;
   }
 
-  const preview = await inspectShipmentOrdersForClose(ship, profileId);
+  const staleCleanup = await removeStaleOrdersFromShipment(ship, profileId, organizationId);
+  if (staleCleanup.ship) {
+    ship = staleCleanup.ship;
+  }
+  const preview = staleCleanup.preview;
   const hasNotAssembled = preview.notAssembled.length > 0;
   const hasCancelled = preview.cancelled.length > 0;
 
@@ -726,7 +807,7 @@ async function closeShipment(
 
     if (hasNotAssembled && notAssembledAction === 'assemble') {
       for (const item of preview.notAssembled) {
-        if (item.status === 'not_found') continue;
+        if (item.status === 'not_found' || isOrderStaleInShipment(item.status)) continue;
         try {
           await ordersService.markOrderAsAssembled(mp, item.orderId, null, profileId, null);
         } catch (e) {
@@ -765,49 +846,21 @@ async function closeShipment(
 
   const orderIdsForWb = Array.isArray(shipToClose.orderIds) ? shipToClose.orderIds : [];
 
-  if (shipToClose.marketplace === 'wildberries') {
-    try {
-      const push =
-        orderIdsForWb.length > 0
-          ? await pushOrdersToWildberriesSupply(shipToClose, orderIdsForWb, { organizationId })
-          : { ok: true, added: 0 };
-
-      if (!push.ok) {
-        shipToClose.wbLastSyncError = push.message || 'Заказы не добавлены в поставку WB';
-        shipToClose.localWbOnly = !shipToClose.externalId;
-        logger.warn(`[Shipments] Закрытие ${shipmentId}: WB push — ${shipToClose.wbLastSyncError}`);
-      } else {
-        shipToClose.localWbOnly = false;
-        delete shipToClose.wbLastSyncError;
-      }
-
-      const wbConfig = await getWildberriesConfigForScope(shipToClose.profileId, { organizationId });
-      if (wbConfig?.api_key && shipToClose.externalId) {
-        try {
-          const stickerOk = await applyWbSupplyQrSticker(shipToClose, wbConfig);
-          if (stickerOk) {
-            shipToClose.localWbOnly = false;
-            delete shipToClose.wbLastSyncError;
-          } else if (!shipToClose.wbLastSyncError) {
-            shipToClose.wbLastSyncError =
-              'Поставка передана на WB, этикетка пока недоступна — откройте «Печать этикетки»';
-          }
-        } catch (e) {
-          shipToClose.wbLastSyncError = shipToClose.wbLastSyncError || `Этикетка WB: ${e.message}`;
-          logger.warn('[Shipments] WB deliver/barcode:', e.message);
-        }
-      } else if (orderIdsForWb.length > 0 && !wbConfig?.api_key) {
-        shipToClose.wbLastSyncError = shipToClose.wbLastSyncError || 'Wildberries API не настроен';
-        if (!shipToClose.externalId) shipToClose.localWbOnly = true;
-      }
-    } catch (e) {
-      shipToClose.localWbOnly = !shipToClose.externalId;
-      shipToClose.wbLastSyncError = e.message || 'Ошибка передачи поставки на WB';
-      logger.warn('[Shipments] WB sync before close:', e.message);
-    }
-  }
-
   await saveLocalShipments(shipmentsToSave);
+
+  if (shipToClose.marketplace === 'wildberries') {
+    const wbCloseCtx = {
+      shipmentId,
+      profileId: shipToClose.profileId ?? profileId ?? null,
+      organizationId,
+      orderIds: [...orderIdsForWb],
+    };
+    setImmediate(() => {
+      finalizeWildberriesShipmentClose(wbCloseCtx).catch((e) => {
+        logger.warn(`[Shipments] WB close background ${shipmentId}:`, e?.message || e);
+      });
+    });
+  }
 
   // Остатки — по «Собран»; затем все заказы в поставке → внутренний «Отгружен».
   const orderIds = orderIdsForWb;
