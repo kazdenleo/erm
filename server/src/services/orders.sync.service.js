@@ -1339,6 +1339,11 @@ class OrdersSyncService {
               fromLocal: true
             };
           }
+          const ordersService = (await import('./orders.service.js')).default;
+          const any = await ordersService.getByOrderId(orderId, { profileId });
+          if (any?.marketplace && String(any.marketplace).toLowerCase() !== 'ozon') {
+            return this.getOrderDetail(any.marketplace, orderId, { profileId });
+          }
         }
         throw e;
       }

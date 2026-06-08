@@ -231,10 +231,12 @@ function extractOrderIdFromReserveMovement(m) {
 }
 
 function marketplacePathFromMeta(meta) {
-  const mp = String(meta.marketplace || 'ozon').toLowerCase();
+  const mp = String(meta.marketplace || '').trim().toLowerCase();
+  if (!mp) return null;
   if (mp === 'wb' || mp === 'wildberries') return 'wildberries';
-  if (mp === 'ym' || mp === 'yandex') return 'yandex';
-  return 'ozon';
+  if (mp === 'ym' || mp === 'yandex' || mp === 'yandexmarket') return 'yandex';
+  if (mp === 'manual') return 'manual';
+  return mp;
 }
 
 /** Список заказов из движений резерва (для модалки). */
@@ -667,9 +669,8 @@ function getMovementLink(m) {
   }
   if (t === 'reserve' && meta.orderId != null && String(meta.orderId).trim() !== '') {
     const orderId = String(meta.orderId).trim();
-    const mp = String(meta.marketplace || 'ozon').toLowerCase();
-    const pathMp =
-      mp === 'wb' || mp === 'wildberries' ? 'wildberries' : mp === 'ym' || mp === 'yandex' ? 'yandex' : 'ozon';
+    const pathMp = marketplacePathFromMeta(meta);
+    if (!pathMp) return null;
     return { to: `/orders/${pathMp}/${encodeURIComponent(orderId)}`, state: null, label: reasonText };
   }
   if (t === 'writeoff') {
@@ -688,9 +689,8 @@ function getMovementLink(m) {
   }
   if (t === 'shipment' && meta.orderId != null && String(meta.orderId).trim() !== '') {
     const orderId = String(meta.orderId).trim();
-    const mp = String(meta.marketplace || 'ozon').toLowerCase();
-    const pathMp =
-      mp === 'wb' || mp === 'wildberries' ? 'wildberries' : mp === 'ym' || mp === 'yandex' ? 'yandex' : 'ozon';
+    const pathMp = marketplacePathFromMeta(meta);
+    if (!pathMp) return null;
     return { to: `/orders/${pathMp}/${encodeURIComponent(orderId)}`, state: null, label: reasonText };
   }
   return null;

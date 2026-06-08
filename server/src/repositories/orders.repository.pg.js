@@ -697,15 +697,20 @@ class OrdersRepositoryPG {
   /**
    * Найти заказ по order_id (posting number) в любом маркетплейсе — для этикеток и API по :orderId.
    */
-  async findAnyByOrderId(orderId) {
+  async findAnyByOrderId(orderId, profileId = null) {
     const id = String(orderId ?? '').trim();
     if (!id) return null;
+    const pid = normalizeProfileId(profileId);
+    const profileSql = pid ? ' AND o.profile_id = $2' : '';
+    const params = pid ? [id, pid] : [id];
     const result = await query(
       `
       SELECT o.* FROM orders o
-      WHERE o.order_id = $1
+      WHERE (
+        o.order_id = $1
          OR o.order_group_id = $1
          OR o.order_id LIKE ($1 || '~%')
+      )${profileSql}
       ORDER BY CASE
         WHEN o.order_id = $1 THEN 0
         WHEN o.order_group_id = $1 THEN 1
@@ -713,7 +718,7 @@ class OrdersRepositoryPG {
       END
       LIMIT 1
     `,
-      [id]
+      params
     );
     return rowToCamel(result.rows[0]) || null;
   }

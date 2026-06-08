@@ -744,8 +744,13 @@ class OrdersController {
 
   async getDetail(req, res, next) {
     try {
-      const { marketplace, orderId } = req.params;
+      const { marketplace: marketplaceFromUrl, orderId } = req.params;
       const profileId = req.user?.profileId ?? null;
+      const marketplace = await ordersService.resolveMarketplaceForOrderDetail(
+        marketplaceFromUrl,
+        orderId,
+        { profileId }
+      );
       const fast =
         req.query.fast === '1' ||
         req.query.fast === 'true' ||

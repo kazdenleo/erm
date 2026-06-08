@@ -10,6 +10,13 @@ export function normalizeMarketplaceForUI(marketplace) {
   return mp;
 }
 
+/** Сегмент URL `/orders/:marketplace/:orderId` (единый формат для ссылок). */
+export function marketplaceRouteSegment(marketplace) {
+  const mp = normalizeMarketplaceForUI(marketplace);
+  if (!mp) return '';
+  return mp;
+}
+
 /** Базовый ID группы ручного заказа: manual-…-2 → manual-…. */
 export function manualOrderGroupKeyFromOrderId(orderId) {
   const id = String(orderId ?? '').trim();
