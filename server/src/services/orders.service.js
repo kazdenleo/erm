@@ -993,6 +993,73 @@ class OrdersService {
     return mappedWh;
   }
 
+  /** FBS-заказ без привязки склада — резерв недоступен (не показывать глобальный остаток). */
+  _fbsReserveWarehouseBlocked(orderRow, warehouseId) {
+    if (!isMarketplaceFbsOrderRow(orderRow)) return false;
+    return warehouseId == null || String(warehouseId).trim() === '';
+  }
+
+  _assertFbsReserveWarehouse(orderRow, warehouseId) {
+    if (this._fbsReserveWarehouseBlocked(orderRow, warehouseId)) {
+      const err = new Error(
+        'Не определён склад FBS для заказа — настройте привязку warehouse_mappings'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  async _reconcileKitReserveBeforeApply(orderRow, kitProductId, orderDbId, metaBase = {}) {
+    const pid = Number(kitProductId);
+    const id = Number(orderDbId);
+    if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(id) || id < 1) return;
+    if (!(await isKitProductId(pid))) return;
+
+    const orderIdStr = String(orderRow?.orderId ?? orderRow?.order_id ?? id).trim();
+    const stockHooks = {
+      unreserveProduct: (unreservePid, net, oid, m) =>
+        stockMovementsService.applyChange(unreservePid, {
+          delta: net,
+          type: 'unreserve',
+          reason: `Перенос резерва комплекта на комплектующие (заказ ${oid})`.trim(),
+          meta: m
+        }),
+      applyKitReserve: (kitId, kits, oid, m) =>
+        applyKitOrderReserve(kitId, kits, oid, m, (compId, compQty, o, mm) =>
+          this._applyReserveForOrderComponent(compId, compQty, o, mm)
+        )
+    };
+
+    try {
+      await reconcileMisplacedKitWholeReserve(
+        pid,
+        id,
+        orderIdStr || String(id),
+        metaBase,
+        stockHooks
+      );
+    } catch (e) {
+      if (e?.statusCode !== 400) throw e;
+    }
+    try {
+      await reconcileMixedKitOrderReservePaths(
+        pid,
+        id,
+        orderIdStr || String(id),
+        metaBase,
+        (unreservePid, net, oid, m) =>
+          stockMovementsService.applyChange(unreservePid, {
+            delta: net,
+            type: 'unreserve',
+            reason: `Снятие дублирующего резерва комплекта (заказ ${oid})`.trim(),
+            meta: m
+          })
+      );
+    } catch (e) {
+      if (e?.statusCode !== 400) throw e;
+    }
+  }
+
   async _availableUnitsForOrderReserve(productId, orderRow, warehouseId) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
@@ -2559,6 +2626,9 @@ class OrdersService {
   async _getAvailableUnitsForOrderReserveLine(productId, orderRow, { warehouseId = null, kitProductId = null } = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
+    if (orderRow != null && this._fbsReserveWarehouseBlocked(orderRow, warehouseId)) {
+      return 0;
+    }
 
     const kitId =
       kitProductId != null && Number.isFinite(Number(kitProductId))
@@ -4436,13 +4506,7 @@ class OrdersService {
     const orderIdStr = String(row.orderId ?? row.order_id ?? orderId);
     const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, pid);
     const strictWh = isMarketplaceFbsOrderRow(row);
-    if (strictWh && (warehouseId == null || String(warehouseId).trim() === '')) {
-      const err = new Error(
-        'Не определён склад FBS для заказа — настройте привязку warehouse_mappings'
-      );
-      err.statusCode = 400;
-      throw err;
-    }
+    this._assertFbsReserveWarehouse(row, warehouseId);
     if (doUnreserve) {
       const isKitRoot = await isKitProductId(pid);
       if (isKitRoot && quantity == null) {
@@ -4563,6 +4627,11 @@ class OrdersService {
           throw err;
         }
         if ((await isKitProductId(pid)) && kitProductId == null) {
+          await this._reconcileKitReserveBeforeApply(row, pid, orderDbId, {
+            ...meta,
+            order_row: row,
+            strict_warehouse: strictWh
+          });
           const reservedKits = await this._withKitAssemblyStockLocks(pid, () =>
             applyKitOrderReserve(
               pid,
@@ -4672,8 +4741,10 @@ class OrdersService {
           err.statusCode = 400;
           throw err;
         }
+        const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, productId);
+        this._assertFbsReserveWarehouse(row, warehouseId);
         try {
-          await this._applyReserveForOrderIfAbsent(row, { skipKitReconcile: true });
+          await this._applyReserveForOrderIfAbsent(row, { skipKitReconcile: false });
         } catch (e) {
           if (e?.statusCode === 400) throw e;
           /* ignore */
