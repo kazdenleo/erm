@@ -522,7 +522,11 @@ class OrdersController {
       const effectiveOrderIds = req.body?.orderIds;
 
       // Сначала статус в БД (быстро), поставки МП — в фоне (иначе nginx 504).
-      const result = await ordersService.sendToAssembly(effectiveOrderIds, profileId, { deferReserve: true });
+      const preserveAssembled = req.body?.preserveAssembled === true;
+      const result = await ordersService.sendToAssembly(effectiveOrderIds, profileId, {
+        deferReserve: true,
+        preserveAssembled
+      });
 
       setImmediate(() => {
         processAssemblyShipmentsInBackground(effectiveOrderIds, { profileId, organizationId }).catch((e) => {

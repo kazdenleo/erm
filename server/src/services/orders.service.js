@@ -2973,8 +2973,10 @@ class OrdersService {
    * @param {Array<{ marketplace: string, orderId: string }>} orderIds
    * @returns {{ sent: number, updated: number }}
    */
-  async _sendToAssemblyPostgresBulk(orderIds, profileId, { deferReserve }) {
-    const preserveStatuses = ['assembled', 'shipped', 'in_transit', 'delivered', 'cancelled'];
+  async _sendToAssemblyPostgresBulk(orderIds, profileId, { deferReserve, preserveAssembled = false }) {
+    const preserveStatuses = preserveAssembled
+      ? ['assembled', 'shipped', 'in_transit', 'delivered', 'cancelled']
+      : ['shipped', 'in_transit', 'delivered', 'cancelled'];
     const values = [];
     const params = [];
     let i = 1;
@@ -3016,6 +3018,8 @@ class OrdersService {
       UPDATE orders o
       SET status = 'in_assembly',
           returned_to_new_at = NULL,
+          assembled_at = NULL,
+          assembled_by_user_id = NULL,
           updated_at = CURRENT_TIMESTAMP
       FROM refs r
       WHERE o.marketplace = r.marketplace
@@ -3072,8 +3076,9 @@ class OrdersService {
       return { sent: 0, updated: 0, statusPreserved: 0 };
     }
     const deferReserve = options.deferReserve === true;
+    const preserveAssembled = options.preserveAssembled === true;
     if (repositoryFactory.isUsingPostgreSQL()) {
-      return this._sendToAssemblyPostgresBulk(orderIds, profileId, { deferReserve });
+      return this._sendToAssemblyPostgresBulk(orderIds, profileId, { deferReserve, preserveAssembled });
     }
 
     let updated = 0;

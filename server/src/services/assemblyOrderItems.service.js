@@ -3,7 +3,14 @@
  */
 
 import { query } from '../config/database.js';
-import { getKitComponents, isKitProductId, findKitProductIdForMarketplaceOrder } from './kitStock.service.js';
+import {
+  getKitComponents,
+  isKitProductId,
+  findKitProductIdForMarketplaceOrder,
+  getNetReservedForOrderProduct,
+  getReservedKitUnitsFromComponentsForOrder,
+  readKitPhysicalOnHandFromDb
+} from './kitStock.service.js';
 
 async function loadProductBriefMap(productIds) {
   const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
@@ -56,6 +63,48 @@ export async function expandKitOrderToAssemblyItems(order, kitProductId) {
 }
 
 /**
+ * Строки сборки для заказа на комплект: целый SKU (1 скан) или разворот в комплектующие.
+ */
+async function resolveKitAssemblyItems(order, kitProductId) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return [];
+
+  const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
+  const oid = Number(order.id ?? order.db_id);
+  const mpLabel = order.orderId ?? order.order_id;
+
+  let onKit = 0;
+  let fromComp = 0;
+  if (Number.isFinite(oid) && oid > 0) {
+    onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
+    fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
+  }
+
+  if (fromComp > 0 && onKit <= 0) {
+    return expandKitOrderToAssemblyItems(order, kitId);
+  }
+
+  if (onKit <= 0 && fromComp <= 0) {
+    const physical = await readKitPhysicalOnHandFromDb(kitId, null, {});
+    if (physical < orderQty) {
+      const expanded = await expandKitOrderToAssemblyItems(order, kitId);
+      if (expanded.length) return expanded;
+    }
+  }
+
+  const brief = await loadProductBriefMap([kitId]);
+  const b = brief.get(kitId);
+  const qty = onKit > 0 ? Math.min(orderQty, onKit) : orderQty;
+  return [
+    orderRowToAssemblyItem(order, kitId, b?.name ?? order.productName ?? order.product_name, qty, {
+      offerId: b?.sku ?? order.offerId ?? order.offer_id ?? null,
+      kitProductId: kitId,
+      isKitWhole: true
+    })
+  ];
+}
+
+/**
  * Собрать orderItems для ответа /assembly/find-by-barcode.
  */
 export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
@@ -83,37 +132,17 @@ export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
       kitId = null;
     }
   }
-  if (kitId == null && Number.isFinite(lineNum) && lineNum > 0) {
-    const compKits = await query(
-      `SELECT kit_product_id FROM kit_components WHERE component_product_id = $1`,
-      [lineNum]
-    );
-    for (const row of compKits.rows || []) {
-      const kid = Number(row.kit_product_id);
-      if (kid > 0 && (await isKitProductId(kid))) {
-        kitId = kid;
-        break;
-      }
-    }
-  }
   const scannedId = opts.scannedProductId != null ? Number(opts.scannedProductId) : NaN;
   if (kitId == null && Number.isFinite(scannedId) && scannedId > 0) {
-    const compKits = await query(
-      `SELECT kit_product_id FROM kit_components WHERE component_product_id = $1`,
-      [scannedId]
-    );
-    for (const row of compKits.rows || []) {
-      const kid = Number(row.kit_product_id);
-      if (kid > 0 && (await isKitProductId(kid))) {
-        kitId = kid;
-        break;
-      }
+    const byScan = await findKitProductIdForMarketplaceOrder(scannedId, order);
+    if (byScan != null && (await isKitProductId(byScan))) {
+      kitId = byScan;
     }
   }
 
   if (kitId != null) {
-    const expanded = await expandKitOrderToAssemblyItems(order, kitId);
-    if (expanded.length) return expanded;
+    const kitItems = await resolveKitAssemblyItems(order, kitId);
+    if (kitItems.length) return kitItems;
   }
 
   const resolvedPid = linePid != null ? linePid : null;
@@ -153,19 +182,6 @@ async function tryExpandGroupAsSingleKit(groupOrders, ordersService, opts = {}) 
     } else {
       kitId = await findKitProductIdForMarketplaceOrder(lineNum, o);
     }
-    if (kitId == null || !(await isKitProductId(kitId))) {
-      const compKits = await query(
-        `SELECT kit_product_id FROM kit_components WHERE component_product_id = $1`,
-        [lineNum]
-      );
-      for (const row of compKits.rows || []) {
-        const kid = Number(row.kit_product_id);
-        if (kid > 0 && (await isKitProductId(kid))) {
-          kitId = kid;
-          break;
-        }
-      }
-    }
     if (kitId == null) return null;
     if (sharedKitId == null) sharedKitId = kitId;
     else if (sharedKitId !== kitId) return null;
@@ -177,8 +193,8 @@ async function tryExpandGroupAsSingleKit(groupOrders, ordersService, opts = {}) 
     const bq = Math.max(1, parseInt(best?.quantity, 10) || 1);
     return q >= bq ? o : best;
   }, rows[0]);
-  const expanded = await expandKitOrderToAssemblyItems(primary, sharedKitId);
-  return expanded.length ? expanded : null;
+  const kitItems = await resolveKitAssemblyItems(primary, sharedKitId);
+  return kitItems.length ? kitItems : null;
 }
 
 export async function buildAssemblyOrderItemsFromGroup(groupOrders, ordersService, opts = {}) {

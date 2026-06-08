@@ -1186,7 +1186,7 @@ export function Orders() {
     }
   };
 
-  const handleSendOneToAssembly = async (row) => {
+  const handleSendOneToAssembly = async (row, opts = {}) => {
     const toSend = row.orders || [row.first];
     const items = toSend.map(o => ({ marketplace: o.marketplace, orderId: o.orderId }));
     if (items.length === 0) return;
@@ -1198,7 +1198,9 @@ export function Orders() {
       setSendToAssemblyRowKey(row.key);
       setAssemblyMessage(null);
       setRefreshError(null);
-      const result = await ordersApi.sendToAssembly(items);
+      const result = await ordersApi.sendToAssembly(items, {
+        preserveAssembled: opts.preserveAssembled === true
+      });
       const updated = result?.updated ?? items.length;
       const preserved = result?.statusPreserved ?? 0;
       const allPreserved = preserved >= items.length && updated === 0;
@@ -3252,12 +3254,29 @@ export function Orders() {
                           )}
                         </Button>
                       )}
-                      {orderCanAddToOpenShipment(first) && (
+                      {first.status === 'assembled' && (
                         <Button
                           variant="primary"
                           size="small"
                           className="orders-action-icon"
                           onClick={() => handleSendOneToAssembly(row)}
+                          disabled={sendToAssemblyRowKey === row.key}
+                          title="Вернуть заказ на сборку"
+                          aria-label="Вернуть на сборку"
+                        >
+                          {sendToAssemblyRowKey === row.key ? (
+                            <span className="orders-action-icon__busy" aria-hidden>…</span>
+                          ) : (
+                            <i className="pe-7s-box2" aria-hidden />
+                          )}
+                        </Button>
+                      )}
+                      {orderCanAddToOpenShipment(first) && (
+                        <Button
+                          variant="primary"
+                          size="small"
+                          className="orders-action-icon"
+                          onClick={() => handleSendOneToAssembly(row, { preserveAssembled: true })}
                           disabled={sendToAssemblyRowKey === row.key}
                           title="Добавить в открытую поставку FBS (статус «Собран» не меняется)"
                           aria-label="В поставку"

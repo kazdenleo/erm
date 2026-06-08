@@ -171,8 +171,11 @@ export const ordersApi = {
    * Отправить выбранные заказы на сборку
    * @param {Array<{ marketplace: string, orderId: string }>} items
    */
-  sendToAssembly: async (items) => {
-    const response = await api.post('/orders/send-to-assembly', { orderIds: items });
+  sendToAssembly: async (items, opts = {}) => {
+    const response = await api.post('/orders/send-to-assembly', {
+      orderIds: items,
+      preserveAssembled: opts.preserveAssembled === true
+    });
     return response.data?.data ?? response.data;
   },
 
