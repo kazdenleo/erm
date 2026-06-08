@@ -1355,8 +1355,10 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   const kitId = Number(kitProductId);
   let wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
   const orderDbId = Number(meta?.order_id ?? meta?.orderId);
+  let reservedBeforeKit = null;
   if (Number.isFinite(orderDbId) && orderDbId > 0) {
-    const already = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
+    reservedBeforeKit = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
+    const already = reservedBeforeKit;
     const orderQtyCap =
       meta?.order_qty != null
         ? Math.max(1, parseInt(meta.order_qty, 10) || 1)
@@ -1408,17 +1410,8 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   }
 
   if (alloc.fromComponents > 0) {
-    const components = await getKitComponents(kitId);
-    let canReserveFromComponents = components.length > 0;
-    const compQtyMapCheck = buildKitComponentQtyMap(components, alloc.fromComponents);
-    for (const [compId, compQty] of compQtyMapCheck) {
-      const compAvail = await getComponentAssemblableUnits(compId, reserveOpts);
-      if (compAvail < compQty) {
-        canReserveFromComponents = false;
-        break;
-      }
-    }
-    if (!canReserveFromComponents) {
+    const assemblable = await computeAssemblableFromComponents(kitId, reserveOpts);
+    if (assemblable < alloc.fromComponents) {
       alloc = {
         kitsToReserve: alloc.fromWhole,
         fromWhole: alloc.fromWhole,
@@ -1458,6 +1451,10 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
       String(meta?.warehouse_id ?? meta?.warehouseId).trim() !== ''
   });
 
+  if (Number.isFinite(orderDbId) && orderDbId > 0 && reservedBeforeKit != null) {
+    const reservedAfter = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
+    return Math.max(0, reservedAfter - reservedBeforeKit);
+  }
   return alloc.kitsToReserve;
 }
 

@@ -104,6 +104,20 @@ function lineReserveApiQuantity(line, uiQty, { unreserve = false } = {}) {
   return Math.min(q, headroomPieces > 0 ? headroomPieces : q);
 }
 
+/** Для резерва комплекта по kitProductId API ждёт число комплектов, не штук. */
+function lineReserveApiKitUnits(line, uiQty, { unreserve = false } = {}) {
+  const pieces = lineReserveApiQuantity(line, uiQty, { unreserve });
+  const perKit = Math.max(1, Number(line.perKitQty ?? line.per_kit_qty) || 1);
+  const b = lineReserveBounds(line);
+  const kitUnits = Math.max(1, Math.ceil(pieces / perKit));
+  if (unreserve) {
+    const reservedKits = Math.max(0, Number(b.reserved) || 0);
+    return reservedKits > 0 ? Math.min(kitUnits, reservedKits) : kitUnits;
+  }
+  const headroomKits = Math.max(0, b.remaining);
+  return headroomKits > 0 ? Math.min(kitUnits, headroomKits) : kitUnits;
+}
+
 function clampLineQty(raw, min, max) {
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n)) return min;
@@ -346,13 +360,13 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
 
   const handleLineAction = async (line, action, qtyOverride = null) => {
     const isUnreserve = String(action || '').toLowerCase() === 'unreserve';
-    let pid = line?.productId;
-    if (
+    const reserveViaKit =
       line?.lineKind === 'component' &&
       line?.kitReserveFromComponents &&
       !isUnreserve &&
-      line?.kitProductId
-    ) {
+      line?.kitProductId;
+    let pid = line?.productId;
+    if (reserveViaKit) {
       pid = line.kitProductId;
     }
     if (!marketplace || !orderId || !pid || lineLoadingKey) return;
@@ -366,7 +380,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
       qtyOverride != null
         ? clampLineQty(qtyOverride, 1, max)
         : clampLineQty(lineQty[key], 1, max);
-    const apiQty = lineReserveApiQuantity(line, qty, { unreserve: isUnreserveAct });
+    const apiQty = reserveViaKit
+      ? lineReserveApiKitUnits(line, qty, { unreserve: isUnreserveAct })
+      : lineReserveApiQuantity(line, qty, { unreserve: isUnreserveAct });
 
     setLineLoadingKey(key);
     setError(null);
