@@ -1120,7 +1120,11 @@ export async function resolveKitOrderShipmentPlan(kitProductId, orderDbId, opts 
   const compKitUnitsRemaining = Math.max(0, compKitUnitsReserved - kitsShippedViaComp);
 
   const physicalWhole = await readKitPhysicalOnHandFromDb(kitId, null, { warehouseId });
-  const wholeUnitsRemaining = Math.max(0, Math.min(kitNet, physicalWhole) - wholeShipped);
+  // Резерв на SKU комплекта — план по резерву; иначе — по наличию (догоняющее списание после снятия резерва).
+  const wholeUnitsRemaining =
+    kitNet > 0
+      ? Math.max(0, kitNet - wholeShipped)
+      : Math.max(0, physicalWhole - wholeShipped);
   const wholeUnitsToShip = Math.min(orderKitsRemaining, wholeUnitsRemaining);
   const orderAfterWhole = orderKitsRemaining - wholeUnitsToShip;
   let componentKitUnitsToShip = Math.min(orderAfterWhole, compKitUnitsRemaining);

@@ -658,10 +658,19 @@ class StockMovementsService {
 
   async listReservedOrdersForProduct(
     productId,
-    { profileId = null, warehouseId = null, _skipStaleCleanup = false } = {}
+    { profileId = null, warehouseId = null, _skipStaleCleanup = false, _skipShipmentReconcile = false } = {}
   ) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) return [];
+
+    if (!_skipShipmentReconcile) {
+      try {
+        const { default: ordersService } = await import('./orders.service.js');
+        await ordersService.reconcileMissingShipmentStockForProduct(idNum, { profileId });
+      } catch (_) {
+        /* не блокируем список резерва */
+      }
+    }
 
     const tid =
       profileId != null && profileId !== ''
@@ -764,7 +773,8 @@ class StockMovementsService {
         return this.listReservedOrdersForProduct(productId, {
           profileId,
           warehouseId,
-          _skipStaleCleanup: true
+          _skipStaleCleanup: true,
+          _skipShipmentReconcile: true
         });
       }
     }

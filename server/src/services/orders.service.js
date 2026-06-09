@@ -363,6 +363,18 @@ export function isOrderTerminalNoReserve(status) {
   return ORDER_TERMINAL_NO_RESERVE_STATUSES.has(String(status || '').trim().toLowerCase());
 }
 
+/** Статусы, при которых товар уже должен быть списан со склада (сборка / отгрузка / логистика МП). */
+export const ORDER_SHIPMENT_DEDUCT_STATUSES = new Set([
+  'assembled',
+  'shipped',
+  'in_transit',
+  'delivered'
+]);
+
+export function isOrderShipmentDeductStatus(status) {
+  return ORDER_SHIPMENT_DEDUCT_STATUSES.has(String(status || '').trim().toLowerCase());
+}
+
 function marketplaceFromOrdersDb(dbMarketplace) {
   const m = String(dbMarketplace || '').toLowerCase();
   if (m === 'wb') return 'wildberries';
@@ -1504,7 +1516,7 @@ class OrdersService {
    * Снять резерв и списать наличие по одному product_id (строка заказа).
    * @param {number|null} targetQty — сколько списать; по умолчанию — из состава комплекта или резерва.
    */
-  async _applyAssemblyStockForOrderProduct(orderRow, productId, targetQty = null) {
+  async _applyAssemblyStockForOrderProduct(orderRow, productId, targetQty = null, opts = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow || !productId) return;
     const orderDbId = orderRowDbId(orderRow);
     if (!orderDbId) return;
@@ -1524,12 +1536,18 @@ class OrdersService {
     const shipQty = Math.max(0, lineQty - alreadyShipped);
     if (shipQty <= 0) return;
 
+    let requireReserve = opts.requireReserve;
+    if (requireReserve === undefined) {
+      const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
+      requireReserve = net > 0;
+    }
+
     await stockMovementsService.applyOrderAssemblyShipment(pid, {
       shipQty,
       unreserveReason: `Отгрузка: снятие резерва по заказу ${orderIdStr}`.trim(),
       shipmentReason: `Отгрузка: списание наличия по заказу ${orderIdStr}`.trim(),
       meta: metaBase,
-      requireReserve: true
+      requireReserve: requireReserve !== false
     });
   }
 
@@ -1608,13 +1626,16 @@ class OrdersService {
       throw err;
     }
 
+    const kitNet = await getNetReservedForOrderProduct(orderDbId, kitId, orderIdStr || null, warehouseId);
+    const requireReserve = kitNet > 0;
+
     if (wholeUnitsToShip > 0) {
       await stockMovementsService.applyOrderAssemblyShipment(kitId, {
         shipQty: wholeUnitsToShip,
         unreserveReason: `Отгрузка: снятие резерва комплекта по заказу ${orderIdStr}`.trim(),
         shipmentReason: `Отгрузка: списание комплекта (1 SKU) по заказу ${orderIdStr}`.trim(),
         meta: metaBase,
-        requireReserve: true
+        requireReserve
       });
     }
 
@@ -1753,7 +1774,7 @@ class OrdersService {
           skipped += 1;
           continue;
         }
-        if (status !== 'assembled' && status !== 'shipped') {
+        if (!isOrderShipmentDeductStatus(status)) {
           skipped += 1;
           continue;
         }
@@ -1773,6 +1794,77 @@ class OrdersService {
     }
 
     return { processed, stockOnly, skipped, notFound };
+  }
+
+  /**
+   * Догоняющее списание: заказы в статусе отгрузки/логистики без движения shipment в журнале.
+   */
+  async reconcileMissingShipmentStockForProduct(productId, { profileId = null, limit = 80 } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { processed: 0, skipped: 0, errors: [] };
+    }
+    const pid = Number(productId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      return { processed: 0, skipped: 0, errors: [] };
+    }
+
+    const statuses = [...ORDER_SHIPMENT_DEDUCT_STATUSES];
+    const params = [pid, statuses];
+    let profileSql = '';
+    if (profileId != null && String(profileId).trim() !== '') {
+      const p = Number(profileId);
+      if (Number.isFinite(p) && p > 0) {
+        profileSql = ` AND o.profile_id = $${params.length + 1}`;
+        params.push(p);
+      }
+    }
+
+    const r = await query(
+      `SELECT o.id, o.marketplace, o.order_id, o.status, o.quantity, o.product_id, o.order_group_id
+       FROM orders o
+       WHERE LOWER(TRIM(COALESCE(o.status, ''))) = ANY($2::text[])
+         AND (
+           o.product_id = $1::bigint
+           OR o.product_id IN (SELECT component_product_id FROM kit_components WHERE kit_product_id = $1::bigint)
+           OR EXISTS (SELECT 1 FROM kit_components kc WHERE kc.kit_product_id = o.product_id AND kc.component_product_id = $1::bigint)
+         )
+         ${profileSql}
+       ORDER BY o.updated_at DESC NULLS LAST
+       LIMIT ${Math.max(1, Math.min(500, Number(limit) || 80))}`,
+      params
+    );
+
+    let processed = 0;
+    let skipped = 0;
+    const errors = [];
+    const seen = new Set();
+
+    for (const row of r.rows || []) {
+      const dbId = orderRowDbId(row);
+      if (dbId == null || seen.has(dbId)) continue;
+      seen.add(dbId);
+
+      try {
+        if (await this.isOrderFullyShipped(row)) {
+          skipped += 1;
+          await this._releaseLeftoverOrderReserve(row).catch(() => {});
+          continue;
+        }
+        await this._applyAssemblyStockForOrderRow(row);
+        if (await this.isOrderFullyShipped(row)) {
+          processed += 1;
+        } else {
+          skipped += 1;
+        }
+      } catch (e) {
+        errors.push({
+          orderId: row.order_id,
+          message: e?.message || String(e)
+        });
+      }
+    }
+
+    return { processed, skipped, errors };
   }
 
   /**
