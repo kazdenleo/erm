@@ -20,7 +20,7 @@ import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 
 // Небольшой in‑memory кэш для rate‑limit'а и отдачи последнего результата
 const SYNC_STALE_LOCK_MS = 5 * 60 * 1000;
-const SYNC_BACKGROUND_MAX_MS = 18 * 60 * 1000;
+const SYNC_BACKGROUND_MAX_MS = 25 * 60 * 1000;
 
 const ordersSyncCache = {
   lastSyncTime: null,
@@ -42,6 +42,17 @@ function normMarketplaceMerge(mp) {
   const m = String(mp || '').toLowerCase();
   if (m === 'wb') return 'wildberries';
   return m;
+}
+
+function orderSyncKey(order) {
+  const oid = order?.orderId ?? order?.order_id;
+  const mp = normMarketplaceMerge(order?.marketplace);
+  return oid != null && String(oid) !== '' ? `${mp}:${oid}` : '';
+}
+
+function markOrderSyncDirty(dirtyKeys, order) {
+  const key = orderSyncKey(order);
+  if (key) dirtyKeys.add(key);
 }
 
 /**
@@ -197,19 +208,13 @@ function statusCatchUpPriority(status) {
 }
 
 /**
- * Ручное «Обновить статусы»: локально «Новый», на МП уже отгружен/доставлен — берём статус с маркетплейса.
+ * Ручное «Обновить статусы»: локально «Новый», на МП уже отгружен/доставлен/отменён — берём статус с маркетплейса.
+ * «На сборке» и «Собран» для Ozon/Яндекс не подтягиваем с МП — только вручную в ERM (см. preventAutoInAssembly).
  */
 function shouldForceMpStatusOnRefresh(existing, incomingStatus, refreshStatuses) {
   if (!refreshStatuses || !existing || incomingStatus == null || incomingStatus === '') return false;
   const localStale = new Set(['new', 'unknown', WB_STATUS_UNKNOWN, WB_STATUS_PENDING]);
-  const mpProgress = new Set([
-    'in_assembly',
-    'assembled',
-    'in_transit',
-    'shipped',
-    'delivered',
-    'cancelled'
-  ]);
+  const mpProgress = new Set(['in_transit', 'shipped', 'delivered', 'cancelled']);
   return localStale.has(String(existing.status ?? '').toLowerCase()) && mpProgress.has(String(incomingStatus).toLowerCase());
 }
 
@@ -311,7 +316,7 @@ class OrdersSyncService {
       });
       const timeout = new Promise((_, reject) => {
         setTimeout(
-          () => reject(new Error('Синхронизация прервана по таймауту (12 мин). Уменьшите период или повторите позже.')),
+          () => reject(new Error('Синхронизация прервана по таймауту (25 мин). Уменьшите период или повторите позже.')),
           SYNC_BACKGROUND_MAX_MS
         );
       });
@@ -355,7 +360,7 @@ class OrdersSyncService {
       });
       const timeout = new Promise((_, reject) => {
         setTimeout(
-          () => reject(new Error('Синхронизация прервана по таймауту (18 мин). Уменьшите период или повторите позже.')),
+          () => reject(new Error('Синхронизация прервана по таймауту (25 мин). Уменьшите период или повторите позже.')),
           SYNC_BACKGROUND_MAX_MS
         );
       });
@@ -503,7 +508,7 @@ class OrdersSyncService {
       const wb = mps?.wildberries || {};
       const ym = mps?.yandex || {};
       const ymApiKey = ym?.api_key ?? ym?.apiKey;
-      return Boolean((oz?.client_id && oz?.api_key) || (wb?.api_key || wb?.apiKey) || (ymApiKey && (ym?.campaign_id ?? ym?.campaignId)));
+      return Boolean((oz?.client_id && oz?.api_key) || (wb?.api_key || wb?.apiKey) || ymApiKey);
     };
     if (!hasAnyKeys(marketplaces)) {
       marketplaces = (await integrationsService.getAllConfigs({
@@ -610,7 +615,14 @@ class OrdersSyncService {
     let ymReason = null;
     try {
       if (hasYmKeys) {
-        const ymResult = await fetchYandexFBSOrders(ymConfig, { force });
+        const ymCreationDays = fromScheduler ? schedulerDays : syncDaysBack;
+        const ymUpdateDays =
+          force || refreshStatuses ? Math.min(30, Math.max(14, syncDaysBack)) : 0;
+        const ymResult = await fetchYandexFBSOrders(ymConfig, {
+          force,
+          creationDaysBack: ymCreationDays,
+          updateDaysBack: ymUpdateDays
+        });
         const ymOrders = ymResult?.orders ?? [];
         ymReason = ymResult?.reason ?? null;
         results.yandex.success = ymOrders.length;
@@ -631,13 +643,17 @@ class OrdersSyncService {
       ordersSyncCache.lastSyncError = ymReason;
     }
 
+    const dirtyOrderKeys = new Set();
+
     // существующие заказы (из БД или файла — в зависимости от настроек)
     let existingOrders = [];
     try {
       if (repositoryFactory.isUsingPostgreSQL()) {
-        existingOrders = await repositoryFactory.getOrdersRepository().findAll(
-          profileId != null ? { profileId } : {}
-        );
+        const ordersRepo = repositoryFactory.getOrdersRepository();
+        existingOrders =
+          typeof ordersRepo.findAllForSync === 'function'
+            ? await ordersRepo.findAllForSync(profileId)
+            : await ordersRepo.findAll(profileId != null ? { profileId } : {});
         if (!Array.isArray(existingOrders)) existingOrders = [];
       } else {
         const existingData = await readData('orders');
@@ -652,6 +668,7 @@ class OrdersSyncService {
       ...results.wildberries.orders,
       ...results.yandex.orders
     ];
+    for (const o of newOrders) markOrderSyncDirty(dirtyOrderKeys, o);
     if (ozonConfig?.client_id && ozonConfig?.api_key && existingOrders.length) {
       try {
         const extraOzon = await fetchOzonExtraPostingsFromExisting(
@@ -662,6 +679,7 @@ class OrdersSyncService {
         );
         if (extraOzon.length) {
           newOrders = [...newOrders, ...extraOzon];
+          for (const o of extraOzon) markOrderSyncDirty(dirtyOrderKeys, o);
         }
       } catch (e) {
         logger.warn('[Orders Sync] Ozon catch-up:', e.message);
@@ -819,6 +837,7 @@ class OrdersSyncService {
             const apiSt = statusByWbId.get(String(order.orderId || order.order_id));
             const anchorSt = preWbLocalAnchor.get(key) ?? prev;
             const existingBeforeWbPoll = { status: anchorSt };
+            const prevSt = order.status;
             if (shouldForceMpStatusOnRefresh(existingBeforeWbPoll, apiSt, refreshStatuses)) {
               order.status = String(apiSt).toLowerCase();
             } else {
@@ -828,12 +847,14 @@ class OrdersSyncService {
               next = preserveLocalLogisticsStatus(existingBeforeWbPoll, next);
               order.status = next;
             }
+            if (order.status !== prevSt) markOrderSyncDirty(dirtyOrderKeys, order);
           }
         }
         for (const [key, order] of ordersMap.entries()) {
           const want = preWbPreserve.get(key);
           if (!want) continue;
           const api = order.status;
+          const prevSt = order.status;
           if (
             want === 'in_procurement' &&
             (api === 'new' || api === WB_STATUS_UNKNOWN || api === WB_STATUS_PENDING || api === 'unknown')
@@ -847,6 +868,7 @@ class OrdersSyncService {
           ) {
             order.status = 'shipped';
           }
+          if (order.status !== prevSt) markOrderSyncDirty(dirtyOrderKeys, order);
         }
         for (const [key, anchor] of preWbLocalAnchor) {
           const order = ordersMap.get(key);
@@ -869,6 +891,7 @@ class OrdersSyncService {
         );
         if (extraYm.length) {
           for (const order of extraYm) {
+            markOrderSyncDirty(dirtyOrderKeys, order);
             const key = `${order.marketplace}:${order.orderId}`;
             const existing = ordersMap.get(key);
             let nextStatus = order.status;
@@ -913,13 +936,17 @@ class OrdersSyncService {
       for (const [, order] of ordersMap.entries()) {
         const mp = String(order.marketplace || '').toLowerCase();
         if (mp !== 'wb' && mp !== 'wildberries') continue;
+        const prevSt = order.status;
         applyWbNewOrdersFeedRule(order, wbNewIdsThisSync);
+        if (order.status !== prevSt) markOrderSyncDirty(dirtyOrderKeys, order);
       }
     }
 
     for (const [, order] of ordersMap.entries()) {
       if (!order.returnedToNewAt || order.status === 'in_procurement') continue;
+      const prevSt = order.status;
       order.status = applyReturnedToNewStatusGuard(order.status);
+      if (order.status !== prevSt) markOrderSyncDirty(dirtyOrderKeys, order);
     }
 
     const allOrders = Array.from(ordersMap.values());
@@ -931,8 +958,15 @@ class OrdersSyncService {
 
     if (repositoryFactory.isUsingPostgreSQL()) {
       const ordersRepo = repositoryFactory.getOrdersRepository();
+      const toUpsert =
+        dirtyOrderKeys.size > 0
+          ? allOrders.filter((o) => dirtyOrderKeys.has(orderSyncKey(o)))
+          : allOrders;
       try {
-        await ordersRepo.upsertFromSyncBatch(allOrders);
+        logger.info(
+          `[Orders Sync] upsert ${toUpsert.length}/${allOrders.length} orders (profile=${profileId ?? 'all'})`
+        );
+        await ordersRepo.upsertFromSyncBatch(toUpsert);
       } catch (err) {
         console.error('[Orders Sync] Batch upsert failed:', err.message);
         throw err;
@@ -2612,21 +2646,22 @@ const yandexCampaignsCache = new Map();
  *   orderGroups: Array<{ businessId: number, campaignIds: number[] }>
  * }}
  */
-async function getYandexBusinessAndCampaigns(config) {
+async function getYandexBusinessAndCampaigns(config, options = {}) {
   const api_key = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
   const campaign_id = config?.campaign_id ?? config?.campaignId;
   const configBusinessId = config?.business_id ?? config?.businessId;
-  const cacheKey = `${api_key}|${String(campaign_id ?? '')}|${String(configBusinessId ?? '')}`;
+  const skipCampaignNarrowing = options.skipCampaignNarrowing === true;
+  const cacheKey = `${api_key}|${String(campaign_id ?? '')}|${String(configBusinessId ?? '')}|narrow=${skipCampaignNarrowing ? 0 : 1}`;
   const hit = yandexCampaignsCache.get(cacheKey);
   if (hit && Date.now() - hit.at < YANDEX_CAMPAIGNS_CACHE_MS) {
     return hit.value;
   }
-  const value = await resolveYandexBusinessAndCampaigns(config);
+  const value = await resolveYandexBusinessAndCampaigns(config, { skipCampaignNarrowing });
   yandexCampaignsCache.set(cacheKey, { at: Date.now(), value });
   return value;
 }
 
-async function resolveYandexBusinessAndCampaigns(config) {
+async function resolveYandexBusinessAndCampaigns(config, options = {}) {
   const rawKey = config?.api_key ?? config?.apiKey;
   const api_key = normalizeYandexApiKey(rawKey);
   const campaign_id = config?.campaign_id ?? config?.campaignId;
@@ -2761,7 +2796,12 @@ async function resolveYandexBusinessAndCampaigns(config) {
 
   // В интеграции задана конкретная кампания — не тянем заказы с остальных кампаний,
   // которые Яндекс отдаёт по тому же Api-Key (часто у одного ключа видны несколько магазинов).
-  const wantCid = campaign_id != null && String(campaign_id).trim() !== '' ? Number(campaign_id) : null;
+  const wantCid =
+    options.skipCampaignNarrowing !== true &&
+    campaign_id != null &&
+    String(campaign_id).trim() !== ''
+      ? Number(campaign_id)
+      : null;
   if (wantCid != null && !Number.isNaN(wantCid) && wantCid >= 1) {
     const narrowed = [];
     for (const g of out.orderGroups) {
@@ -2927,8 +2967,16 @@ async function fetchYandexOrdersRawForBusinessGroup(
  */
 async function fetchYandexFBSOrders(config, options = {}) {
   const force = options.force === true;
+  const creationDaysBack = Math.max(1, Math.min(365, Number(options.creationDaysBack) || (force ? 45 : 14)));
+  const updateDaysBack = Math.max(
+    0,
+    Math.min(45, Number(options.updateDaysBack) ?? (force ? 30 : 0))
+  );
+  const skipCampaignNarrowing = options.skipCampaignNarrowing === true;
   try {
-    logger.info('[YM Orders] fetch started');
+    logger.info(
+      `[YM Orders] fetch started (creation ${creationDaysBack}д${updateDaysBack > 0 ? `, update ${updateDaysBack}д` : ''}${skipCampaignNarrowing ? ', все кампании' : ''})`
+    );
     const api_key = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
 
     if (!api_key) {
@@ -2936,7 +2984,9 @@ async function fetchYandexFBSOrders(config, options = {}) {
       return { orders: [], reason: 'No API key' };
     }
 
-    const { businessId, campaignIds, orderGroups } = await getYandexBusinessAndCampaigns(config);
+    const { businessId, campaignIds, orderGroups } = await getYandexBusinessAndCampaigns(config, {
+      skipCampaignNarrowing
+    });
     const groups =
       Array.isArray(orderGroups) && orderGroups.length > 0
         ? orderGroups.filter(g => g && g.businessId >= 1 && Array.isArray(g.campaignIds) && g.campaignIds.length > 0)
@@ -2970,10 +3020,10 @@ async function fetchYandexFBSOrders(config, options = {}) {
           logger.warn(`[YM Orders] ${msg}`);
         }
       };
-      if (force) {
-        await loadGroup('update', 45, 'update 45д ');
+      if (updateDaysBack > 0) {
+        await loadGroup('update', updateDaysBack, `update ${updateDaysBack}д `);
       }
-      await loadGroup('creation', 365, '');
+      await loadGroup('creation', creationDaysBack, '');
     }
 
     const uniqueByOrderId = new Map();
@@ -3015,6 +3065,25 @@ async function fetchYandexFBSOrders(config, options = {}) {
           ? fetchErrors.join('; ')
           : 'API не вернул заказов (проверьте Business ID, Campaign ID и права Api-Key в ЛК Яндекс.Маркета)';
     }
+
+    const configuredCampaignId = config?.campaign_id ?? config?.campaignId;
+    if (
+      mapped.length === 0 &&
+      !skipCampaignNarrowing &&
+      options.campaignFallback !== false &&
+      configuredCampaignId != null &&
+      String(configuredCampaignId).trim() !== ''
+    ) {
+      logger.warn(
+        `[YM Orders] 0 заказов при campaign_id=${configuredCampaignId} — повторный запрос по всем кампаниям ключа`
+      );
+      return fetchYandexFBSOrders(config, {
+        ...options,
+        skipCampaignNarrowing: true,
+        campaignFallback: false
+      });
+    }
+
     return { orders: mapped, reason, errors: fetchErrors.length ? fetchErrors : undefined };
   } catch (error) {
     logger.error('[YM Orders] Fetch error:', error.message);

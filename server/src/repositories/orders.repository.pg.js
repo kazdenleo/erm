@@ -256,6 +256,29 @@ class OrdersRepositoryPG {
   }
 
   /**
+   * Лёгкая выборка для синхронизации с маркетплейсами (без JOIN product_skus / резервов).
+   */
+  async findAllForSync(profileId = null) {
+    const pid = normalizeProfileId(profileId);
+    const params = [];
+    let sql = `
+      SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id,
+             o.product_id, o.offer_id, o.marketplace_sku, o.product_name,
+             o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
+             o.delivery_address, o.created_at, o.in_process_at, o.shipment_date,
+             o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number
+      FROM orders o
+      WHERE 1=1
+    `;
+    if (pid) {
+      sql += ` AND o.profile_id = $1`;
+      params.push(pid);
+    }
+    const result = await query(sql, params);
+    return result.rows.map(rowToCamel);
+  }
+
+  /**
    * Счётчики по статусам для UI (по "строкам списка", т.е. группам заказов).
    * Группируем по (marketplace, order_group_id) если он есть, иначе по (marketplace, order_id).
    * Для WB техстатусы до резолва считаем как `new`, чтобы соответствовать UI-логике.
