@@ -172,10 +172,14 @@ class WarehouseReceiptsController {
     try {
       const id = parseInt(req.params.id, 10);
       if (!id) return res.status(400).json({ ok: false, message: 'Некорректный ID' });
-      const result = await warehouseReceiptsService.deleteReceipt(id);
+      const profileId = req.user?.profileId ?? null;
+      const result = await warehouseReceiptsService.deleteReceipt(id, { profileId });
       if (!result) return res.status(404).json({ ok: false, message: 'Документ не найден' });
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
+      if (error.statusCode === 400 || error.statusCode === 403 || error.statusCode === 404 || error.statusCode === 409) {
+        return res.status(error.statusCode).json({ ok: false, message: error.message });
+      }
       next(error);
     }
   }

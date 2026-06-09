@@ -3981,10 +3981,13 @@ export function WarehouseOperations({
                   try {
                     await receiptsApi.delete(receiptDetail.id);
                     setReceiptDetail(null);
+                    setLookupError(null);
                     loadReceiptsList();
                     onRefresh?.();
                   } catch (e) {
-                    setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось удалить'));
+                    const msg = e.response?.data?.message || e.message || 'не удалось удалить';
+                    setOpMessage('Ошибка: ' + msg);
+                    setLookupError(msg);
                   } finally {
                     setReceiptDeleteLoading(false);
                   }

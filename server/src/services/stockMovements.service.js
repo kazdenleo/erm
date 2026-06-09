@@ -267,7 +267,9 @@ class StockMovementsService {
       metaObj.kit_assembly_receipt === true ||
       metaObj.kit_assembly_receipt_reversal === true ||
       metaObj.kit_component_restore === true ||
-      metaObj.stock_history_reset === true;
+      metaObj.stock_history_reset === true ||
+      metaObj.receipt_reversal === true ||
+      metaObj.deleted === true;
 
     if (newWhRaw < 0 && !allowNegativeClamp) {
       const error = new Error(

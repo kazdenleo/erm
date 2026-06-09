@@ -417,12 +417,36 @@ class WarehouseReceiptsService {
    * Приёмка: остаток уменьшается на количество по строкам.
    * Возврат: остаток увеличивается на количество по строкам.
    */
-  async deleteReceipt(id) {
-    const receipt = await this.getByIdWithLines(id);
+  async deleteReceipt(id, { profileId = null } = {}) {
+    const numId = parseInt(id, 10);
+    if (!numId || Number.isNaN(numId)) return null;
+
+    const linkedPr = await query(
+      `SELECT pr.id, p.profile_id
+       FROM purchase_receipts pr
+       JOIN purchases p ON p.id = pr.purchase_id
+       WHERE pr.warehouse_receipt_id = $1
+       ORDER BY pr.id DESC`,
+      [numId]
+    );
+    if ((linkedPr.rows?.length ?? 0) > 0) {
+      const purchasesService = (await import('./purchases.service.js')).default;
+      let lastResult = null;
+      for (const row of linkedPr.rows) {
+        const effectiveProfileId =
+          profileId != null && profileId !== '' ? profileId : row.profile_id ?? null;
+        lastResult = await purchasesService.deleteReceipt(row.id, {
+          profileId: effectiveProfileId,
+        });
+      }
+      return { deleted: true, id: numId, viaPurchaseReceipt: true, ...(lastResult || {}) };
+    }
+
+    const receipt = await this.getByIdWithLines(numId);
     if (!receipt) return null;
     const receiptNumber = receipt.receipt_number ||
-      (receipt.document_type === 'return' ? `ВН-${id}` : (receipt.document_type === 'customer_return' ? `ВК-${id}` : `ПТ-${id}`));
-    const lines = receipt.lines || await this.receiptsRepo.getLinesWithProducts(id);
+      (receipt.document_type === 'return' ? `ВН-${numId}` : (receipt.document_type === 'customer_return' ? `ВК-${numId}` : `ПТ-${numId}`));
+    const lines = receipt.lines || await this.receiptsRepo.getLinesWithProducts(numId);
     const isReturnToSupplier = receipt.document_type === 'return';
     const isCustomerReturn = receipt.document_type === 'customer_return';
     const reason = isReturnToSupplier
@@ -437,14 +461,14 @@ class WarehouseReceiptsService {
         !isReturnToSupplier &&
         !isCustomerReturn &&
         (await isKitProductId(productId)) &&
-        (await this._isLegacyKitAssemblyReceipt(id))
+        (await this._isLegacyKitAssemblyReceipt(numId))
       ) {
-        const whId = await this._resolveReceiptWarehouseId(id);
+        const whId = await this._resolveReceiptWarehouseId(numId);
         await this._reverseLegacyKitAssemblyReceipt({
           kitProductId: productId,
           quantity,
           reason,
-          receiptId: id,
+          receiptId: numId,
           receiptNumber,
           warehouseId: whId
         });
@@ -457,13 +481,13 @@ class WarehouseReceiptsService {
         : isReturnToSupplier
           ? 'return_to_supplier'
           : 'manual';
-      const whId = await this._resolveReceiptWarehouseId(id);
+      const whId = await this._resolveReceiptWarehouseId(numId);
       await stockMovementsService.applyChange(productId, {
         delta: reverseDelta,
         type: reverseType,
         reason,
         meta: {
-          receipt_id: id,
+          receipt_id: numId,
           receipt_number: receiptNumber,
           warehouse_id: whId,
           deleted: true,
@@ -471,8 +495,8 @@ class WarehouseReceiptsService {
         }
       });
     }
-    await this.receiptsRepo.delete(id);
-    return { deleted: true, id };
+    await this.receiptsRepo.delete(numId);
+    return { deleted: true, id: numId };
   }
 }
 
