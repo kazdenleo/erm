@@ -8,7 +8,6 @@ import {
   isKitProductId,
   findKitProductIdForMarketplaceOrder,
   getNetReservedForOrderProduct,
-  getReservedKitUnitsFromComponentsForOrder,
   readKitPhysicalOnHandFromDb
 } from './kitStock.service.js';
 
@@ -64,32 +63,26 @@ export async function expandKitOrderToAssemblyItems(order, kitProductId) {
 
 /**
  * Строки сборки для заказа на комплект: целый SKU (1 скан) или разворот в комплектующие.
+ * Решение по фактическому наличию целых комплектов на складе, а не по пути резерва:
+ * резерв на SKU комплекта при нулевом physical on-hand всё равно требует сборки из деталей.
  */
 async function resolveKitAssemblyItems(order, kitProductId) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return [];
 
   const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
+  const physical = await readKitPhysicalOnHandFromDb(kitId, null, {});
+
+  if (physical < orderQty) {
+    const expanded = await expandKitOrderToAssemblyItems(order, kitId);
+    if (expanded.length) return expanded;
+  }
+
   const oid = Number(order.id ?? order.db_id);
   const mpLabel = order.orderId ?? order.order_id;
-
   let onKit = 0;
-  let fromComp = 0;
   if (Number.isFinite(oid) && oid > 0) {
     onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
-    fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
-  }
-
-  if (fromComp > 0 && onKit <= 0) {
-    return expandKitOrderToAssemblyItems(order, kitId);
-  }
-
-  if (onKit <= 0 && fromComp <= 0) {
-    const physical = await readKitPhysicalOnHandFromDb(kitId, null, {});
-    if (physical < orderQty) {
-      const expanded = await expandKitOrderToAssemblyItems(order, kitId);
-      if (expanded.length) return expanded;
-    }
   }
 
   const brief = await loadProductBriefMap([kitId]);

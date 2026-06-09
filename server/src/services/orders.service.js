@@ -4521,8 +4521,9 @@ class OrdersService {
           });
         }
 
-        // Приоритет: целый комплект (1 SKU). Комплектующие — если целый комплект недоступен к резерву.
-        const showKitLine = reserveOnWholeSku || kitReservableQty > 0;
+        // Приоритет: целый комплект (1 SKU) только при фактическом наличии на складе.
+        const physicalOnHand = Math.max(0, Number(breakdown.physicalOnHand) || 0);
+        const showKitLine = (reserveOnWholeSku || kitReservableQty > 0) && physicalOnHand > 0;
         const showAllComponents = kitReservableQty <= 0 && !reserveOnWholeSku;
 
         if (showKitLine) {
@@ -4536,7 +4537,14 @@ class OrdersService {
             label: orderLineLabel || 'Комплект'
           });
         } else if (componentCandidates.length > 0) {
-          if (showAllComponents) {
+          if (!showKitLine && reserveOnWholeSku && physicalOnHand <= 0) {
+            for (const entry of componentCandidates) {
+              lineEntries.push({
+                ...entry,
+                reservedQty: entry.needQty
+              });
+            }
+          } else if (showAllComponents) {
             const assemblable = await computeAssemblableFromComponents(pid, { warehouseId });
             const remainingKits = Math.max(0, qty - reserved);
             const compLabels = componentCandidates.map((e) => e.label).filter(Boolean);

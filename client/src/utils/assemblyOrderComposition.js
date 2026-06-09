@@ -89,11 +89,13 @@ function partsFromReserveLines(rows) {
   const seen = new Set();
   for (const line of reserveLines) {
     const reserved = Number(line.reservedQty ?? line.reserved_qty) || 0;
-    if (reserved <= 0) continue;
+    const need = Number(line.needQty ?? line.need_qty) || 0;
+    const displayQty = reserved > 0 ? reserved : need;
+    if (displayQty <= 0) continue;
     const key = reserveLineKey(line);
     if (seen.has(key)) continue;
     seen.add(key);
-    parts.push(compositionPart(articleFromReserveLine(line, rows), reserved));
+    parts.push(compositionPart(articleFromReserveLine(line, rows), displayQty));
   }
   return parts.length ? parts : null;
 }

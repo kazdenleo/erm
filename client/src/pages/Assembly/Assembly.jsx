@@ -235,7 +235,7 @@ export function Assembly() {
       if (!silent) setLoading(true);
       setError(null);
       const [assemblyResponse, collectedResponse] = await Promise.all([
-        ordersApi.getAll({ status: 'in_assembly', limit: 500 }),
+        ordersApi.getAll({ status: 'in_assembly', limit: 500, enrichReserve: 'full' }),
         ordersApi.getAll({ status: 'assembled', limit: 200 }),
       ]);
       const assemblyList = Array.isArray(assemblyResponse?.data) ? assemblyResponse.data : [];
