@@ -551,7 +551,7 @@ class PurchasesImportService {
 
     if (aggregated.size === 0) {
       const err = new Error(
-        'В файле нет строк с артикулом и количеством. Ожидается: A — артикул, B — количество, C — себестоимость (третий столбец опционален), либо колонки «артикул», «количество», «себестоимость».'
+        'В файле нет строк с артикулом и количеством. Ожидается: A — артикул, B — количество, C — цена (опционально), либо колонки «артикул», «количество», «цена» / «себестоимость».'
       );
       err.statusCode = 400;
       throw err;
@@ -616,11 +616,14 @@ class PurchasesImportService {
       excelLines: data.excelLines || [],
     }));
 
+    const hasImportPrices = items.some((it) => it.purchasePrice != null);
+
     return {
       items,
       preview,
       prefixes,
       sourceRows,
+      hasImportPrices,
       parserVersion: PURCHASE_IMPORT_PARSER_VERSION,
       lineCount: items.length,
       excelDataRows: sourceRows.length,
@@ -646,7 +649,12 @@ class PurchasesImportService {
       },
       { userId, profileId }
     );
-    return { ...created, importSummary: parsed };
+    let costsUpdated = 0;
+    if (parsed.hasImportPrices) {
+      const costResult = await purchasesService.applyProductCostsFromImport(parsed.items, { profileId });
+      costsUpdated = costResult?.costsUpdated ?? 0;
+    }
+    return { ...created, importSummary: { ...parsed, costsUpdated } };
   }
 }
 

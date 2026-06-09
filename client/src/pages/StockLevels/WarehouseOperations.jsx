@@ -42,6 +42,26 @@ const MODE_RETURN_CUSTOMER = 'return_customer';
 const MODE_TRANSFER = 'transfer';
 
 const INVENTORY_LIVE_DRAFT_LS = 'warehouse_ops_inventory_live_draft';
+const WAREHOUSE_SCAN_DEDUP_MS = 500;
+
+function clearWarehouseScanDebounce(debounceRef) {
+  if (debounceRef?.current) {
+    clearTimeout(debounceRef.current);
+    debounceRef.current = null;
+  }
+}
+
+/** Один физический скан не должен обрабатываться дважды (debounce + Enter). */
+function shouldIgnoreDuplicateWarehouseScan(dedupRef, value) {
+  const k = String(value || '').trim().toLowerCase();
+  if (!k) return true;
+  const now = Date.now();
+  if (dedupRef.current.key === k && now - dedupRef.current.at < WAREHOUSE_SCAN_DEDUP_MS) {
+    return true;
+  }
+  dedupRef.current = { key: k, at: now };
+  return false;
+}
 
 function normalizeScanInput(raw) {
   return String(raw || '')
@@ -285,6 +305,7 @@ export function WarehouseOperations({
   const returnScanDebounceRef = useRef(null);
   const returnScanValueRef = useRef('');
   const returnScanInputRef = useRef(null);
+  const returnScanDedupRef = useRef({ key: '', at: 0 });
   // Возврат от клиентов на склад
   const [customerReturnOrganizationId, setCustomerReturnOrganizationId] = useState('');
   const [customerReturnList, setCustomerReturnList] = useState([]);
@@ -297,6 +318,7 @@ export function WarehouseOperations({
   const customerReturnScanDebounceRef = useRef(null);
   const customerReturnScanValueRef = useRef('');
   const customerReturnScanInputRef = useRef(null);
+  const customerReturnScanDedupRef = useRef({ key: '', at: 0 });
   /** Пересчёт выборочно: скан / поиск + только отмеченные позиции */
   const [inventoryNewSession, setInventoryNewSession] = useState(false);
   const [inventoryNewRows, setInventoryNewRows] = useState([]);
@@ -1447,6 +1469,7 @@ export function WarehouseOperations({
       playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
+    if (shouldIgnoreDuplicateWarehouseScan(returnScanDedupRef, v)) return;
     if (!returnWarehouseId) {
       setLookupError('Сначала выберите склад списания');
       playEventSound(SOUND_EVENTS.scan_error);
@@ -1472,15 +1495,32 @@ export function WarehouseOperations({
     }
   };
 
+  const submitReturnScan = (e) => {
+    e?.preventDefault?.();
+    clearWarehouseScanDebounce(returnScanDebounceRef);
+    const v = (returnScanValueRef.current || returnScanValue).trim();
+    setReturnScanValue('');
+    returnScanValueRef.current = '';
+    returnScanInputRef.current?.focus();
+    if (v) lookupByBarcodeOrSkuThenReturnOne(v);
+  };
+
   const handleReturnScanChange = (e) => {
-    const value = e.target.value;
+    const rawValue = e.target.value;
+    if (/[\r\n]/.test(rawValue)) {
+      clearWarehouseScanDebounce(returnScanDebounceRef);
+      const cleaned = String(rawValue).replace(/[\r\n]+/g, '').trim();
+      setReturnScanValue('');
+      returnScanValueRef.current = '';
+      if (cleaned) lookupByBarcodeOrSkuThenReturnOne(cleaned);
+      returnScanInputRef.current?.focus();
+      return;
+    }
+    const value = rawValue;
     returnScanValueRef.current = value;
     setReturnScanValue(value);
     setLookupError(null);
-    if (returnScanDebounceRef.current) {
-      clearTimeout(returnScanDebounceRef.current);
-      returnScanDebounceRef.current = null;
-    }
+    clearWarehouseScanDebounce(returnScanDebounceRef);
     if (!value.trim()) return;
     const SCAN_DELAY_MS = 200;
     returnScanDebounceRef.current = setTimeout(() => {
@@ -1610,6 +1650,7 @@ export function WarehouseOperations({
       playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
+    if (shouldIgnoreDuplicateWarehouseScan(customerReturnScanDedupRef, v)) return;
     if (!customerReturnWarehouseId) {
       setLookupError('Сначала выберите склад приёмки возврата');
       playEventSound(SOUND_EVENTS.scan_error);
@@ -1629,15 +1670,32 @@ export function WarehouseOperations({
     }
   };
 
+  const submitCustomerReturnScan = (e) => {
+    e?.preventDefault?.();
+    clearWarehouseScanDebounce(customerReturnScanDebounceRef);
+    const v = (customerReturnScanValueRef.current || customerReturnScanValue).trim();
+    setCustomerReturnScanValue('');
+    customerReturnScanValueRef.current = '';
+    customerReturnScanInputRef.current?.focus();
+    if (v) lookupByBarcodeOrSkuThenCustomerReturnOne(v);
+  };
+
   const handleCustomerReturnScanChange = (e) => {
-    const value = e.target.value;
+    const rawValue = e.target.value;
+    if (/[\r\n]/.test(rawValue)) {
+      clearWarehouseScanDebounce(customerReturnScanDebounceRef);
+      const cleaned = String(rawValue).replace(/[\r\n]+/g, '').trim();
+      setCustomerReturnScanValue('');
+      customerReturnScanValueRef.current = '';
+      if (cleaned) lookupByBarcodeOrSkuThenCustomerReturnOne(cleaned);
+      customerReturnScanInputRef.current?.focus();
+      return;
+    }
+    const value = rawValue;
     customerReturnScanValueRef.current = value;
     setCustomerReturnScanValue(value);
     setLookupError(null);
-    if (customerReturnScanDebounceRef.current) {
-      clearTimeout(customerReturnScanDebounceRef.current);
-      customerReturnScanDebounceRef.current = null;
-    }
+    clearWarehouseScanDebounce(customerReturnScanDebounceRef);
     if (!value.trim()) return;
     const SCAN_DELAY_MS = 200;
     customerReturnScanDebounceRef.current = setTimeout(() => {
@@ -2555,7 +2613,7 @@ export function WarehouseOperations({
           {returnMode === 'scan' && (
             <>
               <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список возврата (1 скан = 1 шт).</p>
-              <form onSubmit={e => { e.preventDefault(); lookupByBarcodeOrSkuThenReturnOne(returnScanValue); }} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+              <form onSubmit={submitReturnScan} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
                 <input
                   ref={returnScanInputRef}
                   type="text"
@@ -2750,7 +2808,7 @@ export function WarehouseOperations({
           {customerReturnMode === 'scan' && (
             <>
               <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список (1 скан = 1 шт).</p>
-              <form onSubmit={e => { e.preventDefault(); lookupByBarcodeOrSkuThenCustomerReturnOne(customerReturnScanValue); }} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+              <form onSubmit={submitCustomerReturnScan} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
                 <input
                   ref={customerReturnScanInputRef}
                   type="text"

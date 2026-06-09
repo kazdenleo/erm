@@ -2927,6 +2927,47 @@ class PurchasesService {
 
     return result;
   }
+
+  /**
+   * Импорт закупки с колонкой «Цена»: обновить себестоимость в каталоге.
+   * Без цены в файле позиция не попадает сюда — cost товара не меняется.
+   */
+  async applyProductCostsFromImport(items, { profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const list = Array.isArray(items) ? items : [];
+    const toUpdate = [];
+    for (const it of list) {
+      const productId = Number(it?.productId);
+      const cost = normalizePurchasePrice(it?.purchasePrice ?? it?.purchase_price);
+      if (!Number.isFinite(productId) || productId < 1 || cost == null) continue;
+      toUpdate.push({ productId, cost });
+    }
+    if (!toUpdate.length) return { costsUpdated: 0 };
+
+    const repo = repositoryFactory.getProductsRepository();
+    let costsUpdated = 0;
+    for (const { productId, cost } of toUpdate) {
+      const r = await query(
+        `UPDATE products
+         SET cost = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2
+           AND ($3::bigint IS NULL OR profile_id = $3)
+         RETURNING id`,
+        [cost, productId, pid]
+      );
+      if ((r.rowCount ?? 0) > 0) {
+        costsUpdated += 1;
+        if (repo && typeof repo.recalcKitsContainingProduct === 'function') {
+          try {
+            await repo.recalcKitsContainingProduct(productId);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+    return { costsUpdated };
+  }
 }
 
 export default new PurchasesService();

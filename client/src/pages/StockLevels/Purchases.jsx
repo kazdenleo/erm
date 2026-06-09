@@ -585,8 +585,14 @@ export function Purchases() {
           .map((p) => `${p.cleanSku}: ${p.quantity} шт. (${(p.excelLines || []).map((l) => l.qty).join('+')})`)
           .slice(0, 5);
         const dupNote = lines.length ? ` Суммы дублей: ${lines.join('; ')}.` : '';
+        const costNote =
+          summary.costsUpdated > 0
+            ? ` Обновлена себестоимость у ${summary.costsUpdated} товаров.`
+            : summary.hasImportPrices
+              ? ''
+              : '';
         setImportOk(
-          `Импорт ${summary.parserVersion || ''}: ${summary.excelDataRows ?? '—'} строк Excel → ${summary.totalQuantity ?? '—'} шт.${dupNote}`
+          `Импорт ${summary.parserVersion || ''}: ${summary.excelDataRows ?? '—'} строк Excel → ${summary.totalQuantity ?? '—'} шт.${costNote}${dupNote}`
         );
       }
       closeCreateModal();
@@ -908,7 +914,7 @@ export function Purchases() {
           style={{ marginBottom: 14, borderTop: '1px solid var(--border, #e8e8e8)', paddingTop: 12 }}
         >
           <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
-            Импорт из Excel: A — артикул, B — количество, C — себестоимость (заголовок не обязателен), либо колонки «артикул», «количество», «себестоимость». Одинаковые артикулы суммируются. Себестоимость из файла попадёт в закупку и обновит cost товара при приёмке на склад. Если хотя бы один артикул не найден в каталоге, закупка не создаётся.
+            Импорт из Excel: столбцы <strong>Артикул</strong> и <strong>Количество</strong> (обязательно), третий столбец <strong>Цена</strong> — по желанию (заголовок не обязателен; также «себестоимость», «cost»). Одинаковые артикулы суммируются. Если цена указана — обновится себестоимость товара в каталоге и попадёт в закупку; без цены остаётся текущая себестоимость в системе. Если хотя бы один артикул не найден в каталоге, закупка не создаётся.
           </p>
           <div style={{ marginBottom: 12 }}>
             <Button
