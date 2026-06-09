@@ -418,7 +418,22 @@ class WarehouseReceiptsService {
     const receipt = await this.receiptsRepo.findById(id);
     if (!receipt) return null;
     const lines = await this.receiptsRepo.getLinesWithProducts(id);
-    return { ...receipt, lines };
+    const linkedPr = await query(
+      `SELECT pr.id, pr.status, pr.purchase_id
+       FROM purchase_receipts pr
+       WHERE pr.warehouse_receipt_id = $1
+       ORDER BY pr.id DESC
+       LIMIT 1`,
+      [id]
+    );
+    const link = linkedPr.rows?.[0] || null;
+    return {
+      ...receipt,
+      lines,
+      purchase_receipt_id: link?.id != null ? Number(link.id) : null,
+      purchase_receipt_status: link?.status ?? null,
+      purchase_id: link?.purchase_id != null ? Number(link.purchase_id) : null,
+    };
   }
 
   /**

@@ -3,7 +3,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
 import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
 import { productsApi } from '../../services/products.api';
@@ -196,6 +196,7 @@ export function WarehouseOperations({
   hideTabs = false
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
@@ -3970,7 +3971,41 @@ export function WarehouseOperations({
             ) : (
               <p className="warehouse-ops-receipt-list-empty">Нет строк.</p>
             )}
-            <div className="warehouse-ops-receipt-detail-actions" style={{ marginTop: 16 }}>
+            <div className="warehouse-ops-receipt-detail-actions" style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {receiptDetail.purchase_receipt_id &&
+              String(receiptDetail.purchase_receipt_status) === 'scanning' &&
+              receiptDetail.document_type !== 'return' &&
+              receiptDetail.document_type !== 'customer_return' ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    const prId = receiptDetail.purchase_receipt_id;
+                    const purchaseId = receiptDetail.purchase_id;
+                    const params = new URLSearchParams();
+                    params.set('purchase_receipt', String(prId));
+                    if (purchaseId != null) params.set('purchase', String(purchaseId));
+                    setReceiptDetail(null);
+                    navigate(`/stock-levels/purchases?${params.toString()}`);
+                  }}
+                >
+                  Редактировать приёмку
+                </Button>
+              ) : receiptDetail.purchase_receipt_id ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    const prId = receiptDetail.purchase_receipt_id;
+                    const purchaseId = receiptDetail.purchase_id;
+                    const params = new URLSearchParams();
+                    params.set('purchase_receipt', String(prId));
+                    if (purchaseId != null) params.set('purchase', String(purchaseId));
+                    setReceiptDetail(null);
+                    navigate(`/stock-levels/purchases?${params.toString()}`);
+                  }}
+                >
+                  Открыть в закупке
+                </Button>
+              ) : null}
               <Button
                 variant="danger"
                 onClick={async () => {

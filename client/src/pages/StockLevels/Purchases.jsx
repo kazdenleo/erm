@@ -357,6 +357,7 @@ export function Purchases() {
   const [deleteReceiptDraftBusy, setDeleteReceiptDraftBusy] = useState(false);
   const [receiptNote, setReceiptNote] = useState('');
   const [receiptNoteBusy, setReceiptNoteBusy] = useState(false);
+  const [receiptLoading, setReceiptLoading] = useState(false);
   const [deleteReceiptBusy, setDeleteReceiptBusy] = useState(null);
   const [linkBarcodeOpen, setLinkBarcodeOpen] = useState(false);
   const [linkBarcodeValue, setLinkBarcodeValue] = useState('');
@@ -433,6 +434,13 @@ export function Purchases() {
 
   useEffect(() => {
     const sp = new URLSearchParams(location.search);
+    const purchaseRaw = String(sp.get('purchase') || '').trim();
+    if (purchaseRaw && /^\d+$/.test(purchaseRaw)) {
+      const pid = Number(purchaseRaw);
+      if (Number.isFinite(pid) && pid > 0 && Number(detail?.purchase?.id) !== pid) {
+        openDetail(pid);
+      }
+    }
     const ridRaw = String(sp.get('purchase_receipt') || '').trim();
     if (!ridRaw || !/^\d+$/.test(ridRaw)) return;
     const rid = Number(ridRaw);
@@ -746,16 +754,27 @@ export function Purchases() {
   );
 
   const openReceipt = async (receiptId) => {
+    const rid = Number(receiptId);
+    if (!Number.isFinite(rid) || rid < 1) return;
+    setReceiptLoading(true);
+    setErr(null);
     try {
-      const data = await purchasesApi.getReceipt(receiptId);
+      const data = await purchasesApi.getReceipt(rid);
+      if (!data?.receipt?.id) {
+        setErr('Приёмка не найдена или недоступна');
+        return;
+      }
       setReceipt(data);
       setReceiptNote(data?.receipt?.note ?? '');
-      syncPurchaseReceiptInUrl(data?.receipt?.id ?? receiptId);
+      syncPurchaseReceiptInUrl(data.receipt.id);
       setReceiptInviteLinkCopied(false);
       setScanMsg(null);
       setLastScanLine(null);
       const p = data?.purchase || {};
       const dp = detail?.purchase;
+      if (p.id != null && Number(dp?.id) !== Number(p.id)) {
+        await openDetail(p.id);
+      }
       setReceiptWarehouseId(
         p.warehouseId != null
           ? String(p.warehouseId)
@@ -777,9 +796,13 @@ export function Purchases() {
             ? String(dp.organization_id)
             : ''
       );
-      setTimeout(() => scanRef.current?.focus(), 80);
+      if (String(data.receipt.status) === 'scanning') {
+        setTimeout(() => scanRef.current?.focus(), 80);
+      }
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось открыть приёмку');
+    } finally {
+      setReceiptLoading(false);
     }
   };
 
@@ -936,10 +959,21 @@ export function Purchases() {
       try {
         setManualQtyBusy(it.product_id);
         setErr(null);
-        await purchasesApi.setReceiptItemQuantity(rid, {
+        const res = await purchasesApi.setReceiptItemQuantity(rid, {
           productId: it.product_id,
           quantity: qty,
           scannerId: scannerId || null,
+        });
+        const savedQty = res?.scannedQuantity ?? qty;
+        setReceipt((prev) => {
+          if (!prev?.items) return prev;
+          const pid = Number(it.product_id);
+          return {
+            ...prev,
+            items: prev.items.map((row) =>
+              Number(row.product_id) === pid ? { ...row, scanned_quantity: savedQty } : row
+            ),
+          };
         });
         scheduleReceiptRefresh(rid);
       } catch (ex) {
@@ -1343,7 +1377,7 @@ export function Purchases() {
       </Modal>
 
       <Modal
-        isOpen={!!detail}
+        isOpen={!!detail && !receipt?.receipt?.id}
         onClose={() => setDetail(null)}
         title={detail?.purchase?.id ? `Закупка №${detail.purchase.id}` : 'Закупка'}
         size="xl"
@@ -1660,9 +1694,13 @@ export function Purchases() {
                               <Button
                                 variant="secondary"
                                 size="small"
-                                onClick={onNavigationClick(() => openReceipt(r.id))}
+                                disabled={receiptLoading}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openReceipt(r.id);
+                                }}
                               >
-                                {isScanning ? 'Редактировать' : 'Открыть'}
+                                {receiptLoading ? 'Открываю…' : isScanning ? 'Редактировать' : 'Открыть'}
                               </Button>
                               <Button
                                 variant="secondary"
@@ -1688,13 +1726,27 @@ export function Purchases() {
       </Modal>
 
       <Modal
-        isOpen={!!receipt?.receipt?.id}
+        isOpen={!!receipt?.receipt?.id || receiptLoading}
         onClose={requestCloseReceipt}
-        title={receipt?.receipt?.id ? `Приёмка №${receipt.receipt.id}` : 'Приёмка'}
+        title={
+          receiptLoading
+            ? 'Загрузка приёмки…'
+            : receipt?.receipt?.id
+              ? `Приёмка №${receipt.receipt.id}`
+              : 'Приёмка'
+        }
         size="xl"
       >
+        {receiptLoading && !receipt?.receipt?.id ? (
+          <div className="loading">Загрузка приёмки…</div>
+        ) : null}
         {receipt?.receipt ? (
           <>
+            {err ? (
+              <p className="error" role="alert" style={{ marginBottom: 12 }}>
+                {err}
+              </p>
+            ) : null}
             {(() => {
               const isReceiptScanning = String(receipt.receipt.status) === 'scanning';
               return (
