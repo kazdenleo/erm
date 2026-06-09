@@ -2960,14 +2960,11 @@ class PurchasesService {
       }
     });
 
-    for (const prodId of trimProducts) {
-      await ordersService
-        .trimExcessReservesForProduct(prodId, {
-          reason: `Откат/удаление приёмки по закупке`,
-          meta: { purchase_receipt_id: rid }
-        })
-        .catch(() => {});
-    }
+    schedulePurchaseReserveCleanup({
+      productIds: [...trimProducts],
+      reason: `Откат/удаление приёмки по закупке`,
+      meta: { purchase_receipt_id: rid },
+    });
 
     return { ok: true, purchaseId: purchaseIdOut };
   }

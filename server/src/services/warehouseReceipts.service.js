@@ -125,6 +125,26 @@ class WarehouseReceiptsService {
     }
   }
 
+  /** Остатки по документу уже откатаны (повторное удаление — только снять запись). */
+  async _isReceiptStockAlreadyReversed(receiptId) {
+    const rid = Number(receiptId);
+    if (!Number.isFinite(rid) || rid < 1) return false;
+    const r = await query(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (
+                WHERE COALESCE(meta->>'deleted', '') IN ('true', '1')
+                   OR COALESCE(meta->>'kit_assembly_receipt_reversal', '') IN ('true', '1')
+                   OR COALESCE(meta->>'receipt_reversal', '') IN ('true', '1')
+              )::int AS reversed
+       FROM stock_movements
+       WHERE (meta->>'receipt_id')::bigint = $1`,
+      [rid]
+    );
+    const total = r.rows?.[0]?.total ?? 0;
+    const reversed = r.rows?.[0]?.reversed ?? 0;
+    return total > 0 && reversed >= total;
+  }
+
   /** Старая приёмка «сборки»: в журнале есть списание комплектующих по этому документу. */
   async _isLegacyKitAssemblyReceipt(receiptId) {
     const rid = Number(receiptId);
@@ -183,7 +203,6 @@ class WarehouseReceiptsService {
     warehouseId
   }) {
     const { getKitComponents, buildKitComponentQtyMap } = await import('./kitStock.service.js');
-    const { runWithProductStockLock } = await import('./stockMovements.service.js');
     const kitId = Number(kitProductId);
     const kits = Math.max(1, parseInt(quantity, 10) || 1);
     const components = await getKitComponents(kitId);
@@ -203,9 +222,6 @@ class WarehouseReceiptsService {
     }
 
     const compQtyMap = buildKitComponentQtyMap(components, kits);
-    const lockIds = [kitId, ...[...compQtyMap.keys()].map((n) => Number(n))]
-      .filter((n) => Number.isFinite(n) && n > 0)
-      .sort((a, b) => a - b);
 
     const metaBase = {
       receipt_id: receiptId,
@@ -218,28 +234,21 @@ class WarehouseReceiptsService {
       deleted: true
     };
 
-    const applyMoves = async () => {
-      await stockMovementsService.applyChange(kitId, {
-        delta: -kits,
-        type: 'shipment',
-        reason,
-        meta: metaBase
+    // applyChange сам берёт advisory lock на product_id; вложенные runWithProductStockLock давали deadlock.
+    await stockMovementsService.applyChange(kitId, {
+      delta: -kits,
+      type: 'shipment',
+      reason,
+      meta: metaBase
+    });
+    for (const [compId, compQty] of compQtyMap) {
+      await stockMovementsService.applyChange(compId, {
+        delta: compQty,
+        type: 'receipt',
+        reason: `${reason}: возврат комплектующих при отмене приёмки комплекта`,
+        meta: { ...metaBase, kit_component_restore: true }
       });
-      for (const [compId, compQty] of compQtyMap) {
-        await stockMovementsService.applyChange(compId, {
-          delta: compQty,
-          type: 'receipt',
-          reason: `${reason}: возврат комплектующих при отмене приёмки комплекта`,
-          meta: { ...metaBase, kit_component_restore: true }
-        });
-      }
-    };
-
-    const runChain = (idx) => {
-      if (idx >= lockIds.length) return applyMoves();
-      return runWithProductStockLock(lockIds[idx], () => runChain(idx + 1));
-    };
-    await runChain(0);
+    }
   }
 
   /**
@@ -452,6 +461,11 @@ class WarehouseReceiptsService {
     const reason = isReturnToSupplier
       ? `Аннулирование возврата ${receiptNumber}`
       : (isCustomerReturn ? `Аннулирование возврата от клиента ${receiptNumber}` : `Аннулирование приёмки ${receiptNumber}`);
+    const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId);
+    if (stockAlreadyReversed) {
+      await this.receiptsRepo.delete(numId);
+      return { deleted: true, id: numId, stockSkipped: true };
+    }
     for (const line of lines) {
       const productId = line.product_id;
       const quantity = Math.max(0, parseInt(line.quantity, 10) || 0);

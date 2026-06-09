@@ -24,7 +24,7 @@ export const receiptsApi = {
   },
 
   delete: async (id) => {
-    const response = await api.delete(`/receipts/${id}`);
+    const response = await api.delete(`/receipts/${id}`, { timeout: 120000 });
     return response.data;
   },
 
