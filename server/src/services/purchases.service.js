@@ -229,6 +229,14 @@ function normalizeProfileId(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+const RECEIPT_CALENDAR_TZ = 'Europe/Moscow';
+
+function receiptCalendarDayKey(isoOrDate) {
+  const d = isoOrDate != null ? new Date(isoOrDate) : new Date();
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-CA', { timeZone: RECEIPT_CALENDAR_TZ });
+}
+
 async function getDefaultWarehouseIdForTx(client) {
   const r = await client.query(
     `SELECT id FROM warehouses WHERE type = 'warehouse' AND supplier_id IS NULL ORDER BY id ASC LIMIT 1`
@@ -2080,20 +2088,40 @@ class PurchasesService {
       await assertPurchaseNotArchivedInTx(client, id);
 
       const existing = await client.query(
-        `SELECT r.id, r.warehouse_receipt_id
+        `SELECT r.id, r.warehouse_receipt_id, r.started_at, r.created_at
          FROM purchase_receipts r
          WHERE r.purchase_id = $1
            AND r.status = 'scanning'
          ORDER BY r.id DESC`,
         [id]
       );
+      const scanningRows = existing.rows || [];
+      const todayKey = receiptCalendarDayKey(new Date());
 
       if (forceNew === true || forceNew === 'true' || forceNew === '1') {
-        for (const row of existing.rows || []) {
+        for (const row of scanningRows) {
           if (row?.id) await deleteScanningPurchaseReceiptInTx(client, row.id);
         }
-      } else if (existing.rows?.[0]?.id) {
-        return { id: existing.rows[0].id, reused: true, warehouseReceiptId: null };
+      } else {
+        const todayDraft = scanningRows.find((row) => {
+          const dayKey = receiptCalendarDayKey(row?.started_at || row?.created_at);
+          return dayKey && dayKey === todayKey;
+        });
+        if (todayDraft?.id) {
+          return {
+            id: todayDraft.id,
+            reused: true,
+            sameDay: true,
+            warehouseReceiptId: todayDraft.warehouse_receipt_id ?? null,
+          };
+        }
+        for (const row of scanningRows) {
+          if (!row?.id) continue;
+          const dayKey = receiptCalendarDayKey(row.started_at || row.created_at);
+          if (dayKey && dayKey !== todayKey) {
+            await deleteScanningPurchaseReceiptInTx(client, row.id);
+          }
+        }
       }
 
       const ins = await client.query(
@@ -2103,6 +2131,50 @@ class PurchasesService {
         [id, uid && !Number.isNaN(uid) ? uid : null]
       );
       return { id: ins.rows[0].id, warehouseReceiptId: null };
+    });
+  }
+
+  /** Обновить черновик приёмки (комментарий и пр.). */
+  async updatePurchaseReceipt(receiptId, { note, profileId } = {}) {
+    const rid = parseInt(receiptId, 10);
+    if (!rid || Number.isNaN(rid)) {
+      const err = new Error('Некорректный ID приёмки');
+      err.statusCode = 400;
+      throw err;
+    }
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    const noteVal = note != null && String(note).trim() !== '' ? String(note).trim() : null;
+
+    return transaction(async (client) => {
+      const r = await client.query(
+        `SELECT r.id, r.status
+         FROM purchase_receipts r
+         JOIN purchases p ON p.id = r.purchase_id
+         WHERE r.id = $1 AND p.profile_id = $2
+         FOR UPDATE`,
+        [rid, pid]
+      );
+      const row = r.rows?.[0];
+      if (!row) {
+        const err = new Error('Приёмка не найдена');
+        err.statusCode = 404;
+        throw err;
+      }
+      if (String(row.status) !== 'scanning') {
+        const err = new Error('Редактировать можно только приёмку в статусе сканирования');
+        err.statusCode = 400;
+        throw err;
+      }
+      await client.query(
+        `UPDATE purchase_receipts SET note = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [rid, noteVal]
+      );
+      return { ok: true, id: rid, note: noteVal };
     });
   }
 

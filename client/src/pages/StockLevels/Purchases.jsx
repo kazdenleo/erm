@@ -144,6 +144,28 @@ function fmtDt(iso) {
   });
 }
 
+const RECEIPT_CALENDAR_TZ = 'Europe/Moscow';
+
+function receiptCalendarDayKey(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-CA', { timeZone: RECEIPT_CALENDAR_TZ });
+  } catch {
+    return '';
+  }
+}
+
+function isReceiptSameCalendarDay(receiptRow) {
+  if (!receiptRow) return false;
+  const raw =
+    receiptRow.started_at || receiptRow.startedAt || receiptRow.created_at || receiptRow.createdAt;
+  return receiptCalendarDayKey(raw) === receiptCalendarDayKey(new Date().toISOString());
+}
+
+function findScanningDraftReceipt(receipts) {
+  return (Array.isArray(receipts) ? receipts : []).find((x) => String(x?.status) === 'scanning') || null;
+}
+
 function qtyCell(raw) {
   if (raw == null || raw === '') return '—';
   const n = Number(raw);
@@ -333,6 +355,9 @@ export function Purchases() {
   const [excelPreviewInfo, setExcelPreviewInfo] = useState(null);
   const [receiptCompleteInfo, setReceiptCompleteInfo] = useState(null);
   const [deleteReceiptDraftBusy, setDeleteReceiptDraftBusy] = useState(false);
+  const [receiptNote, setReceiptNote] = useState('');
+  const [receiptNoteBusy, setReceiptNoteBusy] = useState(false);
+  const [deleteReceiptBusy, setDeleteReceiptBusy] = useState(null);
   const [linkBarcodeOpen, setLinkBarcodeOpen] = useState(false);
   const [linkBarcodeValue, setLinkBarcodeValue] = useState('');
   const purchaseLinkRetryRef = useRef(null);
@@ -667,10 +692,64 @@ export function Purchases() {
     }
   };
 
+  const startPurchaseReceipt = useCallback(
+    async ({ forceNew = false } = {}) => {
+      const purchaseId = detail?.purchase?.id;
+      if (!purchaseId) return null;
+      setCreateReceiptBusy(true);
+      try {
+        setErr(null);
+        const r = await purchasesApi.createReceipt(purchaseId, forceNew ? { forceNew: true } : {});
+        await openDetail(purchaseId);
+        await openReceipt(r.id);
+        return r;
+      } catch (ex) {
+        setErr(ex.response?.data?.message || ex.message || 'Не удалось создать приёмку');
+        return null;
+      } finally {
+        setCreateReceiptBusy(false);
+      }
+    },
+    // openDetail/openReceipt ниже по файлу — стабильные колбэки не требуются
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [detail?.purchase?.id]
+  );
+
+  const handleDeletePurchaseReceipt = useCallback(
+    async (receiptRow, { closeModal = false } = {}) => {
+      const rid = receiptRow?.id;
+      if (!rid) return;
+      const completed = String(receiptRow.status) === 'completed';
+      const msg = completed
+        ? `Удалить приёмку №${rid}? Сторно: остатки и incoming будут откатаны новыми проводками в журнале.`
+        : `Удалить приёмку №${rid} (сканирование)? Черновик и строки складской приёмки будут сняты.`;
+      if (!window.confirm(msg)) return;
+      try {
+        setDeleteReceiptBusy(rid);
+        setErr(null);
+        await purchasesApi.deleteReceipt(rid);
+        if (closeModal || Number(receipt?.receipt?.id) === Number(rid)) {
+          syncPurchaseReceiptInUrl('');
+          setReceipt(null);
+          setScanMsg(null);
+          setReceiptCloseConfirm(false);
+        }
+        if (detail?.purchase?.id) await openDetail(detail.purchase.id);
+        await reload();
+      } catch (ex) {
+        setErr(ex.response?.data?.message || ex.message || 'Не удалось удалить приёмку');
+      } finally {
+        setDeleteReceiptBusy(null);
+      }
+    },
+    [detail?.purchase?.id, receipt?.receipt?.id, reload]
+  );
+
   const openReceipt = async (receiptId) => {
     try {
       const data = await purchasesApi.getReceipt(receiptId);
       setReceipt(data);
+      setReceiptNote(data?.receipt?.note ?? '');
       syncPurchaseReceiptInUrl(data?.receipt?.id ?? receiptId);
       setReceiptInviteLinkCopied(false);
       setScanMsg(null);
@@ -1385,27 +1464,16 @@ export function Purchases() {
                     setErr('Закупка в архиве — всё принято. Создайте новую закупку для следующей поставки.');
                     return;
                   }
-                  setCreateReceiptBusy(true);
-                  try {
-                    setErr(null);
-                    const existingScanning = Array.isArray(detail?.receipts)
-                      ? detail.receipts.find((x) => String(x?.status) === 'scanning')
-                      : null;
-                    if (existingScanning?.id) {
-                      setReceiptDraftChoice({
-                        purchaseId: detail.purchase.id,
-                        existingReceiptId: existingScanning.id,
-                      });
-                      return;
-                    }
-                    const r = await purchasesApi.createReceipt(detail.purchase.id);
-                    await openDetail(detail.purchase.id);
-                    await openReceipt(r.id);
-                  } catch (ex) {
-                    setErr(ex.response?.data?.message || ex.message || 'Не удалось создать приёмку');
-                  } finally {
-                    setCreateReceiptBusy(false);
+                  const scanningDraft = findScanningDraftReceipt(detail?.receipts);
+                  if (scanningDraft?.id && isReceiptSameCalendarDay(scanningDraft)) {
+                    setReceiptDraftChoice({
+                      purchaseId: detail.purchase.id,
+                      existingReceiptId: scanningDraft.id,
+                      draftDate: scanningDraft.started_at || scanningDraft.created_at,
+                    });
+                    return;
                   }
+                  await startPurchaseReceipt({ forceNew: false });
                 }}
                 disabled={createReceiptBusy}
               >
@@ -1575,50 +1643,40 @@ export function Purchases() {
                       <th>№</th>
                       <th>Статус</th>
                       <th>Позиций</th>
-                      <th />
-                      <th />
+                      <th>Действия</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {detail.receipts.map((r) => (
-                      <tr
-                        key={r.id}
-                        className="stock-levels-row-clickable"
-                        onClick={onNavigationClick(() => openReceipt(r.id))}
-                      >
-                        <td>{fmtDt(r.created_at)}</td>
-                        <td>№{r.id}</td>
-                        <td>{receiptStatusLabel(r.status)}</td>
-                        <td>{r.items_count ?? '—'}</td>
-                        <td>
-                          <span className="muted">Открыть →</span>
-                        </td>
-                        <td onClick={(e) => e.stopPropagation()}>
-                          <Button
-                            variant="secondary"
-                            size="small"
-                            onClick={async () => {
-                              const completed = String(r.status) === 'completed';
-                              const msg = completed
-                                ? `Удалить приёмку №${r.id}? Сторно: остатки и incoming будут откатаны новыми проводками в журнале; исходные записи приёмки останутся в истории.`
-                                : `Удалить приёмку №${r.id} (сканирование)? Черновик и строки складской приёмки будут сняты (в журнал движений это не пишется, т.к. приёмка не была завершена).`;
-                              if (!window.confirm(msg)) return;
-                              try {
-                                setErr(null);
-                                await purchasesApi.deleteReceipt(r.id);
-                                await openDetail(detail.purchase.id);
-                                await reload();
-                                if (receipt?.receipt?.id === r.id) setReceipt(null);
-                              } catch (ex) {
-                                setErr(ex.response?.data?.message || ex.message || 'Не удалось удалить приёмку');
-                              }
-                            }}
-                          >
-                            Удалить
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
+                    {detail.receipts.map((r) => {
+                      const isScanning = String(r.status) === 'scanning';
+                      return (
+                        <tr key={r.id}>
+                          <td>{fmtDt(r.started_at || r.created_at)}</td>
+                          <td>№{r.id}</td>
+                          <td>{receiptStatusLabel(r.status)}</td>
+                          <td>{r.items_count ?? '—'}</td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <Button
+                                variant="secondary"
+                                size="small"
+                                onClick={onNavigationClick(() => openReceipt(r.id))}
+                              >
+                                {isScanning ? 'Редактировать' : 'Открыть'}
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                size="small"
+                                disabled={deleteReceiptBusy === r.id}
+                                onClick={() => handleDeletePurchaseReceipt(r)}
+                              >
+                                {deleteReceiptBusy === r.id ? 'Удаляю…' : 'Удалить'}
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1637,14 +1695,25 @@ export function Purchases() {
       >
         {receipt?.receipt ? (
           <>
+            {(() => {
+              const isReceiptScanning = String(receipt.receipt.status) === 'scanning';
+              return (
+                <>
             <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
               статус: {receiptStatusLabel(receipt.receipt.status)} · закупка №{receipt.receipt.purchase_id}
+              {receipt.receipt.completed_at ? ` · завершена ${fmtDt(receipt.receipt.completed_at)}` : ''}
             </p>
+            {!isReceiptScanning ? (
+              <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
+                Завершённую приёмку можно просмотреть или удалить (с откатом остатков). Редактирование количеств недоступно.
+              </p>
+            ) : null}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
               <span className="muted" style={{ fontSize: 13 }}>Поставщик</span>
               <select
                 className="warehouse-ops-select"
                 value={receiptSupplierId}
+                disabled={!isReceiptScanning}
                 onChange={async (e) => {
                   const v = e.target.value;
                   setReceiptSupplierId(v);
@@ -1673,6 +1742,7 @@ export function Purchases() {
               <select
                 className="warehouse-ops-select"
                 value={receiptOrganizationId}
+                disabled={!isReceiptScanning}
                 onChange={async (e) => {
                   const v = e.target.value;
                   setReceiptOrganizationId(v);
@@ -1713,12 +1783,53 @@ export function Purchases() {
                   ))}
               </select>
             </div>
+            {isReceiptScanning && !isReceiptGuest ? (
+              <div style={{ marginBottom: 12 }}>
+                <span className="muted" style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
+                  Комментарий к приёмке
+                </span>
+                <textarea
+                  className="warehouse-ops-input"
+                  rows={2}
+                  value={receiptNote}
+                  onChange={(e) => setReceiptNote(e.target.value)}
+                  placeholder="Необязательно"
+                  style={{ width: '100%', maxWidth: 520 }}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="small"
+                  style={{ marginTop: 8 }}
+                  disabled={receiptNoteBusy}
+                  onClick={async () => {
+                    const rid = receipt.receipt.id;
+                    try {
+                      setReceiptNoteBusy(true);
+                      setErr(null);
+                      await purchasesApi.updateReceipt(rid, { note: receiptNote });
+                      await openReceipt(rid);
+                    } catch (ex) {
+                      setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить комментарий');
+                    } finally {
+                      setReceiptNoteBusy(false);
+                    }
+                  }}
+                >
+                  {receiptNoteBusy ? 'Сохраняю…' : 'Сохранить комментарий'}
+                </Button>
+              </div>
+            ) : receipt.receipt.note ? (
+              <p className="muted" style={{ marginBottom: 12 }}>
+                Комментарий: {receipt.receipt.note}
+              </p>
+            ) : null}
             {isReceiptGuest ? (
               <p className="warehouse-ops-hint" style={{ marginBottom: 10 }}>
                 Вы приглашены в совместную приёмку: сканируйте товары — они попадут в общий список. Завершить приёмку может только создатель.
               </p>
             ) : null}
-            {String(receipt.receipt.status) === 'scanning' ? (
+            {isReceiptScanning ? (
               <div className="warehouse-ops-live-invite-panel" style={{ marginBottom: 12 }}>
                 <h4 className="warehouse-ops-live-invite-title">Пригласить коллег / другое устройство</h4>
                 <p className="warehouse-ops-hint warehouse-ops-live-invite-lead">
@@ -1792,6 +1903,7 @@ export function Purchases() {
                 ) : null}
               </div>
             ) : null}
+            {isReceiptScanning ? (
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -1835,14 +1947,15 @@ export function Purchases() {
                 autoComplete="off"
               />
             </form>
-            {pendingScans > 0 ? (
+            ) : null}
+            {isReceiptScanning && pendingScans > 0 ? (
               <p className="muted" style={{ marginTop: 8 }} role="status">
                 В очереди сканов: <strong>{pendingScans}</strong> · список обновляется автоматически
               </p>
-            ) : scanMsg ? (
+            ) : isReceiptScanning && scanMsg ? (
               <p className="muted" style={{ marginTop: 8 }}>{scanMsg}</p>
             ) : null}
-            {lastScanLine && (
+            {isReceiptScanning && lastScanLine && (
               <div
                 role="status"
                 style={{
@@ -1865,6 +1978,7 @@ export function Purchases() {
             )}
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+              {isReceiptScanning ? (
               <Button
                 disabled={isReceiptGuest}
                 title={isReceiptGuest ? 'Завершить может только создатель приёмки' : undefined}
@@ -1897,16 +2011,28 @@ export function Purchases() {
               >
                 Завершить приёмку
               </Button>
+              ) : null}
               <Button variant="secondary" onClick={() => openReceipt(receipt.receipt.id)}>
                 Обновить
               </Button>
-              {String(receipt.receipt.status) === 'scanning' ? (
+              {isReceiptScanning ? (
                 <Button variant="secondary" onClick={requestCloseReceipt}>
                   Закрыть (сохранить черновик)
                 </Button>
               ) : null}
+              {!isReceiptGuest ? (
+                <Button
+                  variant="secondary"
+                  disabled={deleteReceiptBusy === receipt.receipt.id}
+                  onClick={() => handleDeletePurchaseReceipt(receipt.receipt, { closeModal: true })}
+                >
+                  {deleteReceiptBusy === receipt.receipt.id ? 'Удаляю…' : 'Удалить приёмку'}
+                </Button>
+              ) : null}
             </div>
 
+            {isReceiptScanning ? (
+            <>
             <h4 style={{ marginTop: 14 }}>Коробкой (ручной ввод)</h4>
             <form
               onSubmit={async (e) => {
@@ -1967,8 +2093,10 @@ export function Purchases() {
                 Добавить
               </Button>
             </form>
+            </>
+            ) : null}
 
-            <h4 style={{ marginTop: 14 }}>Отсканировано</h4>
+            <h4 style={{ marginTop: 14 }}>{isReceiptScanning ? 'Отсканировано' : 'Принято по приёмке'}</h4>
             {Array.isArray(receipt.items) && receipt.items.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
                 <table className="warehouse-ops-receipt-list-table table">
@@ -1979,7 +2107,7 @@ export function Purchases() {
                       <th>Закуп. цена</th>
                       <th>Заказано</th>
                       <th>Принято</th>
-                      <th style={{ width: 190 }}>Коробкой</th>
+                      {isReceiptScanning ? <th style={{ width: 190 }}>Коробкой</th> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -1988,28 +2116,32 @@ export function Purchases() {
                         <td className="sku-cell">{it.product_sku || '—'}</td>
                         <td className="name-cell">{it.product_name || '—'}</td>
                         <td style={{ width: 140 }}>
-                          <input
-                            className="warehouse-ops-qty-input"
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            value={it.purchase_price ?? it.product_cost ?? ''}
-                            onChange={async (e) => {
-                              const v = e.target.value;
-                              const purchaseItemId = it.purchase_item_id;
-                              if (!purchaseItemId) return;
-                              try {
-                                setErr(null);
-                                await purchasesApi.updatePurchaseItem(receipt.receipt.purchase_id, purchaseItemId, {
-                                  purchasePrice: v === '' ? null : Number(v),
-                                });
-                                await openReceipt(receipt.receipt.id);
-                                if (detail?.purchase?.id) await openDetail(detail.purchase.id);
-                              } catch (ex) {
-                                setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить цену');
-                              }
-                            }}
-                          />
+                          {isReceiptScanning ? (
+                            <input
+                              className="warehouse-ops-qty-input"
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={it.purchase_price ?? it.product_cost ?? ''}
+                              onChange={async (e) => {
+                                const v = e.target.value;
+                                const purchaseItemId = it.purchase_item_id;
+                                if (!purchaseItemId) return;
+                                try {
+                                  setErr(null);
+                                  await purchasesApi.updatePurchaseItem(receipt.receipt.purchase_id, purchaseItemId, {
+                                    purchasePrice: v === '' ? null : Number(v),
+                                  });
+                                  await openReceipt(receipt.receipt.id);
+                                  if (detail?.purchase?.id) await openDetail(detail.purchase.id);
+                                } catch (ex) {
+                                  setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить цену');
+                                }
+                              }}
+                            />
+                          ) : (
+                            it.purchase_price ?? it.product_cost ?? '—'
+                          )}
                         </td>
                         {(() => {
                           const exp = Number(it.expected_quantity);
@@ -2089,71 +2221,73 @@ export function Purchases() {
                             </>
                           );
                         })()}
-                        <td>
-                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            <input
-                              type="number"
-                              min={1}
-                              step={1}
-                              className="warehouse-ops-qty-input"
-                              style={{ width: 90 }}
-                              placeholder="+N"
-                              value={it._boxQtyInput ?? ''}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                setReceipt((prev) => {
-                                  if (!prev?.items) return prev;
-                                  const nextItems = (prev.items || []).map((x) =>
-                                    Number(x?.product_id) === Number(it.product_id)
-                                      ? { ...x, _boxQtyInput: v }
-                                      : x
-                                  );
-                                  return { ...prev, items: nextItems };
-                                });
-                              }}
-                            />
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              size="small"
-                              onClick={async () => {
-                                const rid = receipt?.receipt?.id;
-                                const qty = Math.floor(Number(it._boxQtyInput) || 0);
-                                if (!rid || qty <= 0) return;
-                                try {
-                                  pendingScansRef.current += 1;
-                                  setPendingScans(pendingScansRef.current);
-                                  const effectiveScannerId = scannerId || null;
-                                  const res = await purchasesApi.addReceiptQuantity(rid, {
-                                    productId: it.product_id,
-                                    quantity: qty,
-                                    scannerId: effectiveScannerId,
+                        {isReceiptScanning ? (
+                          <td>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <input
+                                type="number"
+                                min={1}
+                                step={1}
+                                className="warehouse-ops-qty-input"
+                                style={{ width: 90 }}
+                                placeholder="+N"
+                                value={it._boxQtyInput ?? ''}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setReceipt((prev) => {
+                                    if (!prev?.items) return prev;
+                                    const nextItems = (prev.items || []).map((x) =>
+                                      Number(x?.product_id) === Number(it.product_id)
+                                        ? { ...x, _boxQtyInput: v }
+                                        : x
+                                    );
+                                    return { ...prev, items: nextItems };
                                   });
-                                  const updatedProductId = Number(res?.productId);
-                                  const updatedScannedQty = Number(res?.scannedQuantity);
-                                  if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty)) {
-                                    setReceipt((prev) => {
-                                      if (!prev?.items) return prev;
-                                      const nextItems = (prev.items || []).map((x) => {
-                                        if (Number(x?.product_id) !== updatedProductId) return x;
-                                        return { ...x, scanned_quantity: updatedScannedQty, _boxQtyInput: '' };
-                                      });
-                                      return { ...prev, items: nextItems };
+                                }}
+                              />
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="small"
+                                onClick={async () => {
+                                  const rid = receipt?.receipt?.id;
+                                  const qty = Math.floor(Number(it._boxQtyInput) || 0);
+                                  if (!rid || qty <= 0) return;
+                                  try {
+                                    pendingScansRef.current += 1;
+                                    setPendingScans(pendingScansRef.current);
+                                    const effectiveScannerId = scannerId || null;
+                                    const res = await purchasesApi.addReceiptQuantity(rid, {
+                                      productId: it.product_id,
+                                      quantity: qty,
+                                      scannerId: effectiveScannerId,
                                     });
+                                    const updatedProductId = Number(res?.productId);
+                                    const updatedScannedQty = Number(res?.scannedQuantity);
+                                    if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty)) {
+                                      setReceipt((prev) => {
+                                        if (!prev?.items) return prev;
+                                        const nextItems = (prev.items || []).map((x) => {
+                                          if (Number(x?.product_id) !== updatedProductId) return x;
+                                          return { ...x, scanned_quantity: updatedScannedQty, _boxQtyInput: '' };
+                                        });
+                                        return { ...prev, items: nextItems };
+                                      });
+                                    }
+                                    scheduleReceiptRefresh(rid);
+                                  } catch (ex) {
+                                    setErr(ex.response?.data?.message || ex.message || 'Не удалось добавить количество');
+                                  } finally {
+                                    pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
+                                    setPendingScans(pendingScansRef.current);
                                   }
-                                  scheduleReceiptRefresh(rid);
-                                } catch (ex) {
-                                  setErr(ex.response?.data?.message || ex.message || 'Не удалось добавить количество');
-                                } finally {
-                                  pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
-                                  setPendingScans(pendingScansRef.current);
-                                }
-                              }}
-                            >
-                              Добавить
-                            </Button>
-                          </div>
-                        </td>
+                                }}
+                              >
+                                Добавить
+                              </Button>
+                            </div>
+                          </td>
+                        ) : null}
                       </tr>
                     ))}
                   </tbody>
@@ -2162,6 +2296,9 @@ export function Purchases() {
             ) : (
               <p className="muted">Пока ничего не отсканировано.</p>
             )}
+                </>
+              );
+            })()}
           </>
         ) : null}
       </Modal>
@@ -2169,14 +2306,19 @@ export function Purchases() {
       <Modal
         isOpen={!!receiptDraftChoice}
         onClose={() => setReceiptDraftChoice(null)}
-        title="Незавершённая приёмка"
+        title="Приёмка за сегодня"
         size="md"
       >
         {receiptDraftChoice ? (
           <>
             <p className="warehouse-ops-hint">
-              У закупки №{receiptDraftChoice.purchaseId} уже есть черновик приёмки №
-              {receiptDraftChoice.existingReceiptId}. Продолжить его или начать новую?
+              У закупки №{receiptDraftChoice.purchaseId} сегодня уже есть незавершённая приёмка №
+              {receiptDraftChoice.existingReceiptId}
+              {receiptDraftChoice.draftDate ? ` (от ${fmtDt(receiptDraftChoice.draftDate)})` : ''}. Продолжить её или
+              начать новую?
+            </p>
+            <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
+              Черновик с другого дня не предлагается — для новой даты создаётся отдельная приёмка.
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
               <Button
@@ -2186,26 +2328,14 @@ export function Purchases() {
                   await openReceipt(rid);
                 }}
               >
-                Продолжить черновик
+                Продолжить приёмку
               </Button>
               <Button
                 variant="secondary"
                 disabled={createReceiptBusy}
                 onClick={async () => {
-                  setCreateReceiptBusy(true);
-                  try {
-                    setErr(null);
-                    const r = await purchasesApi.createReceipt(receiptDraftChoice.purchaseId, {
-                      forceNew: true,
-                    });
-                    setReceiptDraftChoice(null);
-                    await openDetail(receiptDraftChoice.purchaseId);
-                    await openReceipt(r.id);
-                  } catch (ex) {
-                    setErr(ex.response?.data?.message || ex.message || 'Не удалось создать приёмку');
-                  } finally {
-                    setCreateReceiptBusy(false);
-                  }
+                  setReceiptDraftChoice(null);
+                  await startPurchaseReceipt({ forceNew: true });
                 }}
               >
                 {createReceiptBusy ? 'Создаю…' : 'Начать новую'}

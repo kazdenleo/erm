@@ -91,6 +91,11 @@ export const purchasesApi = {
     return response.data?.data ?? response.data;
   },
 
+  updateReceipt: async (receiptId, payload) => {
+    const response = await api.put(`/purchases/receipts/${receiptId}`, payload);
+    return response.data?.data ?? response.data;
+  },
+
   scanReceipt: async (receiptId, payload) => {
     const response = await api.post(`/purchases/receipts/${receiptId}/scan`, payload);
     return response.data?.data ?? response.data;

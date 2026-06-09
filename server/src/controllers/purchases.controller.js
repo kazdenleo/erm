@@ -264,6 +264,21 @@ class PurchasesController {
     }
   }
 
+  async updateReceipt(req, res, next) {
+    try {
+      const { receiptId } = req.params;
+      const { note } = req.body || {};
+      const profileId = req.user?.profileId ?? null;
+      const data = await purchasesService.updatePurchaseReceipt(receiptId, { note, profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async scanReceipt(req, res, next) {
     try {
       const { receiptId } = req.params;
