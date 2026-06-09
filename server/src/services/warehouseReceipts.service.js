@@ -24,6 +24,15 @@ class WarehouseReceiptsService {
     return wid;
   }
 
+  /** Себестоимость строки: из запроса или из карточки товара. */
+  async _resolveLineCost(productId, lineCost) {
+    const parsed = lineCost != null && lineCost !== '' ? parseFloat(lineCost) : null;
+    if (parsed != null && !Number.isNaN(parsed) && parsed >= 0) return parsed;
+    const product = await this.productsRepository.findById(productId);
+    const fromCatalog = product?.cost != null ? Number(product.cost) : null;
+    return fromCatalog != null && !Number.isNaN(fromCatalog) && fromCatalog >= 0 ? fromCatalog : null;
+  }
+
   /**
    * Создать приёмку: запись приёмки, строки, движения остатков, обновление себестоимости товаров
    * @param {object} params
@@ -396,7 +405,8 @@ class WarehouseReceiptsService {
     }
 
     for (const [, row] of byProduct) {
-      const { productId, quantity, cost } = row;
+      const { productId, quantity } = row;
+      const cost = await this._resolveLineCost(productId, row.cost);
       const isKit = await isKitProductId(productId);
 
       await this.receiptsRepo.addLine({
@@ -477,11 +487,23 @@ class WarehouseReceiptsService {
       }
 
       const reverseDelta = isReturnToSupplier ? quantity : -quantity;
+      const reverseType = isCustomerReturn
+        ? 'customer_return'
+        : isReturnToSupplier
+          ? 'return_to_supplier'
+          : 'manual';
+      const whId = await this._resolveReceiptWarehouseId(id);
       await stockMovementsService.applyChange(productId, {
         delta: reverseDelta,
-        type: 'manual',
+        type: reverseType,
         reason,
-        meta: { receipt_id: id, receipt_number: receiptNumber, deleted: true, receipt_reversal: true }
+        meta: {
+          receipt_id: id,
+          receipt_number: receiptNumber,
+          warehouse_id: whId,
+          deleted: true,
+          receipt_reversal: true
+        }
       });
     }
     await this.receiptsRepo.delete(id);

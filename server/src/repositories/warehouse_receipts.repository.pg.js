@@ -96,7 +96,9 @@ class WarehouseReceiptsRepositoryPG {
 
   async getLinesWithProducts(receiptId) {
     const r = await query(
-      `SELECT l.id, l.product_id, l.quantity, l.cost, l.created_at,
+      `SELECT l.id, l.product_id, l.quantity,
+              COALESCE(l.cost, p.cost) AS cost,
+              l.created_at,
               p.sku AS product_sku, p.name AS product_name
        FROM warehouse_receipt_lines l
        JOIN products p ON p.id = l.product_id

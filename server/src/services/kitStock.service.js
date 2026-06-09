@@ -44,7 +44,9 @@ export const KIT_PHYSICAL_BALANCE_MOVEMENT_TYPES = [
   'inventory',
   'manual',
   'transfer',
-  'opening_balance'
+  'opening_balance',
+  'customer_return',
+  'return_to_supplier'
 ];
 
 /**
@@ -56,7 +58,8 @@ export const KIT_WHOLE_STOCK_INBOUND_TYPES = [
   'inventory',
   'manual',
   'transfer',
-  'opening_balance'
+  'opening_balance',
+  'customer_return'
 ];
 
 /** Типы движений в истории остатков комплекта (SKU + резерв/«в пути»). */

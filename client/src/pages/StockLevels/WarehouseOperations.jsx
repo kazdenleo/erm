@@ -1632,6 +1632,9 @@ export function WarehouseOperations({
   const addToCustomerReturnList = (product, add) => {
     const qty = Math.max(1, parseInt(add, 10) || 1);
     const id = product.id;
+    const pc = product?.cost;
+    const defaultCost =
+      pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : '';
     setCustomerReturnList(prev => {
       const existing = prev.find(item => String(item.productId) === String(id));
       if (existing) {
@@ -1639,7 +1642,13 @@ export function WarehouseOperations({
           String(item.productId) === String(id) ? { ...item, quantity: existing.quantity + qty } : item
         );
       }
-      return [...prev, { productId: id, sku: product.sku || '—', name: product.name || 'Без названия', quantity: qty }];
+      return [...prev, {
+        productId: id,
+        sku: product.sku || '—',
+        name: product.name || 'Без названия',
+        quantity: qty,
+        cost: defaultCost
+      }];
     });
   };
 
@@ -1755,9 +1764,13 @@ export function WarehouseOperations({
     setOpLoading(true);
     setOpMessage(null);
     try {
-      const lines = customerReturnList.map(l => ({
+      const lines = customerReturnList.map((l) => ({
         productId: l.productId,
-        quantity: Math.max(1, l.quantity)
+        quantity: Math.max(1, l.quantity),
+        cost:
+          l.cost !== '' && l.cost != null
+            ? parseFloat(String(l.cost).replace(',', '.'))
+            : null
       }));
       const res = await receiptsApi.create({
         documentType: 'customer_return',
