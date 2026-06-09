@@ -5,8 +5,8 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
-import stockMovementsService, { runWithProductStockLock } from './stockMovements.service.js';
-import { isKitProductId, getKitComponents, buildKitComponentQtyMap } from './kitStock.service.js';
+import stockMovementsService from './stockMovements.service.js';
+import { isKitProductId } from './kitStock.service.js';
 
 class WarehouseReceiptsService {
   constructor() {
@@ -50,12 +50,6 @@ class WarehouseReceiptsService {
 
     const whId = await this._requireReceiptWarehouseId(warehouseId);
 
-    const receipt = await this.receiptsRepo.create({ supplierId, organizationId, documentType: 'receipt' });
-    if (!receipt) throw new Error('Не удалось создать приёмку');
-
-    const receiptNumber = receipt.receipt_number || `ПТ-${receipt.id}`;
-    const reason = `Поступление ${receiptNumber}`;
-
     const byProduct = new Map();
     for (const line of lines) {
       const productId = typeof line.productId === 'string' ? parseInt(line.productId, 10) : line.productId;
@@ -72,116 +66,80 @@ class WarehouseReceiptsService {
       }
     }
 
-    for (const [, row] of byProduct) {
-      const { productId, quantity, cost } = row;
+    if (byProduct.size === 0) {
+      const err = new Error('Добавьте хотя бы одну позицию в приёмку');
+      err.statusCode = 400;
+      throw err;
+    }
 
-      await this.receiptsRepo.addLine({
-        receiptId: receipt.id,
-        productId,
-        quantity,
-        cost: cost != null && cost >= 0 ? cost : null
-      });
+    let receipt = null;
+    try {
+      receipt = await this.receiptsRepo.create({ supplierId, organizationId, documentType: 'receipt' });
+      if (!receipt) throw new Error('Не удалось создать приёмку');
 
-      if (await isKitProductId(productId)) {
-        await this._applyKitReceiptMovements({
-          kitProductId: productId,
-          quantity,
-          reason,
+      const receiptNumber = receipt.receipt_number || `ПТ-${receipt.id}`;
+      const reason = `Поступление ${receiptNumber}`;
+
+      for (const [, row] of byProduct) {
+        const { productId, quantity, cost } = row;
+        const isKit = await isKitProductId(productId);
+
+        await this.receiptsRepo.addLine({
           receiptId: receipt.id,
-          receiptNumber,
-          warehouseId: whId
+          productId,
+          quantity,
+          cost: cost != null && cost >= 0 ? cost : null
         });
-      } else {
+
+        // Приёмка комплекта с поставщика — оприходование целого SKU, без списания комплектующих (это не производство).
         await stockMovementsService.applyChange(productId, {
           delta: quantity,
           type: 'receipt',
           reason,
-          meta: { receipt_id: receipt.id, receipt_number: receiptNumber, warehouse_id: whId }
+          meta: {
+            receipt_id: receipt.id,
+            receipt_number: receiptNumber,
+            warehouse_id: whId,
+            ...(isKit ? { kit_receipt: true } : {})
+          }
         });
+
+        if (cost != null && !Number.isNaN(cost) && cost >= 0) {
+          await this.productsRepository.update(productId, { cost });
+        }
       }
 
-      if (cost != null && !Number.isNaN(cost) && cost >= 0) {
-        await this.productsRepository.update(productId, { cost });
+      return {
+        receipt,
+        linesCount: byProduct.size
+      };
+    } catch (err) {
+      if (receipt?.id) {
+        try {
+          await this.receiptsRepo.delete(receipt.id);
+        } catch {
+          /* не блокируем исходную ошибку */
+        }
       }
-    }
-
-    return {
-      receipt,
-      linesCount: byProduct.size
-    };
-  }
-
-  /**
-   * Приёмка собранного комплекта: оприходование K1 и списание комплектующих по составу под блокировками product_id.
-   */
-  async _applyKitReceiptMovements({
-    kitProductId,
-    quantity,
-    reason,
-    receiptId,
-    receiptNumber,
-    warehouseId
-  }) {
-    const kitId = Number(kitProductId);
-    const kits = Math.max(1, parseInt(quantity, 10) || 1);
-    const components = await getKitComponents(kitId);
-    if (!components.length) {
-      const err = new Error('У комплекта не задан состав kit_components');
-      err.statusCode = 400;
       throw err;
     }
-    const compQtyMap = buildKitComponentQtyMap(components, kits);
-    const lockIds = [kitId, ...[...compQtyMap.keys()].map((n) => Number(n))]
-      .filter((n) => Number.isFinite(n) && n > 0)
-      .sort((a, b) => a - b);
+  }
 
-    const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
-    for (const [compId, compQty] of compQtyMap) {
-      const metrics = await computeAvailableQuantity(compId, {
-        warehouseId,
-        supplierSyncEnabled: false
-      });
-      const onHand = Math.max(0, Number(metrics.onHand) || 0);
-      if (onHand < compQty) {
-        const err = new Error(
-          `Недостаточно комплектующих для приёмки комплекта: product #${compId}, нужно ${compQty}, на складе ${onHand}`
-        );
-        err.statusCode = 409;
-        throw err;
-      }
-    }
-
-    const metaBase = {
-      receipt_id: receiptId,
-      receipt_number: receiptNumber,
-      warehouse_id: warehouseId,
-      kit_assembly_receipt: true,
-      kit_product_id: kitId,
-      kit_units: kits
-    };
-
-    const applyMoves = async () => {
-      await stockMovementsService.applyChange(kitId, {
-        delta: kits,
-        type: 'receipt',
-        reason,
-        meta: metaBase
-      });
-      for (const [compId, compQty] of compQtyMap) {
-        await stockMovementsService.applyChange(compId, {
-          delta: -compQty,
-          type: 'shipment',
-          reason: `${reason}: комплектующие для сборки комплекта`,
-          meta: { ...metaBase, kit_component_deduct: true }
-        });
-      }
-    };
-
-    const runChain = (idx) => {
-      if (idx >= lockIds.length) return applyMoves();
-      return runWithProductStockLock(lockIds[idx], () => runChain(idx + 1));
-    };
-    await runChain(0);
+  /** Старая приёмка «сборки»: в журнале есть списание комплектующих по этому документу. */
+  async _isLegacyKitAssemblyReceipt(receiptId) {
+    const rid = Number(receiptId);
+    if (!Number.isFinite(rid) || rid < 1) return false;
+    const r = await query(
+      `SELECT 1 FROM stock_movements
+       WHERE (meta->>'receipt_id')::bigint = $1
+         AND (
+           meta->>'kit_component_deduct' = 'true'
+           OR meta->>'kit_assembly_receipt' = 'true'
+         )
+       LIMIT 1`,
+      [rid]
+    );
+    return (r.rows?.length ?? 0) > 0;
   }
 
   async _resolveReceiptWarehouseId(receiptId) {
@@ -214,9 +172,9 @@ class WarehouseReceiptsService {
   }
 
   /**
-   * Отмена приёмки собранного комплекта: K1− и возврат комплектующих на склад.
+   * Отмена старой приёмки «сборки»: K1− и возврат комплектующих на склад.
    */
-  async _reverseKitReceiptMovements({
+  async _reverseLegacyKitAssemblyReceipt({
     kitProductId,
     quantity,
     reason,
@@ -224,6 +182,8 @@ class WarehouseReceiptsService {
     receiptNumber,
     warehouseId
   }) {
+    const { getKitComponents, buildKitComponentQtyMap } = await import('./kitStock.service.js');
+    const { runWithProductStockLock } = await import('./stockMovements.service.js');
     const kitId = Number(kitProductId);
     const kits = Math.max(1, parseInt(quantity, 10) || 1);
     const components = await getKitComponents(kitId);
@@ -473,9 +433,14 @@ class WarehouseReceiptsService {
       const quantity = Math.max(0, parseInt(line.quantity, 10) || 0);
       if (!productId || quantity < 1) continue;
 
-      if (!isReturnToSupplier && !isCustomerReturn && (await isKitProductId(productId))) {
+      if (
+        !isReturnToSupplier &&
+        !isCustomerReturn &&
+        (await isKitProductId(productId)) &&
+        (await this._isLegacyKitAssemblyReceipt(id))
+      ) {
         const whId = await this._resolveReceiptWarehouseId(id);
-        await this._reverseKitReceiptMovements({
+        await this._reverseLegacyKitAssemblyReceipt({
           kitProductId: productId,
           quantity,
           reason,
