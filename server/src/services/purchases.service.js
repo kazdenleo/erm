@@ -188,10 +188,10 @@ async function upsertReceiptItemQuantityInTx(
   if (row?.id) {
     const up = await client.query(
       `UPDATE purchase_receipt_items
-       SET scanned_quantity = $3, scan_meta = $4::jsonb, updated_at = CURRENT_TIMESTAMP
+       SET scanned_quantity = $2, scan_meta = $3::jsonb, updated_at = CURRENT_TIMESTAMP
        WHERE id = $1
        RETURNING scanned_quantity, scan_meta`,
-      [row.id, pid, nextQty, JSON.stringify(meta)]
+      [row.id, nextQty, JSON.stringify(meta)]
     );
     return {
       scannedQuantity: up.rows?.[0]?.scanned_quantity ?? nextQty,
