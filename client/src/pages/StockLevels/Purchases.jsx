@@ -73,6 +73,27 @@ function syncPurchaseReceiptInUrl(receiptId) {
   }
 }
 
+function receiptItemRowKey(it) {
+  const pid = Number(it?.product_id);
+  if (Number.isFinite(pid) && pid > 0) return `p-${pid}`;
+  const id = Number(it?.id);
+  if (Number.isFinite(id) && id > 0) return `i-${id}`;
+  return String(it?.product_sku || 'row');
+}
+
+function parseReceiptScanMeta(raw) {
+  if (raw == null || raw === '') return {};
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+
 /** Сначала недавно отсканированные текущим пользователем/устройством, затем по количеству. */
 function sortReceiptItemsByParticipant(items, { userId = null, scannerId = null } = {}) {
   const uid =
@@ -81,18 +102,14 @@ function sortReceiptItemsByParticipant(items, { userId = null, scannerId = null 
     scannerId != null && String(scannerId).trim() !== '' ? String(scannerId).trim() : '_default';
   return [...(items || [])].sort((a, b) => {
     if (uid) {
-      const byUserA =
-        a?.scan_meta?.byUser && typeof a.scan_meta.byUser === 'object' ? a.scan_meta.byUser : {};
-      const byUserB =
-        b?.scan_meta?.byUser && typeof b.scan_meta.byUser === 'object' ? b.scan_meta.byUser : {};
+      const byUserA = parseReceiptScanMeta(a?.scan_meta).byUser || {};
+      const byUserB = parseReceiptScanMeta(b?.scan_meta).byUser || {};
       const ta = Number(byUserA[uid]) || 0;
       const tb = Number(byUserB[uid]) || 0;
       if (tb !== ta) return tb - ta;
     }
-    const metaA =
-      a?.scan_meta?.byScanner && typeof a.scan_meta.byScanner === 'object' ? a.scan_meta.byScanner : {};
-    const metaB =
-      b?.scan_meta?.byScanner && typeof b.scan_meta.byScanner === 'object' ? b.scan_meta.byScanner : {};
+    const metaA = parseReceiptScanMeta(a?.scan_meta).byScanner || {};
+    const metaB = parseReceiptScanMeta(b?.scan_meta).byScanner || {};
     const taSc = Number(metaA[sc]) || 0;
     const tbSc = Number(metaB[sc]) || 0;
     if (tbSc !== taSc) return tbSc - taSc;
@@ -890,13 +907,20 @@ export function Purchases() {
       setScanMsg('Сканирую…');
       setLastScanLine(null);
       const before = new Map();
-      for (const it of (receipt?.items || [])) {
-        if (!it || it.id == null) continue;
-        before.set(String(it.id), Number(it.scanned_quantity) || 0);
+      for (const it of receipt?.items || []) {
+        const pid = Number(it?.product_id);
+        if (!Number.isFinite(pid) || pid < 1) continue;
+        before.set(String(pid), Number(it.scanned_quantity) || 0);
       }
       pendingScansRef.current += 1;
       setPendingScans(pendingScansRef.current);
       const scanRes = await purchasesApi.scanReceipt(rid, { barcode: v, scannerId: effectiveScannerId });
+      if (scanRes?.ignoredDuplicate) {
+        setScanValue('');
+        setScanMsg(null);
+        scanRef.current?.focus();
+        return;
+      }
       // Оптимистично обновим строку по ответу сервера (productId + scannedQuantity),
       // а полный receipt подтянем с debounce — чтобы несколько сканеров не "забивали" API.
       const updatedProductId = Number(scanRes?.productId);
@@ -1960,7 +1984,7 @@ export function Purchases() {
                   </thead>
                   <tbody>
                     {sortedReceiptItems.map((it) => (
-                      <tr key={it.id}>
+                      <tr key={receiptItemRowKey(it)}>
                         <td className="sku-cell">{it.product_sku || '—'}</td>
                         <td className="name-cell">{it.product_name || '—'}</td>
                         <td style={{ width: 140 }}>
@@ -2080,7 +2104,9 @@ export function Purchases() {
                                 setReceipt((prev) => {
                                   if (!prev?.items) return prev;
                                   const nextItems = (prev.items || []).map((x) =>
-                                    x?.id === it.id ? { ...x, _boxQtyInput: v } : x
+                                    Number(x?.product_id) === Number(it.product_id)
+                                      ? { ...x, _boxQtyInput: v }
+                                      : x
                                   );
                                   return { ...prev, items: nextItems };
                                 });

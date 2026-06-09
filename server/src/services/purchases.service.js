@@ -117,6 +117,22 @@ function shouldIgnoreDuplicateScan(key, windowMs = 800) {
   return false;
 }
 
+function normalizeReceiptScanMeta(existingMeta) {
+  if (existingMeta == null || existingMeta === '') return {};
+  if (typeof existingMeta === 'string') {
+    try {
+      const parsed = JSON.parse(existingMeta);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? { ...parsed } : {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof existingMeta === 'object' && !Array.isArray(existingMeta)) {
+    return { ...existingMeta };
+  }
+  return {};
+}
+
 function touchReceiptScanMeta(existingMeta, scannerOrOpts = null, userIdArg = null) {
   let scannerId = scannerOrOpts;
   let userId = userIdArg;
@@ -126,10 +142,7 @@ function touchReceiptScanMeta(existingMeta, scannerOrOpts = null, userIdArg = nu
   }
   const sc = scannerId != null && String(scannerId).trim() !== '' ? String(scannerId).trim() : '_default';
   const now = Date.now();
-  const base =
-    existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
-      ? { ...existingMeta }
-      : {};
+  const base = normalizeReceiptScanMeta(existingMeta);
   const byScanner =
     base.byScanner && typeof base.byScanner === 'object' && !Array.isArray(base.byScanner)
       ? { ...base.byScanner }
@@ -2134,7 +2147,8 @@ class PurchasesService {
     const purchaseId = Number(receipt.purchase_id);
     const lines = await query(
       `WITH purchase_lines AS (
-         SELECT COALESCE(pri.id, pi.id) AS id,
+         SELECT pi.id AS id,
+                pri.id AS receipt_item_id,
                 pi.product_id,
                 COALESCE(pri.scanned_quantity, 0)::int AS scanned_quantity,
                 pi.id AS purchase_item_id,
@@ -2153,7 +2167,8 @@ class PurchasesService {
          WHERE pi.purchase_id = $2
        ),
        extra_lines AS (
-         SELECT pri.id,
+         SELECT pri.id AS id,
+                pri.id AS receipt_item_id,
                 pri.product_id,
                 pri.scanned_quantity,
                 NULL::bigint AS purchase_item_id,
