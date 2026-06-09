@@ -4,6 +4,9 @@
  */
 
 import { query } from '../config/database.js';
+import { orderReservedQtyCorrelatedSubquerySql } from '../constants/netReservedStockSql.js';
+
+const ORDER_RESERVED_QTY_SQL = orderReservedQtyCorrelatedSubquerySql('sm', 'o');
 
 /** Преобразование строки БД (snake_case) в формат API (camelCase) для совместимости с фронтом и файловым хранилищем */
 function rowToCamel(row) {
@@ -154,30 +157,8 @@ class OrdersRepositoryPG {
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
-        (COALESCE((
-          SELECT
-            GREATEST(
-              0,
-              COALESCE(SUM(CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change ELSE 0 END), 0)
-              - COALESCE(SUM(CASE WHEN sm.type = 'unreserve' THEN sm.quantity_change ELSE 0 END), 0)
-            )::int
-          FROM stock_movements sm
-          WHERE (sm.type = 'reserve' OR sm.type = 'unreserve')
-            AND sm.meta ? 'order_id'
-            AND (sm.meta->>'order_id')::bigint = o.id::bigint
-        ), 0) > 0) AS has_reserve,
-        COALESCE((
-          SELECT
-            GREATEST(
-              0,
-              COALESCE(SUM(CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change ELSE 0 END), 0)
-              - COALESCE(SUM(CASE WHEN sm.type = 'unreserve' THEN sm.quantity_change ELSE 0 END), 0)
-            )::int
-          FROM stock_movements sm
-          WHERE (sm.type = 'reserve' OR sm.type = 'unreserve')
-            AND sm.meta ? 'order_id'
-            AND (sm.meta->>'order_id')::bigint = o.id::bigint
-        ), 0)::int AS reserved_qty
+        (${ORDER_RESERVED_QTY_SQL} > 0) AS has_reserve,
+        ${ORDER_RESERVED_QTY_SQL}::int AS reserved_qty
       FROM orders o
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
@@ -215,30 +196,8 @@ class OrdersRepositoryPG {
             assembler.email AS assembled_by_email,
             assembler.full_name AS assembled_by_full_name,
             p.sku AS product_sku,
-            (COALESCE((
-              SELECT
-                GREATEST(
-                  0,
-                  COALESCE(SUM(CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change ELSE 0 END), 0)
-                  - COALESCE(SUM(CASE WHEN sm.type = 'unreserve' THEN sm.quantity_change ELSE 0 END), 0)
-                )::int
-              FROM stock_movements sm
-              WHERE (sm.type = 'reserve' OR sm.type = 'unreserve')
-                AND sm.meta ? 'order_id'
-                AND (sm.meta->>'order_id')::bigint = o.id::bigint
-            ), 0) > 0) AS has_reserve,
-            COALESCE((
-              SELECT
-                GREATEST(
-                  0,
-                  COALESCE(SUM(CASE WHEN sm.type = 'reserve' THEN -sm.quantity_change ELSE 0 END), 0)
-                  - COALESCE(SUM(CASE WHEN sm.type = 'unreserve' THEN sm.quantity_change ELSE 0 END), 0)
-                )::int
-              FROM stock_movements sm
-              WHERE (sm.type = 'reserve' OR sm.type = 'unreserve')
-                AND sm.meta ? 'order_id'
-                AND (sm.meta->>'order_id')::bigint = o.id::bigint
-            ), 0)::int AS reserved_qty
+            (${ORDER_RESERVED_QTY_SQL} > 0) AS has_reserve,
+            ${ORDER_RESERVED_QTY_SQL}::int AS reserved_qty
           FROM orders o
           LEFT JOIN products p ON o.product_id = p.id
           LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
@@ -359,14 +318,7 @@ class OrdersRepositoryPG {
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
-        EXISTS(
-          SELECT 1 FROM stock_movements sm
-          WHERE sm.type = 'reserve'
-            AND sm.quantity_change < 0
-            AND sm.meta ? 'order_id'
-            AND (sm.meta->>'order_id')::bigint = o.id::bigint
-          LIMIT 1
-        ) AS has_reserve
+        (${ORDER_RESERVED_QTY_SQL} > 0) AS has_reserve
       FROM orders o
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
@@ -450,14 +402,7 @@ class OrdersRepositoryPG {
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
-        EXISTS(
-          SELECT 1 FROM stock_movements sm
-          WHERE sm.type = 'reserve'
-            AND sm.quantity_change < 0
-            AND sm.meta ? 'order_id'
-            AND (sm.meta->>'order_id')::bigint = o.id::bigint
-          LIMIT 1
-        ) AS has_reserve
+        (${ORDER_RESERVED_QTY_SQL} > 0) AS has_reserve
       FROM orders o
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id

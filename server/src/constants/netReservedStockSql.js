@@ -76,8 +76,41 @@ export function allocateWarehouseScopedReserved({
  */
 export function orderReserveMovementMatchSql(alias = '', orderDbIdParam, mpOrderIdParam) {
   const a = alias ? `${alias}` : '';
-  const metaOrderExpr = `COALESCE(NULLIF(TRIM(${a}meta->>'order_id'), ''), NULLIF(TRIM(${a}meta->>'orderId'), ''))`;
+  const metaOrderExpr = stockMovementMetaOrderKeySql(a);
   const numericMatch = `(${metaOrderExpr} ~ '^[0-9]+$' AND (${metaOrderExpr})::bigint = $${orderDbIdParam}::bigint)`;
   const mpMatch = `($${mpOrderIdParam}::text IS NOT NULL AND TRIM($${mpOrderIdParam}::text) <> '' AND TRIM(${metaOrderExpr}) = TRIM($${mpOrderIdParam}::text))`;
   return `(${numericMatch} OR ${mpMatch})`;
+}
+
+/** Ключ заказа в meta движения (orders.id или номер на МП). */
+export function stockMovementMetaOrderKeySql(alias = '') {
+  const a = alias ? `${alias}` : '';
+  return `COALESCE(NULLIF(TRIM(${a}meta->>'order_id'), ''), NULLIF(TRIM(${a}meta->>'orderId'), ''))`;
+}
+
+/**
+ * Сопоставление движения резерва со строкой orders (коррелированный подзапрос).
+ * @param {string} [smAlias='sm.'] — префикс stock_movements
+ * @param {string} [oAlias='o.'] — префикс orders
+ */
+export function orderReserveMovementMatchOrderRowSql(smAlias = 'sm.', oAlias = 'o.') {
+  const sm = smAlias.endsWith('.') ? smAlias : `${smAlias}.`;
+  const o = oAlias.endsWith('.') ? oAlias : `${oAlias}.`;
+  const metaOrderExpr = stockMovementMetaOrderKeySql(sm);
+  const numericMatch = `(${metaOrderExpr} ~ '^[0-9]+$' AND (${metaOrderExpr})::bigint = ${o}id::bigint)`;
+  const mpMatch = `(${o}order_id IS NOT NULL AND TRIM(${o}order_id) <> '' AND TRIM(${metaOrderExpr}) = TRIM(${o}order_id))`;
+  return `(${numericMatch} OR ${mpMatch})`;
+}
+
+/** Нетто-резерв по заказу (коррелированный подзапрос для списка заказов). */
+export function orderReservedQtyCorrelatedSubquerySql(smAlias = 'sm', oAlias = 'o') {
+  const sm = smAlias.endsWith('.') ? smAlias : `${smAlias}.`;
+  const match = orderReserveMovementMatchOrderRowSql(sm, oAlias.endsWith('.') ? oAlias : `${oAlias}.`);
+  return `COALESCE((
+    SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int
+    FROM stock_movements ${smAlias.replace(/\.$/, '')}
+    WHERE ${sm}type IN ('reserve', 'unreserve')
+      AND (${sm}meta ? 'order_id' OR ${sm}meta ? 'orderId')
+      AND ${match}
+  ), 0)`;
 }

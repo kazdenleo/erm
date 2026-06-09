@@ -43,7 +43,10 @@ import {
   getProductSupplySnapshotWithClient,
   getReservableSupplyUnits
 } from './sellableQuantity.service.js';
-import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
+import {
+  orderReserveMovementMatchOrderRowSql,
+  orderReserveMovementMatchSql
+} from '../constants/netReservedStockSql.js';
 import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
 import { buildAssemblyCompositionLinesForOrder } from './assemblyOrderItems.service.js';
 
@@ -112,9 +115,8 @@ async function buildReserveCoverageFifoMap(productIds) {
               FROM stock_movements sm
               WHERE sm.product_id = o.product_id
                 AND sm.type IN ('reserve', 'unreserve')
-                AND sm.meta ? 'order_id'
-                AND (sm.meta->>'order_id') ~ '^[0-9]+$'
-                AND (sm.meta->>'order_id')::bigint = o.id
+                AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+                AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
             ), 0))::int AS reserved_qty
      FROM orders o
      WHERE o.product_id = ANY($1::int[])
@@ -157,15 +159,15 @@ async function buildReserveCoverageByOrderIds(orderDbIds) {
   if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
 
   const r = await query(
-    `SELECT (sm.meta->>'order_id')::bigint AS order_db_id,
+    `SELECT o.id AS order_db_id,
             sm.product_id,
             ${NET_RESERVED_SUM_EXPR_SQL}::int AS reserved_qty
-     FROM stock_movements sm
-     WHERE sm.type IN ('reserve', 'unreserve')
-       AND sm.meta ? 'order_id'
-       AND (sm.meta->>'order_id') ~ '^[0-9]+$'
-       AND (sm.meta->>'order_id')::bigint = ANY($1::bigint[])
-     GROUP BY order_db_id, sm.product_id
+     FROM orders o
+     JOIN stock_movements sm ON sm.type IN ('reserve', 'unreserve')
+       AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+       AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+     WHERE o.id = ANY($1::bigint[])
+     GROUP BY o.id, sm.product_id
      HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
     [ids]
   );

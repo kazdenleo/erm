@@ -2373,7 +2373,10 @@ export function WarehouseStocks() {
                         <button
                           type="button"
                           className="stock-levels-reserved-btn"
-                          onClick={() => openReserveModalForProduct(row.product)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openReserveModalForProduct(row.product);
+                          }}
                           title="Заказы с резервом и снятие резерва"
                         >
                           {row.reserved}

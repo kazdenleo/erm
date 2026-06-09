@@ -12,6 +12,7 @@ import {
   RAW_RESERVED_SUM_EXPR_SQL,
   orderReserveMovementMatchSql,
   parseStockMovementWarehouseId,
+  stockMovementMetaOrderKeySql,
   stockMovementWarehouseReserveSql
 } from '../constants/netReservedStockSql.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
@@ -701,23 +702,26 @@ class StockMovementsService {
 
     const params = [idNum];
 
+    const metaKeySql = stockMovementMetaOrderKeySql('');
     const res = await query(
-      `WITH order_ids AS (
-         SELECT DISTINCT (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint AS order_row_id
+      `WITH order_keys AS (
+         SELECT DISTINCT ${metaKeySql} AS meta_key
          FROM stock_movements
          WHERE (${movementScopeSql})
            AND type IN ('reserve', 'unreserve')
-           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
-           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint > 0
+           AND ${metaKeySql} IS NOT NULL
+           AND TRIM(${metaKeySql}) <> ''
        ),
        sku_net AS (
-         SELECT (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint AS order_row_id,
+         SELECT ${metaKeySql} AS meta_key,
            ${NET_RESERVED_SUM_EXPR_SQL}::int AS sku_net_qty
          FROM stock_movements
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
-           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
+           AND ${metaKeySql} IS NOT NULL
+           AND TRIM(${metaKeySql}) <> ''
          GROUP BY 1
+         HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
        )
        SELECT o.id,
               o.marketplace,
@@ -725,21 +729,25 @@ class StockMovementsService {
               o.status,
               COALESCE(sku_net.sku_net_qty, 0) AS sku_net_qty,
               (o.id IS NULL) AS order_missing,
-              order_ids.order_row_id AS movement_order_db_id
-       FROM order_ids
-       LEFT JOIN sku_net ON sku_net.order_row_id = order_ids.order_row_id
+              CASE
+                WHEN order_keys.meta_key ~ '^[0-9]+$' THEN order_keys.meta_key::bigint
+                ELSE NULL
+              END AS movement_order_db_id
+       FROM order_keys
+       INNER JOIN sku_net ON sku_net.meta_key = order_keys.meta_key
        LEFT JOIN LATERAL (
          SELECT o.id, o.marketplace, o.order_id, o.status, o.created_at
          FROM orders o
-         WHERE o.id = order_ids.order_row_id
+         WHERE (order_keys.meta_key ~ '^[0-9]+$' AND o.id = order_keys.meta_key::bigint)
             OR (
               o.order_id IS NOT NULL
-              AND TRIM(o.order_id) = TRIM(order_ids.order_row_id::text)
+              AND TRIM(o.order_id) = TRIM(order_keys.meta_key)
             )
-         ORDER BY CASE WHEN o.id = order_ids.order_row_id THEN 0 ELSE 1 END, o.id DESC
+         ORDER BY CASE WHEN order_keys.meta_key ~ '^[0-9]+$' AND o.id = order_keys.meta_key::bigint THEN 0 ELSE 1 END,
+                  o.id DESC
          LIMIT 1
        ) o ON true
-       ORDER BY o.created_at DESC NULLS LAST, order_ids.order_row_id DESC
+       ORDER BY o.created_at DESC NULLS LAST, order_keys.meta_key DESC
        LIMIT 200`,
       params
     );
@@ -1023,14 +1031,16 @@ class StockMovementsService {
   async _ordersJournalNetForProduct(productId) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return 0;
+    const metaKeySql = stockMovementMetaOrderKeySql('');
     const r = await query(
       `WITH nets AS (
          SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_r
          FROM stock_movements
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
-           AND (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId',''))) ~ '^[0-9]+$'
-         GROUP BY (COALESCE(NULLIF(meta->>'order_id',''), NULLIF(meta->>'orderId','')))::bigint
+           AND ${metaKeySql} IS NOT NULL
+           AND TRIM(${metaKeySql}) <> ''
+         GROUP BY ${metaKeySql}
        )
        SELECT COALESCE(SUM(net_r), 0)::int AS total FROM nets WHERE net_r > 0`,
       [pid]
