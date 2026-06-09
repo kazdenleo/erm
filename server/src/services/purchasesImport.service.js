@@ -68,7 +68,7 @@ function rowToObject(worksheet, rowNum, keyRow) {
   const row = worksheet.getRow(rowNum);
   const obj = {};
   keyRow.eachCell({ includeEmpty: true }, (cell, col) => {
-    const key = normalizeCellValue(cell).toLowerCase().replace(/\s+/g, '_');
+    let key = normalizeCellValue(cell).toLowerCase().replace(/\s+/g, '_').replace(/^\ufeff/, '');
     if (!key) return;
     obj[key] = normalizeCellValue(row.getCell(col));
   });
@@ -99,7 +99,7 @@ function rowHasImportHeaders(worksheet, rowNum) {
 
 /** Строка с заголовками колонок (если есть) или null — тогда два столбца без шапки. */
 function findHeaderRow(worksheet) {
-  for (let r = 1; r <= Math.min(10, worksheet.rowCount || 10); r++) {
+  for (let r = 1; r <= Math.min(30, worksheet.rowCount || 30, getWorksheetLastDataRow(worksheet, 1)); r++) {
     if (rowHasImportHeaders(worksheet, r)) {
       return worksheet.getRow(r);
     }
@@ -524,7 +524,7 @@ class PurchasesImportService {
    * Разбор Excel и подготовка позиций закупки.
    * @throws {Error} statusCode 400 если есть нераспознанные артикулы (err.details.unresolved)
    */
-  async parseExcelBuffer(buffer, { profileId, supplierId } = {}) {
+  async parseExcelBuffer(buffer, { profileId, supplierId, allowUnresolved = false } = {}) {
     const sid = supplierId != null && supplierId !== '' ? Number(supplierId) : null;
     if (!Number.isFinite(sid) || sid < 1) {
       const err = new Error('Выберите поставщика');
@@ -594,7 +594,7 @@ class PurchasesImportService {
       purchasePrice: row.purchasePrice ?? null,
     }));
 
-    if (unresolved.length > 0) {
+    if (unresolved.length > 0 && !allowUnresolved) {
       const lines = unresolved
         .slice(0, 30)
         .map((u) => `${u.cleanSku} (${u.quantity} шт.)`)
@@ -604,7 +604,7 @@ class PurchasesImportService {
         `Не найдены товары в каталоге (${unresolved.length}): ${lines}${tail}. Закупка не создана.`
       );
       err.statusCode = 400;
-      err.details = { unresolved, prefixes };
+      err.details = { unresolved, prefixes, items };
       throw err;
     }
 
@@ -623,12 +623,40 @@ class PurchasesImportService {
       preview,
       prefixes,
       sourceRows,
+      unresolved,
       hasImportPrices,
       parserVersion: PURCHASE_IMPORT_PARSER_VERSION,
       lineCount: items.length,
       excelDataRows: sourceRows.length,
       totalQuantity: items.reduce((s, it) => s + it.quantity, 0),
     };
+  }
+
+  /** Разбор Excel для заполнения таблицы закупки (без создания документа). */
+  async previewExcelBuffer(buffer, { profileId, supplierId } = {}) {
+    const parsed = await this.parseExcelBuffer(buffer, {
+      profileId,
+      supplierId,
+      allowUnresolved: true,
+    });
+    const ids = parsed.items.map((it) => it.productId).filter(Boolean);
+    let productsById = new Map();
+    if (ids.length > 0) {
+      const r = await query(
+        `SELECT id, sku, name FROM products WHERE id = ANY($1::bigint[])`,
+        [ids]
+      );
+      productsById = new Map((r.rows || []).map((row) => [String(row.id), row]));
+    }
+    const tableItems = parsed.items.map((it) => {
+      const p = productsById.get(String(it.productId));
+      return {
+        ...it,
+        sku: p?.sku || null,
+        name: p?.name || null,
+      };
+    });
+    return { ...parsed, tableItems };
   }
 
   /**

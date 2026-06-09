@@ -17,6 +17,10 @@ function notificationOpenUrl(n) {
   if (n?.type === 'receipt_session_invite' && sid != null && String(sid).trim() !== '') {
     return `/stock-levels/warehouse?op=receipts_list&session=${encodeURIComponent(String(sid).trim())}`;
   }
+  const receiptId = n?.meta?.receipt_id ?? n?.meta?.receiptId ?? null;
+  if (n?.type === 'purchase_receipt_invite' && receiptId != null && String(receiptId).trim() !== '') {
+    return `/stock-levels/purchases?purchase_receipt=${encodeURIComponent(String(receiptId).trim())}`;
+  }
   if (direct) return direct;
   if (sid != null && String(sid).trim() !== '') {
     return `/stock-levels/warehouse?op=receipts_list&session=${encodeURIComponent(String(sid).trim())}`;
@@ -27,6 +31,7 @@ function notificationOpenUrl(n) {
 function notificationOpenLabel(n) {
   if (n?.type === 'inventory_session_invite') return 'Открыть инвентаризацию';
   if (n?.type === 'receipt_session_invite') return 'Открыть приёмку';
+  if (n?.type === 'purchase_receipt_invite') return 'Открыть приёмку';
   return 'Открыть';
 }
 

@@ -1,0 +1,134 @@
+.production-page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 0 32px;
+}
+
+.production-page h1 {
+  margin: 0 0 8px;
+  font-size: 1.5rem;
+}
+
+.production-intro {
+  color: var(--muted, #6b7280);
+  margin: 0 0 20px;
+  font-size: 0.95rem;
+}
+
+.production-panel {
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.production-field {
+  margin-bottom: 16px;
+}
+
+.production-field label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+}
+
+.production-field select,
+.production-field input[type='number'] {
+  width: 100%;
+  max-width: 360px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color, #d1d5db);
+  border-radius: 6px;
+}
+
+.production-kit-title {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+}
+
+.production-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-bottom: 16px;
+  font-size: 0.95rem;
+}
+
+.production-metrics strong {
+  font-weight: 700;
+}
+
+.production-components {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.production-components th,
+.production-components td {
+  border: 1px solid var(--border-color, #e5e7eb);
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.production-components th {
+  background: var(--table-header-bg, #f9fafb);
+  font-weight: 600;
+}
+
+.production-components .num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.production-components tr.insufficient td {
+  background: #fef2f2;
+}
+
+.production-qty-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  margin-top: 16px;
+}
+
+.production-checkbox label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.production-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.production-success {
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  color: #065f46;
+}
+
+.production-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  color: #991b1b;
+}
+
+.production-loading {
+  color: var(--muted, #6b7280);
+  font-size: 0.9rem;
+}

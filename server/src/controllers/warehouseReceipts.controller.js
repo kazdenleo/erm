@@ -17,9 +17,11 @@ class WarehouseReceiptsController {
       }
       const limit = req.query.limit ? Math.min(500, parseInt(req.query.limit, 10)) : 100;
       const offset = req.query.offset ? parseInt(req.query.offset, 10) : 0;
+      const documentType = req.query.documentType ?? req.query.document_type ?? null;
       const result = await warehouseReceiptsService.getList({
         limit,
         offset,
+        documentType,
         ...(tid != null ? { profileId: tid } : {})
       });
       return res.status(200).json({ ok: true, data: result.list, total: result.total });

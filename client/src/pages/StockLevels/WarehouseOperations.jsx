@@ -165,6 +165,19 @@ const KNOWN_MODES = new Set([
   MODE_RECEIPT
 ]);
 
+/** Тип документа warehouse_receipts для каждого раздела склада. */
+const RECEIPT_DOCUMENT_TYPE_BY_MODE = {
+  [MODE_RECEIPTS_LIST]: 'receipt',
+  [MODE_RETURN_SUPPLIER]: 'return',
+  [MODE_RETURN_CUSTOMER]: 'customer_return'
+};
+
+function receiptDocumentTypeLabel(documentType) {
+  if (documentType === 'return') return 'Возврат поставщику';
+  if (documentType === 'customer_return') return 'Возврат от клиента';
+  return 'Приёмка';
+}
+
 export function WarehouseOperations({
   products,
   mainWarehouseName,
@@ -467,18 +480,24 @@ export function WarehouseOperations({
   const [inventoryLiveOwnerUserId, setInventoryLiveOwnerUserId] = useState(null);
   const inventorySetFactDebounceRef = useRef({});
 
-  const loadReceiptsList = useCallback(() => {
-    setReceiptsLoading(true);
-    receiptsApi.getList({ limit: 200 })
-      .then(({ list }) => {
-        setReceiptsList(Array.isArray(list) ? list : []);
-      })
-      .catch(err => {
-        console.warn('[WarehouseOperations] loadReceiptsList failed:', err?.message || err);
-        setReceiptsList([]);
-      })
-      .finally(() => setReceiptsLoading(false));
-  }, []);
+  const loadReceiptsList = useCallback(
+    (forMode = mode) => {
+      const documentType = RECEIPT_DOCUMENT_TYPE_BY_MODE[forMode];
+      if (!documentType) return;
+      setReceiptsLoading(true);
+      receiptsApi
+        .getList({ limit: 200, documentType })
+        .then(({ list }) => {
+          setReceiptsList(Array.isArray(list) ? list : []);
+        })
+        .catch((err) => {
+          console.warn('[WarehouseOperations] loadReceiptsList failed:', err?.message || err);
+          setReceiptsList([]);
+        })
+        .finally(() => setReceiptsLoading(false));
+    },
+    [mode]
+  );
 
   const receiptRowTotalUnits = (r) => {
     const q = r?.total_quantity ?? r?.totalQuantity;
@@ -1132,8 +1151,8 @@ export function WarehouseOperations({
   }, [addReceiptModalOpen, receiptSessionEnabled, user?.id, user?.userId, user?.email, inviteUserId]);
 
   useEffect(() => {
-    if (mode !== MODE_RECEIPTS_LIST) return;
-    loadReceiptsList();
+    if (!RECEIPT_DOCUMENT_TYPE_BY_MODE[mode]) return;
+    loadReceiptsList(mode);
   }, [mode, loadReceiptsList]);
 
   useEffect(() => {
@@ -1613,10 +1632,10 @@ export function WarehouseOperations({
       });
       const receiptNumber = res?.data?.receipt?.receipt_number || '';
       setOpMessage(receiptNumber ? `Возвратная накладная ${receiptNumber} оформлена` : 'Возврат оформлен');
+      playEventSound(SOUND_EVENTS.success);
       setReturnList([]);
       onRefresh?.();
-      loadReceiptsList();
-      setMode(MODE_RECEIPTS_LIST);
+      loadReceiptsList(MODE_RETURN_SUPPLIER);
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось оформить'));
     } finally {
@@ -1780,10 +1799,10 @@ export function WarehouseOperations({
       });
       const receiptNumber = res?.data?.receipt?.receipt_number || '';
       setOpMessage(receiptNumber ? `Возврат от клиента ${receiptNumber} оформлен` : 'Возврат на склад оформлен');
+      playEventSound(SOUND_EVENTS.success);
       setCustomerReturnList([]);
       onRefresh?.();
-      loadReceiptsList();
-      setMode(MODE_RECEIPTS_LIST);
+      loadReceiptsList(MODE_RETURN_CUSTOMER);
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось оформить'));
     } finally {
@@ -1851,6 +1870,77 @@ export function WarehouseOperations({
     if (!Number.isFinite(n)) return '—';
     return formatRub(n);
   };
+
+  const openReceiptDocument = (id) => {
+    receiptsApi
+      .getById(id)
+      .then((res) => {
+        const data = res?.data ?? res;
+        if (data) setReceiptDetail(data);
+      })
+      .catch(() => {});
+  };
+
+  const renderWarehouseDocumentsList = ({
+    title,
+    emptyText,
+    showSupplier = true,
+    showTypeColumn = false
+  }) => (
+    <div className="warehouse-ops-documents-section">
+      <h4 className="warehouse-ops-receipt-list-title">{title}</h4>
+      {receiptsLoading ? (
+        <div className="loading">Загрузка документов…</div>
+      ) : receiptsList.length === 0 ? (
+        <p className="warehouse-ops-receipt-list-empty">{emptyText}</p>
+      ) : (
+        <div className="warehouse-ops-receipts-list-wrap">
+          <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--documents table">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Номер</th>
+                {showTypeColumn ? <th>Тип</th> : null}
+                <th>Организация</th>
+                {showSupplier ? <th>Поставщик</th> : null}
+                <th>Кол-во, шт</th>
+                <th>Сумма, ₽</th>
+              </tr>
+            </thead>
+            <tbody>
+              {receiptsList.map((r) => (
+                <tr
+                  key={r.id}
+                  className="stock-levels-row-clickable"
+                  onClick={onNavigationClick(() => openReceiptDocument(r.id))}
+                >
+                  <td>
+                    {r.created_at
+                      ? new Date(r.created_at).toLocaleString('ru-RU', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })
+                      : '—'}
+                  </td>
+                  <td>{r.receipt_number || `#${r.id}`}</td>
+                  {showTypeColumn ? (
+                    <td>{receiptDocumentTypeLabel(r.document_type)}</td>
+                  ) : null}
+                  <td>{r.organization_name || '—'}</td>
+                  {showSupplier ? <td>{r.supplier_name || r.supplier_code || '—'}</td> : null}
+                  <td>{receiptRowTotalUnits(r)}</td>
+                  <td>{formatReceiptListAmountRub(r.total_amount_rub ?? r.totalAmountRub)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 
   const inventoryNewRowsSorted = useMemo(
     () => sortInventoryNewRows(inventoryNewRows),

@@ -12,9 +12,11 @@ import {
   normalizeProductSearchQuery,
   searchProductsRemote,
 } from '../../utils/productSearch';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { purchasesApi } from '../../services/purchases.api';
 import { productsApi } from '../../services/products.api';
+import { usersApi } from '../../services/users.api.js';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { useProducts } from '../../hooks/useProducts';
 import './WarehouseOperations.css';
 import { useWarehouses } from '../../hooks/useWarehouses';
@@ -43,6 +45,71 @@ function getOrCreateScannerId() {
     /* ignore */
   }
   return next;
+}
+
+function buildPurchaseReceiptInviteUrl(receiptId) {
+  const rid = String(receiptId || '').trim();
+  if (!rid) return '';
+  try {
+    const url = new URL(window.location.href);
+    url.pathname = '/stock-levels/purchases';
+    url.search = '';
+    url.searchParams.set('purchase_receipt', rid);
+    return url.toString();
+  } catch {
+    return `/stock-levels/purchases?purchase_receipt=${encodeURIComponent(rid)}`;
+  }
+}
+
+function syncPurchaseReceiptInUrl(receiptId) {
+  const rid = String(receiptId || '').trim();
+  try {
+    const url = new URL(window.location.href);
+    if (rid) url.searchParams.set('purchase_receipt', rid);
+    else url.searchParams.delete('purchase_receipt');
+    window.history.replaceState({}, '', url.toString());
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Сначала недавно отсканированные текущим пользователем/устройством, затем по количеству. */
+function sortReceiptItemsByParticipant(items, { userId = null, scannerId = null } = {}) {
+  const uid =
+    userId != null && userId !== '' && Number.isFinite(Number(userId)) ? String(Number(userId)) : null;
+  const sc =
+    scannerId != null && String(scannerId).trim() !== '' ? String(scannerId).trim() : '_default';
+  return [...(items || [])].sort((a, b) => {
+    if (uid) {
+      const byUserA =
+        a?.scan_meta?.byUser && typeof a.scan_meta.byUser === 'object' ? a.scan_meta.byUser : {};
+      const byUserB =
+        b?.scan_meta?.byUser && typeof b.scan_meta.byUser === 'object' ? b.scan_meta.byUser : {};
+      const ta = Number(byUserA[uid]) || 0;
+      const tb = Number(byUserB[uid]) || 0;
+      if (tb !== ta) return tb - ta;
+    }
+    const metaA =
+      a?.scan_meta?.byScanner && typeof a.scan_meta.byScanner === 'object' ? a.scan_meta.byScanner : {};
+    const metaB =
+      b?.scan_meta?.byScanner && typeof b.scan_meta.byScanner === 'object' ? b.scan_meta.byScanner : {};
+    const taSc = Number(metaA[sc]) || 0;
+    const tbSc = Number(metaB[sc]) || 0;
+    if (tbSc !== taSc) return tbSc - taSc;
+    const scannedA = Number(a?.scanned_quantity) || 0;
+    const scannedB = Number(b?.scanned_quantity) || 0;
+    if (scannedB !== scannedA) return scannedB - scannedA;
+    return String(a?.product_sku || a?.id || '').localeCompare(String(b?.product_sku || b?.id || ''), 'ru', {
+      numeric: true,
+    });
+  });
+}
+
+function receiptStatusLabel(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'scanning') return 'сканирование';
+  if (s === 'completed') return 'завершена';
+  return status || '—';
 }
 
 function normalizeScanInput(raw) {
@@ -186,6 +253,8 @@ function formatSourceOrders(raw) {
 
 export function Purchases() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { user } = useAuth();
   const { products } = useProducts({ autoLoad: false });
   const { warehouses } = useWarehouses();
   const { suppliers } = useSuppliers();
@@ -213,7 +282,11 @@ export function Purchases() {
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
   const scanDebounceRef = useRef(null);
-  const [scannerId, setScannerId] = useState(() => getOrCreateScannerId());
+  const [scannerId] = useState(() => getOrCreateScannerId());
+  const [inviteUsers, setInviteUsers] = useState([]);
+  const [inviteUserId, setInviteUserId] = useState('');
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [receiptInviteLinkCopied, setReceiptInviteLinkCopied] = useState(false);
   const scanInFlightRef = useRef(false);
   const lastScanRef = useRef({ value: '', at: 0 });
   const receiptRefreshTimerRef = useRef(null);
@@ -237,9 +310,38 @@ export function Purchases() {
   const detailErrRef = useRef(null);
   /** null | 'asc' | 'desc' — сортировка строк приёмки по отсканированному количеству */
   const [receiptScannedQtySort, setReceiptScannedQtySort] = useState(null);
+  const [receiptDraftChoice, setReceiptDraftChoice] = useState(null);
+  const [receiptCloseConfirm, setReceiptCloseConfirm] = useState(false);
+  const [manualQtyBusy, setManualQtyBusy] = useState(null);
+  const [excelPreviewInfo, setExcelPreviewInfo] = useState(null);
+  const [receiptCompleteInfo, setReceiptCompleteInfo] = useState(null);
+  const [deleteReceiptDraftBusy, setDeleteReceiptDraftBusy] = useState(false);
   const [linkBarcodeOpen, setLinkBarcodeOpen] = useState(false);
   const [linkBarcodeValue, setLinkBarcodeValue] = useState('');
   const purchaseLinkRetryRef = useRef(null);
+
+  const currentUserId = useMemo(() => {
+    const raw = user?.id ?? user?.userId ?? null;
+    return raw != null && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  }, [user?.id, user?.userId]);
+
+  const receiptOwnerUserId = useMemo(() => {
+    const raw =
+      receipt?.receipt?.created_by_user_id ??
+      receipt?.receipt?.createdByUserId ??
+      null;
+    return raw != null && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  }, [receipt?.receipt?.created_by_user_id, receipt?.receipt?.createdByUserId]);
+
+  const isReceiptGuest = useMemo(() => {
+    if (receiptOwnerUserId == null || currentUserId == null) return false;
+    return Number(receiptOwnerUserId) !== Number(currentUserId);
+  }, [receiptOwnerUserId, currentUserId]);
+
+  const purchaseReceiptInviteUrl = useMemo(
+    () => (receipt?.receipt?.id ? buildPurchaseReceiptInviteUrl(receipt.receipt.id) : ''),
+    [receipt?.receipt?.id]
+  );
 
   const sortedDetailItems = useMemo(() => {
     const items = detail?.items;
@@ -262,20 +364,22 @@ export function Purchases() {
   const sortedReceiptItems = useMemo(() => {
     const items = receipt?.items;
     if (!Array.isArray(items) || items.length === 0) return [];
-    if (receiptScannedQtySort == null) return items;
-    const dir = receiptScannedQtySort === 'asc' ? 1 : -1;
-    const qty = (it) => {
-      const n = Number(it.scanned_quantity);
-      return Number.isFinite(n) ? n : 0;
-    };
-    return [...items].sort((a, b) => {
-      const d = qty(a) - qty(b);
-      if (d !== 0) return d * dir;
-      const sa = String(a.product_sku || a.id || '');
-      const sb = String(b.product_sku || b.id || '');
-      return sa.localeCompare(sb, 'ru', { numeric: true });
-    });
-  }, [receipt?.items, receiptScannedQtySort]);
+    if (receiptScannedQtySort != null) {
+      const dir = receiptScannedQtySort === 'asc' ? 1 : -1;
+      const qty = (it) => {
+        const n = Number(it.scanned_quantity);
+        return Number.isFinite(n) ? n : 0;
+      };
+      return [...items].sort((a, b) => {
+        const d = qty(a) - qty(b);
+        if (d !== 0) return d * dir;
+        const sa = String(a.product_sku || a.id || '');
+        const sb = String(b.product_sku || b.id || '');
+        return sa.localeCompare(sb, 'ru', { numeric: true });
+      });
+    }
+    return sortReceiptItemsByParticipant(items, { userId: currentUserId, scannerId });
+  }, [receipt?.items, receiptScannedQtySort, scannerId, currentUserId]);
 
   useEffect(() => {
     setDetailExpectedQtySort(null);
@@ -284,6 +388,57 @@ export function Purchases() {
   useEffect(() => {
     setReceiptScannedQtySort(null);
   }, [receipt?.receipt?.id]);
+
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    const ridRaw = String(sp.get('purchase_receipt') || '').trim();
+    if (!ridRaw || !/^\d+$/.test(ridRaw)) return;
+    const rid = Number(ridRaw);
+    if (!Number.isFinite(rid) || rid < 1) return;
+    if (Number(receipt?.receipt?.id) === rid) return;
+    openReceipt(rid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
+  useEffect(() => {
+    const rid = receipt?.receipt?.id;
+    if (!rid || String(receipt?.receipt?.status) !== 'scanning') return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await usersApi.getInviteCandidates();
+        const rows = res?.data ?? [];
+        if (cancelled) return;
+        const meEmail = user?.email ? String(user.email).trim().toLowerCase() : null;
+        setInviteUsers(
+          (Array.isArray(rows) ? rows : []).filter((u) => {
+            if (!u) return false;
+            const uidRaw = u.id ?? u.user_id ?? u.userId ?? null;
+            const uid =
+              uidRaw != null && uidRaw !== '' && Number.isFinite(Number(uidRaw)) ? Number(uidRaw) : null;
+            if (currentUserId != null && uid != null && uid === currentUserId) return false;
+            const em = u.email ? String(u.email).trim().toLowerCase() : null;
+            if (meEmail && em && em === meEmail) return false;
+            return true;
+          })
+        );
+      } catch {
+        if (!cancelled) setInviteUsers([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [receipt?.receipt?.id, receipt?.receipt?.status, currentUserId, user?.email]);
+
+  useEffect(() => {
+    const rid = receipt?.receipt?.id;
+    if (!rid || String(receipt?.receipt?.status) !== 'scanning') return undefined;
+    const t = setInterval(() => {
+      purchasesApi.getReceipt(rid).then((data) => setReceipt(data)).catch(() => {});
+    }, 1500);
+    return () => clearInterval(t);
+  }, [receipt?.receipt?.id, receipt?.receipt?.status]);
 
   const reload = async (opts = {}) => {
     const includeArchived = opts.includeArchived ?? showArchived;
@@ -332,7 +487,31 @@ export function Purchases() {
     setCreateSearchResults([]);
     setCreateSearchLoading(false);
     setExcelImportLoading(false);
+    setExcelPreviewInfo(null);
   }, []);
+
+  const requestCloseReceipt = useCallback(() => {
+    if (String(receipt?.receipt?.status) === 'scanning') {
+      setReceiptCloseConfirm(true);
+      return;
+    }
+    syncPurchaseReceiptInUrl('');
+    setReceipt(null);
+  }, [receipt?.receipt?.status]);
+
+  const copyPurchaseReceiptInviteLink = useCallback(() => {
+    const url = purchaseReceiptInviteUrl;
+    if (!url) return;
+    const done = () => {
+      setReceiptInviteLinkCopied(true);
+      setTimeout(() => setReceiptInviteLinkCopied(false), 2500);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(done).catch(() => {});
+      return;
+    }
+    done();
+  }, [purchaseReceiptInviteUrl]);
 
   const createSupplierPrefixes = useMemo(() => {
     if (!createSupplierId) return [];
@@ -475,6 +654,8 @@ export function Purchases() {
     try {
       const data = await purchasesApi.getReceipt(receiptId);
       setReceipt(data);
+      syncPurchaseReceiptInUrl(data?.receipt?.id ?? receiptId);
+      setReceiptInviteLinkCopied(false);
       setScanMsg(null);
       setLastScanLine(null);
       const p = data?.purchase || {};
@@ -508,10 +689,20 @@ export function Purchases() {
 
   const createPurchase = async () => {
     const items = createItems
-      .map((it) => ({
-        productId: it.productId ? Number(it.productId) : null,
-        quantity: Number(it.quantity) || 1,
-      }))
+      .map((it) => {
+        const row = {
+          productId: it.productId ? Number(it.productId) : null,
+          quantity: Number(it.quantity) || 1,
+        };
+        if (
+          it.purchasePrice != null &&
+          it.purchasePrice !== '' &&
+          Number.isFinite(Number(it.purchasePrice))
+        ) {
+          row.purchasePrice = Number(it.purchasePrice);
+        }
+        return row;
+      })
       .filter((it) => it.productId && it.quantity > 0);
     if (items.length === 0) {
       setErr('Добавьте хотя бы одну позицию');
@@ -548,73 +739,65 @@ export function Purchases() {
     }
   };
 
-  const importPurchaseFromExcel = async (file) => {
+  const loadExcelIntoCreateTable = async (file) => {
     if (!file) return;
     if (!String(createSupplierId || '').trim()) {
       setErr('Выберите поставщика');
       return;
     }
-    if (!String(createOrganizationId || '').trim()) {
-      setErr('Выберите организацию');
-      return;
-    }
-    if (!String(createWarehouseId || '').trim()) {
-      setErr('Выберите склад назначения');
-      return;
-    }
     setExcelImportLoading(true);
     setErr(null);
-    setImportOk(null);
+    setExcelPreviewInfo(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('supplierId', String(createSupplierId));
-      formData.append('organizationId', String(createOrganizationId));
-      formData.append('warehouseId', String(createWarehouseId));
-      const res = await purchasesApi.importFromExcel(formData);
-      const summary = res?.importSummary;
-      if (summary?.parserVersion && summary.parserVersion !== 'v4-article-qty-cost') {
+      const res = await purchasesApi.previewExcelImport(formData);
+      if (res?.parserVersion && res.parserVersion !== 'v4-article-qty-cost') {
         setErr(
-          `На сервере старая версия импорта (${summary.parserVersion}). Нужны git pull и pm2 restart erm-api.`
+          `На сервере старая версия импорта (${res.parserVersion}). Нужны git pull и pm2 restart erm-api.`
         );
         return;
       }
-      if (summary) {
-        const lines = (summary.preview || [])
-          .filter((p) => (p.excelLines?.length || 0) > 1)
-          .map((p) => `${p.cleanSku}: ${p.quantity} шт. (${(p.excelLines || []).map((l) => l.qty).join('+')})`)
-          .slice(0, 5);
-        const dupNote = lines.length ? ` Суммы дублей: ${lines.join('; ')}.` : '';
-        const costNote =
-          summary.costsUpdated > 0
-            ? ` Обновлена себестоимость у ${summary.costsUpdated} товаров.`
-            : summary.hasImportPrices
-              ? ''
-              : '';
-        setImportOk(
-          `Импорт ${summary.parserVersion || ''}: ${summary.excelDataRows ?? '—'} строк Excel → ${summary.totalQuantity ?? '—'} шт.${costNote}${dupNote}`
-        );
+      const tableItems = Array.isArray(res?.tableItems) ? res.tableItems : [];
+      const unresolved = Array.isArray(res?.unresolved) ? res.unresolved : [];
+      if (tableItems.length === 0 && unresolved.length === 0) {
+        setErr('В файле нет распознанных строк с артикулом и количеством.');
+        return;
       }
-      closeCreateModal();
-      setCreateSupplierId('');
-      setCreateOrganizationId('');
-      setCreateWarehouseId('');
-      setCreateItems([{ productId: '', quantity: 1 }]);
-      await reload();
-      if (res?.id) openDetail(res.id);
-    } catch (e) {
-      const msg = e.response?.data?.message || e.message || 'Не удалось импортировать Excel';
-      const unresolved = e.response?.data?.details?.unresolved;
-      if (Array.isArray(unresolved) && unresolved.length > 0) {
+      const productsFromExcel = tableItems
+        .filter((it) => it?.productId != null)
+        .map((it) => ({
+          id: it.productId,
+          sku: it.sku || null,
+          name: it.name || null,
+        }));
+      if (productsFromExcel.length > 0) {
+        setCreateSearchResults((prev) => mergeProductLists(prev, productsFromExcel));
+      }
+      setCreateItems(
+        tableItems.length > 0
+          ? tableItems.map((it) => ({
+              productId: String(it.productId),
+              quantity: it.quantity,
+              purchasePrice: it.purchasePrice ?? null,
+            }))
+          : [{ productId: '', quantity: 1 }]
+      );
+      const loadedQty = tableItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+      let info = `Загружено из Excel: ${res.excelDataRows ?? '—'} строк → ${tableItems.length} поз., ${loadedQty} шт.`;
+      if (res.hasImportPrices) info += ' Цены из файла попадут в закупку при сохранении.';
+      if (unresolved.length > 0) {
         const extra = unresolved
-          .slice(0, 15)
+          .slice(0, 10)
           .map((u) => `${u.cleanSku} (${u.quantity} шт.)`)
           .join(', ');
-        const tail = unresolved.length > 15 ? ` … +${unresolved.length - 15}` : '';
-        setErr(`${msg}${extra ? `\n${extra}${tail}` : ''}`);
-      } else {
-        setErr(msg);
+        const tail = unresolved.length > 10 ? ` … +${unresolved.length - 10}` : '';
+        info += ` Не найдены в каталоге (${unresolved.length}): ${extra}${tail}.`;
       }
+      setExcelPreviewInfo(info);
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось разобрать Excel');
     } finally {
       setExcelImportLoading(false);
       if (excelInputRef.current) excelInputRef.current.value = '';
@@ -645,6 +828,31 @@ export function Purchases() {
       }, 1500);
     },
     [setReceipt]
+  );
+
+  const handleManualReceiptQty = useCallback(
+    async (it, rawQty) => {
+      const rid = receipt?.receipt?.id;
+      if (!rid || String(receipt?.receipt?.status) !== 'scanning') return;
+      const qty = Math.max(0, Math.floor(Number(rawQty) || 0));
+      const prev = Number(it.scanned_quantity) || 0;
+      if (qty === prev) return;
+      try {
+        setManualQtyBusy(it.product_id);
+        setErr(null);
+        await purchasesApi.setReceiptItemQuantity(rid, {
+          productId: it.product_id,
+          quantity: qty,
+          scannerId: scannerId || null,
+        });
+        scheduleReceiptRefresh(rid);
+      } catch (ex) {
+        setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить количество');
+      } finally {
+        setManualQtyBusy(null);
+      }
+    },
+    [receipt?.receipt?.id, receipt?.receipt?.status, scannerId, scheduleReceiptRefresh]
   );
 
   // Пока приёмка открыта и идёт поток сканов — периодически подтягиваем состояние (на случай пропущенных строк/излишков).
@@ -792,6 +1000,11 @@ export function Purchases() {
           {importOk}
         </p>
       )}
+      {receiptCompleteInfo && (
+        <p className="muted" style={{ color: 'var(--success, #198754)', marginBottom: 12 }}>
+          {receiptCompleteInfo}
+        </p>
+      )}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
         <Button onClick={() => setCreateOpen(true)}>Новая закупка</Button>
         <Button variant="secondary" onClick={() => reload()} disabled={loading}>
@@ -863,7 +1076,7 @@ export function Purchases() {
           style={{ display: 'none' }}
           onChange={(e) => {
             const f = e.target.files?.[0];
-            if (f) importPurchaseFromExcel(f);
+            if (f) loadExcelIntoCreateTable(f);
           }}
         />
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
@@ -914,7 +1127,8 @@ export function Purchases() {
           style={{ marginBottom: 14, borderTop: '1px solid var(--border, #e8e8e8)', paddingTop: 12 }}
         >
           <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
-            Импорт из Excel: столбцы <strong>Артикул</strong> и <strong>Количество</strong> (обязательно), третий столбец <strong>Цена</strong> — по желанию (заголовок не обязателен; также «себестоимость», «cost»). Одинаковые артикулы суммируются. Если цена указана — обновится себестоимость товара в каталоге и попадёт в закупку; без цены остаётся текущая себестоимость в системе. Если хотя бы один артикул не найден в каталоге, закупка не создаётся.
+            Excel: столбцы <strong>Артикул</strong>, <strong>Количество</strong> (обязательно), <strong>Цена / себестоимость</strong> — по желанию.
+            Кнопка ниже загружает файл в таблицу позиций; закупка создаётся отдельно кнопкой «Сохранить». Нераспознанные артикулы показываются предупреждением, найденные строки всё равно попадут в таблицу.
           </p>
           <div style={{ marginBottom: 12 }}>
             <Button
@@ -923,9 +1137,14 @@ export function Purchases() {
               disabled={excelImportLoading}
               onClick={() => excelInputRef.current?.click()}
             >
-              {excelImportLoading ? 'Импорт…' : 'Импорт из Excel'}
+              {excelImportLoading ? 'Загрузка…' : 'Загрузить из Excel в таблицу'}
             </Button>
           </div>
+          {excelPreviewInfo ? (
+            <p className="muted" style={{ fontSize: 13, marginBottom: 12, color: 'var(--success, #198754)' }}>
+              {excelPreviewInfo}
+            </p>
+          ) : null}
           <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
             Поиск товара по артикулу, названию или штрихкоду
           </p>
@@ -1149,8 +1368,10 @@ export function Purchases() {
                       ? detail.receipts.find((x) => String(x?.status) === 'scanning')
                       : null;
                     if (existingScanning?.id) {
-                      setErr(`У этой закупки уже есть незавершённая приёмка №${existingScanning.id}. Открываю её.`);
-                      await openReceipt(existingScanning.id);
+                      setReceiptDraftChoice({
+                        purchaseId: detail.purchase.id,
+                        existingReceiptId: existingScanning.id,
+                      });
                       return;
                     }
                     const r = await purchasesApi.createReceipt(detail.purchase.id);
@@ -1343,7 +1564,7 @@ export function Purchases() {
                       >
                         <td>{fmtDt(r.created_at)}</td>
                         <td>№{r.id}</td>
-                        <td>{r.status}</td>
+                        <td>{receiptStatusLabel(r.status)}</td>
                         <td>{r.items_count ?? '—'}</td>
                         <td>
                           <span className="muted">Открыть →</span>
@@ -1386,14 +1607,14 @@ export function Purchases() {
 
       <Modal
         isOpen={!!receipt?.receipt?.id}
-        onClose={() => setReceipt(null)}
+        onClose={requestCloseReceipt}
         title={receipt?.receipt?.id ? `Приёмка №${receipt.receipt.id}` : 'Приёмка'}
         size="xl"
       >
         {receipt?.receipt ? (
           <>
             <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
-              статус: {receipt.receipt.status} · закупка №{receipt.receipt.purchase_id}
+              статус: {receiptStatusLabel(receipt.receipt.status)} · закупка №{receipt.receipt.purchase_id}
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
               <span className="muted" style={{ fontSize: 13 }}>Поставщик</span>
@@ -1468,29 +1689,85 @@ export function Purchases() {
                   ))}
               </select>
             </div>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-              <span className="muted" style={{ fontSize: 13 }}>Сканер</span>
-              <input
-                className="warehouse-ops-input"
-                style={{ maxWidth: 220 }}
-                value={scannerId}
-                onChange={(e) => {
-                  const v = String(e.target.value || '').trim();
-                  setScannerId(v);
-                  try {
-                    if (typeof localStorage !== 'undefined') localStorage.setItem(RECEIPT_SCANNER_ID_LS, v);
-                  } catch {
-                    /* ignore */
-                  }
-                }}
-                placeholder="scn-..."
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <span className="muted" style={{ fontSize: 12 }}>
-                На каждом устройстве свой ID (сохраняется в браузере). Нужен, если два сканера на одном ПК ведут одну приёмку.
-              </span>
-            </div>
+            {isReceiptGuest ? (
+              <p className="warehouse-ops-hint" style={{ marginBottom: 10 }}>
+                Вы приглашены в совместную приёмку: сканируйте товары — они попадут в общий список. Завершить приёмку может только создатель.
+              </p>
+            ) : null}
+            {String(receipt.receipt.status) === 'scanning' ? (
+              <div className="warehouse-ops-live-invite-panel" style={{ marginBottom: 12 }}>
+                <h4 className="warehouse-ops-live-invite-title">Пригласить коллег / другое устройство</h4>
+                <p className="warehouse-ops-hint warehouse-ops-live-invite-lead">
+                  Несколько человек могут сканировать одну приёмку с телефонов, планшетов или других компьютеров (тот же профиль ERP).
+                </p>
+                <div className="warehouse-ops-live-invite-link-row" style={{ marginTop: 10 }}>
+                  <span className="warehouse-ops-live-invite-label">Ссылка для другого устройства</span>
+                  <input
+                    type="text"
+                    className="warehouse-ops-input warehouse-ops-live-invite-url"
+                    readOnly
+                    value={purchaseReceiptInviteUrl}
+                    onFocus={(e) => e.target.select()}
+                  />
+                  <Button type="button" variant="secondary" onClick={copyPurchaseReceiptInviteLink}>
+                    {receiptInviteLinkCopied ? 'Скопировано' : 'Копировать ссылку'}
+                  </Button>
+                </div>
+                {!isReceiptGuest ? (
+                  <div className="warehouse-ops-live-invite-users" style={{ marginTop: 16 }}>
+                    <label>Пригласить пользователя</label>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: 10,
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        marginTop: 8,
+                      }}
+                    >
+                      <select
+                        className="warehouse-ops-select"
+                        value={inviteUserId}
+                        onChange={(e) => setInviteUserId(e.target.value)}
+                        style={{ minWidth: 260 }}
+                      >
+                        <option value="">— Выберите пользователя —</option>
+                        {(inviteUsers || []).map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {(u.full_name ||
+                              [u.last_name, u.first_name].filter(Boolean).join(' ') ||
+                              u.email ||
+                              `User #${u.id}`) + (u.email ? ` (${u.email})` : '')}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={inviteBusy || !inviteUserId}
+                        onClick={async () => {
+                          const rid = receipt?.receipt?.id;
+                          const uid = inviteUserId ? Number(inviteUserId) : null;
+                          if (!rid || !uid || Number.isNaN(uid) || inviteBusy) return;
+                          try {
+                            setInviteBusy(true);
+                            setErr(null);
+                            await purchasesApi.inviteToReceipt(rid, { userId: uid });
+                            setReceiptCompleteInfo('Приглашение отправлено в уведомления.');
+                          } catch (ex) {
+                            setErr(ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение');
+                          } finally {
+                            setInviteBusy(false);
+                          }
+                        }}
+                      >
+                        {inviteBusy ? 'Отправляю…' : 'Отправить приглашение'}
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -1565,21 +1842,24 @@ export function Purchases() {
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
               <Button
+                disabled={isReceiptGuest}
+                title={isReceiptGuest ? 'Завершить может только создатель приёмки' : undefined}
                 onClick={async () => {
-                  const res = await purchasesApi.completeReceipt(receipt.receipt.id, {
+                  const completedReceiptId = receipt.receipt.id;
+                  const res = await purchasesApi.completeReceipt(completedReceiptId, {
                     warehouseId: receiptWarehouseId || null,
                   });
+                  syncPurchaseReceiptInUrl('');
                   setReceipt(null);
                   setScanMsg(null);
+                  setReceiptCloseConfirm(false);
                   await reload();
                   if (detail?.purchase?.id) await openDetail(detail.purchase.id);
                   if (Array.isArray(res?.extras) && res.extras.length > 0) {
-                    setExtrasToResolve({
-                      receiptId: receipt.receipt.id,
-                      purchaseId: res.purchaseId,
-                      extras: res.extras,
-                      warehouseId: res.warehouseId ?? (receiptWarehouseId || null),
-                    });
+                    const totalExtra = res.extras.reduce((s, x) => s + (Number(x.quantity) || 0), 0);
+                    setReceiptCompleteInfo(
+                      `Приёмка завершена. Излишек: ${res.extras.length} поз., ${totalExtra} шт. — товар уже принят на склад.`
+                    );
                   }
                   if (res?.stockProblems?.length) {
                     setErr(`Проблемы с покрытием резерва: ${res.stockProblems.length} SKU`);
@@ -1596,6 +1876,11 @@ export function Purchases() {
               <Button variant="secondary" onClick={() => openReceipt(receipt.receipt.id)}>
                 Обновить
               </Button>
+              {String(receipt.receipt.status) === 'scanning' ? (
+                <Button variant="secondary" onClick={requestCloseReceipt}>
+                  Закрыть (сохранить черновик)
+                </Button>
+              ) : null}
             </div>
 
             <h4 style={{ marginTop: 14 }}>Коробкой (ручной ввод)</h4>
@@ -1720,12 +2005,42 @@ export function Purchases() {
                               : isUnder
                                 ? { color: '#8a6d00', fontWeight: 700 }
                                 : {};
+                          const isScanning = String(receipt?.receipt?.status) === 'scanning';
                           return (
                             <>
                               <td>{it.expected_quantity ?? '—'}</td>
                               <td style={cellStyle}>
-                                {scanned}
-                                {received != null ? `/${received}` : ''}
+                                {isScanning ? (
+                                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                    <input
+                                      key={`${it.product_id}-${scanned}`}
+                                      type="number"
+                                      min={0}
+                                      step={1}
+                                      className="warehouse-ops-qty-input"
+                                      style={{ width: 80 }}
+                                      defaultValue={scanned}
+                                      disabled={manualQtyBusy === it.product_id}
+                                      onBlur={(e) => handleManualReceiptQty(it, e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          e.currentTarget.blur();
+                                        }
+                                      }}
+                                    />
+                                    {received != null ? (
+                                      <span className="muted" style={{ fontSize: 12 }}>
+                                        было {received}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  <>
+                                    {scanned}
+                                    {received != null ? `/${received}` : ''}
+                                  </>
+                                )}
                                 {diff != null && diff !== 0 && (
                                   <span className="muted" style={{ marginLeft: 6, fontWeight: 600 }}>
                                     ({diff > 0 ? `+${diff}` : diff})
@@ -1741,9 +2056,9 @@ export function Purchases() {
                                     (не ожидалось)
                                   </span>
                                 )}
-                                {received != null && expected != null && received >= expected && scanned > expected && (
+                                {isOver && (
                                   <span className="muted" style={{ marginLeft: 8, fontWeight: 600 }}>
-                                    перескан
+                                    больше заказанного
                                   </span>
                                 )}
                               </td>
@@ -1823,6 +2138,109 @@ export function Purchases() {
             )}
           </>
         ) : null}
+      </Modal>
+
+      <Modal
+        isOpen={!!receiptDraftChoice}
+        onClose={() => setReceiptDraftChoice(null)}
+        title="Незавершённая приёмка"
+        size="md"
+      >
+        {receiptDraftChoice ? (
+          <>
+            <p className="warehouse-ops-hint">
+              У закупки №{receiptDraftChoice.purchaseId} уже есть черновик приёмки №
+              {receiptDraftChoice.existingReceiptId}. Продолжить его или начать новую?
+            </p>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+              <Button
+                onClick={async () => {
+                  const rid = receiptDraftChoice.existingReceiptId;
+                  setReceiptDraftChoice(null);
+                  await openReceipt(rid);
+                }}
+              >
+                Продолжить черновик
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={createReceiptBusy}
+                onClick={async () => {
+                  setCreateReceiptBusy(true);
+                  try {
+                    setErr(null);
+                    const r = await purchasesApi.createReceipt(receiptDraftChoice.purchaseId, {
+                      forceNew: true,
+                    });
+                    setReceiptDraftChoice(null);
+                    await openDetail(receiptDraftChoice.purchaseId);
+                    await openReceipt(r.id);
+                  } catch (ex) {
+                    setErr(ex.response?.data?.message || ex.message || 'Не удалось создать приёмку');
+                  } finally {
+                    setCreateReceiptBusy(false);
+                  }
+                }}
+              >
+                {createReceiptBusy ? 'Создаю…' : 'Начать новую'}
+              </Button>
+              <Button variant="secondary" onClick={() => setReceiptDraftChoice(null)}>
+                Отмена
+              </Button>
+            </div>
+          </>
+        ) : null}
+      </Modal>
+
+      <Modal
+        isOpen={receiptCloseConfirm}
+        onClose={() => setReceiptCloseConfirm(false)}
+        title="Закрыть приёмку"
+        size="md"
+      >
+        <p className="warehouse-ops-hint">
+          Черновик приёмки №{receipt?.receipt?.id} можно сохранить и продолжить позже, или удалить без завершения.
+        </p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+          <Button
+            onClick={() => {
+              setReceiptCloseConfirm(false);
+              syncPurchaseReceiptInUrl('');
+              setReceipt(null);
+              setScanMsg(null);
+            }}
+          >
+            Сохранить черновик и закрыть
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={deleteReceiptDraftBusy}
+            onClick={async () => {
+              const rid = receipt?.receipt?.id;
+              if (!rid) return;
+              try {
+                setDeleteReceiptDraftBusy(true);
+                setErr(null);
+                await purchasesApi.deleteReceipt(rid);
+                setReceiptCloseConfirm(false);
+                syncPurchaseReceiptInUrl('');
+                setReceipt(null);
+                setScanMsg(null);
+                if (detail?.purchase?.id) await openDetail(detail.purchase.id);
+                await reload();
+              } catch (ex) {
+                setErr(ex.response?.data?.message || ex.message || 'Не удалось удалить черновик');
+              } finally {
+                setDeleteReceiptDraftBusy(false);
+              }
+            }}
+          >
+            {deleteReceiptDraftBusy ? 'Удаляю…' : 'Удалить черновик'}
+          </Button>
+          <Button variant="secondary" onClick={() => setReceiptCloseConfirm(false)}>
+            Отмена
+          </Button>
+        </div>
       </Modal>
 
       <Modal

@@ -21,6 +21,7 @@ const stockWarehouseChildren = [
     warehouseOp: 'table',
   },
   { path: '/stock-levels/purchases', label: '🧾 Закупка', iconClass: 'pe-7s-cart' },
+  { path: '/production', label: '🔧 Производство', iconClass: 'pe-7s-tools' },
   { path: '/fbo-supplies', label: '📦 Поставки FBO', iconClass: 'pe-7s-box2' },
   {
     path: opsByKey.receipts_list?.to || '/stock-levels/warehouse?op=receipts_list',

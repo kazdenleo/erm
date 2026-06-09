@@ -399,9 +399,9 @@ class WarehouseReceiptsService {
     };
   }
 
-  async getList({ limit = 100, offset = 0, profileId = null } = {}) {
-    const list = await this.receiptsRepo.findAll({ limit, offset, profileId });
-    const total = await this.receiptsRepo.count({ profileId });
+  async getList({ limit = 100, offset = 0, profileId = null, documentType = null } = {}) {
+    const list = await this.receiptsRepo.findAll({ limit, offset, profileId, documentType });
+    const total = await this.receiptsRepo.count({ profileId, documentType });
     return { list, total };
   }
 

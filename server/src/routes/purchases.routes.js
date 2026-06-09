@@ -16,6 +16,11 @@ router.use(requireAuth);
 // закупки
 router.get('/', wrapAsync(purchasesController.list.bind(purchasesController)));
 router.post(
+  '/import/excel/preview',
+  excelUpload.single('file'),
+  wrapAsync(purchasesController.previewExcelFromExcel.bind(purchasesController))
+);
+router.post(
   '/import/excel',
   excelUpload.single('file'),
   wrapAsync(purchasesController.importFromExcel.bind(purchasesController))
@@ -36,6 +41,8 @@ router.post('/:id/receipts', wrapAsync(purchasesController.createReceipt.bind(pu
 router.get('/receipts/:receiptId', wrapAsync(purchasesController.getReceipt.bind(purchasesController)));
 router.post('/receipts/:receiptId/scan', wrapAsync(purchasesController.scanReceipt.bind(purchasesController)));
 router.post('/receipts/:receiptId/add-quantity', wrapAsync(purchasesController.addReceiptQuantity.bind(purchasesController)));
+router.post('/receipts/:receiptId/set-quantity', wrapAsync(purchasesController.setReceiptItemQuantity.bind(purchasesController)));
+router.post('/receipts/:receiptId/invite', wrapAsync(purchasesController.inviteToReceipt.bind(purchasesController)));
 router.post('/receipts/:receiptId/complete', wrapAsync(purchasesController.completeReceipt.bind(purchasesController)));
 router.post('/receipts/:receiptId/resolve-extras', wrapAsync(purchasesController.resolveExtras.bind(purchasesController)));
 

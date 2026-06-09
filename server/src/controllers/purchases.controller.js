@@ -6,6 +6,7 @@
 import purchasesService from '../services/purchases.service.js';
 import purchasesImportService from '../services/purchasesImport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 
 class PurchasesController {
   async list(req, res, next) {
@@ -66,6 +67,34 @@ class PurchasesController {
    * POST /api/purchases/import/excel
    * multipart: file, supplierId, organizationId, warehouseId
    */
+  /**
+   * POST /api/purchases/import/excel/preview
+   * multipart: file, supplierId — разбор без создания закупки (допускаются не найденные артикулы).
+   */
+  async previewExcelFromExcel(req, res, next) {
+    try {
+      if (!req.file?.buffer) {
+        return res.status(400).json({ ok: false, message: 'Загрузите файл Excel (.xlsx)' });
+      }
+      const supplierId = req.body?.supplierId ?? req.body?.supplier_id;
+      const profileId = req.user?.profileId ?? null;
+      const data = await purchasesImportService.previewExcelBuffer(req.file.buffer, {
+        supplierId,
+        profileId,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          ...(e.details ? { details: e.details } : {}),
+        });
+      }
+      next(e);
+    }
+  }
+
   async importFromExcel(req, res, next) {
     try {
       if (!req.file?.buffer) {
@@ -204,9 +233,14 @@ class PurchasesController {
   async createReceipt(req, res, next) {
     try {
       const { id } = req.params;
+      const { forceNew } = req.body || {};
       const userId = req.user?.id ?? null;
       const profileId = req.user?.profileId ?? null;
-      const data = await purchasesService.createReceiptFromPurchase(id, { userId, profileId });
+      const data = await purchasesService.createReceiptFromPurchase(id, {
+        userId,
+        profileId,
+        forceNew,
+      });
       return res.status(201).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
@@ -235,10 +269,33 @@ class PurchasesController {
       const { receiptId } = req.params;
       const { productId, barcode, sku, scannerId } = req.body || {};
       const profileId = req.user?.profileId ?? null;
+      const userId = req.user?.id ?? null;
       const data = await purchasesService.scanToReceipt(
         receiptId,
         { productId, barcode, sku, scannerId: scannerId ?? (req.get('x-scanner-id') || req.get('X-Scanner-Id') || null) },
-        { profileId }
+        { profileId, userId }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async setReceiptItemQuantity(req, res, next) {
+    try {
+      const { receiptId } = req.params;
+      const { productId, quantity, scannerId } = req.body || {};
+      const profileId = req.user?.profileId ?? null;
+      const effectiveScannerId =
+        scannerId ?? (req.get('x-scanner-id') || req.get('X-Scanner-Id') || null);
+      const userId = req.user?.id ?? null;
+      const data = await purchasesService.setReceiptItemQuantity(
+        receiptId,
+        { productId, quantity, scannerId: effectiveScannerId },
+        { profileId, userId }
       );
       return res.status(200).json({ ok: true, data });
     } catch (e) {
@@ -256,10 +313,11 @@ class PurchasesController {
       const profileId = req.user?.profileId ?? null;
       const effectiveScannerId =
         scannerId ?? (req.get('x-scanner-id') || req.get('X-Scanner-Id') || null);
+      const userId = req.user?.id ?? null;
       const data = await purchasesService.addQuantityToReceipt(
         receiptId,
         { productId, barcode, sku, quantity, scannerId: effectiveScannerId },
-        { profileId }
+        { profileId, userId }
       );
       return res.status(200).json({ ok: true, data });
     } catch (e) {
@@ -278,6 +336,51 @@ class PurchasesController {
       const userId = req.user?.id ?? null;
       const data = await purchasesService.completeReceipt(receiptId, { profileId, userId, warehouseId });
       return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async inviteToReceipt(req, res, next) {
+    try {
+      const { receiptId } = req.params;
+      const { userId: targetUserIdRaw } = req.body || {};
+      const targetUserId = targetUserIdRaw != null && targetUserIdRaw !== '' ? Number(targetUserIdRaw) : null;
+      if (!targetUserId || Number.isNaN(targetUserId)) {
+        return res.status(400).json({ ok: false, message: 'Укажите пользователя' });
+      }
+      const me = req.user?.id != null ? Number(req.user.id) : null;
+      if (me != null && !Number.isNaN(me) && me === targetUserId) {
+        return res.status(400).json({ ok: false, message: 'Нельзя пригласить самого себя' });
+      }
+      const profileId = req.user?.profileId ?? null;
+      const row = await purchasesService.getPurchaseReceiptForInvite(receiptId, { profileId });
+      const creatorId =
+        row.created_by_user_id != null && row.created_by_user_id !== ''
+          ? Number(row.created_by_user_id)
+          : null;
+      if (creatorId != null && Number.isFinite(creatorId) && me != null && Number.isFinite(me) && me !== creatorId) {
+        return res.status(403).json({ ok: false, message: 'Приглашать может только создатель приёмки' });
+      }
+      const rid = Number(row.id);
+      const url = `/stock-levels/purchases?purchase_receipt=${encodeURIComponent(String(rid))}`;
+      const from = req.user?.fullName || req.user?.email || 'Пользователь';
+      await addRuntimeNotification({
+        type: 'purchase_receipt_invite',
+        severity: 'info',
+        title: 'Приглашение в приёмку по закупке',
+        message: `${from} приглашает вас в совместную приёмку №${rid} (закупка №${row.purchase_id}). Нажмите «Открыть приёмку» в уведомлении.`,
+        meta: {
+          target_user_id: targetUserId,
+          url,
+          receipt_id: rid,
+          purchase_id: row.purchase_id ?? null,
+        },
+      });
+      return res.status(200).json({ ok: true, data: { ok: true, url, receiptId: rid } });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });

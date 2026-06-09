@@ -34,6 +34,7 @@ import wbMarketplaceRoutes from './wbMarketplace.routes.js';
 import shipmentsRoutes from './shipments.routes.js';
 import shipmentsController from '../controllers/shipments.controller.js';
 import assemblyRoutes from './assembly.routes.js';
+import productionRoutes from './production.routes.js';
 import productAttributesRoutes from './product_attributes.routes.js';
 import warehouseReceiptsRoutes from './warehouseReceipts.routes.js';
 import purchasesRoutes from './purchases.routes.js';
@@ -274,6 +275,7 @@ router.use('/shipments', shipmentsRoutes);
 
 // Сборка заказов (поиск по штрихкоду)
 router.use('/assembly', assemblyRoutes);
+router.use('/production', productionRoutes);
 
 // Атрибуты товаров (настройки → атрибуты)
 router.use('/product-attributes', productAttributesRoutes);

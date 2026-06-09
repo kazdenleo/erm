@@ -378,16 +378,24 @@ class ProductsService {
   async _attachParticipationFlags(products) {
     if (!Array.isArray(products) || products.length === 0) return products;
     if (!repositoryFactory.isUsingPostgreSQL()) return products;
-    const batch = await getProductParticipationBatch(products.map((p) => p.id));
+    const [batch, kitComponentMap] = await Promise.all([
+      getProductParticipationBatch(products.map((p) => p.id)),
+      import('./kitStock.service.js').then(({ batchKitIdByComponentMap }) =>
+        batchKitIdByComponentMap(products.map((p) => p.id))
+      ),
+    ]);
     return products.map((p) => {
       const info = batch.get(String(p.id)) || { hasParticipation: false, reasons: [] };
       const isArchived = Boolean(p.is_archived);
+      const pid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+      const isKitComponent = Number.isFinite(pid) && kitComponentMap.has(pid);
       return {
         ...p,
         isArchived,
         hasParticipation: info.hasParticipation,
         participationReasons: info.reasons,
         canDelete: !info.hasParticipation && !isArchived,
+        is_kit_component: isKitComponent,
       };
     });
   }

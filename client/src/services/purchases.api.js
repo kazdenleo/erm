@@ -59,6 +59,12 @@ export const purchasesApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Разбор Excel в таблицу новой закупки (без создания документа). */
+  previewExcelImport: async (formData) => {
+    const response = await api.post('/purchases/import/excel/preview', formData);
+    return response.data?.data ?? response.data;
+  },
+
   /** Догон incoming/даты для старых данных и повторная выкладка резервов по строкам закупки */
   markOrdered: async (id) => {
     const response = await api.post(`/purchases/${id}/mark-ordered`, {});
@@ -75,8 +81,8 @@ export const purchasesApi = {
     return response.data?.data ?? response.data;
   },
 
-  createReceipt: async (purchaseId) => {
-    const response = await api.post(`/purchases/${purchaseId}/receipts`, {});
+  createReceipt: async (purchaseId, options = {}) => {
+    const response = await api.post(`/purchases/${purchaseId}/receipts`, options);
     return response.data?.data ?? response.data;
   },
 
@@ -93,6 +99,17 @@ export const purchasesApi = {
   /** Ручной ввод: добавить сразу N штук в приёмку (без N сканов). */
   addReceiptQuantity: async (receiptId, payload) => {
     const response = await api.post(`/purchases/receipts/${receiptId}/add-quantity`, payload);
+    return response.data?.data ?? response.data;
+  },
+
+  /** Ручная установка принятого количества по строке приёмки. */
+  setReceiptItemQuantity: async (receiptId, payload) => {
+    const response = await api.post(`/purchases/receipts/${receiptId}/set-quantity`, payload);
+    return response.data?.data ?? response.data;
+  },
+
+  inviteToReceipt: async (receiptId, payload) => {
+    const response = await api.post(`/purchases/receipts/${receiptId}/invite`, payload);
     return response.data?.data ?? response.data;
   },
 

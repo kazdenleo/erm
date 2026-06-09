@@ -22,6 +22,7 @@ import { Reviews } from './pages/Reviews/Reviews';
 import { OrderDetail } from './pages/Orders/OrderDetail';
 import { Shipments } from './pages/Shipments/Shipments';
 import { Assembly } from './pages/Assembly/Assembly';
+import { Production } from './pages/Production/Production';
 import { PrintLabel } from './pages/PrintLabel/PrintLabel.jsx';
 import { PrintProductLabel } from './pages/PrintProductLabel/PrintProductLabel.jsx';
 import { PrintProductLabelsBatch } from './pages/PrintProductLabel/PrintProductLabelsBatch.jsx';
@@ -107,6 +108,7 @@ function App() {
           <Route path="/fbo-supplies/purchase-calc" element={<ProtectedRoute><Layout><FboPurchaseCalculation /></Layout></ProtectedRoute>} />
           <Route path="/fbo-supplies/:id" element={<ProtectedRoute><Layout><FboSupplyDetail /></Layout></ProtectedRoute>} />
           <Route path="/assembly" element={<ProtectedRoute><Layout><Assembly /></Layout></ProtectedRoute>} />
+          <Route path="/production" element={<ProtectedRoute><Layout><Production /></Layout></ProtectedRoute>} />
           <Route path="/print/label/:orderId" element={<ProtectedRoute><PrintLabel /></ProtectedRoute>} />
           <Route path="/print/product-label/:productId" element={<ProtectedRoute><PrintProductLabel /></ProtectedRoute>} />
           <Route path="/print/product-labels-batch" element={<ProtectedRoute><PrintProductLabelsBatch /></ProtectedRoute>} />

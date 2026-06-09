@@ -25,6 +25,12 @@ export function isKitProduct(product) {
   return Array.isArray(comps) && comps.length > 0;
 }
 
+/** Обычный SKU, но входит в состав хотя бы одного комплекта. */
+export function isKitComponentProduct(product) {
+  if (!product) return false;
+  return product.is_kit_component === true || product.isKitComponent === true;
+}
+
 /** Типы движений в истории остатков комплекта (SKU + резерв / «в пути»). */
 export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = [
   'receipt',
