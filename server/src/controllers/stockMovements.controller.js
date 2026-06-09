@@ -128,25 +128,20 @@ class StockMovementsController {
       const warehouseRaw = req.query.warehouseId ?? req.query.warehouse_id ?? null;
       const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw);
 
-      await stockMovementsService
-        .releaseUnattributedJournalReserve(id, {
-          profileId: tid,
-          warehouseId: whFilter
-        })
-        .catch(() => {});
-
-      await stockMovementsService._reconcileKitReserveForProductModal(id).catch(() => {});
-
       const rows = await stockMovementsService.listReservedOrdersForProduct(id, {
         profileId: tid,
-        warehouseId: whFilter
+        warehouseId: whFilter,
+        _skipShipmentReconcile: true,
+        _skipStaleCleanup: true
       });
       const fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
         profileId: tid
       });
       const summary = await stockMovementsService.getReserveSummaryForProduct(id, {
         profileId: tid,
-        warehouseId: whFilter
+        warehouseId: whFilter,
+        ordersPreloaded: rows,
+        fboSuppliesPreloaded: fboSupplies
       });
       return res.status(200).json({ ok: true, data: rows, fboSupplies, summary });
     } catch (error) {

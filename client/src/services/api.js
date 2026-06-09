@@ -187,6 +187,8 @@ api.interceptors.response.use(
       /* вызывающий код обрабатывает ошибку без шума в консоли */
     } else if (error.code === 'ERR_CANCELED' || error.name === 'CanceledError') {
       /* отмена запроса при размонтировании / смене фильтра — не ошибка API */
+    } else if (error.code === 'ECONNABORTED') {
+      /* таймаут — сообщение показываем в UI страницы */
     } else if (
       error.response?.status === 400 &&
       String(error.config?.url || '').includes('/marketplace-attributes')

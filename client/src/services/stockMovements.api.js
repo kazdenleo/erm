@@ -22,7 +22,10 @@ export const stockMovementsApi = {
     if (warehouseId != null && String(warehouseId).trim() !== '') {
       params.warehouseId = warehouseId;
     }
-    const response = await api.get(`/products/${productId}/stock-movements`, { params });
+    const response = await api.get(`/products/${productId}/stock-movements`, {
+      params,
+      timeout: 120000
+    });
     return response.data;
   },
 
@@ -32,7 +35,10 @@ export const stockMovementsApi = {
     if (warehouseId != null && String(warehouseId).trim() !== '') {
       params.warehouseId = warehouseId;
     }
-    const response = await api.get(`/products/${productId}/stock-reserved-orders`, { params });
+    const response = await api.get(`/products/${productId}/stock-reserved-orders`, {
+      params,
+      timeout: 120000
+    });
     return response.data;
   },
 

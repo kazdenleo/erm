@@ -1042,6 +1042,7 @@ export function WarehouseStocks() {
   const [historyList, setHistoryList] = useState([]);
   const [historyNetReserved, setHistoryNetReserved] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
   const [historyWarehouseFilterIgnored, setHistoryWarehouseFilterIgnored] = useState(false);
   const [reserveModalOpen, setReserveModalOpen] = useState(false);
   /** Товар, для которого открыта модалка резерва (таблица или история). */
@@ -1675,10 +1676,12 @@ export function WarehouseStocks() {
       setHistoryList([]);
       setHistoryNetReserved(null);
       setHistoryWarehouseFilterIgnored(false);
+      setHistoryError(null);
       return;
     }
     let cancelled = false;
     setHistoryLoading(true);
+    setHistoryError(null);
     stockMovementsApi.getHistory(historyProduct.id, {
       limit: 100,
       warehouseId: stockWarehouseId || undefined
@@ -1704,16 +1707,20 @@ export function WarehouseStocks() {
                     ? Number(res2.net_reserved)
                     : null;
               setHistoryNetReserved(Number.isFinite(net2) ? net2 : null);
-              if (Number.isFinite(net2)) {
-                loadListRef.current?.({ page: currentPage, silent: true });
-              }
               return;
             })
-            .catch(() => {
+            .catch((err) => {
               if (!cancelled) {
                 setHistoryList([]);
                 setHistoryNetReserved(null);
                 setHistoryWarehouseFilterIgnored(false);
+                setHistoryError(
+                  err?.response?.data?.message ||
+                    (err?.code === 'ECONNABORTED'
+                      ? 'Превышено время ожидания ответа сервера'
+                      : err?.message) ||
+                    'Не удалось загрузить историю'
+                );
               }
             });
         }
@@ -1726,14 +1733,18 @@ export function WarehouseStocks() {
               ? Number(res.net_reserved)
               : null;
         setHistoryNetReserved(Number.isFinite(net) ? net : null);
-        if (Number.isFinite(net)) {
-          loadListRef.current?.({ page: currentPage, silent: true });
-        }
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
           setHistoryList([]);
           setHistoryNetReserved(null);
+          setHistoryError(
+            err?.response?.data?.message ||
+              (err?.code === 'ECONNABORTED'
+                ? 'Превышено время ожидания ответа сервера'
+                : err?.message) ||
+              'Не удалось загрузить историю'
+          );
         }
       })
       .finally(() => {
@@ -1907,6 +1918,7 @@ export function WarehouseStocks() {
     }
     let cancelled = false;
     setReserveLoading(true);
+    setReserveError(null);
     stockMovementsApi
       .getReservedOrders(reserveModalProduct.id, {
         warehouseId: stockWarehouseId || undefined
@@ -1917,13 +1929,19 @@ export function WarehouseStocks() {
         setReserveOrders(Array.isArray(list) ? list : []);
         setReserveFboSupplies(Array.isArray(res?.fboSupplies) ? res.fboSupplies : []);
         setReserveSummary(res?.summary ?? null);
-        loadListRef.current?.({ page: currentPage, silent: true });
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
           setReserveOrders([]);
           setReserveFboSupplies([]);
           setReserveSummary(null);
+          setReserveError(
+            err?.response?.data?.message ||
+              (err?.code === 'ECONNABORTED'
+                ? 'Превышено время ожидания ответа сервера'
+                : err?.message) ||
+              'Не удалось загрузить список заказов'
+          );
         }
       })
       .finally(() => {
@@ -2625,6 +2643,10 @@ export function WarehouseStocks() {
         ) : null}
         {historyLoading ? (
           <div className="loading">Загрузка истории…</div>
+        ) : historyError ? (
+          <p className="text-danger mb-0" role="alert">
+            {historyError}
+          </p>
         ) : historyList.length === 0 ? (
           <p className="stock-levels-history-empty">Нет записей об изменениях остатков.</p>
         ) : (

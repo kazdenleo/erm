@@ -562,22 +562,6 @@ class StockMovementsService {
       whFilter = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
     }
 
-    const { reconcileLegacyProductQuantityToPws } = await import(
-      './productWarehouseQuantity.service.js'
-    );
-    await reconcileLegacyProductQuantityToPws(idNum, whFilter).catch(() => {});
-
-    const summary = await this.getReserveSummaryForProduct(idNum, {
-      profileId,
-      warehouseId: whFilter
-    });
-    if (Number(summary.orphanJournalReserve) > 0) {
-      await this.releaseUnattributedJournalReserve(idNum, {
-        profileId,
-        warehouseId: whFilter
-      }).catch(() => {});
-    }
-
     const rows = await this.repository.findByProduct(productId, {
       limit: cap,
       profileId,
@@ -586,23 +570,19 @@ class StockMovementsService {
 
     const { isKitProductId, isKitStockHistoryMovementType, getKitComponents, readKitDisplayReservedQuantity } =
       await import('./kitStock.service.js');
-    const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
     const isKit = await isKitProductId(idNum);
 
     let netReserved;
     if (isKit) {
       netReserved = await readKitDisplayReservedQuantity(idNum);
-      await syncProductReservedQuantityFromJournal(idNum, { reserved: netReserved });
+    } else if (whFilter != null) {
+      netReserved = await getReservedQuantityFromMovements(idNum, { warehouseId: whFilter });
     } else {
-      const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
-      if (whFilter != null) {
-        netReserved = await getReservedQuantityFromMovements(idNum, { warehouseId: whFilter });
-      } else {
-        netReserved = await syncProductReservedQuantityFromJournal(idNum);
-        if (netReserved <= 0) {
-          netReserved = await getReservedQuantityFromMovements(idNum);
-        }
-      }
+      netReserved = await getReservedQuantityFromMovements(idNum);
+    }
+
+    if (!isKit) {
       return { movements: rows, netReserved };
     }
 
@@ -612,7 +592,6 @@ class StockMovementsService {
     for (const c of comps || []) {
       const cid = Number(c.component_product_id);
       if (!Number.isFinite(cid) || cid < 1) continue;
-      await reconcileLegacyProductQuantityToPws(cid, whFilter).catch(() => {});
       const compRows = await this.repository.findByProduct(cid, {
         limit: Math.min(cap, 80),
         profileId,
@@ -915,7 +894,15 @@ class StockMovementsService {
   /**
    * Сводка резерва для модалки остатков (комплект: колонка = только SKU комплекта).
    */
-  async getReserveSummaryForProduct(productId, { profileId = null, warehouseId = null } = {}) {
+  async getReserveSummaryForProduct(
+    productId,
+    {
+      profileId = null,
+      warehouseId = null,
+      ordersPreloaded = null,
+      fboSuppliesPreloaded = null
+    } = {}
+  ) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) {
       return {
@@ -928,14 +915,21 @@ class StockMovementsService {
       };
     }
 
-    const fboSupplies = await this.listFboReservedSuppliesForProduct(idNum, { profileId });
+    const fboSupplies =
+      fboSuppliesPreloaded != null
+        ? fboSuppliesPreloaded
+        : await this.listFboReservedSuppliesForProduct(idNum, { profileId });
     const fboReservedQty = fboSupplies.reduce((s, row) => s + (Number(row.reservedQty) || 0), 0);
 
-    const orders = await this.listReservedOrdersForProduct(idNum, {
-      profileId,
-      warehouseId,
-      _skipStaleCleanup: true
-    });
+    const orders =
+      ordersPreloaded != null
+        ? ordersPreloaded
+        : await this.listReservedOrdersForProduct(idNum, {
+            profileId,
+            warehouseId,
+            _skipShipmentReconcile: true,
+            _skipStaleCleanup: true
+          });
     const ordersReservedQty = orders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
 
     const { isKitProductId, readKitDisplayReservedQuantity, getKitComponents } =
