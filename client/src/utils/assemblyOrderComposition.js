@@ -77,6 +77,28 @@ function reserveLineKey(line) {
   return `${kind}|${pid}|${oid}`;
 }
 
+function partsFromAssemblyComposition(rows) {
+  const parts = [];
+  for (const o of rows || []) {
+    const acl = o.assemblyCompositionLines ?? o.assembly_composition_lines;
+    if (!Array.isArray(acl) || !acl.length) continue;
+    for (const line of acl) {
+      const article =
+        line.article ??
+        line.sku ??
+        line.productSku ??
+        line.product_sku ??
+        line.offerId ??
+        line.offer_id;
+      const qty = line.quantity ?? line.qty ?? line.needQty ?? line.need_qty ?? 0;
+      const q = Math.max(0, Number(qty) || 0);
+      if (q <= 0) continue;
+      parts.push(compositionPart(article, q));
+    }
+  }
+  return parts.length ? parts : null;
+}
+
 function partsFromReserveLines(rows) {
   const reserveLines = [];
   for (const o of rows || []) {
@@ -102,11 +124,14 @@ function partsFromReserveLines(rows) {
 
 /**
  * Строки состава для таблицы сборки: «артикул - количество» (каждая — отдельная строка в UI).
- * Для комплекта — что забронировано: целый комплект или комплектующие по отдельности.
+ * Для комплекта — полный BOM из каталога (все комплектующие), не путь резерва.
  */
 export function getAssemblyOrderCompositionLines(rows) {
   const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
   if (!list.length) return [];
+
+  const fromAssembly = partsFromAssemblyComposition(list);
+  if (fromAssembly) return fromAssembly;
 
   const fromReserve = partsFromReserveLines(list);
   if (fromReserve) return fromReserve;

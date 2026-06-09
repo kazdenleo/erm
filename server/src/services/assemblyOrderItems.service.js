@@ -97,11 +97,9 @@ async function resolveKitAssemblyItems(order, kitProductId) {
   ];
 }
 
-/**
- * Собрать orderItems для ответа /assembly/find-by-barcode.
- */
-export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
-  if (!order) return [];
+/** Найти product_id комплекта для строки заказа (каталог или сопоставление МП). */
+export async function resolveKitProductIdForOrder(order, ordersService, opts = {}) {
+  if (!order) return null;
 
   let linePid = order.productId ?? order.product_id;
   if (linePid == null && ordersService) {
@@ -132,12 +130,73 @@ export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
       kitId = byScan;
     }
   }
+  return kitId;
+}
+
+function articleFromOrderOrProduct(order, productBrief) {
+  const sku = String(productBrief?.sku ?? '').trim();
+  if (sku) return sku;
+  const offer = String(order?.offerId ?? order?.offer_id ?? '').trim();
+  if (offer) return offer;
+  const ps = String(order?.productSku ?? order?.product_sku ?? '').trim();
+  if (ps) return ps;
+  const name = String(productBrief?.name ?? order?.productName ?? order?.product_name ?? '').trim();
+  return name || '—';
+}
+
+/**
+ * Состав для колонки «Состав» на сборке: всегда BOM комплекта (артикул × кол-во), не путь резерва.
+ */
+export async function buildAssemblyCompositionLinesForOrder(order, ordersService) {
+  if (!order) return [];
+
+  const kitId = await resolveKitProductIdForOrder(order, ordersService);
+  if (kitId != null) {
+    const expanded = await expandKitOrderToAssemblyItems(order, kitId);
+    if (expanded.length) {
+      return expanded.map((item) => ({
+        article: articleFromOrderOrProduct(
+          { offerId: item.offerId },
+          { sku: item.offerId, name: item.productName }
+        ),
+        quantity: Math.max(1, Number(item.quantity) || 1)
+      }));
+    }
+  }
+
+  let linePid = order.productId ?? order.product_id;
+  if (linePid == null && ordersService) {
+    linePid = await ordersService.resolveProductIdForAssemblyLine(order);
+  }
+  const pid = linePid != null ? Number(linePid) : NaN;
+  const briefMap =
+    Number.isFinite(pid) && pid > 0 ? await loadProductBriefMap([pid]) : new Map();
+  const brief = Number.isFinite(pid) && pid > 0 ? briefMap.get(pid) : null;
+  return [
+    {
+      article: articleFromOrderOrProduct(order, brief),
+      quantity: Math.max(1, parseInt(order.quantity, 10) || 1)
+    }
+  ];
+}
+
+/**
+ * Собрать orderItems для ответа /assembly/find-by-barcode.
+ */
+export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
+  if (!order) return [];
+
+  const kitId = await resolveKitProductIdForOrder(order, ordersService, opts);
 
   if (kitId != null) {
     const kitItems = await resolveKitAssemblyItems(order, kitId);
     if (kitItems.length) return kitItems;
   }
 
+  let linePid = order.productId ?? order.product_id;
+  if (linePid == null && ordersService) {
+    linePid = await ordersService.resolveProductIdForAssemblyLine(order);
+  }
   const resolvedPid = linePid != null ? linePid : null;
   const n = resolvedPid != null ? Number(resolvedPid) : NaN;
   return [

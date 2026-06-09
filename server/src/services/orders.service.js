@@ -45,6 +45,7 @@ import {
 } from './sellableQuantity.service.js';
 import { orderReserveMovementMatchSql } from '../constants/netReservedStockSql.js';
 import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
+import { buildAssemblyCompositionLinesForOrder } from './assemblyOrderItems.service.js';
 
 function reserveSnapshotOptsFromMeta(meta = {}) {
   const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
@@ -2459,6 +2460,8 @@ class OrdersService {
         if (o.reserveCoverage === 'none') {
           await applyReserveCoverageToOrderRow(o, supplyMap, coverageFifoMap);
         }
+        o.assemblyCompositionLines = await buildAssemblyCompositionLinesForOrder(o, this);
+        o.assembly_composition_lines = o.assemblyCompositionLines;
       } catch {
         /* ignore */
       }
