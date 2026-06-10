@@ -8,7 +8,7 @@ import { PDFDocument } from 'pdf-lib';
 import { query } from '../config/database.js';
 import { categoryLabelTemplatesRepository } from '../repositories/categoryLabelTemplates.repository.pg.js';
 import productsService from './products.service.js';
-import { pickBarcodeForMarketplace } from '../utils/productBarcodes.js';
+import { pickBarcodeForMarketplace, shouldUseBarcodeDigitFallback } from '../utils/productBarcodes.js';
 import {
   getProductFieldDisplayValue,
   labelProductFieldLabel,
@@ -379,17 +379,24 @@ async function enrichProductForLabel(product, template) {
   return { ...product, product_type: product.product_type || 'kit', kit_components };
 }
 
-/** Тип штрихкода и нормализованный текст (EAN-13 — 13 цифр). */
+/** Тип штрихкода и нормализованный текст (EAN-13 — только цифры; DT-000023 — Code128 целиком). */
 function resolveBarcodeSpec(raw) {
-  const code = String(raw || '').replace(/\D/g, '');
-  if (!code) return null;
-  if (code.length === 12 || code.length === 13) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return null;
+
+  if (!shouldUseBarcodeDigitFallback(trimmed)) {
+    return { bcid: 'code128', text: trimmed };
+  }
+
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length === 12 || digits.length === 13) {
     return {
       bcid: 'ean13',
-      text: code.length === 12 ? `0${code}` : code.slice(0, 13),
+      text: digits.length === 12 ? `0${digits}` : digits.slice(0, 13),
     };
   }
-  return { bcid: 'code128', text: code };
+  return { bcid: 'code128', text: digits };
 }
 
 /** Ширина символа в модулях (для подбора целочисленного scale). */
@@ -543,7 +550,10 @@ async function buildLabelSvg({ template, product, attributeNames, categoryAttrib
   const innerW = Math.max(10, widthPx - padL - padR);
   const elements = normalizeElements(template.elements);
   const attrValues = product.attribute_values || product.attributeValues || {};
-  const barcodeValue = pickBarcodeForMarketplace(product.barcodes, marketplace) || '';
+  const barcodeValue =
+    pickBarcodeForMarketplace(product.barcodes, marketplace) ||
+    String(product.sku || '').trim() ||
+    '';
 
   const lineGapPx = resolveLineGapPx(template, mmToPx);
   const blockGap = lineGapPx;

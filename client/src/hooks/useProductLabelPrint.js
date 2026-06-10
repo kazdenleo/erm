@@ -173,9 +173,17 @@ export function useProductLabelPrint(printHelperUrl = '') {
           ? Math.min(99, Math.floor(copiesRaw))
           : 1;
 
+      // Несколько копий — вкладка /print/product-label (дублирует листы); Print Helper печатает 1 PNG.
+      if (copies > 1) {
+        const ok = openProductLabelPrintTab(id, copies, options.marketplace);
+        if (!ok) {
+          setError('Не удалось открыть вкладку печати. Разрешите всплывающие окна для этого сайта.');
+        }
+        return ok;
+      }
+
       if (!canUsePrintHelper(printHelperUrl)) {
-        setError('Print Helper не настроен. Используйте openProductLabelPrintTab по клику.');
-        return false;
+        return openProductLabelPrintTab(id, copies, options.marketplace);
       }
 
       setPrinting(true);

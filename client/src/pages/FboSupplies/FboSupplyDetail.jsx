@@ -919,7 +919,18 @@ export function FboSupplyDetail() {
       <ProductLabelPrintModal
         isOpen={Boolean(labelPrintItem)}
         product={labelPrintItem ? itemToPrintProduct(labelPrintItem) : null}
-        defaultCopies={labelPrintItem?.quantity ?? 1}
+        defaultCopies={
+          labelPrintItem
+            ? Math.max(
+                1,
+                parseInt(
+                  statsByItemId.get(String(labelPrintItem.id))?.planned ??
+                    labelPrintItem.quantity,
+                  10
+                ) || 1
+              )
+            : 1
+        }
         onClose={closeLabelModal}
         onPrint={handleSingleLabelConfirm}
         printing={labelPrinting}
