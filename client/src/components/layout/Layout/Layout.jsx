@@ -16,7 +16,7 @@ export function Layout({ children }) {
   const { user, profileId, hasOrganizations, loading: authLoading } = useAuth();
 
   // Глобальный звук "Новый заказ": работает на любой странице, пока пользователь авторизован.
-  useNewOrdersSound({ enabled: Boolean(user?.id) });
+  useNewOrdersSound({ enabled: Boolean(user?.id), profileId });
 
   const toggleSidebar = useCallback(() => {
     setIsSidebarClosed((v) => !v);

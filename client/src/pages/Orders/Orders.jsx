@@ -7,6 +7,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useOrders } from '../../hooks/useOrders';
+import { requestNewOrdersSoundCheck } from '../../hooks/useNewOrdersSound';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { ordersApi } from '../../services/orders.api';
@@ -731,6 +732,7 @@ export function Orders() {
         if (q) params.search = q;
         const data = await ordersApi.getStatusCounts(params);
         setStatusCounts(data && typeof data === 'object' ? data : { all: 0 });
+        requestNewOrdersSoundCheck();
       } catch (e) {
         // Не блокируем UI счётчиков на ошибке — просто оставляем прошлые значения.
       }
@@ -996,16 +998,16 @@ export function Orders() {
   useEffect(() => {
     if (!ordersAutoSyncPauseLoaded || ordersAutoSyncPaused) return undefined;
     let mounted = true;
-    const POLL_MS = 2 * 60 * 1000;
+    const POLL_MS = 30 * 1000;
 
     const t0 = setTimeout(() => {
       if (!mounted) return;
-      reloadOrders({ silent: true });
+      void reloadOrders({ silent: true }).finally(() => requestNewOrdersSoundCheck());
     }, 5000);
 
     const poll = setInterval(() => {
       if (!mounted) return;
-      reloadOrders({ silent: true });
+      void reloadOrders({ silent: true }).finally(() => requestNewOrdersSoundCheck());
     }, POLL_MS);
 
     return () => {

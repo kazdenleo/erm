@@ -178,7 +178,7 @@ export function Settings() {
         {[
           { key: SOUND_EVENTS.scan_ok, title: 'Правильное сканирование', hint: 'Когда скан прошёл и товар/заказ найден.' },
           { key: SOUND_EVENTS.scan_error, title: 'Ошибка сканирования', hint: 'Когда скан прошёл, но ничего не найдено.' },
-          { key: SOUND_EVENTS.new_order, title: 'Новый заказ', hint: 'Когда появляется новый заказ (автообновление списка).' },
+          { key: SOUND_EVENTS.new_order, title: 'Новый заказ', hint: 'Когда появляется новый заказ (опрос каждые 5 с при активной вкладке).' },
         ].map(({ key, title, hint }) => {
           const sel = soundForm?.[key] || { kind: 'builtin', id: 'beep_1' };
           const v =
