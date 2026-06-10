@@ -102,10 +102,28 @@ export function summarizeOzonPlacementZones(items) {
     .join(' · ');
 }
 
+function normalizeOzonTagValue(tag) {
+  if (tag == null) return '';
+  if (typeof tag === 'string' || typeof tag === 'number') return String(tag).trim();
+  if (typeof tag === 'object') {
+    const v =
+      tag.tag ??
+      tag.name ??
+      tag.code ??
+      tag.value ??
+      tag.type ??
+      null;
+    return v != null ? String(v).trim() : '';
+  }
+  return '';
+}
+
 export function parseOzonBundleRowMeta(row) {
   const placementZone = row?.placement_zone ?? row?.placementZone ?? null;
   const rawTags = row?.tags ?? row?.item_tags ?? [];
-  const ozonTags = Array.isArray(rawTags) ? rawTags.map((t) => String(t).trim()).filter(Boolean) : [];
+  const ozonTags = Array.isArray(rawTags)
+    ? rawTags.map(normalizeOzonTagValue).filter(Boolean)
+    : [];
   return {
     placementZone: placementZone != null ? String(placementZone).trim() : null,
     ozonTags,

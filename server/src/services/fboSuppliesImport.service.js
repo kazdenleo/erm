@@ -623,30 +623,34 @@ function resolveOzonPreviewItemCount({ items, totalCount, order, supply, orderDe
 }
 
 async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags = true } = {}) {
-  const items = [];
-  let lastId = '';
+  let items = [];
   let reportedLineCount = 0;
   let reportedQtySum = 0;
   const clusterQty = new Map();
 
-  const loadPages = async () => {
-    lastId = '';
+  const loadPages = async (includeTagsCalc) => {
+    const batch = [];
+    let lastId = '';
+    let lineCount = 0;
+    let qtySum = 0;
+    const localClusterQty = new Map();
+
     for (let page = 0; page < 20; page++) {
       const body = { bundle_ids: [String(bundleId)], limit: 100 };
-      if (withTags) body.item_tags_calculation = true;
+      if (includeTagsCalc) body.item_tags_calculation = true;
       if (lastId) body.last_id = lastId;
       const bundleData = await integrationsService._ozonApiPost('/v1/supply-order/bundle', body, ozonApiOpts);
       const parsed = parseOzonBundleResponse(bundleData);
-      if (parsed.totalCount > reportedLineCount) reportedLineCount = parsed.totalCount;
+      if (parsed.totalCount > lineCount) lineCount = parsed.totalCount;
       for (const row of parsed.rows) {
-        reportedQtySum += parseOzonBundleRowQuantity(row);
+        qtySum += parseOzonBundleRowQuantity(row);
       }
 
       for (const row of parsed.rows) {
         const qty = parseOzonBundleRowQuantity(row);
         const rowCluster = ozonClusterFromBundleRow(row);
         if (rowCluster && qty > 0) {
-          clusterQty.set(rowCluster, (clusterQty.get(rowCluster) || 0) + qty);
+          localClusterQty.set(rowCluster, (localClusterQty.get(rowCluster) || 0) + qty);
         }
         if (!qty || qty <= 0) continue;
         const offerId = parseOzonBundleRowOfferId(row);
@@ -656,8 +660,8 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags
           barcode,
           profileId,
         });
-        const { placementZone, ozonTags } = withTags ? parseOzonBundleRowMeta(row) : { placementZone: null, ozonTags: [] };
-        items.push({
+        const { placementZone, ozonTags } = parseOzonBundleRowMeta(row);
+        batch.push({
           productId,
           quantity: qty,
           sku: offerId,
@@ -666,7 +670,7 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags
           mpProductId: row.product_id != null ? String(row.product_id) : null,
           name: row.name ?? row.product_name ?? null,
           placementZone,
-          ozonTags,
+          ozonTags: includeTagsCalc ? ozonTags : [],
           unresolved: productId == null,
         });
       }
@@ -675,12 +679,37 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags
       if (!parsed.lastId || parsed.lastId === lastId) break;
       lastId = parsed.lastId;
     }
+
+    return { batch, lineCount, qtySum, localClusterQty };
+  };
+
+  const mergeLoaded = ({ batch, lineCount, qtySum, localClusterQty }) => {
+    items = batch;
+    if (lineCount > reportedLineCount) reportedLineCount = lineCount;
+    reportedQtySum = Math.max(reportedQtySum, qtySum);
+    for (const [name, qty] of localClusterQty) {
+      clusterQty.set(name, (clusterQty.get(name) || 0) + qty);
+    }
   };
 
   try {
-    await loadPages();
+    mergeLoaded(await loadPages(withTags));
   } catch {
-    /* bundle failed */
+    if (withTags) {
+      try {
+        mergeLoaded(await loadPages(false));
+      } catch {
+        /* bundle failed */
+      }
+    }
+  }
+
+  if (!items.length && withTags) {
+    try {
+      mergeLoaded(await loadPages(false));
+    } catch {
+      /* bundle failed */
+    }
   }
 
   const qtyTotal = sumSupplyItemsQuantity(items);

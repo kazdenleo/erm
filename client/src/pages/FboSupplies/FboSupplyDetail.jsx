@@ -100,6 +100,7 @@ export function FboSupplyDetail() {
   const [placementZonesMsg, setPlacementZonesMsg] = useState(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const selectAllItemsRef = useRef(null);
+  const autoPlacementSyncAttemptedRef = useRef(null);
 
   const deductionWarehouses = useMemo(
     () => filterDeductionWarehouses(allWarehouses, supply?.deductionWarehouseId),
@@ -284,7 +285,7 @@ export function FboSupplyDetail() {
     }
   };
 
-  const handleSyncOzonPlacementZones = async () => {
+  const handleSyncOzonPlacementZones = useCallback(async () => {
     setSyncingPlacementZones(true);
     setErr(null);
     setPlacementZonesMsg(null);
@@ -305,7 +306,28 @@ export function FboSupplyDetail() {
     } finally {
       setSyncingPlacementZones(false);
     }
-  };
+  }, [id]);
+
+  useEffect(() => {
+    if (!supply?.id || loading || syncingPlacementZones) return;
+    if (autoPlacementSyncAttemptedRef.current === String(supply.id)) return;
+    const isOzon =
+      supply.marketplace !== 'wb' && supply.marketplace !== 'ym' && supply.marketplace !== 'yandex';
+    const canSync = isOzon && Boolean(supply.externalShipmentNumber || supply.externalSupplyId);
+    const needsZones = (supply.items || []).some((it) => !it.placementZone);
+    if (!canSync || !needsZones) return;
+    autoPlacementSyncAttemptedRef.current = String(supply.id);
+    handleSyncOzonPlacementZones();
+  }, [
+    supply?.id,
+    supply?.items,
+    supply?.marketplace,
+    supply?.externalShipmentNumber,
+    supply?.externalSupplyId,
+    loading,
+    syncingPlacementZones,
+    handleSyncOzonPlacementZones,
+  ]);
 
   const applyStatusChangeResult = (data) => {
     setSupply(data);
