@@ -1376,13 +1376,18 @@ class OrdersService {
     const oid = Number(orderDbId);
     const pid = Number(productId);
     if (!Number.isFinite(oid) || !Number.isFinite(pid)) return 0;
+    const or = await query(`SELECT order_id FROM orders WHERE id = $1 LIMIT 1`, [oid]);
+    const mpLabel =
+      or.rows?.[0]?.order_id != null && String(or.rows[0].order_id).trim() !== ''
+        ? String(or.rows[0].order_id).trim()
+        : null;
     const r = await query(
       `SELECT COALESCE(SUM(CASE WHEN type = 'shipment' THEN -quantity_change ELSE 0 END), 0)::int AS shipped
        FROM stock_movements
-       WHERE product_id = $2
+       WHERE product_id = $3
          AND type = 'shipment'
-         AND (meta->>'order_id')::bigint = $1::bigint`,
-      [oid, pid]
+         AND ${orderReserveMovementMatchSql('', 1, 2)}`,
+      [oid, mpLabel, pid]
     );
     return Math.max(0, Number(r.rows?.[0]?.shipped) || 0);
   }
@@ -1405,21 +1410,20 @@ class OrdersService {
     if (!orderDbId || !repositoryFactory.isUsingPostgreSQL()) return [];
     const oid = Number(orderDbId);
     if (!Number.isFinite(oid) || oid < 1) return [];
+    const or = await query(`SELECT order_id FROM orders WHERE id = $1 LIMIT 1`, [oid]);
+    const mpLabel =
+      or.rows?.[0]?.order_id != null && String(or.rows[0].order_id).trim() !== ''
+        ? String(or.rows[0].order_id).trim()
+        : null;
     const r = await query(
       `SELECT product_id,
-              GREATEST(0,
-                COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
-                                  WHEN type = 'unreserve' THEN quantity_change
-                                  ELSE 0 END), 0)
-              )::int AS net_reserved
+              ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_reserved
        FROM stock_movements
-       WHERE (meta->>'order_id')::bigint = $1::bigint
-         AND type IN ('reserve', 'unreserve')
+       WHERE type IN ('reserve', 'unreserve')
+         AND ${orderReserveMovementMatchSql('', 1, 2)}
        GROUP BY product_id
-       HAVING COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
-                                 WHEN type = 'unreserve' THEN quantity_change
-                                 ELSE 0 END), 0) > 0`,
-      [oid]
+       HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
+      [oid, mpLabel]
     );
     return (r.rows || [])
       .map((row) => Number(row.product_id))
@@ -1430,30 +1434,29 @@ class OrdersService {
     const orderDbId = orderRowDbId(orderRow);
     const pid = Number(productId);
     if (orderDbId && Number.isFinite(pid) && pid >= 1) {
+      const mpLabel = String(orderRow.orderId ?? orderRow.order_id ?? '').trim() || null;
       const whRows = await query(
         `SELECT warehouse_id,
-                GREATEST(0, COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
-                  WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0))::int AS net
+                ${NET_RESERVED_SUM_EXPR_SQL}::int AS net
          FROM stock_movements
-         WHERE product_id = $2
+         WHERE product_id = $3
            AND type IN ('reserve', 'unreserve')
            AND warehouse_id IS NOT NULL
-           AND (meta->>'order_id')::bigint = $1
+           AND ${orderReserveMovementMatchSql('', 1, 2)}
          GROUP BY warehouse_id
-         HAVING COALESCE(SUM(CASE WHEN type = 'reserve' THEN -quantity_change
-           WHEN type = 'unreserve' THEN quantity_change ELSE 0 END), 0) > 0
+         HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
          ORDER BY net DESC, warehouse_id ASC`,
-        [orderDbId, pid]
+        [orderDbId, mpLabel, pid]
       );
       if (whRows.rows?.[0]?.warehouse_id != null) {
         return Number(whRows.rows[0].warehouse_id);
       }
       const shipRow = await query(
         `SELECT warehouse_id FROM stock_movements
-         WHERE product_id = $2 AND type = 'shipment' AND warehouse_id IS NOT NULL
-           AND (meta->>'order_id')::bigint = $1
+         WHERE product_id = $3 AND type = 'shipment' AND warehouse_id IS NOT NULL
+           AND ${orderReserveMovementMatchSql('', 1, 2)}
          ORDER BY id DESC LIMIT 1`,
-        [orderDbId, pid]
+        [orderDbId, mpLabel, pid]
       );
       if (shipRow.rows?.[0]?.warehouse_id != null) {
         return Number(shipRow.rows[0].warehouse_id);
@@ -1755,13 +1758,22 @@ class OrdersService {
    */
   async applyAssemblyStockForShipmentOrders(marketplace, orderIds, profileId = null) {
     if (!repositoryFactory.isUsingPostgreSQL() || !marketplace || !Array.isArray(orderIds)) {
-      return { processed: 0, stockOnly: 0, skipped: 0, notFound: 0 };
+      return {
+        processed: 0,
+        stockOnly: 0,
+        skipped: 0,
+        notFound: 0,
+        successOrderIds: [],
+        errors: []
+      };
     }
     const mpForRepo = this._marketplaceToOrdersDb(marketplace);
     let processed = 0;
     let stockOnly = 0;
     let skipped = 0;
     let notFound = 0;
+    const successOrderIds = [];
+    const errors = [];
 
     for (const rawOid of orderIds) {
       const orderId = String(rawOid).trim();
@@ -1786,17 +1798,45 @@ class OrdersService {
           ? await this.repository.findByOrderGroupId(order.orderGroupId, profileId)
           : [order];
 
+        let orderFailed = false;
         for (const r of rows) {
-          await this._applyAssemblyStockForOrderRow(r);
+          try {
+            if (await this.isOrderFullyShipped(r)) continue;
+            await this._applyAssemblyStockForOrderRow(r);
+            if (!(await this.isOrderFullyShipped(r))) {
+              orderFailed = true;
+              errors.push({
+                orderId,
+                orderDbId: orderRowDbId(r),
+                message: 'Списание по заказу выполнено не полностью'
+              });
+            }
+          } catch (rowErr) {
+            orderFailed = true;
+            errors.push({
+              orderId,
+              orderDbId: orderRowDbId(r),
+              message: rowErr?.message || String(rowErr)
+            });
+          }
         }
-        processed += 1;
-        stockOnly += 1;
+
+        const groupFullyShipped = (
+          await Promise.all(rows.map((r) => this.isOrderFullyShipped(r)))
+        ).every(Boolean);
+
+        if (!orderFailed || groupFullyShipped) {
+          successOrderIds.push(orderId);
+          processed += 1;
+          stockOnly += 1;
+        }
       } catch (e) {
+        errors.push({ orderId, message: e?.message || String(e) });
         console.warn('[Orders] applyAssemblyStockForShipmentOrders:', orderId, e?.message || e);
       }
     }
 
-    return { processed, stockOnly, skipped, notFound };
+    return { processed, stockOnly, skipped, notFound, successOrderIds, errors };
   }
 
   /**
