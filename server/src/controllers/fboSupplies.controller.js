@@ -351,11 +351,11 @@ class FboSuppliesController {
     try {
       const { id, cargoUnitId } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const { cargoKind } = req.body || {};
+      const { cargoKind, palletTareWeightKg } = req.body || {};
       const data = await fboSuppliesPackingService.updateCargoUnit(
         id,
         cargoUnitId,
-        { cargoKind },
+        { cargoKind, palletTareWeightKg },
         { profileId }
       );
       return res.status(200).json({ ok: true, data });

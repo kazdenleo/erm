@@ -50,12 +50,36 @@ export function weightLimitKgForCargo(cargo, limits) {
   return kind === 'pallet' ? limits?.maxPalletWeightKg ?? null : limits?.maxBoxWeightKg ?? null;
 }
 
-export function enrichCargoWeightLimits(cargo, limits) {
-  const limitKg = weightLimitKgForCargo(cargo, limits);
-  const totalKg = (Number(cargo.totalWeightG) || 0) / 1000;
-  const weightExceeded = limitKg != null && totalKg > limitKg;
+export function parsePalletTareWeightKg(v) {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'string' ? parseFloat(v.replace(',', '.')) : Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+export function cargoPalletTareWeightG(cargo) {
+  if (cargo?.cargoKind !== 'pallet') return 0;
+  const kg = parsePalletTareWeightKg(cargo.palletTareWeightKg);
+  return kg != null && kg > 0 ? kg * 1000 : 0;
+}
+
+export function applyCargoTotalWeight(cargo) {
+  const goodsWeightG = Number(cargo.goodsWeightG) || 0;
+  const tareG = cargoPalletTareWeightG(cargo);
   return {
     ...cargo,
+    goodsWeightG,
+    palletTareWeightG: tareG,
+    totalWeightG: goodsWeightG + tareG,
+  };
+}
+
+export function enrichCargoWeightLimits(cargo, limits) {
+  const withWeight = applyCargoTotalWeight(cargo);
+  const limitKg = weightLimitKgForCargo(withWeight, limits);
+  const totalKg = (Number(withWeight.totalWeightG) || 0) / 1000;
+  const weightExceeded = limitKg != null && totalKg > limitKg;
+  return {
+    ...withWeight,
     weightLimitKg: limitKg,
     weightExceeded,
     weightExceededByKg: weightExceeded ? totalKg - limitKg : null,
@@ -67,5 +91,8 @@ export function buildWeightExceededMessage(cargo) {
   const kind = cargoKindLabel(cargo.cargoKind);
   const limit = cargo.weightLimitKg;
   const totalKg = ((Number(cargo.totalWeightG) || 0) / 1000).toFixed(2);
-  return `Превышен вес грузоместа (${kind}): ${totalKg} кг при лимите ${limit} кг`;
+  const tareG = cargoPalletTareWeightG(cargo);
+  const tarePart =
+    tareG > 0 ? ` (включая паллету ${(tareG / 1000).toFixed(2)} кг)` : '';
+  return `Превышен вес грузоместа (${kind}): ${totalKg} кг${tarePart} при лимите ${limit} кг`;
 }

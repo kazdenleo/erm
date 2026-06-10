@@ -23,7 +23,18 @@ export function fmtWeightKg(v) {
 export function cargoWeightExceededMessage(cargo) {
   if (!cargo?.weightExceeded) return null;
   const kind = cargo.cargoKind === 'pallet' ? 'паллета' : 'короб';
-  return `Превышен вес грузоместа (${kind}): ${fmtWeightG(cargo.totalWeightG)} при лимите ${fmtWeightKg(cargo.weightLimitKg)}`;
+  const tareG = Number(cargo.palletTareWeightG) || 0;
+  const tarePart = tareG > 0 ? ` (включая паллету ${fmtWeightG(tareG)})` : '';
+  return `Превышен вес грузоместа (${kind}): ${fmtWeightG(cargo.totalWeightG)}${tarePart} при лимите ${fmtWeightKg(cargo.weightLimitKg)}`;
+}
+
+export function cargoWeightSummary(cargo) {
+  const goods = fmtWeightG(cargo?.goodsWeightG ?? cargo?.totalWeightG);
+  const tareG = Number(cargo?.palletTareWeightG) || 0;
+  if (cargo?.cargoKind === 'pallet' && tareG > 0) {
+    return `${goods} товар + ${fmtWeightG(tareG)} паллета = ${fmtWeightG(cargo.totalWeightG)}`;
+  }
+  return fmtWeightG(cargo?.totalWeightG);
 }
 
 export function fmtExpiryDate(v) {

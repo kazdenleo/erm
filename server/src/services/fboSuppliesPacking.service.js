@@ -10,6 +10,7 @@ import {
   buildWeightExceededMessage,
   enrichCargoWeightLimits,
   loadFboWeightLimitsForSupply,
+  parsePalletTareWeightKg,
 } from '../utils/fboPackingLimits.js';
 
 function normalizeBarcode(v) {
@@ -133,11 +134,17 @@ function normalizeCargoKind(v) {
 }
 
 function mapCargoRow(row) {
+  const kind = normalizeCargoKind(row.cargo_kind);
+  const palletTareWeightKg =
+    kind === 'pallet' && row.pallet_tare_weight_kg != null
+      ? parsePalletTareWeightKg(row.pallet_tare_weight_kg)
+      : null;
   return {
     id: row.id,
     fboSupplyId: row.fbo_supply_id,
     barcode: row.barcode,
-    cargoKind: normalizeCargoKind(row.cargo_kind),
+    cargoKind: kind,
+    palletTareWeightKg,
     createdAt: row.created_at,
   };
 }
@@ -158,7 +165,7 @@ class FboSuppliesPackingService {
     const weightLimits = await loadFboWeightLimitsForSupply(supply, { profileId });
 
     const cargoR = await query(
-      `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.created_at
+      `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at
        FROM fbo_supply_cargo_units c
        WHERE c.fbo_supply_id = $1
        ORDER BY c.id ASC`,
@@ -220,7 +227,7 @@ class FboSuppliesPackingService {
       cargo.contents = contents;
       cargo.totalQuantity = contents.reduce((s, c) => s + c.quantity, 0);
       cargo.totalVolumeL = contents.reduce((s, c) => s + (c.lineVolumeL || 0), 0);
-      cargo.totalWeightG = contents.reduce((s, c) => s + (c.lineWeightG || 0), 0);
+      cargo.goodsWeightG = contents.reduce((s, c) => s + (c.lineWeightG || 0), 0);
       return enrichCargoWeightLimits(cargo, weightLimits);
     });
 
@@ -261,18 +268,42 @@ class FboSuppliesPackingService {
       throw err;
     }
 
-    if (patch.cargoKind === undefined) {
+    const fields = [];
+    const params = [];
+    let idx = 1;
+
+    if (patch.cargoKind !== undefined) {
+      const kind = normalizeCargoKind(patch.cargoKind);
+      fields.push(`cargo_kind = $${idx++}`);
+      params.push(kind);
+      if (kind === 'box') {
+        fields.push('pallet_tare_weight_kg = NULL');
+      }
+    }
+
+    if (patch.palletTareWeightKg !== undefined) {
+      const parsed = parsePalletTareWeightKg(patch.palletTareWeightKg);
+      if (patch.palletTareWeightKg != null && String(patch.palletTareWeightKg).trim() !== '' && parsed == null) {
+        const err = new Error('Вес паллеты: укажите неотрицательное число');
+        err.statusCode = 400;
+        throw err;
+      }
+      fields.push(`pallet_tare_weight_kg = $${idx++}`);
+      params.push(parsed);
+    }
+
+    if (!fields.length) {
       const packing = await this.getPackingState(supplyId, { profileId });
       return { packing };
     }
 
-    const kind = normalizeCargoKind(patch.cargoKind);
+    params.push(cid, supplyId);
     const r = await query(
       `UPDATE fbo_supply_cargo_units
-       SET cargo_kind = $1
-       WHERE id = $2 AND fbo_supply_id = $3
+       SET ${fields.join(', ')}
+       WHERE id = $${idx++} AND fbo_supply_id = $${idx}
        RETURNING id`,
-      [kind, cid, supplyId]
+      params
     );
     if (!r.rows?.length) {
       const err = new Error('Грузоместо не найдено');

@@ -10,7 +10,12 @@ import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { FboSupplyPackingRemoveModal } from './FboSupplyPackingRemoveModal.jsx';
 import { FboCargoContentMeta } from './FboCargoContentMeta.jsx';
 import { FboCargoUnitKind } from './FboCargoUnitKind.jsx';
-import { cargoWeightExceededMessage, fmtVolumeL, fmtWeightG } from './fboPackingFormat.js';
+import {
+  cargoWeightExceededMessage,
+  cargoWeightSummary,
+  fmtVolumeL,
+  fmtWeightG,
+} from './fboPackingFormat.js';
 import {
   buildStatsMap,
   isSupplyItemPackingComplete,
@@ -253,7 +258,7 @@ export function FboSupplyPacking({
             {(activeCargo.totalVolumeL > 0 || activeCargo.totalWeightG > 0) && (
               <>
                 {' '}
-                · {fmtVolumeL(activeCargo.totalVolumeL)} · {fmtWeightG(activeCargo.totalWeightG)}
+                · {fmtVolumeL(activeCargo.totalVolumeL)} · {cargoWeightSummary(activeCargo)}
               </>
             )}
             {activeCargo.weightLimitKg ? (
@@ -332,7 +337,7 @@ export function FboSupplyPacking({
                     {(cargo.totalVolumeL > 0 || cargo.totalWeightG > 0) && (
                       <>
                         {' '}
-                        · {fmtVolumeL(cargo.totalVolumeL)} · {fmtWeightG(cargo.totalWeightG)}
+                        · {fmtVolumeL(cargo.totalVolumeL)} · {cargoWeightSummary(cargo)}
                       </>
                     )}
                     {cargo.weightExceeded ? (
@@ -428,7 +433,7 @@ export function FboSupplyPacking({
                                   <strong>{fmtVolumeL(cargo.totalVolumeL)}</strong>
                                 </td>
                                 <td className="text-end">
-                                  <strong>{fmtWeightG(cargo.totalWeightG)}</strong>
+                                  <strong>{cargoWeightSummary(cargo)}</strong>
                                 </td>
                               </tr>
                             </tfoot>
