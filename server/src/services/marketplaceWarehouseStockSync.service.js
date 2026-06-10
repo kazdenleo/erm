@@ -10,6 +10,44 @@ import { assertMarketplaceStockPushAllowed } from '../utils/organizationMarketpl
 import { computeAvailableQuantity } from './sellableQuantity.service.js';
 import { pushStockToMarketplace } from './marketplaceStockPush.service.js';
 
+/**
+ * Склад ERP, с которого считаются и отправляются остатки на МП.
+ * Приоритет: явный склад с привязками → основной склад профиля с warehouse_mappings.
+ */
+export async function resolveMarketplaceStockWarehouseId({ profileId = null, warehouseId = null } = {}) {
+  const repo = repositoryFactory.getWarehouseMappingsRepository();
+  const explicit =
+    warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId).trim() : null;
+
+  if (repo && explicit) {
+    const rows = (await repo.findByWarehouse(explicit)) || [];
+    const pid =
+      profileId != null && String(profileId).trim() !== ''
+        ? Number(profileId)
+        : null;
+    const hasMappingForProfile =
+      pid != null && Number.isFinite(pid) && pid > 0
+        ? rows.some((row) => Number(row.profile_id) === pid)
+        : rows.length > 0;
+    if (hasMappingForProfile) {
+      return { warehouseId: explicit, strict: true, source: 'explicit' };
+    }
+  }
+
+  if (repo && typeof repo.findPrimaryMarketplaceStockWarehouseId === 'function') {
+    const primary = await repo.findPrimaryMarketplaceStockWarehouseId(profileId);
+    if (primary != null && String(primary).trim() !== '') {
+      return { warehouseId: String(primary).trim(), strict: true, source: 'primary' };
+    }
+  }
+
+  return {
+    warehouseId: explicit,
+    strict: Boolean(explicit),
+    source: explicit ? 'explicit_unmapped' : 'none'
+  };
+}
+
 async function resolveOrganizationIdForProduct(productId) {
   const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
   if (!idNum || Number.isNaN(idNum) || idNum < 1) return null;
@@ -152,22 +190,10 @@ const SKIP_REASON_LABELS = {
   no_credentials: 'нет API-ключей маркетплейса',
   no_warehouse_mapping: 'не указан склад МП в сопоставлении',
   invalid_warehouse_mapping: 'некорректный ID склада МП (нужно число, не название)',
-  warehouse_profile_mismatch: 'склад привязки не относится к аккаунту товара',
   no_product_sku: 'нет артикула на МП',
   no_wb_barcode: 'нет штрихкода WB',
   unsupported_marketplace: 'маркетплейс не поддерживается'
 };
-
-function mappingMatchesProductProfile(mapping, productProfileId) {
-  if (productProfileId == null || productProfileId === '') return true;
-  const whPid = mapping?.warehouse_profile_id ?? mapping?.warehouseProfileId ?? null;
-  if (whPid == null || whPid === '') return true;
-  return String(whPid) === String(productProfileId);
-}
-
-function filterMappingsForProduct(mappings, productProfileId) {
-  return (mappings || []).filter((m) => mappingMatchesProductProfile(m, productProfileId));
-}
 
 /** Все товары организации со связью с МП (product_links или product_skus). */
 export async function findOrganizationMarketplaceLinkedProductIds(organizationId) {
@@ -217,6 +243,10 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
     organizationId = await resolveOrganizationIdForProduct(productId);
   }
 
+  const ctxEarly = await loadProductContext(productId);
+  const profileId =
+    opts.profileId ?? ctxEarly?.product?.profile_id ?? ctxEarly?.product?.profileId ?? null;
+
   const gate = await assertMarketplaceStockPushAllowed({
     organizationId,
     productId,
@@ -234,29 +264,46 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
     };
   }
 
-  const ctx = await loadProductContext(productId);
+  const ctx = ctxEarly;
   if (!ctx) {
     return { skipped: true, reason: 'product_not_found', organizationId };
   }
 
-  const profileId = ctx.product.profile_id ?? ctx.product.profileId ?? null;
-  const strictWarehouse = opts.strictWarehouse === true;
-  const { rows: mappingsLoaded, mappingFallback } = await loadMappingsForSync({
-    warehouseId: opts.warehouseId ?? null,
-    profileId,
-    strictWarehouse
+  const profileIdFromProduct = ctx.product.profile_id ?? ctx.product.profileId ?? profileId ?? null;
+  const stockWh = await resolveMarketplaceStockWarehouseId({
+    profileId: profileIdFromProduct,
+    warehouseId: opts.warehouseId ?? null
   });
-  const mappings = filterMappingsForProduct(mappingsLoaded, profileId);
+  const effectiveWarehouseId = stockWh.warehouseId;
+  const strictWarehouse =
+    stockWh.strict === true || opts.strictWarehouse === true || opts.warehouseScoped === true;
+
+  if (
+    stockWh.source === 'primary' &&
+    opts.warehouseId != null &&
+    String(opts.warehouseId).trim() !== '' &&
+    String(opts.warehouseId) !== String(effectiveWarehouseId)
+  ) {
+    logger.info('[MP Stock Push] остатки берутся со склада с привязкой к МП', {
+      productId,
+      requestedWarehouseId: opts.warehouseId,
+      effectiveWarehouseId,
+      profileId: profileIdFromProduct
+    });
+  }
+
+  const { rows: mappings, mappingFallback } = await loadMappingsForSync({
+    warehouseId: effectiveWarehouseId,
+    profileId: profileIdFromProduct,
+    strictWarehouse: strictWarehouse && effectiveWarehouseId != null
+  });
 
   if (mappings.length === 0) {
     logger.info('[MP Stock Push] no warehouse_mappings', {
       productId,
-      warehouseId: opts.warehouseId,
-      profileId,
-      loaded: mappingsLoaded.length
+      warehouseId: effectiveWarehouseId,
+      requestedWarehouseId: opts.warehouseId
     });
-    const profileMismatch =
-      mappingsLoaded.length > 0 && profileId != null && String(profileId).trim() !== '';
     return {
       skipped: false,
       organizationId,
@@ -266,9 +313,8 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
       skippedMarketplaces: 0,
       results: [],
       noMappings: true,
-      message: profileMismatch
-        ? 'Склад в привязке относится к другому аккаунту, чем товар. Выберите склад ERP с привязкой к МП в вашем аккаунте (например «Электролитный»).'
-        : 'Нет сопоставления складов ERP ↔ маркетплейс. Настройте в разделе «Склады» → сопоставление с Ozon / WB / Яндекс.'
+      message:
+        'Нет сопоставления складов ERP ↔ маркетплейс. Настройте в разделе «Склады» → сопоставление с Ozon / WB / Яндекс.'
     };
   }
 
@@ -281,17 +327,12 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
     }
 
     const erpWarehouseId = mapping.warehouse_id;
-    if (!mappingMatchesProductProfile(mapping, profileId)) {
-      results.push({ marketplace: mp, ok: false, skipped: true, reason: 'warehouse_profile_mismatch' });
-      continue;
-    }
-    // Остаток всегда со склада ERP из привязки (не с произвольного склада движения/UI).
-    const whForStock = erpWarehouseId;
+    const whForStock = effectiveWarehouseId ?? erpWarehouseId;
     const { available, onHand, suppliers, reserved, displayAvailable } = await computeAvailableQuantity(
       productId,
       {
         warehouseId: whForStock,
-        profileId,
+        profileId: profileIdFromProduct,
         forMarketplace: true
       }
     );
@@ -301,7 +342,6 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
       sku: ctx.product?.sku,
       marketplace: mp,
       erpWarehouseId: whForStock,
-      mappingWarehouseId: erpWarehouseId,
       onHand,
       suppliers,
       reserved,
@@ -317,7 +357,7 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
         mapping,
         quantity: available,
         organizationId,
-        profileId
+        profileId: profileIdFromProduct
       });
       results.push({
         ...pushResult,
@@ -372,9 +412,17 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
   const warehouseScoped = opts.warehouseScoped === true;
   const strictWarehouse = warehouseScoped || opts.strictWarehouse === true;
   const warehouseId = opts.warehouseId ?? null;
+  let resolvedWarehouseId = warehouseId;
 
   if (warehouseScoped) {
-    if (warehouseId == null || String(warehouseId).trim() === '') {
+    const stockWh = await resolveMarketplaceStockWarehouseId({
+      profileId: opts.profileId ?? null,
+      warehouseId
+    });
+    if (stockWh.warehouseId) {
+      resolvedWarehouseId = stockWh.warehouseId;
+    }
+    if (resolvedWarehouseId == null || String(resolvedWarehouseId).trim() === '') {
       return {
         organizationId,
         pushed: 0,
@@ -385,7 +433,7 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
       };
     }
     const { rows: whMappings } = await loadMappingsForSync({
-      warehouseId,
+      warehouseId: resolvedWarehouseId,
       profileId: opts.profileId ?? null,
       strictWarehouse: true
     });
@@ -421,7 +469,7 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
         failed: 0,
         skipped: 0,
         productsTotal: 0,
-        warehouseId,
+        warehouseId: resolvedWarehouseId,
         marketplaces: mps.map((mp) => MP_LABELS[mp] || mp),
         message: explicitIds.length > 0
           ? 'В выбранном списке нет товаров для отправки.'
@@ -432,9 +480,10 @@ export async function syncOrganizationWarehouseStockToMarketplaces(organizationI
 
   if (productIds && productIds.length > 0) {
     return runBulkWarehouseStockSync(productIds, organizationId, {
-      warehouseId,
+      warehouseId: warehouseScoped ? resolvedWarehouseId : warehouseId,
       strictWarehouse,
       warehouseScoped,
+      profileId: opts.profileId ?? null,
       source: opts.source || (warehouseScoped ? 'bulk_org_warehouse' : 'bulk'),
       marketplaces: opts._warehouseMarketplaces
         ? opts._warehouseMarketplaces.map((mp) => MP_LABELS[mp] || mp)
@@ -511,7 +560,9 @@ export async function runBulkWarehouseStockSync(productIds, organizationId, opts
           organizationId,
           source: opts.source || 'bulk',
           warehouseId: opts.warehouseId ?? null,
-          strictWarehouse: opts.strictWarehouse === true
+          profileId: opts.profileId ?? null,
+          strictWarehouse: opts.strictWarehouse === true,
+          warehouseScoped: opts.warehouseScoped === true
         });
         tallySyncResult(summary, r);
         if (opts.includeDetails === true && Array.isArray(summary.results)) {
@@ -557,9 +608,9 @@ export function scheduleWarehouseStockMarketplaceSync(productId, opts = {}) {
   );
   const syncOpts = {
     ...opts,
-    // Фоновый синк: только привязки аккаунта товара; warehouseId из движения не ограничивает выбор.
-    strictWarehouse: opts.strictWarehouse === true,
-    warehouseId: opts.strictWarehouse === true ? opts.warehouseId ?? null : null
+    strictWarehouse:
+      opts.strictWarehouse === true ||
+      (opts.warehouseId != null && String(opts.warehouseId).trim() !== '')
   };
   if (mpSyncDebounceTimers.has(key)) {
     clearTimeout(mpSyncDebounceTimers.get(key));
@@ -642,5 +693,6 @@ export default {
   syncMarketplaceStocksForProductIds,
   scheduleWarehouseStockMarketplaceSync,
   formatSkipReasonsSummary,
-  findOrganizationMarketplaceLinkedProductIds
+  findOrganizationMarketplaceLinkedProductIds,
+  resolveMarketplaceStockWarehouseId
 };

@@ -16,6 +16,7 @@ import { ordersApi } from '../../services/orders.api';
 import { supplierStocksApi } from '../../services/supplierStocks.api';
 import { productsApi } from '../../services/products.api';
 import { marketplaceStockApi } from '../../services/marketplaceStock.api';
+import { warehouseMappingsApi } from '../../services/warehouseMappings.api';
 import {
   buildStockRowsWithKits,
   stockTableAvailable,
@@ -705,6 +706,28 @@ function getMovementLink(m) {
 
 const STOCK_WAREHOUSE_LS = 'stockLevelsWarehouseId';
 
+/** ERP-склад с привязками warehouse_mappings (для экспорта остатков на МП). */
+function pickPrimaryMarketplaceStockWarehouseId(mappings) {
+  if (!Array.isArray(mappings) || mappings.length === 0) return '';
+  const byWh = new Map();
+  for (const m of mappings) {
+    const wid = String(m.warehouse_id ?? m.warehouseId ?? '').trim();
+    if (!wid) continue;
+    const mid = Number(m.id) || 0;
+    const prev = byWh.get(wid);
+    if (!prev || mid < prev.mid || (mid === prev.mid && Number(wid) < Number(prev.wid))) {
+      byWh.set(wid, { wid, mid });
+    }
+  }
+  let best = null;
+  for (const v of byWh.values()) {
+    if (!best || v.mid < best.mid || (v.mid === best.mid && Number(v.wid) < Number(best.wid))) {
+      best = v;
+    }
+  }
+  return best?.wid ?? '';
+}
+
 function buildSupplierBreakdownMap(rows) {
   const map = {};
   for (const row of rows || []) {
@@ -1062,6 +1085,7 @@ export function WarehouseStocks() {
   const [mpStockPushBanner, setMpStockPushBanner] = useState(null);
   /** error | confirm | force | working | result — панель на странице (не window.alert) */
   const [mpPushPanel, setMpPushPanel] = useState(null);
+  const [mpLinkedWarehouseId, setMpLinkedWarehouseId] = useState('');
   const [stockResetOpen, setStockResetOpen] = useState(false);
   const [stockResetProduct, setStockResetProduct] = useState(null);
   const [stockResetForm, setStockResetForm] = useState({ incoming: 0, onHand: 0, reserved: 0 });
@@ -1102,6 +1126,42 @@ export function WarehouseStocks() {
       navigate(`/stock-levels/warehouse?op=${encodeURIComponent(s.openTab)}`, { replace: true, state: s });
     }
   }, [location.pathname, location.search, location.state, navigate]);
+
+  useEffect(() => {
+    let cancelled = false;
+    warehouseMappingsApi
+      .list()
+      .then((list) => {
+        if (cancelled) return;
+        const rows = Array.isArray(list) ? list : [];
+        setMpLinkedWarehouseId(pickPrimaryMarketplaceStockWarehouseId(rows));
+      })
+      .catch(() => {
+        if (!cancelled) setMpLinkedWarehouseId('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId]);
+
+  const mpLinkedWarehouse = useMemo(
+    () =>
+      mpLinkedWarehouseId && Array.isArray(warehouses)
+        ? warehouses.find((w) => String(w.id) === String(mpLinkedWarehouseId))
+        : null,
+    [mpLinkedWarehouseId, warehouses]
+  );
+
+  /** По умолчанию таблица — склад с привязками к МП (Электролитный и т.п.). */
+  useEffect(() => {
+    if (!mpLinkedWarehouseId || stockWarehouseId) return;
+    setStockWarehouseId(String(mpLinkedWarehouseId));
+    try {
+      localStorage.setItem(STOCK_WAREHOUSE_LS, String(mpLinkedWarehouseId));
+    } catch {
+      /* ignore */
+    }
+  }, [mpLinkedWarehouseId, stockWarehouseId]);
 
   const buildListParams = useCallback(
     (extra = {}) => {
@@ -1341,14 +1401,14 @@ export function WarehouseStocks() {
     if (!filterOrganizationId) {
       return 'Выберите организацию в фильтре (не «Все») — остатки уходят в кабинет этой организации.';
     }
-    if (!stockWarehouseId) {
-      return 'Выберите склад в фильтре «Склад (остаток)» (не «Все склады») — нужны привязки Ozon / WB / Яндекс.';
+    if (!mpLinkedWarehouseId) {
+      return 'Нет привязки складов ERP ↔ маркетплейсы. Настройте в разделе «Склады».';
     }
     if (tableProductIdsForMpPush.length === 0) {
       return 'В таблице нет товаров для отправки. Измените фильтры или нажмите «Обновить склад».';
     }
     return null;
-  }, [filterOrganizationId, stockWarehouseId, tableProductIdsForMpPush.length]);
+  }, [filterOrganizationId, mpLinkedWarehouseId, tableProductIdsForMpPush.length]);
 
   const buildMpPushFilterHint = useCallback(() => {
     const filterParts = [];
@@ -1418,7 +1478,7 @@ export function WarehouseStocks() {
         const res = await marketplaceStockApi.syncBulk({
           organizationId: filterOrganizationId,
           productIds: tableProductIdsForMpPush,
-          warehouseId: stockWarehouseId,
+          warehouseId: mpLinkedWarehouseId,
           warehouseScoped: true,
           force
         });
@@ -1459,7 +1519,7 @@ export function WarehouseStocks() {
     [
       filterOrganizationId,
       tableProductIdsForMpPush,
-      stockWarehouseId,
+      mpLinkedWarehouseId,
       refreshMpStockPushStatus,
       formatMpPushResultDetails
     ]
@@ -1473,11 +1533,8 @@ export function WarehouseStocks() {
         setMpPushPanel({ type: 'error', message: mpPushBlockReason });
         return;
       }
-      const wh =
-        stockWarehouseId && Array.isArray(warehouses)
-          ? warehouses.find((w) => String(w.id) === String(stockWarehouseId))
-          : null;
-      const whLabel = wh?.address || wh?.name || `склад #${stockWarehouseId}`;
+      const whLabel =
+        mpLinkedWarehouse?.address || mpLinkedWarehouse?.name || `склад #${mpLinkedWarehouseId}`;
       const orgLabel =
         organizations.find((o) => String(o.id) === String(filterOrganizationId))?.name ||
         filterOrganizationId;
@@ -2508,8 +2565,11 @@ export function WarehouseStocks() {
               {mpPushPanel.type === 'confirm' ? (
                 <>
                   <p className="mb-2">
-                    Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «{mpPushPanel.whLabel}»?
-                    Количество берётся только с этого склада ERP (из привязки), а не с других складов.
+                    Отправить остатки («Доступно») на маркетплейсы со склада «{mpPushPanel.whLabel}»?
+                    <br />
+                    <span className="text-muted small">
+                      Только остаток этого склада ERP (с привязкой к Ozon / WB / Яндекс), не с других складов.
+                    </span>
                   </p>
                   <p className="mb-2 text-muted small">
                     Позиций в таблице: <strong>{mpPushPanel.count}</strong> (организация «{mpPushPanel.orgLabel}»).
@@ -2591,7 +2651,11 @@ export function WarehouseStocks() {
               onClick={handleMpPushButtonClick}
               disabled={supplierStocksRefreshing}
               style={{ marginLeft: 8 }}
-              title="Отправить «Доступно» на МП со склада ERP, у которого настроена привязка к Ozon / WB / Яндекс"
+              title={
+                mpLinkedWarehouse
+                  ? `Отправить «Доступно» со склада «${mpLinkedWarehouse.address || mpLinkedWarehouseId}» (привязан к МП) на Ozon, WB и Яндекс`
+                  : 'Отправить остатки со склада ERP, привязанного к маркетплейсам'
+              }
             >
               {mpStockSyncing ? 'Отправка на МП…' : 'Отправить на маркетплейсы'}
             </Button>

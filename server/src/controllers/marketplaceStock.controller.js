@@ -17,7 +17,8 @@ class MarketplaceStockController {
       const result = await syncWarehouseStockToMarketplaces(productId, {
         source: 'api_manual',
         warehouseId,
-        organizationId: req.body?.organizationId ?? null
+        organizationId: req.body?.organizationId ?? null,
+        profileId: req.user?.profileId ?? null
       });
       return res.status(200).json({ ok: true, data: result });
     } catch (e) {
@@ -29,6 +30,7 @@ class MarketplaceStockController {
   async syncBulk(req, res, next) {
     try {
       const { organizationId, productIds, warehouseId, warehouseScoped, force } = req.body || {};
+      const profileId = req.user?.profileId ?? null;
       if (!organizationId) {
         return res.status(400).json({ ok: false, message: 'Укажите organizationId' });
       }
@@ -78,6 +80,7 @@ class MarketplaceStockController {
           productIds: idsList.length > 0 ? idsList : undefined,
           warehouseId: warehouseId ?? null,
           warehouseScoped: warehouseScoped === true,
+          profileId,
           source: 'api_bulk',
           productsTotal,
           force: force === true
@@ -98,6 +101,7 @@ class MarketplaceStockController {
         productIds: idsList.length > 0 ? idsList : undefined,
         warehouseId: warehouseId ?? null,
         warehouseScoped: warehouseScoped === true,
+        profileId,
         source: 'api_bulk',
         includeDetails: true
       });

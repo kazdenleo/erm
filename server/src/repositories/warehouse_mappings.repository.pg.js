@@ -27,8 +27,7 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type,
-        w.profile_id as warehouse_profile_id
+        w.type as warehouse_type
       FROM warehouse_mappings wm
       INNER JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE w.profile_id = $${paramIndex++}
@@ -39,8 +38,7 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type,
-        w.profile_id as warehouse_profile_id
+        w.type as warehouse_type
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE 1=1
@@ -71,8 +69,7 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type,
-        w.profile_id as warehouse_profile_id
+        w.type as warehouse_type
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.id = $1
@@ -89,8 +86,7 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type,
-        w.profile_id as warehouse_profile_id
+        w.type as warehouse_type
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.warehouse_id = $1 AND wm.marketplace = $2
@@ -108,7 +104,7 @@ class WarehouseMappingsRepositoryPG {
         wm.*,
         w.address as warehouse_address,
         w.type as warehouse_type,
-        w.profile_id as warehouse_profile_id
+        w.profile_id
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.warehouse_id = $1
@@ -126,8 +122,7 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type,
-        w.profile_id as warehouse_profile_id
+        w.type as warehouse_type
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.marketplace = $1
@@ -179,6 +174,32 @@ class WarehouseMappingsRepositoryPG {
        LIMIT 1`,
       [mp]
     );
+    return r.rows?.[0]?.warehouse_id ?? null;
+  }
+
+  /**
+   * ERP-склад для передачи остатков на МП: первый склад профиля с привязками warehouse_mappings.
+   * @param {number|string|null} profileId
+   */
+  async findPrimaryMarketplaceStockWarehouseId(profileId = null) {
+    const pid = normalizeProfileId(profileId);
+    const params = [];
+    let sql = `
+      SELECT wm.warehouse_id
+      FROM warehouse_mappings wm
+      INNER JOIN warehouses w ON w.id = wm.warehouse_id
+      WHERE LOWER(COALESCE(w.type, '')) NOT IN ('supplier')
+    `;
+    if (pid) {
+      sql += ` AND w.profile_id = $1`;
+      params.push(pid);
+    }
+    sql += `
+      GROUP BY wm.warehouse_id
+      ORDER BY MIN(wm.id) ASC, wm.warehouse_id ASC
+      LIMIT 1
+    `;
+    const r = await query(sql, params);
     return r.rows?.[0]?.warehouse_id ?? null;
   }
   
