@@ -48,6 +48,7 @@ function mapSupplyRow(row) {
     readyAt: row.ready_at,
     marketplaceWarehouseName: row.marketplace_warehouse_name,
     marketplaceWarehouseId: row.marketplace_warehouse_id,
+    placementCluster: row.placement_cluster ?? null,
     externalShipmentNumber: row.external_shipment_number,
     externalSupplyId: row.external_supply_id,
     deductionWarehouseId: row.deduction_warehouse_id,
@@ -383,9 +384,9 @@ class FboSuppliesService {
         `INSERT INTO fbo_supplies (
           profile_id, organization_id, created_by_user_id, status, marketplace,
           name, ready_at, marketplace_warehouse_name, marketplace_warehouse_id,
-          external_shipment_number, external_supply_id, deduction_warehouse_id,
-          deduct_stock, source, note
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+          placement_cluster, external_shipment_number, external_supply_id,
+          deduction_warehouse_id, deduct_stock, source, note
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
         RETURNING id`,
         [
           pid,
@@ -397,6 +398,7 @@ class FboSuppliesService {
           payload.readyAt ?? null,
           payload.marketplaceWarehouseName ?? null,
           payload.marketplaceWarehouseId ?? null,
+          payload.placementCluster ?? payload.shippingCluster ?? null,
           ext,
           payload.externalSupplyId ?? null,
           payload.deductionWarehouseId ?? null,
@@ -482,6 +484,11 @@ class FboSuppliesService {
     }
     if (payload.marketplaceWarehouseId !== undefined) {
       setField('marketplace_warehouse_id', payload.marketplaceWarehouseId);
+    }
+    if (payload.placementCluster !== undefined) {
+      const cluster =
+        payload.placementCluster != null ? String(payload.placementCluster).trim() : '';
+      setField('placement_cluster', cluster || null);
     }
     if (payload.deductionWarehouseId !== undefined) {
       setField('deduction_warehouse_id', payload.deductionWarehouseId);

@@ -622,6 +622,17 @@ export function FboSupplyDetail() {
           />
         </div>
         <div>
+          <label>Кластер размещения</label>
+          <input
+            className="form-control form-control-sm"
+            value={supply.placementCluster || ''}
+            onChange={(e) => setSupply((s) => ({ ...s, placementCluster: e.target.value }))}
+            onBlur={() => saveField({ placementCluster: supply.placementCluster })}
+            disabled={saving}
+            placeholder="Кластер со склада МП"
+          />
+        </div>
+        <div>
           <label>Номер отгрузки</label>
           <input
             className="form-control form-control-sm"

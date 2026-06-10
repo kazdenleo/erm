@@ -167,6 +167,7 @@ export function FboSupplies() {
                 <th>Название</th>
                 <th>Дата готовности</th>
                 <th>Склад МП</th>
+                <th>Кластер размещения</th>
                 <th>Организация</th>
                 <th>Кол-во, шт.</th>
                 <th>Статус</th>
@@ -177,7 +178,7 @@ export function FboSupplies() {
             <tbody>
               {!list.length && (
                 <tr>
-                  <td colSpan={12} className="text-center muted">
+                  <td colSpan={13} className="text-center muted">
                     Нет поставок. Загрузите из Excel или с маркетплейса.
                   </td>
                 </tr>
@@ -211,6 +212,7 @@ export function FboSupplies() {
                   <td>{row.name || '—'}</td>
                   <td>{fmtDate(row.readyAt)}</td>
                   <td>{row.marketplaceWarehouseName || '—'}</td>
+                  <td>{row.placementCluster || '—'}</td>
                   <td>{row.organizationName || '—'}</td>
                   <td>{row.itemCount ?? '—'}</td>
                   <td>

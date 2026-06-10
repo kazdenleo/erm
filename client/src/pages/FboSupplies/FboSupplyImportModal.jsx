@@ -299,7 +299,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                     <th>Название</th>
                     <th>Дата</th>
                     <th>Склад МП</th>
-                    <th>Кластер отгрузки</th>
+                    <th>Кластер размещения</th>
                     <th>Кол-во, шт.</th>
                     <th>Статус</th>
                   </tr>

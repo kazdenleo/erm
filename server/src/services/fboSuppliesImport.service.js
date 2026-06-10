@@ -531,11 +531,19 @@ function resolveOzonShippingCluster(order, supply, warehousesById, clusterByWare
     supply?.cluster_name ??
     supply?.cluster?.name ??
     supply?.placement_cluster_name ??
+    supply?.placement_cluster?.name ??
+    supply?.macrocluster?.name ??
     supply?.macrocluster_name ??
     supply?.storage_warehouse?.cluster_name ??
+    supply?.storage_warehouse?.macrocluster_name ??
+    supply?.destination_warehouse?.cluster_name ??
+    supply?.destination_warehouse?.macrocluster_name ??
     order?.cluster_name ??
     order?.placement_cluster_name ??
+    order?.placement_cluster?.name ??
+    order?.macrocluster?.name ??
     order?.macrocluster_name ??
+    order?.destination_warehouse?.cluster_name ??
     null;
   if (direct != null && String(direct).trim() !== '') return String(direct).trim();
 
@@ -749,6 +757,38 @@ function wbSupplyGoodsApiId(row) {
   }
   const preorder = row.preorderID ?? row.preorderId ?? row.preorder_id;
   if (preorder != null && String(preorder).trim() !== '') return String(preorder);
+  return null;
+}
+
+function resolveWbPlacementCluster(row) {
+  const candidates = [
+    row.clusterName,
+    row.cluster_name,
+    row.warehouseCluster,
+    row.warehouseClusterName,
+    row.destinationWarehouseName,
+    row.destination_warehouse_name,
+  ];
+  for (const c of candidates) {
+    if (c != null && String(c).trim() !== '') return String(c).trim();
+  }
+  return null;
+}
+
+function resolveYmPlacementCluster(req, target) {
+  const candidates = [
+    target?.clusterName,
+    target?.cluster_name,
+    target?.placementCluster,
+    target?.placement_cluster,
+    req?.placementCluster,
+    req?.placement_cluster,
+    req?.placementClusterName,
+    req?.placement_cluster_name,
+  ];
+  for (const c of candidates) {
+    if (c != null && String(c).trim() !== '') return String(c).trim();
+  }
   return null;
 }
 
@@ -1107,6 +1147,7 @@ class FboSuppliesImportService {
             : row.warehouseId != null
               ? String(row.warehouseId)
               : null,
+        shippingCluster: resolveWbPlacementCluster(row),
         externalShipmentNumber: externalNumber,
         externalSupplyId: supplyId != null ? String(supplyId) : String(preorderId ?? goodsApiId),
         deductionWarehouseId: null,
@@ -1220,6 +1261,7 @@ class FboSuppliesImportService {
         readyAt: parseDateOnly(req.updatedAt ?? req.plannedDate ?? req.createdAt),
         marketplaceWarehouseName: target.name ?? target.warehouseName ?? null,
         marketplaceWarehouseId: target.id != null ? String(target.id) : null,
+        shippingCluster: resolveYmPlacementCluster(req, target),
         externalShipmentNumber: extNum,
         externalSupplyId: reqId != null ? String(reqId) : null,
         deductionWarehouseId: null,
@@ -1273,6 +1315,7 @@ class FboSuppliesImportService {
             readyAt: row.readyAt,
             marketplaceWarehouseName: row.marketplaceWarehouseName,
             marketplaceWarehouseId: row.marketplaceWarehouseId,
+            placementCluster: row.shippingCluster ?? row.placementCluster ?? null,
             externalShipmentNumber: row.externalShipmentNumber,
             externalSupplyId: row.externalSupplyId,
             deductionWarehouseId: row.deductionWarehouseId,
