@@ -421,15 +421,21 @@ function parseOzonBundleResponse(bundleData) {
 }
 
 function parseOzonBundleRowQuantity(row) {
-  return parseInt(
-    row?.quantity ??
-      row?.count ??
-      row?.amount ??
-      row?.total_quantity ??
-      row?.planned_quantity ??
-      0,
-    10
-  );
+  const candidates = [
+    row?.quantity,
+    row?.quant,
+    row?.count,
+    row?.amount,
+    row?.total_quantity,
+    row?.planned_quantity,
+    row?.item_quantity,
+    row?.supply_quantity,
+  ];
+  for (const v of candidates) {
+    const n = parseInt(v, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
 }
 
 function parseOzonBundleRowOfferId(row) {
@@ -535,38 +541,106 @@ async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
   }
 }
 
-function resolveOzonSupplyMetaCounts(order, supply) {
+function resolveOzonSupplyMetaCounts(order, supply, orderDetails = null) {
   const values = [
     supply?.total_quantity,
     supply?.total_item_count,
+    supply?.total_items_count,
     supply?.items_count,
     supply?.quantity,
     supply?.total_items,
+    supply?.planned_quantity,
     order?.total_quantity,
     order?.total_item_count,
+    order?.total_items_count,
     order?.items_count,
+    orderDetails?.totalQuantity,
   ];
+
+  const supplyId = supply?.supply_id ?? supply?.id;
+  if (supplyId != null && orderDetails?.raw) {
+    for (const s of ozonDetailsSuppliesList(orderDetails.raw)) {
+      if (String(s?.supply_id ?? s?.id) !== String(supplyId)) continue;
+      values.push(
+        s?.total_quantity,
+        s?.total_item_count,
+        s?.total_items_count,
+        s?.items_count,
+        s?.quantity,
+        s?.planned_quantity,
+        s?.total_items
+      );
+    }
+  }
+
   for (const v of values) {
     const n = parseInt(v, 10);
     if (n > 0) return n;
   }
+
+  for (const lines of [supply?.items, supply?.lines, supply?.products]) {
+    if (!Array.isArray(lines) || !lines.length) continue;
+    const sum = lines.reduce((s, row) => s + parseOzonBundleRowQuantity(row), 0);
+    if (sum > 0) return sum;
+  }
+
   return 0;
 }
 
-async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
+function collectOzonBundleIdsForSupply(order, supply, orderDetails = null) {
+  const ids = [];
+  const push = (v) => {
+    if (v != null && String(v).trim() !== '') ids.push(String(v).trim());
+  };
+
+  push(resolveOzonBundleId(order, supply));
+
+  const supplyId = supply?.supply_id ?? supply?.id;
+  for (const s of ozonDetailsSuppliesList(orderDetails?.raw ?? {})) {
+    if (supplyId != null && String(s?.supply_id ?? s?.id) !== String(supplyId)) continue;
+    push(s?.bundle_id ?? s?.bundleId);
+    for (const entry of s?.bundle_ids ?? []) {
+      push(typeof entry === 'object' ? entry?.bundle_id ?? entry?.bundleId : entry);
+    }
+  }
+
+  for (const id of orderDetails?.bundleIds ?? []) push(id);
+
+  return [...new Set(ids)];
+}
+
+function resolveOzonPreviewItemCount({ items, totalCount, order, supply, orderDetails }) {
+  const fromItems = sumSupplyItemsQuantity(items);
+  if (fromItems > 0) return fromItems;
+
+  const fromMeta = resolveOzonSupplyMetaCounts(order, supply, orderDetails);
+  if (fromMeta > 0) return fromMeta;
+
+  const fromDetails = parseInt(orderDetails?.totalQuantity, 10) || 0;
+  if (fromDetails > 0) return fromDetails;
+
+  return parseInt(totalCount, 10) || 0;
+}
+
+async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags = true } = {}) {
   const items = [];
   let lastId = '';
-  let reportedTotal = 0;
+  let reportedLineCount = 0;
+  let reportedQtySum = 0;
   const clusterQty = new Map();
 
   const loadPages = async () => {
     lastId = '';
     for (let page = 0; page < 20; page++) {
-      const body = { bundle_ids: [String(bundleId)], limit: 100, item_tags_calculation: true };
+      const body = { bundle_ids: [String(bundleId)], limit: 100 };
+      if (withTags) body.item_tags_calculation = true;
       if (lastId) body.last_id = lastId;
       const bundleData = await integrationsService._ozonApiPost('/v1/supply-order/bundle', body, ozonApiOpts);
       const parsed = parseOzonBundleResponse(bundleData);
-      if (parsed.totalCount > reportedTotal) reportedTotal = parsed.totalCount;
+      if (parsed.totalCount > reportedLineCount) reportedLineCount = parsed.totalCount;
+      for (const row of parsed.rows) {
+        reportedQtySum += parseOzonBundleRowQuantity(row);
+      }
 
       for (const row of parsed.rows) {
         const qty = parseOzonBundleRowQuantity(row);
@@ -582,7 +656,7 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
           barcode,
           profileId,
         });
-        const { placementZone, ozonTags } = parseOzonBundleRowMeta(row);
+        const { placementZone, ozonTags } = withTags ? parseOzonBundleRowMeta(row) : { placementZone: null, ozonTags: [] };
         items.push({
           productId,
           quantity: qty,
@@ -609,9 +683,10 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
     /* bundle failed */
   }
 
+  const qtyTotal = sumSupplyItemsQuantity(items);
   return {
     items,
-    totalCount: Math.max(reportedTotal, sumSupplyItemsQuantity(items)),
+    totalCount: Math.max(qtyTotal, reportedQtySum, reportedLineCount),
     shippingCluster: pickDominantOzonCluster(clusterQty),
   };
 }
@@ -628,12 +703,7 @@ async function fetchOzonSupplyItems(
   const details =
     orderDetails ?? (await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts));
 
-  const bundleIds = [];
-  const primaryBundleId = resolveOzonBundleId(order, supply);
-  if (primaryBundleId) bundleIds.push(primaryBundleId);
-  for (const id of details.bundleIds) {
-    if (!bundleIds.includes(id)) bundleIds.push(id);
-  }
+  const bundleIds = collectOzonBundleIdsForSupply(order, supply, details);
 
   let items = [];
   let totalCount = details.totalQuantity || 0;
@@ -654,7 +724,10 @@ async function fetchOzonSupplyItems(
 
   for (const bundleId of bundleIds) {
     try {
-      const fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId);
+      let fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags: true });
+      if (!fetched.items.length && !fetched.totalCount) {
+        fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags: false });
+      }
       if (fetched.items.length > items.length) items = fetched.items;
       if (fetched.totalCount > totalCount) totalCount = fetched.totalCount;
       if (fetched.shippingCluster) addCluster(fetched.shippingCluster, fetched.totalCount || 1);
@@ -663,7 +736,7 @@ async function fetchOzonSupplyItems(
     }
   }
 
-  if (!totalCount) totalCount = resolveOzonSupplyMetaCounts(order, supply);
+  if (!totalCount) totalCount = resolveOzonSupplyMetaCounts(order, supply, details);
   if (!totalCount && items.length) totalCount = sumSupplyItemsQuantity(items);
 
   const operationIds = [
@@ -1500,11 +1573,23 @@ class FboSuppliesImportService {
           }
         );
         items = fetchedItems.items;
-        itemCount = fetchedItems.totalCount;
+        itemCount = resolveOzonPreviewItemCount({
+          items,
+          totalCount: fetchedItems.totalCount,
+          order,
+          supply,
+          orderDetails,
+        });
         shippingClusterFromDetails = fetchedItems.shippingCluster;
       } catch {
         items = [];
-        itemCount = orderDetails?.totalQuantity || resolveOzonSupplyMetaCounts(order, supply);
+        itemCount = resolveOzonPreviewItemCount({
+          items: [],
+          totalCount: 0,
+          order,
+          supply,
+          orderDetails,
+        });
         shippingClusterFromDetails =
           resolveOzonMacrolocalClusterName(supply, order, orderDetails?.raw, ozonMacrolocalById) ||
           orderDetails?.shippingCluster ||

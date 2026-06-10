@@ -234,7 +234,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
         {candidates.length > 0 && mode === 'excel' && candidates[0]?.isNewDraft && (
           <>
             <p style={{ fontSize: 14, marginBottom: 8 }}>
-              Будет создана поставка «{candidates[0].name}» — {(candidates[0].items || []).length} поз.
+              Будет создана новая поставка — {(candidates[0].items || []).length} поз.
             </p>
             <div className="fbo-import-table-wrap">
               <table className="fbo-import-table">
@@ -296,7 +296,6 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                     <th style={{ width: 36 }} />
                     <th>Номер отгрузки</th>
                     <th>МП</th>
-                    <th>Название</th>
                     <th>Дата</th>
                     <th>Склад МП</th>
                     <th>Кластер размещения</th>
@@ -323,7 +322,6 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                         </td>
                         <td>{c.externalShipmentNumber}</td>
                         <td>{getMarketplaceLabel(c.marketplace)}</td>
-                        <td>{c.name || '—'}</td>
                         <td>{fmtDate(c.readyAt)}</td>
                         <td>{c.marketplaceWarehouseName || '—'}</td>
                         <td>{c.shippingCluster || '—'}</td>
