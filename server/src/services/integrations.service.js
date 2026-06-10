@@ -1068,6 +1068,68 @@ class IntegrationsService {
   }
 
   /**
+   * Организации профиля с настроенными кабинетами МП (marketplace_cabinets или integrations).
+   * Фоновый импорт заказов идёт отдельно по каждой организации — свои ключи API.
+   */
+  async getOrganizationIdsWithMarketplaceIntegrations(profileId) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return [];
+    }
+    const pid =
+      profileId != null && profileId !== '' ? Number(profileId) : NaN;
+    if (!Number.isFinite(pid) || pid < 1) return [];
+
+    const result = await query(
+      `SELECT DISTINCT o.id AS organization_id
+       FROM organizations o
+       WHERE o.profile_id = $1
+         AND (
+           EXISTS (
+             SELECT 1 FROM marketplace_cabinets mc
+             WHERE mc.organization_id = o.id
+               AND COALESCE(mc.is_active, true) = true
+               AND mc.config IS NOT NULL
+               AND mc.config::text NOT IN ('{}', 'null')
+           )
+           OR EXISTS (
+             SELECT 1 FROM integrations i
+             WHERE i.organization_id = o.id
+               AND i.type = 'marketplace'
+               AND COALESCE(i.is_active, true) = true
+               AND i.config IS NOT NULL
+               AND i.config::text NOT IN ('{}', 'null')
+           )
+         )
+       ORDER BY o.id ASC`,
+      [pid]
+    );
+
+    const orgIds = [];
+    for (const row of result.rows || []) {
+      const oid = row?.organization_id != null ? Number(row.organization_id) : NaN;
+      if (!Number.isFinite(oid) || oid < 1) continue;
+      let hasCreds = false;
+      for (const mp of ['ozon', 'wildberries', 'yandex']) {
+        try {
+          const cfg = await this.getMarketplaceConfig(mp, { profileId: pid, organizationId: oid });
+          if (mp === 'ozon' && cfg?.client_id && cfg?.api_key) {
+            hasCreds = true;
+            break;
+          }
+          if ((mp === 'wildberries' || mp === 'yandex') && (cfg?.api_key || cfg?.apiKey)) {
+            hasCreds = true;
+            break;
+          }
+        } catch {
+          /* skip */
+        }
+      }
+      if (hasCreds) orgIds.push(oid);
+    }
+    return orgIds;
+  }
+
+  /**
    * Получить тарифы на логистику Wildberries
    * Сначала проверяет кэш, если данных нет или они устарели - загружает из API
    */

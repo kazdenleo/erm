@@ -484,24 +484,6 @@ class OrdersSyncService {
     }
     ordersSyncCache.lastSyncTime = now;
     ordersSyncCache.lastSyncError = null;
-    const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} org=${organizationId != null && organizationId !== '' ? organizationId : '—'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0} days=${syncDaysBack}`;
-    if (refreshStatuses) {
-      logger.info(
-        `[Orders Sync] обновление статусов с маркетплейсов (catch-up до ${catchUpLimit} на МП, минутный лимит снят) (${ctx})`
-      );
-    } else if (force) {
-      logger.info(`[Orders Sync] принудительный импорт заказов (полный опрос маркетплейсов, минутный лимит снят) (${ctx})`);
-    }
-
-    try {
-      const results = {
-        ozon: { success: 0, failed: 0, orders: [] },
-        wildberries: { success: 0, failed: 0, orders: [] },
-        yandex: { success: 0, failed: 0, orders: [] }
-      };
-
-    /** Если синк WB прошёл — множество id из /api/v3/orders/new (иначе null, правило не трогаем). */
-    let wbNewIdsThisSync = null;
 
     // Период опроса МП: авто — минимальный (7 дн.), ручной — 7/14/28/90 по выбору пользователя.
     const schedulerDays = resolveAutoSchedulerDaysBack();
@@ -520,6 +502,25 @@ class OrdersSyncService {
     }
     const WB_DAYS_BACK = syncDaysBack;
     const OZON_DAYS_BACK = syncDaysBack;
+
+    const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} org=${organizationId != null && organizationId !== '' ? organizationId : '—'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0} days=${syncDaysBack}`;
+    if (refreshStatuses) {
+      logger.info(
+        `[Orders Sync] обновление статусов с маркетплейсов (catch-up до ${catchUpLimit} на МП, минутный лимит снят) (${ctx})`
+      );
+    } else if (force) {
+      logger.info(`[Orders Sync] принудительный импорт заказов (полный опрос маркетплейсов, минутный лимит снят) (${ctx})`);
+    }
+
+    try {
+      const results = {
+        ozon: { success: 0, failed: 0, orders: [] },
+        wildberries: { success: 0, failed: 0, orders: [] },
+        yandex: { success: 0, failed: 0, orders: [] }
+      };
+
+    /** Если синк WB прошёл — множество id из /api/v3/orders/new (иначе null, правило не трогаем). */
+    let wbNewIdsThisSync = null;
 
     // Конфиги маркетплейсов из того же источника, что и раздел «Интеграции» (БД или файлы).
     // Важно: если is_active сбился (или кабинет помечен неактивным), синк не должен «молчать» и переставать приносить заказы.
@@ -1111,13 +1112,25 @@ class OrdersSyncService {
     };
     const backgroundJob = options.backgroundJob === true;
     for (const profileId of ids) {
-      const out = await this.syncFbs({ ...options, profileId, backgroundJob });
-      combined.profiles.push({ profileId, ...out });
-      if (out.rateLimited) combined.rateLimited = true;
-      if (out.cached) combined.cached = true;
-      if (out.skipped) combined.skipped = true;
-      if ((out.retryAfterSeconds || 0) > combined.retryAfterSeconds) {
-        combined.retryAfterSeconds = out.retryAfterSeconds || 0;
+      const orgIds = await integrationsService.getOrganizationIdsWithMarketplaceIntegrations(profileId);
+      const targets =
+        orgIds.length > 0
+          ? orgIds.map((organizationId) => ({ profileId, organizationId }))
+          : [{ profileId, organizationId: null }];
+      for (const target of targets) {
+        const out = await this.syncFbs({
+          ...options,
+          profileId: target.profileId,
+          organizationId: target.organizationId,
+          backgroundJob
+        });
+        combined.profiles.push({ profileId: target.profileId, organizationId: target.organizationId, ...out });
+        if (out.rateLimited) combined.rateLimited = true;
+        if (out.cached) combined.cached = true;
+        if (out.skipped) combined.skipped = true;
+        if ((out.retryAfterSeconds || 0) > combined.retryAfterSeconds) {
+          combined.retryAfterSeconds = out.retryAfterSeconds || 0;
+        }
       }
     }
     combined.result = combined.profiles.map((p) => p.result).filter(Boolean);
