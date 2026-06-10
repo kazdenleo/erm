@@ -56,6 +56,10 @@ router.post(
   '/:id/packing/scan-remove',
   wrapAsync(fboSuppliesController.packingScanRemove.bind(fboSuppliesController))
 );
+router.patch(
+  '/:id/packing/cargo-units/:cargoUnitId',
+  wrapAsync(fboSuppliesController.packingUpdateCargoUnit.bind(fboSuppliesController))
+);
 router.delete(
   '/:id/packing/cargo-units/:cargoUnitId',
   wrapAsync(fboSuppliesController.deleteCargoUnit.bind(fboSuppliesController))

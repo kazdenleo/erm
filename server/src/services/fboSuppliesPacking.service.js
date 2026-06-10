@@ -6,9 +6,52 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import fboSuppliesService from './fboSupplies.service.js';
 import { syncSupplyStatusForPacking } from '../utils/fboSupplyPackingCheck.js';
+import {
+  buildWeightExceededMessage,
+  enrichCargoWeightLimits,
+  loadFboWeightLimitsForSupply,
+} from '../utils/fboPackingLimits.js';
 
 function normalizeBarcode(v) {
   return v != null ? String(v).trim() : '';
+}
+
+/** Объём единицы товара, л (из карточки или габаритов мм). */
+function productUnitVolumeLiters(row) {
+  const vol = row.product_volume != null ? Number(row.product_volume) : NaN;
+  if (Number.isFinite(vol) && vol > 0) return vol;
+  const l = Number(row.product_length) || 0;
+  const w = Number(row.product_width) || 0;
+  const h = Number(row.product_height) || 0;
+  if (l > 0 && w > 0 && h > 0) return (l * w * h) / 1_000_000;
+  return 0;
+}
+
+function productUnitWeightGrams(row) {
+  const w = Number(row.product_weight);
+  return Number.isFinite(w) && w > 0 ? w : 0;
+}
+
+function mapContentLine(row) {
+  const qty = Number(row.quantity);
+  const unitVolumeL = productUnitVolumeLiters(row);
+  const unitWeightG = productUnitWeightGrams(row);
+  return {
+    id: row.id,
+    supplyItemId: row.fbo_supply_item_id,
+    productId: row.product_id,
+    productName: row.product_name,
+    sku: row.sku,
+    barcode: row.item_barcode,
+    quantity: qty,
+    plannedQuantity: Number(row.planned_qty),
+    placementZone: row.placement_zone ?? null,
+    expiresAt: row.expires_at ?? null,
+    unitVolumeL,
+    unitWeightG,
+    lineVolumeL: unitVolumeL * qty,
+    lineWeightG: unitWeightG * qty,
+  };
 }
 
 function normalizeProfileId(v) {
@@ -85,11 +128,16 @@ async function findSupplyItemForScan(supplyId, barcode, profileId) {
   return null;
 }
 
+function normalizeCargoKind(v) {
+  return String(v || '').trim().toLowerCase() === 'pallet' ? 'pallet' : 'box';
+}
+
 function mapCargoRow(row) {
   return {
     id: row.id,
     fboSupplyId: row.fbo_supply_id,
     barcode: row.barcode,
+    cargoKind: normalizeCargoKind(row.cargo_kind),
     createdAt: row.created_at,
   };
 }
@@ -106,10 +154,11 @@ async function withPackingStatusSync(supplyId, packing) {
 
 class FboSuppliesPackingService {
   async getPackingState(supplyId, { profileId } = {}) {
-    await assertSupplyAccess(supplyId, profileId);
+    const supply = await assertSupplyAccess(supplyId, profileId);
+    const weightLimits = await loadFboWeightLimitsForSupply(supply, { profileId });
 
     const cargoR = await query(
-      `SELECT c.id, c.fbo_supply_id, c.barcode, c.created_at
+      `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.created_at
        FROM fbo_supply_cargo_units c
        WHERE c.fbo_supply_id = $1
        ORDER BY c.id ASC`,
@@ -120,7 +169,12 @@ class FboSuppliesPackingService {
       `SELECT cc.id, cc.cargo_unit_id, cc.fbo_supply_item_id, cc.quantity,
               cc.placement_zone, cc.expires_at,
               i.product_id, i.sku, i.barcode AS item_barcode, i.quantity AS planned_qty,
-              COALESCE(p.name, i.name) AS product_name
+              COALESCE(p.name, i.name) AS product_name,
+              p.weight AS product_weight,
+              p.volume AS product_volume,
+              p.length AS product_length,
+              p.width AS product_width,
+              p.height AS product_height
        FROM fbo_supply_cargo_contents cc
        JOIN fbo_supply_cargo_units cu ON cu.id = cc.cargo_unit_id
        JOIN fbo_supply_items i ON i.id = cc.fbo_supply_item_id
@@ -144,18 +198,7 @@ class FboSuppliesPackingService {
     for (const row of contentsR.rows || []) {
       const cid = row.cargo_unit_id;
       if (!contentsByCargo.has(cid)) contentsByCargo.set(cid, []);
-      contentsByCargo.get(cid).push({
-        id: row.id,
-        supplyItemId: row.fbo_supply_item_id,
-        productId: row.product_id,
-        productName: row.product_name,
-        sku: row.sku,
-        barcode: row.item_barcode,
-        quantity: Number(row.quantity),
-        plannedQuantity: Number(row.planned_qty),
-        placementZone: row.placement_zone ?? null,
-        expiresAt: row.expires_at ?? null,
-      });
+      contentsByCargo.get(cid).push(mapContentLine(row));
     }
 
     const packedByItem = new Map();
@@ -176,7 +219,9 @@ class FboSuppliesPackingService {
       const contents = contentsByCargo.get(row.id) || [];
       cargo.contents = contents;
       cargo.totalQuantity = contents.reduce((s, c) => s + c.quantity, 0);
-      return cargo;
+      cargo.totalVolumeL = contents.reduce((s, c) => s + (c.lineVolumeL || 0), 0);
+      cargo.totalWeightG = contents.reduce((s, c) => s + (c.lineWeightG || 0), 0);
+      return enrichCargoWeightLimits(cargo, weightLimits);
     });
 
     const cargoBarcodeById = new Map(cargoUnits.map((c) => [c.id, c.barcode]));
@@ -204,7 +249,39 @@ class FboSuppliesPackingService {
       };
     });
 
-    return { cargoUnits, itemStats };
+    return { cargoUnits, itemStats, weightLimits };
+  }
+
+  async updateCargoUnit(supplyId, cargoUnitId, patch = {}, { profileId } = {}) {
+    await assertSupplyAccess(supplyId, profileId);
+    const cid = Number(cargoUnitId);
+    if (!Number.isFinite(cid)) {
+      const err = new Error('Некорректное грузоместо');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (patch.cargoKind === undefined) {
+      const packing = await this.getPackingState(supplyId, { profileId });
+      return { packing };
+    }
+
+    const kind = normalizeCargoKind(patch.cargoKind);
+    const r = await query(
+      `UPDATE fbo_supply_cargo_units
+       SET cargo_kind = $1
+       WHERE id = $2 AND fbo_supply_id = $3
+       RETURNING id`,
+      [kind, cid, supplyId]
+    );
+    if (!r.rows?.length) {
+      const err = new Error('Грузоместо не найдено');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const packing = await this.getPackingState(supplyId, { profileId });
+    return { packing };
   }
 
   async scan(supplyId, { barcode, activeCargoUnitId } = {}, { profileId } = {}) {
@@ -270,9 +347,14 @@ class FboSuppliesPackingService {
       const packing = await this.getPackingState(supplyId, { profileId });
       const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
       const syncMeta = await withPackingStatusSync(supplyId, packing);
+      const activeCargo = (packing.cargoUnits || []).find((c) => Number(c.id) === activeId);
+      const weightWarning = buildWeightExceededMessage(activeCargo);
+      let message = `${name}: ${newQty} шт. в грузоместе`;
+      if (weightWarning) message += `. ${weightWarning}`;
       return {
         action: 'product_added',
-        message: `${name}: ${newQty} шт. в грузоместе`,
+        message,
+        weightWarning,
         activeCargoUnitId: activeId,
         supplyItemId: supplyItem.id,
         quantityInCargo: newQty,

@@ -7,9 +7,10 @@ import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
 import { BarcodeScanField } from '../../components/common/BarcodeScanField/BarcodeScanField';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
-import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import { FboSupplyPackingRemoveModal } from './FboSupplyPackingRemoveModal.jsx';
 import { FboCargoContentMeta } from './FboCargoContentMeta.jsx';
+import { FboCargoUnitKind } from './FboCargoUnitKind.jsx';
+import { cargoWeightExceededMessage, fmtVolumeL, fmtWeightG } from './fboPackingFormat.js';
 import {
   buildStatsMap,
   isSupplyItemPackingComplete,
@@ -63,6 +64,7 @@ export function FboSupplyPacking({
   const [activeCargoUnitId, setActiveCargoUnitId] = useState(null);
   const [removeModalOpen, setRemoveModalOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [weightWarning, setWeightWarning] = useState(null);
   const scanLoadingRef = useRef(false);
 
   scanLoadingRef.current = scanLoading;
@@ -84,12 +86,39 @@ export function FboSupplyPacking({
 
   const itemSearchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
 
+  const cargoUnits = packing?.cargoUnits || [];
+
+  const sortedCargoUnits = useMemo(() => {
+    if (!activeCargoUnitId) return cargoUnits;
+    return [...cargoUnits].sort((a, b) => {
+      const aActive = String(a.id) === String(activeCargoUnitId);
+      const bActive = String(b.id) === String(activeCargoUnitId);
+      if (aActive && !bActive) return -1;
+      if (!aActive && bActive) return 1;
+      return Number(a.id) - Number(b.id);
+    });
+  }, [cargoUnits, activeCargoUnitId]);
+
+  useEffect(() => {
+    if (!cargoUnits.length) {
+      setActiveCargoUnitId(null);
+      return;
+    }
+    const stillValid =
+      activeCargoUnitId != null &&
+      cargoUnits.some((c) => String(c.id) === String(activeCargoUnitId));
+    if (!stillValid) {
+      setActiveCargoUnitId(cargoUnits[cargoUnits.length - 1]?.id ?? null);
+    }
+  }, [cargoUnits, activeCargoUnitId]);
+
   const handleScan = useCallback(
     async (raw) => {
       const trimmed = (raw || '').trim();
       if (trimmed.length < 2 || scanLoadingRef.current) return;
       setScanError(null);
       setScanMsg(null);
+      setWeightWarning(null);
       setScanLoading(true);
       try {
         const data = await fboSuppliesApi.packingScan(supplyId, {
@@ -105,6 +134,13 @@ export function FboSupplyPacking({
             packingAllMatch: data.packingAllMatch,
             statusReverted: data.statusReverted,
           });
+          const nextActiveId = data.activeCargoUnitId ?? activeCargoUnitId;
+          const nextActive = (data.packing.cargoUnits || []).find(
+            (c) => String(c.id) === String(nextActiveId)
+          );
+          setWeightWarning(data?.weightWarning || cargoWeightExceededMessage(nextActive) || null);
+        } else {
+          setWeightWarning(data?.weightWarning || null);
         }
         setScanMsg(data?.message || 'Готово');
         playEventSound(SOUND_EVENTS.scan_ok);
@@ -132,7 +168,8 @@ export function FboSupplyPacking({
     }
   };
 
-  const handleDeleteCargo = async (cargoUnitId) => {
+  const handleDeleteCargo = async (cargoUnitId, e) => {
+    e?.stopPropagation?.();
     if (!window.confirm('Удалить грузоместо и весь его состав?')) return;
     try {
       const data = await fboSuppliesApi.deleteCargoUnit(supplyId, cargoUnitId);
@@ -142,18 +179,32 @@ export function FboSupplyPacking({
           packingAllMatch: data.packingAllMatch,
           statusReverted: data.statusReverted,
         });
+        const nextActive = (data.packing.cargoUnits || []).find(
+          (c) => String(c.id) === String(activeCargoUnitId) && String(c.id) !== String(cargoUnitId)
+        );
+        setWeightWarning(nextActive ? cargoWeightExceededMessage(nextActive) : null);
       }
       if (String(activeCargoUnitId) === String(cargoUnitId)) {
         setActiveCargoUnitId(null);
+        setWeightWarning(null);
       }
     } catch (e) {
       setScanError(e.response?.data?.message || e.message || 'Не удалось удалить');
     }
   };
 
-  const activeCargo = (packing?.cargoUnits || []).find(
-    (c) => String(c.id) === String(activeCargoUnitId)
-  );
+  const activeCargo = cargoUnits.find((c) => String(c.id) === String(activeCargoUnitId));
+  const activeWeightWarning =
+    weightWarning || (activeCargo ? cargoWeightExceededMessage(activeCargo) : null);
+  const isOzon = marketplace !== 'wb';
+
+  const handlePackingChange = (nextPacking, meta) => {
+    onPackingChange?.(nextPacking, meta);
+    const nextActive = (nextPacking?.cargoUnits || []).find(
+      (c) => String(c.id) === String(activeCargoUnitId)
+    );
+    setWeightWarning(nextActive ? cargoWeightExceededMessage(nextActive) : null);
+  };
 
   return (
     <div className="fbo-packing">
@@ -188,11 +239,27 @@ export function FboSupplyPacking({
       </div>
 
       {activeCargo ? (
-        <div className="fbo-packing-active alert alert-info">
+        <div
+          className={`fbo-packing-active alert ${
+            activeCargo.weightExceeded ? 'alert-warning' : 'alert-info'
+          }`}
+        >
           Активное грузоместо: <strong>{activeCargo.barcode}</strong>
           {' '}
           <span className="text-muted">
-            ({activeCargo.totalQuantity ?? 0} шт. внутри)
+            ({activeCargo.cargoKind === 'pallet' ? 'паллета' : 'короб'}
+            {' · '}
+            {activeCargo.totalQuantity ?? 0} шт.
+            {(activeCargo.totalVolumeL > 0 || activeCargo.totalWeightG > 0) && (
+              <>
+                {' '}
+                · {fmtVolumeL(activeCargo.totalVolumeL)} · {fmtWeightG(activeCargo.totalWeightG)}
+              </>
+            )}
+            {activeCargo.weightLimitKg ? (
+              <> · лимит {activeCargo.weightLimitKg} кг</>
+            ) : null}
+            )
           </span>
         </div>
       ) : (
@@ -202,16 +269,19 @@ export function FboSupplyPacking({
       )}
 
       {scanError && <div className="alert alert-danger">{scanError}</div>}
+      {activeWeightWarning && !scanError ? (
+        <div className="alert alert-warning">{activeWeightWarning}</div>
+      ) : null}
       {scanMsg && !scanError && <div className="alert alert-success">{scanMsg}</div>}
 
       <div className="fbo-items-toolbar">
         <h4 className="fbo-packing-section-title" style={{ margin: 0, flex: 1 }}>
-          Грузоместа ({packing?.cargoUnits?.length ?? 0})
+          Грузоместа ({cargoUnits.length})
         </h4>
         <Button
           variant="secondary"
           size="small"
-          disabled={exporting || !(packing?.cargoUnits?.length > 0)}
+          disabled={exporting || !(cargoUnits.length > 0)}
           onClick={handleExportExcel}
         >
           {exporting ? 'Выгрузка…' : 'Excel по грузоместам'}
@@ -222,54 +292,152 @@ export function FboSupplyPacking({
           ? 'Формат WB: баркод, кол-во, ШК короба, срок годности.'
           : 'Формат Ozon: артикул, кол-во, зона, ШК ГМ, срок годности (1 дата на SKU в грузоместе).'}
       </p>
-      {(packing?.cargoUnits || []).length === 0 ? (
+      {cargoUnits.length === 0 ? (
         <p className="text-muted">Пока нет грузомест — отсканируйте штрихкод коробки.</p>
       ) : (
         <div className="fbo-cargo-list">
-          {(packing.cargoUnits || []).map((cargo) => {
+          {sortedCargoUnits.map((cargo) => {
             const isActive = String(cargo.id) === String(activeCargoUnitId);
             return (
               <div
                 key={cargo.id}
-                className={`fbo-cargo-card${isActive ? ' fbo-cargo-card--active' : ''}`}
+                className={[
+                  'fbo-cargo-card',
+                  isActive ? 'fbo-cargo-card--active' : 'fbo-cargo-card--collapsed',
+                  cargo.weightExceeded ? 'fbo-cargo-card--overweight' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
               >
-                <div className="fbo-cargo-card__head">
-                  <button
-                    type="button"
-                    className="fbo-cargo-card__select btn btn-link"
-                    onClick={() => setActiveCargoUnitId(cargo.id)}
-                  >
+                <div
+                  className="fbo-cargo-card__head"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setActiveCargoUnitId(cargo.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveCargoUnitId(cargo.id);
+                    }
+                  }}
+                >
+                  <div className="fbo-cargo-card__title">
                     <strong>{cargo.barcode}</strong>
                     {isActive ? <span className="badge bg-primary ms-2">активно</span> : null}
-                  </button>
+                  </div>
+                  <span className="fbo-cargo-card__summary text-muted small">
+                    {cargo.cargoKind === 'pallet' ? 'паллета' : 'короб'}
+                    {' · '}
+                    {cargo.totalQuantity ?? 0} шт.
+                    {(cargo.totalVolumeL > 0 || cargo.totalWeightG > 0) && (
+                      <>
+                        {' '}
+                        · {fmtVolumeL(cargo.totalVolumeL)} · {fmtWeightG(cargo.totalWeightG)}
+                      </>
+                    )}
+                    {cargo.weightExceeded ? (
+                      <span className="fbo-cargo-card__overweight"> · превышен вес</span>
+                    ) : null}
+                  </span>
                   <span className="text-muted small">{fmtDt(cargo.createdAt)}</span>
                   <Button
                     variant="secondary"
                     size="small"
-                    onClick={() => handleDeleteCargo(cargo.id)}
+                    onClick={(e) => handleDeleteCargo(cargo.id, e)}
                   >
-                    Удалить грузоместо
+                    Удалить
                   </Button>
                 </div>
-                {(cargo.contents || []).length === 0 ? (
-                  <p className="text-muted small mb-0">Пусто</p>
-                ) : (
-                  <ul className="fbo-cargo-card__items">
-                    {(cargo.contents || []).map((line) => (
-                      <li key={line.id}>
-                        <div>
-                          {line.productName || line.sku || '—'} — <strong>{line.quantity}</strong> шт.
-                        </div>
-                        <FboCargoContentMeta
-                          supplyId={supplyId}
-                          line={line}
-                          marketplace={marketplace}
-                          onPackingChange={onPackingChange}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                {isActive ? (
+                  <div className="fbo-cargo-card__body">
+                    <FboCargoUnitKind
+                      supplyId={supplyId}
+                      cargo={cargo}
+                      onPackingChange={handlePackingChange}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    {cargo.weightExceeded ? (
+                      <div className="alert alert-warning py-2 px-3 small mb-2">
+                        {cargoWeightExceededMessage(cargo)}
+                      </div>
+                    ) : null}
+                    {(cargo.contents || []).length === 0 ? (
+                      <p className="text-muted small mb-0">Пусто — отсканируйте товары.</p>
+                    ) : (
+                      <div className="table-responsive">
+                        <table className="table table-sm fbo-cargo-items-table mb-0">
+                          <thead>
+                            <tr>
+                              <th>Товар</th>
+                              <th>Артикул</th>
+                              <th className="text-end">Кол-во</th>
+                              {isOzon ? <th>Зона</th> : null}
+                              <th>Срок годности</th>
+                              <th className="text-end">Объём</th>
+                              <th className="text-end">Масса</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(cargo.contents || []).map((line) => (
+                              <tr key={line.id}>
+                                <td>{line.productName || line.sku || '—'}</td>
+                                <td>{line.sku || '—'}</td>
+                                <td className="text-end">
+                                  <strong>{line.quantity}</strong>
+                                </td>
+                                {isOzon ? (
+                                  <td className="fbo-cargo-items-table__meta">
+                                    <FboCargoContentMeta
+                                      supplyId={supplyId}
+                                      line={line}
+                                      marketplace={marketplace}
+                                      onPackingChange={handlePackingChange}
+                                      variant="inline"
+                                      showZone
+                                      showExpiry={false}
+                                    />
+                                  </td>
+                                ) : null}
+                                <td className="fbo-cargo-items-table__meta">
+                                  <FboCargoContentMeta
+                                    supplyId={supplyId}
+                                    line={line}
+                                    marketplace={marketplace}
+                                    onPackingChange={handlePackingChange}
+                                    variant="inline"
+                                    showZone={false}
+                                    showExpiry
+                                  />
+                                </td>
+                                <td className="text-end text-muted">
+                                  {fmtVolumeL(line.lineVolumeL)}
+                                </td>
+                                <td className="text-end text-muted">
+                                  {fmtWeightG(line.lineWeightG)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          {(cargo.contents || []).length > 0 ? (
+                            <tfoot>
+                              <tr className="fbo-cargo-items-table__totals">
+                                <td colSpan={isOzon ? 5 : 4} className="text-end">
+                                  <strong>Итого по грузоместу</strong>
+                                </td>
+                                <td className="text-end">
+                                  <strong>{fmtVolumeL(cargo.totalVolumeL)}</strong>
+                                </td>
+                                <td className="text-end">
+                                  <strong>{fmtWeightG(cargo.totalWeightG)}</strong>
+                                </td>
+                              </tr>
+                            </tfoot>
+                          ) : null}
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -349,7 +517,7 @@ export function FboSupplyPacking({
         supplyId={supplyId}
         activeCargoUnitId={activeCargoUnitId}
         activeCargoBarcode={activeCargo?.barcode}
-        onPackingChange={onPackingChange}
+        onPackingChange={handlePackingChange}
       />
     </div>
   );

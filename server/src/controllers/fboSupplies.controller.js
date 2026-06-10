@@ -347,6 +347,26 @@ class FboSuppliesController {
     }
   }
 
+  async packingUpdateCargoUnit(req, res, next) {
+    try {
+      const { id, cargoUnitId } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { cargoKind } = req.body || {};
+      const data = await fboSuppliesPackingService.updateCargoUnit(
+        id,
+        cargoUnitId,
+        { cargoKind },
+        { profileId }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async deleteCargoUnit(req, res, next) {
     try {
       const { id, cargoUnitId } = req.params;

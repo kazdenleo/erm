@@ -14,7 +14,15 @@ function toDateInput(v) {
   return d.toISOString().slice(0, 10);
 }
 
-export function FboCargoContentMeta({ supplyId, line, marketplace, onPackingChange }) {
+export function FboCargoContentMeta({
+  supplyId,
+  line,
+  marketplace,
+  onPackingChange,
+  variant = 'block',
+  showZone = true,
+  showExpiry = true,
+}) {
   const isOzon = marketplace !== 'wb';
   const [zone, setZone] = useState(line.placementZone || '');
   const [expiry, setExpiry] = useState(toDateInput(line.expiresAt));
@@ -39,6 +47,36 @@ export function FboCargoContentMeta({ supplyId, line, marketplace, onPackingChan
       setSaving(false);
     }
   };
+
+  if (variant === 'inline') {
+    return (
+      <div className="fbo-cargo-line-meta fbo-cargo-line-meta--inline" onClick={(e) => e.stopPropagation()}>
+        {isOzon && showZone ? (
+          <input
+            type="text"
+            className="form-control form-control-sm"
+            value={zone}
+            disabled={saving}
+            placeholder="Зона"
+            title="Зона размещения"
+            onChange={(e) => setZone(e.target.value)}
+            onBlur={save}
+          />
+        ) : null}
+        {showExpiry ? (
+          <input
+            type="date"
+            className="form-control form-control-sm"
+            value={expiry}
+            disabled={saving}
+            title="Срок годности"
+            onChange={(e) => setExpiry(e.target.value)}
+            onBlur={save}
+          />
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="fbo-cargo-line-meta" onClick={(e) => e.stopPropagation()}>

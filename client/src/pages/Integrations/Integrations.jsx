@@ -10,6 +10,7 @@ import { marketplaceCabinetsApi } from '../../services/marketplaceCabinets.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { useAuth } from '../../context/AuthContext';
+import { FboPackingLimitFields } from '../../components/integrations/FboPackingLimitFields.jsx';
 import './Integrations.css';
 
 export function Integrations() {
@@ -467,6 +468,7 @@ function MarketplacesTab({
               )}
             </div>
           )}
+          <FboPackingLimitFields formData={formData} onChange={handleChange} />
           <div className="form-actions">
             <Button
               type="button"
@@ -682,6 +684,7 @@ function MarketplacesTab({
               Процент услуг Джем вычисляется от суммы товара и добавляется к расчету минимальной цены (например, 1.5)
             </small>
           </div>
+          <FboPackingLimitFields formData={formData} onChange={handleChange} />
           <div className="form-actions">
             <Button
               type="button"
@@ -1120,6 +1123,7 @@ function MarketplacesTab({
               placeholder="Нужен для заказов. Настройки → API в ЛК Маркета"
             />
           </div>
+          <FboPackingLimitFields formData={formData} onChange={handleChange} />
           <div className="form-actions">
             <Button
               type="button"

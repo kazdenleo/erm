@@ -168,6 +168,14 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  updateCargoUnit: async (supplyId, cargoUnitId, patch) => {
+    const response = await api.patch(
+      `/fbo-supplies/${supplyId}/packing/cargo-units/${cargoUnitId}`,
+      patch
+    );
+    return response.data?.data ?? response.data;
+  },
+
   deleteCargoUnit: async (supplyId, cargoUnitId) => {
     const response = await api.delete(
       `/fbo-supplies/${supplyId}/packing/cargo-units/${cargoUnitId}`
