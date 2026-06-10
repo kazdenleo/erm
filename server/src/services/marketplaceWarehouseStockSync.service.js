@@ -1,6 +1,6 @@
 /**
  * Передача остатков склада на маркетплейсы (Ozon, Wildberries, Яндекс.Маркет).
- * Количество = «Доступно» (наличие на складе + остатки поставщиков по настройкам).
+ * Количество = одно число из колонки «Доступно» таблицы остатков (не «Наличие», не число в скобках у комплектов).
  */
 
 import { query } from '../config/database.js';
@@ -336,7 +336,7 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
 
     const erpWarehouseId = mapping.warehouse_id;
     const whForStock = effectiveWarehouseId ?? erpWarehouseId;
-    const { available, onHand, suppliers, reserved, displayAvailable } = await computeAvailableQuantity(
+    const { available, onHand, suppliers, reserved } = await computeAvailableQuantity(
       productId,
       {
         warehouseId: whForStock,
@@ -354,7 +354,6 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
       onHand,
       suppliers,
       reserved,
-      displayAvailable: displayAvailable ?? onHand + suppliers,
       pushQuantity: available
     });
 

@@ -857,13 +857,29 @@ export async function computeKitDisplayMetricsFromDb(kitProductId, options = {})
   return stub.kit_display ?? empty;
 }
 
-/** Для отправки на МП: «Доступно» как в таблице остатков (kit_display.available_total). */
+/**
+ * «Доступно» комплекта для экспорта на МП — первое число колонки (buildStockRowsWithKits на клиенте).
+ * Не целые комплекты в скобках и не supplier_kit_units (они в отдельной колонке «Поставщики»).
+ */
+export function computeKitStockTableAvailableFromMetrics(display, { incoming = 0, reserved = 0 } = {}) {
+  const wholeOnHand = Math.max(0, Number(display?.whole_on_hand) || 0);
+  const assemblable = Math.max(0, Number(display?.assemblable_from_components) || 0);
+  const inc = Math.max(0, Number(incoming) || 0);
+  const res = Math.max(0, Number(reserved) || 0);
+  const wholeAvail = Math.max(0, wholeOnHand + inc - res);
+  return Math.max(0, assemblable + wholeAvail);
+}
+
+/** Для отправки на МП: только число из колонки «Доступно» таблицы остатков. */
 export async function readKitMarketplaceStockFromDb(kitProductId, opts = {}) {
   const [base, display] = await Promise.all([
     readKitStockFromDb(kitProductId, opts),
     computeKitDisplayMetricsFromDb(kitProductId, opts)
   ]);
-  const available = Math.max(0, Number(display.available_total) || 0);
+  const available = computeKitStockTableAvailableFromMetrics(display, {
+    incoming: base.incoming,
+    reserved: base.reserved
+  });
   return {
     ...base,
     onHand: Math.max(0, Number(display.whole_on_hand) || 0),
@@ -2114,6 +2130,7 @@ export default {
   readKitStockFromDb,
   readKitMarketplaceStockFromDb,
   computeKitDisplayMetricsFromDb,
+  computeKitStockTableAvailableFromMetrics,
   persistKitStock,
   recalculateKitsForComponent,
   recalculateAllKitStocks,

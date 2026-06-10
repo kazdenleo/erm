@@ -1,7 +1,7 @@
 /**
  * Расчёт «Доступно».
  * Формула (таблица остатков): наличие + в пути + поставщики − резерв.
- * - Маркетплейсы (forMarketplace): та же формула с резервом из журнала.
+ * - Маркетплейсы (forMarketplace): строго одно число из колонки «Доступно» UI (с резервом по складу).
  */
 
 import { query } from '../config/database.js';
@@ -209,20 +209,19 @@ export async function computeAvailableQuantity(productId, opts = {}) {
     }
   }
 
-  let reserved = 0;
-  if (opts.forMarketplace === true) {
-    reserved = await getReservedQuantityFromMovements(pid);
-  }
+  const reserved =
+    opts.forMarketplace === true ? await getReservedQuantityFromMovements(pid, opts) : 0;
 
   const available = Math.max(0, Math.floor(onHand + incoming + suppliers - reserved));
   return {
     available,
     onHand,
+    incoming,
     suppliers,
     ...(opts.forMarketplace
       ? {
           reserved,
-          displayAvailable: Math.max(0, Math.floor(onHand + suppliers))
+          displayAvailable: available
         }
       : {})
   };
