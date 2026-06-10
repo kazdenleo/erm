@@ -152,6 +152,11 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  syncOzonPlacementZones: async (id) => {
+    const response = await api.post(`/fbo-supplies/${id}/sync-ozon-placement-zones`);
+    return response.data?.data ?? response.data;
+  },
+
   packingScan: async (id, { barcode, activeCargoUnitId }) => {
     const response = await api.post(`/fbo-supplies/${id}/packing/scan`, {
       barcode,

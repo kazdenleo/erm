@@ -35,6 +35,7 @@ import {
   sortSupplyItemsForPacking,
 } from './fboSupplyPackingSort.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
+import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 import './FboSupplies.css';
 
 function packedCellClass(packed, planned) {
@@ -95,6 +96,8 @@ export function FboSupplyDetail() {
   const [breakdownItem, setBreakdownItem] = useState(null);
   const [packingExporting, setPackingExporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [syncingPlacementZones, setSyncingPlacementZones] = useState(false);
+  const [placementZonesMsg, setPlacementZonesMsg] = useState(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const selectAllItemsRef = useRef(null);
 
@@ -281,6 +284,29 @@ export function FboSupplyDetail() {
     }
   };
 
+  const handleSyncOzonPlacementZones = async () => {
+    setSyncingPlacementZones(true);
+    setErr(null);
+    setPlacementZonesMsg(null);
+    try {
+      const data = await fboSuppliesApi.syncOzonPlacementZones(id);
+      if (data?.supply) setSupply(data.supply);
+      const parts = [];
+      if (data?.updated > 0) parts.push(`обновлено ${data.updated}`);
+      if (data?.unchanged > 0) parts.push(`без изменений ${data.unchanged}`);
+      if (data?.missing > 0) parts.push(`не сопоставлено ${data.missing}`);
+      setPlacementZonesMsg(
+        parts.length
+          ? `Зоны размещения с Ozon: ${parts.join(', ')}.`
+          : 'Зоны размещения обновлены.'
+      );
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось обновить зоны размещения');
+    } finally {
+      setSyncingPlacementZones(false);
+    }
+  };
+
   const applyStatusChangeResult = (data) => {
     setSupply(data);
     const sd = data?.stockDeduction;
@@ -431,6 +457,10 @@ export function FboSupplyDetail() {
   }
 
   const statusIdx = FBO_SUPPLY_STATUS_ORDER.indexOf(supply.status);
+  const isOzonSupply =
+    supply.marketplace !== 'wb' && supply.marketplace !== 'ym' && supply.marketplace !== 'yandex';
+  const canSyncOzonPlacementZones =
+    isOzonSupply && Boolean(supply.externalShipmentNumber || supply.externalSupplyId);
 
   return (
     <div className="fbo-supplies-page">
@@ -451,6 +481,17 @@ export function FboSupplyDetail() {
         >
           {packingExporting ? 'Excel…' : 'Excel грузоместа'}
         </Button>
+        {canSyncOzonPlacementZones ? (
+          <Button
+            variant="secondary"
+            size="small"
+            disabled={syncingPlacementZones || saving}
+            onClick={handleSyncOzonPlacementZones}
+            title="Подтянуть сортируемый / несортируемый с Ozon для строк поставки"
+          >
+            {syncingPlacementZones ? 'Зоны…' : 'Зоны с Ozon'}
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant="secondary"
@@ -475,6 +516,9 @@ export function FboSupplyDetail() {
       </div>
 
       {err && <div className="alert alert-danger">{err}</div>}
+      {placementZonesMsg ? (
+        <div className="alert alert-success">{placementZonesMsg}</div>
+      ) : null}
       {stockMsg && (
         <div className={`alert ${stockMsg.includes('Списано') ? 'alert-success' : 'alert-warning'}`}>
           {stockMsg}
@@ -586,16 +630,6 @@ export function FboSupplyDetail() {
             <option value="wb">Wildberries</option>
             <option value="ym">Яндекс Маркет</option>
           </select>
-        </div>
-        <div>
-          <label>Название</label>
-          <input
-            className="form-control form-control-sm"
-            value={supply.name || ''}
-            onChange={(e) => setSupply((s) => ({ ...s, name: e.target.value }))}
-            onBlur={() => saveField({ name: supply.name })}
-            disabled={saving}
-          />
         </div>
         <div>
           <label>Дата готовности</label>
@@ -746,6 +780,18 @@ export function FboSupplyDetail() {
           <label>Создана</label>
           <div>{fmtDt(supply.createdAt)}</div>
         </div>
+        <div className="fbo-supply-meta-full">
+          <label>Комментарий</label>
+          <textarea
+            className="form-control form-control-sm"
+            value={supply.note || ''}
+            onChange={(e) => setSupply((s) => ({ ...s, note: e.target.value }))}
+            onBlur={() => saveField({ note: supply.note || null })}
+            disabled={saving}
+            placeholder="Произвольный комментарий к поставке"
+            rows={3}
+          />
+        </div>
       </div>
 
       <h3 style={{ fontSize: 16, marginBottom: 8 }}>Товары поставки</h3>
@@ -826,6 +872,7 @@ export function FboSupplyDetail() {
               <th>Артикул</th>
               <th>Штрихкод</th>
               <th title="Зарезервировано под поставку со склада списания">Кол-во</th>
+              {isOzonSupply ? <th>Размещение</th> : null}
               <th>Расхождения</th>
               <th style={{ width: 48 }} />
             </tr>
@@ -833,7 +880,7 @@ export function FboSupplyDetail() {
           <tbody>
             {filteredSupplyItems.length === 0 ? (
               <tr>
-                <td colSpan={8} className="text-muted text-center py-3">
+                <td colSpan={isOzonSupply ? 9 : 8} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
@@ -887,6 +934,21 @@ export function FboSupplyDetail() {
                   >
                     {it.productId ? (it.reservedQuantity ?? 0) : '—'}
                   </td>
+                  {isOzonSupply ? (
+                    <td>
+                      <span
+                        className={`badge ${
+                          ozonPlacementZoneLabel(it.placementZone, it.ozonTags) === 'Сортируемый'
+                            ? 'bg-info text-dark'
+                            : ozonPlacementZoneLabel(it.placementZone, it.ozonTags) === 'Несортируемый'
+                              ? 'bg-secondary'
+                              : 'bg-light text-dark border'
+                        }`}
+                      >
+                        {ozonPlacementZoneLabel(it.placementZone, it.ozonTags)}
+                      </span>
+                    </td>
+                  ) : null}
                   <td>
                     <button
                       type="button"

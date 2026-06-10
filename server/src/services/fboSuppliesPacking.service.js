@@ -12,6 +12,12 @@ import {
   loadFboWeightLimitsForSupply,
   parsePalletTareWeightKg,
 } from '../utils/fboPackingLimits.js';
+import {
+  buildPlacementMixingMessage,
+  ozonPlacementMixingKey,
+  ozonPlacementZoneLabel,
+  ozonPlacementZonesConflict,
+} from '../constants/ozonPlacementZones.js';
 
 function normalizeBarcode(v) {
   return v != null ? String(v).trim() : '';
@@ -33,10 +39,27 @@ function productUnitWeightGrams(row) {
   return Number.isFinite(w) && w > 0 ? w : 0;
 }
 
+function parseOzonTagsJson(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.map((t) => String(t).trim()).filter(Boolean);
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parseOzonTagsJson(parsed);
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
 function mapContentLine(row) {
   const qty = Number(row.quantity);
   const unitVolumeL = productUnitVolumeLiters(row);
   const unitWeightG = productUnitWeightGrams(row);
+  const supplyPlacementZone =
+    row.item_placement_zone != null ? String(row.item_placement_zone).trim() : null;
+  const supplyOzonTags = parseOzonTagsJson(row.item_ozon_tags);
   return {
     id: row.id,
     supplyItemId: row.fbo_supply_item_id,
@@ -47,6 +70,9 @@ function mapContentLine(row) {
     quantity: qty,
     plannedQuantity: Number(row.planned_qty),
     placementZone: row.placement_zone ?? null,
+    supplyPlacementZone,
+    supplyOzonTags,
+    placementKindLabel: ozonPlacementZoneLabel(supplyPlacementZone, supplyOzonTags),
     expiresAt: row.expires_at ?? null,
     unitVolumeL,
     unitWeightG,
@@ -105,11 +131,48 @@ async function resolveProductIdByBarcode(barcode, profileId) {
   return r.rows?.[0]?.id != null ? Number(r.rows[0].id) : null;
 }
 
+function isOzonSupply(supply) {
+  const mp = supply?.marketplace != null ? String(supply.marketplace).trim().toLowerCase() : '';
+  return mp !== 'wb' && mp !== 'ym' && mp !== 'yandex';
+}
+
+async function getCargoPlacementMixingKeys(cargoUnitId) {
+  const r = await query(
+    `SELECT i.placement_zone, i.ozon_tags
+     FROM fbo_supply_cargo_contents cc
+     JOIN fbo_supply_items i ON i.id = cc.fbo_supply_item_id
+     WHERE cc.cargo_unit_id = $1 AND cc.quantity > 0`,
+    [cargoUnitId]
+  );
+  const keys = new Set();
+  for (const row of r.rows || []) {
+    const key = ozonPlacementMixingKey(row.placement_zone, row.ozon_tags);
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+async function assertCargoPlacementZoneCompatible(cargoUnitId, supplyItem, supply) {
+  if (!isOzonSupply(supply)) return;
+  const newKey = ozonPlacementMixingKey(supplyItem.placement_zone, supplyItem.ozon_tags);
+  if (!newKey) return;
+  const existingKeys = await getCargoPlacementMixingKeys(cargoUnitId);
+  for (const existingKey of existingKeys) {
+    if (ozonPlacementZonesConflict(existingKey, newKey)) {
+      const err = new Error(buildPlacementMixingMessage(existingKey, newKey));
+      err.statusCode = 409;
+      err.code = 'PLACEMENT_ZONE_CONFLICT';
+      throw err;
+    }
+  }
+}
+
 async function findSupplyItemForScan(supplyId, barcode, profileId) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
   const itemsR = await query(
     `SELECT i.id, i.product_id, i.quantity, i.barcode, i.sku, i.name,
+            i.placement_zone, i.ozon_tags,
             p.name AS product_name
      FROM fbo_supply_items i
      LEFT JOIN products p ON p.id = i.product_id
@@ -176,6 +239,7 @@ class FboSuppliesPackingService {
       `SELECT cc.id, cc.cargo_unit_id, cc.fbo_supply_item_id, cc.quantity,
               cc.placement_zone, cc.expires_at,
               i.product_id, i.sku, i.barcode AS item_barcode, i.quantity AS planned_qty,
+              i.placement_zone AS item_placement_zone, i.ozon_tags AS item_ozon_tags,
               COALESCE(p.name, i.name) AS product_name,
               p.weight AS product_weight,
               p.volume AS product_volume,
@@ -193,6 +257,7 @@ class FboSuppliesPackingService {
 
     const itemsR = await query(
       `SELECT i.id, i.quantity, i.product_id, i.sku, i.barcode,
+              i.placement_zone, i.ozon_tags,
               COALESCE(p.name, i.name) AS product_name
        FROM fbo_supply_items i
        LEFT JOIN products p ON p.id = i.product_id
@@ -243,6 +308,9 @@ class FboSuppliesPackingService {
         cargoBarcode: cargoBarcodeById.get(x.cargoUnitId) || '',
         quantity: x.quantity,
       }));
+      const placementZone =
+        row.placement_zone != null ? String(row.placement_zone).trim() : null;
+      const ozonTags = parseOzonTagsJson(row.ozon_tags);
       return {
         supplyItemId,
         productId: row.product_id,
@@ -253,6 +321,9 @@ class FboSuppliesPackingService {
         packed,
         discrepancy: packed - planned,
         byCargo,
+        placementZone,
+        ozonTags,
+        placementKindLabel: ozonPlacementZoneLabel(placementZone, ozonTags),
       };
     });
 
@@ -363,6 +434,8 @@ class FboSuppliesPackingService {
         err.statusCode = 400;
         throw err;
       }
+
+      await assertCargoPlacementZoneCompatible(activeId, supplyItem, supply);
 
       const upsert = await query(
         `INSERT INTO fbo_supply_cargo_contents (cargo_unit_id, fbo_supply_item_id, quantity)

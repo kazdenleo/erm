@@ -57,8 +57,8 @@ export function FboCargoContentMeta({
             className="form-control form-control-sm"
             value={zone}
             disabled={saving}
-            placeholder="Зона"
-            title="Зона размещения"
+            placeholder="Код зоны"
+            title="Код зоны для выгрузки Ozon"
             onChange={(e) => setZone(e.target.value)}
             onBlur={save}
           />

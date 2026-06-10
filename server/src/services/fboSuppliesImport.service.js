@@ -8,6 +8,7 @@ import integrationsService from './integrations.service.js';
 import fboSuppliesService from './fboSupplies.service.js';
 import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
+import { parseOzonBundleRowMeta } from '../constants/ozonPlacementZones.js';
 
 const WB_SUPPLIES_API = 'https://supplies-api.wildberries.ru';
 const YM_API = 'https://api.partner.market.yandex.ru';
@@ -236,6 +237,172 @@ function resolveOzonBundleId(order, supply) {
   return null;
 }
 
+function ozonSupplyOrderId(order) {
+  if (!order || typeof order !== 'object') return null;
+  const v = order.order_id ?? order.supply_order_id ?? order.id;
+  return v != null && String(v).trim() !== '' ? v : null;
+}
+
+function ozonDetailsSuppliesList(result) {
+  if (!result || typeof result !== 'object') return [];
+  const nested = result.order ?? result.supply_order ?? result.supplyOrder;
+  return result.supplies ?? result.supply ?? nested?.supplies ?? nested?.supply ?? [];
+}
+
+function isLikelyOzonHubWarehouseName(name) {
+  const s = String(name ?? '').trim();
+  if (!s) return true;
+  if (/(_ХАБ|_HUB|ХАБ_|CROSSDOCK|КРОСС)/i.test(s)) return true;
+  if (/^(МСК|MSK|SPB|СПБ)_/i.test(s) && s.includes('_')) return true;
+  return false;
+}
+
+/** Рекурсивный поиск названия кластера размещения в ответе Ozon. */
+function findOzonClusterNameInTree(node, depth = 0, seen = null) {
+  if (node == null || depth > 8) return null;
+  const set = seen ?? new Set();
+  if (typeof node !== 'object') return null;
+  if (set.has(node)) return null;
+  set.add(node);
+
+  if (Array.isArray(node)) {
+    for (const el of node) {
+      const hit = findOzonClusterNameInTree(el, depth + 1, set);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  const directKeys = [
+    'macrocluster_name',
+    'macroclusterName',
+    'placement_cluster_name',
+    'placementClusterName',
+    'cluster_name',
+    'clusterName',
+    'cluster_to',
+    'cluster_from',
+  ];
+  for (const key of directKeys) {
+    const v = node[key];
+    if (v != null && String(v).trim() !== '' && !isLikelyOzonHubWarehouseName(v)) {
+      return String(v).trim();
+    }
+  }
+  const mc = node.macrocluster ?? node.placement_cluster ?? node.placementCluster ?? node.cluster;
+  if (mc && typeof mc === 'object') {
+    const name = mc.name ?? mc.title ?? mc.label;
+    if (name != null && String(name).trim() !== '' && !isLikelyOzonHubWarehouseName(name)) {
+      return String(name).trim();
+    }
+  }
+
+  for (const val of Object.values(node)) {
+    if (val && typeof val === 'object') {
+      const hit = findOzonClusterNameInTree(val, depth + 1, set);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+function collectOzonOperationIdCandidates(...nodes) {
+  const ids = new Set();
+  const push = (v) => {
+    if (v == null) return;
+    const s = String(v).trim();
+    if (s && s !== '0') ids.add(s);
+  };
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') continue;
+    push(node.operation_id);
+    push(node.draft_operation_id);
+    push(node.order_draft_id);
+    push(node.draft_id);
+  }
+  return [...ids];
+}
+
+function matchOzonDraftClusters(clusters, bundleIds) {
+  const bundles = new Set((bundleIds || []).map(String).filter(Boolean));
+  const matched = new Set();
+  for (const cl of clusters || []) {
+    const cname = String(cl?.cluster_name ?? cl?.name ?? '').trim();
+    if (!cname) continue;
+    if (!bundles.size) {
+      matched.add(cname);
+      continue;
+    }
+    for (const wh of cl?.warehouses ?? []) {
+      for (const b of wh?.bundle_ids ?? []) {
+        const bid = b?.bundle_id ?? b?.id ?? b;
+        if (bundles.has(String(bid))) matched.add(cname);
+      }
+      const restricted = wh?.restricted_bundle_id;
+      if (restricted && bundles.has(String(restricted))) matched.add(cname);
+    }
+  }
+  return matched.size ? [...matched].join(', ') : null;
+}
+
+async function resolveOzonClusterFromDraftInfo(operationIds, bundleIds, ozonApiOpts) {
+  const ids = [...new Set((operationIds || []).map(String).filter(Boolean))];
+  if (!ids.length) return null;
+
+  for (const opId of ids) {
+    const requests = [
+      { path: '/v1/draft/create/info', body: { operation_id: opId } },
+      { path: '/v2/draft/create/info', body: { operation_id: opId } },
+    ];
+    const draftNum = Number(opId);
+    if (Number.isFinite(draftNum) && draftNum > 0) {
+      requests.push({ path: '/v2/draft/create/info', body: { draft_id: draftNum } });
+    }
+    for (const { path, body } of requests) {
+      try {
+        const data = await integrationsService._ozonApiPost(path, body, ozonApiOpts);
+        const hit = matchOzonDraftClusters(
+          data?.result?.clusters ?? data?.clusters,
+          bundleIds
+        );
+        if (hit) return hit;
+      } catch {
+        /* try next */
+      }
+    }
+  }
+  return null;
+}
+
+function ozonClusterFromBundleRow(row) {
+  const candidates = [
+    row?.macrocluster?.name,
+    row?.macrocluster_name,
+    row?.destination_cluster_name,
+    row?.destination_cluster?.name,
+    row?.placement_cluster_name,
+    row?.cluster_name,
+  ];
+  for (const c of candidates) {
+    if (c != null && String(c).trim() !== '' && !isLikelyOzonHubWarehouseName(c)) {
+      return String(c).trim();
+    }
+  }
+  return null;
+}
+
+function pickDominantOzonCluster(clusterQty) {
+  let best = null;
+  let max = 0;
+  for (const [name, qty] of clusterQty.entries()) {
+    if (qty > max) {
+      max = qty;
+      best = name;
+    }
+  }
+  return best;
+}
+
 function parseOzonBundleResponse(bundleData) {
   const root = bundleData?.result ?? bundleData ?? {};
   let rows = root.items ?? root.products ?? bundleData?.items ?? [];
@@ -278,7 +445,7 @@ function parseOzonBundleRowOfferId(row) {
 
 async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
   if (supplyOrderId == null || String(supplyOrderId).trim() === '') {
-    return { bundleIds: [], shippingCluster: null, totalQuantity: 0 };
+    return { bundleIds: [], shippingCluster: null, totalQuantity: 0, operationIds: [] };
   }
   try {
     const data = await integrationsService._ozonApiPost(
@@ -287,6 +454,7 @@ async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
       ozonApiOpts
     );
     const result = data?.result ?? data ?? {};
+    const supplies = ozonDetailsSuppliesList(result);
     const ids = [];
     const pushId = (v) => {
       if (v != null && String(v).trim() !== '') ids.push(String(v).trim());
@@ -294,7 +462,8 @@ async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
     for (const entry of result.bundle_ids ?? []) {
       pushId(typeof entry === 'object' ? entry?.bundle_id ?? entry?.bundleId : entry);
     }
-    for (const s of result.supplies ?? result.supply ?? []) {
+    pushId(result.bundle_id ?? result.bundleId);
+    for (const s of supplies) {
       pushId(s?.bundle_id ?? s?.bundleId);
       for (const entry of s?.bundle_ids ?? []) {
         pushId(typeof entry === 'object' ? entry?.bundle_id ?? entry?.bundleId : entry);
@@ -306,21 +475,28 @@ async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
       result.macrocluster_name,
       result.cluster_name,
       result.placement_cluster_name,
+      result.cluster_to,
+      result.cluster_from,
       result.destination_warehouse?.cluster_name,
-      result.destination_warehouse?.name,
+      result.destination_warehouse?.macrocluster_name,
       result.storage_warehouse?.cluster_name,
-      ...(result.supplies ?? result.supply ?? []).flatMap((s) => [
+      findOzonClusterNameInTree(result),
+      ...supplies.flatMap((s) => [
         s?.macrocluster?.name,
         s?.macrocluster_name,
         s?.cluster_name,
         s?.placement_cluster_name,
+        s?.cluster_to,
+        s?.cluster_from,
+        s?.destination_warehouse?.cluster_name,
+        s?.destination_warehouse?.macrocluster_name,
         s?.storage_warehouse?.cluster_name,
         s?.storage_warehouse?.macrocluster_name,
       ]),
     ];
     let shippingCluster = null;
     for (const c of clusterCandidates) {
-      if (c != null && String(c).trim() !== '') {
+      if (c != null && String(c).trim() !== '' && !isLikelyOzonHubWarehouseName(c)) {
         shippingCluster = String(c).trim();
         break;
       }
@@ -329,10 +505,12 @@ async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
     const qtyCandidates = [
       result.total_quantity,
       result.total_item_count,
+      result.total_items_count,
       result.items_count,
-      ...(result.supplies ?? result.supply ?? []).flatMap((s) => [
+      ...supplies.flatMap((s) => [
         s?.total_quantity,
         s?.total_item_count,
+        s?.total_items_count,
         s?.items_count,
       ]),
     ];
@@ -349,9 +527,11 @@ async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
       bundleIds: [...new Set(ids)],
       shippingCluster,
       totalQuantity,
+      operationIds: collectOzonOperationIdCandidates(result, ...supplies),
+      raw: result,
     };
   } catch {
-    return { bundleIds: [], shippingCluster: null, totalQuantity: 0 };
+    return { bundleIds: [], shippingCluster: null, totalQuantity: 0, operationIds: [], raw: null };
   }
 }
 
@@ -377,51 +557,74 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
   const items = [];
   let lastId = '';
   let reportedTotal = 0;
-  for (let page = 0; page < 20; page++) {
-    const body = { bundle_ids: [String(bundleId)], limit: 100 };
-    if (lastId) body.last_id = lastId;
-    const bundleData = await integrationsService._ozonApiPost(
-      '/v1/supply-order/bundle',
-      body,
-      ozonApiOpts
-    );
-    const parsed = parseOzonBundleResponse(bundleData);
-    if (parsed.totalCount > reportedTotal) reportedTotal = parsed.totalCount;
+  const clusterQty = new Map();
 
-    for (const row of parsed.rows) {
-      const qty = parseOzonBundleRowQuantity(row);
-      if (!qty || qty <= 0) continue;
-      const offerId = parseOzonBundleRowOfferId(row);
-      const barcode = row.barcode ?? row.bar_code ?? null;
-      const productId = await resolveProductId({
-        sku: offerId,
-        barcode,
-        profileId,
-      });
-      items.push({
-        productId,
-        quantity: qty,
-        sku: offerId,
-        barcode,
-        mpOfferId: offerId,
-        mpProductId: row.product_id != null ? String(row.product_id) : null,
-        name: row.name ?? row.product_name ?? null,
-        unresolved: productId == null,
-      });
+  const loadPages = async () => {
+    lastId = '';
+    for (let page = 0; page < 20; page++) {
+      const body = { bundle_ids: [String(bundleId)], limit: 100, item_tags_calculation: true };
+      if (lastId) body.last_id = lastId;
+      const bundleData = await integrationsService._ozonApiPost('/v1/supply-order/bundle', body, ozonApiOpts);
+      const parsed = parseOzonBundleResponse(bundleData);
+      if (parsed.totalCount > reportedTotal) reportedTotal = parsed.totalCount;
+
+      for (const row of parsed.rows) {
+        const qty = parseOzonBundleRowQuantity(row);
+        const rowCluster = ozonClusterFromBundleRow(row);
+        if (rowCluster && qty > 0) {
+          clusterQty.set(rowCluster, (clusterQty.get(rowCluster) || 0) + qty);
+        }
+        if (!qty || qty <= 0) continue;
+        const offerId = parseOzonBundleRowOfferId(row);
+        const barcode = row.barcode ?? row.bar_code ?? null;
+        const productId = await resolveProductId({
+          sku: offerId,
+          barcode,
+          profileId,
+        });
+        const { placementZone, ozonTags } = parseOzonBundleRowMeta(row);
+        items.push({
+          productId,
+          quantity: qty,
+          sku: offerId,
+          barcode,
+          mpOfferId: offerId,
+          mpProductId: row.product_id != null ? String(row.product_id) : null,
+          name: row.name ?? row.product_name ?? null,
+          placementZone,
+          ozonTags,
+          unresolved: productId == null,
+        });
+      }
+
+      if (!parsed.hasNext) break;
+      if (!parsed.lastId || parsed.lastId === lastId) break;
+      lastId = parsed.lastId;
     }
+  };
 
-    if (!parsed.hasNext) break;
-    if (!parsed.lastId || parsed.lastId === lastId) break;
-    lastId = parsed.lastId;
+  try {
+    await loadPages();
+  } catch {
+    /* bundle failed */
   }
+
   return {
     items,
     totalCount: Math.max(reportedTotal, sumSupplyItemsQuantity(items)),
+    shippingCluster: pickDominantOzonCluster(clusterQty),
   };
 }
 
-async function fetchOzonSupplyItems(order, supply, ozonApiOpts, profileId, orderDetails = null) {
-  const supplyOrderId = order?.supply_order_id ?? order?.order_id ?? order?.id;
+async function fetchOzonSupplyItems(
+  order,
+  supply,
+  ozonApiOpts,
+  profileId,
+  orderDetails = null,
+  { warehousesById = null, clusterByWarehouseId = null, macrolocalById = null } = {}
+) {
+  const supplyOrderId = ozonSupplyOrderId(order);
   const details =
     orderDetails ?? (await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts));
 
@@ -434,12 +637,27 @@ async function fetchOzonSupplyItems(order, supply, ozonApiOpts, profileId, order
 
   let items = [];
   let totalCount = details.totalQuantity || 0;
+  const clusterQty = new Map();
+  const addCluster = (name, qty = 1) => {
+    if (!name) return;
+    clusterQty.set(name, (clusterQty.get(name) || 0) + qty);
+  };
+  if (details.shippingCluster) addCluster(details.shippingCluster, 1000);
+
+  const macrolocalCluster = resolveOzonMacrolocalClusterName(
+    supply,
+    order,
+    details?.raw,
+    macrolocalById
+  );
+  if (macrolocalCluster) addCluster(macrolocalCluster, 5000);
+
   for (const bundleId of bundleIds) {
     try {
       const fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId);
       if (fetched.items.length > items.length) items = fetched.items;
       if (fetched.totalCount > totalCount) totalCount = fetched.totalCount;
-      if (items.length && totalCount > 0) break;
+      if (fetched.shippingCluster) addCluster(fetched.shippingCluster, fetched.totalCount || 1);
     } catch {
       /* try next bundle_id */
     }
@@ -448,7 +666,33 @@ async function fetchOzonSupplyItems(order, supply, ozonApiOpts, profileId, order
   if (!totalCount) totalCount = resolveOzonSupplyMetaCounts(order, supply);
   if (!totalCount && items.length) totalCount = sumSupplyItemsQuantity(items);
 
-  return { items, totalCount, shippingCluster: details.shippingCluster };
+  const operationIds = [
+    ...collectOzonOperationIdCandidates(order, supply),
+    ...(details.operationIds ?? []),
+  ];
+  const draftCluster = await resolveOzonClusterFromDraftInfo(operationIds, bundleIds, ozonApiOpts);
+  if (draftCluster) addCluster(draftCluster, 2000);
+
+  const fromWarehouse = resolveOzonShippingCluster(
+    order,
+    supply,
+    warehousesById,
+    clusterByWarehouseId,
+    details?.raw
+  );
+  if (fromWarehouse) addCluster(fromWarehouse, 500);
+
+  const treeCluster =
+    findOzonClusterNameInTree(supply) ||
+    findOzonClusterNameInTree(order) ||
+    findOzonClusterNameInTree(details?.raw);
+  if (treeCluster) addCluster(treeCluster, 300);
+
+  return {
+    items,
+    totalCount,
+    shippingCluster: pickDominantOzonCluster(clusterQty),
+  };
 }
 
 async function fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, { states, useTimeslotFilter = true } = {}) {
@@ -500,33 +744,131 @@ async function fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts) {
   return { orders, warehousesById };
 }
 
-async function fetchOzonStorageWarehouseClusterMap(ozonApiOpts) {
-  const map = new Map();
-  const bodies = [{ cluster_type: 'CLUSTER_TYPE_OZON' }, {}];
-  for (const body of bodies) {
-    try {
-      const data = await integrationsService._ozonApiPost('/v1/cluster/list', body, ozonApiOpts);
-      const clusters = data?.result?.clusters ?? data?.clusters ?? [];
-      for (const cluster of clusters) {
-        const clusterName = String(cluster?.name ?? cluster?.cluster_name ?? '').trim();
-        if (!clusterName) continue;
-        const logistic = cluster?.logistic_clusters ?? cluster?.logisticClusters ?? [];
-        for (const lc of logistic) {
-          for (const wh of lc?.warehouses ?? []) {
-            const id = wh?.warehouse_id ?? wh?.id;
-            if (id != null) map.set(String(id), clusterName);
-          }
+function collectMacrolocalClusterIds(...nodes) {
+  const ids = [];
+  const push = (v) => {
+    if (v == null) return;
+    const s = String(v).trim();
+    if (s && s !== '0') ids.push(s);
+  };
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object') continue;
+    push(node.macrolocal_cluster_id);
+    push(node.macrolocalClusterId);
+    const mc = node.macrolocal_cluster ?? node.macrolocalCluster;
+    if (mc && typeof mc === 'object') {
+      push(mc.id);
+      push(mc.cluster_id);
+      push(mc.macrolocal_cluster_id);
+    }
+  }
+  return ids;
+}
+
+function resolveOzonMacrolocalClusterName(supply, order, detailsRaw, macrolocalById) {
+  if (!macrolocalById?.size) return null;
+  const supplyKey = supply?.supply_id ?? supply?.id;
+  const detailSupplies = ozonDetailsSuppliesList(detailsRaw ?? {});
+  const matchedDetail =
+    supplyKey != null
+      ? detailSupplies.find((s) => String(s?.supply_id ?? s?.id) === String(supplyKey))
+      : detailSupplies[0];
+
+  const idCandidates = collectMacrolocalClusterIds(
+    matchedDetail,
+    supply,
+    order,
+    ...(detailsRaw ? [detailsRaw] : []),
+    ...detailSupplies
+  );
+  for (const id of idCandidates) {
+    const name = macrolocalById.get(String(id));
+    if (name) return name;
+  }
+  return null;
+}
+
+async function fetchOzonClusterMaps(ozonApiOpts) {
+  const warehouseById = new Map();
+  const macrolocalById = new Map();
+  const bodies = [
+    { cluster_type: 'CLUSTER_TYPE_OZON' },
+    { cluster_type: 'CLUSTER_TYPE_CIS' },
+    {},
+  ];
+  const addWarehouse = (clusterName, wh) => {
+    const name = String(clusterName ?? '').trim();
+    if (!name) return;
+    const id = wh?.warehouse_id ?? wh?.id;
+    if (id != null) warehouseById.set(String(id), name);
+  };
+  const addMacrolocal = (clusterName, mlId) => {
+    const name = String(clusterName ?? '').trim();
+    if (!name || mlId == null) return;
+    const id = String(mlId).trim();
+    if (id && id !== '0') macrolocalById.set(id, name);
+  };
+  const ingestClusters = (clusters) => {
+    for (const cluster of clusters || []) {
+      const clusterName = String(cluster?.name ?? cluster?.cluster_name ?? '').trim();
+      if (!clusterName) continue;
+      addMacrolocal(clusterName, cluster?.macrolocal_cluster_id ?? cluster?.macrolocalClusterId);
+      const logistic = cluster?.logistic_clusters ?? cluster?.logisticClusters ?? [];
+      for (const lc of logistic) {
+        const lcName = String(lc?.name ?? clusterName).trim() || clusterName;
+        addMacrolocal(lcName, lc?.macrolocal_cluster_id ?? lc?.macrolocalClusterId ?? cluster?.macrolocal_cluster_id);
+        for (const wh of lc?.warehouses ?? []) {
+          addWarehouse(lcName, wh);
         }
       }
-      if (map.size) break;
+      for (const wh of cluster?.warehouses ?? []) {
+        addWarehouse(clusterName, wh);
+      }
+    }
+  };
+  for (const body of bodies) {
+    try {
+      for (const path of ['/v1/cluster/list', '/v2/cluster/list']) {
+        try {
+          const data = await integrationsService._ozonApiPost(path, body, ozonApiOpts);
+          ingestClusters(data?.result?.clusters ?? data?.clusters ?? []);
+        } catch {
+          /* v2 may be unavailable */
+        }
+      }
+      if (warehouseById.size || macrolocalById.size) break;
     } catch {
       /* try next body */
     }
   }
-  return map;
+  return { warehouseById, macrolocalById };
 }
 
-function resolveOzonShippingCluster(order, supply, warehousesById, clusterByWarehouseId) {
+async function fetchOzonStorageWarehouseClusterMap(ozonApiOpts) {
+  const maps = await fetchOzonClusterMaps(ozonApiOpts);
+  return maps.warehouseById;
+}
+
+function ozonWarehouseClusterName(wh, clusterByWarehouseId) {
+  if (!wh || typeof wh !== 'object') return null;
+  const whId = wh.warehouse_id ?? wh.id;
+  if (whId != null && clusterByWarehouseId?.get) {
+    const fromMap = clusterByWarehouseId.get(String(whId));
+    if (fromMap) return fromMap;
+  }
+  const direct =
+    wh.macrocluster?.name ??
+    wh.macrocluster_name ??
+    wh.placement_cluster_name ??
+    wh.cluster?.name ??
+    wh.cluster_name ??
+    null;
+  return direct != null && String(direct).trim() !== '' && !isLikelyOzonHubWarehouseName(direct)
+    ? String(direct).trim()
+    : null;
+}
+
+function resolveOzonShippingCluster(order, supply, warehousesById, clusterByWarehouseId, orderDetails = null) {
   const direct =
     supply?.cluster_name ??
     supply?.cluster?.name ??
@@ -534,8 +876,6 @@ function resolveOzonShippingCluster(order, supply, warehousesById, clusterByWare
     supply?.placement_cluster?.name ??
     supply?.macrocluster?.name ??
     supply?.macrocluster_name ??
-    supply?.storage_warehouse?.cluster_name ??
-    supply?.storage_warehouse?.macrocluster_name ??
     supply?.destination_warehouse?.cluster_name ??
     supply?.destination_warehouse?.macrocluster_name ??
     order?.cluster_name ??
@@ -545,21 +885,46 @@ function resolveOzonShippingCluster(order, supply, warehousesById, clusterByWare
     order?.macrocluster_name ??
     order?.destination_warehouse?.cluster_name ??
     null;
-  if (direct != null && String(direct).trim() !== '') return String(direct).trim();
-
-  const whId =
-    supply?.storage_warehouse_id ??
-    supply?.storage_warehouse?.warehouse_id ??
-    supply?.storage_warehouse?.id ??
-    null;
-  if (whId != null) {
-    const fromCluster = clusterByWarehouseId.get(String(whId));
-    if (fromCluster) return fromCluster;
-    const wh = warehousesById?.get?.(String(whId));
-    const whCluster =
-      wh?.cluster_name ?? wh?.macrocluster_name ?? wh?.placement_cluster_name ?? null;
-    if (whCluster != null && String(whCluster).trim() !== '') return String(whCluster).trim();
+  if (direct != null && String(direct).trim() !== '' && !isLikelyOzonHubWarehouseName(direct)) {
+    return String(direct).trim();
   }
+
+  const supplies = ozonDetailsSuppliesList(orderDetails ?? {});
+  const whCandidates = [
+    supply?.destination_warehouse,
+    supply?.destination_warehouse_id,
+    supply?.supply_warehouse,
+    supply?.supply_warehouse_id,
+    order?.destination_warehouse,
+    order?.destination_warehouse_id,
+    ...supplies.flatMap((s) => [
+      s?.destination_warehouse,
+      s?.destination_warehouse_id,
+      s?.supply_warehouse,
+      s?.supply_warehouse?.warehouse_id,
+      s?.final_warehouse_id,
+    ]),
+    supply?.storage_warehouse,
+    supply?.storage_warehouse_id ?? supply?.storage_warehouse?.warehouse_id ?? supply?.storage_warehouse?.id,
+    order?.storage_warehouse,
+    order?.storage_warehouse_id,
+  ];
+
+  for (const whRef of whCandidates) {
+    if (whRef == null) continue;
+    if (typeof whRef === 'object') {
+      const fromWh = ozonWarehouseClusterName(whRef, clusterByWarehouseId);
+      if (fromWh) return fromWh;
+      continue;
+    }
+    const whId = String(whRef);
+    const fromCluster = clusterByWarehouseId?.get?.(whId);
+    if (fromCluster) return fromCluster;
+    const wh = warehousesById?.get?.(whId);
+    const whCluster = ozonWarehouseClusterName(wh, clusterByWarehouseId);
+    if (whCluster) return whCluster;
+  }
+
   return null;
 }
 
@@ -831,6 +1196,154 @@ function parseDateOnly(v) {
   return null;
 }
 
+function buildOzonOrderIdCandidates(ermSupply) {
+  const candidates = new Set();
+  const extNum =
+    ermSupply.externalShipmentNumber != null ? String(ermSupply.externalShipmentNumber).trim() : '';
+  const extSupply =
+    ermSupply.externalSupplyId != null ? String(ermSupply.externalSupplyId).trim() : '';
+
+  if (extNum) {
+    candidates.add(extNum);
+    const dash = extNum.lastIndexOf('-');
+    if (dash > 0) {
+      const left = extNum.slice(0, dash).trim();
+      const right = extNum.slice(dash + 1).trim();
+      if (left) candidates.add(left);
+      if (right) candidates.add(right);
+    }
+  }
+  if (extSupply) candidates.add(extSupply);
+  return [...candidates];
+}
+
+function ermOzonExternalNumber(order, supply) {
+  const supplyOrderId = ozonSupplyOrderId(order);
+  const supplyId = supply?.supply_id ?? supply?.id;
+  const supplyIdStr = supplyId != null ? String(supplyId).trim() : '';
+  const baseNumber = String(
+    order?.order_number ?? order?.supply_order_number ?? supplyOrderId ?? ''
+  ).trim();
+  return baseNumber && supplyIdStr && baseNumber !== supplyIdStr
+    ? `${baseNumber}-${supplyIdStr}`
+    : baseNumber || supplyIdStr;
+}
+
+function findOzonOrderSupplyMatch(orders, ermSupply) {
+  const targetSupplyId =
+    ermSupply.externalSupplyId != null ? String(ermSupply.externalSupplyId).trim() : '';
+  const targetExtNum =
+    ermSupply.externalShipmentNumber != null ? String(ermSupply.externalShipmentNumber).trim() : '';
+
+  for (const { order, supply } of flattenOzonSupplyOrders(orders)) {
+    const supplyId = supply?.supply_id ?? supply?.id;
+    const supplyIdStr = supplyId != null ? String(supplyId).trim() : '';
+    const externalNumber = ermOzonExternalNumber(order, supply);
+    const supplyOrderId = ozonSupplyOrderId(order);
+    const baseNumber = String(
+      order?.order_number ?? order?.supply_order_number ?? supplyOrderId ?? ''
+    ).trim();
+
+    if (targetSupplyId && supplyIdStr && supplyIdStr === targetSupplyId) {
+      return { order, supply };
+    }
+    if (targetExtNum && externalNumber === targetExtNum) {
+      return { order, supply };
+    }
+    if (targetExtNum && baseNumber === targetExtNum) {
+      return { order, supply };
+    }
+    if (targetSupplyId && supplyOrderId != null && String(supplyOrderId) === targetSupplyId) {
+      return { order, supply };
+    }
+  }
+  return null;
+}
+
+async function resolveOzonOrderSupplyForErmSupply(ermSupply, ozonApiOpts) {
+  const candidates = buildOzonOrderIdCandidates(ermSupply);
+  if (candidates.length) {
+    try {
+      const { orders } = await fetchOzonSupplyOrdersByIds(candidates, ozonApiOpts);
+      const match = findOzonOrderSupplyMatch(orders, ermSupply);
+      if (match) return match;
+    } catch {
+      /* попробуем поиск по списку */
+    }
+  }
+
+  const daysBack = 180;
+  const orderIds = await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, {
+    states: OZON_SUPPLY_LIST_STATES,
+    useTimeslotFilter: false,
+  });
+  for (let i = 0; i < orderIds.length; i += 50) {
+    const chunk = orderIds.slice(i, i + 50);
+    const { orders } = await fetchOzonSupplyOrdersByIds(chunk, ozonApiOpts);
+    const match = findOzonOrderSupplyMatch(orders, ermSupply);
+    if (match) return match;
+  }
+
+  const err = new Error(
+    'Не удалось найти поставку в Ozon по сохранённому номеру отгрузки. Проверьте номер в карточке и настройки интеграции.'
+  );
+  err.statusCode = 400;
+  throw err;
+}
+
+function buildOzonItemZoneLookup(ozonItems) {
+  const map = new Map();
+  const put = (key, meta) => {
+    if (!key) return;
+    if (!map.has(key)) map.set(key, meta);
+  };
+  for (const it of ozonItems || []) {
+    const meta = {
+      placementZone: it.placementZone ?? null,
+      ozonTags: Array.isArray(it.ozonTags) ? it.ozonTags : [],
+    };
+    const sku = it.sku ?? it.mpOfferId;
+    if (sku != null && String(sku).trim()) {
+      put(String(sku).trim().toUpperCase(), meta);
+    }
+    if (it.barcode != null && String(it.barcode).trim()) {
+      put(String(it.barcode).trim(), meta);
+    }
+    if (it.mpProductId != null && String(it.mpProductId).trim()) {
+      put(`mp:${String(it.mpProductId).trim()}`, meta);
+    }
+  }
+  return map;
+}
+
+function lookupOzonItemZone(lookup, ermItem) {
+  const keys = [
+    ermItem.sku ? String(ermItem.sku).trim().toUpperCase() : '',
+    ermItem.barcode ? String(ermItem.barcode).trim() : '',
+    ermItem.mpOfferId ? String(ermItem.mpOfferId).trim().toUpperCase() : '',
+    ermItem.mpProductId ? `mp:${String(ermItem.mpProductId).trim()}` : '',
+  ].filter(Boolean);
+  for (const k of keys) {
+    const hit = lookup.get(k);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function parseOzonTagsForCompare(v) {
+  if (!v) return '[]';
+  if (Array.isArray(v)) return JSON.stringify(v.map((t) => String(t).trim()).filter(Boolean));
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parseOzonTagsForCompare(parsed);
+    } catch {
+      /* ignore */
+    }
+  }
+  return '[]';
+}
+
 class FboSuppliesImportService {
   /**
    * Excel: только артикул и количество → одна новая поставка (черновик).
@@ -875,13 +1388,13 @@ class FboSuppliesImportService {
         importKey: `excel:${externalShipmentNumber}`,
         isNewDraft: true,
         marketplace: 'ozon',
-        name: 'Новая поставка',
+        name: null,
         readyAt: null,
         marketplaceWarehouseName: null,
         externalShipmentNumber,
         deductionWarehouseId: null,
         organizationId: null,
-        deductStock: false,
+        deductStock: true,
         status: 'new',
         source: 'excel',
         items,
@@ -927,11 +1440,14 @@ class FboSuppliesImportService {
     let ozonOrders;
     let ozonWarehousesById;
     let ozonClusterByWarehouseId;
+    let ozonMacrolocalById;
     try {
       const fetched = await fetchOzonSupplyOrdersByIds(orderIds, ozonApiOpts);
       ozonOrders = fetched.orders;
       ozonWarehousesById = fetched.warehousesById;
-      ozonClusterByWarehouseId = await fetchOzonStorageWarehouseClusterMap(ozonApiOpts);
+      const clusterMaps = await fetchOzonClusterMaps(ozonApiOpts);
+      ozonClusterByWarehouseId = clusterMaps.warehouseById;
+      ozonMacrolocalById = clusterMaps.macrolocalById;
     } catch (e) {
       const err = new Error(e?.message || 'Не удалось загрузить детали поставок Ozon');
       err.statusCode = 400;
@@ -943,7 +1459,7 @@ class FboSuppliesImportService {
     for (const { order, supply } of flattenOzonSupplyOrders(ozonOrders)) {
       if (!isOzonSupplyImportable(order, supply)) continue;
 
-      const supplyOrderId = order.supply_order_id ?? order.order_id ?? order.id;
+      const supplyOrderId = ozonSupplyOrderId(order);
       if (!ozonDetailsCache.has(String(supplyOrderId))) {
         ozonDetailsCache.set(
           String(supplyOrderId),
@@ -953,11 +1469,14 @@ class FboSuppliesImportService {
       const orderDetails = ozonDetailsCache.get(String(supplyOrderId));
 
       const supplyId = supply?.supply_id ?? supply?.id;
+      const supplyIdStr = supplyId != null ? String(supplyId).trim() : '';
       const baseNumber = String(
         order.order_number ?? order.supply_order_number ?? supplyOrderId ?? ''
       ).trim();
       const externalNumber =
-        baseNumber && supplyId != null ? `${baseNumber}-${supplyId}` : baseNumber || String(supplyId ?? '');
+        baseNumber && supplyIdStr && baseNumber !== supplyIdStr
+          ? `${baseNumber}-${supplyIdStr}`
+          : baseNumber || supplyIdStr;
       if (!externalNumber) continue;
 
       if (ozonSupplyAlreadyImported(imported, externalNumber, supplyId, supplyOrderId)) {
@@ -973,7 +1492,12 @@ class FboSuppliesImportService {
           supply,
           ozonApiOpts,
           profileId,
-          orderDetails
+          orderDetails,
+          {
+            warehousesById: ozonWarehousesById,
+            clusterByWarehouseId: ozonClusterByWarehouseId,
+            macrolocalById: ozonMacrolocalById,
+          }
         );
         items = fetchedItems.items;
         itemCount = fetchedItems.totalCount;
@@ -981,7 +1505,16 @@ class FboSuppliesImportService {
       } catch {
         items = [];
         itemCount = orderDetails?.totalQuantity || resolveOzonSupplyMetaCounts(order, supply);
-        shippingClusterFromDetails = orderDetails?.shippingCluster ?? null;
+        shippingClusterFromDetails =
+          resolveOzonMacrolocalClusterName(supply, order, orderDetails?.raw, ozonMacrolocalById) ||
+          orderDetails?.shippingCluster ||
+          resolveOzonShippingCluster(
+            order,
+            supply,
+            ozonWarehousesById,
+            ozonClusterByWarehouseId,
+            orderDetails?.raw
+          );
       }
 
       const storageWhId =
@@ -1000,13 +1533,19 @@ class FboSuppliesImportService {
         {};
       const shippingCluster =
         shippingClusterFromDetails ||
-        resolveOzonShippingCluster(order, supply, ozonWarehousesById, ozonClusterByWarehouseId);
+        resolveOzonMacrolocalClusterName(supply, order, orderDetails?.raw, ozonMacrolocalById) ||
+        resolveOzonShippingCluster(
+          order,
+          supply,
+          ozonWarehousesById,
+          ozonClusterByWarehouseId,
+          orderDetails?.raw
+        );
+
       candidates.push({
         importKey: `ozon:${externalNumber}`,
         marketplace: 'ozon',
-        name: order.order_number
-          ? `Ozon ${order.order_number}${supplyId != null ? ` / ${supplyId}` : ''}`
-          : `Ozon ${externalNumber}`,
+        name: null,
         readyAt: parseDateOnly(
           order.timeslot?.from ??
             order.timeslot?.timeslot?.from ??
@@ -1029,7 +1568,7 @@ class FboSuppliesImportService {
           supplyId != null ? String(supplyId) : supplyOrderId != null ? String(supplyOrderId) : null,
         deductionWarehouseId: null,
         organizationId: organizationId != null ? Number(organizationId) : null,
-        deductStock: false,
+        deductStock: true,
         status: mapOzonStateToStatus(supply?.state ?? order.state ?? order.status),
         ozonState: ozonSupplyRowState(order, supply),
         items,
@@ -1134,9 +1673,7 @@ class FboSuppliesImportService {
       return {
         importKey: `wb:${externalNumber}`,
         marketplace: 'wb',
-        name:
-          row.name ??
-          (supplyId ? `Поставка WB ${supplyId}` : `Заказ WB ${preorderId ?? goodsApiId}`),
+        name: null,
         readyAt: parseDateOnly(
           row.supplyDate ?? row.factDate ?? row.createDate ?? row.updatedDate ?? row.date
         ),
@@ -1152,7 +1689,7 @@ class FboSuppliesImportService {
         externalSupplyId: supplyId != null ? String(supplyId) : String(preorderId ?? goodsApiId),
         deductionWarehouseId: null,
         organizationId: organizationId != null ? Number(organizationId) : null,
-        deductStock: false,
+        deductStock: true,
         status: mapWbStateToStatus(row.statusName ?? row.status ?? row.statusID),
         items,
         itemCount: sumSupplyItemsQuantity(items),
@@ -1257,7 +1794,7 @@ class FboSuppliesImportService {
       candidates.push({
         importKey: `ym:${extNum}`,
         marketplace: 'ym',
-        name: target.name ?? `Яндекс ${extNum}`,
+        name: null,
         readyAt: parseDateOnly(req.updatedAt ?? req.plannedDate ?? req.createdAt),
         marketplaceWarehouseName: target.name ?? target.warehouseName ?? null,
         marketplaceWarehouseId: target.id != null ? String(target.id) : null,
@@ -1266,7 +1803,7 @@ class FboSuppliesImportService {
         externalSupplyId: reqId != null ? String(reqId) : null,
         deductionWarehouseId: null,
         organizationId: organizationId != null ? Number(organizationId) : null,
-        deductStock: false,
+        deductStock: true,
         status: mapYmStateToStatus(req.status),
         items,
         itemCount: sumSupplyItemsQuantity(items),
@@ -1320,7 +1857,7 @@ class FboSuppliesImportService {
             externalSupplyId: row.externalSupplyId,
             deductionWarehouseId: row.deductionWarehouseId,
             organizationId: row.organizationId,
-            deductStock: row.deductStock,
+            deductStock: row.deductStock !== false,
             status: row.status || 'new',
             source: row.source || 'api',
             items: (row.items || []).map((it) => ({
@@ -1331,9 +1868,11 @@ class FboSuppliesImportService {
               mpOfferId: it.mpOfferId,
               mpProductId: it.mpProductId,
               name: it.name,
+              placementZone: it.placementZone ?? null,
+              ozonTags: it.ozonTags ?? [],
             })),
           },
-          { profileId, userId }
+          { profileId, userId, deferReserveRebalance: true, lightReturn: true }
         );
         created.push(doc);
       } catch (e) {
@@ -1348,6 +1887,117 @@ class FboSuppliesImportService {
       }
     }
     return { created, skipped };
+  }
+
+  /**
+   * Подтянуть зоны размещения (сортируемый / несортируемый) с Ozon для уже импортированной поставки.
+   */
+  async syncOzonPlacementZones(supplyId, { profileId } = {}) {
+    const supply = await fboSuppliesService.getById(supplyId, { profileId });
+    const mp = String(supply.marketplace || 'ozon').trim().toLowerCase();
+    if (mp === 'wb' || mp === 'ym' || mp === 'yandex') {
+      const err = new Error('Обновление зон размещения доступно только для поставок Ozon');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const extSupply =
+      supply.externalSupplyId != null ? String(supply.externalSupplyId).trim() : '';
+    const extNum =
+      supply.externalShipmentNumber != null ? String(supply.externalShipmentNumber).trim() : '';
+    if (!extSupply && !extNum) {
+      const err = new Error('У поставки нет номера отгрузки Ozon — обновить зоны нельзя');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const organizationId = supply.organizationId ?? null;
+    const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
+      profileId,
+      organizationId,
+    });
+    const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
+    const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
+    if (!clientId || !apiKey) {
+      const err = new Error(
+        'Не настроены Client ID и API Key Ozon для организации поставки. Укажите их в «Интеграции».'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts);
+    const supplyOrderId = ozonSupplyOrderId(order);
+    const orderDetails = await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts);
+    const fetched = await fetchOzonSupplyItems(
+      order,
+      ozonSupply,
+      ozonApiOpts,
+      profileId,
+      orderDetails,
+      {}
+    );
+
+    if (!fetched.items?.length) {
+      const err = new Error('Ozon не вернул товары поставки — зоны не обновлены');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const lookup = buildOzonItemZoneLookup(fetched.items);
+    const itemsR = await query(
+      `SELECT id, sku, barcode, mp_offer_id, mp_product_id, placement_zone, ozon_tags
+       FROM fbo_supply_items
+       WHERE fbo_supply_id = $1
+       ORDER BY id`,
+      [supplyId]
+    );
+
+    let updated = 0;
+    let unchanged = 0;
+    let missing = 0;
+
+    for (const row of itemsR.rows || []) {
+      const zoneMeta = lookupOzonItemZone(lookup, {
+        sku: row.sku,
+        barcode: row.barcode,
+        mpOfferId: row.mp_offer_id,
+        mpProductId: row.mp_product_id,
+      });
+      if (!zoneMeta) {
+        missing += 1;
+        continue;
+      }
+
+      const newZone = zoneMeta.placementZone;
+      const newTagsJson = JSON.stringify(zoneMeta.ozonTags || []);
+      const oldZone = row.placement_zone != null ? String(row.placement_zone).trim() : null;
+      const oldTagsJson = parseOzonTagsForCompare(row.ozon_tags);
+      const tagsEqual = oldTagsJson === newTagsJson;
+      const zoneEqual = (oldZone || null) === (newZone || null);
+      if (zoneEqual && tagsEqual) {
+        unchanged += 1;
+        continue;
+      }
+
+      await query(
+        `UPDATE fbo_supply_items
+         SET placement_zone = $1, ozon_tags = $2::jsonb, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3`,
+        [newZone, newTagsJson, row.id]
+      );
+      updated += 1;
+    }
+
+    const updatedSupply = await fboSuppliesService.getById(supplyId, { profileId });
+    return {
+      updated,
+      unchanged,
+      missing,
+      total: (itemsR.rows || []).length,
+      supply: updatedSupply,
+    };
   }
 }
 

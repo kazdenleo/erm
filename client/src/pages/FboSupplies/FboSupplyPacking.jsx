@@ -22,6 +22,7 @@ import {
   sortSupplyItemsForPacking,
 } from './fboSupplyPackingSort.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
+import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -38,6 +39,23 @@ function packedCellClass(packed, planned) {
   if (packed > planned) return 'over';
   if (packed > 0) return 'short';
   return 'none';
+}
+
+function placementKindLabel(lineOrItem) {
+  if (!lineOrItem) return '—';
+  return (
+    lineOrItem.placementKindLabel ||
+    ozonPlacementZoneLabel(lineOrItem.placementZone ?? lineOrItem.supplyPlacementZone, lineOrItem.ozonTags ?? lineOrItem.supplyOzonTags)
+  );
+}
+
+function cargoPlacementSummary(contents) {
+  const labels = new Set();
+  for (const line of contents || []) {
+    const label = placementKindLabel(line);
+    if (label && label !== '—') labels.add(label);
+  }
+  return labels.size ? [...labels].join(', ') : null;
 }
 
 function downloadExcelBuffer(buffer, filename) {
@@ -70,6 +88,7 @@ export function FboSupplyPacking({
   const [removeModalOpen, setRemoveModalOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [weightWarning, setWeightWarning] = useState(null);
+  const [placementWarning, setPlacementWarning] = useState(null);
   const scanLoadingRef = useRef(false);
 
   scanLoadingRef.current = scanLoading;
@@ -124,6 +143,7 @@ export function FboSupplyPacking({
       setScanError(null);
       setScanMsg(null);
       setWeightWarning(null);
+      setPlacementWarning(null);
       setScanLoading(true);
       try {
         const data = await fboSuppliesApi.packingScan(supplyId, {
@@ -151,7 +171,14 @@ export function FboSupplyPacking({
         playEventSound(SOUND_EVENTS.scan_ok);
       } catch (e) {
         playEventSound(SOUND_EVENTS.scan_error);
-        setScanError(e.response?.data?.message || e.message || 'Ошибка сканирования');
+        const msg = e.response?.data?.message || e.message || 'Ошибка сканирования';
+        if (e.response?.status === 409 && e.response?.data?.code === 'PLACEMENT_ZONE_CONFLICT') {
+          setPlacementWarning(msg);
+          setScanError(null);
+        } else {
+          setScanError(msg);
+          setPlacementWarning(null);
+        }
       } finally {
         setScanLoading(false);
       }
@@ -199,9 +226,11 @@ export function FboSupplyPacking({
   };
 
   const activeCargo = cargoUnits.find((c) => String(c.id) === String(activeCargoUnitId));
+  const isOzon = marketplace !== 'wb';
   const activeWeightWarning =
     weightWarning || (activeCargo ? cargoWeightExceededMessage(activeCargo) : null);
-  const isOzon = marketplace !== 'wb';
+  const activePlacementSummary =
+    isOzon && activeCargo ? cargoPlacementSummary(activeCargo.contents) : null;
 
   const handlePackingChange = (nextPacking, meta) => {
     onPackingChange?.(nextPacking, meta);
@@ -264,6 +293,9 @@ export function FboSupplyPacking({
             {activeCargo.weightLimitKg ? (
               <> · лимит {activeCargo.weightLimitKg} кг</>
             ) : null}
+            {activePlacementSummary ? (
+              <> · <strong>{activePlacementSummary}</strong></>
+            ) : null}
             )
           </span>
         </div>
@@ -274,6 +306,9 @@ export function FboSupplyPacking({
       )}
 
       {scanError && <div className="alert alert-danger">{scanError}</div>}
+      {placementWarning ? (
+        <div className="alert alert-warning">{placementWarning}</div>
+      ) : null}
       {activeWeightWarning && !scanError ? (
         <div className="alert alert-warning">{activeWeightWarning}</div>
       ) : null}
@@ -376,7 +411,7 @@ export function FboSupplyPacking({
                               <th>Товар</th>
                               <th>Артикул</th>
                               <th className="text-end">Кол-во</th>
-                              {isOzon ? <th>Зона</th> : null}
+                              {isOzon ? <th>Размещение</th> : null}
                               <th>Срок годности</th>
                               <th className="text-end">Объём</th>
                               <th className="text-end">Масса</th>
@@ -392,6 +427,19 @@ export function FboSupplyPacking({
                                 </td>
                                 {isOzon ? (
                                   <td className="fbo-cargo-items-table__meta">
+                                    <div className="fbo-placement-kind">
+                                      <span
+                                        className={`badge ${
+                                          placementKindLabel(line) === 'Сортируемый'
+                                            ? 'bg-info text-dark'
+                                            : placementKindLabel(line) === 'Несортируемый'
+                                              ? 'bg-secondary'
+                                              : 'bg-light text-dark border'
+                                        }`}
+                                      >
+                                        {placementKindLabel(line)}
+                                      </span>
+                                    </div>
                                     <FboCargoContentMeta
                                       supplyId={supplyId}
                                       line={line}
@@ -468,13 +516,14 @@ export function FboSupplyPacking({
               <th>Артикул</th>
               <th>Штрихкод</th>
               <th>План</th>
+              {isOzon ? <th>Размещение</th> : null}
               <th>Расхождения</th>
             </tr>
           </thead>
           <tbody>
             {filteredSupplyItems.length === 0 ? (
               <tr>
-                <td colSpan={5} className="text-muted text-center py-3">
+                <td colSpan={isOzon ? 6 : 5} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
@@ -491,6 +540,21 @@ export function FboSupplyPacking({
                   <td>{it.sku || '—'}</td>
                   <td>{it.barcode || '—'}</td>
                   <td>{planned}</td>
+                  {isOzon ? (
+                    <td>
+                      <span
+                        className={`badge ${
+                          placementKindLabel(it) === 'Сортируемый'
+                            ? 'bg-info text-dark'
+                            : placementKindLabel(it) === 'Несортируемый'
+                              ? 'bg-secondary'
+                              : 'bg-light text-dark border'
+                        }`}
+                      >
+                        {placementKindLabel(it)}
+                      </span>
+                    </td>
+                  ) : null}
                   <td>
                     <button
                       type="button"

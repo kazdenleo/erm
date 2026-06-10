@@ -74,6 +74,10 @@ router.patch(
 router.get('/:id', wrapAsync(fboSuppliesController.getById.bind(fboSuppliesController)));
 router.put('/:id', wrapAsync(fboSuppliesController.update.bind(fboSuppliesController)));
 router.post('/:id/advance-status', wrapAsync(fboSuppliesController.advanceStatus.bind(fboSuppliesController)));
+router.post(
+  '/:id/sync-ozon-placement-zones',
+  wrapAsync(fboSuppliesController.syncOzonPlacementZones.bind(fboSuppliesController))
+);
 router.delete('/:id', wrapAsync(fboSuppliesController.delete.bind(fboSuppliesController)));
 
 export default router;

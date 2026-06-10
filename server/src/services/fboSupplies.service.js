@@ -63,6 +63,20 @@ function mapSupplyRow(row) {
   };
 }
 
+function parseOzonTagsJson(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.map((t) => String(t).trim()).filter(Boolean);
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parseOzonTagsJson(parsed);
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
 function mapItemRow(row) {
   return {
     id: row.id,
@@ -79,6 +93,8 @@ function mapItemRow(row) {
     productName: row.product_name ?? null,
     productImage: row.product_image ?? null,
     productCategoryId: row.product_category_id ?? null,
+    placementZone: row.placement_zone != null ? String(row.placement_zone).trim() : null,
+    ozonTags: parseOzonTagsJson(row.ozon_tags),
   };
 }
 
@@ -350,7 +366,7 @@ class FboSuppliesService {
     return supply;
   }
 
-  async create(payload, { profileId, userId } = {}) {
+  async create(payload, { profileId, userId, deferReserveRebalance = false, lightReturn = false } = {}) {
     const pid = normalizeProfileId(profileId);
     const mp = normalizeMarketplace(payload.marketplace);
     const ext = String(payload.externalShipmentNumber || '').trim();
@@ -402,7 +418,7 @@ class FboSuppliesService {
           ext,
           payload.externalSupplyId ?? null,
           payload.deductionWarehouseId ?? null,
-          !!payload.deductStock,
+          payload.deductStock !== false,
           payload.source || 'manual',
           payload.note ?? null,
         ]
@@ -413,8 +429,9 @@ class FboSuppliesService {
         if (!qty || qty <= 0) continue;
         await client.query(
           `INSERT INTO fbo_supply_items (
-            fbo_supply_id, product_id, quantity, barcode, sku, mp_offer_id, mp_product_id, name
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            fbo_supply_id, product_id, quantity, barcode, sku, mp_offer_id, mp_product_id, name,
+            placement_zone, ozon_tags
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
           [
             newId,
             it.productId ?? null,
@@ -424,15 +441,37 @@ class FboSuppliesService {
             it.mpOfferId ?? null,
             it.mpProductId ?? null,
             it.name ?? null,
+            it.placementZone ?? it.placement_zone ?? null,
+            JSON.stringify(it.ozonTags ?? it.ozon_tags ?? []),
           ]
         );
       }
       return newId;
     });
 
-    await fboSupplyReserveService.rebalanceReservesForSupply(supplyId, { profileId: pid }).catch((e) => {
-      console.warn('[FboSupplies] reserve after create:', e?.message || e);
-    });
+    const runReserveRebalance = () =>
+      fboSupplyReserveService.rebalanceReservesForSupply(supplyId, { profileId: pid }).catch((e) => {
+        console.warn('[FboSupplies] reserve after create:', e?.message || e);
+      });
+
+    if (deferReserveRebalance) {
+      setImmediate(runReserveRebalance);
+    } else {
+      await runReserveRebalance();
+    }
+
+    if (lightReturn) {
+      return {
+        id: supplyId,
+        marketplace: mp,
+        externalShipmentNumber: ext,
+        status: FBO_SUPPLY_STATUSES.includes(payload.status) ? payload.status : 'new',
+        placementCluster: payload.placementCluster ?? payload.shippingCluster ?? null,
+        organizationId: payload.organizationId ?? null,
+        itemCount: items.reduce((s, it) => s + (parseInt(it.quantity, 10) || 0), 0),
+        itemsLineCount: items.filter((it) => (parseInt(it.quantity, 10) || 0) > 0).length,
+      };
+    }
 
     const created = await this.getById(supplyId, { profileId: pid });
     if (created.status === 'shipped' && created.deductStock) {

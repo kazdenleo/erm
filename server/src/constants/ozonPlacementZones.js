@@ -73,6 +73,22 @@ export function ozonPlacementZonesConflict(keyA, keyB) {
   return keyA !== keyB;
 }
 
+/** Сообщение при попытке смешать сортируемые и несортируемые (и прочие зоны) в одном грузоместе. */
+export function buildPlacementMixingMessage(existingKey, newKey) {
+  if (existingKey === 'sortable' && newKey === 'non_sortable') {
+    return 'В этом грузоместе уже лежат сортируемые товары. Несортируемый товар добавить нельзя.';
+  }
+  if (existingKey === 'non_sortable' && newKey === 'sortable') {
+    return 'В этом грузоместе уже лежат несортируемые товары. Сортируемый товар добавить нельзя.';
+  }
+  if (existingKey && newKey && existingKey !== newKey) {
+    const a = ozonPlacementZoneLabel(existingKey, []);
+    const b = ozonPlacementZoneLabel(newKey, []);
+    return `В этом грузоместе товары зоны «${a}». Нельзя смешивать с «${b}».`;
+  }
+  return 'Нельзя смешивать разные зоны размещения в одном грузоместе.';
+}
+
 export function summarizeOzonPlacementZones(items) {
   const counts = new Map();
   for (const it of items || []) {
