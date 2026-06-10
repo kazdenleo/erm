@@ -28,6 +28,7 @@ import {
   hasPackingDiscrepancy,
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
+import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import {
   buildStatsMap,
@@ -825,6 +826,7 @@ export function FboSupplyDetail() {
               <th>Название</th>
               <th>Артикул</th>
               <th>Штрихкод</th>
+              {supply.marketplace === 'ozon' ? <th>Размещение</th> : null}
               <th title="Зарезервировано под поставку со склада списания">Кол-во</th>
               <th>Расхождения</th>
               <th style={{ width: 48 }} />
@@ -833,7 +835,7 @@ export function FboSupplyDetail() {
           <tbody>
             {filteredSupplyItems.length === 0 ? (
               <tr>
-                <td colSpan={8} className="text-muted text-center py-3">
+                <td colSpan={supply.marketplace === 'ozon' ? 9 : 8} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
@@ -878,6 +880,9 @@ export function FboSupplyDetail() {
                   </td>
                   <td>{it.sku || '—'}</td>
                   <td>{it.barcode || '—'}</td>
+                  {supply.marketplace === 'ozon' ? (
+                    <td>{ozonPlacementZoneLabel(it.placementZone, it.ozonTags)}</td>
+                  ) : null}
                   <td
                     title={
                       it.productId

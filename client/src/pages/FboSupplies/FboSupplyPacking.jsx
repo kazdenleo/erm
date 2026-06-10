@@ -16,6 +16,7 @@ import {
   sortSupplyItemsForPacking,
 } from './fboSupplyPackingSort.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
+import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -174,6 +175,13 @@ export function FboSupplyPacking({
               Затем сканируйте <strong>товары из этой поставки</strong> (+1 шт. за скан).
               Чтобы перейти к другой коробке, снова отсканируйте её штрихкод — активным станет это грузоместо
               (новая коробка создаётся автоматически).
+              {marketplace === 'ozon' ? (
+                <>
+                  {' '}
+                  В одном грузоместе нельзя смешивать <strong>сортируемый</strong> и{' '}
+                  <strong>несортируемый</strong> товар.
+                </>
+              ) : null}
             </>
           }
         >
@@ -295,6 +303,7 @@ export function FboSupplyPacking({
               <th>Название</th>
               <th>Артикул</th>
               <th>Штрихкод</th>
+              {marketplace === 'ozon' ? <th>Размещение</th> : null}
               <th>План</th>
               <th>Расхождения</th>
             </tr>
@@ -302,7 +311,7 @@ export function FboSupplyPacking({
           <tbody>
             {filteredSupplyItems.length === 0 ? (
               <tr>
-                <td colSpan={5} className="text-muted text-center py-3">
+                <td colSpan={marketplace === 'ozon' ? 6 : 5} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
@@ -318,6 +327,9 @@ export function FboSupplyPacking({
                   <td>{it.productName || it.name || '—'}</td>
                   <td>{it.sku || '—'}</td>
                   <td>{it.barcode || '—'}</td>
+                  {marketplace === 'ozon' ? (
+                    <td>{ozonPlacementZoneLabel(it.placementZone, it.ozonTags)}</td>
+                  ) : null}
                   <td>{planned}</td>
                   <td>
                     <button

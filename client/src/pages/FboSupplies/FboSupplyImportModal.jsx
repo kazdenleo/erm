@@ -8,6 +8,10 @@ import { Button } from '../../components/common/Button/Button';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { useAuth } from '../../context/AuthContext';
 import { getMarketplaceLabel, getOzonSupplyStateLabel } from '../../constants/fboSupplyStatuses';
+import {
+  ozonPlacementZoneLabel,
+  summarizeOzonPlacementZones,
+} from '../../constants/ozonPlacementZones';
 import './FboSupplies.css';
 
 function fmtDate(v) {
@@ -31,6 +35,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
   const [selected, setSelected] = useState(new Set());
   const [marketplace, setMarketplace] = useState('ozon');
   const [daysBack, setDaysBack] = useState(90);
+  const [expandedImportKey, setExpandedImportKey] = useState(null);
 
   const reset = useCallback(() => {
     setCandidates([]);
@@ -38,6 +43,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
     setErr(null);
     setLoading(false);
     setConfirming(false);
+    setExpandedImportKey(null);
   }, []);
 
   const handleClose = () => {
@@ -301,6 +307,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                     <th>Склад МП</th>
                     <th>Кластер размещения</th>
                     <th>Кол-во, шт.</th>
+                    {marketplace === 'ozon' ? <th>Размещение</th> : null}
                     <th>Статус</th>
                   </tr>
                 </thead>
@@ -308,9 +315,11 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                   {candidates.map((c) => {
                     const disabled = c.alreadyImported;
                     const unresolved = (c.items || []).filter((i) => i.unresolved).length;
+                    const expanded = expandedImportKey === c.importKey;
+                    const colSpan = marketplace === 'ozon' ? 10 : 9;
                     return (
+                      <React.Fragment key={c.importKey}>
                       <tr
-                        key={c.importKey}
                         className={disabled ? 'fbo-import-row-disabled' : ''}
                       >
                         <td>
@@ -336,7 +345,24 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                           {unresolved > 0 && (
                             <div className="fbo-import-warn">{unresolved} без привязки</div>
                           )}
+                          {(c.items || []).length > 0 ? (
+                            <button
+                              type="button"
+                              className="btn btn-link btn-sm p-0"
+                              style={{ fontSize: 12 }}
+                              onClick={() =>
+                                setExpandedImportKey(expanded ? null : c.importKey)
+                              }
+                            >
+                              {expanded ? 'Скрыть состав' : 'Состав'}
+                            </button>
+                          ) : null}
                         </td>
+                        {marketplace === 'ozon' ? (
+                          <td style={{ fontSize: 12, maxWidth: 180 }}>
+                            {summarizeOzonPlacementZones(c.items)}
+                          </td>
+                        ) : null}
                         <td>
                           {disabled ? (
                             <span className="badge bg-secondary">Уже в системе</span>
@@ -349,6 +375,41 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
                           )}
                         </td>
                       </tr>
+                      {expanded && (c.items || []).length > 0 ? (
+                        <tr>
+                          <td colSpan={colSpan} style={{ padding: '0 8px 12px' }}>
+                            <table className="fbo-import-table" style={{ marginTop: 4 }}>
+                              <thead>
+                                <tr>
+                                  <th>Артикул</th>
+                                  <th>Кол-во</th>
+                                  {marketplace === 'ozon' ? <th>Размещение</th> : null}
+                                  <th>В ERM</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(c.items || []).map((it, idx) => (
+                                  <tr key={`${c.importKey}-item-${idx}`}>
+                                    <td>{it.sku || it.mpOfferId || '—'}</td>
+                                    <td>{it.quantity}</td>
+                                    {marketplace === 'ozon' ? (
+                                      <td>{ozonPlacementZoneLabel(it.placementZone, it.ozonTags)}</td>
+                                    ) : null}
+                                    <td>
+                                      {it.unresolved ? (
+                                        <span className="fbo-import-warn">не найден</span>
+                                      ) : (
+                                        <span className="badge bg-light text-dark">OK</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      ) : null}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>

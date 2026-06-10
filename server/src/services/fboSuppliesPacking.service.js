@@ -6,6 +6,11 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import fboSuppliesService from './fboSupplies.service.js';
 import { syncSupplyStatusForPacking } from '../utils/fboSupplyPackingCheck.js';
+import {
+  ozonPlacementMixingKey,
+  ozonPlacementZoneLabel,
+  ozonPlacementZonesConflict,
+} from '../constants/ozonPlacementZones.js';
 
 function normalizeBarcode(v) {
   return v != null ? String(v).trim() : '';
@@ -61,11 +66,61 @@ async function resolveProductIdByBarcode(barcode, profileId) {
   return r.rows?.[0]?.id != null ? Number(r.rows[0].id) : null;
 }
 
+function isOzonMarketplace(marketplace) {
+  return String(marketplace || '').trim().toLowerCase() === 'ozon';
+}
+
+function cargoPlacementZoneFromItem(supplyItem) {
+  const zone = supplyItem.placement_zone ?? supplyItem.placementZone ?? null;
+  return zone != null ? String(zone).trim() : null;
+}
+
+async function assertCargoPlacementZoneCompatible(
+  cargoUnitId,
+  supplyItem,
+  { marketplace, excludeItemId } = {}
+) {
+  if (!isOzonMarketplace(marketplace)) return;
+
+  const newKey = ozonPlacementMixingKey(
+    supplyItem.placement_zone ?? supplyItem.placementZone,
+    supplyItem.ozon_tags ?? supplyItem.ozonTags
+  );
+  if (!newKey) return;
+
+  const params = [cargoUnitId];
+  let sql = `
+    SELECT DISTINCT i.placement_zone, i.ozon_tags
+    FROM fbo_supply_cargo_contents cc
+    JOIN fbo_supply_items i ON i.id = cc.fbo_supply_item_id
+    WHERE cc.cargo_unit_id = $1`;
+  if (excludeItemId != null) {
+    params.push(excludeItemId);
+    sql += ` AND cc.fbo_supply_item_id <> $${params.length}`;
+  }
+
+  const existingR = await query(sql, params);
+  for (const row of existingR.rows || []) {
+    const existingKey = ozonPlacementMixingKey(row.placement_zone, row.ozon_tags);
+    if (ozonPlacementZonesConflict(newKey, existingKey)) {
+      const err = new Error(
+        `Нельзя смешивать в одном грузоместе: ${ozonPlacementZoneLabel(
+          supplyItem.placement_zone ?? supplyItem.placementZone,
+          supplyItem.ozon_tags ?? supplyItem.ozonTags
+        )} и ${ozonPlacementZoneLabel(row.placement_zone, row.ozon_tags)}`
+      );
+      err.statusCode = 409;
+      throw err;
+    }
+  }
+}
+
 async function findSupplyItemForScan(supplyId, barcode, profileId) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
   const itemsR = await query(
     `SELECT i.id, i.product_id, i.quantity, i.barcode, i.sku, i.name,
+            i.placement_zone, i.ozon_tags,
             p.name AS product_name
      FROM fbo_supply_items i
      LEFT JOIN products p ON p.id = i.product_id
@@ -132,6 +187,7 @@ class FboSuppliesPackingService {
 
     const itemsR = await query(
       `SELECT i.id, i.quantity, i.product_id, i.sku, i.barcode,
+              i.placement_zone, i.ozon_tags,
               COALESCE(p.name, i.name) AS product_name
        FROM fbo_supply_items i
        LEFT JOIN products p ON p.id = i.product_id
@@ -197,6 +253,8 @@ class FboSuppliesPackingService {
         productName: row.product_name,
         sku: row.sku,
         barcode: row.barcode,
+        placementZone: row.placement_zone ?? null,
+        ozonTags: Array.isArray(row.ozon_tags) ? row.ozon_tags : row.ozon_tags ?? [],
         planned,
         packed,
         discrepancy: packed - planned,
@@ -251,15 +309,21 @@ class FboSuppliesPackingService {
           throw err;
         }
 
+        await assertCargoPlacementZoneCompatible(activeId, supplyItem, {
+          marketplace: supply.marketplace,
+        });
+
+        const itemZone = cargoPlacementZoneFromItem(supplyItem);
         const upsert = await query(
-          `INSERT INTO fbo_supply_cargo_contents (cargo_unit_id, fbo_supply_item_id, quantity)
-           VALUES ($1, $2, 1)
+          `INSERT INTO fbo_supply_cargo_contents (cargo_unit_id, fbo_supply_item_id, quantity, placement_zone)
+           VALUES ($1, $2, 1, $3)
            ON CONFLICT (cargo_unit_id, fbo_supply_item_id)
            DO UPDATE SET
              quantity = fbo_supply_cargo_contents.quantity + 1,
+             placement_zone = COALESCE(fbo_supply_cargo_contents.placement_zone, EXCLUDED.placement_zone),
              updated_at = CURRENT_TIMESTAMP
            RETURNING quantity`,
-          [activeId, supplyItem.id]
+          [activeId, supplyItem.id, itemZone]
         );
         const newQty = Number(upsert.rows[0]?.quantity ?? 1);
         const packing = await this.getPackingState(supplyId, { profileId });
@@ -392,7 +456,9 @@ class FboSuppliesPackingService {
   async getPackingExportRows(supplyId, { profileId } = {}) {
     const supply = await assertSupplyAccess(supplyId, profileId);
     const r = await query(
-      `SELECT cc.id, cc.quantity, cc.placement_zone, cc.expires_at,
+      `SELECT cc.id, cc.quantity,
+              COALESCE(NULLIF(TRIM(cc.placement_zone), ''), NULLIF(TRIM(i.placement_zone), '')) AS placement_zone,
+              cc.expires_at,
               cu.barcode AS cargo_barcode,
               TRIM(COALESCE(i.sku, p.sku, '')) AS article,
               TRIM(COALESCE(
