@@ -429,13 +429,7 @@ function pickBarcodeScale(bcid, text, targetWidthPx) {
   return Math.max(2, Math.min(8, scale));
 }
 
-async function generateBarcodePng(text, { widthPx, barHeightMm }) {
-  const spec = resolveBarcodeSpec(text);
-  if (!spec) return null;
-
-  const targetW = Math.max(80, Number(widthPx) || 200);
-  const barMm = Math.min(40, Math.max(4, Number(barHeightMm) || 12));
-
+async function renderBarcodePngForSpec(spec, { targetW, barMm }) {
   let scale = pickBarcodeScale(spec.bcid, spec.text, targetW);
 
   try {
@@ -468,6 +462,27 @@ async function generateBarcodePng(text, { widthPx, barHeightMm }) {
   } catch {
     return null;
   }
+}
+
+async function generateBarcodePng(text, { widthPx, barHeightMm }) {
+  const spec = resolveBarcodeSpec(text);
+  if (!spec) return null;
+
+  const targetW = Math.max(80, Number(widthPx) || 200);
+  const barMm = Math.min(40, Math.max(4, Number(barHeightMm) || 12));
+  const renderOpts = { targetW, barMm };
+
+  const primary = await renderBarcodePngForSpec(spec, renderOpts);
+  if (primary) return primary;
+
+  if (spec.bcid === 'ean13') {
+    const digits = String(text || '').trim().replace(/\D/g, '');
+    if (digits) {
+      return renderBarcodePngForSpec({ bcid: 'code128', text: digits }, renderOpts);
+    }
+  }
+
+  return null;
 }
 
 /** Вписать в слот: сначала по ширине (~100% innerW), затем ограничить высотой heightMm. */
