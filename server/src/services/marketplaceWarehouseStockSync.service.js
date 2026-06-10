@@ -151,6 +151,7 @@ const SKIP_REASON_LABELS = {
   not_linked: 'нет связи с МП (SKU/ссылка)',
   no_credentials: 'нет API-ключей маркетплейса',
   no_warehouse_mapping: 'не указан склад МП в сопоставлении',
+  invalid_warehouse_mapping: 'некорректный ID склада МП (нужно число, не название)',
   no_product_sku: 'нет артикула на МП',
   no_wb_barcode: 'нет штрихкода WB',
   unsupported_marketplace: 'маркетплейс не поддерживается'

@@ -32,6 +32,19 @@ function yandexKey(cfg) {
 }
 
 /**
+ * Числовой ID склада МП из сопоставления: "1020001624191000" или "1326703 — Теплый стан".
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+export function parseMarketplaceWarehouseId(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return s;
+  const m = s.match(/^(\d{1,20})/);
+  return m ? m[1] : null;
+}
+
+/**
  * Штрихкод для WB stocks API (поле sku).
  */
 async function resolveWildberriesStockSku({ nmId, productId, profileId, organizationId, mpExtra }) {
@@ -105,16 +118,27 @@ async function pushOzon(ctx, quantity, organizationId, profileId) {
       : ctx.product?.ozon_product_id != null
         ? Number(ctx.product.ozon_product_id)
         : null;
-  const mpWarehouseId = String(ctx.mapping?.marketplace_warehouse_id ?? '').trim();
+  const mpWarehouseId = parseMarketplaceWarehouseId(ctx.mapping?.marketplace_warehouse_id);
 
   if (!offerId && !productId) {
     return { marketplace: 'ozon', ok: false, skipped: true, reason: 'no_product_sku' };
   }
   if (!mpWarehouseId) {
-    return { marketplace: 'ozon', ok: false, skipped: true, reason: 'no_warehouse_mapping' };
+    return {
+      marketplace: 'ozon',
+      ok: false,
+      skipped: true,
+      reason: String(ctx.mapping?.marketplace_warehouse_id ?? '').trim()
+        ? 'invalid_warehouse_mapping'
+        : 'no_warehouse_mapping'
+    };
+  }
+  const warehouseIdNum = Number(mpWarehouseId);
+  if (!Number.isFinite(warehouseIdNum) || warehouseIdNum <= 0) {
+    return { marketplace: 'ozon', ok: false, skipped: true, reason: 'invalid_warehouse_mapping' };
   }
 
-  const stockRow = { stock: quantity, warehouse_id: Number(mpWarehouseId) };
+  const stockRow = { stock: quantity, warehouse_id: warehouseIdNum };
   if (offerId) stockRow.offer_id = offerId;
   if (productId && Number.isFinite(productId)) stockRow.product_id = productId;
 
@@ -135,6 +159,13 @@ async function pushOzon(ctx, quantity, organizationId, profileId) {
   } catch {
     data = { raw: text };
   }
+  const rowErrors = (data?.result || [])
+    .flatMap((row) => (Array.isArray(row?.errors) ? row.errors : []))
+    .filter(Boolean);
+  if (rowErrors.length > 0) {
+    const err = new Error(`Ozon stocks: ${JSON.stringify(rowErrors).substring(0, 300)}`);
+    throw err;
+  }
   logger.info(`[MP Stock Push] Ozon OK product=${ctx.product?.id} offer=${offerId} qty=${quantity} wh=${mpWarehouseId}`);
   return { marketplace: 'ozon', ok: true, quantity, warehouseId: mpWarehouseId, response: data };
 }
@@ -148,12 +179,19 @@ async function pushWildberries(ctx, quantity, organizationId, profileId) {
 
   const wbSku = ctx.productSkus?.find((s) => s.marketplace === 'wb');
   const nmId = wbSku?.sku || ctx.product?.sku_wb;
-  const mpWarehouseId = String(ctx.mapping?.marketplace_warehouse_id ?? '').trim();
+  const mpWarehouseId = parseMarketplaceWarehouseId(ctx.mapping?.marketplace_warehouse_id);
   if (!nmId) {
     return { marketplace: 'wb', ok: false, skipped: true, reason: 'no_product_sku' };
   }
   if (!mpWarehouseId) {
-    return { marketplace: 'wb', ok: false, skipped: true, reason: 'no_warehouse_mapping' };
+    return {
+      marketplace: 'wb',
+      ok: false,
+      skipped: true,
+      reason: String(ctx.mapping?.marketplace_warehouse_id ?? '').trim()
+        ? 'invalid_warehouse_mapping'
+        : 'no_warehouse_mapping'
+    };
   }
 
   let mpExtra = wbSku?.mp_extra;

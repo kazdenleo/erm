@@ -1392,6 +1392,14 @@ export function WarehouseStocks() {
     if (total != null) details += `\nПозиций в отправке: ${total}`;
     if (data?.message) details += `\n\n${data.message}`;
     if (data?.skipReasonsText) details += `\n\nПричины пропуска:\n${data.skipReasonsText}`;
+    const failSamples = (data?.results || [])
+      .flatMap((row) => row?.results || [])
+      .filter((r) => r && r.ok === false && !r.skipped && r.error)
+      .slice(0, 5)
+      .map((r) => `${r.marketplace}: ${r.error}`);
+    if (failSamples.length > 0) {
+      details += `\n\nОшибки API:\n${failSamples.join('\n')}`;
+    }
     else if (pushed === 0 && failed === 0 && skipped === 0 && (data?.noMappings ?? 0) > 0) {
       details +=
         '\n\nНи у одного товара нет сопоставления вашего склада с складами Ozon / WB / Яндекс. Проверьте раздел «Склады».';
