@@ -164,10 +164,10 @@ export function FboSupplies() {
                 <th>№</th>
                 <th>Номер отгрузки</th>
                 <th>Маркетплейс</th>
-                <th>Название</th>
                 <th>Дата готовности</th>
                 <th>Склад МП</th>
                 <th>Кластер размещения</th>
+                <th>Комментарий</th>
                 <th>Организация</th>
                 <th>Кол-во, шт.</th>
                 <th>Статус</th>
@@ -209,10 +209,16 @@ export function FboSupplies() {
                   <td>{row.id}</td>
                   <td>{row.externalShipmentNumber}</td>
                   <td>{getMarketplaceLabel(row.marketplace)}</td>
-                  <td>{row.name || '—'}</td>
                   <td>{fmtDate(row.readyAt)}</td>
                   <td>{row.marketplaceWarehouseName || '—'}</td>
                   <td>{row.placementCluster || '—'}</td>
+                  <td className="fbo-supply-note-cell" title={row.note || ''}>
+                    {row.note
+                      ? row.note.length > 48
+                        ? `${row.note.slice(0, 48)}…`
+                        : row.note
+                      : '—'}
+                  </td>
                   <td>{row.organizationName || '—'}</td>
                   <td>{row.itemCount ?? '—'}</td>
                   <td>

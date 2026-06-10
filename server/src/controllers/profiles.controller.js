@@ -50,6 +50,13 @@ function pickAccountOwnerProfilePayload(body) {
     const v = b.allow_stock_history_reset ?? b.allowStockHistoryReset;
     out.allow_stock_history_reset = v === true || v === '1' || v === 'true';
   }
+  if (
+    b.procurement_status_enabled !== undefined ||
+    b.procurementStatusEnabled !== undefined
+  ) {
+    const v = b.procurement_status_enabled ?? b.procurementStatusEnabled;
+    out.procurement_status_enabled = v === true || v === '1' || v === 'true';
+  }
   return out;
 }
 

@@ -756,6 +756,29 @@ async function finalizeWildberriesShipmentClose({ shipmentId, profileId, organiz
   await saveLocalShipments(shipments);
 }
 
+/** Списание остатков и статус «Отгружен» после закрытия (не блокирует HTTP). */
+async function finalizeShipmentCloseStock({ shipmentId, marketplace, orderIds, profileId }) {
+  if (!orderIds?.length || !marketplace) return;
+  const { default: ordersService } = await import('./orders.service.js');
+  let fin = { processed: 0, skipped: 0, notFound: 0 };
+  let st = { updated: 0, skipped: 0, notFound: 0 };
+  try {
+    fin = await ordersService.applyAssemblyStockForShipmentOrders(marketplace, orderIds, profileId);
+  } catch (e) {
+    logger.warn('[Shipments] Закрытие поставки (фон): списание остатков:', e?.message || e);
+  }
+  try {
+    st = await ordersService.markShipmentOrdersAsShipped(marketplace, orderIds, profileId);
+  } catch (e) {
+    logger.warn('[Shipments] Закрытие поставки (фон): статус «Отгружен»:', e?.message || e);
+  }
+  logger.info(
+    `[Shipments] Закрытие ${shipmentId} (фон): резерв и списание — обработано ${fin?.processed ?? 0}, ` +
+      `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; ` +
+      `внутренний «Отгружен»: ${st?.updated ?? 0}, пропущено ${st?.skipped ?? 0}, не найдено ${st?.notFound ?? 0}`
+  );
+}
+
 /**
  * Закрыть поставку. После закрытия новые заказы «на сборку» пойдут в новую поставку.
  * @param {{ notAssembled?: 'assemble'|'remove', cancelled?: 'remove'|'keep' }} [closeOptions]
@@ -862,35 +885,20 @@ async function closeShipment(
     });
   }
 
-  // Остатки — по «Собран»; затем все заказы в поставке → внутренний «Отгружен».
+  // Остатки — по «Собран»; затем все заказы в поставке → внутренний «Отгружен» (в фоне).
   const orderIds = orderIdsForWb;
   if (orderIds.length > 0 && shipToClose.marketplace) {
-    const { default: ordersService } = await import('./orders.service.js');
-    let fin = { processed: 0, skipped: 0, notFound: 0 };
-    try {
-      fin = await ordersService.applyAssemblyStockForShipmentOrders(
-        shipToClose.marketplace,
-        orderIds,
-        profileId
-      );
-    } catch (e) {
-      logger.warn('[Shipments] Закрытие поставки: списание остатков:', e?.message || e);
-    }
-    let st = { updated: 0, skipped: 0, notFound: 0 };
-    try {
-      st = await ordersService.markShipmentOrdersAsShipped(
-        shipToClose.marketplace,
-        orderIds,
-        profileId
-      );
-    } catch (e) {
-      logger.warn('[Shipments] Закрытие поставки: статус «Отгружен»:', e?.message || e);
-    }
-    logger.info(
-      `[Shipments] Закрытие ${shipmentId}: резерв и списание — обработано ${fin?.processed ?? 0}, ` +
-        `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; ` +
-        `внутренний «Отгружен»: ${st?.updated ?? 0}, пропущено ${st?.skipped ?? 0}, не найдено ${st?.notFound ?? 0}`
-    );
+    const stockCtx = {
+      shipmentId,
+      marketplace: shipToClose.marketplace,
+      orderIds: [...orderIds],
+      profileId,
+    };
+    setImmediate(() => {
+      finalizeShipmentCloseStock(stockCtx).catch((e) => {
+        logger.warn(`[Shipments] Закрытие ${shipmentId} (фон):`, e?.message || e);
+      });
+    });
   } else if (orderIds.length === 0) {
     logger.warn(`[Shipments] Закрытие ${shipmentId}: в поставке нет orderIds — движения остатков не созданы`);
   }

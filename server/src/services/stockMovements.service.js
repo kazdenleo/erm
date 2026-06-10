@@ -2339,143 +2339,144 @@ class StockMovementsService {
     const orgId = product.organization_id ?? product.organizationId ?? null;
     const totalBefore = product.quantity != null ? Number(product.quantity) : 0;
 
-    const result = await runWithProductStockLock(idNum, async () => {
-      const client = await getClient();
-      try {
-        await client.query('BEGIN');
-        await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [idNum]);
-        await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [idNum]);
+    const client = await getClient();
+    let result;
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [idNum]);
+      // Одна транзакция + xact_lock (как резерв); без runWithProductStockLock — иначе deadlock
+      // при вызове из _withKitAssemblyStockLocks (два соединения, один product_id).
+      await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [idNum]);
 
-        const orderDbIdNum = metaObj.order_id != null ? Number(metaObj.order_id) : NaN;
-        const mpOrderId =
-          metaObj.orderId != null && String(metaObj.orderId).trim() !== ''
-            ? String(metaObj.orderId).trim()
-            : null;
+      const orderDbIdNum = metaObj.order_id != null ? Number(metaObj.order_id) : NaN;
+      const mpOrderId =
+        metaObj.orderId != null && String(metaObj.orderId).trim() !== ''
+          ? String(metaObj.orderId).trim()
+          : null;
 
-        const { getNetReservedForOrderProduct } = await import('./kitStock.service.js');
-        const { getRawReservedQuantityFromMovementsWithClient } = await import(
-          './sellableQuantity.service.js'
+      const { getNetReservedForOrderProduct } = await import('./kitStock.service.js');
+      const { getRawReservedQuantityFromMovementsWithClient } = await import(
+        './sellableQuantity.service.js'
+      );
+
+      let netForOrder = 0;
+      if ((Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) || mpOrderId) {
+        netForOrder = await getNetReservedForOrderProduct(
+          Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : 0,
+          idNum,
+          mpOrderId,
+          warehouseId
         );
+      }
+      netForOrder = Math.max(0, Math.floor(Number(netForOrder) || 0));
 
-        let netForOrder = 0;
-        if ((Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1) || mpOrderId) {
-          netForOrder = await getNetReservedForOrderProduct(
-            Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : 0,
-            idNum,
-            mpOrderId,
-            warehouseId
-          );
-        }
-        netForOrder = Math.max(0, Math.floor(Number(netForOrder) || 0));
-
-        if (requireReserve && netForOrder < shipQty) {
-          const err = new Error(
-            `Недостаточно резерва для отгрузки: зарезервировано ${netForOrder}, к отгрузке ${shipQty}`
-          );
-          err.statusCode = 409;
-          throw err;
-        }
-
-        const pwsR = await client.query(
-          `SELECT quantity FROM product_warehouse_stock
-           WHERE product_id = $1 AND warehouse_id = $2
-           FOR UPDATE`,
-          [idNum, warehouseId]
+      if (requireReserve && netForOrder < shipQty) {
+        const err = new Error(
+          `Недостаточно резерва для отгрузки: зарезервировано ${netForOrder}, к отгрузке ${shipQty}`
         );
-        let currentWh =
-          pwsR.rows?.length && pwsR.rows[0].quantity != null
-            ? Math.max(0, parseInt(pwsR.rows[0].quantity, 10) || 0)
-            : 0;
-        if (!pwsR.rows?.length) {
-          const pr = await client.query(`SELECT COALESCE(quantity, 0)::int AS q FROM products WHERE id = $1`, [
-            idNum
-          ]);
-          currentWh = Math.max(0, Number(pr.rows[0]?.q ?? 0) || 0);
-          await client.query(
-            `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (product_id, warehouse_id) DO NOTHING`,
-            [idNum, warehouseId, currentWh]
-          );
-        }
+        err.statusCode = 409;
+        throw err;
+      }
 
-        if (currentWh < shipQty) {
-          const err = new Error(
-            `Недостаточно наличия на складе для отгрузки: на складе ${currentWh}, к отгрузке ${shipQty}`
-          );
-          err.statusCode = 409;
-          throw err;
-        }
-
-        const metaOut = { ...metaObj, warehouse_id: warehouseId };
-        const release = Math.min(shipQty, netForOrder);
-        let unreserveMovement = null;
-
-        if (release > 0) {
-          const journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
-          const journalAfter = Math.max(0, journalBeforeRaw - release);
-          await client.query(
-            'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-            [journalAfter, idNum]
-          );
-          unreserveMovement = await this.repository.insertSnapshotAfterProduct(client, {
-            productId: idNum,
-            type: 'unreserve',
-            quantityChange: release,
-            reason: unreserveReason || null,
-            meta: metaOut,
-            warehouseId,
-            profileId: profId
-          });
-        } else if (requireReserve) {
-          const err = new Error('Нет резерва для снятия перед отгрузкой');
-          err.statusCode = 409;
-          throw err;
-        }
-
-        const newWh = currentWh - shipQty;
+      const pwsR = await client.query(
+        `SELECT quantity FROM product_warehouse_stock
+         WHERE product_id = $1 AND warehouse_id = $2
+         FOR UPDATE`,
+        [idNum, warehouseId]
+      );
+      let currentWh =
+        pwsR.rows?.length && pwsR.rows[0].quantity != null
+          ? Math.max(0, parseInt(pwsR.rows[0].quantity, 10) || 0)
+          : 0;
+      if (!pwsR.rows?.length) {
+        const pr = await client.query(`SELECT COALESCE(quantity, 0)::int AS q FROM products WHERE id = $1`, [
+          idNum
+        ]);
+        currentWh = Math.max(0, Number(pr.rows[0]?.q ?? 0) || 0);
         await client.query(
           `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
            VALUES ($1, $2, $3)
-           ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
-          [idNum, warehouseId, newWh]
+           ON CONFLICT (product_id, warehouse_id) DO NOTHING`,
+          [idNum, warehouseId, currentWh]
         );
-        await client.query(
-          `UPDATE products
-           SET quantity = COALESCE(
-             (SELECT SUM(quantity)::int FROM product_warehouse_stock WHERE product_id = $1),
-             0
-           ),
-           updated_at = CURRENT_TIMESTAMP
-           WHERE id = $1`,
-          [idNum]
-        );
+      }
 
-        const shipMeta = {
-          ...metaOut,
-          warehouse_balance_before: currentWh,
-          warehouse_balance_after: newWh,
-          order_assembly_shipment: true
-        };
-        const shipmentMovement = await this.repository.insertSnapshotAfterProduct(client, {
+      if (currentWh < shipQty) {
+        const err = new Error(
+          `Недостаточно наличия на складе для отгрузки: на складе ${currentWh}, к отгрузке ${shipQty}`
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+
+      const metaOut = { ...metaObj, warehouse_id: warehouseId };
+      const release = Math.min(shipQty, netForOrder);
+      let unreserveMovement = null;
+
+      if (release > 0) {
+        const journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
+        const journalAfter = Math.max(0, journalBeforeRaw - release);
+        await client.query(
+          'UPDATE products SET reserved_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [journalAfter, idNum]
+        );
+        unreserveMovement = await this.repository.insertSnapshotAfterProduct(client, {
           productId: idNum,
-          type: 'shipment',
-          quantityChange: -shipQty,
-          reason: shipmentReason || null,
-          meta: shipMeta,
+          type: 'unreserve',
+          quantityChange: release,
+          reason: unreserveReason || null,
+          meta: metaOut,
           warehouseId,
           profileId: profId
         });
-
-        await client.query('COMMIT');
-        return { release, unreserveMovement, shipmentMovement, warehouseId, newWh };
-      } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
-      } finally {
-        client.release();
+      } else if (requireReserve) {
+        const err = new Error('Нет резерва для снятия перед отгрузкой');
+        err.statusCode = 409;
+        throw err;
       }
-    });
+
+      const newWh = currentWh - shipQty;
+      await client.query(
+        `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (product_id, warehouse_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
+        [idNum, warehouseId, newWh]
+      );
+      await client.query(
+        `UPDATE products
+         SET quantity = COALESCE(
+           (SELECT SUM(quantity)::int FROM product_warehouse_stock WHERE product_id = $1),
+           0
+         ),
+         updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [idNum]
+      );
+
+      const shipMeta = {
+        ...metaOut,
+        warehouse_balance_before: currentWh,
+        warehouse_balance_after: newWh,
+        order_assembly_shipment: true
+      };
+      const shipmentMovement = await this.repository.insertSnapshotAfterProduct(client, {
+        productId: idNum,
+        type: 'shipment',
+        quantityChange: -shipQty,
+        reason: shipmentReason || null,
+        meta: shipMeta,
+        warehouseId,
+        profileId: profId
+      });
+
+      await client.query('COMMIT');
+      result = { release, unreserveMovement, shipmentMovement, warehouseId, newWh };
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
 
     try {
       await syncProductQuantityFromWarehouseStock(idNum);

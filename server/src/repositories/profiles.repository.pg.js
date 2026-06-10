@@ -118,6 +118,13 @@ class ProfilesRepositoryPG {
       const v = updates.allow_stock_history_reset ?? updates.allowStockHistoryReset;
       set('allow_stock_history_reset', v === true || v === '1' || v === 'true');
     }
+    if (
+      updates.procurement_status_enabled !== undefined ||
+      updates.procurementStatusEnabled !== undefined
+    ) {
+      const v = updates.procurement_status_enabled ?? updates.procurementStatusEnabled;
+      set('procurement_status_enabled', v === true || v === '1' || v === 'true');
+    }
 
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

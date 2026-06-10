@@ -13,5 +13,12 @@ export function accountSettingsFromProfile(profile) {
     require_reserved_stock_for_assembly: isProfileBoolFlag(profile.require_reserved_stock_for_assembly),
     allow_manual_warehouse_stock_edit: isProfileBoolFlag(profile.allow_manual_warehouse_stock_edit),
     allow_stock_history_reset: isProfileBoolFlag(profile.allow_stock_history_reset),
+    procurement_status_enabled: profile.procurement_status_enabled !== false,
   };
+}
+
+/** Статус заказа «В закупке» включён (по умолчанию да). */
+export function isProfileProcurementStatusEnabled(profile) {
+  if (profile == null) return true;
+  return profile.procurement_status_enabled !== false;
 }

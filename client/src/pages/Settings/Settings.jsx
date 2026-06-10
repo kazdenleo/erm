@@ -35,6 +35,7 @@ export function Settings() {
     require_reserved_stock_for_assembly: false,
     allow_manual_warehouse_stock_edit: false,
     allow_stock_history_reset: false,
+    procurement_status_enabled: true,
   });
 
   const loadAccount = useCallback(async () => {
@@ -73,6 +74,7 @@ export function Settings() {
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
         allow_manual_warehouse_stock_edit: form.allow_manual_warehouse_stock_edit,
         allow_stock_history_reset: form.allow_stock_history_reset,
+        procurement_status_enabled: form.procurement_status_enabled,
       };
       const res = await profilesApi.updateMe(payload);
       if (!res?.ok) {
@@ -322,6 +324,22 @@ export function Settings() {
                 />
               </label>
               <label className="settings-account-toggle" style={{ marginTop: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={form.procurement_status_enabled !== false}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, procurement_status_enabled: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Статус заказа «В закупке»</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Если выключено — заказы не переводятся в «В закупке» (вручную, при закупке и автозаказе).
+                    Резерв с наличия и «в пути» по-прежнему создаётся для заказов в статусе «Новый».
+                  </span>
+                </span>
+              </label>
+              <label className="settings-account-toggle">
                 <input
                   type="checkbox"
                   checked={form.require_reserved_stock_for_assembly === true}

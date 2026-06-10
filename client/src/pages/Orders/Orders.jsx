@@ -50,6 +50,7 @@ import {
   productsMapFromStockList,
   warehouseOptionsForOrganization,
 } from '../../utils/procurementPreview.js';
+import { isProfileProcurementStatusEnabled } from '../../utils/profileFlags.js';
 import './Orders.css';
 import './OrderDetail.css';
 
@@ -405,6 +406,7 @@ export function Orders() {
   const { profile, selectedOrganizationId: contextOrganizationId, setSelectedOrganizationId } = useAuth();
   const allowPrivateOrders = profile?.allow_private_orders === true;
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
+  const procurementStatusEnabled = isProfileProcurementStatusEnabled(profile);
   const { warehouses, loadWarehouses } = useWarehouses();
   const { organizations } = useOrganizations();
   const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
@@ -422,6 +424,11 @@ export function Orders() {
   const [ordersAutoSyncPauseError, setOrdersAutoSyncPauseError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('new');
+  useEffect(() => {
+    if (!procurementStatusEnabled && statusFilter === 'in_procurement') {
+      setStatusFilter('new');
+    }
+  }, [procurementStatusEnabled, statusFilter]);
   /** Колонка «Поставка» — только на вкладке «Собран» */
   const showShipmentColumn = statusFilter === 'assembled';
   /** Колонка «Стикер» — на сборке и у собранных (не на «Новый» / «В закупке») */
@@ -1194,8 +1201,10 @@ export function Orders() {
       let successMsg = purchaseId
         ? `Закупка №${purchaseId} создана`
         : 'Закупка оформлена';
-      if (procUpdated > 0) {
+      if (procUpdated > 0 && procurementStatusEnabled) {
         successMsg += `, заказов переведено в «В закупке»: ${procUpdated}`;
+      } else if (procurementItems.length > 0 && !procurementStatusEnabled) {
+        successMsg += '. Статус заказов не менялся (отключён «В закупке»), резерв обновляется';
       } else if (procurementItems.length === 0) {
         successMsg += '. Статус заказов не менялся (уже «В закупке» или не подходят под правила)';
       }
@@ -1433,23 +1442,23 @@ export function Orders() {
     }
   };
   
-  const uniqueStatuses = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          'new',
-          'in_procurement',
-          'in_assembly',
-          'assembled',
-          'shipped',
-          'in_transit',
-          'delivered',
-          'cancelled',
-          ...orders.map((o) => o.status).filter((s) => s && s !== 'processing'),
-        ])
-      ),
-    [orders]
-  );
+  const uniqueStatuses = useMemo(() => {
+    const base = [
+      'new',
+      ...(procurementStatusEnabled ? ['in_procurement'] : []),
+      'in_assembly',
+      'assembled',
+      'shipped',
+      'in_transit',
+      'delivered',
+      'cancelled',
+      ...orders.map((o) => o.status).filter((s) => s && s !== 'processing'),
+    ];
+    if (!procurementStatusEnabled) {
+      return Array.from(new Set(base.filter((s) => s !== 'in_procurement')));
+    }
+    return Array.from(new Set(base));
+  }, [orders, procurementStatusEnabled]);
 
   /** Для WB техстатусы до резолва API — в UI считаем тем же «Новый», что и `new` (без дублей в фильтре). */
   const normalizeWbNewLikeStatus = (status) => {
@@ -1812,6 +1821,10 @@ export function Orders() {
           setAssemblyMessage(e.response?.data?.message || e.message || 'Ошибка возврата в «Новый»');
         }
       } else if (targetStatus === 'in_procurement') {
+        if (!procurementStatusEnabled) {
+          setAssemblyMessage('Статус «В закупке» отключён в настройках аккаунта.');
+          return;
+        }
         const reps = representativesForGroupScopedApi(toSend);
         const items = reps
           .filter((o) => isOrderStatusEligibleForProcurement(o.marketplace, o.status))
@@ -2079,12 +2092,16 @@ export function Orders() {
                   ? selectedCount > 0
                     ? 'Среди отмеченных нет заказов в статусе «Новый» / «На сборке» (доступных к закупке)'
                     : 'Отметьте строки заказов в статусе «Новый» или «На сборке»'
-                  : 'Выберите существующую закупку или создайте новую — позиции попадут туда, заказы перейдут в «В закупке»'
+                  : procurementStatusEnabled
+                    ? 'Выберите существующую закупку или создайте новую — позиции попадут туда, заказы перейдут в «В закупке»'
+                    : 'Создать или дополнить закупку; заказы останутся в «Новый», резерв обновится'
               }
             >
               {procurementLoadingKey === '__bulk__'
                 ? '…'
-                : `🛒 В закупку (${bulkProcurementSelectedRows.length || 0})`}
+                : procurementStatusEnabled
+                  ? `🛒 В закупку (${bulkProcurementSelectedRows.length || 0})`
+                  : `🛒 Закупка (${bulkProcurementSelectedRows.length || 0})`}
             </Button>
           )}
           {selectedCount > 0 && (
@@ -2116,7 +2133,7 @@ export function Orders() {
               >
                 <option value="">— выберите —</option>
                 <option value="new">Новый</option>
-                <option value="in_procurement">В закупке</option>
+                {procurementStatusEnabled ? <option value="in_procurement">В закупке</option> : null}
                 <option value="in_assembly">На сборке</option>
               </select>
             </div>
@@ -3227,27 +3244,28 @@ export function Orders() {
                           )}
                         </Button>
                       )}
-                      {groupOrders.some((o) =>
-                        isOrderStatusEligibleForProcurement(o.marketplace, o.status)
-                      ) && (
-                        <Button
-                          variant="secondary"
-                          size="small"
-                          className="orders-action-icon"
-                          onClick={() => handleSetToProcurement(first.marketplace, first.orderId, row.key)}
-                          disabled={
-                            procurementLoadingKey === row.key || procurementLoadingKey === '__bulk__'
-                          }
-                          title="Перевести заказ в статус «В закупке»"
-                          aria-label="В закупке"
-                        >
-                          {procurementLoadingKey === row.key ? (
-                            <span className="orders-action-icon__busy" aria-hidden>…</span>
-                          ) : (
-                            <i className="pe-7s-cart" aria-hidden />
-                          )}
-                        </Button>
-                      )}
+                      {procurementStatusEnabled &&
+                        groupOrders.some((o) =>
+                          isOrderStatusEligibleForProcurement(o.marketplace, o.status)
+                        ) && (
+                          <Button
+                            variant="secondary"
+                            size="small"
+                            className="orders-action-icon"
+                            onClick={() => handleSetToProcurement(first.marketplace, first.orderId, row.key)}
+                            disabled={
+                              procurementLoadingKey === row.key || procurementLoadingKey === '__bulk__'
+                            }
+                            title="Перевести заказ в статус «В закупке»"
+                            aria-label="В закупке"
+                          >
+                            {procurementLoadingKey === row.key ? (
+                              <span className="orders-action-icon__busy" aria-hidden>…</span>
+                            ) : (
+                              <i className="pe-7s-cart" aria-hidden />
+                            )}
+                          </Button>
+                        )}
                       {supplierSyncEnabled &&
                         groupOrders.some((o) =>
                           isOrderStatusEligibleForSupplierOrder(o.marketplace, o.status)

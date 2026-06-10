@@ -43,6 +43,7 @@ import {
   getProductSupplySnapshotWithClient,
   getReservableSupplyUnits
 } from './sellableQuantity.service.js';
+import { resolveProfileProcurementStatusEnabled } from '../utils/profileProcurementStatus.js';
 import {
   orderReserveMovementMatchOrderRowSql,
   orderReserveMovementMatchSql
@@ -977,7 +978,15 @@ class OrdersService {
       profileId
     );
     if (!order) return;
-    if (String(order.status || '').toLowerCase() !== 'in_procurement') return;
+    const st = String(order.status || '').toLowerCase();
+    const procurementEnabled = await resolveProfileProcurementStatusEnabled(
+      profileId ?? order.profile_id ?? order.profileId ?? null
+    );
+    if (procurementEnabled) {
+      if (st !== 'in_procurement') return;
+    } else if (!['new', 'in_procurement'].includes(st)) {
+      return;
+    }
     await this._reapplyReserveForOrderRows([order]);
   }
 
@@ -1555,11 +1564,9 @@ class OrdersService {
   }
 
   async _withKitAssemblyStockLocks(kitProductId, fn) {
-    const kitId = Number(kitProductId);
-    if (!Number.isFinite(kitId) || kitId < 1) return fn();
-    // Только сборка/списание: резерв комплекта сериализуется в applyChange (xact_lock), без session lock —
-    // иначе держится 2 соединения из пула (lock + транзакция) и HTTP зависает до таймаута.
-    return runWithProductStockLock(kitId, fn);
+    // Сериализация — в applyOrderAssemblyShipment (xact_lock в одной транзакции).
+    // Внешний runWithProductStockLock давал deadlock: два соединения, один product_id.
+    return fn();
   }
 
   /**
@@ -3417,6 +3424,20 @@ class OrdersService {
       const stNorm = String(order.status ?? '').trim().toLowerCase();
       if (stNorm === 'in_procurement') return order;
       if (!orderEligibleForProcurement(order)) return null;
+      const procurementEnabled = await resolveProfileProcurementStatusEnabled(
+        profileId ?? order.profile_id ?? order.profileId ?? null
+      );
+      if (!procurementEnabled) {
+        if (!opts.skipReserveReapply) {
+          this._scheduleReapplyReserveAfterProcurement({
+            orderGroupId: order.orderGroupId || null,
+            marketplace,
+            orderId,
+            profileId,
+          });
+        }
+        return order;
+      }
       if (order.orderGroupId) {
         await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'in_procurement', profileId);
       } else {
@@ -3515,6 +3536,18 @@ class OrdersService {
     );
     const seedRows = seedRes.rows || [];
     skipped += Math.max(0, seen.size - seedRows.length);
+
+    const procurementEnabled = await resolveProfileProcurementStatusEnabled(profileId);
+    if (!procurementEnabled) {
+      if (seedRows.length > 0 && !skipReserveReapply) {
+        setImmediate(() => {
+          this._reapplyReserveForOrderRows(seedRows).catch((e) => {
+            console.warn('[Orders] bulk reserve without procurement status:', e?.message || e);
+          });
+        });
+      }
+      return { updated: 0, skipped, procurementStatusDisabled: true, rows: [] };
+    }
 
     const groupIds = [
       ...new Set(

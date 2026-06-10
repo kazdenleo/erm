@@ -642,7 +642,23 @@ class OrdersController {
           currentStatus: order.status ?? null
         });
       }
+      const { resolveProfileProcurementStatusEnabled } = await import(
+        '../utils/profileProcurementStatus.js'
+      );
+      const procurementEnabled = await resolveProfileProcurementStatusEnabled(
+        req.user?.profileId ?? null
+      );
       await ordersService.setOrderToProcurement(marketplace, orderId, req.user?.profileId ?? null);
+      if (!procurementEnabled) {
+        return res.status(200).json({
+          ok: true,
+          data: {
+            message:
+              'Статус «В закупке» отключён в настройках аккаунта. Заказ остаётся в текущем статусе; резерв обновляется.',
+            procurementStatusDisabled: true,
+          },
+        });
+      }
       return res.status(200).json({ ok: true, data: { message: 'Статус заказа изменён на «В закупке»' } });
     } catch (error) {
       next(error);
