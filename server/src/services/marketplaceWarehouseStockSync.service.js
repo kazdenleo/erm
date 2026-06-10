@@ -7,6 +7,7 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import logger from '../utils/logger.js';
 import { assertMarketplaceStockPushAllowed } from '../utils/organizationMarketplaceStockSyncPolicy.js';
+import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 import { computeAvailableQuantity } from './sellableQuantity.service.js';
 import { pushStockToMarketplace } from './marketplaceStockPush.service.js';
 
@@ -319,6 +320,13 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
   }
 
   const results = [];
+  let supplierSyncEnabled = opts.supplierSyncEnabled;
+  if (supplierSyncEnabled === undefined && profileIdFromProduct != null && profileIdFromProduct !== '') {
+    const profRepo = repositoryFactory.getProfilesRepository();
+    const prof = profRepo ? await profRepo.findById(profileIdFromProduct) : null;
+    supplierSyncEnabled = isProfileSupplierSyncEnabled(prof);
+  }
+
   for (const mapping of mappings) {
     const mp = normalizeMpKey(mapping.marketplace);
     if (!isMarketplaceLinked(mp, ctx)) {
@@ -333,7 +341,8 @@ export async function syncWarehouseStockToMarketplaces(productId, opts = {}) {
       {
         warehouseId: whForStock,
         profileId: profileIdFromProduct,
-        forMarketplace: true
+        forMarketplace: true,
+        supplierSyncEnabled: supplierSyncEnabled !== false
       }
     );
 

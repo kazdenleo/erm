@@ -829,16 +829,48 @@ async function readKitOnHandFromMovementsBalance(kitProductId) {
   return Math.max(0, Number(r.rows[0].balance_after) || 0);
 }
 
-/** Для отправки на МП: собираемость из комплектующих + доступно по SKU комплекта. */
+/**
+ * Метрики комплекта для экспорта на МП — та же формула, что в колонке «Доступно» (attachKitDisplayMetrics).
+ */
+export async function computeKitDisplayMetricsFromDb(kitProductId, options = {}) {
+  const kitId = Number(kitProductId);
+  const empty = {
+    whole_on_hand: 0,
+    assemblable_from_components: 0,
+    supplier_kit_units: 0,
+    available_total: 0
+  };
+  if (!Number.isFinite(kitId) || kitId < 1) return empty;
+
+  const stub = { id: kitId, product_type: 'kit' };
+  try {
+    const pr = await query(
+      `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity FROM products WHERE id = $1`,
+      [kitId]
+    );
+    stub.incoming_quantity = Number(pr.rows[0]?.incoming_quantity ?? 0) || 0;
+  } catch {
+    stub.incoming_quantity = 0;
+  }
+
+  await attachKitDisplayMetrics([stub], options);
+  return stub.kit_display ?? empty;
+}
+
+/** Для отправки на МП: «Доступно» как в таблице остатков (kit_display.available_total). */
 export async function readKitMarketplaceStockFromDb(kitProductId, opts = {}) {
-  const base = await readKitStockFromDb(kitProductId, opts);
-  const fromComponents = await computeAssemblableFromComponents(kitProductId, opts);
-  const wholeAvail = Math.max(0, base.onHand + base.incoming + base.suppliers - base.reserved);
-  const available = fromComponents + wholeAvail;
+  const [base, display] = await Promise.all([
+    readKitStockFromDb(kitProductId, opts),
+    computeKitDisplayMetricsFromDb(kitProductId, opts)
+  ]);
+  const available = Math.max(0, Number(display.available_total) || 0);
   return {
     ...base,
+    onHand: Math.max(0, Number(display.whole_on_hand) || 0),
+    suppliers: Math.max(0, Number(display.supplier_kit_units) || 0),
     available,
-    displayAvailable: available
+    displayAvailable: available,
+    kit_display: display
   };
 }
 
@@ -2081,6 +2113,7 @@ export default {
   computeKitMarketplaceStock,
   readKitStockFromDb,
   readKitMarketplaceStockFromDb,
+  computeKitDisplayMetricsFromDb,
   persistKitStock,
   recalculateKitsForComponent,
   recalculateAllKitStocks,
