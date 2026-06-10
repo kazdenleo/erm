@@ -697,7 +697,10 @@ export async function recalculateKitsForComponent(componentProductId, opts = {})
   for (const kitId of kitIds) {
     scheduleWarehouseStockMarketplaceSync(kitId, {
       source: opts.source || 'kit_component_changed',
-      organizationId: opts.organizationId ?? null
+      organizationId: opts.organizationId ?? null,
+      warehouseId: opts.warehouseId ?? null,
+      strictWarehouse:
+        opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
     });
   }
   return kitIds;
@@ -870,7 +873,10 @@ export function scheduleMarketplaceSyncForParentKits(componentProductId, opts = 
       for (const kitId of kitIds) {
         scheduleWarehouseStockMarketplaceSync(kitId, {
           source: opts.source || 'kit_component_changed',
-          organizationId: opts.organizationId ?? null
+          organizationId: opts.organizationId ?? null,
+          warehouseId: opts.warehouseId ?? null,
+          strictWarehouse:
+            opts.warehouseId != null && String(opts.warehouseId).trim() !== ''
         });
       }
     } catch (e) {
@@ -1472,7 +1478,11 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
 
   scheduleWarehouseStockMarketplaceSync(kitId, {
     source: 'kit_order_reserve',
-    organizationId: meta?.organizationId ?? null
+    organizationId: meta?.organizationId ?? null,
+    warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
+    strictWarehouse:
+      (meta?.warehouse_id ?? meta?.warehouseId) != null &&
+      String(meta?.warehouse_id ?? meta?.warehouseId).trim() !== ''
   });
 
   if (Number.isFinite(orderDbId) && orderDbId > 0 && reservedBeforeKit != null) {

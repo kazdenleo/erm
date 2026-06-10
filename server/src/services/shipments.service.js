@@ -782,15 +782,6 @@ async function closeShipment(
     throw err;
   }
 
-  // Списание — по всем заказам поставки до удаления «устаревших» (in_transit/shipped с МП).
-  const orderIdsForStock = [
-    ...new Set(
-      (Array.isArray(ship.orderIds) ? ship.orderIds : [])
-        .map((id) => String(id).trim())
-        .filter(Boolean)
-    )
-  ];
-
   const staleCleanup = await removeStaleOrdersFromShipment(ship, profileId, organizationId);
   if (staleCleanup.ship) {
     ship = staleCleanup.ship;
@@ -871,44 +862,36 @@ async function closeShipment(
     });
   }
 
-  // Остатки — по всем заказам из исходной поставки; «Отгружен» только при успешном списании.
-  if (orderIdsForStock.length > 0 && shipToClose.marketplace) {
+  // Остатки — по «Собран»; затем все заказы в поставке → внутренний «Отгружен».
+  const orderIds = orderIdsForWb;
+  if (orderIds.length > 0 && shipToClose.marketplace) {
     const { default: ordersService } = await import('./orders.service.js');
-    let fin = { processed: 0, skipped: 0, notFound: 0, successOrderIds: [], errors: [] };
+    let fin = { processed: 0, skipped: 0, notFound: 0 };
     try {
       fin = await ordersService.applyAssemblyStockForShipmentOrders(
         shipToClose.marketplace,
-        orderIdsForStock,
+        orderIds,
         profileId
       );
     } catch (e) {
       logger.warn('[Shipments] Закрытие поставки: списание остатков:', e?.message || e);
     }
-    if ((fin?.errors || []).length > 0) {
-      logger.warn(
-        `[Shipments] Закрытие ${shipmentId}: ошибки списания (${fin.errors.length}):`,
-        fin.errors
-      );
-    }
-    const toMarkShipped = [...new Set(fin?.successOrderIds || [])];
     let st = { updated: 0, skipped: 0, notFound: 0 };
-    if (toMarkShipped.length > 0) {
-      try {
-        st = await ordersService.markShipmentOrdersAsShipped(
-          shipToClose.marketplace,
-          toMarkShipped,
-          profileId
-        );
-      } catch (e) {
-        logger.warn('[Shipments] Закрытие поставки: статус «Отгружен»:', e?.message || e);
-      }
+    try {
+      st = await ordersService.markShipmentOrdersAsShipped(
+        shipToClose.marketplace,
+        orderIds,
+        profileId
+      );
+    } catch (e) {
+      logger.warn('[Shipments] Закрытие поставки: статус «Отгружен»:', e?.message || e);
     }
     logger.info(
       `[Shipments] Закрытие ${shipmentId}: резерв и списание — обработано ${fin?.processed ?? 0}, ` +
-        `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}, ошибок ${fin?.errors?.length ?? 0}; ` +
+        `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; ` +
         `внутренний «Отгружен»: ${st?.updated ?? 0}, пропущено ${st?.skipped ?? 0}, не найдено ${st?.notFound ?? 0}`
     );
-  } else if (orderIdsForStock.length === 0) {
+  } else if (orderIds.length === 0) {
     logger.warn(`[Shipments] Закрытие ${shipmentId}: в поставке нет orderIds — движения остатков не созданы`);
   }
 
@@ -951,10 +934,9 @@ async function reapplyStockForShipment(shipmentId, { profileId = null, organizat
     orderIds,
     profileId
   );
-  const toMarkShipped = [...new Set(fin?.successOrderIds || [])];
   const st = await ordersService.markShipmentOrdersAsShipped(
     ship.marketplace,
-    toMarkShipped,
+    orderIds,
     profileId
   );
   return {

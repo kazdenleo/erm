@@ -79,8 +79,6 @@ function mapItemRow(row) {
     productName: row.product_name ?? null,
     productImage: row.product_image ?? null,
     productCategoryId: row.product_category_id ?? null,
-    placementZone: row.placement_zone ?? null,
-    ozonTags: Array.isArray(row.ozon_tags) ? row.ozon_tags : [],
   };
 }
 
@@ -413,12 +411,10 @@ class FboSuppliesService {
       for (const it of items) {
         const qty = parseInt(it.quantity, 10);
         if (!qty || qty <= 0) continue;
-        const ozonTags = Array.isArray(it.ozonTags) ? JSON.stringify(it.ozonTags) : '[]';
         await client.query(
           `INSERT INTO fbo_supply_items (
-            fbo_supply_id, product_id, quantity, barcode, sku, mp_offer_id, mp_product_id, name,
-            placement_zone, ozon_tags
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+            fbo_supply_id, product_id, quantity, barcode, sku, mp_offer_id, mp_product_id, name
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
           [
             newId,
             it.productId ?? null,
@@ -428,8 +424,6 @@ class FboSuppliesService {
             it.mpOfferId ?? null,
             it.mpProductId ?? null,
             it.name ?? null,
-            it.placementZone ?? null,
-            ozonTags,
           ]
         );
       }

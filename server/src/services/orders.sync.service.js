@@ -484,22 +484,6 @@ class OrdersSyncService {
     }
     ordersSyncCache.lastSyncTime = now;
     ordersSyncCache.lastSyncError = null;
-
-    const schedulerDays = resolveAutoSchedulerDaysBack();
-    const manualDays = normalizeManualSyncDaysBack(options.daysBack);
-    let syncDaysBack;
-    if (fromScheduler) {
-      syncDaysBack = schedulerDays;
-    } else if (manualDays != null) {
-      syncDaysBack = manualDays;
-    } else if (refreshStatuses) {
-      syncDaysBack = 90;
-    } else if (force) {
-      syncDaysBack = 14;
-    } else {
-      syncDaysBack = schedulerDays;
-    }
-
     const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} org=${organizationId != null && organizationId !== '' ? organizationId : '—'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0} days=${syncDaysBack}`;
     if (refreshStatuses) {
       logger.info(
@@ -519,6 +503,21 @@ class OrdersSyncService {
     /** Если синк WB прошёл — множество id из /api/v3/orders/new (иначе null, правило не трогаем). */
     let wbNewIdsThisSync = null;
 
+    // Период опроса МП: авто — минимальный (7 дн.), ручной — 7/14/28/90 по выбору пользователя.
+    const schedulerDays = resolveAutoSchedulerDaysBack();
+    const manualDays = normalizeManualSyncDaysBack(options.daysBack);
+    let syncDaysBack;
+    if (fromScheduler) {
+      syncDaysBack = schedulerDays;
+    } else if (manualDays != null) {
+      syncDaysBack = manualDays;
+    } else if (refreshStatuses) {
+      syncDaysBack = 90;
+    } else if (force) {
+      syncDaysBack = 14;
+    } else {
+      syncDaysBack = schedulerDays;
+    }
     const WB_DAYS_BACK = syncDaysBack;
     const OZON_DAYS_BACK = syncDaysBack;
 

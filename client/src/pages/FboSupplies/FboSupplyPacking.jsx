@@ -16,7 +16,6 @@ import {
   sortSupplyItemsForPacking,
 } from './fboSupplyPackingSort.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
-import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -64,7 +63,6 @@ export function FboSupplyPacking({
   const [activeCargoUnitId, setActiveCargoUnitId] = useState(null);
   const [removeModalOpen, setRemoveModalOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [newCargoMode, setNewCargoMode] = useState(false);
   const scanLoadingRef = useRef(false);
 
   scanLoadingRef.current = scanLoading;
@@ -97,13 +95,9 @@ export function FboSupplyPacking({
         const data = await fboSuppliesApi.packingScan(supplyId, {
           barcode: trimmed,
           activeCargoUnitId,
-          scanMode: newCargoMode ? 'cargo' : 'product',
         });
         if (data?.activeCargoUnitId != null) {
           setActiveCargoUnitId(data.activeCargoUnitId);
-        }
-        if (newCargoMode && (data?.action === 'cargo_created' || data?.action === 'cargo_selected')) {
-          setNewCargoMode(false);
         }
         if (data?.packing) {
           onPackingChange(data.packing, {
@@ -121,24 +115,8 @@ export function FboSupplyPacking({
         setScanLoading(false);
       }
     },
-    [supplyId, activeCargoUnitId, newCargoMode, onPackingChange]
+    [supplyId, activeCargoUnitId, onPackingChange]
   );
-
-  const handleNewCargoMode = () => {
-    setScanError(null);
-    if (newCargoMode) {
-      setNewCargoMode(false);
-      setScanMsg(null);
-      return;
-    }
-    setNewCargoMode(true);
-    setScanMsg('Отсканируйте штрихкод коробки или паллеты');
-  };
-
-  const handleSelectCargo = (cargoId) => {
-    setNewCargoMode(false);
-    setActiveCargoUnitId(cargoId);
-  };
 
   const handleExportExcel = async () => {
     setExporting(true);
@@ -185,44 +163,19 @@ export function FboSupplyPacking({
           label="Штрихкод"
           className="form-control"
           formClassName="fbo-packing-scan-row warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
-          placeholder={
-            newCargoMode
-              ? 'Штрихкод коробки / паллеты'
-              : marketplace === 'ozon'
-                ? 'Штрихкод товара из поставки'
-                : 'Коробка / паллета, затем товары поставки'
-          }
+          placeholder="Коробка / паллета, затем товары поставки"
           loading={scanLoading}
           disabled={scanLoading}
           enableGlobalCapture
           onScan={handleScan}
           hint={
-            marketplace === 'ozon' ? (
-              <>
-                Нажмите <strong>«Новое грузоместо»</strong> и отсканируйте штрихкод коробки.
-                Затем сканируйте <strong>товары из поставки</strong> (+1 шт. за скан).
-                Для следующей коробки снова нажмите «Новое грузоместо».
-                В одном грузоместе нельзя смешивать <strong>сортируемый</strong> и{' '}
-                <strong>несортируемый</strong> товар.
-              </>
-            ) : (
-              <>
-                Сначала отсканируйте штрихкод <strong>коробки или паллеты</strong> — откроется грузоместо.
-                Затем сканируйте <strong>товары из этой поставки</strong> (+1 шт. за скан).
-                Чтобы перейти к другой коробке, снова отсканируйте её штрихкод или нажмите «Новое грузоместо».
-              </>
-            )
+            <>
+              Сначала отсканируйте штрихкод <strong>коробки или паллеты</strong> — откроется грузоместо.
+              Затем сканируйте <strong>товары из этой поставки</strong> (+1 шт. за скан).
+              Повторный скан того же штрихкода коробки переключит на это грузоместо.
+            </>
           }
         >
-          <Button
-            type="button"
-            variant={newCargoMode ? 'primary' : 'secondary'}
-            disabled={scanLoading}
-            onClick={handleNewCargoMode}
-            title="Добавить или переключить грузоместо по скану коробки"
-          >
-            {newCargoMode ? 'Отмена' : 'Новое грузоместо'}
-          </Button>
           <Button
             type="button"
             variant="secondary"
@@ -244,9 +197,7 @@ export function FboSupplyPacking({
         </div>
       ) : (
         <div className="fbo-packing-active alert alert-warning">
-          {marketplace === 'ozon'
-            ? 'Нет активного грузоместа — нажмите «Новое грузоместо» и отсканируйте коробку.'
-            : 'Нет активного грузоместа — отсканируйте коробку или паллету.'}
+          Нет активного грузоместа — отсканируйте коробку или паллету.
         </div>
       )}
 
@@ -272,11 +223,7 @@ export function FboSupplyPacking({
           : 'Формат Ozon: артикул, кол-во, зона, ШК ГМ, срок годности (1 дата на SKU в грузоместе).'}
       </p>
       {(packing?.cargoUnits || []).length === 0 ? (
-        <p className="text-muted">
-          {marketplace === 'ozon'
-            ? 'Пока нет грузомест — нажмите «Новое грузоместо» и отсканируйте коробку.'
-            : 'Пока нет грузомест — отсканируйте штрихкод коробки.'}
-        </p>
+        <p className="text-muted">Пока нет грузомест — отсканируйте штрихкод коробки.</p>
       ) : (
         <div className="fbo-cargo-list">
           {(packing.cargoUnits || []).map((cargo) => {
@@ -290,7 +237,7 @@ export function FboSupplyPacking({
                   <button
                     type="button"
                     className="fbo-cargo-card__select btn btn-link"
-                    onClick={() => handleSelectCargo(cargo.id)}
+                    onClick={() => setActiveCargoUnitId(cargo.id)}
                   >
                     <strong>{cargo.barcode}</strong>
                     {isActive ? <span className="badge bg-primary ms-2">активно</span> : null}
@@ -347,7 +294,6 @@ export function FboSupplyPacking({
               <th>Название</th>
               <th>Артикул</th>
               <th>Штрихкод</th>
-              {marketplace === 'ozon' ? <th>Размещение</th> : null}
               <th>План</th>
               <th>Расхождения</th>
             </tr>
@@ -355,7 +301,7 @@ export function FboSupplyPacking({
           <tbody>
             {filteredSupplyItems.length === 0 ? (
               <tr>
-                <td colSpan={marketplace === 'ozon' ? 6 : 5} className="text-muted text-center py-3">
+                <td colSpan={5} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
@@ -371,9 +317,6 @@ export function FboSupplyPacking({
                   <td>{it.productName || it.name || '—'}</td>
                   <td>{it.sku || '—'}</td>
                   <td>{it.barcode || '—'}</td>
-                  {marketplace === 'ozon' ? (
-                    <td>{ozonPlacementZoneLabel(it.placementZone, it.ozonTags)}</td>
-                  ) : null}
                   <td>{planned}</td>
                   <td>
                     <button

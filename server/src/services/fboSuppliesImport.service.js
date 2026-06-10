@@ -8,7 +8,6 @@ import integrationsService from './integrations.service.js';
 import fboSuppliesService from './fboSupplies.service.js';
 import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
-import { parseOzonBundleRowMeta } from '../constants/ozonPlacementZones.js';
 
 const WB_SUPPLIES_API = 'https://supplies-api.wildberries.ru';
 const YM_API = 'https://api.partner.market.yandex.ru';
@@ -379,7 +378,7 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
   let lastId = '';
   let reportedTotal = 0;
   for (let page = 0; page < 20; page++) {
-    const body = { bundle_ids: [String(bundleId)], limit: 100, item_tags_calculation: true };
+    const body = { bundle_ids: [String(bundleId)], limit: 100 };
     if (lastId) body.last_id = lastId;
     const bundleData = await integrationsService._ozonApiPost(
       '/v1/supply-order/bundle',
@@ -394,7 +393,6 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
       if (!qty || qty <= 0) continue;
       const offerId = parseOzonBundleRowOfferId(row);
       const barcode = row.barcode ?? row.bar_code ?? null;
-      const { placementZone, ozonTags } = parseOzonBundleRowMeta(row);
       const productId = await resolveProductId({
         sku: offerId,
         barcode,
@@ -408,8 +406,6 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId) {
         mpOfferId: offerId,
         mpProductId: row.product_id != null ? String(row.product_id) : null,
         name: row.name ?? row.product_name ?? null,
-        placementZone,
-        ozonTags,
         unresolved: productId == null,
       });
     }
@@ -1335,8 +1331,6 @@ class FboSuppliesImportService {
               mpOfferId: it.mpOfferId,
               mpProductId: it.mpProductId,
               name: it.name,
-              placementZone: it.placementZone ?? null,
-              ozonTags: it.ozonTags ?? [],
             })),
           },
           { profileId, userId }

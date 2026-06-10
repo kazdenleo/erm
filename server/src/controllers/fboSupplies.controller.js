@@ -270,15 +270,15 @@ class FboSuppliesController {
     try {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const { barcode, activeCargoUnitId, scanMode } = req.body || {};
+      const { barcode, activeCargoUnitId } = req.body || {};
       const data = await fboSuppliesPackingService.scan(
         id,
-        { barcode, activeCargoUnitId, scanMode },
+        { barcode, activeCargoUnitId },
         { profileId }
       );
       return res.status(200).json({ ok: true, data });
     } catch (e) {
-      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
       }
       next(e);

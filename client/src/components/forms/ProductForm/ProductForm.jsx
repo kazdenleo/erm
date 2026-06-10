@@ -3453,14 +3453,8 @@ export function ProductForm({
           value={formData.cost}
           onChange={(e) => handleChange('cost', e.target.value)}
         />
-        <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-          {currentProduct?.supplier_min_cost != null ? (
-            <>
-              Мин. у поставщиков: {Number(currentProduct.supplier_min_cost).toLocaleString('ru-RU')} ₽.
-              {' '}
-            </>
-          ) : null}
-          Сохранённое значение не перезаписывается синхронизацией; если поле пустое — подставится цена поставщика.
+        <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
+            Обновляется при синхронизации с поставщиками
         </div>
         {errors.cost && <div className="error">{errors.cost}</div>}
       </div>
