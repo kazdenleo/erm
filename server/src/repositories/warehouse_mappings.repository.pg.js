@@ -27,7 +27,8 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type
+        w.type as warehouse_type,
+        w.profile_id as warehouse_profile_id
       FROM warehouse_mappings wm
       INNER JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE w.profile_id = $${paramIndex++}
@@ -38,7 +39,8 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type
+        w.type as warehouse_type,
+        w.profile_id as warehouse_profile_id
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE 1=1
@@ -69,7 +71,8 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type
+        w.type as warehouse_type,
+        w.profile_id as warehouse_profile_id
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.id = $1
@@ -86,7 +89,8 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type
+        w.type as warehouse_type,
+        w.profile_id as warehouse_profile_id
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.warehouse_id = $1 AND wm.marketplace = $2
@@ -103,7 +107,8 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type
+        w.type as warehouse_type,
+        w.profile_id as warehouse_profile_id
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.warehouse_id = $1
@@ -121,7 +126,8 @@ class WarehouseMappingsRepositoryPG {
       SELECT 
         wm.*,
         w.address as warehouse_address,
-        w.type as warehouse_type
+        w.type as warehouse_type,
+        w.profile_id as warehouse_profile_id
       FROM warehouse_mappings wm
       LEFT JOIN warehouses w ON wm.warehouse_id = w.id
       WHERE wm.marketplace = $1

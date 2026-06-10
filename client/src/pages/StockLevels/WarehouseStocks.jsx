@@ -2509,6 +2509,7 @@ export function WarehouseStocks() {
                 <>
                   <p className="mb-2">
                     Отправить остатки («Доступно») на маркетплейсы, привязанные к складу «{mpPushPanel.whLabel}»?
+                    Количество берётся только с этого склада ERP (из привязки), а не с других складов.
                   </p>
                   <p className="mb-2 text-muted small">
                     Позиций в таблице: <strong>{mpPushPanel.count}</strong> (организация «{mpPushPanel.orgLabel}»).
@@ -2590,7 +2591,7 @@ export function WarehouseStocks() {
               onClick={handleMpPushButtonClick}
               disabled={supplierStocksRefreshing}
               style={{ marginLeft: 8 }}
-              title="Отправить значения из колонки «Доступно» на Ozon, Wildberries и Яндекс.Маркет"
+              title="Отправить «Доступно» на МП со склада ERP, у которого настроена привязка к Ozon / WB / Яндекс"
             >
               {mpStockSyncing ? 'Отправка на МП…' : 'Отправить на маркетплейсы'}
             </Button>
