@@ -152,10 +152,11 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
-  packingScan: async (id, { barcode, activeCargoUnitId }) => {
+  packingScan: async (id, { barcode, activeCargoUnitId, scanMode }) => {
     const response = await api.post(`/fbo-supplies/${id}/packing/scan`, {
       barcode,
       activeCargoUnitId: activeCargoUnitId ?? null,
+      scanMode: scanMode ?? 'product',
     });
     return response.data?.data ?? response.data;
   },
