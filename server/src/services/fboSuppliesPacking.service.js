@@ -240,44 +240,58 @@ class FboSuppliesPackingService {
 
     if (activeId) {
       const supplyItem = await findSupplyItemForScan(supplyId, code, profileId);
-      if (!supplyItem) {
-        const err = new Error('Товар не найден в этой поставке (штрихкод, артикул или SKU)');
-        err.statusCode = 400;
-        throw err;
+      if (supplyItem) {
+        const cargoCheck = await query(
+          `SELECT id FROM fbo_supply_cargo_units WHERE id = $1 AND fbo_supply_id = $2`,
+          [activeId, supplyId]
+        );
+        if (!cargoCheck.rows?.length) {
+          const err = new Error('Активное грузоместо не найдено — отсканируйте коробку');
+          err.statusCode = 400;
+          throw err;
+        }
+
+        const upsert = await query(
+          `INSERT INTO fbo_supply_cargo_contents (cargo_unit_id, fbo_supply_item_id, quantity)
+           VALUES ($1, $2, 1)
+           ON CONFLICT (cargo_unit_id, fbo_supply_item_id)
+           DO UPDATE SET
+             quantity = fbo_supply_cargo_contents.quantity + 1,
+             updated_at = CURRENT_TIMESTAMP
+           RETURNING quantity`,
+          [activeId, supplyItem.id]
+        );
+        const newQty = Number(upsert.rows[0]?.quantity ?? 1);
+        const packing = await this.getPackingState(supplyId, { profileId });
+        const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
+        const syncMeta = await withPackingStatusSync(supplyId, packing);
+        return {
+          action: 'product_added',
+          message: `${name}: ${newQty} шт. в грузоместе`,
+          activeCargoUnitId: activeId,
+          supplyItemId: supplyItem.id,
+          quantityInCargo: newQty,
+          ...syncMeta,
+        };
       }
 
-      const cargoCheck = await query(
-        `SELECT id FROM fbo_supply_cargo_units WHERE id = $1 AND fbo_supply_id = $2`,
+      // Не товар поставки — новое грузоместо (переключение коробки/паллеты во время сборки).
+      const activeCargoR = await query(
+        `SELECT id, fbo_supply_id, barcode, created_at
+         FROM fbo_supply_cargo_units WHERE id = $1 AND fbo_supply_id = $2`,
         [activeId, supplyId]
       );
-      if (!cargoCheck.rows?.length) {
-        const err = new Error('Активное грузоместо не найдено — отсканируйте коробку');
-        err.statusCode = 400;
-        throw err;
+      if (activeCargoR.rows?.[0] && normalizeBarcode(activeCargoR.rows[0].barcode) === code) {
+        const cargo = mapCargoRow(activeCargoR.rows[0]);
+        const packing = await this.getPackingState(supplyId, { profileId });
+        return {
+          action: 'cargo_selected',
+          message: `Грузоместо уже активно: ${cargo.barcode}`,
+          activeCargoUnitId: cargo.id,
+          cargoUnit: cargo,
+          packing,
+        };
       }
-
-      const upsert = await query(
-        `INSERT INTO fbo_supply_cargo_contents (cargo_unit_id, fbo_supply_item_id, quantity)
-         VALUES ($1, $2, 1)
-         ON CONFLICT (cargo_unit_id, fbo_supply_item_id)
-         DO UPDATE SET
-           quantity = fbo_supply_cargo_contents.quantity + 1,
-           updated_at = CURRENT_TIMESTAMP
-         RETURNING quantity`,
-        [activeId, supplyItem.id]
-      );
-      const newQty = Number(upsert.rows[0]?.quantity ?? 1);
-      const packing = await this.getPackingState(supplyId, { profileId });
-      const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
-      const syncMeta = await withPackingStatusSync(supplyId, packing);
-      return {
-        action: 'product_added',
-        message: `${name}: ${newQty} шт. в грузоместе`,
-        activeCargoUnitId: activeId,
-        supplyItemId: supplyItem.id,
-        quantityInCargo: newQty,
-        ...syncMeta,
-      };
     }
 
     const ins = await query(
@@ -288,9 +302,12 @@ class FboSuppliesPackingService {
     );
     const cargo = mapCargoRow(ins.rows[0]);
     const packing = await this.getPackingState(supplyId, { profileId });
+    const switched = activeId != null && Number.isFinite(activeId) && activeId > 0;
     return {
       action: 'cargo_created',
-      message: `Добавлено грузоместо: ${cargo.barcode}`,
+      message: switched
+        ? `Новое грузоместо: ${cargo.barcode}`
+        : `Добавлено грузоместо: ${cargo.barcode}`,
       activeCargoUnitId: cargo.id,
       cargoUnit: cargo,
       packing,
