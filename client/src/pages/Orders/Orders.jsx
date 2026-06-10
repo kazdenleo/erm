@@ -53,7 +53,9 @@ import {
 import './Orders.css';
 import './OrderDetail.css';
 
-function buildOrdersSyncDoneMessage(lastStatus, { forceImport = false } = {}) {
+const MANUAL_IMPORT_DAYS_OPTIONS = [7, 14, 28, 90];
+
+function buildOrdersSyncDoneMessage(lastStatus, { forceImport = false, daysBack = null } = {}) {
   const r = lastStatus?.lastSyncResult;
   if (!r) return 'Синхронизация завершена. Список обновлён.';
   const oz = r.ozon?.success ?? 0;
@@ -61,8 +63,9 @@ function buildOrdersSyncDoneMessage(lastStatus, { forceImport = false } = {}) {
   const ym = r.yandex?.success ?? 0;
   const ymTail = r.yandex?.reason ? ` (${r.yandex.reason})` : '';
   if (forceImport) {
+    const period = daysBack != null ? ` за ${daysBack} дн.` : '';
     return (
-      `Импорт завершён: Ozon ${oz}, WB ${wb}, Яндекс ${ym}${ymTail}. ` +
+      `Импорт${period} завершён: Ozon ${oz}, WB ${wb}, Яндекс ${ym}${ymTail}. ` +
       'Если заказ не виден во «Новых», откройте фильтр «Все» или другой статус.'
     );
   }
@@ -409,6 +412,7 @@ export function Orders() {
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncKind, setSyncKind] = useState(null);
+  const [manualImportDays, setManualImportDays] = useState(14);
   const [syncError, setSyncError] = useState(null);
   const [syncInfo, setSyncInfo] = useState(null);
   /** Пауза фоновой синхронизации с МП + таймер обновления списка на этой странице */
@@ -809,6 +813,10 @@ export function Orders() {
       }
       syncInFlightRef.current = true;
       const refreshStatuses = opts.refreshStatuses === true;
+      const daysBack =
+        opts.daysBack != null && MANUAL_IMPORT_DAYS_OPTIONS.includes(Number(opts.daysBack))
+          ? Number(opts.daysBack)
+          : null;
       try {
         if (!silent) {
           setSyncLoading(true);
@@ -818,10 +826,16 @@ export function Orders() {
         }
         await ordersApi.syncFbs({
           force: forceImport,
-          refreshStatuses
+          refreshStatuses,
+          daysBack: daysBack ?? undefined
         });
         if (!silent) {
-          setSyncInfo({ message: forceImport ? 'Импорт заказов с маркетплейсов…' : 'Синхронизация…' });
+          const periodHint = daysBack != null ? ` (${daysBack} дн.)` : '';
+          setSyncInfo({
+            message: forceImport
+              ? `Импорт заказов с маркетплейсов${periodHint}…`
+              : `Синхронизация${periodHint}…`
+          });
         }
 
         const startedAt = Date.now();
@@ -881,7 +895,7 @@ export function Orders() {
             if (!silent) {
               setSyncInfo({
                 message:
-                  (buildOrdersSyncDoneMessage(lastStatus, { forceImport }) || 'Импорт завершён.') +
+                  (buildOrdersSyncDoneMessage(lastStatus, { forceImport, daysBack }) || 'Импорт завершён.') +
                   ' Показан фильтр «Все», т.к. по текущему фильтру список оказался пустым.'
               });
             }
@@ -923,8 +937,8 @@ export function Orders() {
     [reloadOrders, statusFilter]
   );
 
-  const handleSync = () => runSync(false, { refreshStatuses: true });
-  const handleImportOrders = () => runSync(false, { force: true });
+  const handleSync = () => runSync(false, { refreshStatuses: true, daysBack: manualImportDays });
+  const handleImportOrders = () => runSync(false, { force: true, daysBack: manualImportDays });
 
   const handleResetSync = async () => {
     try {
@@ -1970,7 +1984,9 @@ export function Orders() {
       <div className="orders-page-header">
         <div className="orders-page-header__main">
           <h1 className="title">📋 Заказы</h1>
-          <p className="subtitle">Управление заказами с маркетплейсов</p>
+          <p className="subtitle">
+            Управление заказами с маркетплейсов. Автоимпорт — каждые 5 мин, глубина 7 дн.; ручной — период ниже.
+          </p>
         </div>
         <div className="orders-page-header__actions">
           {!ordersAutoSyncPaused ? (
@@ -1992,12 +2008,32 @@ export function Orders() {
           >
             {syncLoading && syncKind === 'refresh' ? 'Обновление...' : '🔄 Обновить статусы заказов'}
           </Button>
+          <label
+            className="orders-import-period"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+            title="Период ручного импорта и обновления статусов"
+          >
+            <span className="muted">Период</span>
+            <select
+              className="warehouse-ops-select"
+              value={manualImportDays}
+              disabled={syncLoading}
+              onChange={(e) => setManualImportDays(Number(e.target.value))}
+              style={{ minWidth: 72 }}
+            >
+              {MANUAL_IMPORT_DAYS_OPTIONS.map((d) => (
+                <option key={d} value={d}>
+                  {d} дн.
+                </option>
+              ))}
+            </select>
+          </label>
           <Button
             variant="secondary"
             size="small"
             onClick={handleImportOrders}
             disabled={syncLoading}
-            title="Загрузка заказов за последние ~45 дней с Ozon, Wildberries и Яндекс.Маркет"
+            title={`Загрузка заказов за ${manualImportDays} дн. с Ozon, Wildberries и Яндекс.Маркет`}
           >
             {syncLoading && syncKind === 'import' ? 'Импорт...' : '📥 Импортировать заказы'}
           </Button>

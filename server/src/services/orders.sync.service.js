@@ -22,6 +22,24 @@ import { isOrdersFbsBackgroundSyncPaused } from './orders-fbs-sync-pause.js';
 const SYNC_STALE_LOCK_MS = 5 * 60 * 1000;
 const SYNC_BACKGROUND_MAX_MS = 25 * 60 * 1000;
 
+/** Ручной импорт: допустимые периоды (дней назад). */
+export const MANUAL_ORDER_SYNC_DAYS = [7, 14, 28, 90];
+const AUTO_ORDER_SYNC_DAYS = 7;
+
+function normalizeManualSyncDaysBack(raw) {
+  const n = typeof raw === 'string' ? parseInt(raw, 10) : Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return MANUAL_ORDER_SYNC_DAYS.includes(n) ? n : null;
+}
+
+function resolveAutoSchedulerDaysBack() {
+  const n = Number(process.env.ORDERS_FBS_SYNC_SCHEDULER_DAYS_BACK);
+  if (Number.isFinite(n) && n > 0) {
+    return Math.min(90, Math.max(7, Math.floor(n)));
+  }
+  return AUTO_ORDER_SYNC_DAYS;
+}
+
 const ordersSyncCache = {
   lastSyncTime: null,
   lastSyncResult: null,
@@ -312,6 +330,7 @@ class OrdersSyncService {
         organizationId,
         scheduler,
         refreshStatuses,
+        daysBack: options.daysBack,
         backgroundJob: true
       });
       const timeout = new Promise((_, reject) => {
@@ -465,7 +484,7 @@ class OrdersSyncService {
     }
     ordersSyncCache.lastSyncTime = now;
     ordersSyncCache.lastSyncError = null;
-    const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} org=${organizationId != null && organizationId !== '' ? organizationId : '—'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0}`;
+    const ctx = `profile=${profileId != null && profileId !== '' ? profileId : 'all'} org=${organizationId != null && organizationId !== '' ? organizationId : '—'} scheduler=${fromScheduler ? 1 : 0} force=${force ? 1 : 0} days=${syncDaysBack}`;
     if (refreshStatuses) {
       logger.info(
         `[Orders Sync] обновление статусов с маркетплейсов (catch-up до ${catchUpLimit} на МП, минутный лимит снят) (${ctx})`
@@ -484,14 +503,21 @@ class OrdersSyncService {
     /** Если синк WB прошёл — множество id из /api/v3/orders/new (иначе null, правило не трогаем). */
     let wbNewIdsThisSync = null;
 
-    // Чтобы заказы попадали в систему, запрашиваем период назад.
-    // Ручной импорт: короче (быстрее на VPS). Планировщик: ORDERS_FBS_SYNC_SCHEDULER_DAYS_BACK (по умолчанию 60, не 365).
-    const schedulerDays = (() => {
-      const n = Number(process.env.ORDERS_FBS_SYNC_SCHEDULER_DAYS_BACK);
-      if (Number.isFinite(n) && n > 0) return Math.min(365, Math.floor(n));
-      return 14;
-    })();
-    const syncDaysBack = fromScheduler ? schedulerDays : refreshStatuses ? 90 : 45;
+    // Период опроса МП: авто — минимальный (7 дн.), ручной — 7/14/28/90 по выбору пользователя.
+    const schedulerDays = resolveAutoSchedulerDaysBack();
+    const manualDays = normalizeManualSyncDaysBack(options.daysBack);
+    let syncDaysBack;
+    if (fromScheduler) {
+      syncDaysBack = schedulerDays;
+    } else if (manualDays != null) {
+      syncDaysBack = manualDays;
+    } else if (refreshStatuses) {
+      syncDaysBack = 90;
+    } else if (force) {
+      syncDaysBack = 14;
+    } else {
+      syncDaysBack = schedulerDays;
+    }
     const WB_DAYS_BACK = syncDaysBack;
     const OZON_DAYS_BACK = syncDaysBack;
 
@@ -615,9 +641,8 @@ class OrdersSyncService {
     let ymReason = null;
     try {
       if (hasYmKeys) {
-        const ymCreationDays = fromScheduler ? schedulerDays : syncDaysBack;
-        const ymUpdateDays =
-          force || refreshStatuses ? Math.min(30, Math.max(14, syncDaysBack)) : 0;
+        const ymCreationDays = syncDaysBack;
+        const ymUpdateDays = fromScheduler ? 0 : force || refreshStatuses ? Math.min(30, syncDaysBack) : 0;
         const ymResult = await fetchYandexFBSOrders(ymConfig, {
           force,
           creationDaysBack: ymCreationDays,

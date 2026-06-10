@@ -12,6 +12,17 @@ export const syncOrdersSchema = z.object({
   marketplace: z.enum(['ozon', 'wildberries', 'yandex']).optional(),
   force: z.coerce.boolean().optional().default(false),
   refreshStatuses: z.coerce.boolean().optional().default(false),
+  daysBack: z
+    .union([z.number(), z.string()])
+    .optional()
+    .transform((v) => {
+      if (v == null || v === '') return undefined;
+      const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    })
+    .refine((v) => v == null || [7, 14, 28, 90].includes(v), {
+      message: 'Период импорта: 7, 14, 28 или 90 дней',
+    }),
 });
 
 /**

@@ -375,6 +375,13 @@ class OrdersController {
         req.body?.refreshStatuses === true ||
         req.body?.refreshStatuses === 'true';
       const effectiveForce = force || refreshStatuses;
+      const daysBackRaw = req.body?.daysBack ?? req.query?.daysBack ?? null;
+      const daysBackParsed =
+        daysBackRaw != null && String(daysBackRaw).trim() !== '' ? Number(daysBackRaw) : null;
+      const daysBack =
+        daysBackParsed != null && Number.isFinite(daysBackParsed) && [7, 14, 28, 90].includes(daysBackParsed)
+          ? daysBackParsed
+          : null;
       const profileId = req.user?.profileId ?? null;
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId =
@@ -411,6 +418,7 @@ class OrdersController {
       const start = ordersSyncService.startSyncFbsInBackground({
         force: effectiveForce,
         refreshStatuses,
+        daysBack,
         profileId,
         organizationId
       });
@@ -420,6 +428,7 @@ class OrdersController {
         inProgress: true,
         force: effectiveForce || undefined,
         refreshStatuses: refreshStatuses || undefined,
+        daysBack: daysBack ?? undefined,
         message: start.started ? 'Синхронизация запущена' : 'Синхронизация уже выполняется',
         status: ordersSyncService.getSyncFbsStatus()
       });
