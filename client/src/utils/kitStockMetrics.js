@@ -3,8 +3,8 @@
  *
  * - Движения (резерв, отгрузка, поступление) — только по SKU комплекта, как у обычного товара.
  * - Наличие / в пути / поставщики — по карточке комплекта (1 SKU); резерв — на SKU или сумма по комплектующим.
- * - Доступно — «собрать из комплектующих» + доступно по SKU комплекта; в скобках — целые комплекты на складе.
- *   Пример: 7 (2) — из деталей можно 5, на складе 2 шт. комплектом, всего доступно 7.
+ * - Доступно — с учётом резерва; в скобках — целые комплекты + собираемость из комплектующих (это число уходит на МП).
+ *   Пример: 5 (7) — с резервом доступно 5; в скобках 2 целых + 5 из деталей = 7 к продаже на МП.
  */
 
 /** В таблице «Остатки на складе»: наличие + в пути − резерв + поставщики (не ниже 0). */
@@ -78,7 +78,17 @@ export function formatKitAvailableDisplay(metrics) {
   if (!metrics) return null;
   const total = Math.max(0, Number(metrics.available_total) || 0);
   const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
-  return `${total} (${whole})`;
+  const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
+  const marketplaceQty = Math.max(0, whole + assemblable);
+  return `${total} (${marketplaceQty})`;
+}
+
+/** Число в скобках колонки «Доступно» — целые комплекты + собираемость (для экспорта на МП). */
+export function kitMarketplaceAvailableFromMetrics(metrics) {
+  if (!metrics) return 0;
+  const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
+  const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
+  return Math.max(0, whole + assemblable);
 }
 
 /** В колонке «Поставщики» для комплекта: (N) — сколько комплектов из остатков поставщиков по составу. */

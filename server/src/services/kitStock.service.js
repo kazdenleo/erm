@@ -858,28 +858,28 @@ export async function computeKitDisplayMetricsFromDb(kitProductId, options = {})
 }
 
 /**
- * «Доступно» комплекта для экспорта на МП — первое число колонки (buildStockRowsWithKits на клиенте).
- * Не целые комплекты в скобках и не supplier_kit_units (они в отдельной колонке «Поставщики»).
+ * На МП для комплектов: целые комплекты на складе + собираемость из комплектующих (число в скобках «Доступно»).
  */
-export function computeKitStockTableAvailableFromMetrics(display, { incoming = 0, reserved = 0 } = {}) {
+export function computeKitMarketplaceAvailableFromMetrics(display) {
   const wholeOnHand = Math.max(0, Number(display?.whole_on_hand) || 0);
   const assemblable = Math.max(0, Number(display?.assemblable_from_components) || 0);
-  const inc = Math.max(0, Number(incoming) || 0);
-  const res = Math.max(0, Number(reserved) || 0);
-  const wholeAvail = Math.max(0, wholeOnHand + inc - res);
-  return Math.max(0, assemblable + wholeAvail);
+  return Math.max(0, wholeOnHand + assemblable);
 }
 
-/** Для отправки на МП: только число из колонки «Доступно» таблицы остатков. */
+/** @deprecated Используйте computeKitMarketplaceAvailableFromMetrics */
+export function computeKitStockTableAvailableFromMetrics(display, { incoming = 0, reserved = 0 } = {}) {
+  void incoming;
+  void reserved;
+  return computeKitMarketplaceAvailableFromMetrics(display);
+}
+
+/** Для отправки на МП: число в скобках колонки «Доступно» (целые + собираемость). */
 export async function readKitMarketplaceStockFromDb(kitProductId, opts = {}) {
   const [base, display] = await Promise.all([
     readKitStockFromDb(kitProductId, opts),
     computeKitDisplayMetricsFromDb(kitProductId, opts)
   ]);
-  const available = computeKitStockTableAvailableFromMetrics(display, {
-    incoming: base.incoming,
-    reserved: base.reserved
-  });
+  const available = computeKitMarketplaceAvailableFromMetrics(display);
   return {
     ...base,
     onHand: Math.max(0, Number(display.whole_on_hand) || 0),
@@ -2090,6 +2090,7 @@ export async function attachKitDisplayMetrics(products, options = {}) {
       whole_on_hand: wholeOnHand,
       assemblable_from_components: assemblable,
       supplier_kit_units: supplierKitUnits,
+      marketplace_available: wholeOnHand + assemblable,
       available_total: availableTotal
     };
   }
@@ -2130,6 +2131,7 @@ export default {
   readKitStockFromDb,
   readKitMarketplaceStockFromDb,
   computeKitDisplayMetricsFromDb,
+  computeKitMarketplaceAvailableFromMetrics,
   computeKitStockTableAvailableFromMetrics,
   persistKitStock,
   recalculateKitsForComponent,
