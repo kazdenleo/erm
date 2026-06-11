@@ -16,6 +16,13 @@ export function accountSettingsFromProfile(profile) {
         : profile.manualOrdersWarehouseId != null && profile.manualOrdersWarehouseId !== ''
           ? String(profile.manualOrdersWarehouseId)
           : '',
+    fbo_enabled: isProfileBoolFlag(profile.fbo_enabled ?? profile.fboEnabled),
+    fbo_deduction_warehouse_id:
+      profile.fbo_deduction_warehouse_id != null && profile.fbo_deduction_warehouse_id !== ''
+        ? String(profile.fbo_deduction_warehouse_id)
+        : profile.fboDeductionWarehouseId != null && profile.fboDeductionWarehouseId !== ''
+          ? String(profile.fboDeductionWarehouseId)
+          : '',
     require_reserved_stock_for_assembly: isProfileBoolFlag(profile.require_reserved_stock_for_assembly),
     allow_manual_warehouse_stock_edit: isProfileBoolFlag(profile.allow_manual_warehouse_stock_edit),
     allow_stock_history_reset: isProfileBoolFlag(profile.allow_stock_history_reset),

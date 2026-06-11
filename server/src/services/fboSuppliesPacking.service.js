@@ -363,6 +363,27 @@ class FboSuppliesPackingService {
       params.push(parsed);
     }
 
+    if (patch.barcode !== undefined) {
+      const code = normalizeBarcode(patch.barcode);
+      if (!code) {
+        const err = new Error('Укажите штрихкод грузоместа');
+        err.statusCode = 400;
+        throw err;
+      }
+      const dup = await query(
+        `SELECT id FROM fbo_supply_cargo_units
+         WHERE fbo_supply_id = $1 AND barcode = $2 AND id <> $3`,
+        [supplyId, code, cid]
+      );
+      if (dup.rows?.length) {
+        const err = new Error('В этой поставке уже есть грузоместо с таким штрихкодом');
+        err.statusCode = 409;
+        throw err;
+      }
+      fields.push(`barcode = $${idx++}`);
+      params.push(code);
+    }
+
     if (!fields.length) {
       const packing = await this.getPackingState(supplyId, { profileId });
       return { packing };

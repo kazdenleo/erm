@@ -78,6 +78,10 @@ router.post(
   '/:id/sync-ozon-placement-zones',
   wrapAsync(fboSuppliesController.syncOzonPlacementZones.bind(fboSuppliesController))
 );
+router.post(
+  '/:id/packing/submit',
+  wrapAsync(fboSuppliesController.submitPackingToMarketplace.bind(fboSuppliesController))
+);
 router.delete('/:id', wrapAsync(fboSuppliesController.delete.bind(fboSuppliesController)));
 
 export default router;

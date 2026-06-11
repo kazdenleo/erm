@@ -10,6 +10,7 @@ import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { FboSupplyPackingRemoveModal } from './FboSupplyPackingRemoveModal.jsx';
 import { FboCargoContentMeta } from './FboCargoContentMeta.jsx';
 import { FboCargoUnitKind } from './FboCargoUnitKind.jsx';
+import { FboCargoBarcodeEdit } from './FboCargoBarcodeEdit.jsx';
 import {
   cargoWeightExceededMessage,
   cargoWeightSummary,
@@ -90,6 +91,7 @@ export function FboSupplyPacking({
   const [newCargoMode, setNewCargoMode] = useState(false);
   const [weightWarning, setWeightWarning] = useState(null);
   const [placementWarning, setPlacementWarning] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
   const scanLoadingRef = useRef(false);
 
   scanLoadingRef.current = scanLoading;
@@ -218,6 +220,28 @@ export function FboSupplyPacking({
       setScanError(e.response?.data?.message || e.message || 'Не удалось выгрузить Excel');
     } finally {
       setExporting(false);
+    }
+  };
+
+  const handleSubmitToMarketplace = async () => {
+    const mpLabel = isOzon ? 'Ozon' : marketplace === 'wb' ? 'Wildberries' : 'маркетплейс';
+    if (
+      !window.confirm(
+        `Отправить состав грузомест в ${mpLabel}? Убедитесь, что сборка совпадает с планом.`
+      )
+    ) {
+      return;
+    }
+    setSubmitting(true);
+    setScanError(null);
+    setPlacementWarning(null);
+    try {
+      const data = await fboSuppliesApi.submitPackingToMarketplace(supplyId);
+      setScanMsg(data?.message || 'Состав отправлен на маркетплейс');
+    } catch (e) {
+      setScanError(e.response?.data?.message || e.message || 'Не удалось отправить состав');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -374,6 +398,19 @@ export function FboSupplyPacking({
         >
           {exporting ? 'Выгрузка…' : 'Excel по грузоместам'}
         </Button>
+        <Button
+          variant="primary"
+          size="small"
+          disabled={submitting || !(cargoUnits.length > 0)}
+          onClick={handleSubmitToMarketplace}
+          title={
+            isOzon
+              ? 'Отправить грузоместа в Ozon через API'
+              : 'Для WB используйте Excel — API отправки пока недоступен'
+          }
+        >
+          {submitting ? 'Отправка…' : 'На маркетплейс'}
+        </Button>
       </div>
       <p className="fbo-packing-hint" style={{ marginTop: 4 }}>
         {marketplace === 'wb'
@@ -443,6 +480,12 @@ export function FboSupplyPacking({
                 {isActive ? (
                   <div className="fbo-cargo-card__body">
                     <FboCargoUnitKind
+                      supplyId={supplyId}
+                      cargo={cargo}
+                      onPackingChange={handlePackingChange}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <FboCargoBarcodeEdit
                       supplyId={supplyId}
                       cargo={cargo}
                       onPackingChange={handlePackingChange}

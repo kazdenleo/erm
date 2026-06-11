@@ -7,6 +7,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import { FBO_SUPPLY_STATUSES, getNextFboSupplyStatus } from '../constants/fboSupplyStatuses.js';
 import stockMovementsService from './stockMovements.service.js';
 import fboSupplyReserveService from './fboSupplyReserve.service.js';
+import { resolveDefaultFboDeductionWarehouseId } from '../utils/fboProfileDefaults.js';
 import {
   assertCanSetReadyForSupply,
   evaluateSupplyPacking,
@@ -396,6 +397,10 @@ class FboSuppliesService {
       }
 
       const status = FBO_SUPPLY_STATUSES.includes(payload.status) ? payload.status : 'new';
+      let deductionWarehouseId = payload.deductionWarehouseId ?? null;
+      if (deductionWarehouseId == null) {
+        deductionWarehouseId = await resolveDefaultFboDeductionWarehouseId(pid);
+      }
       const ins = await client.query(
         `INSERT INTO fbo_supplies (
           profile_id, organization_id, created_by_user_id, status, marketplace,
@@ -417,7 +422,7 @@ class FboSuppliesService {
           payload.placementCluster ?? payload.shippingCluster ?? null,
           ext,
           payload.externalSupplyId ?? null,
-          payload.deductionWarehouseId ?? null,
+          deductionWarehouseId,
           payload.deductStock !== false,
           payload.source || 'manual',
           payload.note ?? null,
@@ -531,6 +536,13 @@ class FboSuppliesService {
     }
     if (payload.deductionWarehouseId !== undefined) {
       setField('deduction_warehouse_id', payload.deductionWarehouseId);
+    }
+    if (payload.externalSupplyId !== undefined) {
+      const sid =
+        payload.externalSupplyId != null && String(payload.externalSupplyId).trim() !== ''
+          ? String(payload.externalSupplyId).trim()
+          : null;
+      setField('external_supply_id', sid);
     }
     if (payload.organizationId !== undefined) setField('organization_id', payload.organizationId);
     if (payload.deductStock !== undefined) setField('deduct_stock', !!payload.deductStock);

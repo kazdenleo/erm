@@ -35,6 +35,8 @@ export function Settings() {
     contact_phone: '',
     allow_private_orders: false,
     manual_orders_warehouse_id: '',
+    fbo_enabled: false,
+    fbo_deduction_warehouse_id: '',
     require_reserved_stock_for_assembly: false,
     allow_manual_warehouse_stock_edit: false,
     allow_stock_history_reset: false,
@@ -80,6 +82,10 @@ export function Settings() {
       alert('Укажите склад списания остатков для ручных заказов');
       return;
     }
+    if (form.fbo_enabled && !String(form.fbo_deduction_warehouse_id || '').trim()) {
+      alert('Укажите склад списания остатков для поставок FBO');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -91,6 +97,8 @@ export function Settings() {
         manual_orders_warehouse_id: form.allow_private_orders
           ? form.manual_orders_warehouse_id || null
           : null,
+        fbo_enabled: form.fbo_enabled,
+        fbo_deduction_warehouse_id: form.fbo_enabled ? form.fbo_deduction_warehouse_id || null : null,
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
         allow_manual_warehouse_stock_edit: form.allow_manual_warehouse_stock_edit,
         allow_stock_history_reset: form.allow_stock_history_reset,
@@ -454,6 +462,47 @@ export function Settings() {
                       Нет складов типа «Склад». Создайте склад в разделе «Склады».
                     </span>
                   )}
+                </label>
+              )}
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.fbo_enabled}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setForm((f) => ({
+                      ...f,
+                      fbo_enabled: on,
+                      fbo_deduction_warehouse_id: on ? f.fbo_deduction_warehouse_id : '',
+                    }));
+                  }}
+                />
+                <span>
+                  <strong>Работать по FBO</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    При создании и импорте поставок FBO автоматически подставляется склад списания остатков.
+                  </span>
+                </span>
+              </label>
+              {form.fbo_enabled && (
+                <label className="settings-account-label" style={{ marginTop: 8, marginLeft: 28 }}>
+                  Склад списания для FBO
+                  <select
+                    className="login-input"
+                    style={{ maxWidth: 420, marginTop: 8 }}
+                    value={form.fbo_deduction_warehouse_id}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, fbo_deduction_warehouse_id: e.target.value }))
+                    }
+                  >
+                    <option value="">— выберите склад —</option>
+                    {ownWarehouses.map((w) => (
+                      <option key={w.id} value={String(w.id)}>
+                        {w.address ? `${w.address} (#${w.id})` : `Склад #${w.id}`}
+                        {(w.isFboStock || w.is_fbo_stock) ? ' (FBO)' : ''}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               )}
               <label className="settings-account-toggle">

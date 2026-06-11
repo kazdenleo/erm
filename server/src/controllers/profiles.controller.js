@@ -75,7 +75,52 @@ function pickAccountOwnerProfilePayload(body) {
       out.manual_orders_warehouse_id = Number.isFinite(n) && n > 0 ? n : null;
     }
   }
+  if (b.fbo_enabled !== undefined || b.fboEnabled !== undefined) {
+    const v = b.fbo_enabled ?? b.fboEnabled;
+    out.fbo_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.fbo_deduction_warehouse_id !== undefined || b.fboDeductionWarehouseId !== undefined) {
+    const raw = b.fbo_deduction_warehouse_id ?? b.fboDeductionWarehouseId;
+    if (raw == null || raw === '') {
+      out.fbo_deduction_warehouse_id = null;
+    } else {
+      const n = Number(raw);
+      out.fbo_deduction_warehouse_id = Number.isFinite(n) && n > 0 ? n : null;
+    }
+  }
   return out;
+}
+
+async function validateFboDeductionWarehouse(profileId, payload, currentProfile) {
+  const fboEnabled =
+    payload.fbo_enabled !== undefined
+      ? payload.fbo_enabled === true
+      : currentProfile?.fbo_enabled === true;
+  let whId =
+    payload.fbo_deduction_warehouse_id !== undefined
+      ? payload.fbo_deduction_warehouse_id
+      : currentProfile?.fbo_deduction_warehouse_id ?? null;
+  if (!fboEnabled) {
+    if (payload.fbo_enabled === false) {
+      payload.fbo_deduction_warehouse_id = null;
+    }
+    return null;
+  }
+  if (whId == null || whId === '') {
+    return 'Укажите склад списания остатков для поставок FBO';
+  }
+  const wid = Number(whId);
+  if (!Number.isFinite(wid) || wid <= 0) {
+    return 'Укажите склад списания остатков для поставок FBO';
+  }
+  const wh = await query(
+    `SELECT id FROM warehouses WHERE id = $1 AND profile_id = $2 AND type = 'warehouse' LIMIT 1`,
+    [wid, profileId]
+  );
+  if (!wh.rows[0]) {
+    return 'Выбранный склад FBO не найден или недоступен для этого аккаунта';
+  }
+  return null;
 }
 
 async function validateManualOrdersWarehouse(profileId, payload, currentProfile) {
@@ -162,6 +207,10 @@ export const profilesController = {
       const manualWhError = await validateManualOrdersWarehouse(id, payload, current);
       if (manualWhError) {
         return res.status(400).json({ ok: false, message: manualWhError });
+      }
+      const fboWhError = await validateFboDeductionWarehouse(id, payload, current);
+      if (fboWhError) {
+        return res.status(400).json({ ok: false, message: fboWhError });
       }
       const item = await repo.update(id, payload);
       if (!item) {

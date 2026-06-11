@@ -145,6 +145,22 @@ class ProfilesRepositoryPG {
         set('manual_orders_warehouse_id', Number.isFinite(n) && n > 0 ? n : null);
       }
     }
+    if (updates.fbo_enabled !== undefined || updates.fboEnabled !== undefined) {
+      const v = updates.fbo_enabled ?? updates.fboEnabled;
+      set('fbo_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (
+      updates.fbo_deduction_warehouse_id !== undefined ||
+      updates.fboDeductionWarehouseId !== undefined
+    ) {
+      const raw = updates.fbo_deduction_warehouse_id ?? updates.fboDeductionWarehouseId;
+      if (raw == null || raw === '') {
+        set('fbo_deduction_warehouse_id', null);
+      } else {
+        const n = Number(raw);
+        set('fbo_deduction_warehouse_id', Number.isFinite(n) && n > 0 ? n : null);
+      }
+    }
 
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

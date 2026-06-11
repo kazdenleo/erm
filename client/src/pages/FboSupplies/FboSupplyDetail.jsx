@@ -98,6 +98,8 @@ export function FboSupplyDetail() {
   const [deleting, setDeleting] = useState(false);
   const [syncingPlacementZones, setSyncingPlacementZones] = useState(false);
   const [placementZonesMsg, setPlacementZonesMsg] = useState(null);
+  const [submittingPacking, setSubmittingPacking] = useState(false);
+  const [submitPackingMsg, setSubmitPackingMsg] = useState(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const selectAllItemsRef = useRef(null);
   const autoPlacementSyncAttemptedRef = useRef(null);
@@ -308,6 +310,32 @@ export function FboSupplyDetail() {
     }
   }, [id]);
 
+  const handleSubmitPackingToMarketplace = async () => {
+    if (!supply) return;
+    const mp = supply.marketplace;
+    const isOzon =
+      mp !== 'wb' && mp !== 'ym' && mp !== 'yandex';
+    const mpLabel = isOzon ? 'Ozon' : mp === 'wb' ? 'Wildberries' : 'маркетплейс';
+    if (
+      !window.confirm(
+        `Отправить состав грузомест в ${mpLabel}? Убедитесь, что сборка совпадает с планом.`
+      )
+    ) {
+      return;
+    }
+    setSubmittingPacking(true);
+    setErr(null);
+    setSubmitPackingMsg(null);
+    try {
+      const data = await fboSuppliesApi.submitPackingToMarketplace(id);
+      setSubmitPackingMsg(data?.message || 'Состав отправлен на маркетплейс');
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось отправить состав');
+    } finally {
+      setSubmittingPacking(false);
+    }
+  };
+
   useEffect(() => {
     if (!supply?.id || loading || syncingPlacementZones) return;
     if (autoPlacementSyncAttemptedRef.current === String(supply.id)) return;
@@ -515,6 +543,15 @@ export function FboSupplyDetail() {
           </Button>
         ) : null}
         <Button
+          variant="primary"
+          size="small"
+          disabled={submittingPacking || saving || !(packing?.cargoUnits?.length > 0)}
+          onClick={handleSubmitPackingToMarketplace}
+          title="Отправить упакованный состав грузомест на маркетплейс"
+        >
+          {submittingPacking ? 'Отправка…' : 'На маркетплейс'}
+        </Button>
+        <Button
           type="button"
           variant="secondary"
           size="small"
@@ -540,6 +577,9 @@ export function FboSupplyDetail() {
       {err && <div className="alert alert-danger">{err}</div>}
       {placementZonesMsg ? (
         <div className="alert alert-success">{placementZonesMsg}</div>
+      ) : null}
+      {submitPackingMsg ? (
+        <div className="alert alert-success">{submitPackingMsg}</div>
       ) : null}
       {stockMsg && (
         <div className={`alert ${stockMsg.includes('Списано') ? 'alert-success' : 'alert-warning'}`}>
@@ -699,6 +739,20 @@ export function FboSupplyDetail() {
             placeholder="Номер с маркетплейса"
           />
         </div>
+        {isOzonSupply ? (
+          <div>
+            <label>ID поставки Ozon</label>
+            <input
+              className="form-control form-control-sm"
+              value={supply.externalSupplyId || ''}
+              onChange={(e) => setSupply((s) => ({ ...s, externalSupplyId: e.target.value }))}
+              onBlur={() => saveField({ externalSupplyId: supply.externalSupplyId || null })}
+              disabled={saving}
+              placeholder="supply_id для API Ozon"
+              title="Нужен для отправки грузомест в Ozon"
+            />
+          </div>
+        ) : null}
         <div>
           <label>Организация</label>
           <select
