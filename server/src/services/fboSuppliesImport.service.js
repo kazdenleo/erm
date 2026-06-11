@@ -208,9 +208,18 @@ function isOzonSupplyImportable(order, supply) {
   return OZON_SUPPLY_IMPORT_STATES.includes(ozonSupplyRowState(order, supply));
 }
 
+function ozonSupplyContentBundleId(supplyOrDetail) {
+  if (!supplyOrDetail || typeof supplyOrDetail !== 'object') return null;
+  const fromContent = supplyOrDetail.content?.bundle_id ?? supplyOrDetail.content?.bundleId;
+  if (fromContent != null && String(fromContent).trim() !== '') return String(fromContent).trim();
+  const direct = supplyOrDetail.bundle_id ?? supplyOrDetail.bundleId;
+  if (direct != null && String(direct).trim() !== '') return String(direct).trim();
+  return null;
+}
+
 function resolveOzonBundleId(order, supply) {
-  const fromSupply = supply?.bundle_id ?? supply?.bundleId;
-  if (fromSupply != null && String(fromSupply).trim() !== '') return String(fromSupply).trim();
+  const fromSupply = ozonSupplyContentBundleId(supply);
+  if (fromSupply) return fromSupply;
 
   const supplyBundles = supply?.bundle_ids;
   if (Array.isArray(supplyBundles) && supplyBundles.length) {
@@ -501,6 +510,7 @@ async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
     }
     pushId(result.bundle_id ?? result.bundleId);
     for (const s of supplies) {
+      pushId(ozonSupplyContentBundleId(s));
       pushId(s?.bundle_id ?? s?.bundleId);
       for (const entry of s?.bundle_ids ?? []) {
         pushId(typeof entry === 'object' ? entry?.bundle_id ?? entry?.bundleId : entry);
@@ -645,6 +655,7 @@ function collectOzonBundleIdsForSupply(order, supply, orderDetails = null) {
   const supplyId = supply?.supply_id ?? supply?.id;
   for (const s of ozonDetailsSuppliesList(orderDetails?.raw ?? {})) {
     if (supplyId != null && String(s?.supply_id ?? s?.id) !== String(supplyId)) continue;
+    push(ozonSupplyContentBundleId(s));
     push(s?.bundle_id ?? s?.bundleId);
     for (const entry of s?.bundle_ids ?? []) {
       push(typeof entry === 'object' ? entry?.bundle_id ?? entry?.bundleId : entry);
@@ -684,13 +695,13 @@ function resolveOzonPreviewItemCount({ items, totalCount, order, supply, orderDe
   return 0;
 }
 
-async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags = true } = {}) {
+async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags = false } = {}) {
   let items = [];
   let reportedLineCount = 0;
   let reportedQtySum = 0;
   const clusterQty = new Map();
 
-  const loadPages = async (includeTagsCalc) => {
+  const loadPages = async () => {
     const batch = [];
     let lastId = '';
     let lineCount = 0;
@@ -699,7 +710,7 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags
 
     for (let page = 0; page < 20; page++) {
       const body = { bundle_ids: [String(bundleId)], limit: 100 };
-      if (includeTagsCalc) body.item_tags_calculation = true;
+      // item_tags_calculation: true — Ozon API 400 (proto unexpected token true); теги не запрашиваем.
       if (lastId) body.last_id = lastId;
       const bundleData = await integrationsService._ozonApiPost('/v1/supply-order/bundle', body, ozonApiOpts);
       const parsed = parseOzonBundleResponse(bundleData);
@@ -732,7 +743,7 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags
           mpProductId: row.product_id != null ? String(row.product_id) : null,
           name: row.name ?? row.product_name ?? null,
           placementZone,
-          ozonTags: includeTagsCalc ? ozonTags : [],
+          ozonTags: withTags ? ozonTags : [],
           unresolved: productId == null,
         });
       }
@@ -745,33 +756,16 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags
     return { batch, lineCount, qtySum, localClusterQty };
   };
 
-  const mergeLoaded = ({ batch, lineCount, qtySum, localClusterQty }) => {
-    items = batch;
-    if (lineCount > reportedLineCount) reportedLineCount = lineCount;
-    reportedQtySum = Math.max(reportedQtySum, qtySum);
-    for (const [name, qty] of localClusterQty) {
+  try {
+    const loaded = await loadPages();
+    items = loaded.batch;
+    reportedLineCount = loaded.lineCount;
+    reportedQtySum = loaded.qtySum;
+    for (const [name, qty] of loaded.localClusterQty) {
       clusterQty.set(name, (clusterQty.get(name) || 0) + qty);
     }
-  };
-
-  try {
-    mergeLoaded(await loadPages(withTags));
   } catch {
-    if (withTags) {
-      try {
-        mergeLoaded(await loadPages(false));
-      } catch {
-        /* bundle failed */
-      }
-    }
-  }
-
-  if (!items.length && withTags) {
-    try {
-      mergeLoaded(await loadPages(false));
-    } catch {
-      /* bundle failed */
-    }
+    /* bundle failed */
   }
 
   const qtyTotal = sumSupplyItemsQuantity(items);
@@ -831,10 +825,7 @@ async function fetchOzonSupplyItems(
 
   for (const bundleId of bundleIds) {
     try {
-      let fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags: true });
-      if (!fetched.items.length && !fetched.totalCount) {
-        fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags: false });
-      }
+      const fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags: false });
       if (fetched.items.length > items.length) items = fetched.items;
       const bundleQty = fetched.totalCount || sumSupplyItemsQuantity(fetched.items);
       if (bundleQty > totalCount) totalCount = bundleQty;
@@ -988,11 +979,6 @@ function resolveOzonMacrolocalClusterName(supply, order, detailsRaw, macrolocalB
 async function fetchOzonClusterMaps(ozonApiOpts) {
   const warehouseById = new Map();
   const macrolocalById = new Map();
-  const bodies = [
-    { cluster_type: 'CLUSTER_TYPE_OZON' },
-    { cluster_type: 'CLUSTER_TYPE_CIS' },
-    {},
-  ];
   const addWarehouse = (clusterName, wh) => {
     const name = String(clusterName ?? '').trim();
     if (!name) return;
@@ -1023,19 +1009,14 @@ async function fetchOzonClusterMaps(ozonApiOpts) {
       }
     }
   };
-  for (const body of bodies) {
-    try {
-      for (const path of ['/v1/cluster/list', '/v2/cluster/list']) {
-        try {
-          const data = await integrationsService._ozonApiPost(path, body, ozonApiOpts);
-          ingestClusters(data?.result?.clusters ?? data?.clusters ?? []);
-        } catch {
-          /* v2 may be unavailable */
-        }
+  for (const cluster_type of ['CLUSTER_TYPE_OZON', 'CLUSTER_TYPE_CIS']) {
+    for (const path of ['/v1/cluster/list', '/v2/cluster/list']) {
+      try {
+        const data = await integrationsService._ozonApiPost(path, { cluster_type }, ozonApiOpts);
+        ingestClusters(data?.result?.clusters ?? data?.clusters ?? []);
+      } catch {
+        /* v2 или тип кластера может быть недоступен */
       }
-      if (warehouseById.size || macrolocalById.size) break;
-    } catch {
-      /* try next body */
     }
   }
   return { warehouseById, macrolocalById };
