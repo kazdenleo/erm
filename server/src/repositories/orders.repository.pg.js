@@ -20,6 +20,8 @@ function rowToCamel(row) {
   const productId = Number.isFinite(pid) && pid >= 1 ? pid : null;
   return {
     id: row.id,
+    profileId:
+      row.profile_id != null && row.profile_id !== '' ? Number(row.profile_id) : null,
     marketplace: marketplaceFromDb(row.marketplace),
     orderId: row.order_id,
     orderGroupId: row.order_group_id || null,
@@ -760,7 +762,7 @@ class OrdersRepositoryPG {
     }
     const result = await query(
       `
-      SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+      SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
@@ -794,7 +796,7 @@ class OrdersRepositoryPG {
     if (!orderGroupId) return [];
     const pid = normalizeProfileId(profileId);
     const result = await query(`
-      SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+      SELECT o.id, o.profile_id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, o.product_name) AS product_name,
         o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
         o.delivery_address, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
