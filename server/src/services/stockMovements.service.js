@@ -577,7 +577,9 @@ class StockMovementsService {
 
     let netReserved;
     if (isKit) {
-      netReserved = await readKitDisplayReservedQuantity(idNum);
+      netReserved = await readKitDisplayReservedQuantity(idNum, {
+        warehouseId: whFilter ?? null
+      });
     } else if (whFilter != null) {
       netReserved = await getReservedQuantityFromMovements(idNum, { warehouseId: whFilter });
     } else {

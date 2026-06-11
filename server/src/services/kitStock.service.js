@@ -1002,20 +1002,15 @@ async function minKitUnitsFromComponentReservesAsync(components, getReservedAsyn
 }
 
 /**
- * Резерв в колонке «Резерв» для комплекта: журнал по SKU комплекта; если там 0 — сумма резерва по комплектующим
- * (как в истории остатков комплекта, куда подмешиваются reserve/unreserve комплектующих).
+ * Резерв в колонке «Резерв» для комплекта — та же формула, что readKitDisplayReservedQuantity / история:
+ * нетто на SKU комплекта; если 0 — min(⌊резерв_i / qty_i⌋) по комплектующим (целые комплекты, не сумма штук).
  */
 function kitTotalDisplayReservedFromContext(kitId, ctx) {
   const onSku = Math.max(0, ctx.reservedMap.get(kitId) || 0);
   if (onSku > 0) return onSku;
   const comps = ctx.componentsByKit?.get(kitId) || [];
-  let compSum = 0;
-  for (const c of comps) {
-    const pid = Number(c.component_product_id ?? c.productId);
-    if (!Number.isFinite(pid) || pid < 1) continue;
-    compSum += Math.max(0, ctx.reservedMap.get(pid) || 0);
-  }
-  return compSum;
+  if (!comps.length) return 0;
+  return minKitUnitsFromComponentReserves(comps, (pid) => ctx.reservedMap.get(pid) ?? 0);
 }
 
 /** Map component_product_id → нетто-резерв (warehouse-scoped, как sumKitComponentsNetReserved). */
@@ -2073,10 +2068,9 @@ export async function attachKitDisplayMetrics(products, options = {}) {
     const supplierSyncOn = options.supplierSyncEnabled !== false;
     const supplierKitUnits = supplierSyncOn ? supplierKitUnitsFromContext(kitId, ctx) : 0;
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
-    let reserved = kitDisplayReservedFromContext(kitId, ctx);
-    if (reserved <= 0) {
-      reserved = await readKitDisplayReservedQuantity(kitId, options);
-    }
+    const reserved =
+      (await readKitDisplayReservedQuantity(kitId, options)) ||
+      kitDisplayReservedFromContext(kitId, ctx);
     const wholeAvail = Math.max(0, wholeOnHand + incoming - reserved);
     const availableTotal = assemblable + wholeAvail + supplierKitUnits;
 
