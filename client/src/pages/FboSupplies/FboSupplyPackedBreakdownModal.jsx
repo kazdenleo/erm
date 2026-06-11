@@ -20,7 +20,8 @@ export function FboSupplyPackedBreakdownModal({ isOpen, item, onClose }) {
         {sku}
         <br />
         <span className="text-muted" style={{ fontSize: 13 }}>
-          Упаковано {item.packed ?? item.stat?.packed ?? 0} из {item.planned ?? item.stat?.planned ?? item.quantity ?? 0}
+          План {item.planned ?? item.stat?.planned ?? item.quantity ?? 0} · упаковано{' '}
+          {item.packed ?? item.stat?.packed ?? 0}
         </span>
       </p>
       {byCargo.length === 0 ? (

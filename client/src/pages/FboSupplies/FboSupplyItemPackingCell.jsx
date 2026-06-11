@@ -1,5 +1,5 @@
 /**
- * Отображение «упаковано / в поставке»; по клику — редактирование количества в поставке.
+ * План / упаковано; редактируется только план (количество в поставке).
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -43,6 +43,11 @@ export function FboSupplyItemPackingCell({
     setPlannedInput(String(planned));
     setError(null);
     setEditing(false);
+  };
+
+  const startPlanEdit = () => {
+    if (disabled || saving) return;
+    setEditing(true);
   };
 
   const save = async () => {
@@ -95,8 +100,6 @@ export function FboSupplyItemPackingCell({
   if (editing) {
     return (
       <div className={`fbo-supply-qty-cell fbo-supply-qty-cell--edit fbo-packed-${cls}`}>
-        <span className="fbo-supply-qty-cell__packed-num">{packedNum}</span>
-        <span className="fbo-supply-qty-cell__sep">/</span>
         <input
           ref={inputRef}
           type="number"
@@ -120,8 +123,12 @@ export function FboSupplyItemPackingCell({
               cancelEdit();
             }
           }}
-          aria-label="Количество в поставке"
+          aria-label="План: количество в поставке"
         />
+        <span className="fbo-supply-qty-cell__sep">/</span>
+        <span className="fbo-supply-qty-cell__packed-num" title="Упаковано">
+          {packedNum}
+        </span>
         {error ? <div className="text-danger small mt-1">{error}</div> : null}
       </div>
     );
@@ -129,6 +136,16 @@ export function FboSupplyItemPackingCell({
 
   return (
     <div className={`fbo-supply-qty-cell fbo-packed-${cls}`}>
+      <button
+        type="button"
+        className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__plan-part`}
+        disabled={disabled || saving}
+        onClick={startPlanEdit}
+        title="План: количество в поставке (нажмите, чтобы изменить)"
+      >
+        {plannedNum}
+      </button>
+      <span className="fbo-supply-qty-cell__sep"> / </span>
       <span
         className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__packed-part`}
         role={packedNum > 0 ? 'button' : undefined}
@@ -142,20 +159,10 @@ export function FboSupplyItemPackingCell({
             onBreakdownClick?.();
           }
         }}
-        title={packedNum > 0 ? 'Упаковано по грузоместам' : undefined}
+        title={packedNum > 0 ? 'Упаковано в грузоместах' : 'Упаковано'}
       >
         {packedNum}
       </span>
-      <span className="fbo-supply-qty-cell__sep"> / </span>
-      <button
-        type="button"
-        className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__plan-part`}
-        disabled={disabled || saving}
-        onClick={() => setEditing(true)}
-        title="Изменить количество в поставке"
-      >
-        {plannedNum}
-      </button>
     </div>
   );
 }
