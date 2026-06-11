@@ -36,6 +36,9 @@ npm run build
 
 echo "==> pm2 restart (cwd=$APP_ROOT/server)"
 cd "$APP_ROOT/server"
+NODE_HEAP_MB="${NODE_HEAP_MB:-3072}"
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=${NODE_HEAP_MB}}"
+echo "    NODE_OPTIONS=$NODE_OPTIONS"
 if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
   pm2 restart "$PM2_NAME" --update-env
 else

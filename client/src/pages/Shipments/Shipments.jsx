@@ -7,6 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { shipmentsApi, getQrStickerPrintUrl } from '../../services/shipments.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
+import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import './Shipments.css';
 
 export function Shipments() {
@@ -138,7 +139,7 @@ export function Shipments() {
         });
         return;
       }
-      setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка закрытия');
+      setOpenDetailError(getApiErrorMessage(e, 'Ошибка закрытия'));
     } finally {
       setCloseLoadingId(null);
     }
@@ -163,7 +164,7 @@ export function Shipments() {
       if (hasCancelled) options.cancelled = closeCancelledAction;
       await finishCloseShipment(shipment, options);
     } catch (e) {
-      const msg = e.response?.data?.message || e.message || 'Ошибка закрытия';
+      const msg = getApiErrorMessage(e, 'Ошибка закрытия');
       setOpenDetailError(msg);
       if (e.response?.status === 409 && e.response?.data?.details?.code === 'SHIPMENT_CLOSE_CONFIRM_REQUIRED') {
         setCloseConfirm({

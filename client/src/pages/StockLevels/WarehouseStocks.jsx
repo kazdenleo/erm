@@ -441,12 +441,34 @@ function sumMovementsQuantityChange(movements) {
   return movements.reduce((s, x) => s + Number(x.quantity_change || 0), 0);
 }
 
+/** Для истории комплекта: резерв в целых комплектах, не сумма штук комплектующих. */
+function kitReserveUnitsFromMovements(movements) {
+  let units = 0;
+  for (const m of movements || []) {
+    const meta = parseMovementMeta(m);
+    const fromMeta =
+      Number(meta.kit_units) ||
+      Number(meta.kit_reserve_preallocated) ||
+      Number(meta.kit_reserve_from_whole) ||
+      0;
+    if (fromMeta > 0) {
+      units += fromMeta;
+      continue;
+    }
+    if (meta.kit_component_reserve === true) continue;
+    const qc = Number(m.quantity_change) || 0;
+    if (qc < 0) units += Math.abs(qc);
+    else if (qc > 0) units -= qc;
+  }
+  return Math.max(0, units);
+}
+
 /**
  * Дополняем снимок для отображения: у резервов в БД часто нет incoming_after/reserved_after;
  * одиночный «Резерв по заказу» — те же правила, что у сгруппированных резервов;
  * пачка отгрузки — «в пути» 0, резерв 0.
  */
-function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
+function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
   const out = {
     inc: cur.inc != null && !Number.isNaN(Number(cur.inc)) ? Number(cur.inc) : cur.inc,
     res: cur.res != null && !Number.isNaN(Number(cur.res)) ? Number(cur.res) : cur.res,
@@ -477,8 +499,24 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
       out.inc = 0;
     }
 
+    const useKitUnits =
+      kitProduct &&
+      isKitProduct(kitProduct) &&
+      reserveLikeMs.some((m) => {
+        const meta = parseMovementMeta(m);
+        return meta.kit_component_reserve === true || meta.kit_reserve_scope;
+      });
+
     if (dbRes != null) {
       out.res = dbRes;
+    } else if (useKitUnits && prevLineBelow?.res != null) {
+      const kitUnits = kitReserveUnitsFromMovements(reserveLikeMs);
+      const isUnreserve =
+        item.kind === 'unreserveGroup' ||
+        (item.kind === 'single' && movementTypeLower(item.m) === 'unreserve');
+      out.res = isUnreserve
+        ? Math.max(0, prevLineBelow.res - kitUnits)
+        : prevLineBelow.res + kitUnits;
     } else if (prevLineBelow?.res != null && Number.isFinite(sumQc)) {
       out.res =
         sumQc > 0
@@ -581,7 +619,12 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow) {
 }
 
 /** Снимки строк истории с enrich; индекс 0 — самая новая строка, prev для строки i = enriched[i+1]. */
-function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null, warehouseFilterId = null) {
+function buildHistoryDisplaySnapshots(
+  displayRows,
+  currentNetReserved = null,
+  warehouseFilterId = null,
+  kitProduct = null
+) {
   if (!Array.isArray(displayRows) || displayRows.length === 0) return [];
   const n = displayRows.length;
   const enriched = new Array(n);
@@ -589,7 +632,7 @@ function buildHistoryDisplaySnapshots(displayRows, currentNetReserved = null, wa
     const item = displayRows[i];
     const raw = snapshotAfterDisplayItem(item, warehouseFilterId);
     const prevLineBelow = i + 1 < n ? enriched[i + 1] : null;
-    enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow);
+    enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow, kitProduct);
   }
   const net =
     currentNetReserved != null && Number.isFinite(Number(currentNetReserved))
@@ -668,10 +711,13 @@ function getMovementLink(m) {
   const meta = parseMovementMeta(m);
   const reasonText = formatMovementReason(m);
   const t = movementTypeLower(m);
-  if ((t === 'receipt' || t === 'customer_return') && meta.receipt_id != null) {
+  if (meta.receipt_id != null) {
+    let op = 'receipts_list';
+    if (t === 'customer_return') op = 'return_customer';
+    else if (t === 'return_to_supplier') op = 'return_supplier';
     return {
-      to: { pathname: '/stock-levels/warehouse', search: '?op=receipts_list' },
-      state: { openReceiptId: meta.receipt_id },
+      to: { pathname: '/stock-levels/warehouse', search: `?op=${op}` },
+      state: { openReceiptId: meta.receipt_id, openTab: op },
       label: reasonText
     };
   }
@@ -1118,9 +1164,16 @@ export function WarehouseStocks() {
     if (location.pathname !== '/stock-levels/warehouse') return;
     const s = location.state;
     const sp = new URLSearchParams(location.search || '');
-    if (s?.openReceiptId != null && sp.get('op') !== 'receipts_list') {
-      navigate('/stock-levels/warehouse?op=receipts_list', { replace: true, state: s });
-      return;
+    if (s?.openReceiptId != null) {
+      const targetOp =
+        s?.openTab && WAREHOUSE_VALID_OPS.has(s.openTab) ? s.openTab : 'receipts_list';
+      if (sp.get('op') !== targetOp) {
+        navigate(`/stock-levels/warehouse?op=${encodeURIComponent(targetOp)}`, {
+          replace: true,
+          state: s
+        });
+        return;
+      }
     }
     if (s?.openTab && WAREHOUSE_VALID_OPS.has(s.openTab) && sp.get('op') !== s.openTab) {
       navigate(`/stock-levels/warehouse?op=${encodeURIComponent(s.openTab)}`, { replace: true, state: s });
@@ -1832,9 +1885,10 @@ export function WarehouseStocks() {
       buildHistoryDisplaySnapshots(
         displayHistoryRows,
         historyNetReserved,
-        historyWarehouseFilterIgnored ? null : stockWarehouseId
+        historyWarehouseFilterIgnored ? null : stockWarehouseId,
+        historyProduct
       ),
-    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyWarehouseFilterIgnored]
+    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyWarehouseFilterIgnored, historyProduct]
   );
 
   const historyWarehouseScopedAvailable = useMemo(() => {

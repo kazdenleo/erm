@@ -652,36 +652,46 @@ export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) 
     1,
     Math.min(12, parseInt(process.env.MP_STOCK_PUSH_CONCURRENCY || '4', 10) || 4)
   );
-  let index = 0;
+  const batchSize = Math.max(
+    10,
+    Math.min(200, parseInt(process.env.MP_STOCK_PUSH_BATCH_SIZE || '50', 10) || 50)
+  );
   let productsProcessed = 0;
   let pushed = 0;
   let failed = 0;
   let skipped = 0;
 
-  const worker = async () => {
-    while (index < ids.length) {
-      const pid = ids[index++];
-      try {
-        const r = await syncWarehouseStockToMarketplaces(pid, {
-          source: opts.source || 'supplier_stocks_batch',
-          warehouseId: opts.warehouseId ?? null
-        });
-        if (!r.skipped) {
-          productsProcessed += 1;
-          pushed += r.pushed || 0;
-          failed += r.failed || 0;
-          skipped += r.skippedMarketplaces || 0;
+  const syncChunk = async (chunkIds) => {
+    let index = 0;
+    const worker = async () => {
+      while (index < chunkIds.length) {
+        const pid = chunkIds[index++];
+        try {
+          const r = await syncWarehouseStockToMarketplaces(pid, {
+            source: opts.source || 'supplier_stocks_batch',
+            warehouseId: opts.warehouseId ?? null
+          });
+          if (!r.skipped) {
+            productsProcessed += 1;
+            pushed += r.pushed || 0;
+            failed += r.failed || 0;
+            skipped += r.skippedMarketplaces || 0;
+          }
+        } catch (e) {
+          failed += 1;
+          logger.warn(`[MP Stock Push] batch product ${pid}:`, e?.message || e);
         }
-      } catch (e) {
-        failed += 1;
-        logger.warn(`[MP Stock Push] batch product ${pid}:`, e?.message || e);
       }
-    }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, chunkIds.length) }, () => worker())
+    );
   };
 
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, ids.length) }, () => worker())
-  );
+  for (let offset = 0; offset < ids.length; offset += batchSize) {
+    const chunk = ids.slice(offset, offset + batchSize);
+    await syncChunk(chunk);
+  }
 
   logger.info('[MP Stock Push] batch after supplier stocks', {
     products: ids.length,

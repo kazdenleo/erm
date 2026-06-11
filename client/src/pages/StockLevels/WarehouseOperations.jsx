@@ -1889,7 +1889,7 @@ export function WarehouseOperations({
     showTypeColumn = false
   }) => (
     <div className="warehouse-ops-documents-section">
-      <h4 className="warehouse-ops-receipt-list-title">{title}</h4>
+      {title ? <h4 className="warehouse-ops-receipt-list-title">{title}</h4> : null}
       {receiptsLoading ? (
         <div className="loading">Загрузка документов…</div>
       ) : receiptsList.length === 0 ? (
@@ -2647,7 +2647,7 @@ export function WarehouseOperations({
       {mode === MODE_RETURN_SUPPLIER && (
         <div className="warehouse-ops-panel return-supplier-panel">
           <h3 className="warehouse-ops-panel-title">Возврат товара поставщику</h3>
-          <p className="warehouse-ops-hint">Укажите организацию (от имени которой возврат), поставщика и склад списания; добавьте товары по скану или из списка. Возвратная накладная сохранится в общем списке приёмок.</p>
+          <p className="warehouse-ops-hint">Укажите организацию (от имени которой возврат), поставщика и склад списания; добавьте товары по скану или из списка. Документы сохраняются в списке ниже.</p>
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
@@ -2846,7 +2846,11 @@ export function WarehouseOperations({
                 </div>
               </>
             )}
-          </div>
+          {renderWarehouseDocumentsList({
+            title: 'Оформленные возвраты поставщику',
+            emptyText: 'Нет возвратных накладных.',
+            showSupplier: true
+          })}
         </div>
       )}
 
@@ -2854,7 +2858,7 @@ export function WarehouseOperations({
         <div className="warehouse-ops-panel return-customer-panel">
           <h3 className="warehouse-ops-panel-title">Возврат товара от клиентов на склад</h3>
           <p className="warehouse-ops-hint">
-            Принимайте возвращённый клиентом товар: укажите склад приёмки и организацию (при необходимости), добавьте товары по скану или из списка. Документ сохранится в общем списке приёмок.
+            Принимайте возвращённый клиентом товар: укажите склад приёмки и организацию (при необходимости), добавьте товары по скану или из списка. Документы сохраняются в списке ниже.
           </p>
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
@@ -3035,6 +3039,12 @@ export function WarehouseOperations({
               </>
             )}
           </div>
+
+          {renderWarehouseDocumentsList({
+            title: 'Оформленные возвраты от клиентов',
+            emptyText: 'Нет документов возврата от клиентов.',
+            showSupplier: false
+          })}
         </div>
       )}
 
@@ -3864,10 +3874,10 @@ export function WarehouseOperations({
         <div className="warehouse-ops-panel receipts-list-panel">
           <div className="warehouse-ops-receipts-list-header">
             <div>
-              <h3 className="warehouse-ops-panel-title">Список приёмок и возвратов</h3>
+              <h3 className="warehouse-ops-panel-title">Список приёмок</h3>
               <p className="warehouse-ops-hint">
-                Поступления на склад (ПТ) и возвратные накладные поставщикам (ВН). «Кол-во, шт» — сумма единиц по
-                строкам; «Сумма, ₽» — по строкам с указанной себестоимостью (кол-во × цена в строке), иначе «—».
+                Поступления на склад (ПТ). Возвраты — в разделах «Возврат поставщику» и «Возврат от клиентов».
+                «Кол-во, шт» — сумма единиц по строкам; «Сумма, ₽» — по строкам с указанной себестоимостью.
               </p>
             </div>
             <Button
@@ -3882,49 +3892,11 @@ export function WarehouseOperations({
               Добавить поступление
             </Button>
           </div>
-          {receiptsLoading ? (
-            <div className="loading">Загрузка приёмок…</div>
-          ) : receiptsList.length === 0 ? (
-            <p className="warehouse-ops-receipt-list-empty">Нет приёмок.</p>
-          ) : (
-            <div className="warehouse-ops-receipts-list-wrap">
-              <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--documents table">
-                <thead>
-                  <tr>
-                    <th>Дата</th>
-                    <th>Номер</th>
-                    <th>Тип</th>
-                    <th>Организация</th>
-                    <th>Поставщик</th>
-                    <th>Кол-во, шт</th>
-                    <th>Сумма, ₽</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {receiptsList.map(r => (
-                    <tr
-                      key={r.id}
-                      className="stock-levels-row-clickable"
-                      onClick={onNavigationClick(() => {
-                        receiptsApi.getById(r.id).then(res => {
-                          const data = res?.data ?? res;
-                          if (data) setReceiptDetail(data);
-                        });
-                      })}
-                    >
-                      <td>{r.created_at ? new Date(r.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
-                      <td>{r.receipt_number || `#${r.id}`}</td>
-                      <td>{r.document_type === 'return' ? 'Возврат' : (r.document_type === 'customer_return' ? 'Возврат от клиента' : 'Приёмка')}</td>
-                      <td>{r.organization_name || '—'}</td>
-                      <td>{r.supplier_name || r.supplier_code || '—'}</td>
-                      <td>{receiptRowTotalUnits(r)}</td>
-                      <td>{formatReceiptListAmountRub(r.total_amount_rub ?? r.totalAmountRub)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          {renderWarehouseDocumentsList({
+            title: '',
+            emptyText: 'Нет приёмок.',
+            showSupplier: true
+          })}
         </div>
       )}
 
