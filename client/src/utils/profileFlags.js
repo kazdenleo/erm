@@ -10,6 +10,12 @@ export function accountSettingsFromProfile(profile) {
     contact_email: profile.contact_email ?? '',
     contact_phone: profile.contact_phone ?? '',
     allow_private_orders: isProfileBoolFlag(profile.allow_private_orders),
+    manual_orders_warehouse_id:
+      profile.manual_orders_warehouse_id != null && profile.manual_orders_warehouse_id !== ''
+        ? String(profile.manual_orders_warehouse_id)
+        : profile.manualOrdersWarehouseId != null && profile.manualOrdersWarehouseId !== ''
+          ? String(profile.manualOrdersWarehouseId)
+          : '',
     require_reserved_stock_for_assembly: isProfileBoolFlag(profile.require_reserved_stock_for_assembly),
     allow_manual_warehouse_stock_edit: isProfileBoolFlag(profile.allow_manual_warehouse_stock_edit),
     allow_stock_history_reset: isProfileBoolFlag(profile.allow_stock_history_reset),

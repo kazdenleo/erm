@@ -76,6 +76,11 @@ export function isMarketplaceFbsOrderRow(orderRow) {
   );
 }
 
+/** Ручной заказ — резерв только со склада profiles.manual_orders_warehouse_id. */
+export function isManualOrderRow(orderRow) {
+  return String(orderRow?.marketplace || '').toLowerCase() === 'manual';
+}
+
 /**
  * Покрытие резерва по заказу: только со склада (on_hand) или с участием «в пути» (incoming).
  * @returns {'none'|'on_hand'|'incoming'}
@@ -1043,16 +1048,33 @@ class OrdersService {
         // ignore
       }
     }
+    if (isManualOrderRow(orderRow)) {
+      try {
+        const profileId = orderRow.profile_id ?? orderRow.profileId ?? null;
+        if (profileId != null) {
+          const profRepo = repositoryFactory.getProfilesRepository();
+          const prof = await profRepo?.findById?.(profileId);
+          const wid = prof?.manual_orders_warehouse_id ?? prof?.manualOrdersWarehouseId ?? null;
+          if (wid) return wid;
+        }
+        const whRepo = repositoryFactory.getWarehousesRepository();
+        const legacyWid = await whRepo?.findManualOrdersWarehouseId?.(profileId);
+        if (legacyWid) return legacyWid;
+      } catch {
+        // ignore
+      }
+    }
     return await stockMovementsService.productsRepository.resolveOwnWarehouseId(null);
   }
 
   /**
    * Склад для резерва/отгрузки заказа.
    * FBS с маркетплейса — только привязка из warehouse_mappings (без поиска «где есть остаток»).
+   * Ручной заказ — только склад из profiles.manual_orders_warehouse_id (без поиска «где есть остаток»).
    */
   async _resolveWarehouseIdForOrderReserve(orderRow, productId = null) {
     const mappedWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
-    if (isMarketplaceFbsOrderRow(orderRow)) {
+    if (isMarketplaceFbsOrderRow(orderRow) || isManualOrderRow(orderRow)) {
       return mappedWh;
     }
     if (productId != null) {

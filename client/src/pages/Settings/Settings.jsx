@@ -7,6 +7,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
+import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
 import {
   BUILTIN_SOUNDS,
@@ -20,6 +21,7 @@ import './Settings.css';
 
 export function Settings() {
   const { isProfileAdmin, profileId, refreshUser } = useAuth();
+  const { warehouses, loadWarehouses } = useWarehouses();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [resettingAllStock, setResettingAllStock] = useState(false);
@@ -32,6 +34,7 @@ export function Settings() {
     contact_email: '',
     contact_phone: '',
     allow_private_orders: false,
+    manual_orders_warehouse_id: '',
     require_reserved_stock_for_assembly: false,
     allow_manual_warehouse_stock_edit: false,
     allow_stock_history_reset: false,
@@ -59,10 +62,22 @@ export function Settings() {
     loadAccount();
   }, [loadAccount]);
 
+  useEffect(() => {
+    if (isProfileAdmin && profileId != null) {
+      loadWarehouses();
+    }
+  }, [isProfileAdmin, profileId, loadWarehouses]);
+
+  const ownWarehouses = warehouses.filter((w) => w.type === 'warehouse');
+
   const saveAccount = async () => {
     const name = form.name.trim();
     if (!name) {
       alert('Укажите название аккаунта');
+      return;
+    }
+    if (form.allow_private_orders && !String(form.manual_orders_warehouse_id || '').trim()) {
+      alert('Укажите склад списания остатков для ручных заказов');
       return;
     }
     setSaving(true);
@@ -73,6 +88,9 @@ export function Settings() {
         contact_email: form.contact_email.trim() || null,
         contact_phone: form.contact_phone.trim() || null,
         allow_private_orders: form.allow_private_orders,
+        manual_orders_warehouse_id: form.allow_private_orders
+          ? form.manual_orders_warehouse_id || null
+          : null,
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
         allow_manual_warehouse_stock_edit: form.allow_manual_warehouse_stock_edit,
         allow_stock_history_reset: form.allow_stock_history_reset,
@@ -393,9 +411,14 @@ export function Settings() {
                 <input
                   type="checkbox"
                   checked={form.allow_private_orders}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, allow_private_orders: e.target.checked }))
-                  }
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setForm((f) => ({
+                      ...f,
+                      allow_private_orders: on,
+                      manual_orders_warehouse_id: on ? f.manual_orders_warehouse_id : '',
+                    }));
+                  }}
                 />
                 <span>
                   <strong>Выполнять частные заказы</strong>
@@ -405,6 +428,34 @@ export function Settings() {
                   </span>
                 </span>
               </label>
+              {form.allow_private_orders && (
+                <label className="settings-account-label" style={{ marginTop: 8, marginLeft: 28 }}>
+                  Склад списания остатков
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Резерв и списание по ручным заказам выполняются с выбранного склада.
+                  </span>
+                  <select
+                    className="login-input"
+                    style={{ maxWidth: 420, marginTop: 8 }}
+                    value={form.manual_orders_warehouse_id}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, manual_orders_warehouse_id: e.target.value }))
+                    }
+                  >
+                    <option value="">— выберите склад —</option>
+                    {ownWarehouses.map((w) => (
+                      <option key={w.id} value={String(w.id)}>
+                        {w.address ? `${w.address} (#${w.id})` : `Склад #${w.id}`}
+                      </option>
+                    ))}
+                  </select>
+                  {ownWarehouses.length === 0 && (
+                    <span className="text-muted small" style={{ display: 'block', marginTop: 6 }}>
+                      Нет складов типа «Склад». Создайте склад в разделе «Склады».
+                    </span>
+                  )}
+                </label>
+              )}
               <label className="settings-account-toggle">
                 <input
                   type="checkbox"

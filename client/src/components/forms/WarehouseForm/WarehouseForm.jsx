@@ -252,7 +252,7 @@ export function WarehouseForm({
         supplierId: warehouse.supplierId ? String(warehouse.supplierId) : '',
         mainWarehouseId: warehouse.mainWarehouseId ? String(warehouse.mainWarehouseId) : '',
         wbWarehouseName: warehouse.wbWarehouseName || '',
-        isFboStock: warehouse.isFboStock === true,
+        isFboStock: warehouse.isFboStock === true || warehouse.is_fbo_stock === true,
         weekendDays: normalizeWeekendDays(warehouse.weekendDays ?? warehouse.weekend_days),
       });
       setOzonWarehouseName('');

@@ -76,6 +76,22 @@ class WarehousesRepositoryPG {
       weekendDays: row.weekend_days ?? null,
     }));
   }
+
+  /** @deprecated Используйте profiles.manual_orders_warehouse_id; оставлено для обратной совместимости. */
+  async findManualOrdersWarehouseId(profileId) {
+    const pid = normalizeProfileId(profileId);
+    if (!pid) return null;
+    const result = await query(
+      `
+      SELECT id FROM warehouses
+      WHERE profile_id = $1 AND type = 'warehouse' AND is_manual_orders_warehouse = TRUE
+      LIMIT 1
+    `,
+      [pid]
+    );
+    const id = result.rows[0]?.id;
+    return id != null ? id : null;
+  }
   
   /**
    * Получить склад по ID
@@ -122,6 +138,7 @@ class WarehousesRepositoryPG {
       mainWarehouseAddress: row.main_warehouse_address,
       orderAcceptanceTime: row.order_acceptance_time,
       wbWarehouseName: row.wb_warehouse_name,
+      isFboStock: row.is_fbo_stock === true,
       weekendDays: row.weekend_days ?? null,
     };
   }
@@ -332,6 +349,7 @@ class WarehousesRepositoryPG {
         organizationId: row.organization_id,
         orderAcceptanceTime: row.order_acceptance_time,
         wbWarehouseName: row.wb_warehouse_name || null,
+        isFboStock: row.is_fbo_stock === true,
         weekendDays: row.weekend_days ?? null,
       };
       console.log('[WarehousesRepository] Mapped result:', mapped);

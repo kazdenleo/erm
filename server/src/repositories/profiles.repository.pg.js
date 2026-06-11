@@ -133,6 +133,18 @@ class ProfilesRepositoryPG {
       const v = updates.production_enabled ?? updates.productionEnabled;
       set('production_enabled', v === true || v === '1' || v === 'true');
     }
+    if (
+      updates.manual_orders_warehouse_id !== undefined ||
+      updates.manualOrdersWarehouseId !== undefined
+    ) {
+      const raw = updates.manual_orders_warehouse_id ?? updates.manualOrdersWarehouseId;
+      if (raw == null || raw === '') {
+        set('manual_orders_warehouse_id', null);
+      } else {
+        const n = Number(raw);
+        set('manual_orders_warehouse_id', Number.isFinite(n) && n > 0 ? n : null);
+      }
+    }
 
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

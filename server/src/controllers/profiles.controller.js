@@ -66,7 +66,48 @@ function pickAccountOwnerProfilePayload(body) {
     const v = b.production_enabled ?? b.productionEnabled;
     out.production_enabled = v === true || v === '1' || v === 'true';
   }
+  if (b.manual_orders_warehouse_id !== undefined || b.manualOrdersWarehouseId !== undefined) {
+    const raw = b.manual_orders_warehouse_id ?? b.manualOrdersWarehouseId;
+    if (raw == null || raw === '') {
+      out.manual_orders_warehouse_id = null;
+    } else {
+      const n = Number(raw);
+      out.manual_orders_warehouse_id = Number.isFinite(n) && n > 0 ? n : null;
+    }
+  }
   return out;
+}
+
+async function validateManualOrdersWarehouse(profileId, payload, currentProfile) {
+  const allowPrivate =
+    payload.allow_private_orders !== undefined
+      ? payload.allow_private_orders === true
+      : currentProfile?.allow_private_orders === true;
+  let whId =
+    payload.manual_orders_warehouse_id !== undefined
+      ? payload.manual_orders_warehouse_id
+      : currentProfile?.manual_orders_warehouse_id ?? null;
+  if (!allowPrivate) {
+    if (payload.allow_private_orders === false) {
+      payload.manual_orders_warehouse_id = null;
+    }
+    return null;
+  }
+  if (whId == null || whId === '') {
+    return 'Укажите склад списания остатков для ручных заказов';
+  }
+  const wid = Number(whId);
+  if (!Number.isFinite(wid) || wid <= 0) {
+    return 'Укажите склад списания остатков для ручных заказов';
+  }
+  const wh = await query(
+    `SELECT id FROM warehouses WHERE id = $1 AND profile_id = $2 AND type = 'warehouse' LIMIT 1`,
+    [wid, profileId]
+  );
+  if (!wh.rows[0]) {
+    return 'Выбранный склад не найден или недоступен для этого аккаунта';
+  }
+  return null;
 }
 
 function normalizeProfileStatsRow(row) {
@@ -111,12 +152,16 @@ export const profilesController = {
       if (payload.name !== undefined && String(payload.name).trim() === '') {
         return res.status(400).json({ ok: false, message: 'Укажите название аккаунта' });
       }
+      const current = await repo.findById(id);
+      if (!current) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
       if (Object.keys(payload).length === 0) {
-        const current = await repo.findById(id);
-        if (!current) {
-          return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
-        }
         return res.json({ ok: true, data: jsonSafeRow(current) });
+      }
+      const manualWhError = await validateManualOrdersWarehouse(id, payload, current);
+      if (manualWhError) {
+        return res.status(400).json({ ok: false, message: manualWhError });
       }
       const item = await repo.update(id, payload);
       if (!item) {
