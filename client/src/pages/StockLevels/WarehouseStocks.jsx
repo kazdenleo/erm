@@ -21,7 +21,8 @@ import {
   buildStockRowsWithKits,
   stockTableAvailable,
   isKitProduct,
-  isKitStockHistoryMovement
+  isKitStockHistoryMovement,
+  parseKitDisplayMetrics
 } from '../../utils/kitStockMetrics';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -186,8 +187,14 @@ function availableFromSnapshot(snap) {
 }
 
 function formatAvailableHistoryCell(curSnap, prevSnap) {
-  const after = availableFromSnapshot(curSnap);
-  const prev = availableFromSnapshot(prevSnap);
+  const after =
+    curSnap?._kitAvailable != null && !Number.isNaN(Number(curSnap._kitAvailable))
+      ? Number(curSnap._kitAvailable)
+      : availableFromSnapshot(curSnap);
+  const prev =
+    prevSnap?._kitAvailable != null && !Number.isNaN(Number(prevSnap._kitAvailable))
+      ? Number(prevSnap._kitAvailable)
+      : availableFromSnapshot(prevSnap);
   return formatAfterDelta(after, prev);
 }
 
@@ -647,6 +654,37 @@ function buildHistoryDisplaySnapshots(
       enriched[0].res = net;
     }
   }
+
+  // Комплект: «Доступно» и снимок наличия/в пути — как в таблице остатков (kit_display), не сырой журнал SKU.
+  if (kitProduct && isKitProduct(kitProduct) && warehouseFilterId) {
+    const metrics = parseKitDisplayMetrics(kitProduct);
+    if (metrics) {
+      const whInc = Math.max(
+        0,
+        Number(kitProduct.incoming_quantity ?? kitProduct.incomingQuantity) || 0
+      );
+      const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
+      const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
+      const supplierKit = Math.max(
+        0,
+        Number(
+          kitProduct.kit_display?.supplier_kit_units ??
+            kitProduct.kit_display?.supplierKitUnits ??
+            kitProduct.supplierStockTotal ??
+            0
+        ) || 0
+      );
+      for (let i = 0; i < enriched.length; i++) {
+        const row = enriched[i];
+        if (!row) continue;
+        const res = Math.max(0, Number(row.res) || 0);
+        row.bal = whole;
+        row.inc = whInc;
+        row._kitAvailable = Math.max(0, whole + whInc - res) + assemblable + supplierKit;
+      }
+    }
+  }
+
   return enriched;
 }
 
@@ -2793,7 +2831,14 @@ export function WarehouseStocks() {
               </p>
             ) : stockWarehouseId ? (
               <p className="text-muted small mb-2" role="status">
-                Колонка «Наличие» — по выбранному складу в фильтре таблицы (не сумма по всем складам).
+                {isKitProduct(historyProduct) ? (
+                  <>
+                    Для комплекта колонки «Наличие», «В пути» и «Доступно» — как в таблице остатков:
+                    целые комплекты на складе + собираемость из комплектующих (не сырой журнал SKU).
+                  </>
+                ) : (
+                  <>Колонка «Наличие» — по выбранному складу в фильтре таблицы (не сумма по всем складам).</>
+                )}
               </p>
             ) : null}
             {historyNetReserved != null && (
