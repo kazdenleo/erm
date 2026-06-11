@@ -214,17 +214,16 @@ export const fboSuppliesApi = {
   },
 
   submitPackingToMarketplace: async (id) => {
-    const response = await api.post(`/fbo-supplies/${id}/packing/submit`);
-    return response.data?.data ?? response.data;
-  },
-
-  syncMarketplaceContent: async (id) => {
-    const response = await api.post(`/fbo-supplies/${id}/sync-marketplace-content`);
+    const response = await api.post(`/fbo-supplies/${id}/packing/submit`, {}, { timeout: 180000 });
     return response.data?.data ?? response.data;
   },
 
   pullMarketplaceContent: async (id) => {
-    const response = await api.post(`/fbo-supplies/${id}/pull-marketplace-content`);
+    const response = await api.post(
+      `/fbo-supplies/${id}/pull-marketplace-content`,
+      {},
+      { timeout: 300000 }
+    );
     return response.data?.data ?? response.data;
   },
 

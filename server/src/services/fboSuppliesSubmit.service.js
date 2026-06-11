@@ -148,6 +148,14 @@ class FboSuppliesSubmitService {
     const supply = await fboSuppliesService.getById(supplyId, { profileId });
     const mp = normalizeMp(supply.marketplace);
 
+    if (supply.status !== 'packed') {
+      const err = new Error(
+        'Отправить состав грузомест на маркетплейс можно только в статусе «Упакован»'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
     if (mp === 'wb') {
       const err = new Error(
         'Отправка состава упаковки на Wildberries через API пока недоступна — выгрузите Excel и загрузите в личном кабинете WB'

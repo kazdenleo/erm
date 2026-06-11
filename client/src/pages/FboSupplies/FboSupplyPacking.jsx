@@ -24,7 +24,6 @@ import {
 } from './fboSupplyPackingSort.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
 import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
-import { hasPackingDiscrepancy } from '../../constants/fboSupplyStatuses';
 import { FboSupplyItemPackingCell } from './FboSupplyItemPackingCell.jsx';
 
 function fmtDt(iso) {
@@ -87,7 +86,6 @@ export function FboSupplyPacking({
   const [newCargoMode, setNewCargoMode] = useState(false);
   const [weightWarning, setWeightWarning] = useState(null);
   const [placementWarning, setPlacementWarning] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
   const scanLoadingRef = useRef(false);
 
   scanLoadingRef.current = scanLoading;
@@ -222,28 +220,6 @@ export function FboSupplyPacking({
     }
   };
 
-  const handleSubmitToMarketplace = async () => {
-    const mpLabel = isOzon ? 'Ozon' : marketplace === 'wb' ? 'Wildberries' : 'маркетплейс';
-    if (
-      !window.confirm(
-        `Отправить состав грузомест в ${mpLabel}? Убедитесь, что сборка совпадает с планом.`
-      )
-    ) {
-      return;
-    }
-    setSubmitting(true);
-    setScanError(null);
-    setPlacementWarning(null);
-    try {
-      const data = await fboSuppliesApi.submitPackingToMarketplace(supplyId);
-      setScanMsg(data?.message || 'Состав отправлен на маркетплейс');
-    } catch (e) {
-      setScanError(e.response?.data?.message || e.message || 'Не удалось отправить состав');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleDeleteCargo = async (cargoUnitId, e) => {
     e?.stopPropagation?.();
     if (!window.confirm('Удалить грузоместо и весь его состав?')) return;
@@ -271,7 +247,6 @@ export function FboSupplyPacking({
 
   const activeCargo = cargoUnits.find((c) => String(c.id) === String(activeCargoUnitId));
   const isOzon = marketplace !== 'wb';
-  const packingHasDiscrepancy = hasPackingDiscrepancy(null, packing);
   const activeWeightWarning =
     weightWarning || (activeCargo ? cargoWeightExceededMessage(activeCargo) : null);
   const activePlacementSummary =
@@ -397,21 +372,6 @@ export function FboSupplyPacking({
           onClick={handleExportExcel}
         >
           {exporting ? 'Выгрузка…' : 'Excel по грузоместам'}
-        </Button>
-        <Button
-          variant="primary"
-          size="small"
-          disabled={submitting || packingHasDiscrepancy || !(cargoUnits.length > 0)}
-          onClick={handleSubmitToMarketplace}
-          title={
-            packingHasDiscrepancy
-              ? 'Сначала устраните расхождения между планом и сборкой'
-              : isOzon
-                ? 'Отправить грузоместа в Ozon через API'
-                : 'Для WB используйте Excel — API отправки пока недоступен'
-          }
-        >
-          {submitting ? 'Отправка…' : 'На маркетплейс'}
         </Button>
       </div>
       <p className="fbo-packing-hint" style={{ marginTop: 4 }}>
