@@ -2122,11 +2122,12 @@ class FboSuppliesImportService {
       throw err;
     }
 
-    return runWithDbRetry(
+    const productIdsToRebalance = new Set();
+
+    const result = await runWithDbRetry(
       async () => {
         const created = [];
         const skipped = [];
-        const productIdsToRebalance = new Set();
 
         for (const row of supplies) {
           if (row.alreadyImported) {
@@ -2180,18 +2181,28 @@ class FboSuppliesImportService {
           }
         }
 
-        for (const productId of productIdsToRebalance) {
-          await fboSupplyReserveService
-            .rebalanceReservesForProduct(productId, { profileId })
-            .catch((e) => {
-              console.warn('[FboImport] reserve rebalance:', e?.message || e);
-            });
-        }
-
         return { created, skipped };
       },
       { label: 'fbo-import-confirm', attempts: 3, delayMs: 5000 }
     );
+
+    if (productIdsToRebalance.size) {
+      const uniqueProductIds = [...productIdsToRebalance];
+      const pid = profileId;
+      setImmediate(() => {
+        (async () => {
+          for (const productId of uniqueProductIds) {
+            await fboSupplyReserveService
+              .rebalanceReservesForProduct(productId, { profileId: pid })
+              .catch((e) => {
+                console.warn('[FboImport] background reserve rebalance:', e?.message || e);
+              });
+          }
+        })().catch(() => {});
+      });
+    }
+
+    return result;
   }
 
   /**

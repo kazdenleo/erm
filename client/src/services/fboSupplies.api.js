@@ -98,7 +98,9 @@ export const fboSuppliesApi = {
   },
 
   previewApiImport: async (payload) => {
-    const response = await api.post('/fbo-supplies/import/api/preview', payload);
+    const response = await api.post('/fbo-supplies/import/api/preview', payload, {
+      timeout: 180000,
+    });
     return response.data?.data ?? response.data;
   },
 
@@ -112,7 +114,39 @@ export const fboSuppliesApi = {
   },
 
   confirmImport: async (supplies, source = 'api') => {
-    const response = await api.post('/fbo-supplies/import/confirm', { supplies, source });
+    const slim = supplies.map((row) => ({
+      alreadyImported: row.alreadyImported,
+      marketplace: row.marketplace,
+      name: row.name,
+      readyAt: row.readyAt,
+      marketplaceWarehouseName: row.marketplaceWarehouseName,
+      marketplaceWarehouseId: row.marketplaceWarehouseId,
+      shippingCluster: row.shippingCluster,
+      placementCluster: row.placementCluster,
+      externalShipmentNumber: row.externalShipmentNumber,
+      externalSupplyId: row.externalSupplyId,
+      deductionWarehouseId: row.deductionWarehouseId,
+      organizationId: row.organizationId,
+      deductStock: row.deductStock,
+      status: row.status,
+      source: row.source,
+      items: (row.items || []).map((it) => ({
+        productId: it.productId,
+        quantity: it.quantity,
+        barcode: it.barcode,
+        sku: it.sku,
+        mpOfferId: it.mpOfferId,
+        mpProductId: it.mpProductId,
+        name: it.name,
+        placementZone: it.placementZone,
+        ozonTags: it.ozonTags,
+      })),
+    }));
+    const response = await api.post(
+      '/fbo-supplies/import/confirm',
+      { supplies: slim, source },
+      { timeout: 300000 }
+    );
     return response.data?.data ?? response.data;
   },
 

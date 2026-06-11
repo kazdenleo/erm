@@ -389,6 +389,11 @@ class FboSuppliesService {
       throw err;
     }
 
+    let deductionWarehouseId = payload.deductionWarehouseId ?? null;
+    if (deductionWarehouseId == null) {
+      deductionWarehouseId = await resolveDefaultFboDeductionWarehouseId(pid);
+    }
+
     const supplyId = await transaction(async (client) => {
       const dup = await client.query(
         `SELECT id FROM fbo_supplies
@@ -403,10 +408,6 @@ class FboSuppliesService {
       }
 
       const status = FBO_SUPPLY_STATUSES.includes(payload.status) ? payload.status : 'new';
-      let deductionWarehouseId = payload.deductionWarehouseId ?? null;
-      if (deductionWarehouseId == null) {
-        deductionWarehouseId = await resolveDefaultFboDeductionWarehouseId(pid);
-      }
       const ins = await client.query(
         `INSERT INTO fbo_supplies (
           profile_id, organization_id, created_by_user_id, status, marketplace,
@@ -435,16 +436,22 @@ class FboSuppliesService {
         ]
       );
       const newId = ins.rows[0].id;
+      const lineRows = [];
       for (const it of items) {
         const qty = parseInt(it.quantity, 10);
         if (!qty || qty <= 0) continue;
-        await client.query(
-          `INSERT INTO fbo_supply_items (
-            fbo_supply_id, product_id, quantity, mp_quantity, barcode, sku, mp_offer_id, mp_product_id, name,
-            placement_zone, ozon_tags
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
-          [
-            newId,
+        lineRows.push({ it, qty });
+      }
+      const ITEMS_INSERT_CHUNK = 50;
+      for (let offset = 0; offset < lineRows.length; offset += ITEMS_INSERT_CHUNK) {
+        const chunk = lineRows.slice(offset, offset + ITEMS_INSERT_CHUNK);
+        const params = [newId];
+        const tuples = chunk.map(({ it, qty }, idx) => {
+          const base = idx * 10 + 2;
+          return `($1,$${base},$${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9}::jsonb)`;
+        });
+        for (const { it, qty } of chunk) {
+          params.push(
             it.productId ?? null,
             qty,
             qty,
@@ -454,8 +461,15 @@ class FboSuppliesService {
             it.mpProductId ?? null,
             it.name ?? null,
             it.placementZone ?? it.placement_zone ?? null,
-            JSON.stringify(it.ozonTags ?? it.ozon_tags ?? []),
-          ]
+            JSON.stringify(it.ozonTags ?? it.ozon_tags ?? [])
+          );
+        }
+        await client.query(
+          `INSERT INTO fbo_supply_items (
+            fbo_supply_id, product_id, quantity, mp_quantity, barcode, sku, mp_offer_id, mp_product_id, name,
+            placement_zone, ozon_tags
+          ) VALUES ${tuples.join(',')}`,
+          params
         );
       }
       return newId;
