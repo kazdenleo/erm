@@ -5,6 +5,10 @@
 import integrationsService from './integrations.service.js';
 import fboSuppliesService from './fboSupplies.service.js';
 import fboSuppliesPackingService from './fboSuppliesPacking.service.js';
+import {
+  assertPackingReadyForMarketplaceSubmit,
+  evaluateSupplyPacking,
+} from '../utils/fboSupplyPackingCheck.js';
 
 function normalizeMp(marketplace) {
   const m = String(marketplace || 'ozon').trim().toLowerCase();
@@ -157,6 +161,8 @@ class FboSuppliesSubmitService {
       err.statusCode = 400;
       throw err;
     }
+
+    assertPackingReadyForMarketplaceSubmit(await evaluateSupplyPacking(supplyId));
 
     const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
     const body = buildOzonCargoesBody(supply, packing);

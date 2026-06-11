@@ -9,6 +9,7 @@ import stockMovementsService from './stockMovements.service.js';
 import fboSupplyReserveService from './fboSupplyReserve.service.js';
 import { resolveDefaultFboDeductionWarehouseId } from '../utils/fboProfileDefaults.js';
 import {
+  assertCanSetPackedStatus,
   assertCanSetReadyForSupply,
   evaluateSupplyPacking,
   syncSupplyStatusForPacking,
@@ -360,10 +361,12 @@ class FboSuppliesService {
     supply.items = await fboSupplyReserveService.enrichItemsWithReserved(
       (itemsR.rows || []).map(mapItemRow)
     );
-    const packingEval = await evaluateSupplyPacking(id);
-    supply.packingAllMatch = packingEval.allMatch;
-    supply.hasPackingDiscrepancy = packingEval.hasItems && !packingEval.allMatch;
-    supply.packingDiscrepancies = packingEval.discrepancies;
+    const sync = await syncSupplyStatusForPacking(id);
+    supply.status = sync.status;
+    supply.packingAllMatch = sync.allMatch;
+    supply.hasPackingDiscrepancy = sync.hasItems && !sync.allMatch;
+    supply.packingDiscrepancies = sync.discrepancies;
+    supply.statusRevertedByPacking = sync.reverted;
     return supply;
   }
 
@@ -548,8 +551,10 @@ class FboSuppliesService {
     if (payload.deductStock !== undefined) setField('deduct_stock', !!payload.deductStock);
     if (payload.note !== undefined) setField('note', payload.note);
     if (payload.status !== undefined && FBO_SUPPLY_STATUSES.includes(payload.status)) {
-      if (payload.status === 'ready_for_supply') {
-        assertCanSetReadyForSupply(await evaluateSupplyPacking(id));
+      if (payload.status === 'packed' || payload.status === 'ready_for_supply') {
+        const packingEval = await evaluateSupplyPacking(id);
+        if (payload.status === 'packed') assertCanSetPackedStatus(packingEval);
+        else assertCanSetReadyForSupply(packingEval);
       }
       setField('status', payload.status);
     }
@@ -599,8 +604,10 @@ class FboSuppliesService {
       err.statusCode = 400;
       throw err;
     }
-    if (next === 'ready_for_supply') {
-      assertCanSetReadyForSupply(await evaluateSupplyPacking(id));
+    if (next === 'packed' || next === 'ready_for_supply') {
+      const packingEval = await evaluateSupplyPacking(id);
+      if (next === 'packed') assertCanSetPackedStatus(packingEval);
+      else assertCanSetReadyForSupply(packingEval);
     }
     return this.update(id, { status: next }, { profileId });
   }

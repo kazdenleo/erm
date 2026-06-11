@@ -23,6 +23,7 @@ import {
   FBO_SUPPLY_STATUS_ORDER,
   FBO_SUPPLY_STATUS_OPTIONS,
   canSelectFboSupplyStatus,
+  fboSupplyStatusBlockedTitle,
   getFboSupplyStatusLabel,
   getMarketplaceLabel,
   hasPackingDiscrepancy,
@@ -227,17 +228,22 @@ export function FboSupplyDetail() {
 
   const handlePackingChange = useCallback((newPacking, meta) => {
     setPacking(newPacking);
-    if (meta && Object.prototype.hasOwnProperty.call(meta, 'packingAllMatch')) {
-      setSupply((s) =>
-        s
-          ? {
-              ...s,
-              packingAllMatch: meta.packingAllMatch,
-              hasPackingDiscrepancy: meta.packingAllMatch === false,
-            }
-          : s
-      );
-    }
+    if (!meta) return;
+    setSupply((s) => {
+      if (!s) return s;
+      const next = { ...s };
+      if (Object.prototype.hasOwnProperty.call(meta, 'packingAllMatch')) {
+        next.packingAllMatch = meta.packingAllMatch;
+        next.hasPackingDiscrepancy = meta.packingAllMatch === false;
+      }
+      if (meta.supplyStatus != null) {
+        next.status = meta.supplyStatus;
+      }
+      if (meta.statusReverted) {
+        next.statusRevertedByPacking = true;
+      }
+      return next;
+    });
   }, []);
 
   const saveField = async (patch) => {
@@ -375,7 +381,9 @@ export function FboSupplyDetail() {
     if (!supply || newStatus === supply.status) return;
     if (!canSelectFboSupplyStatus(newStatus, packingHasDiscrepancy)) {
       setErr(
-        'Нельзя перевести в «Готов к поставке»: есть расхождения между планом и сборкой. Упакуйте ровно запланированное количество.'
+        newStatus === 'packed'
+          ? 'Нельзя перевести в «Упакован»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
+          : 'Нельзя перевести в «Готов к поставке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
       );
       return;
     }
@@ -545,9 +553,15 @@ export function FboSupplyDetail() {
         <Button
           variant="primary"
           size="small"
-          disabled={submittingPacking || saving || !(packing?.cargoUnits?.length > 0)}
+          disabled={
+            submittingPacking || saving || packingHasDiscrepancy || !(packing?.cargoUnits?.length > 0)
+          }
           onClick={handleSubmitPackingToMarketplace}
-          title="Отправить упакованный состав грузомест на маркетплейс"
+          title={
+            packingHasDiscrepancy
+              ? 'Сначала устраните расхождения между планом и сборкой'
+              : 'Отправить упакованный состав грузомест на маркетплейс'
+          }
         >
           {submittingPacking ? 'Отправка…' : 'На маркетплейс'}
         </Button>
@@ -574,6 +588,17 @@ export function FboSupplyDetail() {
         </Button>
       </div>
 
+      {supply?.statusRevertedByPacking ? (
+        <div className="alert alert-warning">
+          Статус сброшен в «Новая»: сборка не совпадает с планом поставки.
+        </div>
+      ) : null}
+      {packingHasDiscrepancy ? (
+        <div className="alert alert-warning">
+          Есть расхождения между планом и сборкой — завершите упаковку всех позиций, чтобы перейти в
+          «Упакован» или отправить состав на маркетплейс.
+        </div>
+      ) : null}
       {err && <div className="alert alert-danger">{err}</div>}
       {placementZonesMsg ? (
         <div className="alert alert-success">{placementZonesMsg}</div>
@@ -602,18 +627,15 @@ export function FboSupplyDetail() {
         {FBO_SUPPLY_STATUS_OPTIONS.map((s, i) => {
           const done = i < statusIdx;
           const active = s === supply.status;
-          const blocked = s === 'ready_for_supply' && packingHasDiscrepancy;
+          const blocked = !canSelectFboSupplyStatus(s, packingHasDiscrepancy);
+          const blockedTitle = fboSupplyStatusBlockedTitle(s, packingHasDiscrepancy);
           return (
             <button
               key={s}
               type="button"
               className={`fbo-status-step${active ? ' active' : ''}${done ? ' done' : ''}${blocked ? ' blocked' : ''}`}
               disabled={saving || blocked}
-              title={
-                blocked
-                  ? 'Устраните расхождения в сборке, чтобы выбрать этот статус'
-                  : `Установить: ${getFboSupplyStatusLabel(s)}`
-              }
+              title={blockedTitle || `Установить: ${getFboSupplyStatusLabel(s)}`}
               onClick={() => handleStatusChange(s)}
             >
               {getFboSupplyStatusLabel(s)}

@@ -24,6 +24,7 @@ import {
 } from './fboSupplyPackingSort.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
 import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
+import { hasPackingDiscrepancy } from '../../constants/fboSupplyStatuses';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -166,6 +167,9 @@ export function FboSupplyPacking({
             packingAllMatch: data.packingAllMatch,
             statusReverted: data.statusReverted,
           });
+          if (data.statusReverted) {
+            setScanMsg('Статус сброшен в «Новая»: сборка не совпадает с планом');
+          }
           const nextActiveId = data.activeCargoUnitId ?? activeCargoUnitId;
           const nextActive = (data.packing.cargoUnits || []).find(
             (c) => String(c.id) === String(nextActiveId)
@@ -272,6 +276,7 @@ export function FboSupplyPacking({
 
   const activeCargo = cargoUnits.find((c) => String(c.id) === String(activeCargoUnitId));
   const isOzon = marketplace !== 'wb';
+  const packingHasDiscrepancy = hasPackingDiscrepancy(null, packing);
   const activeWeightWarning =
     weightWarning || (activeCargo ? cargoWeightExceededMessage(activeCargo) : null);
   const activePlacementSummary =
@@ -401,12 +406,14 @@ export function FboSupplyPacking({
         <Button
           variant="primary"
           size="small"
-          disabled={submitting || !(cargoUnits.length > 0)}
+          disabled={submitting || packingHasDiscrepancy || !(cargoUnits.length > 0)}
           onClick={handleSubmitToMarketplace}
           title={
-            isOzon
-              ? 'Отправить грузоместа в Ozon через API'
-              : 'Для WB используйте Excel — API отправки пока недоступен'
+            packingHasDiscrepancy
+              ? 'Сначала устраните расхождения между планом и сборкой'
+              : isOzon
+                ? 'Отправить грузоместа в Ozon через API'
+                : 'Для WB используйте Excel — API отправки пока недоступен'
           }
         >
           {submitting ? 'Отправка…' : 'На маркетплейс'}

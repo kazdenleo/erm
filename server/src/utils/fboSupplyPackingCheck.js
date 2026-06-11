@@ -4,6 +4,8 @@
 
 import { query } from '../config/database.js';
 
+const STATUSES_REQUIRING_COMPLETE_PACKING = new Set(['packed', 'ready_for_supply']);
+
 /**
  * @param {number|string} supplyId
  * @returns {Promise<{ allMatch: boolean, hasItems: boolean, discrepancies: Array<{ supplyItemId: number, planned: number, packed: number, discrepancy: number }> }>}
@@ -45,17 +47,30 @@ export async function evaluateSupplyPacking(supplyId) {
 }
 
 /**
- * Сверка сборки без смены статуса (статус меняется вручную, кроме запрета «Готов к поставке»).
- * @returns {Promise<{ allMatch: boolean, hasItems: boolean, status: string, reverted: boolean }>}
+ * После изменения сборки: при расхождениях откатываем «Упакован» / «Готов к поставке» → «Новая».
+ * @returns {Promise<{ allMatch: boolean, hasItems: boolean, status: string, reverted: boolean, discrepancies: Array }>}
  */
 export async function syncSupplyStatusForPacking(supplyId) {
-  const { allMatch, hasItems } = await evaluateSupplyPacking(supplyId);
+  const packingEval = await evaluateSupplyPacking(supplyId);
+  const { allMatch, hasItems, discrepancies } = packingEval;
   const statusR = await query(`SELECT status FROM fbo_supplies WHERE id = $1 LIMIT 1`, [supplyId]);
-  const status = statusR.rows?.[0]?.status || 'new';
-  return { allMatch, hasItems, status, reverted: false };
+  let status = statusR.rows?.[0]?.status || 'new';
+  let reverted = false;
+
+  const packingIncomplete = hasItems && !allMatch;
+  if (packingIncomplete && STATUSES_REQUIRING_COMPLETE_PACKING.has(status)) {
+    await query(
+      `UPDATE fbo_supplies SET status = 'new', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [supplyId]
+    );
+    status = 'new';
+    reverted = true;
+  }
+
+  return { allMatch, hasItems, status, reverted, discrepancies };
 }
 
-export function assertCanSetReadyForSupply(packingEval) {
+function assertPackingComplete(packingEval, statusLabel) {
   if (!packingEval.hasItems) {
     const err = new Error('В поставке нет строк товаров');
     err.statusCode = 400;
@@ -63,7 +78,32 @@ export function assertCanSetReadyForSupply(packingEval) {
   }
   if (!packingEval.allMatch) {
     const err = new Error(
-      'Нельзя перевести в «Готов к поставке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
+      `Нельзя перевести в «${statusLabel}»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.`
+    );
+    err.statusCode = 400;
+    err.code = 'FBO_PACKING_DISCREPANCY';
+    err.details = packingEval.discrepancies;
+    throw err;
+  }
+}
+
+export function assertCanSetPackedStatus(packingEval) {
+  assertPackingComplete(packingEval, 'Упакован');
+}
+
+export function assertCanSetReadyForSupply(packingEval) {
+  assertPackingComplete(packingEval, 'Готов к поставке');
+}
+
+export function assertPackingReadyForMarketplaceSubmit(packingEval) {
+  if (!packingEval.hasItems) {
+    const err = new Error('В поставке нет строк товаров');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!packingEval.allMatch) {
+    const err = new Error(
+      'Нельзя отправить состав на маркетплейс: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
     );
     err.statusCode = 400;
     err.code = 'FBO_PACKING_DISCREPANCY';
