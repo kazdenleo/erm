@@ -8,6 +8,7 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import {
   NET_RESERVED_SUM_EXPR_SQL,
+  allocateWarehouseScopedReserved,
   orderReserveMovementMatchSql,
   parseStockMovementWarehouseId
 } from '../constants/netReservedStockSql.js';
@@ -945,23 +946,156 @@ export async function readKitSkuNetReserved(kitProductId, opts = {}) {
         : Number(whRaw)
       : null;
   const warehouseScoped = Number.isFinite(whId) && whId > 0;
-  const r = warehouseScoped
-    ? await query(
-        `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-         FROM stock_movements
-         WHERE product_id = $1
-           AND type IN ('reserve', 'unreserve')
-           AND (warehouse_id = $2 OR warehouse_id IS NULL)`,
-        [kitId, whId]
-      )
-    : await query(
-        `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-         FROM stock_movements
-         WHERE product_id = $1
-           AND type IN ('reserve', 'unreserve')`,
-        [kitId]
-      );
+  if (warehouseScoped) {
+    return warehouseScopedNetReservedForProduct(kitId, whId);
+  }
+  const r = await query(
+    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+     FROM stock_movements
+     WHERE product_id = $1
+       AND type IN ('reserve', 'unreserve')`,
+    [kitId]
+  );
   return Number(r.rows?.[0]?.rv ?? 0) || 0;
+}
+
+/**
+ * Итоговый резерв комплекта: целые на SKU и/или сборка из комплектующих.
+ * При обоих путях — min по комплектующим (компонентный резерв авторитетен).
+ */
+function resolveKitDisplayReservedQty(onSku, fromComp) {
+  const sku = Math.max(0, Number(onSku) || 0);
+  const comp = Math.max(0, Number(fromComp) || 0);
+  if (sku > 0 && comp > 0) return comp;
+  if (sku > 0) return sku;
+  return comp;
+}
+
+async function warehouseScopedNetReservedForProduct(productId, whId) {
+  const pid = Number(productId);
+  const wh = Number(whId);
+  if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(wh) || wh < 1) return 0;
+  const [strictR, nullR, onHandR, whOnHandR] = await Promise.all([
+    query(
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id = $2`,
+      [pid, wh]
+    ),
+    query(
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id IS NULL`,
+      [pid]
+    ),
+    query(
+      `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty,
+              (SELECT COALESCE(quantity, 0)::int FROM products WHERE id = $1) AS product_qty
+       FROM product_warehouse_stock
+       WHERE product_id = $1`,
+      [pid]
+    ),
+    query(
+      `SELECT COALESCE(quantity, 0)::int AS qty
+       FROM product_warehouse_stock
+       WHERE product_id = $1 AND warehouse_id = $2`,
+      [pid, wh]
+    )
+  ]);
+  const strict = Number(strictR.rows[0]?.rv ?? 0) || 0;
+  const nullReserve = Number(nullR.rows[0]?.rv ?? 0) || 0;
+  const totalOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
+  const legacyProductQty = Number(onHandR.rows[0]?.product_qty ?? 0) || 0;
+  let whOnHand = Number(whOnHandR.rows[0]?.qty ?? 0) || 0;
+  if (whOnHand <= 0 && totalOnHand <= 0 && legacyProductQty > 0) {
+    whOnHand = legacyProductQty;
+  }
+  return allocateWarehouseScopedReserved({
+    strict,
+    nullReserve,
+    whOnHand,
+    totalOnHand,
+    legacyProductQty
+  });
+}
+
+async function warehouseScopedNetReservedMap(productIds, whId) {
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const wh = Number(whId);
+  if (!ids.length || !Number.isFinite(wh) || wh < 1) return new Map();
+  const [strictR, nullR, onHandR, whOnHandR, legacyR] = await Promise.all([
+    query(
+      `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND type IN ('reserve', 'unreserve')
+         AND warehouse_id = $2
+       GROUP BY product_id`,
+      [ids, wh]
+    ),
+    query(
+      `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND type IN ('reserve', 'unreserve')
+         AND warehouse_id IS NULL
+       GROUP BY product_id`,
+      [ids]
+    ),
+    query(
+      `SELECT product_id, COALESCE(SUM(quantity), 0)::int AS pws_qty
+       FROM product_warehouse_stock
+       WHERE product_id = ANY($1::bigint[])
+       GROUP BY product_id`,
+      [ids]
+    ),
+    query(
+      `SELECT product_id, COALESCE(quantity, 0)::int AS qty
+       FROM product_warehouse_stock
+       WHERE product_id = ANY($1::bigint[]) AND warehouse_id = $2`,
+      [ids, wh]
+    ),
+    query(
+      `SELECT id, COALESCE(quantity, 0)::int AS product_qty
+       FROM products WHERE id = ANY($1::bigint[])`,
+      [ids]
+    )
+  ]);
+  const strictMap = new Map(
+    (strictR.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0])
+  );
+  const nullMap = new Map(
+    (nullR.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0])
+  );
+  const totalOnHandMap = new Map(
+    (onHandR.rows || []).map((row) => [Number(row.product_id), Number(row.pws_qty) || 0])
+  );
+  const whOnHandMap = new Map(
+    (whOnHandR.rows || []).map((row) => [Number(row.product_id), Number(row.qty) || 0])
+  );
+  const legacyMap = new Map(
+    (legacyR.rows || []).map((row) => [Number(row.id), Number(row.product_qty) || 0])
+  );
+  const map = new Map();
+  for (const pid of ids) {
+    const totalOnHand = totalOnHandMap.get(pid) ?? 0;
+    const legacyProductQty = legacyMap.get(pid) ?? 0;
+    let whOnHand = whOnHandMap.get(pid) ?? 0;
+    if (whOnHand <= 0 && totalOnHand <= 0 && legacyProductQty > 0) {
+      whOnHand = legacyProductQty;
+    }
+    map.set(
+      pid,
+      allocateWarehouseScopedReserved({
+        strict: strictMap.get(pid) ?? 0,
+        nullReserve: nullMap.get(pid) ?? 0,
+        whOnHand,
+        totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
+        legacyProductQty
+      })
+    );
+  }
+  return map;
 }
 
 /** min(floor(reserve_i / qty_in_kit)) с суммированием qty по одному component_product_id. */
@@ -1003,14 +1137,15 @@ async function minKitUnitsFromComponentReservesAsync(components, getReservedAsyn
 
 /**
  * Резерв в колонке «Резерв» для комплекта — та же формула, что readKitDisplayReservedQuantity / история:
- * нетто на SKU комплекта; если 0 — min(⌊резерв_i / qty_i⌋) по комплектующим (целые комплекты, не сумма штук).
+ * целые на SKU и/или min(⌊резерв_i / qty_i⌋) по комплектующим; при обоих путях — компонентный min.
  */
 function kitTotalDisplayReservedFromContext(kitId, ctx) {
   const onSku = Math.max(0, ctx.reservedMap.get(kitId) || 0);
-  if (onSku > 0) return onSku;
   const comps = ctx.componentsByKit?.get(kitId) || [];
-  if (!comps.length) return 0;
-  return minKitUnitsFromComponentReserves(comps, (pid) => ctx.reservedMap.get(pid) ?? 0);
+  const fromComp = comps.length
+    ? minKitUnitsFromComponentReserves(comps, (pid) => ctx.reservedMap.get(pid) ?? 0)
+    : 0;
+  return resolveKitDisplayReservedQty(onSku, fromComp);
 }
 
 /** Map component_product_id → нетто-резерв (warehouse-scoped, как sumKitComponentsNetReserved). */
@@ -1028,30 +1163,21 @@ export async function readKitComponentsNetReservedMap(kitProductId, opts = {}) {
   const warehouseScoped = Number.isFinite(whId) && whId > 0;
 
   try {
-    const r = warehouseScoped
-      ? await query(
-          `SELECT sm.product_id,
-             ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-           FROM stock_movements sm
-           WHERE sm.product_id IN (
-             SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
-           )
-             AND sm.type IN ('reserve', 'unreserve')
-             AND (sm.warehouse_id = $2 OR sm.warehouse_id IS NULL)
-           GROUP BY sm.product_id`,
-          [kitId, whId]
-        )
-      : await query(
-          `SELECT sm.product_id,
-             ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-           FROM stock_movements sm
-           WHERE sm.product_id IN (
-             SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
-           )
-             AND sm.type IN ('reserve', 'unreserve')
-           GROUP BY sm.product_id`,
-          [kitId]
-        );
+    if (warehouseScoped) {
+      const compIds = (await getKitComponents(kitId)).map((c) => c.component_product_id);
+      return warehouseScopedNetReservedMap(compIds, whId);
+    }
+    const r = await query(
+      `SELECT sm.product_id,
+         ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements sm
+       WHERE sm.product_id IN (
+         SELECT kc.component_product_id FROM kit_components kc WHERE kc.kit_product_id = $1
+       )
+         AND sm.type IN ('reserve', 'unreserve')
+       GROUP BY sm.product_id`,
+      [kitId]
+    );
     const map = new Map();
     for (const row of r.rows || []) {
       const pid = Number(row.product_id);
@@ -1117,11 +1243,11 @@ export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
   const onSku = await readKitSkuNetReserved(kitId, opts);
-  if (onSku > 0) return onSku;
   const components = await getKitComponents(kitId);
-  if (components.length === 0) return 0;
+  if (components.length === 0) return onSku > 0 ? onSku : 0;
   const compMap = await readKitComponentsNetReservedMap(kitId, opts);
-  return minKitUnitsFromComponentReserves(components, (pid) => compMap.get(pid) ?? 0);
+  const fromComp = minKitUnitsFromComponentReserves(components, (pid) => compMap.get(pid) ?? 0);
+  return resolveKitDisplayReservedQty(onSku, fromComp);
 }
 
 /**
@@ -1860,26 +1986,18 @@ async function batchNetReservedMap(productIds, opts = {}) {
         : Number(whRaw)
       : null;
   const warehouseScoped = Number.isFinite(whId) && whId > 0;
-  const r = warehouseScoped
-    ? await query(
-        `SELECT product_id,
-         ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = ANY($1::bigint[])
-         AND type IN ('reserve', 'unreserve')
-         AND (warehouse_id = $2 OR warehouse_id IS NULL)
-       GROUP BY product_id`,
-        [ids, whId]
-      )
-    : await query(
-        `SELECT product_id,
-         ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = ANY($1::bigint[])
-         AND type IN ('reserve', 'unreserve')
-       GROUP BY product_id`,
-        [ids]
-      );
+  if (warehouseScoped) {
+    return warehouseScopedNetReservedMap(ids, whId);
+  }
+  const r = await query(
+    `SELECT product_id,
+     ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+   FROM stock_movements
+   WHERE product_id = ANY($1::bigint[])
+     AND type IN ('reserve', 'unreserve')
+   GROUP BY product_id`,
+    [ids]
+  );
   return new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0]));
 }
 

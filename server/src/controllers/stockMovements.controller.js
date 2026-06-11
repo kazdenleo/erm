@@ -145,7 +145,7 @@ class StockMovementsController {
       });
 
       const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);
-      if (orphanQty > 0 && rows.length === 0 && fboSupplies.length === 0) {
+      if (orphanQty > 0) {
         try {
           await stockMovementsService.releaseUnattributedJournalReserve(id, {
             profileId: tid,

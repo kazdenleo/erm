@@ -3082,6 +3082,30 @@ export function WarehouseStocks() {
                 </ul>
               </>
             ) : null}
+            {reserveOrphanQty > 0 &&
+            (reserveOrders.length > 0 || reserveFboSupplies.length > 0) ? (
+              <>
+                <p className="text-warning small mb-2" role="status">
+                  В журнале по выбранному складу есть лишний резерв:{' '}
+                  <strong>{reserveOrphanQty}</strong> шт. сверх заказов и FBO. При открытии модалки
+                  он снимается автоматически; если цифра не совпадает с колонкой «Резерв», нажмите
+                  кнопку ниже.
+                </p>
+                <div className="mb-3">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="small"
+                    disabled={reserveBulkReleasing}
+                    onClick={handleReleaseOrphanReserveFromStock}
+                  >
+                    {reserveBulkReleasing
+                      ? 'Снимаем резерв…'
+                      : `Снять лишний резерв (${reserveOrphanQty} шт.)`}
+                  </Button>
+                </div>
+              </>
+            ) : null}
             {reserveOrders.length > 0 ? (
           <>
             <p className="text-muted small mb-2">
