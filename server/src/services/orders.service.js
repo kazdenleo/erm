@@ -3008,7 +3008,7 @@ class OrdersService {
     if (!Number.isFinite(kitId) || kitId < 1) return 0;
     const strict =
       opts.strictWarehouse === true ||
-      (opts.orderRow != null && isMarketplaceFbsOrderRow(opts.orderRow));
+      (opts.orderRow != null && isStrictWarehouseOrderRow(opts.orderRow));
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
     if (wh != null) {

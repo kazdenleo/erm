@@ -339,25 +339,36 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
     incoming = 0;
   }
 
+  const whReserveOpts = warehouseScoped ? { warehouseId: whId } : {};
+  const reservedWarehouseScoped = warehouseScoped
+    ? await getReservedQuantityFromMovementsWithClient(client, pid, whReserveOpts)
+    : null;
   const reserved =
     opts.reservedMap instanceof Map
       ? opts.reservedMap.get(pid) || 0
-      : await getReservedQuantityFromMovementsWithClient(client, pid);
+      : warehouseScoped
+        ? reservedWarehouseScoped
+        : await getReservedQuantityFromMovementsWithClient(client, pid);
   const reservedRaw =
     opts.reservedMap instanceof Map
       ? reserved
       : await getRawReservedQuantityFromMovementsWithClient(client, pid);
 
   const supplyCap = onHand + incoming;
-  // Лимит резерва в applyChange сверяется с reservedRaw — «доступно» считаем по тому же источнику.
-  const available = computeOwnWarehouseAvailable({ onHand, incoming, reserved: reservedRaw });
+  // На конкретном складе «доступно» — по резерву, привязанному к этому складу (не глобальному).
+  const reservedForAvailable = warehouseScoped ? reservedWarehouseScoped : reservedRaw;
+  const available = computeOwnWarehouseAvailable({
+    onHand,
+    incoming,
+    reserved: reservedForAvailable
+  });
 
   return { onHand, incoming, reserved, reservedRaw, available, supplyCap };
 }
 
 /**
- * Доступно под резерв в транзакции: SUM(PWS) + «в пути» − резерв (без поставщиков).
- * warehouseId в opts не влияет на расчёт — резерв и incoming глобальны по товару.
+ * Доступно под резерв: PWS (по складу, если указан) + «в пути» − резерв.
+ * При warehouseId резерв считается по движениям этого склада (+ доля legacy без склада).
  */
 export async function getReservableSupplyUnitsWithClient(client, productId, opts = {}) {
   const snap = await getProductSupplySnapshotWithClient(client, productId, opts);

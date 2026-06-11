@@ -89,7 +89,7 @@ function lineReserveBounds(line) {
   const maxReserve = Math.min(remaining, available);
   const remainingPieces = Math.max(0, units.needPieces - units.reservedPieces);
   const inputMax = reserveInKitUnits
-    ? Math.min(remainingPieces, availablePieces > 0 ? availablePieces : remainingPieces)
+    ? Math.min(remainingPieces, Math.max(0, availablePieces))
     : maxReserve;
   return {
     ...units,
