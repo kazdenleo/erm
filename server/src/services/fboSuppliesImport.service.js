@@ -165,10 +165,10 @@ function buildOzonSupplyListBody(daysBack, lastId = '', states = OZON_SUPPLY_LIS
   };
   if (useTimeslotFilter) {
     body.filter.timeslot_from_range = {
-      from: since.toISOString(),
-      to: till.toISOString(),
-      timeslot_filter_type: 'BY_UTC_TIME',
-    };
+        from: since.toISOString(),
+        to: till.toISOString(),
+        timeslot_filter_type: 'BY_UTC_TIME',
+  };
   }
   if (lastId) body.last_id = String(lastId);
   return body;
@@ -451,16 +451,45 @@ function parseOzonBundleRowOfferId(row) {
   );
 }
 
+async function ozonPostSupplyOrderDetails(orderId, ozonApiOpts) {
+  const id = Number(orderId) || orderId;
+  if (id == null || String(id).trim() === '' || Number(id) <= 0) {
+    const err = new Error('Invalid Ozon supply order id');
+    err.statusCode = 400;
+    throw err;
+  }
+  const bodies = [{ order_id: id }, { supply_order_id: id }];
+  let lastError = null;
+  for (const body of bodies) {
+    try {
+      return await integrationsService._ozonApiPost('/v1/supply-order/details', body, ozonApiOpts);
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError ?? new Error('Ozon supply-order/details failed');
+}
+
+function getOzonDetailsSupplyEntry(supply, orderDetails) {
+  const supplyId = supply?.supply_id ?? supply?.id;
+  if (supplyId == null || !orderDetails?.raw) return null;
+  for (const s of ozonDetailsSuppliesList(orderDetails.raw)) {
+    if (String(s?.supply_id ?? s?.id) === String(supplyId)) return s;
+  }
+  return null;
+}
+
+function parseOzonPositiveInt(value) {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
   if (supplyOrderId == null || String(supplyOrderId).trim() === '') {
     return { bundleIds: [], shippingCluster: null, totalQuantity: 0, operationIds: [] };
   }
   try {
-    const data = await integrationsService._ozonApiPost(
-      '/v1/supply-order/details',
-      { supply_order_id: Number(supplyOrderId) || supplyOrderId },
-      ozonApiOpts
-    );
+    const data = await ozonPostSupplyOrderDetails(supplyOrderId, ozonApiOpts);
     const result = data?.result ?? data ?? {};
     const supplies = ozonDetailsSuppliesList(result);
     const ids = [];
@@ -544,7 +573,22 @@ async function fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts) {
 }
 
 function resolveOzonSupplyMetaCounts(order, supply, orderDetails = null) {
-  const values = [
+  const values = [];
+  const detailSupply = getOzonDetailsSupplyEntry(supply, orderDetails);
+  if (detailSupply) {
+    values.push(
+      detailSupply.total_quantity,
+      detailSupply.total_item_count,
+      detailSupply.total_items_count,
+      detailSupply.items_count,
+      detailSupply.quantity,
+      detailSupply.planned_quantity,
+      detailSupply.total_items,
+      detailSupply.package_units_count
+    );
+  }
+
+  values.push(
     supply?.total_quantity,
     supply?.total_item_count,
     supply?.total_items_count,
@@ -552,12 +596,12 @@ function resolveOzonSupplyMetaCounts(order, supply, orderDetails = null) {
     supply?.quantity,
     supply?.total_items,
     supply?.planned_quantity,
+    supply?.package_units_count,
     order?.total_quantity,
     order?.total_item_count,
     order?.total_items_count,
-    order?.items_count,
-    orderDetails?.totalQuantity,
-  ];
+    order?.items_count
+  );
 
   const supplyId = supply?.supply_id ?? supply?.id;
   if (supplyId != null && orderDetails?.raw) {
@@ -570,17 +614,18 @@ function resolveOzonSupplyMetaCounts(order, supply, orderDetails = null) {
         s?.items_count,
         s?.quantity,
         s?.planned_quantity,
-        s?.total_items
+        s?.total_items,
+        s?.package_units_count
       );
     }
   }
 
   for (const v of values) {
-    const n = parseInt(v, 10);
+    const n = parseOzonPositiveInt(v);
     if (n > 0) return n;
   }
 
-  for (const lines of [supply?.items, supply?.lines, supply?.products]) {
+  for (const lines of [detailSupply?.items, supply?.items, supply?.lines, supply?.products]) {
     if (!Array.isArray(lines) || !lines.length) continue;
     const sum = lines.reduce((s, row) => s + parseOzonBundleRowQuantity(row), 0);
     if (sum > 0) return sum;
@@ -606,7 +651,14 @@ function collectOzonBundleIdsForSupply(order, supply, orderDetails = null) {
     }
   }
 
-  for (const id of orderDetails?.bundleIds ?? []) push(id);
+  if (!ids.length) {
+    const detailSupplies = ozonDetailsSuppliesList(orderDetails?.raw ?? {});
+    const orderSupplies = order?.supplies ?? [];
+    const onlyOneSupply = detailSupplies.length <= 1 && orderSupplies.length <= 1;
+    if (onlyOneSupply) {
+      for (const id of orderDetails?.bundleIds ?? []) push(id);
+    }
+  }
 
   return [...new Set(ids)];
 }
@@ -618,10 +670,18 @@ function resolveOzonPreviewItemCount({ items, totalCount, order, supply, orderDe
   const fromMeta = resolveOzonSupplyMetaCounts(order, supply, orderDetails);
   if (fromMeta > 0) return fromMeta;
 
-  const fromDetails = parseInt(orderDetails?.totalQuantity, 10) || 0;
-  if (fromDetails > 0) return fromDetails;
+  const parsedTotal = parseOzonPositiveInt(totalCount);
+  if (parsedTotal > 0) return parsedTotal;
 
-  return parseInt(totalCount, 10) || 0;
+  const detailSupplies = ozonDetailsSuppliesList(orderDetails?.raw ?? {});
+  const orderSupplies = order?.supplies ?? [];
+  const supplyCount = Math.max(detailSupplies.length, orderSupplies.length, 1);
+  if (supplyCount <= 1) {
+    const fromDetails = parseOzonPositiveInt(orderDetails?.totalQuantity);
+    if (fromDetails > 0) return fromDetails;
+  }
+
+  return 0;
 }
 
 async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags = true } = {}) {
@@ -736,8 +796,24 @@ async function fetchOzonSupplyItems(
 
   const bundleIds = collectOzonBundleIdsForSupply(order, supply, details);
 
+  const detailSupplyEntry = getOzonDetailsSupplyEntry(supply, details);
+  let totalCount = detailSupplyEntry
+    ? parseOzonPositiveInt(
+        detailSupplyEntry.total_quantity ??
+          detailSupplyEntry.total_item_count ??
+          detailSupplyEntry.total_items_count ??
+          detailSupplyEntry.items_count
+      )
+    : 0;
+  if (!totalCount) {
+    const detailSupplies = ozonDetailsSuppliesList(details?.raw ?? {});
+    const orderSupplies = order?.supplies ?? [];
+    if (detailSupplies.length <= 1 && orderSupplies.length <= 1) {
+      totalCount = parseOzonPositiveInt(details.totalQuantity);
+    }
+  }
+
   let items = [];
-  let totalCount = details.totalQuantity || 0;
   const clusterQty = new Map();
   const addCluster = (name, qty = 1) => {
     if (!name) return;
@@ -760,12 +836,24 @@ async function fetchOzonSupplyItems(
         fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags: false });
       }
       if (fetched.items.length > items.length) items = fetched.items;
-      if (fetched.totalCount > totalCount) totalCount = fetched.totalCount;
+      const bundleQty = fetched.totalCount || sumSupplyItemsQuantity(fetched.items);
+      if (bundleQty > totalCount) totalCount = bundleQty;
       if (fetched.shippingCluster) addCluster(fetched.shippingCluster, fetched.totalCount || 1);
     } catch {
       /* try next bundle_id */
     }
   }
+
+  const detailSupply = detailSupplyEntry;
+  const detailQty = detailSupply
+    ? parseOzonPositiveInt(
+        detailSupply.total_quantity ??
+          detailSupply.total_item_count ??
+          detailSupply.total_items_count ??
+          detailSupply.items_count
+      )
+    : 0;
+  if (detailQty > totalCount) totalCount = detailQty;
 
   if (!totalCount) totalCount = resolveOzonSupplyMetaCounts(order, supply, details);
   if (!totalCount && items.length) totalCount = sumSupplyItemsQuantity(items);
@@ -792,10 +880,15 @@ async function fetchOzonSupplyItems(
     findOzonClusterNameInTree(details?.raw);
   if (treeCluster) addCluster(treeCluster, 300);
 
+  const shippingCluster =
+    pickDominantOzonCluster(clusterQty) ||
+    macrolocalCluster ||
+    resolveOzonShippingCluster(order, supply, warehousesById, clusterByWarehouseId, details?.raw);
+
   return {
     items,
     totalCount,
-    shippingCluster: pickDominantOzonCluster(clusterQty),
+    shippingCluster,
   };
 }
 
@@ -993,7 +1086,12 @@ function resolveOzonShippingCluster(order, supply, warehousesById, clusterByWare
     return String(direct).trim();
   }
 
-  const supplies = ozonDetailsSuppliesList(orderDetails ?? {});
+  const supplyId = supply?.supply_id ?? supply?.id;
+  const allDetailsSupplies = ozonDetailsSuppliesList(orderDetails ?? {});
+  const detailsSupplies =
+    supplyId != null
+      ? allDetailsSupplies.filter((s) => String(s?.supply_id ?? s?.id) === String(supplyId))
+      : allDetailsSupplies;
   const whCandidates = [
     supply?.destination_warehouse,
     supply?.destination_warehouse_id,
@@ -1001,7 +1099,7 @@ function resolveOzonShippingCluster(order, supply, warehousesById, clusterByWare
     supply?.supply_warehouse_id,
     order?.destination_warehouse,
     order?.destination_warehouse_id,
-    ...supplies.flatMap((s) => [
+    ...detailsSupplies.flatMap((s) => [
       s?.destination_warehouse,
       s?.destination_warehouse_id,
       s?.supply_warehouse,
@@ -1654,7 +1752,7 @@ class FboSuppliesImportService {
           order,
           supply,
           ozonApiOpts,
-          profileId,
+              profileId,
           orderDetails,
           {
             warehousesById: ozonWarehousesById,
@@ -1671,8 +1769,8 @@ class FboSuppliesImportService {
           orderDetails,
         });
         shippingClusterFromDetails = fetchedItems.shippingCluster;
-      } catch {
-        items = [];
+        } catch {
+          items = [];
         itemCount = resolveOzonPreviewItemCount({
           items: [],
           totalCount: 0,
@@ -1733,10 +1831,10 @@ class FboSuppliesImportService {
           storageWhId != null
             ? String(storageWhId)
             : wh.warehouse_id != null
-              ? String(wh.warehouse_id)
-              : wh.storage_warehouse_id != null
-                ? String(wh.storage_warehouse_id)
-                : null,
+            ? String(wh.warehouse_id)
+            : wh.storage_warehouse_id != null
+              ? String(wh.storage_warehouse_id)
+              : null,
         shippingCluster,
         externalShipmentNumber: externalNumber,
         externalSupplyId:
