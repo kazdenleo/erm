@@ -335,6 +335,7 @@ export function FboPurchaseCalculation() {
               <tr>
                 <th className="fbo-pc-sticky-col">Товар</th>
                 <th>Артикул</th>
+                <th>К закупке</th>
                 <th>Наличие</th>
                 <th>В пути</th>
                 {calc.supplies.map((s) => (
@@ -343,7 +344,6 @@ export function FboPurchaseCalculation() {
                   </th>
                 ))}
                 <th>Себест.</th>
-                <th>К закупке</th>
                 <th>Итого себест.</th>
               </tr>
             </thead>
@@ -357,6 +357,12 @@ export function FboPurchaseCalculation() {
                     {getPurchaseRowDisplayName(row)}
                   </td>
                   <td>{row.sku || '—'}</td>
+                  <td>
+                    <strong>{row.toPurchase}</strong>
+                    {row.isKitComponentRow && row.perKit > 1 ? (
+                      <div className="text-muted small">{row.perKit} шт./компл.</div>
+                    ) : null}
+                  </td>
                   <td>{row.onHand}</td>
                   <td>{row.incoming}</td>
                   {calc.supplies.map((s) => {
@@ -421,25 +427,20 @@ export function FboPurchaseCalculation() {
                     );
                   })}
                   <td>{fmtMoney(row.cost)}</td>
-                  <td>
-                    <strong>{row.toPurchase}</strong>
-                    {row.isKitComponentRow && row.perKit > 1 ? (
-                      <div className="text-muted small">{row.perKit} шт./компл.</div>
-                    ) : null}
-                  </td>
                   <td>{fmtMoney(row.lineCostTotal)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr className="fbo-purchase-calc-tfoot">
-                <th colSpan={4 + calc.supplies.length} className="text-end">
+                <th colSpan={2} className="text-end">
                   Итого
                 </th>
-                <th />
                 <th>
                   <strong>{calc.totals.toPurchaseQty}</strong>
                 </th>
+                <th colSpan={2 + calc.supplies.length} />
+                <th />
                 <th>
                   <strong>{fmtMoney(calc.totals.costSum)}</strong>
                 </th>
