@@ -1956,8 +1956,65 @@ class OrdersService {
     };
   }
 
+  /**
+   * Ручное снятие резерва по заказу: не дозарезервировать автоматически, пока пользователь
+   * снова не поставит резерв вручную (reserve после manual unreserve).
+   */
+  async _manualUnreserveBlocksAutoReserve(orderDbId, productId, marketplaceOrderId = null) {
+    const oid = Number(orderDbId);
+    const pid = Number(productId);
+    if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return false;
+
+    const scopeIds = new Set([pid]);
+    if (await isKitProductId(pid)) {
+      for (const c of await getKitComponents(pid)) {
+        const cid = Number(c.component_product_id);
+        if (Number.isFinite(cid) && cid > 0) scopeIds.add(cid);
+      }
+    }
+    const parents = await query(
+      `SELECT DISTINCT kit_product_id FROM kit_components WHERE component_product_id = $1`,
+      [pid]
+    );
+    for (const row of parents.rows || []) {
+      const kid = Number(row.kit_product_id);
+      if (Number.isFinite(kid) && kid > 0) scopeIds.add(kid);
+    }
+
+    const mpLabel =
+      marketplaceOrderId != null && String(marketplaceOrderId).trim() !== ''
+        ? String(marketplaceOrderId).trim()
+        : null;
+
+    for (const scopePid of scopeIds) {
+      const r = await query(
+        `SELECT
+           (SELECT MAX(sm.id) FROM stock_movements sm
+            WHERE sm.product_id = $1
+              AND sm.type = 'unreserve'
+              AND (
+                sm.meta->>'manual_unreserve' IN ('true', 't')
+                OR (sm.meta->'manual_unreserve')::text = 'true'
+              )
+              AND ${orderReserveMovementMatchSql('sm.', 2, 3)}) AS last_manual_id,
+           (SELECT MAX(sm.id) FROM stock_movements sm
+            WHERE sm.product_id = $1
+              AND sm.type = 'reserve'
+              AND ${orderReserveMovementMatchSql('sm.', 2, 3)}) AS last_reserve_id`,
+        [scopePid, oid, mpLabel]
+      );
+      const lastManual = Number(r.rows?.[0]?.last_manual_id) || 0;
+      const lastReserve = Number(r.rows?.[0]?.last_reserve_id) || 0;
+      if (lastManual > 0 && lastManual > lastReserve) return true;
+    }
+    return false;
+  }
+
   /** Резерв для строки заказа из БД: частичный резерв и дозаполнение до qty при появлении остатка. */
-  async _applyReserveForOrderIfAbsent(orderRow, { skipKitReconcile = false } = {}) {
+  async _applyReserveForOrderIfAbsent(
+    orderRow,
+    { skipKitReconcile = false, allowDespiteManualUnreserve = false } = {}
+  ) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
     if (isOrderTerminalNoReserve(orderRow.status)) return;
     const id = orderRowDbId(orderRow);
@@ -1966,6 +2023,13 @@ class OrdersService {
     if (!id) return;
     const productId = await this._resolveProductIdForOrderStock(orderRow);
     if (!productId) return;
+
+    if (
+      !allowDespiteManualUnreserve &&
+      (await this._manualUnreserveBlocksAutoReserve(id, productId, orderIdStr || null))
+    ) {
+      return;
+    }
 
     const rawProductId = orderRow?.productId ?? orderRow?.product_id;
     if (rawProductId == null || String(rawProductId).trim() === '') {
@@ -4891,6 +4955,7 @@ class OrdersService {
               orderId: orderIdStr,
               warehouse_id: warehouseId,
               manual_unreserve: true,
+              skip_auto_reserve: true,
               kit_manual_unreserve: true
             }
           });
@@ -4927,6 +4992,7 @@ class OrdersService {
             orderId: orderIdStr,
             warehouse_id: warehouseId,
             manual_unreserve: true,
+            skip_auto_reserve: true,
             partial_line: true
           }
         });
@@ -4992,6 +5058,7 @@ class OrdersService {
           orderId: orderIdStr,
           warehouse_id: warehouseId,
           strict_warehouse: strictWh,
+          manual_reserve: true,
           partial_line: true
         };
         if (kitProductId != null) {
@@ -5104,7 +5171,7 @@ class OrdersService {
           delta: net,
           type: 'unreserve',
           reason: `Снятие резерва по заказу ${orderIdLabel} (вручную)`.trim(),
-          meta: { ...meta, manual_unreserve: true }
+          meta: { ...meta, manual_unreserve: true, skip_auto_reserve: true }
         });
       });
       if (!affected.length && before.hasReserve) {
@@ -5129,7 +5196,10 @@ class OrdersService {
         const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, productId);
         this._assertFbsReserveWarehouse(row, warehouseId);
         try {
-          await this._applyReserveForOrderIfAbsent(row, { skipKitReconcile: false });
+          await this._applyReserveForOrderIfAbsent(row, {
+            skipKitReconcile: false,
+            allowDespiteManualUnreserve: true
+          });
         } catch (e) {
           if (e?.statusCode === 400) throw e;
           /* ignore */

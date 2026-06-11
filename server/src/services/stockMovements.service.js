@@ -1636,6 +1636,7 @@ class StockMovementsService {
         order_id: orderDbId,
         orderId: label,
         manual_unreserve: true,
+        skip_auto_reserve: true,
         source_product_id: sourceProductId,
         ...extraMeta
       };
