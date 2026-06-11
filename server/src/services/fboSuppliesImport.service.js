@@ -1577,6 +1577,9 @@ function ermItemMatchKeys(ermRow) {
 }
 
 function ozonItemMatchesErm(ozonItem, ermRow) {
+  const ermPid = ermRow.product_id != null ? Number(ermRow.product_id) : NaN;
+  const ozPid = ozonItem.productId != null ? Number(ozonItem.productId) : NaN;
+  if (Number.isFinite(ermPid) && ermPid > 0 && ermPid === ozPid) return true;
   const ozKeys = new Set(ozonItemMatchKeys(ozonItem));
   return ermItemMatchKeys(ermRow).some((k) => ozKeys.has(k));
 }
@@ -2373,6 +2376,14 @@ class FboSuppliesImportService {
     }
 
     const ozonItems = fetched.items.filter((it) => (parseInt(it.quantity, 10) || 0) > 0);
+    for (const ozonItem of ozonItems) {
+      if (ozonItem.productId != null && Number(ozonItem.productId) > 0) continue;
+      ozonItem.productId = await resolveProductId({
+        sku: ozonItem.sku ?? ozonItem.mpOfferId,
+        barcode: ozonItem.barcode,
+        profileId,
+      });
+    }
     const itemsR = await query(
       `SELECT id, product_id, quantity, mp_quantity, sku, barcode, mp_offer_id, mp_product_id, placement_zone, ozon_tags
        FROM fbo_supply_items
@@ -2388,20 +2399,22 @@ class FboSuppliesImportService {
     let shrinkPacked = 0;
 
     for (const row of itemsR.rows || []) {
+      const packed = await getSupplyItemPackedQty(row.id);
       const ozonItem = findOzonItemForErm(ozonItems, row, usedOzon);
       if (!ozonItem) {
-        const packed = await getSupplyItemPackedQty(row.id);
         if (packed <= 0) {
           await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [row.id]);
           removed += 1;
         } else {
           const curQty = parseInt(row.quantity, 10) || 0;
-          if (curQty !== packed) {
+          const keepQty = Math.max(curQty, packed);
+          const curMpQty = parseInt(row.mp_quantity, 10) || 0;
+          if (curQty !== keepQty || curMpQty !== 0) {
             await query(
               `UPDATE fbo_supply_items
-               SET quantity = $1, mp_quantity = $1, updated_at = CURRENT_TIMESTAMP
+               SET quantity = $1, mp_quantity = 0, updated_at = CURRENT_TIMESTAMP
                WHERE id = $2`,
-              [packed, row.id]
+              [keepQty, row.id]
             );
             shrinkPacked += 1;
           } else {
@@ -2412,39 +2425,34 @@ class FboSuppliesImportService {
       }
 
       const ozQty = parseInt(ozonItem.quantity, 10) || 0;
+      const planQty = Math.max(ozQty, packed);
       const curQty = parseInt(row.quantity, 10) || 0;
+      const curMpQty = parseInt(row.mp_quantity, 10) || 0;
       const newZone = ozonItem.placementZone ?? null;
       const newTagsJson = JSON.stringify(ozonItem.ozonTags || []);
       const oldZone = row.placement_zone != null ? String(row.placement_zone).trim() : null;
       const zoneEqual = (oldZone || null) === (newZone || null);
       const tagsEqual = parseOzonTagsForCompare(row.ozon_tags) === newTagsJson;
 
-      if (ozQty === curQty && zoneEqual && tagsEqual) {
-        if ((parseInt(row.mp_quantity, 10) || 0) !== ozQty) {
-          await query(
-            `UPDATE fbo_supply_items SET mp_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-            [ozQty, row.id]
-          );
-          updated += 1;
-        } else {
-          unchanged += 1;
-        }
+      if (planQty === curQty && curMpQty === ozQty && zoneEqual && tagsEqual) {
+        unchanged += 1;
         continue;
       }
 
       await query(
         `UPDATE fbo_supply_items
          SET quantity = $1,
-             mp_quantity = $1,
-             placement_zone = $2,
-             ozon_tags = $3::jsonb,
-             sku = COALESCE(NULLIF(TRIM(sku), ''), $4),
-             barcode = COALESCE(NULLIF(TRIM(barcode), ''), $5),
-             mp_offer_id = COALESCE(NULLIF(TRIM(mp_offer_id), ''), $6),
-             mp_product_id = COALESCE(NULLIF(TRIM(mp_product_id), ''), $7),
+             mp_quantity = $2,
+             placement_zone = $3,
+             ozon_tags = $4::jsonb,
+             sku = COALESCE(NULLIF(TRIM(sku), ''), $5),
+             barcode = COALESCE(NULLIF(TRIM(barcode), ''), $6),
+             mp_offer_id = COALESCE(NULLIF(TRIM(mp_offer_id), ''), $7),
+             mp_product_id = COALESCE(NULLIF(TRIM(mp_product_id), ''), $8),
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $8`,
+         WHERE id = $9`,
         [
+          planQty,
           ozQty,
           newZone,
           newTagsJson,

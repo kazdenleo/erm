@@ -375,7 +375,7 @@ export function FboSupplyDetail() {
   const handlePullMarketplaceContent = useCallback(async () => {
     if (
       !window.confirm(
-        'Загрузить состав поставки с Ozon? Количества в ERM будут приведены к данным маркетплейса.'
+        'Обновить состав поставки с Ozon? План и новые позиции подтянутся с маркетплейса. Упаковка в грузоместах сохранится.'
       )
     ) {
       return;
@@ -398,7 +398,9 @@ export function FboSupplyDetail() {
       if (data?.shrinkPacked > 0) parts.push(`сужено до упакованного ${data.shrinkPacked}`);
       if (data?.unchanged > 0) parts.push(`без изменений ${data.unchanged}`);
       setPullMpContentMsg(
-        parts.length ? `Состав с Ozon: ${parts.join(', ')}.` : 'Состав поставки обновлён с Ozon.'
+        parts.length
+          ? `Состав обновлён с Ozon: ${parts.join(', ')}. Упаковка сохранена.`
+          : 'Состав поставки обновлён с Ozon. Упаковка сохранена.'
       );
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить состав с маркетплейса');
@@ -675,9 +677,9 @@ export function FboSupplyDetail() {
             size="small"
             disabled={pullingMpContent || saving}
             onClick={handlePullMarketplaceContent}
-            title="Загрузить состав поставки (количества) с Ozon в ERM"
+            title="Обновить состав поставки с Ozon (грузоместа и упаковка не сбрасываются)"
           >
-            {pullingMpContent ? 'Загрузка…' : 'С маркетплейса'}
+            {pullingMpContent ? 'Обновление…' : 'Обновить'}
           </Button>
         ) : null}
         {supply.pendingMpContentUpdate && isOzonSupply ? (
