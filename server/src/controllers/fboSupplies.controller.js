@@ -284,10 +284,10 @@ class FboSuppliesController {
     try {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const { barcode, activeCargoUnitId } = req.body || {};
+      const { barcode, activeCargoUnitId, scanMode } = req.body || {};
       const data = await fboSuppliesPackingService.scan(
         id,
-        { barcode, activeCargoUnitId },
+        { barcode, activeCargoUnitId, scanMode },
         { profileId }
       );
       return res.status(200).json({ ok: true, data });

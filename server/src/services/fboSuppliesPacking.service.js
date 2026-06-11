@@ -386,7 +386,28 @@ class FboSuppliesPackingService {
     return { packing };
   }
 
-  async scan(supplyId, { barcode, activeCargoUnitId } = {}, { profileId } = {}) {
+  async _createCargoUnit(supplyId, code, { profileId, activeId } = {}) {
+    const ins = await query(
+      `INSERT INTO fbo_supply_cargo_units (fbo_supply_id, barcode)
+       VALUES ($1, $2)
+       RETURNING id, fbo_supply_id, barcode, created_at`,
+      [supplyId, code]
+    );
+    const cargo = mapCargoRow(ins.rows[0]);
+    const packing = await this.getPackingState(supplyId, { profileId });
+    const switched = activeId != null && Number.isFinite(activeId) && activeId > 0;
+    return {
+      action: 'cargo_created',
+      message: switched
+        ? `Новое грузоместо: ${cargo.barcode}`
+        : `Добавлено грузоместо: ${cargo.barcode}`,
+      activeCargoUnitId: cargo.id,
+      cargoUnit: cargo,
+      packing,
+    };
+  }
+
+  async scan(supplyId, { barcode, activeCargoUnitId, scanMode } = {}, { profileId } = {}) {
     const supply = await assertSupplyAccess(supplyId, profileId);
     const code = normalizeBarcode(barcode);
     if (!code) {
@@ -394,6 +415,10 @@ class FboSuppliesPackingService {
       err.statusCode = 400;
       throw err;
     }
+
+    const mode = scanMode === 'cargo' ? 'cargo' : 'product';
+    const ozonStrictCargo = isOzonSupply(supply);
+    const activeId = activeCargoUnitId != null ? Number(activeCargoUnitId) : null;
 
     const existingCargoR = await query(
       `SELECT id, fbo_supply_id, barcode, created_at
@@ -415,22 +440,34 @@ class FboSuppliesPackingService {
       };
     }
 
-    const activeId = activeCargoUnitId != null ? Number(activeCargoUnitId) : null;
+    if (mode === 'cargo') {
+      return this._createCargoUnit(supplyId, code, { profileId, activeId });
+    }
 
-    if (activeId) {
-      const supplyItem = await findSupplyItemForScan(supplyId, code, profileId);
-      if (!supplyItem) {
-        const err = new Error('Товар не найден в этой поставке (штрихкод, артикул или SKU)');
-        err.statusCode = 400;
-        throw err;
+    if (!activeId) {
+      if (!ozonStrictCargo) {
+        const unknownOnWb = await findSupplyItemForScan(supplyId, code, profileId);
+        if (!unknownOnWb) {
+          return this._createCargoUnit(supplyId, code, { profileId, activeId });
+        }
       }
+      const err = new Error(
+        ozonStrictCargo
+          ? 'Сначала добавьте грузоместо: нажмите «Новое грузоместо» и отсканируйте штрихкод коробки'
+          : 'Сначала отсканируйте штрихкод коробки или паллеты'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
 
+    const supplyItem = await findSupplyItemForScan(supplyId, code, profileId);
+    if (supplyItem) {
       const cargoCheck = await query(
         `SELECT id FROM fbo_supply_cargo_units WHERE id = $1 AND fbo_supply_id = $2`,
         [activeId, supplyId]
       );
       if (!cargoCheck.rows?.length) {
-        const err = new Error('Активное грузоместо не найдено — отсканируйте коробку');
+        const err = new Error('Активное грузоместо не найдено — выберите грузоместо в списке');
         err.statusCode = 400;
         throw err;
       }
@@ -466,21 +503,32 @@ class FboSuppliesPackingService {
       };
     }
 
-    const ins = await query(
-      `INSERT INTO fbo_supply_cargo_units (fbo_supply_id, barcode)
-       VALUES ($1, $2)
-       RETURNING id, fbo_supply_id, barcode, created_at`,
-      [supplyId, code]
+    const activeCargoR = await query(
+      `SELECT id, fbo_supply_id, barcode, created_at
+       FROM fbo_supply_cargo_units WHERE id = $1 AND fbo_supply_id = $2`,
+      [activeId, supplyId]
     );
-    const cargo = mapCargoRow(ins.rows[0]);
-    const packing = await this.getPackingState(supplyId, { profileId });
-    return {
-      action: 'cargo_created',
-      message: `Добавлено грузоместо: ${cargo.barcode}`,
-      activeCargoUnitId: cargo.id,
-      cargoUnit: cargo,
-      packing,
-    };
+    if (activeCargoR.rows?.[0] && normalizeBarcode(activeCargoR.rows[0].barcode) === code) {
+      const cargo = mapCargoRow(activeCargoR.rows[0]);
+      const packing = await this.getPackingState(supplyId, { profileId });
+      return {
+        action: 'cargo_selected',
+        message: `Грузоместо уже активно: ${cargo.barcode}`,
+        activeCargoUnitId: cargo.id,
+        cargoUnit: cargo,
+        packing,
+      };
+    }
+
+    if (ozonStrictCargo) {
+      const err = new Error(
+        'Товар не найден в этой поставке. Для нового грузоместа нажмите «Новое грузоместо» и отсканируйте коробку'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    return this._createCargoUnit(supplyId, code, { profileId, activeId });
   }
 
   /**
