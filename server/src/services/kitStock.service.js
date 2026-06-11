@@ -21,6 +21,7 @@ import {
 import { scheduleWarehouseStockMarketplaceSync } from './marketplaceWarehouseStockSync.service.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 import logger from '../utils/logger.js';
+import { resolveProfileKitsEnabled } from '../utils/profileFeatureFlags.js';
 
 export { syncProductQuantityFromWarehouseStock };
 
@@ -112,15 +113,24 @@ export async function isKitProductId(productId) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return false;
   const r = await query(
-    `SELECT product_type FROM products WHERE id = $1 LIMIT 1`,
+    `SELECT product_type, profile_id FROM products WHERE id = $1 LIMIT 1`,
     [pid]
   );
-  if (isKitProductType(r.rows[0]?.product_type)) return true;
-  const kc = await query(
-    `SELECT 1 FROM kit_components WHERE kit_product_id = $1 LIMIT 1`,
-    [pid]
-  );
-  return (kc.rows?.length ?? 0) > 0;
+  if (!r.rows[0]) return false;
+  let isKit = isKitProductType(r.rows[0]?.product_type);
+  if (!isKit) {
+    const kc = await query(
+      `SELECT 1 FROM kit_components WHERE kit_product_id = $1 LIMIT 1`,
+      [pid]
+    );
+    isKit = (kc.rows?.length ?? 0) > 0;
+  }
+  if (!isKit) return false;
+  const profileId = r.rows[0].profile_id;
+  if (profileId != null && !(await resolveProfileKitsEnabled(profileId))) {
+    return false;
+  }
+  return true;
 }
 
 /** Товар используется как комплектующая хотя бы в одном комплекте. */
@@ -128,10 +138,19 @@ export async function isKitComponentProductId(productId) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return false;
   const r = await query(
-    `SELECT 1 FROM kit_components WHERE component_product_id = $1 LIMIT 1`,
+    `SELECT p.profile_id
+     FROM kit_components kc
+     JOIN products p ON p.id = kc.kit_product_id
+     WHERE kc.component_product_id = $1
+     LIMIT 1`,
     [pid]
   );
-  return (r.rows?.length ?? 0) > 0;
+  if ((r.rows?.length ?? 0) === 0) return false;
+  const profileId = r.rows[0]?.profile_id;
+  if (profileId != null && !(await resolveProfileKitsEnabled(profileId))) {
+    return false;
+  }
+  return true;
 }
 
 /** kit_product_id из meta резерва комплектующей под заказ. */

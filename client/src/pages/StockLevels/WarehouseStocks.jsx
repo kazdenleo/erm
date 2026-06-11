@@ -25,6 +25,7 @@ import {
   parseKitDisplayMetrics,
   formatKitAvailableDisplay
 } from '../../utils/kitStockMetrics';
+import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
@@ -1064,6 +1065,7 @@ function ManualOnHandCell({ productId, currentOnHand, warehouseId, disabledReaso
 
 export function WarehouseStocks() {
   const { profile, isProfileAdmin, isAccountAdmin, accountRole, profileId } = useAuth();
+  const kitsEnabled = isProfileKitsEnabled(profile);
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const allowManualStockEdit = profile?.allow_manual_warehouse_stock_edit === true;
   const canManageAccountStockReset =
@@ -2450,7 +2452,7 @@ export function WarehouseStocks() {
               >
                 <option value="">Все</option>
                 <option value="product">Товар</option>
-                <option value="kit">Комплект</option>
+                {kitsEnabled ? <option value="kit">Комплект</option> : null}
               </select>
             </label>
             <label className="stock-levels-filter-label">

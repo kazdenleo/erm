@@ -244,6 +244,8 @@ export const authController = {
                 allow_stock_history_reset: profile.allow_stock_history_reset === true,
                 supplier_sync_enabled: profile.supplier_sync_enabled !== false,
                 procurement_status_enabled: profile.procurement_status_enabled !== false,
+                kits_enabled: profile.kits_enabled !== false,
+                production_enabled: profile.production_enabled !== false,
               }
             : null,
           features: {},

@@ -7,6 +7,7 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsService from '../services/stockMovements.service.js';
 import { jsonSafeRow } from '../utils/profileId.js';
+import { clearProfileFeatureFlagsCache } from '../utils/profileFeatureFlags.js';
 
 const repo = repositoryFactory.getProfilesRepository();
 const inquiriesRepo = repositoryFactory.getInquiriesRepository();
@@ -56,6 +57,14 @@ function pickAccountOwnerProfilePayload(body) {
   ) {
     const v = b.procurement_status_enabled ?? b.procurementStatusEnabled;
     out.procurement_status_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.kits_enabled !== undefined || b.kitsEnabled !== undefined) {
+    const v = b.kits_enabled ?? b.kitsEnabled;
+    out.kits_enabled = v === true || v === '1' || v === 'true';
+  }
+  if (b.production_enabled !== undefined || b.productionEnabled !== undefined) {
+    const v = b.production_enabled ?? b.productionEnabled;
+    out.production_enabled = v === true || v === '1' || v === 'true';
   }
   return out;
 }
@@ -113,6 +122,7 @@ export const profilesController = {
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
+      clearProfileFeatureFlagsCache(id);
       res.json({ ok: true, data: jsonSafeRow(item) });
     } catch (error) {
       next(error);

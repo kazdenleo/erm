@@ -125,6 +125,14 @@ class ProfilesRepositoryPG {
       const v = updates.procurement_status_enabled ?? updates.procurementStatusEnabled;
       set('procurement_status_enabled', v === true || v === '1' || v === 'true');
     }
+    if (updates.kits_enabled !== undefined || updates.kitsEnabled !== undefined) {
+      const v = updates.kits_enabled ?? updates.kitsEnabled;
+      set('kits_enabled', v === true || v === '1' || v === 'true');
+    }
+    if (updates.production_enabled !== undefined || updates.productionEnabled !== undefined) {
+      const v = updates.production_enabled ?? updates.productionEnabled;
+      set('production_enabled', v === true || v === '1' || v === 'true');
+    }
 
     if (fields.length === 0) return await this.findById(id);
     params.push(id);

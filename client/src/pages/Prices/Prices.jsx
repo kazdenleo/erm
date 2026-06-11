@@ -23,6 +23,8 @@ import {
   FILTER_CATEGORY_NONE,
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
 
 const PRICES_LIST_PAGE_SIZES = [50, 100, 200];
 
@@ -354,6 +356,8 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
 }
 
 export function Prices() {
+  const { profile } = useAuth();
+  const kitsEnabled = isProfileKitsEnabled(profile);
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
   const { categories } = useCategories();
   const { brands } = useBrands();
@@ -1278,7 +1282,7 @@ export function Prices() {
                     >
                       <option value="">Все типы</option>
                       <option value="product">Товар</option>
-                      <option value="kit">Комплект</option>
+                      {kitsEnabled ? <option value="kit">Комплект</option> : null}
                     </select>
                   </div>
                   <div className="col-12 col-md-6 col-lg-3">

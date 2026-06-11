@@ -18,6 +18,8 @@ import {
   FILTER_CATEGORY_NONE,
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
 import './ProductsBulkEdit.css';
 import './Products.css';
 
@@ -616,6 +618,8 @@ function cloneRow(r) {
 export function ProductsBulkEdit() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { profile } = useAuth();
+  const kitsEnabled = isProfileKitsEnabled(profile);
   const { categories, loadCategories } = useCategories();
   const { organizations } = useOrganizations();
   const { brands } = useBrands();
@@ -1051,7 +1055,7 @@ export function ProductsBulkEdit() {
           onChange={(e) => updateCell(row.id, col.key, e.target.value)}
         >
           <option value="product">Товар</option>
-          <option value="kit">Комплект</option>
+          {kitsEnabled ? <option value="kit">Комплект</option> : null}
         </select>
       );
     }
@@ -1232,7 +1236,7 @@ export function ProductsBulkEdit() {
                           >
                             <option value="">Все типы</option>
                             <option value="product">Товар</option>
-                            <option value="kit">Комплект</option>
+                            {kitsEnabled ? <option value="kit">Комплект</option> : null}
                           </select>
                         </div>
                       </div>
@@ -1471,7 +1475,7 @@ export function ProductsBulkEdit() {
               <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
                 <option value="">— не менять тип (выберите)</option>
                 <option value="product">Товар</option>
-                <option value="kit">Комплект</option>
+                {kitsEnabled ? <option value="kit">Комплект</option> : null}
               </select>
             ) : bulkModalCol.input === 'select_category' ? (
               <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>

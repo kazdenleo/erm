@@ -31,6 +31,8 @@ import {
   normalizeBarcodeRows,
 } from '../../../utils/productBarcodes.js';
 import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
+import { useAuth } from '../../../context/AuthContext.jsx';
+import { isProfileKitsEnabled } from '../../../utils/profileFlags.js';
 import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
@@ -377,6 +379,8 @@ export function ProductForm({
   canDeleteProduct = false,
   canArchiveProduct = false,
 }) {
+  const { profile } = useAuth();
+  const kitsEnabled = isProfileKitsEnabled(profile);
   const productFormDomId = useId();
   const [printHelperUrl, setPrintHelperUrl] = useState('');
   const { printProductLabel, printing: labelPrinting, error: labelPrintError } =
@@ -3010,6 +3014,11 @@ export function ProductForm({
           <label className="form-label" htmlFor="productType">
           Тип товара
         </label>
+        {!kitsEnabled && formData.product_type === 'kit' ? (
+          <div className="form-control form-control-sm bg-light" id="productType">
+            Комплект (отключено в настройках аккаунта)
+          </div>
+        ) : (
         <select
           id="productType"
             className="form-select form-select-sm"
@@ -3017,11 +3026,12 @@ export function ProductForm({
           onChange={(e) => handleChange('product_type', e.target.value)}
         >
           <option value="product">Товар</option>
-          <option value="kit">Комплект</option>
+          {kitsEnabled ? <option value="kit">Комплект</option> : null}
         </select>
+        )}
       </div>
         <div className="col-12 col-md-auto">
-      {formData.product_type === 'kit' && (
+      {kitsEnabled && formData.product_type === 'kit' && (
             <Button
               type="button"
               variant="secondary"

@@ -36,6 +36,8 @@ export function Settings() {
     allow_manual_warehouse_stock_edit: false,
     allow_stock_history_reset: false,
     procurement_status_enabled: true,
+    kits_enabled: true,
+    production_enabled: true,
   });
 
   const loadAccount = useCallback(async () => {
@@ -75,6 +77,8 @@ export function Settings() {
         allow_manual_warehouse_stock_edit: form.allow_manual_warehouse_stock_edit,
         allow_stock_history_reset: form.allow_stock_history_reset,
         procurement_status_enabled: form.procurement_status_enabled,
+        kits_enabled: form.kits_enabled,
+        production_enabled: form.production_enabled,
       };
       const res = await profilesApi.updateMe(payload);
       if (!res?.ok) {
@@ -336,6 +340,37 @@ export function Settings() {
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
                     Если выключено — заказы не переводятся в «В закупке» (вручную, при закупке и автозаказе).
                     Резерв с наличия и «в пути» по-прежнему создаётся для заказов в статусе «Новый».
+                  </span>
+                </span>
+              </label>
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.kits_enabled !== false}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, kits_enabled: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Комплекты</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Если выключено — движение товара только по отдельным SKU, без логики комплектов и состава.
+                    Создание и редактирование комплектов недоступно.
+                  </span>
+                </span>
+              </label>
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.production_enabled !== false}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, production_enabled: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Производство</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Если выключено — раздел «Производство» (сборка комплектов из комплектующих) скрыт в меню и недоступен по API.
                   </span>
                 </span>
               </label>

@@ -27,6 +27,8 @@ import {
   FILTER_CATEGORY_NONE,
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
 import './Products.css';
 
 /** Текст подсказки со составом комплекта (title / native tooltip) */
@@ -87,6 +89,8 @@ function getProductMarketplaceLinkBadges(product) {
 
 export function Products() {
   const navigate = useNavigate();
+  const { profile } = useAuth();
+  const kitsEnabled = isProfileKitsEnabled(profile);
   const [searchParams, setSearchParams] = useSearchParams();
   const {
     products,
@@ -1027,7 +1031,7 @@ export function Products() {
                     >
                       <option value="">Все типы</option>
                       <option value="product">Товар</option>
-                      <option value="kit">Комплект</option>
+                      {kitsEnabled ? <option value="kit">Комплект</option> : null}
                     </select>
                   </div>
                   <div className="col-12 col-md-6 col-lg-3">

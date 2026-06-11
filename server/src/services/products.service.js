@@ -10,6 +10,7 @@ import {
   stockListAvailableQuantity
 } from '../repositories/products.repository.pg.js';
 import { query } from '../config/database.js';
+import { resolveProfileKitsEnabled } from '../utils/profileFeatureFlags.js';
 import pricesService from './prices.service.js';
 import integrationsService from './integrations.service.js';
 import {
@@ -169,6 +170,28 @@ async function ensureMpAttributeCachesForScope(scope, exportOpts, existingCaches
         console.warn('[Products Service] ensureMpAttributeCachesForScope YM:', prefix, e.message);
       }
     }
+  }
+}
+
+async function assertKitsFeatureAllowed(productData, profileId, { existingProduct = null } = {}) {
+  const rawProfileId =
+    profileId ??
+    productData?.profileId ??
+    productData?.profile_id ??
+    existingProduct?.profile_id ??
+    existingProduct?.profileId ??
+    null;
+  const kitsEnabled = await resolveProfileKitsEnabled(rawProfileId);
+  if (kitsEnabled) return;
+
+  const nextType = productData?.product_type ?? productData?.productType;
+  const wantsKitType = String(nextType || '').toLowerCase() === 'kit';
+  const wantsKitComponents =
+    Array.isArray(productData?.kit_components) && productData.kit_components.length > 0;
+  if (wantsKitType || wantsKitComponents) {
+    const error = new Error('Комплекты отключены в настройках аккаунта');
+    error.statusCode = 403;
+    throw error;
   }
 }
 
@@ -1075,6 +1098,8 @@ class ProductsService {
       productData.barcodes = normalizeBarcodeRows(productData.barcodes);
     }
 
+    await assertKitsFeatureAllowed(productData, createProfileId);
+
     if (
       productData.ozon_attributes != null &&
       typeof productData.ozon_attributes === 'object' &&
@@ -1201,6 +1226,8 @@ class ProductsService {
 
   async update(id, updates) {
     normalizeMarketplaceCardTextFields(updates);
+    const existingForKits = await this.repository.findById(id);
+    await assertKitsFeatureAllowed(updates, null, { existingProduct: existingForKits });
     // Остаток на складе меняется только складскими операциями (движения, резерв), не через PUT карточки или импорт.
     delete updates.quantity;
     if (updates.organizationId !== undefined) {

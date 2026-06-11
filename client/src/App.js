@@ -5,7 +5,8 @@
 
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext.jsx';
+import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import { isProfileKitsEnabled, isProfileProductionEnabled } from './utils/profileFlags.js';
 import { ProtectedRoute } from './components/ProtectedRoute.jsx';
 import { Layout } from './components/layout/Layout/Layout';
 import { Login } from './pages/Login/Login';
@@ -52,6 +53,19 @@ import { PlatformMarketplaceNotifications } from './platform/PlatformMarketplace
 import './App.css';
 import './styles/mp-badges.css';
 import './styles/erp-filter-bar.css';
+
+function ProductionRoute() {
+  const { profile } = useAuth();
+  const enabled = isProfileProductionEnabled(profile) && isProfileKitsEnabled(profile);
+  if (!enabled) {
+    return <Navigate to="/stock-levels/warehouse" replace />;
+  }
+  return (
+    <Layout>
+      <Production />
+    </Layout>
+  );
+}
 
 function App() {
   return (
@@ -108,7 +122,7 @@ function App() {
           <Route path="/fbo-supplies/purchase-calc" element={<ProtectedRoute><Layout><FboPurchaseCalculation /></Layout></ProtectedRoute>} />
           <Route path="/fbo-supplies/:id" element={<ProtectedRoute><Layout><FboSupplyDetail /></Layout></ProtectedRoute>} />
           <Route path="/assembly" element={<ProtectedRoute><Layout><Assembly /></Layout></ProtectedRoute>} />
-          <Route path="/production" element={<ProtectedRoute><Layout><Production /></Layout></ProtectedRoute>} />
+          <Route path="/production" element={<ProtectedRoute><ProductionRoute /></ProtectedRoute>} />
           <Route path="/print/label/:orderId" element={<ProtectedRoute><PrintLabel /></ProtectedRoute>} />
           <Route path="/print/product-label/:productId" element={<ProtectedRoute><PrintProductLabel /></ProtectedRoute>} />
           <Route path="/print/product-labels-batch" element={<ProtectedRoute><PrintProductLabelsBatch /></ProtectedRoute>} />

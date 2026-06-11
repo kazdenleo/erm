@@ -6,6 +6,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext.jsx';
+import { isProfileKitsEnabled, isProfileProductionEnabled } from '../../../utils/profileFlags.js';
 import { questionsApi } from '../../../services/questions.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
 
@@ -21,7 +22,7 @@ const stockWarehouseChildren = [
     warehouseOp: 'table',
   },
   { path: '/stock-levels/purchases', label: '🧾 Закупка', iconClass: 'pe-7s-cart' },
-  { path: '/production', label: '🔧 Производство', iconClass: 'pe-7s-tools' },
+  { path: '/production', label: '🔧 Производство', iconClass: 'pe-7s-tools', requiresProduction: true },
   { path: '/fbo-supplies', label: '📦 Поставки FBO', iconClass: 'pe-7s-box2' },
   {
     path: opsByKey.receipts_list?.to || '/stock-levels/warehouse?op=receipts_list',
@@ -95,8 +96,10 @@ const menuItems = [
 
 export function Sidebar() {
   const location = useLocation();
-  const { user, isAdmin, isProfileAdmin, isAccountAdmin } = useAuth();
+  const { user, isAdmin, isProfileAdmin, isAccountAdmin, profile } = useAuth();
   const canManageUsers = isAccountAdmin;
+  const productionMenuEnabled =
+    isProfileProductionEnabled(profile) && isProfileKitsEnabled(profile);
   const NONE = '__none__';
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
 
@@ -178,6 +181,7 @@ export function Sidebar() {
       const children = item.children.filter((sub) => {
         if (sub.profileAdminOnly && (!isProfileAdmin || isAdmin)) return false;
         if (sub.adminOnly && !canManageUsers) return false;
+        if (sub.requiresProduction && !productionMenuEnabled) return false;
         return true;
       });
       return { ...item, children };
@@ -186,7 +190,7 @@ export function Sidebar() {
       .filter((i) => !i.needsProfile || user?.profileId != null)
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, user?.profileId]);
+  }, [canManageUsers, isProfileAdmin, isAdmin, user?.profileId, productionMenuEnabled]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 

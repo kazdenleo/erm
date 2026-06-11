@@ -14,6 +14,8 @@ export function accountSettingsFromProfile(profile) {
     allow_manual_warehouse_stock_edit: isProfileBoolFlag(profile.allow_manual_warehouse_stock_edit),
     allow_stock_history_reset: isProfileBoolFlag(profile.allow_stock_history_reset),
     procurement_status_enabled: profile.procurement_status_enabled !== false,
+    kits_enabled: profile.kits_enabled !== false,
+    production_enabled: profile.production_enabled !== false,
   };
 }
 
@@ -21,4 +23,16 @@ export function accountSettingsFromProfile(profile) {
 export function isProfileProcurementStatusEnabled(profile) {
   if (profile == null) return true;
   return profile.procurement_status_enabled !== false;
+}
+
+/** Комплекты включены (по умолчанию да). */
+export function isProfileKitsEnabled(profile) {
+  if (profile == null) return true;
+  return profile.kits_enabled !== false;
+}
+
+/** Раздел «Производство» включён (по умолчанию да). */
+export function isProfileProductionEnabled(profile) {
+  if (profile == null) return true;
+  return profile.production_enabled !== false;
 }
