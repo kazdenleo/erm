@@ -30,6 +30,7 @@ import {
   getComponentAssemblableUnits,
   computeAssemblableFromComponents,
   getReservedKitUnitsFromComponentsForOrder,
+  resolveComplementaryKitReserveUnits,
   readKitPhysicalOnHandFromDb,
   resolveKitOrderShipmentPlan,
   kitOrderReserveExceedsOnHand,
@@ -1383,6 +1384,49 @@ class OrdersService {
         ? String(or.rows[0].order_id).trim()
         : null;
     return getNetReservedForOrderProduct(oid, productId, mpLabel);
+  }
+
+  /** Снять N комплектов с резерва комплектующих под заказ. */
+  async _releaseKitUnitsFromComponentReserves(orderDbId, orderIdStr, kitProductId, kitUnits) {
+    const kitId = Number(kitProductId);
+    const units = Math.max(0, parseInt(kitUnits, 10) || 0);
+    if (!Number.isFinite(kitId) || kitId < 1 || units <= 0) return false;
+
+    const components = await getKitComponents(kitId);
+    if (!components?.length) return false;
+
+    const { releaseOrderReservesGroupedByWarehouse } = await import('./kitStock.service.js');
+    let releasedAny = false;
+    for (const c of components) {
+      const compId = Number(c.component_product_id);
+      if (!Number.isFinite(compId) || compId < 1) continue;
+      const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+      const piecesToRelease = units * perKit;
+      const affected = await releaseOrderReservesGroupedByWarehouse(
+        orderDbId,
+        orderIdStr,
+        async (productId, net, orderIdLabel, meta) => {
+          const rel = Math.min(net, piecesToRelease);
+          if (rel <= 0) return;
+          await stockMovementsService.applyChange(productId, {
+            delta: rel,
+            type: 'unreserve',
+            reason: `Снятие резерва комплектующих (заказ ${orderIdLabel}, ${units} компл.)`.trim(),
+            meta: {
+              ...meta,
+              manual_unreserve: true,
+              skip_auto_reserve: true,
+              kit_manual_unreserve: true,
+              kit_product_id: kitId,
+              kit_units: units
+            }
+          });
+        },
+        { productId: compId }
+      );
+      if (affected.length) releasedAny = true;
+    }
+    return releasedAny;
   }
 
   /**
@@ -4958,21 +5002,90 @@ class OrdersService {
     this._assertFbsReserveWarehouse(row, warehouseId);
     if (doUnreserve) {
       const isKitRoot = await isKitProductId(pid);
-      if (isKitRoot && quantity == null) {
-        const components = await getKitComponents(pid);
-        const productIds = [
-          pid,
-          ...(components || []).map((c) => Number(c.component_product_id))
-        ].filter((n) => Number.isFinite(n) && n > 0);
-        let releasedAny = false;
-        const { releaseOrderReservesGroupedByWarehouse } = await import('./kitStock.service.js');
-        for (const p of productIds) {
+      if (isKitRoot) {
+        const onKit = await this._getReservedQtyForOrderProduct(orderDbId, pid);
+        const fromComp = await getReservedKitUnitsFromComponentsForOrder(pid, orderDbId);
+        const orderQty = Math.max(1, parseInt(row.quantity, 10) || 1);
+
+        if (quantity == null) {
+          const components = await getKitComponents(pid);
+          const productIds = [
+            pid,
+            ...(components || []).map((c) => Number(c.component_product_id))
+          ].filter((n) => Number.isFinite(n) && n > 0);
+          let releasedAny = false;
+          const { releaseOrderReservesGroupedByWarehouse } = await import('./kitStock.service.js');
+          for (const p of productIds) {
+            const affected = await releaseOrderReservesGroupedByWarehouse(
+              orderDbId,
+              orderIdStr,
+              async (productId, net, orderIdLabel, meta) => {
+                await stockMovementsService.applyChange(productId, {
+                  delta: net,
+                  type: 'unreserve',
+                  reason: `Снятие резерва по заказу ${orderIdLabel} (вручную, комплект)`.trim(),
+                  meta: {
+                    ...meta,
+                    manual_unreserve: true,
+                    skip_auto_reserve: true,
+                    kit_manual_unreserve: true
+                  }
+                });
+              },
+              { productId: p }
+            );
+            if (affected.length) releasedAny = true;
+          }
+          if (!releasedAny) {
+            const err = new Error('По этой позиции нет резерва для снятия');
+            err.statusCode = 400;
+            throw err;
+          }
+        } else if (onKit <= 0 && fromComp > 0) {
+          const validated = resolveComplementaryKitReserveUnits(onKit, fromComp, orderQty);
+          const toRelease = Math.min(Math.max(0, parseInt(quantity, 10) || 0), validated);
+          if (toRelease <= 0) {
+            const err = new Error('По этой позиции нет резерва для снятия');
+            err.statusCode = 400;
+            throw err;
+          }
+          const ok = await this._releaseKitUnitsFromComponentReserves(
+            orderDbId,
+            orderIdStr,
+            pid,
+            toRelease
+          );
+          if (!ok) {
+            const err = new Error('По этой позиции нет резерва для снятия');
+            err.statusCode = 400;
+            throw err;
+          }
+        } else {
+          const release =
+            quantity != null
+              ? Math.min(Math.max(0, parseInt(quantity, 10) || 0), net)
+              : net;
+          if (release <= 0) {
+            const err = new Error('По этой позиции нет резерва для снятия');
+            err.statusCode = 400;
+            throw err;
+          }
+          if (fromComp > 0 && onKit > 0) {
+            const err = new Error(
+              'Смешанный резерв (целый комплект и комплектующие) — снимите весь резерв по позиции'
+            );
+            err.statusCode = 400;
+            throw err;
+          }
+          const { releaseOrderReservesGroupedByWarehouse } = await import('./kitStock.service.js');
           const affected = await releaseOrderReservesGroupedByWarehouse(
             orderDbId,
             orderIdStr,
             async (productId, net, orderIdLabel, meta) => {
+              const rel = Math.min(net, release);
+              if (rel <= 0) return;
               await stockMovementsService.applyChange(productId, {
-                delta: net,
+                delta: rel,
                 type: 'unreserve',
                 reason: `Снятие резерва по заказу ${orderIdLabel} (вручную, комплект)`.trim(),
                 meta: {
@@ -4983,14 +5096,13 @@ class OrdersService {
                 }
               });
             },
-            { productId: p }
+            { productId: pid }
           );
-          if (affected.length) releasedAny = true;
-        }
-        if (!releasedAny) {
-          const err = new Error('По этой позиции нет резерва для снятия');
-          err.statusCode = 400;
-          throw err;
+          if (!affected.length) {
+            const err = new Error('По этой позиции нет резерва для снятия');
+            err.statusCode = 400;
+            throw err;
+          }
         }
       } else {
         const release =
@@ -4999,13 +5111,6 @@ class OrdersService {
             : net;
         if (release <= 0) {
           const err = new Error('По этой позиции нет резерва для снятия');
-          err.statusCode = 400;
-          throw err;
-        }
-        if (isKitRoot) {
-          const err = new Error(
-            'Частичное снятие резерва комплекта не поддерживается — укажите полное снятие или снимите резерв с комплектующих'
-          );
           err.statusCode = 400;
           throw err;
         }

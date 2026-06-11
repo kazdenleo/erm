@@ -392,9 +392,11 @@ class StockMovementsService {
           metaOut.manual_unreserve === true ||
           metaOut.manual_unreserve === 'true' ||
           metaOut.bulk_product_release === true;
-        const whCap = manualUnreserve
-          ? null
-          : parseStockMovementWarehouseId(metaOut.warehouse_id);
+        const whFromMeta = parseStockMovementWarehouseId(
+          metaOut.warehouse_id ?? metaOut.warehouseId
+        );
+        // Ручное снятие по складу: лимит netForOrder только на этом складе (не глобальный ноль).
+        const whCap = manualUnreserve ? (whFromMeta ?? null) : whFromMeta;
         netForOrder = await getNetReservedForOrderProduct(
           Number.isFinite(orderDbIdNum) && orderDbIdNum >= 1 ? orderDbIdNum : 0,
           idNum,
