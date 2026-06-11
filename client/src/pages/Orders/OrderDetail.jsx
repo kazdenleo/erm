@@ -522,7 +522,22 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                   ) : null}
                   {line.compositionHint ? (
                     <span style={{ display: 'block', color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>
-                      {line.compositionHint}
+                      {String(line.compositionHint).startsWith('Состав: ')
+                        ? (
+                          <>
+                            Состав:
+                            <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+                              {String(line.compositionHint)
+                                .slice(9)
+                                .split('; ')
+                                .filter(Boolean)
+                                .map((part) => (
+                                  <li key={part}>{part}</li>
+                                ))}
+                            </ul>
+                          </>
+                        )
+                        : line.compositionHint}
                     </span>
                   ) : null}
                   {!canReserve ? (
