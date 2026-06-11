@@ -789,7 +789,7 @@ export async function readKitStockFromDb(kitProductId, opts = {}) {
     incoming = Number(pr.rows[0]?.incoming_quantity ?? 0) || 0;
   }
 
-  const physicalOnHand = await readKitPhysicalOnHandFromDb(kitId, onHandRaw);
+  const physicalOnHand = await readKitPhysicalOnHandFromDb(kitId, onHandRaw, opts);
   const reserved = await readKitDisplayReservedQuantity(kitId, opts);
   const available = physicalOnHand + suppliers;
   return { onHand: physicalOnHand, incoming, reserved, suppliers, available };
@@ -1546,7 +1546,7 @@ export async function computeKitReservableBreakdown(kitProductId, opts = {}) {
   const fromComponents = await computeAssemblableFromComponents(kitId, opts);
   const whole = await readKitStockFromDb(kitId, opts);
   const physicalOnHand = whole.onHand || 0;
-  const onSkuReserved = await readKitSkuNetReserved(kitId);
+  const onSkuReserved = await readKitSkuNetReserved(kitId, opts);
   const wholeReserveAvail = Math.max(0, physicalOnHand - onSkuReserved);
   const wholeAvail = Math.max(0, physicalOnHand + (whole.incoming || 0) - onSkuReserved);
   const allocCap = allocateKitReservePriority(9999, {
