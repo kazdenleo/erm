@@ -17,6 +17,35 @@ const YM_API = 'https://api.partner.market.yandex.ru';
 
 const ITEMS_SHEET = 'Товары';
 
+const OZON_SELLER_API_MIN_GAP_MS = 450;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+let ozonSellerApiLastAt = 0;
+
+function isOzonRateLimitError(err) {
+  const msg = String(err?.message ?? '');
+  return msg.includes('429') || /rate limit/i.test(msg);
+}
+
+async function ozonApiPostWithRetry(path, body, ozonApiOpts, { maxAttempts = 5, minGapMs = OZON_SELLER_API_MIN_GAP_MS } = {}) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (minGapMs > 0) {
+      const wait = ozonSellerApiLastAt + minGapMs - Date.now();
+      if (wait > 0) await sleep(wait);
+    }
+    ozonSellerApiLastAt = Date.now();
+    try {
+      return await integrationsService._ozonApiPost(path, body, ozonApiOpts);
+    } catch (e) {
+      if (!isOzonRateLimitError(e) || attempt >= maxAttempts - 1) throw e;
+      await sleep(800 * 2 ** attempt);
+    }
+  }
+}
+
 function generateDraftExternalNumber() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
@@ -712,7 +741,7 @@ async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags
       const body = { bundle_ids: [String(bundleId)], limit: 100 };
       // item_tags_calculation: true — Ozon API 400 (proto unexpected token true); теги не запрашиваем.
       if (lastId) body.last_id = lastId;
-      const bundleData = await integrationsService._ozonApiPost('/v1/supply-order/bundle', body, ozonApiOpts);
+      const bundleData = await ozonApiPostWithRetry('/v1/supply-order/bundle', body, ozonApiOpts);
       const parsed = parseOzonBundleResponse(bundleData);
       if (parsed.totalCount > lineCount) lineCount = parsed.totalCount;
       for (const row of parsed.rows) {
