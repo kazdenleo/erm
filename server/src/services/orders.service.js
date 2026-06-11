@@ -1769,6 +1769,7 @@ class OrdersService {
     let stockOnly = 0;
     let skipped = 0;
     let notFound = 0;
+    const errors = [];
 
     for (const rawOid of orderIds) {
       const orderId = String(rawOid).trim();
@@ -1799,11 +1800,13 @@ class OrdersService {
         processed += 1;
         stockOnly += 1;
       } catch (e) {
-        console.warn('[Orders] applyAssemblyStockForShipmentOrders:', orderId, e?.message || e);
+        const message = e?.message || String(e);
+        console.warn('[Orders] applyAssemblyStockForShipmentOrders:', orderId, message);
+        errors.push({ orderId, message });
       }
     }
 
-    return { processed, stockOnly, skipped, notFound };
+    return { processed, stockOnly, skipped, notFound, errors };
   }
 
   /**

@@ -756,27 +756,36 @@ async function finalizeWildberriesShipmentClose({ shipmentId, profileId, organiz
   await saveLocalShipments(shipments);
 }
 
-/** Списание остатков и статус «Отгружен» после закрытия (не блокирует HTTP). */
+/** Списание остатков и статус «Отгружен» после закрытия поставки FBS. */
 async function finalizeShipmentCloseStock({ shipmentId, marketplace, orderIds, profileId }) {
-  if (!orderIds?.length || !marketplace) return;
+  if (!orderIds?.length || !marketplace) {
+    return { processed: 0, skipped: 0, notFound: 0, statusUpdated: 0 };
+  }
   const { default: ordersService } = await import('./orders.service.js');
   let fin = { processed: 0, skipped: 0, notFound: 0 };
   let st = { updated: 0, skipped: 0, notFound: 0 };
   try {
     fin = await ordersService.applyAssemblyStockForShipmentOrders(marketplace, orderIds, profileId);
   } catch (e) {
-    logger.warn('[Shipments] Закрытие поставки (фон): списание остатков:', e?.message || e);
+    logger.warn(`[Shipments] Закрытие ${shipmentId}: списание остатков:`, e?.message || e);
+    throw e;
   }
   try {
     st = await ordersService.markShipmentOrdersAsShipped(marketplace, orderIds, profileId);
   } catch (e) {
-    logger.warn('[Shipments] Закрытие поставки (фон): статус «Отгружен»:', e?.message || e);
+    logger.warn(`[Shipments] Закрытие ${shipmentId}: статус «Отгружен»:`, e?.message || e);
   }
   logger.info(
-    `[Shipments] Закрытие ${shipmentId} (фон): резерв и списание — обработано ${fin?.processed ?? 0}, ` +
+    `[Shipments] Закрытие ${shipmentId}: резерв и списание — обработано ${fin?.processed ?? 0}, ` +
       `пропущено ${fin?.skipped ?? 0}, не найдено ${fin?.notFound ?? 0}; ` +
       `внутренний «Отгружен»: ${st?.updated ?? 0}, пропущено ${st?.skipped ?? 0}, не найдено ${st?.notFound ?? 0}`
   );
+  return {
+    ...fin,
+    statusUpdated: st?.updated ?? 0,
+    statusSkipped: st?.skipped ?? 0,
+    statusNotFound: st?.notFound ?? 0
+  };
 }
 
 /**
@@ -804,6 +813,11 @@ async function closeShipment(
     err.statusCode = 400;
     throw err;
   }
+
+  const initialOrderIds = [
+    ...new Set((ship.orderIds || []).map((id) => String(id).trim()).filter(Boolean))
+  ];
+  const manuallyRemovedOrderIds = new Set();
 
   const staleCleanup = await removeStaleOrdersFromShipment(ship, profileId, organizationId);
   if (staleCleanup.ship) {
@@ -847,6 +861,10 @@ async function closeShipment(
       toRemove.push(...preview.cancelled.map((i) => i.orderId));
     }
     if (toRemove.length) {
+      for (const oid of toRemove) {
+        const key = String(oid).trim();
+        if (key) manuallyRemovedOrderIds.add(key);
+      }
       await removeOrdersFromShipment(shipmentId, [...new Set(toRemove)], {
         profileId,
         organizationId
@@ -868,6 +886,8 @@ async function closeShipment(
   shipToClose.closedAt = new Date().toISOString();
 
   const orderIdsForWb = Array.isArray(shipToClose.orderIds) ? shipToClose.orderIds : [];
+  const stockOrderIds = initialOrderIds.filter((id) => !manuallyRemovedOrderIds.has(id));
+  shipToClose.closedOrderIds = [...stockOrderIds];
 
   await saveLocalShipments(shipmentsToSave);
 
@@ -885,25 +905,24 @@ async function closeShipment(
     });
   }
 
-  // Остатки — по «Собран»; затем все заказы в поставке → внутренний «Отгружен» (в фоне).
-  const orderIds = orderIdsForWb;
-  if (orderIds.length > 0 && shipToClose.marketplace) {
-    const stockCtx = {
+  // Остатки — по всем заказам, что были в поставке (в т.ч. убранным как «в пути»/«отгружен»),
+  // кроме явно снятых при закрытии; затем → внутренний «Отгружен».
+  let stockClose = null;
+  const effectiveProfileId = shipToClose.profileId ?? profileId ?? null;
+  if (stockOrderIds.length > 0 && shipToClose.marketplace) {
+    stockClose = await finalizeShipmentCloseStock({
       shipmentId,
       marketplace: shipToClose.marketplace,
-      orderIds: [...orderIds],
-      profileId,
-    };
-    setImmediate(() => {
-      finalizeShipmentCloseStock(stockCtx).catch((e) => {
-        logger.warn(`[Shipments] Закрытие ${shipmentId} (фон):`, e?.message || e);
-      });
+      orderIds: [...stockOrderIds],
+      profileId: effectiveProfileId
     });
-  } else if (orderIds.length === 0) {
-    logger.warn(`[Shipments] Закрытие ${shipmentId}: в поставке нет orderIds — движения остатков не созданы`);
+  } else if (stockOrderIds.length === 0) {
+    logger.warn(`[Shipments] Закрытие ${shipmentId}: нет заказов для списания остатков`);
   }
 
-  return normalizeShipment(shipToClose);
+  const out = normalizeShipment(shipToClose);
+  if (stockClose) out.stockClose = stockClose;
+  return out;
 }
 
 /**
@@ -922,7 +941,12 @@ async function reapplyStockForShipment(shipmentId, { profileId = null, organizat
     err.statusCode = 404;
     throw err;
   }
-  const orderIds = Array.isArray(ship.orderIds) ? ship.orderIds : [];
+  const orderIds =
+    Array.isArray(ship.closedOrderIds) && ship.closedOrderIds.length
+      ? ship.closedOrderIds
+      : Array.isArray(ship.orderIds)
+        ? ship.orderIds
+        : [];
   if (orderIds.length === 0 || !ship.marketplace) {
     return { processed: 0, stockOnly: 0 };
   }
@@ -937,15 +961,16 @@ async function reapplyStockForShipment(shipmentId, { profileId = null, organizat
   }
 
   const { default: ordersService } = await import('./orders.service.js');
+  const effectiveProfileId = ship.profileId ?? profileId ?? null;
   const fin = await ordersService.applyAssemblyStockForShipmentOrders(
     ship.marketplace,
     orderIds,
-    profileId
+    effectiveProfileId
   );
   const st = await ordersService.markShipmentOrdersAsShipped(
     ship.marketplace,
     orderIds,
-    profileId
+    effectiveProfileId
   );
   return {
     ...fin,

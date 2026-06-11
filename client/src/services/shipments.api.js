@@ -60,4 +60,13 @@ export const shipmentsApi = {
     return response.data?.data ?? response.data;
   },
 
+  reapplyStock: async (shipmentId) => {
+    const response = await api.post(
+      `/shipments/${encodeURIComponent(shipmentId)}/reapply-stock`,
+      {},
+      { timeout: 300000 }
+    );
+    return response.data?.data ?? response.data;
+  },
+
 };

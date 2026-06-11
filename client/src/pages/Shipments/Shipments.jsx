@@ -26,6 +26,7 @@ export function Shipments() {
   const [closeConfirm, setCloseConfirm] = useState(null);
   const [closeNotAssembledAction, setCloseNotAssembledAction] = useState('');
   const [closeCancelledAction, setCloseCancelledAction] = useState('');
+  const [reapplyStockLoading, setReapplyStockLoading] = useState(false);
 
   const loadShipments = async () => {
     setLoading(true);
@@ -78,6 +79,35 @@ export function Shipments() {
   const openShipmentDetailModal = (shipment) => {
     setOpenDetailError(null);
     setOpenShipmentDetail(shipment);
+  };
+
+  const handleReapplyStock = async (shipment) => {
+    if (!shipment?.id || !shipment.closed) return;
+    if (
+      !window.confirm(
+        'Повторно списать остатки по заказам этой поставки? Используйте, если при закрытии списание не прошло.'
+      )
+    ) {
+      return;
+    }
+    setReapplyStockLoading(true);
+    setOpenDetailError(null);
+    try {
+      const result = await shipmentsApi.reapplyStock(shipment.id);
+      const processed = Number(result?.processed) || 0;
+      const skipped = Number(result?.skipped) || 0;
+      window.alert(
+        `Готово: списано по ${processed} заказам, пропущено ${skipped}.` +
+          (result?.errors?.length ? ` Ошибок: ${result.errors.length}` : '')
+      );
+      await loadShipments();
+      const fresh = await shipmentsApi.getById(shipment.id);
+      setOpenShipmentDetail(fresh);
+    } catch (e) {
+      setOpenDetailError(getApiErrorMessage(e, 'Не удалось списать остатки'));
+    } finally {
+      setReapplyStockLoading(false);
+    }
   };
 
   const handleRemoveOrderFromShipment = async (orderId) => {
@@ -513,7 +543,17 @@ export function Shipments() {
                   </ul>
                 </div>
               )}
-              <div className="shipments-modal-actions" style={{ marginTop: 16 }}>
+              <div className="shipments-modal-actions" style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {openShipmentDetail.closed && isLocalShipment(openShipmentDetail) && (
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    disabled={reapplyStockLoading}
+                    onClick={() => handleReapplyStock(openShipmentDetail)}
+                  >
+                    {reapplyStockLoading ? 'Списание…' : 'Списать остатки повторно'}
+                  </Button>
+                )}
                 <Button variant="secondary" onClick={() => setOpenShipmentDetail(null)}>Закрыть</Button>
               </div>
             </>
