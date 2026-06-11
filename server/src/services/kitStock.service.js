@@ -2194,22 +2194,27 @@ export async function attachKitDisplayMetrics(products, options = {}) {
     const supplierSyncOn = options.supplierSyncEnabled !== false;
     const supplierKitUnits = supplierSyncOn ? supplierKitUnitsFromContext(kitId, ctx) : 0;
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
-    const reserved =
+    const onSkuReserved = await readKitSkuNetReserved(kitId, options);
+    const displayReserved =
       (await readKitDisplayReservedQuantity(kitId, options)) ||
       kitDisplayReservedFromContext(kitId, ctx);
-    const wholeAvail = Math.max(0, wholeOnHand + incoming - reserved);
-    const marketplaceAvailable = wholeAvail + assemblable;
+    const wholeAvail = Math.max(0, wholeOnHand + incoming - onSkuReserved);
+    const marketplaceAvailable = Math.max(
+      0,
+      wholeOnHand + incoming + assemblable - displayReserved
+    );
     const availableTotal = marketplaceAvailable + supplierKitUnits;
 
     p.supplierStockTotal = supplierKitUnits;
     p.quantity = wholeOnHand;
-    p.reserved_quantity = reserved;
-    p.net_reserved_quantity = reserved;
-    p.reservedQuantity = reserved;
-    p.netReservedQuantity = reserved;
+    p.reserved_quantity = displayReserved;
+    p.net_reserved_quantity = displayReserved;
+    p.reservedQuantity = displayReserved;
+    p.netReservedQuantity = displayReserved;
     p.kit_display = {
       whole_on_hand: wholeOnHand,
       whole_available: wholeAvail,
+      reserved_on_sku: onSkuReserved,
       assemblable_from_components: assemblable,
       supplier_kit_units: supplierKitUnits,
       marketplace_available: marketplaceAvailable,

@@ -673,15 +673,41 @@ function buildHistoryDisplaySnapshots(
       );
       const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
       const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
+      const onSkuReserved = Math.max(0, Number(metrics.reserved_on_sku) || 0);
+      const displayReserved = Math.max(
+        0,
+        Number(
+          kitProduct.net_reserved_quantity ??
+            kitProduct.netReservedQuantity ??
+            kitProduct.reserved_quantity ??
+            kitProduct.reservedQuantity
+        ) || 0
+      );
+      const wholeAvailCurrent =
+        metrics.whole_available != null && !Number.isNaN(Number(metrics.whole_available))
+          ? Math.max(0, Number(metrics.whole_available))
+          : Math.max(0, whole + whInc - onSkuReserved);
+      const totalAvailCurrent =
+        metrics.marketplace_available != null &&
+        !Number.isNaN(Number(metrics.marketplace_available))
+          ? Math.max(0, Number(metrics.marketplace_available))
+          : Math.max(0, whole + whInc + assemblable - displayReserved);
       for (let i = 0; i < enriched.length; i++) {
         const row = enriched[i];
         if (!row) continue;
-        const res = Math.max(0, Number(row.res) || 0);
-        const wholeAvail = Math.max(0, whole + whInc - res);
+        if (i === 0) {
+          row.bal = whole;
+          row.inc = whInc;
+          row._kitAvailableWhole = wholeAvailCurrent;
+          row._kitAvailableTotal = totalAvailCurrent;
+          continue;
+        }
+        const onSkuRes = Math.max(0, Number(row.res) || 0);
+        const wholeAvail = Math.max(0, whole + whInc - onSkuRes);
         row.bal = whole;
         row.inc = whInc;
         row._kitAvailableWhole = wholeAvail;
-        row._kitAvailableTotal = wholeAvail + assemblable;
+        row._kitAvailableTotal = Math.max(0, whole + whInc + assemblable - displayReserved);
       }
     }
   }
