@@ -468,7 +468,7 @@ class FboSuppliesController {
       const data = await fboSuppliesImportService.confirmImport(rows, { profileId, userId });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
-      if (e.statusCode === 400 || e.statusCode === 409) {
+      if (e.statusCode === 400 || e.statusCode === 409 || e.statusCode === 503) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
       }
       next(e);

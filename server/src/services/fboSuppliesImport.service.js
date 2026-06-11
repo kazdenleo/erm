@@ -11,6 +11,7 @@ import { syncSupplyStatusForPacking } from '../utils/fboSupplyPackingCheck.js';
 import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { parseOzonBundleRowMeta } from '../constants/ozonPlacementZones.js';
+import { runWithDbRetry } from '../utils/dbRetry.js';
 
 const WB_SUPPLIES_API = 'https://supplies-api.wildberries.ru';
 const YM_API = 'https://api.partner.market.yandex.ru';
@@ -2120,56 +2121,77 @@ class FboSuppliesImportService {
       err.statusCode = 400;
       throw err;
     }
-    const created = [];
-    const skipped = [];
-    for (const row of supplies) {
-      if (row.alreadyImported) {
-        skipped.push({ externalShipmentNumber: row.externalShipmentNumber, reason: 'already_imported' });
-        continue;
-      }
-      try {
-        const doc = await fboSuppliesService.create(
-          {
-            marketplace: row.marketplace,
-            name: row.name,
-            readyAt: row.readyAt,
-            marketplaceWarehouseName: row.marketplaceWarehouseName,
-            marketplaceWarehouseId: row.marketplaceWarehouseId,
-            placementCluster: row.shippingCluster ?? row.placementCluster ?? null,
-            externalShipmentNumber: row.externalShipmentNumber,
-            externalSupplyId: row.externalSupplyId,
-            deductionWarehouseId: row.deductionWarehouseId,
-            organizationId: row.organizationId,
-            deductStock: row.deductStock !== false,
-            status: row.status || 'new',
-            source: row.source || 'api',
-            items: (row.items || []).map((it) => ({
-              productId: it.productId,
-              quantity: it.quantity,
-              barcode: it.barcode,
-              sku: it.sku,
-              mpOfferId: it.mpOfferId,
-              mpProductId: it.mpProductId,
-              name: it.name,
-              placementZone: it.placementZone ?? null,
-              ozonTags: it.ozonTags ?? [],
-            })),
-          },
-          { profileId, userId, deferReserveRebalance: true, lightReturn: true }
-        );
-        created.push(doc);
-      } catch (e) {
-        if (e.code === 'DUPLICATE_SUPPLY') {
-          skipped.push({
-            externalShipmentNumber: row.externalShipmentNumber,
-            reason: 'duplicate',
-          });
-        } else {
-          throw e;
+
+    return runWithDbRetry(
+      async () => {
+        const created = [];
+        const skipped = [];
+        const productIdsToRebalance = new Set();
+
+        for (const row of supplies) {
+          if (row.alreadyImported) {
+            skipped.push({ externalShipmentNumber: row.externalShipmentNumber, reason: 'already_imported' });
+            continue;
+          }
+          try {
+            const doc = await fboSuppliesService.create(
+              {
+                marketplace: row.marketplace,
+                name: row.name,
+                readyAt: row.readyAt,
+                marketplaceWarehouseName: row.marketplaceWarehouseName,
+                marketplaceWarehouseId: row.marketplaceWarehouseId,
+                placementCluster: row.shippingCluster ?? row.placementCluster ?? null,
+                externalShipmentNumber: row.externalShipmentNumber,
+                externalSupplyId: row.externalSupplyId,
+                deductionWarehouseId: row.deductionWarehouseId,
+                organizationId: row.organizationId,
+                deductStock: row.deductStock !== false,
+                status: row.status || 'new',
+                source: row.source || 'api',
+                items: (row.items || []).map((it) => ({
+                  productId: it.productId,
+                  quantity: it.quantity,
+                  barcode: it.barcode,
+                  sku: it.sku,
+                  mpOfferId: it.mpOfferId,
+                  mpProductId: it.mpProductId,
+                  name: it.name,
+                  placementZone: it.placementZone ?? null,
+                  ozonTags: it.ozonTags ?? [],
+                })),
+              },
+              { profileId, userId, skipReserveRebalance: true, lightReturn: true }
+            );
+            created.push(doc);
+            for (const it of row.items || []) {
+              const pid = it.productId != null ? Number(it.productId) : NaN;
+              if (Number.isFinite(pid) && pid > 0) productIdsToRebalance.add(pid);
+            }
+          } catch (e) {
+            if (e.code === 'DUPLICATE_SUPPLY') {
+              skipped.push({
+                externalShipmentNumber: row.externalShipmentNumber,
+                reason: 'duplicate',
+              });
+            } else {
+              throw e;
+            }
+          }
         }
-      }
-    }
-    return { created, skipped };
+
+        for (const productId of productIdsToRebalance) {
+          await fboSupplyReserveService
+            .rebalanceReservesForProduct(productId, { profileId })
+            .catch((e) => {
+              console.warn('[FboImport] reserve rebalance:', e?.message || e);
+            });
+        }
+
+        return { created, skipped };
+      },
+      { label: 'fbo-import-confirm', attempts: 3, delayMs: 5000 }
+    );
   }
 
   /**

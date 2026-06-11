@@ -373,7 +373,7 @@ class FboSuppliesService {
     return supply;
   }
 
-  async create(payload, { profileId, userId, deferReserveRebalance = false, lightReturn = false } = {}) {
+  async create(payload, { profileId, userId, deferReserveRebalance = false, skipReserveRebalance = false, lightReturn = false } = {}) {
     const pid = normalizeProfileId(profileId);
     const mp = normalizeMarketplace(payload.marketplace);
     const ext = String(payload.externalShipmentNumber || '').trim();
@@ -461,15 +461,17 @@ class FboSuppliesService {
       return newId;
     });
 
-    const runReserveRebalance = () =>
-      fboSupplyReserveService.rebalanceReservesForSupply(supplyId, { profileId: pid }).catch((e) => {
-        console.warn('[FboSupplies] reserve after create:', e?.message || e);
-      });
+    if (!skipReserveRebalance) {
+      const runReserveRebalance = () =>
+        fboSupplyReserveService.rebalanceReservesForSupply(supplyId, { profileId: pid }).catch((e) => {
+          console.warn('[FboSupplies] reserve after create:', e?.message || e);
+        });
 
-    if (deferReserveRebalance) {
-      setImmediate(runReserveRebalance);
-    } else {
-      await runReserveRebalance();
+      if (deferReserveRebalance) {
+        setImmediate(runReserveRebalance);
+      } else {
+        await runReserveRebalance();
+      }
     }
 
     if (lightReturn) {
