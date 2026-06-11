@@ -385,7 +385,7 @@ export function FboPurchaseCalculation() {
                 <th>Наличие</th>
                 <th>В пути</th>
                 {calc.supplies.map((s) => (
-                  <th key={s.id} className="fbo-pc-supply-col" title={s.label}>
+                  <th key={s.id} className="fbo-pc-supply-col" title={s.columnTitle || s.label}>
                     {s.label}
                   </th>
                 ))}

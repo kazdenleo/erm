@@ -485,13 +485,29 @@
 }
 
 .fbo-purchase-calc-wrap {
-  overflow-x: auto;
+  overflow: auto;
   max-width: 100%;
+  max-height: min(72vh, calc(100vh - 200px));
 }
 
 .fbo-purchase-calc-table {
   font-size: 13px;
   min-width: 900px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.fbo-purchase-calc-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+  box-shadow: 0 1px 0 #dee2e6;
+}
+
+.fbo-purchase-calc-table thead th.fbo-pc-sticky-col {
+  left: 0;
+  z-index: 4;
 }
 
 .fbo-purchase-calc-table .fbo-pc-sticky-col {
@@ -503,9 +519,13 @@
   max-width: 220px;
 }
 
+.fbo-purchase-calc-table tbody td.fbo-pc-sticky-col {
+  box-shadow: 1px 0 0 #dee2e6;
+}
+
 .fbo-purchase-calc-table .fbo-pc-supply-col {
-  min-width: 72px;
-  max-width: 120px;
+  min-width: 88px;
+  max-width: 160px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -260,7 +260,8 @@ class FboSuppliesPurchaseCalcService {
     }
 
     const suppliesR = await query(
-      `SELECT s.id, s.external_shipment_number, s.name, s.organization_id, o.name AS organization_name
+      `SELECT s.id, s.external_shipment_number, s.name, s.placement_cluster,
+              s.organization_id, o.name AS organization_name
        FROM fbo_supplies s
        LEFT JOIN organizations o ON o.id = s.organization_id
        WHERE s.id = ANY($1::bigint[])
@@ -274,14 +275,34 @@ class FboSuppliesPurchaseCalcService {
       throw err;
     }
 
-    const supplies = (suppliesR.rows || []).map((row) => ({
-      id: row.id,
-      label: row.external_shipment_number || row.name || `Поставка #${row.id}`,
-      externalShipmentNumber: row.external_shipment_number,
-      name: row.name,
-      organizationId: row.organization_id,
-      organizationName: row.organization_name,
-    }));
+    const supplies = (suppliesR.rows || []).map((row) => {
+      const placementCluster =
+        row.placement_cluster != null ? String(row.placement_cluster).trim() : '';
+      const shipment =
+        row.external_shipment_number != null ? String(row.external_shipment_number).trim() : '';
+      const name = row.name != null ? String(row.name).trim() : '';
+      const label =
+        placementCluster ||
+        shipment ||
+        name ||
+        `Поставка #${row.id}`;
+      const titleParts = [
+        placementCluster ? `Кластер: ${placementCluster}` : null,
+        shipment ? `№ ${shipment}` : null,
+        name || null,
+        `ID ${row.id}`,
+      ].filter(Boolean);
+      return {
+        id: row.id,
+        label,
+        placementCluster: placementCluster || null,
+        externalShipmentNumber: row.external_shipment_number,
+        name: row.name,
+        organizationId: row.organization_id,
+        organizationName: row.organization_name,
+        columnTitle: titleParts.join(' · '),
+      };
+    });
 
     const itemsR = await query(
       `SELECT i.id AS supply_item_id, i.fbo_supply_id, i.product_id, i.quantity, i.sku, i.barcode,
