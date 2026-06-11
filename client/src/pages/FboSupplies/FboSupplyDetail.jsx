@@ -30,6 +30,7 @@ import {
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
+import { FboSupplyItemPackingCell } from './FboSupplyItemPackingCell.jsx';
 import {
   buildStatsMap,
   isSupplyItemPackingComplete,
@@ -38,13 +39,6 @@ import {
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
 import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 import './FboSupplies.css';
-
-function packedCellClass(packed, planned) {
-  if (packed === planned) return 'ok';
-  if (packed > planned) return 'over';
-  if (packed > 0) return 'short';
-  return 'none';
-}
 
 function fmtDate(v) {
   if (!v) return '';
@@ -225,6 +219,57 @@ export function FboSupplyDetail() {
   const itemSearchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
 
   const packingHasDiscrepancy = hasPackingDiscrepancy(supply, packing);
+
+  const handleItemQuantitySaved = useCallback(
+    async (data) => {
+      if (data?.deleted) {
+        setSupply((s) =>
+          s ? { ...s, items: (s.items || []).filter((it) => String(it.id) !== String(data.id)) } : s
+        );
+        setSelectedItemIds((prev) => {
+          const next = new Set(prev);
+          next.delete(String(data.id));
+          return next;
+        });
+      } else if (data?.id != null) {
+        setSupply((s) =>
+          s
+            ? {
+                ...s,
+                items: (s.items || []).map((it) =>
+                  String(it.id) === String(data.id) ? { ...it, quantity: data.quantity } : it
+                ),
+              }
+            : s
+        );
+      }
+      if (data?.supplyStatus != null || data?.packingAllMatch != null) {
+        setSupply((s) =>
+          s
+            ? {
+                ...s,
+                ...(data.supplyStatus != null ? { status: data.supplyStatus } : {}),
+                ...(data.packingAllMatch != null
+                  ? {
+                      packingAllMatch: data.packingAllMatch,
+                      hasPackingDiscrepancy: data.packingAllMatch === false,
+                    }
+                  : {}),
+                ...(data.statusReverted ? { statusRevertedByPacking: true } : {}),
+              }
+            : s
+        );
+      }
+      await loadPacking();
+      try {
+        const fresh = await fboSuppliesApi.getById(id);
+        setSupply(fresh);
+      } catch {
+        /* keep optimistic state */
+      }
+    },
+    [id, loadPacking]
+  );
 
   const handlePackingChange = useCallback((newPacking, meta) => {
     setPacking(newPacking);
@@ -691,6 +736,7 @@ export function FboSupplyDetail() {
           packing={packing}
           onPackingChange={handlePackingChange}
           onBreakdownClick={setBreakdownItem}
+          onItemQuantitySaved={handleItemQuantitySaved}
           itemSearchQuery={itemSearchQuery}
         />
       ) : null}
@@ -969,16 +1015,15 @@ export function FboSupplyDetail() {
               <th>Название</th>
               <th>Артикул</th>
               <th>Штрихкод</th>
-              <th title="Зарезервировано под поставку со склада списания">Кол-во</th>
               {isOzonSupply ? <th>Размещение</th> : null}
-              <th>Расхождения</th>
+              <th title="Упаковано / количество в поставке (редактируется)">Расхождения</th>
               <th style={{ width: 48 }} />
             </tr>
           </thead>
           <tbody>
             {filteredSupplyItems.length === 0 ? (
               <tr>
-                <td colSpan={isOzonSupply ? 9 : 8} className="text-muted text-center py-3">
+                <td colSpan={isOzonSupply ? 8 : 7} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
@@ -989,7 +1034,6 @@ export function FboSupplyDetail() {
               const stat = statsByItemId.get(String(it.id));
               const planned = stat?.planned ?? it.quantity ?? 0;
               const packed = stat?.packed ?? 0;
-              const packedCls = packedCellClass(packed, planned);
               const packingComplete = isSupplyItemPackingComplete(stat, it);
               return (
                 <tr
@@ -1023,15 +1067,6 @@ export function FboSupplyDetail() {
                   </td>
                   <td>{it.sku || '—'}</td>
                   <td>{it.barcode || '—'}</td>
-                  <td
-                    title={
-                      it.productId
-                        ? `Зарезервировано: ${it.reservedQuantity ?? 0}, план: ${it.quantity ?? 0}`
-                        : undefined
-                    }
-                  >
-                    {it.productId ? (it.reservedQuantity ?? 0) : '—'}
-                  </td>
                   {isOzonSupply ? (
                     <td>
                       <span
@@ -1047,11 +1082,15 @@ export function FboSupplyDetail() {
                       </span>
                     </td>
                   ) : null}
-                  <td>
-                    <button
-                      type="button"
-                      className={`fbo-packed-cell fbo-packed-${packedCls}`}
-                      onClick={() =>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <FboSupplyItemPackingCell
+                      supplyId={id}
+                      itemId={it.id}
+                      packed={packed}
+                      planned={planned}
+                      disabled={saving}
+                      onSaved={handleItemQuantitySaved}
+                      onBreakdownClick={() =>
                         setBreakdownItem({
                           ...it,
                           packed,
@@ -1060,10 +1099,7 @@ export function FboSupplyDetail() {
                           byCargo: stat?.byCargo || [],
                         })
                       }
-                      title="Упаковано по грузоместам"
-                    >
-                      {packed} / {planned}
-                    </button>
+                    />
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <Button

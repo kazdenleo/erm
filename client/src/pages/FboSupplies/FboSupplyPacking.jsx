@@ -25,6 +25,7 @@ import {
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
 import { ozonPlacementZoneLabel } from '../../constants/ozonPlacementZones';
 import { hasPackingDiscrepancy } from '../../constants/fboSupplyStatuses';
+import { FboSupplyItemPackingCell } from './FboSupplyItemPackingCell.jsx';
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -34,13 +35,6 @@ function fmtDt(iso) {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function packedCellClass(packed, planned) {
-  if (packed === planned) return 'ok';
-  if (packed > planned) return 'over';
-  if (packed > 0) return 'short';
-  return 'none';
 }
 
 function placementKindLabel(lineOrItem) {
@@ -81,6 +75,7 @@ export function FboSupplyPacking({
   packing,
   onPackingChange,
   onBreakdownClick,
+  onItemQuantitySaved,
   itemSearchQuery = '',
 }) {
   const [scanLoading, setScanLoading] = useState(false);
@@ -617,15 +612,14 @@ export function FboSupplyPacking({
               <th>Название</th>
               <th>Артикул</th>
               <th>Штрихкод</th>
-              <th>План</th>
               {isOzon ? <th>Размещение</th> : null}
-              <th>Расхождения</th>
+              <th title="Упаковано / количество в поставке (редактируется)">Расхождения</th>
             </tr>
           </thead>
           <tbody>
             {filteredSupplyItems.length === 0 ? (
               <tr>
-                <td colSpan={isOzon ? 6 : 5} className="text-muted text-center py-3">
+                <td colSpan={isOzon ? 5 : 4} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
@@ -634,14 +628,12 @@ export function FboSupplyPacking({
               const stat = statsByItemId.get(String(it.id));
               const planned = stat?.planned ?? it.quantity ?? 0;
               const packed = stat?.packed ?? 0;
-              const cls = packedCellClass(packed, planned);
               const complete = isSupplyItemPackingComplete(stat, it);
               return (
                 <tr key={it.id} className={complete ? 'fbo-item-row--complete' : ''}>
                   <td>{it.productName || it.name || '—'}</td>
                   <td>{it.sku || '—'}</td>
                   <td>{it.barcode || '—'}</td>
-                  <td>{planned}</td>
                   {isOzon ? (
                     <td>
                       <span
@@ -658,10 +650,13 @@ export function FboSupplyPacking({
                     </td>
                   ) : null}
                   <td>
-                    <button
-                      type="button"
-                      className={`fbo-packed-cell fbo-packed-${cls}`}
-                      onClick={() =>
+                    <FboSupplyItemPackingCell
+                      supplyId={supplyId}
+                      itemId={it.id}
+                      packed={packed}
+                      planned={planned}
+                      onSaved={onItemQuantitySaved}
+                      onBreakdownClick={() =>
                         onBreakdownClick?.({
                           ...it,
                           packed,
@@ -670,10 +665,7 @@ export function FboSupplyPacking({
                           byCargo: stat?.byCargo || [],
                         })
                       }
-                      title="Где упаковано"
-                    >
-                      {packed} / {planned}
-                    </button>
+                    />
                   </td>
                 </tr>
               );

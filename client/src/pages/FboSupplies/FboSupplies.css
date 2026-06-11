@@ -346,6 +346,37 @@
   color: #64748b;
 }
 
+.fbo-supply-qty-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.fbo-supply-qty-cell__packed {
+  min-width: 1.5rem;
+  text-align: center;
+}
+
+.fbo-supply-qty-cell__packed:disabled {
+  cursor: default;
+  text-decoration: none;
+  opacity: 0.65;
+}
+
+.fbo-supply-qty-cell__sep {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.fbo-supply-qty-cell__plan {
+  width: 4rem;
+  padding: 2px 6px;
+  font-weight: 600;
+  text-align: center;
+}
+
 .fbo-item-row--complete {
   opacity: 0.72;
 }

@@ -791,14 +791,21 @@ class FboSuppliesService {
     const productId = belongs.rows[0].product_id;
 
     if (qty === 0) {
-      await fboSupplyReserveService.releaseReservesForSupply(sid, { profileId: pid }).catch(() => {});
       await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [iid]);
       if (productId) {
         await fboSupplyReserveService
           .rebalanceReservesForProduct(productId, { profileId: pid })
           .catch(() => {});
       }
-      return { id: iid, quantity: 0, deleted: true };
+      const sync = await syncSupplyStatusForPacking(sid);
+      return {
+        id: iid,
+        quantity: 0,
+        deleted: true,
+        supplyStatus: sync.status,
+        packingAllMatch: sync.allMatch,
+        statusReverted: sync.reverted,
+      };
     }
 
     const r = await query(
@@ -812,11 +819,15 @@ class FboSuppliesService {
         .rebalanceReservesForProduct(productId, { profileId: pid })
         .catch(() => {});
     }
+    const sync = await syncSupplyStatusForPacking(sid);
     return {
       id: r.rows[0].id,
       supplyId: r.rows[0].fbo_supply_id,
       quantity: r.rows[0].quantity,
       deleted: false,
+      supplyStatus: sync.status,
+      packingAllMatch: sync.allMatch,
+      statusReverted: sync.reverted,
     };
   }
 
