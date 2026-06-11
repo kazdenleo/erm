@@ -968,13 +968,27 @@ export async function readKitSkuNetReserved(kitProductId, opts = {}) {
 }
 
 /**
- * Итоговый резерв комплекта: целые на SKU и/или сборка из комплектующих.
- * При обоих путях — min по комплектующим (компонентный резерв авторитетен).
+ * Сколько комплектов зарезервировано: целые на SKU + из комплектующих (комплементарные пути).
+ * При дубле (сумма > кол-ва в заказе) — max, не сумма.
  */
+export function resolveComplementaryKitReserveUnits(onSku, fromComp, orderQty = null) {
+  const sku = Math.max(0, Number(onSku) || 0);
+  const comp = Math.max(0, Number(fromComp) || 0);
+  if (sku <= 0) return comp;
+  if (comp <= 0) return sku;
+  const qty =
+    orderQty != null && !Number.isNaN(Number(orderQty))
+      ? Math.max(0, Math.floor(Number(orderQty)) || 0)
+      : 0;
+  if (qty > 0 && sku + comp <= qty) return sku + comp;
+  return Math.max(sku, comp);
+}
+
+/** Итоговый резерв комплекта в колонке «Резерв» (глобально по SKU). */
 function resolveKitDisplayReservedQty(onSku, fromComp) {
   const sku = Math.max(0, Number(onSku) || 0);
   const comp = Math.max(0, Number(fromComp) || 0);
-  if (sku > 0 && comp > 0) return comp;
+  if (sku > 0 && comp > 0) return sku + comp;
   if (sku > 0) return sku;
   return comp;
 }
@@ -1435,9 +1449,16 @@ export async function getReservedKitUnitsForOrderValidation(kitProductId, orderD
 
   const onKit = await getNetReservedForOrderProduct(oid, kitId);
   const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
-  if (onKit <= 0) return fromComp;
-  if (fromComp <= 0) return onKit;
-  return Math.max(onKit, fromComp);
+  let orderQty = null;
+  try {
+    const ord = await query(`SELECT quantity FROM orders WHERE id = $1 LIMIT 1`, [oid]);
+    if (ord.rows?.[0]) {
+      orderQty = Math.max(1, parseInt(ord.rows[0].quantity, 10) || 1);
+    }
+  } catch {
+    /* ignore */
+  }
+  return resolveComplementaryKitReserveUnits(onKit, fromComp, orderQty);
 }
 
 /**
@@ -1530,25 +1551,28 @@ export async function computeMaxKitUnitsReservable(kitProductId, opts = {}) {
 }
 
 /**
- * Сколько комплектов зарезервировать: сначала целые на SKU комплекта (если они есть на складе),
- * иначе — только из комплектующих. На один заказ — один путь, без дубля.
+ * Сколько комплектов зарезервировать: сначала целые на SKU (если есть), остаток — из комплектующих.
  * @returns {{ kitsToReserve: number, fromWhole: number, fromComponents: number }}
  */
 export function allocateKitReservePriority(kitsWanted, breakdown) {
   const wanted = Math.max(0, parseInt(kitsWanted, 10) || 0);
   if (wanted <= 0) return { kitsToReserve: 0, fromWhole: 0, fromComponents: 0 };
   const physicalOnHand = Math.max(0, Number(breakdown?.physicalOnHand) || 0);
-  const fromComponents = Math.max(0, Number(breakdown?.fromComponents) || 0);
+  const fromComponentsAvail = Math.max(0, Number(breakdown?.fromComponents) || 0);
   const wholeReserveAvail =
     breakdown?.wholeReserveAvail != null
       ? Math.max(0, Number(breakdown.wholeReserveAvail) || 0)
-      : physicalOnHand;
-  if (physicalOnHand > 0) {
-    const fromWhole = Math.min(wanted, wholeReserveAvail);
-    return { kitsToReserve: fromWhole, fromWhole, fromComponents: 0 };
-  }
-  const fromComp = Math.min(wanted, fromComponents);
-  return { kitsToReserve: fromComp, fromWhole: 0, fromComponents: fromComp };
+      : physicalOnHand > 0
+        ? physicalOnHand
+        : 0;
+  const fromWhole = Math.min(wanted, wholeReserveAvail);
+  const remainder = Math.max(0, wanted - fromWhole);
+  const fromComponents = remainder > 0 ? Math.min(remainder, fromComponentsAvail) : 0;
+  return {
+    kitsToReserve: fromWhole + fromComponents,
+    fromWhole,
+    fromComponents
+  };
 }
 
 /**
@@ -1585,11 +1609,23 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
       if (meta?.reconcile_kit_to_components || meta?.reconcile_force_mixed) {
         return 0;
       }
-      const err = new Error(
-        'На заказе одновременно резерв на SKU комплекта и на комплектующие — обновите страницу и повторите резерв'
-      );
-      err.statusCode = 409;
-      throw err;
+      const orderQtyCap =
+        meta?.order_qty != null
+          ? Math.max(1, parseInt(meta.order_qty, 10) || 1)
+          : null;
+      if (orderQtyCap != null) {
+        if (onKit + fromComp >= orderQtyCap) return 0;
+        if (onKit + fromComp <= orderQtyCap) {
+          wanted = Math.min(wanted, Math.max(0, orderQtyCap - onKit - fromComp));
+          if (wanted <= 0) return 0;
+        } else {
+          const err = new Error(
+            'На заказе дублирующий резерв на SKU комплекта и на комплектующие — снимите резерв и повторите'
+          );
+          err.statusCode = 409;
+          throw err;
+        }
+      }
     }
   }
   const whRaw = meta?.warehouse_id ?? meta?.warehouseId ?? null;
@@ -1712,8 +1748,8 @@ export async function reconcileMisplacedKitWholeReserve(
 }
 
 /**
- * На заказе одновременно резерв на SKU комплекта и на комплектующие — оставить резерв на комплекте.
- * Резерв на SKU без наличия переносится на комплектующие через reconcileMisplacedKitWholeReserve.
+ * Дублирующий резерв (и на SKU, и на комплектующих сверх кол-ва заказа) — снять с комплектующих.
+ * Комплементарный резерв (1 целый + N из деталей) не трогаем.
  */
 export async function reconcileMixedKitOrderReservePaths(
   kitProductId,
@@ -1732,6 +1768,17 @@ export async function reconcileMixedKitOrderReservePaths(
   const onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
   const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
   if (onKit <= 0 || fromComp <= 0) return 0;
+
+  let orderQty = null;
+  try {
+    const ord = await query(`SELECT quantity FROM orders WHERE id = $1 LIMIT 1`, [oid]);
+    if (ord.rows?.[0]) {
+      orderQty = Math.max(1, parseInt(ord.rows[0].quantity, 10) || 1);
+    }
+  } catch {
+    /* ignore */
+  }
+  if (orderQty != null && onKit + fromComp <= orderQty) return 0;
 
   let changed = 0;
   const components = await getKitComponents(kitId);
@@ -2247,6 +2294,7 @@ export default {
   computeMaxKitUnitsReservable,
   computeKitReservableBreakdown,
   allocateKitReservePriority,
+  resolveComplementaryKitReserveUnits,
   reconcileMisplacedKitWholeReserve,
   reconcileMixedKitOrderReservePaths,
   reconcileComponentOnlyKitReserveToWhole,

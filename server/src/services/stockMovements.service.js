@@ -818,9 +818,7 @@ class StockMovementsService {
 
       let reservedQty = Number(r.sku_net_qty) || 0;
       if (isKit) {
-        const onKit = await getNetReservedForOrderProduct(orderDbId, idNum);
-        const fromComp = await getReservedKitUnitsFromComponentsForOrder(idNum, orderDbId);
-        reservedQty = onKit > 0 ? onKit : fromComp;
+        reservedQty = await getReservedKitUnitsForOrderValidation(idNum, orderDbId);
       }
       if (reservedQty <= 0) continue;
 

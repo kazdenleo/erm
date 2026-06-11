@@ -5087,9 +5087,9 @@ class OrdersService {
             const fromComp = await getReservedKitUnitsFromComponentsForOrder(pid, orderDbId);
             const assemblable = await computeAssemblableFromComponents(pid, { warehouseId: wh });
             let hint = '';
-            if (onKit > 0 && fromComp > 0) {
+            if (onKit > 0 && fromComp > 0 && onKit + fromComp > toAdd) {
               hint =
-                ' На заказе одновременно резерв на SKU комплекта и на комплектующие — обновите страницу и повторите.';
+                ' На заказе дублирующий резерв на SKU и комплектующих — снимите резерв и повторите.';
             } else if (assemblable < toAdd) {
               hint = ` Собираемость из комплектующих на складе заказа: ${assemblable} компл.`;
             }
