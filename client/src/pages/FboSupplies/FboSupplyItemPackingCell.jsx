@@ -1,5 +1,5 @@
 /**
- * План / упаковано; редактируется только план (количество в поставке).
+ * План / упаковано; план редактируется на месте (без отдельного окна).
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -20,6 +20,8 @@ export function FboSupplyItemPackingCell({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const inputRef = useRef(null);
+  const savingRef = useRef(false);
+  const skipBlurRef = useRef(false);
 
   const packedNum = Number(packed) || 0;
   const plannedNum = Number(planned) || 0;
@@ -27,10 +29,15 @@ export function FboSupplyItemPackingCell({
 
   useEffect(() => {
     setPlannedInput(String(planned));
-    setError(null);
-    if (!editing) return;
     setEditing(false);
-  }, [itemId, planned]);
+    setError(null);
+  }, [itemId]);
+
+  useEffect(() => {
+    if (!editing) {
+      setPlannedInput(String(planned));
+    }
+  }, [planned, editing]);
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -40,26 +47,32 @@ export function FboSupplyItemPackingCell({
   }, [editing]);
 
   const cancelEdit = () => {
+    skipBlurRef.current = true;
     setPlannedInput(String(planned));
     setError(null);
     setEditing(false);
   };
 
-  const startPlanEdit = () => {
-    if (disabled || saving) return;
+  const startPlanEdit = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (disabled || saving || editing) return;
+    setError(null);
+    setPlannedInput(String(planned));
     setEditing(true);
   };
 
   const save = async () => {
+    if (savingRef.current) return;
+
     const raw = (plannedInput || '').trim();
     const next = raw === '' ? NaN : parseInt(raw, 10);
     if (!Number.isFinite(next) || next < 0) {
       setError('Укажите целое число ≥ 0');
-      setPlannedInput(String(planned));
       return;
     }
-    if (next === plannedNum || saving || disabled) {
-      setEditing(false);
+    if (next === plannedNum || disabled) {
+      cancelEdit();
       return;
     }
 
@@ -83,6 +96,7 @@ export function FboSupplyItemPackingCell({
       }
     }
 
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -93,68 +107,87 @@ export function FboSupplyItemPackingCell({
       setError(e.response?.data?.message || e.message || 'Не удалось сохранить');
       setPlannedInput(String(planned));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
-  if (editing) {
-    return (
-      <div className={`fbo-supply-qty-cell fbo-supply-qty-cell--edit fbo-packed-${cls}`}>
-        <input
-          ref={inputRef}
-          type="number"
-          min={0}
-          step={1}
-          className="form-control form-control-sm fbo-supply-qty-cell__plan"
-          value={plannedInput}
-          disabled={disabled || saving}
-          onChange={(e) => {
-            setPlannedInput(e.target.value);
-            setError(null);
-          }}
-          onBlur={save}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              e.currentTarget.blur();
-            }
-            if (e.key === 'Escape') {
-              e.preventDefault();
-              cancelEdit();
-            }
-          }}
-          aria-label="План: количество в поставке"
-        />
-        <span className="fbo-supply-qty-cell__sep">/</span>
-        <span className="fbo-supply-qty-cell__packed-num" title="Упаковано">
-          {packedNum}
-        </span>
-        {error ? <div className="text-danger small mt-1">{error}</div> : null}
-      </div>
-    );
-  }
+  const handleBlur = () => {
+    if (skipBlurRef.current) {
+      skipBlurRef.current = false;
+      return;
+    }
+    if (savingRef.current) return;
+    void save();
+  };
 
   return (
-    <div className={`fbo-supply-qty-cell fbo-packed-${cls}`}>
-      <button
-        type="button"
-        className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__plan-part`}
-        disabled={disabled || saving}
-        onClick={startPlanEdit}
-        title="План: количество в поставке (нажмите, чтобы изменить)"
-      >
-        {plannedNum}
-      </button>
+    <div
+      className={`fbo-supply-qty-cell fbo-packed-${cls}${editing ? ' fbo-supply-qty-cell--editing' : ''}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <span className="fbo-supply-qty-cell__plan-slot">
+        {editing ? (
+          <input
+            ref={inputRef}
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            className={`fbo-supply-qty-cell__plan-input${error ? ' is-invalid' : ''}`}
+            value={plannedInput}
+            disabled={disabled || saving}
+            title={error || 'Количество в поставке'}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^\d]/g, '');
+              setPlannedInput(v);
+              setError(null);
+            }}
+            onBlur={handleBlur}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                e.currentTarget.blur();
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                skipBlurRef.current = true;
+                cancelEdit();
+              }
+            }}
+            aria-label="Количество в поставке"
+          />
+        ) : (
+          <span
+            className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__plan-part`}
+            role="button"
+            tabIndex={disabled || saving ? -1 : 0}
+            onClick={startPlanEdit}
+            onKeyDown={(e) => {
+              if (disabled || saving) return;
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                startPlanEdit(e);
+              }
+            }}
+            title="Количество в поставке (нажмите, чтобы изменить)"
+          >
+            {plannedNum}
+          </span>
+        )}
+      </span>
       <span className="fbo-supply-qty-cell__sep"> / </span>
       <span
         className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__packed-part`}
-        role={packedNum > 0 ? 'button' : undefined}
-        tabIndex={packedNum > 0 ? 0 : undefined}
-        onClick={() => {
-          if (packedNum > 0) onBreakdownClick?.();
+        role={packedNum > 0 && !editing ? 'button' : undefined}
+        tabIndex={packedNum > 0 && !editing ? 0 : undefined}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (editing || packedNum <= 0) return;
+          onBreakdownClick?.();
         }}
         onKeyDown={(e) => {
-          if (packedNum > 0 && (e.key === 'Enter' || e.key === ' ')) {
+          if (editing || packedNum <= 0) return;
+          if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             onBreakdownClick?.();
           }

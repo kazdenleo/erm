@@ -366,12 +366,16 @@
   background: #fef2f2;
 }
 
-.fbo-supply-qty-cell--edit {
+.fbo-supply-qty-cell--editing {
+  outline: 1px solid rgba(59, 130, 246, 0.35);
+  outline-offset: 1px;
+}
+
+.fbo-supply-qty-cell__plan-slot {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px 4px;
-  border-radius: 4px;
+  min-width: 1.25em;
+  justify-content: center;
 }
 
 .fbo-supply-qty-cell__packed-part {
@@ -401,17 +405,36 @@
   text-decoration-style: dotted;
   text-underline-offset: 2px;
   background: transparent;
+  border: none;
+  cursor: pointer;
+  line-height: inherit;
 }
 
-.fbo-supply-qty-cell__packed-num {
+.fbo-supply-qty-cell__plan-input {
+  width: 3ch;
+  min-width: 2ch;
+  max-width: 6ch;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-bottom: 1px solid currentColor;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   font-weight: 600;
-}
-
-.fbo-supply-qty-cell__plan {
-  width: 3.5rem;
-  padding: 2px 4px;
-  font-weight: 600;
+  line-height: inherit;
   text-align: center;
+  box-shadow: none;
+}
+
+.fbo-supply-qty-cell__plan-input:focus {
+  outline: none;
+  border-bottom-color: #2563eb;
+}
+
+.fbo-supply-qty-cell__plan-input.is-invalid {
+  border-bottom-color: #dc2626;
 }
 
 .fbo-item-row--complete {
