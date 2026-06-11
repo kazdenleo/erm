@@ -1580,19 +1580,74 @@ function ozonItemMatchesErm(ozonItem, ermRow) {
   const ermPid = ermRow.product_id != null ? Number(ermRow.product_id) : NaN;
   const ozPid = ozonItem.productId != null ? Number(ozonItem.productId) : NaN;
   if (Number.isFinite(ermPid) && ermPid > 0 && ermPid === ozPid) return true;
+  const ermMpPid =
+    ermRow.mp_product_id != null && String(ermRow.mp_product_id).trim() !== ''
+      ? String(ermRow.mp_product_id).trim()
+      : null;
+  const ozMpPid =
+    ozonItem.mpProductId != null && String(ozonItem.mpProductId).trim() !== ''
+      ? String(ozonItem.mpProductId).trim()
+      : null;
+  if (ermMpPid && ozMpPid && ermMpPid === ozMpPid) return true;
   const ozKeys = new Set(ozonItemMatchKeys(ozonItem));
   return ermItemMatchKeys(ermRow).some((k) => ozKeys.has(k));
 }
 
-function findOzonItemForErm(ozonItems, ermRow, usedIndices) {
+function findOzonItemIndexForErm(ozonItems, ermRow, usedIndices) {
   for (let i = 0; i < ozonItems.length; i++) {
     if (usedIndices.has(i)) continue;
-    if (ozonItemMatchesErm(ozonItems[i], ermRow)) {
-      usedIndices.add(i);
-      return ozonItems[i];
+    if (ozonItemMatchesErm(ozonItems[i], ermRow)) return i;
+  }
+  return -1;
+}
+
+function findOzonItemIndexByProductId(ozonItems, productId, usedIndices) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid <= 0) return -1;
+  for (let i = 0; i < ozonItems.length; i++) {
+    if (usedIndices.has(i)) continue;
+    const ozPid = Number(ozonItems[i].productId);
+    if (ozPid === pid) return i;
+  }
+  return -1;
+}
+
+function findUnusedErmRowForOzon(ermRows, usedErm, ozonItem) {
+  const ozPid = ozonItem.productId != null ? Number(ozonItem.productId) : NaN;
+  const ozBc = ozonItem.barcode != null ? String(ozonItem.barcode).trim() : '';
+  const ozSkuRaw = ozonItem.sku ?? ozonItem.mpOfferId;
+  const ozSku = ozSkuRaw != null ? String(ozSkuRaw).trim().toUpperCase() : '';
+
+  if (Number.isFinite(ozPid) && ozPid > 0) {
+    for (const row of ermRows) {
+      if (usedErm.has(row.id)) continue;
+      const ermPid = row.product_id != null ? Number(row.product_id) : NaN;
+      if (ermPid === ozPid) return row;
+    }
+  }
+  if (ozBc) {
+    for (const row of ermRows) {
+      if (usedErm.has(row.id)) continue;
+      if (row.barcode != null && String(row.barcode).trim() === ozBc) return row;
+    }
+  }
+  if (ozSku) {
+    for (const row of ermRows) {
+      if (usedErm.has(row.id)) continue;
+      if (ermItemMatchKeys(row).some((k) => k === ozSku)) return row;
     }
   }
   return null;
+}
+
+function ozonItemReservedForErm(ozonItems, ermRow, usedOzon) {
+  const pid = ermRow.product_id != null ? Number(ermRow.product_id) : NaN;
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  for (let i = 0; i < ozonItems.length; i++) {
+    if (usedOzon.has(i)) continue;
+    if (Number(ozonItems[i].productId) === pid) return true;
+  }
+  return false;
 }
 
 async function getSupplyItemPackedQty(itemId) {
@@ -1603,6 +1658,145 @@ async function getSupplyItemPackedQty(itemId) {
     [itemId]
   );
   return r.rows?.[0]?.packed ?? 0;
+}
+
+async function transferCargoContentsBetweenItems(fromItemId, toItemId) {
+  const fromId = Number(fromItemId);
+  const toId = Number(toItemId);
+  if (!Number.isFinite(fromId) || !Number.isFinite(toId) || fromId === toId) return;
+
+  const contentsR = await query(
+    `SELECT id, cargo_unit_id, quantity
+     FROM fbo_supply_cargo_contents
+     WHERE fbo_supply_item_id = $1
+     ORDER BY id`,
+    [fromId]
+  );
+  for (const cc of contentsR.rows || []) {
+    const existingR = await query(
+      `SELECT id, quantity FROM fbo_supply_cargo_contents
+       WHERE cargo_unit_id = $1 AND fbo_supply_item_id = $2
+       LIMIT 1`,
+      [cc.cargo_unit_id, toId]
+    );
+    if (existingR.rows?.length) {
+      const merged = (Number(existingR.rows[0].quantity) || 0) + (Number(cc.quantity) || 0);
+      await query(`UPDATE fbo_supply_cargo_contents SET quantity = $1 WHERE id = $2`, [
+        merged,
+        existingR.rows[0].id,
+      ]);
+      await query(`DELETE FROM fbo_supply_cargo_contents WHERE id = $1`, [cc.id]);
+    } else {
+      await query(`UPDATE fbo_supply_cargo_contents SET fbo_supply_item_id = $1 WHERE id = $2`, [
+        toId,
+        cc.id,
+      ]);
+    }
+  }
+}
+
+async function applyOzonItemToErmSupplyRow(row, ozonItem) {
+  const packed = await getSupplyItemPackedQty(row.id);
+  const ozQty = parseInt(ozonItem.quantity, 10) || 0;
+  const planQty = Math.max(ozQty, packed);
+  const curQty = parseInt(row.quantity, 10) || 0;
+  const curMpQty = parseInt(row.mp_quantity, 10) || 0;
+  const newZone = ozonItem.placementZone ?? null;
+  const newTagsJson = JSON.stringify(ozonItem.ozonTags || []);
+  const oldZone = row.placement_zone != null ? String(row.placement_zone).trim() : null;
+  const zoneEqual = (oldZone || null) === (newZone || null);
+  const tagsEqual = parseOzonTagsForCompare(row.ozon_tags) === newTagsJson;
+  const resolvedProductId = ozonItem.productId ?? row.product_id ?? null;
+
+  if (
+    planQty === curQty &&
+    curMpQty === ozQty &&
+    zoneEqual &&
+    tagsEqual &&
+    (resolvedProductId == null || Number(row.product_id) === Number(resolvedProductId))
+  ) {
+    return { changed: false };
+  }
+
+  await query(
+    `UPDATE fbo_supply_items
+     SET quantity = $1,
+         mp_quantity = $2,
+         placement_zone = $3,
+         ozon_tags = $4::jsonb,
+         product_id = COALESCE($5, product_id),
+         sku = COALESCE(NULLIF(TRIM(sku), ''), $6),
+         barcode = COALESCE(NULLIF(TRIM(barcode), ''), $7),
+         mp_offer_id = COALESCE(NULLIF(TRIM(mp_offer_id), ''), $8),
+         mp_product_id = COALESCE(NULLIF(TRIM(mp_product_id), ''), $9),
+         name = COALESCE(NULLIF(TRIM(name), ''), $10),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $11`,
+    [
+      planQty,
+      ozQty,
+      newZone,
+      newTagsJson,
+      resolvedProductId,
+      ozonItem.sku ?? ozonItem.mpOfferId ?? null,
+      ozonItem.barcode ?? null,
+      ozonItem.mpOfferId ?? ozonItem.sku ?? null,
+      ozonItem.mpProductId ?? null,
+      ozonItem.name ?? null,
+      row.id,
+    ]
+  );
+  return { changed: true };
+}
+
+async function ensureErmSupplyRowProductIds(ermRows, { profileId } = {}) {
+  for (const row of ermRows) {
+    const cur = row.product_id != null ? Number(row.product_id) : NaN;
+    if (Number.isFinite(cur) && cur > 0) continue;
+    const pid = await resolveProductId({
+      sku: row.sku ?? row.mp_offer_id,
+      barcode: row.barcode,
+      profileId,
+    });
+    if (!pid) continue;
+    row.product_id = pid;
+    await query(
+      `UPDATE fbo_supply_items SET product_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [pid, row.id]
+    );
+  }
+}
+
+async function consolidateDuplicateSupplyItemsByProduct(supplyId) {
+  const dupsR = await query(
+    `SELECT product_id, array_agg(id ORDER BY id) AS ids
+     FROM fbo_supply_items
+     WHERE fbo_supply_id = $1 AND product_id IS NOT NULL
+     GROUP BY product_id
+     HAVING COUNT(*) > 1`,
+    [supplyId]
+  );
+  let merged = 0;
+  for (const group of dupsR.rows || []) {
+    const ids = group.ids || [];
+    if (ids.length < 2) continue;
+    let keeperId = ids[0];
+    let keeperPacked = await getSupplyItemPackedQty(keeperId);
+    for (const id of ids.slice(1)) {
+      const packed = await getSupplyItemPackedQty(id);
+      if (packed > keeperPacked) {
+        keeperId = id;
+        keeperPacked = packed;
+      }
+    }
+    for (const id of ids) {
+      if (id === keeperId) continue;
+      await transferCargoContentsBetweenItems(id, keeperId);
+      await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [id]);
+      merged += 1;
+    }
+  }
+  return merged;
 }
 
 function parseOzonTagsForCompare(v) {
@@ -2392,78 +2586,62 @@ class FboSuppliesImportService {
       [supplyId]
     );
 
+    const ermRows = itemsR.rows || [];
+    await ensureErmSupplyRowProductIds(ermRows, { profileId });
+
     const usedOzon = new Set();
+    const usedErm = new Set();
     let updated = 0;
     let unchanged = 0;
     let removed = 0;
     let shrinkPacked = 0;
 
-    for (const row of itemsR.rows || []) {
+    const applyMatch = async (row, ozonItem) => {
+      const { changed } = await applyOzonItemToErmSupplyRow(row, ozonItem);
+      if (changed) updated += 1;
+      else unchanged += 1;
+    };
+
+    for (const row of ermRows) {
+      let ozIdx = findOzonItemIndexForErm(ozonItems, row, usedOzon);
+      if (ozIdx < 0) {
+        ozIdx = findOzonItemIndexByProductId(ozonItems, row.product_id, usedOzon);
+      }
+      if (ozIdx < 0) continue;
+      usedOzon.add(ozIdx);
+      usedErm.add(row.id);
+      await applyMatch(row, ozonItems[ozIdx]);
+    }
+
+    for (const row of ermRows) {
+      if (usedErm.has(row.id)) continue;
       const packed = await getSupplyItemPackedQty(row.id);
-      const ozonItem = findOzonItemForErm(ozonItems, row, usedOzon);
-      if (!ozonItem) {
-        if (packed <= 0) {
-          await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [row.id]);
-          removed += 1;
+      if (packed > 0) {
+        if (ozonItemReservedForErm(ozonItems, row, usedOzon)) {
+          unchanged += 1;
+          continue;
+        }
+        const curQty = parseInt(row.quantity, 10) || 0;
+        const keepQty = Math.max(curQty, packed);
+        const curMpQty = parseInt(row.mp_quantity, 10) || 0;
+        if (curQty !== keepQty || curMpQty !== 0) {
+          await query(
+            `UPDATE fbo_supply_items
+             SET quantity = $1, mp_quantity = 0, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2`,
+            [keepQty, row.id]
+          );
+          shrinkPacked += 1;
         } else {
-          const curQty = parseInt(row.quantity, 10) || 0;
-          const keepQty = Math.max(curQty, packed);
-          const curMpQty = parseInt(row.mp_quantity, 10) || 0;
-          if (curQty !== keepQty || curMpQty !== 0) {
-            await query(
-              `UPDATE fbo_supply_items
-               SET quantity = $1, mp_quantity = 0, updated_at = CURRENT_TIMESTAMP
-               WHERE id = $2`,
-              [keepQty, row.id]
-            );
-            shrinkPacked += 1;
-          } else {
-            unchanged += 1;
-          }
+          unchanged += 1;
         }
         continue;
       }
-
-      const ozQty = parseInt(ozonItem.quantity, 10) || 0;
-      const planQty = Math.max(ozQty, packed);
-      const curQty = parseInt(row.quantity, 10) || 0;
-      const curMpQty = parseInt(row.mp_quantity, 10) || 0;
-      const newZone = ozonItem.placementZone ?? null;
-      const newTagsJson = JSON.stringify(ozonItem.ozonTags || []);
-      const oldZone = row.placement_zone != null ? String(row.placement_zone).trim() : null;
-      const zoneEqual = (oldZone || null) === (newZone || null);
-      const tagsEqual = parseOzonTagsForCompare(row.ozon_tags) === newTagsJson;
-
-      if (planQty === curQty && curMpQty === ozQty && zoneEqual && tagsEqual) {
-        unchanged += 1;
+      if (ozonItemReservedForErm(ozonItems, row, usedOzon)) {
         continue;
       }
-
-      await query(
-        `UPDATE fbo_supply_items
-         SET quantity = $1,
-             mp_quantity = $2,
-             placement_zone = $3,
-             ozon_tags = $4::jsonb,
-             sku = COALESCE(NULLIF(TRIM(sku), ''), $5),
-             barcode = COALESCE(NULLIF(TRIM(barcode), ''), $6),
-             mp_offer_id = COALESCE(NULLIF(TRIM(mp_offer_id), ''), $7),
-             mp_product_id = COALESCE(NULLIF(TRIM(mp_product_id), ''), $8),
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $9`,
-        [
-          planQty,
-          ozQty,
-          newZone,
-          newTagsJson,
-          ozonItem.sku ?? ozonItem.mpOfferId ?? null,
-          ozonItem.barcode ?? null,
-          ozonItem.mpOfferId ?? ozonItem.sku ?? null,
-          ozonItem.mpProductId ?? null,
-          row.id,
-        ]
-      );
-      updated += 1;
+      await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [row.id]);
+      removed += 1;
     }
 
     let added = 0;
@@ -2472,6 +2650,14 @@ class FboSuppliesImportService {
       const ozonItem = ozonItems[i];
       const ozQty = parseInt(ozonItem.quantity, 10) || 0;
       if (ozQty <= 0) continue;
+
+      const reuseRow = findUnusedErmRowForOzon(ermRows, usedErm, ozonItem);
+      if (reuseRow) {
+        usedErm.add(reuseRow.id);
+        usedOzon.add(i);
+        await applyMatch(reuseRow, ozonItem);
+        continue;
+      }
 
       let productId = ozonItem.productId ?? null;
       if (!productId) {
@@ -2503,6 +2689,9 @@ class FboSuppliesImportService {
       );
       added += 1;
     }
+
+    const mergedDuplicates = await consolidateDuplicateSupplyItemsByProduct(supplyId);
+    if (mergedDuplicates > 0) updated += mergedDuplicates;
 
     await query(
       `UPDATE fbo_supplies
