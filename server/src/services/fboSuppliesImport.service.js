@@ -6,6 +6,8 @@ import ExcelJS from 'exceljs';
 import { query } from '../config/database.js';
 import integrationsService from './integrations.service.js';
 import fboSuppliesService from './fboSupplies.service.js';
+import fboSupplyReserveService from './fboSupplyReserve.service.js';
+import { syncSupplyStatusForPacking } from '../utils/fboSupplyPackingCheck.js';
 import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { parseOzonBundleRowMeta } from '../constants/ozonPlacementZones.js';
@@ -1432,6 +1434,65 @@ function lookupOzonItemZone(lookup, ermItem) {
   return null;
 }
 
+function ozonItemMatchKeys(ozonItem) {
+  const keys = [];
+  const sku = ozonItem.sku ?? ozonItem.mpOfferId;
+  if (sku != null && String(sku).trim()) keys.push(String(sku).trim().toUpperCase());
+  if (ozonItem.mpOfferId != null && String(ozonItem.mpOfferId).trim()) {
+    keys.push(String(ozonItem.mpOfferId).trim().toUpperCase());
+  }
+  if (ozonItem.barcode != null && String(ozonItem.barcode).trim()) {
+    keys.push(String(ozonItem.barcode).trim());
+  }
+  if (ozonItem.mpProductId != null && String(ozonItem.mpProductId).trim()) {
+    keys.push(`mp:${String(ozonItem.mpProductId).trim()}`);
+  }
+  return [...new Set(keys)];
+}
+
+function ermItemMatchKeys(ermRow) {
+  const keys = [];
+  if (ermRow.sku != null && String(ermRow.sku).trim()) {
+    keys.push(String(ermRow.sku).trim().toUpperCase());
+  }
+  if (ermRow.mp_offer_id != null && String(ermRow.mp_offer_id).trim()) {
+    keys.push(String(ermRow.mp_offer_id).trim().toUpperCase());
+  }
+  if (ermRow.barcode != null && String(ermRow.barcode).trim()) {
+    keys.push(String(ermRow.barcode).trim());
+  }
+  if (ermRow.mp_product_id != null && String(ermRow.mp_product_id).trim()) {
+    keys.push(`mp:${String(ermRow.mp_product_id).trim()}`);
+  }
+  return keys;
+}
+
+function ozonItemMatchesErm(ozonItem, ermRow) {
+  const ozKeys = new Set(ozonItemMatchKeys(ozonItem));
+  return ermItemMatchKeys(ermRow).some((k) => ozKeys.has(k));
+}
+
+function findOzonItemForErm(ozonItems, ermRow, usedIndices) {
+  for (let i = 0; i < ozonItems.length; i++) {
+    if (usedIndices.has(i)) continue;
+    if (ozonItemMatchesErm(ozonItems[i], ermRow)) {
+      usedIndices.add(i);
+      return ozonItems[i];
+    }
+  }
+  return null;
+}
+
+async function getSupplyItemPackedQty(itemId) {
+  const r = await query(
+    `SELECT COALESCE(SUM(quantity), 0)::int AS packed
+     FROM fbo_supply_cargo_contents
+     WHERE fbo_supply_item_id = $1`,
+    [itemId]
+  );
+  return r.rows?.[0]?.packed ?? 0;
+}
+
 function parseOzonTagsForCompare(v) {
   if (!v) return '[]';
   if (Array.isArray(v)) return JSON.stringify(v.map((t) => String(t).trim()).filter(Boolean));
@@ -2111,6 +2172,213 @@ class FboSuppliesImportService {
       missing,
       total: (itemsR.rows || []).length,
       supply: updatedSupply,
+    };
+  }
+
+  /**
+   * Подтянуть состав поставки (количества и новые строки) с Ozon в ERM.
+   */
+  async pullOzonSupplyContentFromMarketplace(supplyId, { profileId } = {}) {
+    const supply = await fboSuppliesService.getById(supplyId, { profileId });
+    const mp = String(supply.marketplace || 'ozon').trim().toLowerCase();
+    if (mp === 'wb' || mp === 'ym' || mp === 'yandex') {
+      const err = new Error('Загрузка состава с маркетплейса доступна только для поставок Ozon');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const extSupply =
+      supply.externalSupplyId != null ? String(supply.externalSupplyId).trim() : '';
+    const extNum =
+      supply.externalShipmentNumber != null ? String(supply.externalShipmentNumber).trim() : '';
+    if (!extSupply && !extNum) {
+      const err = new Error('У поставки нет номера отгрузки Ozon — загрузить состав нельзя');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const organizationId = supply.organizationId ?? null;
+    const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
+      profileId,
+      organizationId,
+    });
+    const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
+    const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
+    if (!clientId || !apiKey) {
+      const err = new Error(
+        'Не настроены Client ID и API Key Ozon для организации поставки. Укажите их в «Интеграции».'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts);
+    const supplyOrderId = ozonSupplyOrderId(order);
+    const orderDetails = await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts);
+    const fetched = await fetchOzonSupplyItems(
+      order,
+      ozonSupply,
+      ozonApiOpts,
+      profileId,
+      orderDetails,
+      {}
+    );
+
+    if (!fetched.items?.length) {
+      const err = new Error('Ozon не вернул товары поставки — состав не обновлён');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const ozonItems = fetched.items.filter((it) => (parseInt(it.quantity, 10) || 0) > 0);
+    const itemsR = await query(
+      `SELECT id, product_id, quantity, mp_quantity, sku, barcode, mp_offer_id, mp_product_id, placement_zone, ozon_tags
+       FROM fbo_supply_items
+       WHERE fbo_supply_id = $1
+       ORDER BY id`,
+      [supplyId]
+    );
+
+    const usedOzon = new Set();
+    let updated = 0;
+    let unchanged = 0;
+    let removed = 0;
+    let shrinkPacked = 0;
+
+    for (const row of itemsR.rows || []) {
+      const ozonItem = findOzonItemForErm(ozonItems, row, usedOzon);
+      if (!ozonItem) {
+        const packed = await getSupplyItemPackedQty(row.id);
+        if (packed <= 0) {
+          await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [row.id]);
+          removed += 1;
+        } else {
+          const curQty = parseInt(row.quantity, 10) || 0;
+          if (curQty !== packed) {
+            await query(
+              `UPDATE fbo_supply_items
+               SET quantity = $1, mp_quantity = $1, updated_at = CURRENT_TIMESTAMP
+               WHERE id = $2`,
+              [packed, row.id]
+            );
+            shrinkPacked += 1;
+          } else {
+            unchanged += 1;
+          }
+        }
+        continue;
+      }
+
+      const ozQty = parseInt(ozonItem.quantity, 10) || 0;
+      const curQty = parseInt(row.quantity, 10) || 0;
+      const newZone = ozonItem.placementZone ?? null;
+      const newTagsJson = JSON.stringify(ozonItem.ozonTags || []);
+      const oldZone = row.placement_zone != null ? String(row.placement_zone).trim() : null;
+      const zoneEqual = (oldZone || null) === (newZone || null);
+      const tagsEqual = parseOzonTagsForCompare(row.ozon_tags) === newTagsJson;
+
+      if (ozQty === curQty && zoneEqual && tagsEqual) {
+        if ((parseInt(row.mp_quantity, 10) || 0) !== ozQty) {
+          await query(
+            `UPDATE fbo_supply_items SET mp_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+            [ozQty, row.id]
+          );
+          updated += 1;
+        } else {
+          unchanged += 1;
+        }
+        continue;
+      }
+
+      await query(
+        `UPDATE fbo_supply_items
+         SET quantity = $1,
+             mp_quantity = $1,
+             placement_zone = $2,
+             ozon_tags = $3::jsonb,
+             sku = COALESCE(NULLIF(TRIM(sku), ''), $4),
+             barcode = COALESCE(NULLIF(TRIM(barcode), ''), $5),
+             mp_offer_id = COALESCE(NULLIF(TRIM(mp_offer_id), ''), $6),
+             mp_product_id = COALESCE(NULLIF(TRIM(mp_product_id), ''), $7),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $8`,
+        [
+          ozQty,
+          newZone,
+          newTagsJson,
+          ozonItem.sku ?? ozonItem.mpOfferId ?? null,
+          ozonItem.barcode ?? null,
+          ozonItem.mpOfferId ?? ozonItem.sku ?? null,
+          ozonItem.mpProductId ?? null,
+          row.id,
+        ]
+      );
+      updated += 1;
+    }
+
+    let added = 0;
+    for (let i = 0; i < ozonItems.length; i++) {
+      if (usedOzon.has(i)) continue;
+      const ozonItem = ozonItems[i];
+      const ozQty = parseInt(ozonItem.quantity, 10) || 0;
+      if (ozQty <= 0) continue;
+
+      let productId = ozonItem.productId ?? null;
+      if (!productId) {
+        productId = await resolveProductId({
+          sku: ozonItem.sku ?? ozonItem.mpOfferId,
+          barcode: ozonItem.barcode,
+          profileId,
+        });
+      }
+
+      await query(
+        `INSERT INTO fbo_supply_items (
+          fbo_supply_id, product_id, quantity, mp_quantity, barcode, sku, mp_offer_id, mp_product_id, name,
+          placement_zone, ozon_tags
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
+        [
+          supplyId,
+          productId,
+          ozQty,
+          ozQty,
+          ozonItem.barcode ?? null,
+          ozonItem.sku ?? ozonItem.mpOfferId ?? null,
+          ozonItem.mpOfferId ?? ozonItem.sku ?? null,
+          ozonItem.mpProductId ?? null,
+          ozonItem.name ?? null,
+          ozonItem.placementZone ?? null,
+          JSON.stringify(ozonItem.ozonTags || []),
+        ]
+      );
+      added += 1;
+    }
+
+    await query(
+      `UPDATE fbo_supplies
+       SET pending_mp_content_update = FALSE,
+           marketplace_content_synced_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [supplyId]
+    );
+
+    await fboSupplyReserveService.rebalanceReservesForSupply(supplyId, { profileId }).catch(() => {});
+    const sync = await syncSupplyStatusForPacking(supplyId);
+    const updatedSupply = await fboSuppliesService.getById(supplyId, { profileId });
+
+    return {
+      updated,
+      added,
+      removed,
+      unchanged,
+      shrinkPacked,
+      totalOzon: ozonItems.length,
+      supply: updatedSupply,
+      supplyStatus: sync.status,
+      packingAllMatch: sync.allMatch,
+      statusReverted: sync.reverted,
     };
   }
 }

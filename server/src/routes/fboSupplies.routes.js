@@ -83,6 +83,10 @@ router.post(
   wrapAsync(fboSuppliesController.syncMarketplaceContent.bind(fboSuppliesController))
 );
 router.post(
+  '/:id/pull-marketplace-content',
+  wrapAsync(fboSuppliesController.pullMarketplaceContent.bind(fboSuppliesController))
+);
+router.post(
   '/:id/packing/submit',
   wrapAsync(fboSuppliesController.submitPackingToMarketplace.bind(fboSuppliesController))
 );

@@ -1,8 +1,8 @@
 /**
- * Количество в поставке (редактируется) + упаковано (только просмотр / расхождение).
+ * Отображение «упаковано / в поставке»; по клику — редактирование количества в поставке.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { packedCellClass } from './fboPackedCell.js';
 
@@ -15,19 +15,35 @@ export function FboSupplyItemPackingCell({
   onSaved,
   onBreakdownClick,
 }) {
+  const [editing, setEditing] = useState(false);
   const [plannedInput, setPlannedInput] = useState(String(planned));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const inputRef = useRef(null);
+
+  const packedNum = Number(packed) || 0;
+  const plannedNum = Number(planned) || 0;
+  const cls = packedCellClass(packedNum, plannedNum);
 
   useEffect(() => {
     setPlannedInput(String(planned));
     setError(null);
+    if (!editing) return;
+    setEditing(false);
   }, [itemId, planned]);
 
-  const packedNum = Number(packed) || 0;
-  const plannedNum = Number(planned) || 0;
-  const hasDiscrepancy = packedNum !== plannedNum;
-  const packedCls = packedCellClass(packedNum, plannedNum);
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const cancelEdit = () => {
+    setPlannedInput(String(planned));
+    setError(null);
+    setEditing(false);
+  };
 
   const save = async () => {
     const raw = (plannedInput || '').trim();
@@ -37,7 +53,10 @@ export function FboSupplyItemPackingCell({
       setPlannedInput(String(planned));
       return;
     }
-    if (next === plannedNum || saving || disabled) return;
+    if (next === plannedNum || saving || disabled) {
+      setEditing(false);
+      return;
+    }
 
     if (next === 0) {
       const msg =
@@ -45,16 +64,16 @@ export function FboSupplyItemPackingCell({
           ? `Удалить товар из поставки? В грузоместах упаковано ${packedNum} шт. — эти позиции будут сняты.`
           : 'Удалить товар из поставки?';
       if (!window.confirm(msg)) {
-        setPlannedInput(String(planned));
+        cancelEdit();
         return;
       }
     } else if (next < packedNum) {
       if (
         !window.confirm(
-          `В поставке будет ${next} шт., а упаковано ${packedNum}. Продолжить? Уберите лишнее из грузомест или отправьте обновление на маркетплейс.`
+          `В поставке будет ${next} шт., а упаковано ${packedNum}. Продолжить?`
         )
       ) {
-        setPlannedInput(String(planned));
+        cancelEdit();
         return;
       }
     }
@@ -63,6 +82,7 @@ export function FboSupplyItemPackingCell({
     setError(null);
     try {
       const data = await fboSuppliesApi.updateSupplyItem(supplyId, itemId, next);
+      setEditing(false);
       await onSaved?.(data);
     } catch (e) {
       setError(e.response?.data?.message || e.message || 'Не удалось сохранить');
@@ -72,15 +92,17 @@ export function FboSupplyItemPackingCell({
     }
   };
 
-  return (
-    <div className="fbo-supply-qty-cell">
-      <label className="fbo-supply-qty-cell__plan-wrap">
-        <span className="text-muted small">В поставке</span>
+  if (editing) {
+    return (
+      <div className={`fbo-supply-qty-cell fbo-supply-qty-cell--edit fbo-packed-${cls}`}>
+        <span className="fbo-supply-qty-cell__packed-num">{packedNum}</span>
+        <span className="fbo-supply-qty-cell__sep">/</span>
         <input
+          ref={inputRef}
           type="number"
           min={0}
           step={1}
-          className={`form-control form-control-sm fbo-supply-qty-cell__plan fbo-packed-${hasDiscrepancy ? packedCls : 'ok'}`}
+          className="form-control form-control-sm fbo-supply-qty-cell__plan"
           value={plannedInput}
           disabled={disabled || saving}
           onChange={(e) => {
@@ -93,26 +115,47 @@ export function FboSupplyItemPackingCell({
               e.preventDefault();
               e.currentTarget.blur();
             }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              cancelEdit();
+            }
           }}
-          title="Количество в поставке (0 — удалить строку)"
           aria-label="Количество в поставке"
         />
-      </label>
-      {packedNum > 0 || hasDiscrepancy ? (
-        <div className={`fbo-supply-qty-cell__packed-hint fbo-packed-${packedCls}`}>
-          <button
-            type="button"
-            className="fbo-packed-cell fbo-supply-qty-cell__packed"
-            disabled={packedNum <= 0}
-            onClick={onBreakdownClick}
-            title={packedNum > 0 ? 'Упаковано по грузоместам' : 'Ничего не упаковано'}
-          >
-            Упак.: {packedNum}
-          </button>
-          {hasDiscrepancy ? <span className="fbo-supply-qty-cell__warn">≠ план</span> : null}
-        </div>
-      ) : null}
-      {error ? <div className="text-danger small mt-1">{error}</div> : null}
+        {error ? <div className="text-danger small mt-1">{error}</div> : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`fbo-supply-qty-cell fbo-packed-${cls}`}>
+      <span
+        className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__packed-part`}
+        role={packedNum > 0 ? 'button' : undefined}
+        tabIndex={packedNum > 0 ? 0 : undefined}
+        onClick={() => {
+          if (packedNum > 0) onBreakdownClick?.();
+        }}
+        onKeyDown={(e) => {
+          if (packedNum > 0 && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            onBreakdownClick?.();
+          }
+        }}
+        title={packedNum > 0 ? 'Упаковано по грузоместам' : undefined}
+      >
+        {packedNum}
+      </span>
+      <span className="fbo-supply-qty-cell__sep"> / </span>
+      <button
+        type="button"
+        className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__plan-part`}
+        disabled={disabled || saving}
+        onClick={() => setEditing(true)}
+        title="Изменить количество в поставке"
+      >
+        {plannedNum}
+      </button>
     </div>
   );
 }

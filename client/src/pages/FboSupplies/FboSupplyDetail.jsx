@@ -97,6 +97,8 @@ export function FboSupplyDetail() {
   const [submitPackingMsg, setSubmitPackingMsg] = useState(null);
   const [syncingMpContent, setSyncingMpContent] = useState(false);
   const [syncMpContentMsg, setSyncMpContentMsg] = useState(null);
+  const [pullingMpContent, setPullingMpContent] = useState(false);
+  const [pullMpContentMsg, setPullMpContentMsg] = useState(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const selectAllItemsRef = useRef(null);
   const autoPlacementSyncAttemptedRef = useRef(null);
@@ -370,6 +372,41 @@ export function FboSupplyDetail() {
     }
   }, [id]);
 
+  const handlePullMarketplaceContent = useCallback(async () => {
+    if (
+      !window.confirm(
+        'Загрузить состав поставки с Ozon? Количества в ERM будут приведены к данным маркетплейса.'
+      )
+    ) {
+      return;
+    }
+    setPullingMpContent(true);
+    setErr(null);
+    setPullMpContentMsg(null);
+    try {
+      const data = await fboSuppliesApi.pullMarketplaceContent(id);
+      if (data?.supply) setSupply(data.supply);
+      else {
+        const fresh = await fboSuppliesApi.getById(id);
+        setSupply(fresh);
+      }
+      await loadPacking();
+      const parts = [];
+      if (data?.updated > 0) parts.push(`обновлено ${data.updated}`);
+      if (data?.added > 0) parts.push(`добавлено ${data.added}`);
+      if (data?.removed > 0) parts.push(`удалено ${data.removed}`);
+      if (data?.shrinkPacked > 0) parts.push(`сужено до упакованного ${data.shrinkPacked}`);
+      if (data?.unchanged > 0) parts.push(`без изменений ${data.unchanged}`);
+      setPullMpContentMsg(
+        parts.length ? `Состав с Ozon: ${parts.join(', ')}.` : 'Состав поставки обновлён с Ozon.'
+      );
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось загрузить состав с маркетплейса');
+    } finally {
+      setPullingMpContent(false);
+    }
+  }, [id, loadPacking]);
+
   const handleSyncMarketplaceContent = async () => {
     if (!supply) return;
     const mpLabel = isOzonSupply ? 'Ozon' : supply.marketplace === 'wb' ? 'Wildberries' : 'маркетплейс';
@@ -632,6 +669,17 @@ export function FboSupplyDetail() {
             {syncingPlacementZones ? 'Зоны…' : 'Зоны с Ozon'}
           </Button>
         ) : null}
+        {canSyncOzonPlacementZones ? (
+          <Button
+            variant="secondary"
+            size="small"
+            disabled={pullingMpContent || saving}
+            onClick={handlePullMarketplaceContent}
+            title="Загрузить состав поставки (количества) с Ozon в ERM"
+          >
+            {pullingMpContent ? 'Загрузка…' : 'С маркетплейса'}
+          </Button>
+        ) : null}
         {supply.pendingMpContentUpdate && isOzonSupply ? (
           <Button
             variant="warning"
@@ -701,6 +749,9 @@ export function FboSupplyDetail() {
       ) : null}
       {syncMpContentMsg ? (
         <div className="alert alert-success">{syncMpContentMsg}</div>
+      ) : null}
+      {pullMpContentMsg ? (
+        <div className="alert alert-success">{pullMpContentMsg}</div>
       ) : null}
       {supply.pendingMpContentUpdate && isOzonSupply ? (
         <div className="alert alert-warning">
@@ -1072,7 +1123,7 @@ export function FboSupplyDetail() {
               <th>Артикул</th>
               <th>Штрихкод</th>
               {isOzonSupply ? <th>Размещение</th> : null}
-              <th title="Количество в поставке; упаковано показывается при расхождении">В поставке</th>
+              <th title="Упаковано / в поставке; нажмите на план, чтобы изменить">Расхождения</th>
               <th style={{ width: 48 }} />
             </tr>
           </thead>

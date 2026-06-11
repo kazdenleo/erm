@@ -167,6 +167,11 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  pullMarketplaceContent: async (id) => {
+    const response = await api.post(`/fbo-supplies/${id}/pull-marketplace-content`);
+    return response.data?.data ?? response.data;
+  },
+
   packingScan: async (id, { barcode, activeCargoUnitId, scanMode }) => {
     const response = await api.post(`/fbo-supplies/${id}/packing/scan`, {
       barcode,
