@@ -3019,6 +3019,24 @@ class OrdersService {
     return computeMaxKitUnitsReservable(kitId, { warehouseId: null });
   }
 
+  /** Сколько комплектов можно зарезервировать: только из комплектующих, если целых SKU нет. */
+  async _kitReservableUnitsForOrderLine(kitId, warehouseId, orderRow, { remainingKits = null } = {}) {
+    const kid = Number(kitId);
+    if (!Number.isFinite(kid) || kid < 1) return 0;
+    const wh =
+      warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
+    const breakdown = await computeKitReservableBreakdown(kid, { warehouseId: wh });
+    const wholeReserveAvail = Math.max(0, Number(breakdown.wholeReserveAvail) || 0);
+    const headroom =
+      remainingKits != null ? Math.max(0, Number(remainingKits) || 0) : null;
+    if (wholeReserveAvail <= 0) {
+      const asm = Math.floor(await computeAssemblableFromComponents(kid, { warehouseId: wh }));
+      return headroom != null ? Math.min(headroom, asm) : asm;
+    }
+    const maxKits = await this._computeMaxKitUnitsReservableForOrder(kid, wh, { orderRow });
+    return headroom != null ? Math.min(headroom, maxKits) : maxKits;
+  }
+
   /**
    * Сколько единиц можно зарезервировать по позиции (комплектующая / комплект / обычный товар).
    * Для комплектующей заказа-комплекта — supply SKU и собираемость родительского комплекта.
@@ -3050,7 +3068,7 @@ class OrdersService {
 
     if (await isKitProductId(pid)) {
       return Math.floor(
-        await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId, { orderRow })
+        await this._kitReservableUnitsForOrderLine(pid, warehouseId, orderRow)
       );
     }
 
@@ -4705,21 +4723,18 @@ class OrdersService {
 
         // Приоритет: целый комплект (1 SKU) только при фактическом наличии на складе.
         const physicalOnHand = Math.max(0, Number(breakdown.physicalOnHand) || 0);
-        const showKitLine = (reserveOnWholeSku || kitReservableQty > 0) && physicalOnHand > 0;
+        const wholeReserveAvail = Math.max(0, Number(breakdown.wholeReserveAvail) || 0);
+        const componentsOnlyReserve = wholeReserveAvail <= 0;
+        const showKitLine =
+          physicalOnHand > 0 &&
+          (reserveOnWholeSku || kitReservableQty > 0 || (reserved > 0 && componentsOnlyReserve));
 
         if (showKitLine) {
-          const breakdownForAvail =
-            reserveOnWholeSku && remainingKits > 0
-              ? { ...breakdown, wholeReserveAvail: 0 }
-              : breakdown;
-          const allocHeadroom = allocateKitReservePriority(remainingKits, breakdownForAvail);
-          let availableQty = Math.min(remainingKits, allocHeadroom.kitsToReserve);
-          if (maxKitsAvail > 0) availableQty = Math.min(availableQty, maxKitsAvail);
-          const preferComponentsForRemainder = reserveOnWholeSku && remainingKits > 0;
-          const addFromComponents =
-            preferComponentsForRemainder ||
-            allocHeadroom.fromComponents > 0 ||
-            (wholeAvail <= 0 && (breakdown.fromComponents || 0) > 0 && remainingKits > 0);
+          let availableQty = await this._kitReservableUnitsForOrderLine(pid, warehouseId, row, {
+            remainingKits
+          });
+          const preferComponentsForRemainder =
+            componentsOnlyReserve || (reserveOnWholeSku && remainingKits > 0);
           lineEntries.push({
             productId: pid,
             reservedQty: reserved,
@@ -4729,16 +4744,18 @@ class OrdersService {
             kitReserveFromComponents:
               reserveOnComponents ||
               preferComponentsForRemainder ||
-              (reserveOnWholeSku && addFromComponents),
+              componentsOnlyReserve,
             label: orderLineLabel || 'Комплект',
             compositionHint: fullCompositionHint
           });
         } else if (componentCandidates.length > 0) {
-          const assemblable = await computeAssemblableFromComponents(pid, { warehouseId });
           const remainingKitsAgg = Math.max(0, qty - reserved);
-          let availableQty = Math.min(remainingKitsAgg, assemblable);
-          if (kitReservableQty > 0) availableQty = Math.min(availableQty, kitReservableQty);
-          if (maxKitsAvail > 0) availableQty = Math.min(availableQty, maxKitsAvail);
+          let availableQty = await this._kitReservableUnitsForOrderLine(pid, warehouseId, row, {
+            remainingKits: remainingKitsAgg
+          });
+          if (kitReservableQty > 0 && wholeReserveAvail > 0) {
+            availableQty = Math.min(availableQty, kitReservableQty);
+          }
 
           // Одна строка комплекта с полным составом (все комплектующие), не только с ненулевым резервом.
           lineEntries.push({

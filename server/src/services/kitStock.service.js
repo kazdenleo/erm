@@ -1659,7 +1659,7 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   let breakdown = await computeKitReservableBreakdown(kitId, reserveOpts);
   const manualComponentsOnly =
     meta?.manual_reserve === true &&
-    onKitForAlloc > 0 &&
+    (onKitForAlloc > 0 || (breakdown.wholeReserveAvail || 0) <= 0) &&
     meta?.reconcile_kit_to_components !== true &&
     meta?.reconcile_force_mixed !== true;
   if (manualComponentsOnly) {

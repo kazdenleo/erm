@@ -591,7 +591,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                       {' '}
                       (доступно к резерву:{' '}
                       {reserveInKitUnits
-                        ? `${available} компл.${availablePieces > 0 ? ` / ${availablePieces} шт` : ''}`
+                        ? `${available} компл.${
+                            perKit > 1 && availablePieces > 0 ? ` / ${availablePieces} шт` : ''
+                          }`
                         : available}
                       {line.lineKind === 'kit' && line.kitReserveFromComponents
                         ? ', из комплектующих'
