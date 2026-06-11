@@ -79,6 +79,10 @@ router.post(
   wrapAsync(fboSuppliesController.syncOzonPlacementZones.bind(fboSuppliesController))
 );
 router.post(
+  '/:id/sync-marketplace-content',
+  wrapAsync(fboSuppliesController.syncMarketplaceContent.bind(fboSuppliesController))
+);
+router.post(
   '/:id/packing/submit',
   wrapAsync(fboSuppliesController.submitPackingToMarketplace.bind(fboSuppliesController))
 );

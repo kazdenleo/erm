@@ -95,6 +95,8 @@ export function FboSupplyDetail() {
   const [placementZonesMsg, setPlacementZonesMsg] = useState(null);
   const [submittingPacking, setSubmittingPacking] = useState(false);
   const [submitPackingMsg, setSubmitPackingMsg] = useState(null);
+  const [syncingMpContent, setSyncingMpContent] = useState(false);
+  const [syncMpContentMsg, setSyncMpContentMsg] = useState(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const selectAllItemsRef = useRef(null);
   const autoPlacementSyncAttemptedRef = useRef(null);
@@ -243,7 +245,11 @@ export function FboSupplyDetail() {
             : s
         );
       }
-      if (data?.supplyStatus != null || data?.packingAllMatch != null) {
+      if (
+        data?.supplyStatus != null ||
+        data?.packingAllMatch != null ||
+        data?.pendingMpContentUpdate != null
+      ) {
         setSupply((s) =>
           s
             ? {
@@ -256,6 +262,9 @@ export function FboSupplyDetail() {
                     }
                   : {}),
                 ...(data.statusReverted ? { statusRevertedByPacking: true } : {}),
+                ...(data.pendingMpContentUpdate != null
+                  ? { pendingMpContentUpdate: data.pendingMpContentUpdate === true }
+                  : {}),
               }
             : s
         );
@@ -360,6 +369,34 @@ export function FboSupplyDetail() {
       setSyncingPlacementZones(false);
     }
   }, [id]);
+
+  const handleSyncMarketplaceContent = async () => {
+    if (!supply) return;
+    const mpLabel = isOzonSupply ? 'Ozon' : supply.marketplace === 'wb' ? 'Wildberries' : 'маркетплейс';
+    if (
+      !window.confirm(
+        `Отправить текущий состав поставки в ${mpLabel}? Количества на маркетплейсе будут приведены к значениям в ERM.`
+      )
+    ) {
+      return;
+    }
+    setSyncingMpContent(true);
+    setErr(null);
+    setSyncMpContentMsg(null);
+    try {
+      const data = await fboSuppliesApi.syncMarketplaceContent(id);
+      if (data?.supply) setSupply(data.supply);
+      else {
+        const fresh = await fboSuppliesApi.getById(id);
+        setSupply(fresh);
+      }
+      setSyncMpContentMsg(data?.message || 'Состав обновлён на маркетплейсе');
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось обновить состав на маркетплейсе');
+    } finally {
+      setSyncingMpContent(false);
+    }
+  };
 
   const handleSubmitPackingToMarketplace = async () => {
     if (!supply) return;
@@ -595,6 +632,17 @@ export function FboSupplyDetail() {
             {syncingPlacementZones ? 'Зоны…' : 'Зоны с Ozon'}
           </Button>
         ) : null}
+        {supply.pendingMpContentUpdate && isOzonSupply ? (
+          <Button
+            variant="warning"
+            size="small"
+            disabled={syncingMpContent || saving}
+            onClick={handleSyncMarketplaceContent}
+            title="Отправить изменённый состав поставки в Ozon"
+          >
+            {syncingMpContent ? 'Обновление…' : 'Обновить на маркетплейсе'}
+          </Button>
+        ) : null}
         <Button
           variant="primary"
           size="small"
@@ -650,6 +698,14 @@ export function FboSupplyDetail() {
       ) : null}
       {submitPackingMsg ? (
         <div className="alert alert-success">{submitPackingMsg}</div>
+      ) : null}
+      {syncMpContentMsg ? (
+        <div className="alert alert-success">{syncMpContentMsg}</div>
+      ) : null}
+      {supply.pendingMpContentUpdate && isOzonSupply ? (
+        <div className="alert alert-warning">
+          Состав поставки изменён в ERM и ещё не отправлен на Ozon. Нажмите «Обновить на маркетплейсе».
+        </div>
       ) : null}
       {stockMsg && (
         <div className={`alert ${stockMsg.includes('Списано') ? 'alert-success' : 'alert-warning'}`}>
@@ -1016,7 +1072,7 @@ export function FboSupplyDetail() {
               <th>Артикул</th>
               <th>Штрихкод</th>
               {isOzonSupply ? <th>Размещение</th> : null}
-              <th title="Упаковано / количество в поставке (редактируется)">Расхождения</th>
+              <th title="Количество в поставке; упаковано показывается при расхождении">В поставке</th>
               <th style={{ width: 48 }} />
             </tr>
           </thead>

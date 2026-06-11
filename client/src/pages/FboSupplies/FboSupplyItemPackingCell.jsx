@@ -1,5 +1,5 @@
 /**
- * Упаковано / план: клик по упакованному — разбивка по грузоместам, план редактируется.
+ * Количество в поставке (редактируется) + упаковано (только просмотр / расхождение).
  */
 
 import React, { useEffect, useState } from 'react';
@@ -26,7 +26,8 @@ export function FboSupplyItemPackingCell({
 
   const packedNum = Number(packed) || 0;
   const plannedNum = Number(planned) || 0;
-  const cls = packedCellClass(packedNum, plannedNum);
+  const hasDiscrepancy = packedNum !== plannedNum;
+  const packedCls = packedCellClass(packedNum, plannedNum);
 
   const save = async () => {
     const raw = (plannedInput || '').trim();
@@ -50,7 +51,7 @@ export function FboSupplyItemPackingCell({
     } else if (next < packedNum) {
       if (
         !window.confirm(
-          `План (${next}) меньше упакованного (${packedNum}). Будет расхождение — уберите лишнее из грузомест или подтвердите.`
+          `В поставке будет ${next} шт., а упаковано ${packedNum}. Продолжить? Уберите лишнее из грузомест или отправьте обновление на маркетплейс.`
         )
       ) {
         setPlannedInput(String(planned));
@@ -72,38 +73,45 @@ export function FboSupplyItemPackingCell({
   };
 
   return (
-    <div className={`fbo-supply-qty-cell fbo-packed-${cls}`}>
-      <button
-        type="button"
-        className="fbo-packed-cell fbo-supply-qty-cell__packed"
-        disabled={packedNum <= 0}
-        onClick={onBreakdownClick}
-        title={packedNum > 0 ? 'Упаковано по грузоместам' : 'Ничего не упаковано'}
-      >
-        {packedNum}
-      </button>
-      <span className="fbo-supply-qty-cell__sep">/</span>
-      <input
-        type="number"
-        min={0}
-        step={1}
-        className="form-control form-control-sm fbo-supply-qty-cell__plan"
-        value={plannedInput}
-        disabled={disabled || saving}
-        onChange={(e) => {
-          setPlannedInput(e.target.value);
-          setError(null);
-        }}
-        onBlur={save}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            e.currentTarget.blur();
-          }
-        }}
-        title="Количество в поставке (0 — удалить строку)"
-        aria-label="Количество в поставке"
-      />
+    <div className="fbo-supply-qty-cell">
+      <label className="fbo-supply-qty-cell__plan-wrap">
+        <span className="text-muted small">В поставке</span>
+        <input
+          type="number"
+          min={0}
+          step={1}
+          className={`form-control form-control-sm fbo-supply-qty-cell__plan fbo-packed-${hasDiscrepancy ? packedCls : 'ok'}`}
+          value={plannedInput}
+          disabled={disabled || saving}
+          onChange={(e) => {
+            setPlannedInput(e.target.value);
+            setError(null);
+          }}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.currentTarget.blur();
+            }
+          }}
+          title="Количество в поставке (0 — удалить строку)"
+          aria-label="Количество в поставке"
+        />
+      </label>
+      {packedNum > 0 || hasDiscrepancy ? (
+        <div className={`fbo-supply-qty-cell__packed-hint fbo-packed-${packedCls}`}>
+          <button
+            type="button"
+            className="fbo-packed-cell fbo-supply-qty-cell__packed"
+            disabled={packedNum <= 0}
+            onClick={onBreakdownClick}
+            title={packedNum > 0 ? 'Упаковано по грузоместам' : 'Ничего не упаковано'}
+          >
+            Упак.: {packedNum}
+          </button>
+          {hasDiscrepancy ? <span className="fbo-supply-qty-cell__warn">≠ план</span> : null}
+        </div>
+      ) : null}
       {error ? <div className="text-danger small mt-1">{error}</div> : null}
     </div>
   );

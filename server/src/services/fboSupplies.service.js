@@ -59,6 +59,8 @@ function mapSupplyRow(row) {
     stockDeductedAt: row.stock_deducted_at ?? null,
     source: row.source,
     note: row.note,
+    pendingMpContentUpdate: row.pending_mp_content_update === true,
+    marketplaceContentSyncedAt: row.marketplace_content_synced_at ?? null,
     itemCount: row.items_quantity_total != null ? Number(row.items_quantity_total) : undefined,
     itemsLineCount: row.items_line_count != null ? Number(row.items_line_count) : undefined,
     items: row.items,
@@ -85,6 +87,7 @@ function mapItemRow(row) {
     fboSupplyId: row.fbo_supply_id,
     productId: row.product_id,
     quantity: row.quantity,
+    marketplaceQuantity: row.mp_quantity != null ? Number(row.mp_quantity) : null,
     reservedQuantity:
       row.reserved_quantity != null ? Number(row.reserved_quantity) : row.reservedQuantity ?? undefined,
     barcode: row.barcode,
@@ -437,12 +440,13 @@ class FboSuppliesService {
         if (!qty || qty <= 0) continue;
         await client.query(
           `INSERT INTO fbo_supply_items (
-            fbo_supply_id, product_id, quantity, barcode, sku, mp_offer_id, mp_product_id, name,
+            fbo_supply_id, product_id, quantity, mp_quantity, barcode, sku, mp_offer_id, mp_product_id, name,
             placement_zone, ozon_tags
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
           [
             newId,
             it.productId ?? null,
+            qty,
             qty,
             it.barcode ?? null,
             it.sku ?? null,
@@ -689,10 +693,16 @@ class FboSuppliesService {
     }
     const ins = await query(
       `INSERT INTO fbo_supply_items (
-        fbo_supply_id, product_id, quantity, barcode, sku, name
-      ) VALUES ($1,$2,$3,$4,$5,$6)
+        fbo_supply_id, product_id, quantity, mp_quantity, barcode, sku, name
+      ) VALUES ($1,$2,$3,$3,$4,$5,$6)
       RETURNING id, fbo_supply_id, product_id, quantity`,
       [sid, prod.id, qty, prod.barcode, prod.sku, prod.name]
+    );
+    await query(
+      `UPDATE fbo_supplies
+       SET pending_mp_content_update = TRUE, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [sid]
     );
     const row = ins.rows[0];
     await fboSupplyReserveService
@@ -790,6 +800,15 @@ class FboSuppliesService {
     }
     const productId = belongs.rows[0].product_id;
 
+    const markPendingMpContent = async () => {
+      await query(
+        `UPDATE fbo_supplies
+         SET pending_mp_content_update = TRUE, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [sid]
+      );
+    };
+
     if (qty === 0) {
       await query(`DELETE FROM fbo_supply_items WHERE id = $1`, [iid]);
       if (productId) {
@@ -797,11 +816,13 @@ class FboSuppliesService {
           .rebalanceReservesForProduct(productId, { profileId: pid })
           .catch(() => {});
       }
+      await markPendingMpContent();
       const sync = await syncSupplyStatusForPacking(sid);
       return {
         id: iid,
         quantity: 0,
         deleted: true,
+        pendingMpContentUpdate: true,
         supplyStatus: sync.status,
         packingAllMatch: sync.allMatch,
         statusReverted: sync.reverted,
@@ -819,12 +840,14 @@ class FboSuppliesService {
         .rebalanceReservesForProduct(productId, { profileId: pid })
         .catch(() => {});
     }
+    await markPendingMpContent();
     const sync = await syncSupplyStatusForPacking(sid);
     return {
       id: r.rows[0].id,
       supplyId: r.rows[0].fbo_supply_id,
       quantity: r.rows[0].quantity,
       deleted: false,
+      pendingMpContentUpdate: true,
       supplyStatus: sync.status,
       packingAllMatch: sync.allMatch,
       statusReverted: sync.reverted,

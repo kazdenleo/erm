@@ -11,6 +11,7 @@ import fboSuppliesExportService from '../services/fboSuppliesExport.service.js';
 import fboSuppliesPackingService from '../services/fboSuppliesPacking.service.js';
 import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
+import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -136,6 +137,27 @@ class FboSuppliesController {
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async syncMarketplaceContent(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const data = await fboSuppliesMarketplaceContentService.syncSupplyContentToMarketplace(id, {
+        profileId,
+      });
+      const supply = await fboSuppliesService.getById(id, { profileId });
+      return res.status(200).json({ ok: true, data: { ...data, supply } });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 409) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code || undefined,
+        });
       }
       next(e);
     }
