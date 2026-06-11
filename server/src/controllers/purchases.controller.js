@@ -230,6 +230,51 @@ class PurchasesController {
     }
   }
 
+  async createExpectedReceipt(req, res, next) {
+    try {
+      const { id } = req.params;
+      const userId = req.user?.id ?? null;
+      const profileId = req.user?.profileId ?? null;
+      const data = await purchasesService.createOrGetExpectedReceipt(id, { userId, profileId });
+      return res.status(201).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async saveExpectedReceiptItems(req, res, next) {
+    try {
+      const { receiptId } = req.params;
+      const { items } = req.body || {};
+      const profileId = req.user?.profileId ?? null;
+      const data = await purchasesService.saveExpectedReceiptItems(receiptId, { items }, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async applyExpectedReceipt(req, res, next) {
+    try {
+      const { id } = req.params;
+      const userId = req.user?.id ?? null;
+      const profileId = req.user?.profileId ?? null;
+      const data = await purchasesService.applyExpectedReceiptToPurchase(id, { userId, profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async createReceipt(req, res, next) {
     try {
       const { id } = req.params;

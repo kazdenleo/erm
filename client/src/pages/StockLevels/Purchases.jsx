@@ -27,6 +27,7 @@ import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import { onNavigationClick } from '../../utils/navigationClick.js';
+import { PurchaseExpectedDraftModal } from './PurchaseExpectedDraftModal.jsx';
 import { supplierPrefixesFromApiConfig } from '../../utils/supplierArticlePrefixes';
 
 const RECEIPT_SCANNER_ID_LS = 'erm:purchase-receipt-scanner-id';
@@ -124,9 +125,14 @@ function sortReceiptItemsByParticipant(items, { userId = null, scannerId = null 
 
 function receiptStatusLabel(status) {
   const s = String(status || '').toLowerCase();
+  if (s === 'expected') return 'Ожидается';
   if (s === 'scanning') return 'сканирование';
   if (s === 'completed') return 'завершена';
   return status || '—';
+}
+
+function findExpectedReceipt(receipts) {
+  return (Array.isArray(receipts) ? receipts : []).find((x) => String(x?.status) === 'expected') || null;
 }
 
 function normalizeScanInput(raw) {
@@ -362,6 +368,7 @@ export function Purchases() {
   const [linkBarcodeOpen, setLinkBarcodeOpen] = useState(false);
   const [linkBarcodeValue, setLinkBarcodeValue] = useState('');
   const purchaseLinkRetryRef = useRef(null);
+  const [expectedDraftOpen, setExpectedDraftOpen] = useState(false);
 
   const currentUserId = useMemo(() => {
     const raw = user?.id ?? user?.userId ?? null;
@@ -1492,6 +1499,13 @@ export function Purchases() {
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
               <Button
+                variant="secondary"
+                onClick={() => setExpectedDraftOpen(true)}
+                disabled={String(detail?.purchase?.status || '') === 'archived'}
+              >
+                {findExpectedReceipt(detail?.receipts) ? 'Черновик «Ожидается»' : 'Создать «Ожидается»'}
+              </Button>
+              <Button
                 onClick={async () => {
                   if (createReceiptBusy) return;
                   if (String(detail?.purchase?.status || '') === 'archived') {
@@ -1683,6 +1697,7 @@ export function Purchases() {
                   <tbody>
                     {detail.receipts.map((r) => {
                       const isScanning = String(r.status) === 'scanning';
+                      const isExpected = String(r.status) === 'expected';
                       return (
                         <tr key={r.id}>
                           <td>{fmtDt(r.started_at || r.created_at)}</td>
@@ -1697,10 +1712,17 @@ export function Purchases() {
                                 disabled={receiptLoading}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  openReceipt(r.id);
+                                  if (isExpected) setExpectedDraftOpen(true);
+                                  else openReceipt(r.id);
                                 }}
                               >
-                                {receiptLoading ? 'Открываю…' : isScanning ? 'Редактировать' : 'Открыть'}
+                                {receiptLoading
+                                  ? 'Открываю…'
+                                  : isExpected
+                                    ? 'Редактировать'
+                                    : isScanning
+                                      ? 'Редактировать'
+                                      : 'Открыть'}
                               </Button>
                               <Button
                                 variant="secondary"
@@ -1754,6 +1776,12 @@ export function Purchases() {
             <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
               статус: {receiptStatusLabel(receipt.receipt.status)} · закупка №{receipt.receipt.purchase_id}
               {receipt.receipt.completed_at ? ` · завершена ${fmtDt(receipt.receipt.completed_at)}` : ''}
+              {receipt.hasExpectedDraft ? (
+                <>
+                  {' '}
+                  · сравнение с черновиком <strong>«Ожидается»</strong>
+                </>
+              ) : null}
             </p>
             {!isReceiptScanning ? (
               <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
@@ -2157,7 +2185,7 @@ export function Purchases() {
                       <th>Артикул</th>
                       <th>Товар</th>
                       <th>Закуп. цена</th>
-                      <th>Заказано</th>
+                      <th>{receipt.hasExpectedDraft ? 'Ожидалось (черновик)' : 'Заказано'}</th>
                       <th>Принято</th>
                       {isReceiptScanning ? <th style={{ width: 190 }}>Коробкой</th> : null}
                     </tr>
@@ -2196,8 +2224,16 @@ export function Purchases() {
                           )}
                         </td>
                         {(() => {
-                          const exp = Number(it.expected_quantity);
-                          const expected = Number.isFinite(exp) ? exp : null;
+                          const draftExpRaw = it.draft_expected_quantity;
+                          const draftExp =
+                            draftExpRaw != null && draftExpRaw !== '' ? Number(draftExpRaw) : null;
+                          const expPurchase = Number(it.expected_quantity);
+                          const expected =
+                            draftExp != null && Number.isFinite(draftExp)
+                              ? draftExp
+                              : Number.isFinite(expPurchase)
+                                ? expPurchase
+                                : null;
                           const scanned = Number(it.scanned_quantity) || 0;
                           const rec = Number(it.received_quantity);
                           const received = Number.isFinite(rec) ? rec : null;
@@ -2216,7 +2252,7 @@ export function Purchases() {
                           const isScanning = String(receipt?.receipt?.status) === 'scanning';
                           return (
                             <>
-                              <td>{it.expected_quantity ?? '—'}</td>
+                              <td>{expected ?? '—'}</td>
                               <td style={cellStyle}>
                                 {isScanning ? (
                                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2514,6 +2550,26 @@ export function Purchases() {
           </>
         ) : null}
       </Modal>
+
+      <PurchaseExpectedDraftModal
+        isOpen={expectedDraftOpen && Boolean(detail?.purchase?.id)}
+        onClose={() => setExpectedDraftOpen(false)}
+        purchaseId={detail?.purchase?.id}
+        supplierId={detail?.purchase?.supplier_id}
+        organizationId={detail?.purchase?.organization_id}
+        suppliers={suppliers}
+        products={products}
+        setErr={setErr}
+        onSaved={async () => {
+          if (detail?.purchase?.id) await openDetail(detail.purchase.id);
+        }}
+        onApplied={async () => {
+          if (detail?.purchase?.id) {
+            await openDetail(detail.purchase.id);
+            await reload();
+          }
+        }}
+      />
 
       <LinkBarcodeToProductModal
         isOpen={linkBarcodeOpen}

@@ -1522,7 +1522,7 @@ class PurchasesService {
                 (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
          FROM purchase_receipts r
          WHERE r.purchase_id = $1
-           AND r.status IN ('completed', 'scanning')
+           AND r.status IN ('completed', 'scanning', 'expected')
          ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
         [id]
       );
@@ -1535,7 +1535,7 @@ class PurchasesService {
                   (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
            FROM purchase_receipts r
            WHERE r.purchase_id = $1
-             AND r.status IN ('completed', 'scanning')
+             AND r.status IN ('completed', 'scanning', 'expected')
            ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
           [id]
         );
@@ -1576,7 +1576,7 @@ class PurchasesService {
                 (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
          FROM purchase_receipts r
          WHERE r.purchase_id = $1
-           AND r.status IN ('completed', 'scanning')
+           AND r.status IN ('completed', 'scanning', 'expected')
          ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
         [id]
       );
@@ -1589,7 +1589,7 @@ class PurchasesService {
                   (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
            FROM purchase_receipts r
            WHERE r.purchase_id = $1
-             AND r.status IN ('completed', 'scanning')
+             AND r.status IN ('completed', 'scanning', 'expected')
            ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
           [id]
         );
@@ -2067,6 +2067,232 @@ class PurchasesService {
     return res;
   }
 
+  /** Создать или вернуть черновик «Ожидается» по закупке (один активный на закупку). */
+  async createOrGetExpectedReceipt(purchaseId, { userId, profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    const id = parseInt(purchaseId, 10);
+    if (!id || Number.isNaN(id)) {
+      const err = new Error('Некорректный ID закупки');
+      err.statusCode = 400;
+      throw err;
+    }
+    const uid = userId != null ? parseInt(userId, 10) : null;
+
+    return transaction(async (client) => {
+      await assertPurchaseInProfile(client, id, pid);
+      await assertPurchaseNotArchivedInTx(client, id);
+
+      const existing = await client.query(
+        `SELECT id FROM purchase_receipts
+         WHERE purchase_id = $1 AND status = 'expected'
+         ORDER BY id DESC LIMIT 1`,
+        [id]
+      );
+      if (existing.rows?.[0]?.id) {
+        return { id: existing.rows[0].id, reused: true };
+      }
+
+      const ins = await client.query(
+        `INSERT INTO purchase_receipts (purchase_id, status, created_by_user_id)
+         VALUES ($1, 'expected', $2)
+         RETURNING id`,
+        [id, uid && !Number.isNaN(uid) ? uid : null]
+      );
+      return { id: ins.rows[0].id, reused: false };
+    });
+  }
+
+  /** Сохранить строки черновика «Ожидается» (полная замена списка). */
+  async saveExpectedReceiptItems(receiptId, { items = [] } = {}, { profileId } = {}) {
+    const rid = parseInt(receiptId, 10);
+    if (!rid || Number.isNaN(rid)) {
+      const err = new Error('Некорректный ID приёмки');
+      err.statusCode = 400;
+      throw err;
+    }
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const normalized = (Array.isArray(items) ? items : [])
+      .map((it) => ({
+        productId: parseInt(it?.productId ?? it?.product_id, 10),
+        qty: Math.max(1, parseInt(it?.quantity ?? it?.qty ?? it?.expectedQuantity, 10) || 1),
+        unitPrice: normalizePurchasePrice(it?.unitPrice ?? it?.unit_price ?? it?.purchasePrice),
+      }))
+      .filter((it) => it.productId && !Number.isNaN(it.productId));
+
+    return transaction(async (client) => {
+      const r = await client.query(
+        `SELECT r.id, r.status, r.purchase_id
+         FROM purchase_receipts r
+         JOIN purchases p ON p.id = r.purchase_id
+         WHERE r.id = $1 AND p.profile_id = $2
+         FOR UPDATE`,
+        [rid, pid]
+      );
+      const receipt = r.rows?.[0];
+      if (!receipt) {
+        const err = new Error('Приёмка не найдена');
+        err.statusCode = 404;
+        throw err;
+      }
+      if (String(receipt.status) !== 'expected') {
+        const err = new Error('Редактировать можно только черновик «Ожидается»');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      for (const it of normalized) {
+        await assertProductAllowedInProfile(client, it.productId, pid);
+      }
+
+      await client.query(`DELETE FROM purchase_receipt_items WHERE receipt_id = $1`, [rid]);
+
+      for (const it of normalized) {
+        await client.query(
+          `INSERT INTO purchase_receipt_items (receipt_id, product_id, expected_quantity, unit_price, scanned_quantity)
+           VALUES ($1, $2, $3, $4, 0)`,
+          [rid, it.productId, it.qty, it.unitPrice]
+        );
+      }
+
+      await client.query(
+        `UPDATE purchase_receipts SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [rid]
+      );
+
+      return { ok: true, id: rid, itemsCount: normalized.length };
+    });
+  }
+
+  /** Применить черновик «Ожидается» к строкам закупки (установить ожидаемые кол-ва и цены). */
+  async applyExpectedReceiptToPurchase(purchaseId, { profileId, userId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    const id = parseInt(purchaseId, 10);
+    if (!id || Number.isNaN(id)) {
+      const err = new Error('Некорректный ID закупки');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    let incomingDeltas = null;
+    const result = await purchaseTransaction(async (client) => {
+      await assertPurchaseInProfile(client, id, pid);
+      await assertPurchaseNotArchivedInTx(client, id);
+
+      const expR = await client.query(
+        `SELECT id FROM purchase_receipts
+         WHERE purchase_id = $1 AND status = 'expected'
+         ORDER BY id DESC LIMIT 1`,
+        [id]
+      );
+      const expectedReceiptId = expR.rows?.[0]?.id;
+      if (!expectedReceiptId) {
+        const err = new Error('Сначала создайте черновик «Ожидается» и добавьте позиции');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const linesR = await client.query(
+        `SELECT product_id, expected_quantity, unit_price
+         FROM purchase_receipt_items
+         WHERE receipt_id = $1 AND COALESCE(expected_quantity, 0) > 0`,
+        [expectedReceiptId]
+      );
+      const lines = linesR.rows || [];
+      if (lines.length === 0) {
+        const err = new Error('В черновике «Ожидается» нет позиций');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
+      incomingDeltas = new Map();
+
+      for (const row of lines) {
+        const productId = Number(row.product_id);
+        const newQty = Math.max(1, Number(row.expected_quantity) || 1);
+        const unitPrice = normalizePurchasePrice(row.unit_price);
+
+        const cur = await client.query(
+          `SELECT expected_quantity, received_quantity FROM purchase_items
+           WHERE purchase_id = $1 AND product_id = $2`,
+          [id, productId]
+        );
+        const prevExpected = cur.rows?.[0] ? Number(cur.rows[0].expected_quantity) || 0 : 0;
+        const received = cur.rows?.[0] ? Number(cur.rows[0].received_quantity) || 0 : 0;
+        if (newQty < received) {
+          const err = new Error(
+            `Нельзя уменьшить ожидание ниже уже принятого (${productId}: принято ${received}, в черновике ${newQty})`
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+
+        const delta = newQty - prevExpected;
+        if (delta !== 0) incomingDeltas.set(productId, (incomingDeltas.get(productId) || 0) + delta);
+
+        if (cur.rows?.[0]) {
+          if (hasPrice) {
+            await client.query(
+              `UPDATE purchase_items
+               SET expected_quantity = $3,
+                   purchase_price = COALESCE($4::numeric, purchase_price),
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE purchase_id = $1 AND product_id = $2`,
+              [id, productId, newQty, unitPrice]
+            );
+          } else {
+            await client.query(
+              `UPDATE purchase_items
+               SET expected_quantity = $3, updated_at = CURRENT_TIMESTAMP
+               WHERE purchase_id = $1 AND product_id = $2`,
+              [id, productId, newQty]
+            );
+          }
+        } else if (hasPrice) {
+          await client.query(
+            `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
+             VALUES ($1, $2, $3, 0, '[]'::jsonb, COALESCE($4::numeric, (SELECT cost FROM products WHERE id = $2)))`,
+            [id, productId, newQty, unitPrice]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
+             VALUES ($1, $2, $3, 0, '[]'::jsonb)`,
+            [id, productId, newQty]
+          );
+        }
+      }
+
+      await recalcPurchaseStatusAfterReceiptChangeInTx(client, id);
+      return { ok: true, purchaseId: id, expectedReceiptId, itemsApplied: lines.length };
+    });
+
+    if (incomingDeltas?.size) {
+      await applyIncomingDeltasAfterCommit(incomingDeltas, { purchaseId: id, profileId: pid });
+      scheduleProcurementReserveReapply([...incomingDeltas.keys()], {
+        label: 'background reserve after apply expected receipt',
+      });
+    }
+
+    return result;
+  }
+
   /** Создать приёмку по закупке (scanning) */
   async createReceiptFromPurchase(purchaseId, { userId, profileId, forceNew = false } = {}) {
     const pid = normalizeProfileId(profileId);
@@ -2215,6 +2441,47 @@ class PurchasesService {
       err.statusCode = 404;
       throw err;
     }
+
+    const receiptStatus = String(receipt.status || '');
+
+    if (receiptStatus === 'expected') {
+      const hasPrice = await hasPurchasePriceColumn(query);
+      const expectedLines = await query(
+        `SELECT pri.id,
+                pri.id AS receipt_item_id,
+                pri.product_id,
+                0::int AS scanned_quantity,
+                pri.expected_quantity,
+                ${hasPrice ? 'pri.unit_price AS purchase_price' : 'NULL::numeric AS purchase_price'},
+                NULL::bigint AS purchase_item_id,
+                pri.expected_quantity AS draft_expected_quantity,
+                0 AS received_quantity,
+                pr.sku AS product_sku,
+                pr.name AS product_name,
+                pr.cost AS product_cost,
+                '{}'::jsonb AS scan_meta,
+                true AS is_scanned_row
+         FROM purchase_receipt_items pri
+         JOIN products pr ON pr.id = pri.product_id
+         WHERE pri.receipt_id = $1
+         ORDER BY pr.sku ASC NULLS LAST, pri.id ASC`,
+        [rid]
+      );
+      return {
+        receipt,
+        purchase: {
+          id: receipt.purchase_id,
+          supplierId: receipt.supplier_id,
+          supplierName: receipt.supplier_name,
+          organizationId: receipt.organization_id,
+          organizationName: receipt.organization_name,
+          warehouseId: receipt.warehouse_id,
+          warehouseName: receipt.warehouse_name,
+        },
+        items: expectedLines.rows || [],
+      };
+    }
+
     const hasPrice = await hasPurchasePriceColumn(query);
     const purchaseId = Number(receipt.purchase_id);
     const lines = await query(
@@ -2266,6 +2533,37 @@ class PurchasesService {
        ORDER BY is_scanned_row DESC, product_sku ASC NULLS LAST, id ASC`,
       [rid, purchaseId]
     );
+
+    const draftMap = new Map();
+    if (receiptStatus === 'scanning') {
+      const draftR = await query(
+        `SELECT pri.product_id, pri.expected_quantity, pri.unit_price
+         FROM purchase_receipt_items pri
+         JOIN purchase_receipts pr ON pr.id = pri.receipt_id
+         WHERE pr.purchase_id = $1 AND pr.status = 'expected'
+         ORDER BY pr.id DESC`,
+        [purchaseId]
+      );
+      for (const row of draftR.rows || []) {
+        const pidNum = Number(row.product_id);
+        if (!draftMap.has(pidNum)) {
+          draftMap.set(pidNum, {
+            expectedQuantity: Number(row.expected_quantity) || 0,
+            unitPrice: row.unit_price != null ? Number(row.unit_price) : null,
+          });
+        }
+      }
+    }
+
+    const itemsWithDraft = (lines.rows || []).map((row) => {
+      const draft = draftMap.get(Number(row.product_id));
+      return {
+        ...row,
+        draft_expected_quantity: draft?.expectedQuantity ?? null,
+        draft_unit_price: draft?.unitPrice ?? null,
+      };
+    });
+
     return {
       receipt,
       purchase: {
@@ -2277,7 +2575,8 @@ class PurchasesService {
         warehouseId: receipt.warehouse_id,
         warehouseName: receipt.warehouse_name,
       },
-      items: lines.rows || [],
+      items: itemsWithDraft,
+      hasExpectedDraft: draftMap.size > 0,
     };
   }
 

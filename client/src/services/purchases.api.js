@@ -81,6 +81,21 @@ export const purchasesApi = {
     return response.data?.data ?? response.data;
   },
 
+  createExpectedReceipt: async (purchaseId) => {
+    const response = await api.post(`/purchases/${purchaseId}/receipts/expected`, {});
+    return response.data?.data ?? response.data;
+  },
+
+  saveExpectedReceiptItems: async (receiptId, items) => {
+    const response = await api.put(`/purchases/receipts/${receiptId}/expected-items`, { items });
+    return response.data?.data ?? response.data;
+  },
+
+  applyExpectedReceipt: async (purchaseId) => {
+    const response = await api.post(`/purchases/${purchaseId}/apply-expected`, {});
+    return response.data?.data ?? response.data;
+  },
+
   createReceipt: async (purchaseId, options = {}) => {
     const response = await api.post(`/purchases/${purchaseId}/receipts`, options);
     return response.data?.data ?? response.data;
