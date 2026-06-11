@@ -321,11 +321,19 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
           (Number(line.reservedQty) || 0) > 0 ||
           b.reserved > 0 ||
           (line.lineKind === 'component' && (Number(line.reservedQty) || 0) > 0);
-        const defaultQty = hasPieces
-          ? lineReserveUnreserveMax(line)
-          : b.inputMax > 0
-            ? b.inputMax
-            : 1;
+        const canAddMore = b.remaining > 0 && b.inputMax > 0;
+        const canRemove = b.reserved > 0 || b.reservedPieces > 0;
+        const defaultQty =
+          canAddMore && canRemove
+            ? Math.min(
+                b.remainingPieces > 0 ? b.remainingPieces : b.remaining,
+                b.inputMax > 0 ? b.inputMax : 1
+              )
+            : canRemove
+              ? lineReserveUnreserveMax(line)
+              : b.inputMax > 0
+                ? b.inputMax
+                : 1;
         if (next[key] == null || next[key] === '') {
           next[key] = defaultQty;
           dirty = true;
@@ -467,6 +475,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
               reservedPieces,
               needPieces,
               remaining,
+              remainingPieces,
               available,
               availablePieces,
               reserveInKitUnits,
@@ -479,9 +488,16 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
               r > 0 || (reserveInKitUnits && (lineReserveDisplayUnits(line).reservedPieces || 0) > 0);
             const lineCoverage =
               line.reserveCoverage ?? line.reserve_coverage ?? (lineHas ? 'incoming' : 'none');
-            const inputMaxPieces = lineHas
-              ? Math.max(0, Number(line.reservedQty) || 0)
-              : bounds.inputMax;
+            const canAddMore = remaining > 0 && bounds.inputMax > 0;
+            const canRemove = r > 0 || reservedPieces > 0;
+            const inputMaxAdd = bounds.inputMax;
+            const inputMaxRemove = lineReserveUnreserveMax(line);
+            const inputMaxPieces =
+              canAddMore && canRemove
+                ? Math.max(inputMaxAdd, inputMaxRemove)
+                : canRemove
+                  ? inputMaxRemove
+                  : inputMaxAdd;
             const title =
               line.label ||
               line.productName ||
@@ -494,13 +510,20 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 : pid
                   ? `Товар #${pid}`
                   : 'Позиция без привязки к товару');
-            const qtyDefault = lineHas
-              ? Math.max(1, Number(line.reservedQty) || 1)
-              : inputMaxPieces > 0
-                ? inputMaxPieces
-                : 1;
+            const qtyDefaultAdd = Math.min(
+              remainingPieces > 0 ? remainingPieces : remaining,
+              inputMaxAdd > 0 ? inputMaxAdd : 1
+            );
+            const qtyDefault =
+              canAddMore && !canRemove
+                ? qtyDefaultAdd
+                : canRemove && !canAddMore
+                  ? Math.max(1, inputMaxRemove)
+                  : canAddMore && canRemove
+                    ? qtyDefaultAdd
+                    : 1;
             const qtyVal = lineQty[key] ?? qtyDefault;
-            const lineActionsEnabled = canReserve && (lineHas || inputMaxPieces > 0);
+            const lineActionsEnabled = canReserve && (canAddMore || canRemove);
             return (
               <li
                 key={key}
@@ -545,7 +568,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                       {' '}
                       — привяжите товар в каталоге (артикул в карточке товара или сопоставление МП)
                     </span>
-                  ) : !lineHas && remaining > 0 && available > 0 ? (
+                  ) : canAddMore ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                       {' '}
                       (доступно к резерву:{' '}
@@ -555,9 +578,13 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                       {line.lineKind === 'kit' && line.kitReserveFromComponents
                         ? ', из комплектующих'
                         : ''}
+                      , осталось:{' '}
+                      {reserveInKitUnits
+                        ? `${remaining} компл.${remainingPieces > 0 ? ` / ${remainingPieces} шт` : ''}`
+                        : remaining}
                       )
                     </span>
-                  ) : !lineHas && remaining > 0 && available <= 0 ? (
+                  ) : remaining > 0 && !canAddMore ? (
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}> — нет доступного остатка</span>
                   ) : null}
                 </span>
@@ -592,29 +619,60 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                     />
                     <span className="order-reserve-line__qty-suffix">шт.</span>
                   </label>
-                  <Button
-                    variant={lineHas ? 'secondary' : 'primary'}
-                    size="small"
-                    disabled={
-                      loading || lineLoadingKey === key || inputMaxPieces <= 0 || !lineActionsEnabled
-                    }
-                    onClick={() =>
-                      handleLineAction(line, lineHas ? 'unreserve' : 'reserve')
-                    }
-                  >
-                    {lineLoadingKey === key ? '…' : lineHas ? 'Снять' : 'В резерв'}
-                  </Button>
-                  {inputMaxPieces >= 1 && lineActionsEnabled ? (
+                  {canRemove ? (
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      disabled={
+                        loading ||
+                        lineLoadingKey === key ||
+                        inputMaxRemove <= 0 ||
+                        !lineActionsEnabled
+                      }
+                      onClick={() => handleLineAction(line, 'unreserve')}
+                    >
+                      {lineLoadingKey === key ? '…' : 'Снять'}
+                    </Button>
+                  ) : null}
+                  {canAddMore ? (
+                    <Button
+                      variant="primary"
+                      size="small"
+                      disabled={
+                        loading ||
+                        lineLoadingKey === key ||
+                        inputMaxAdd <= 0 ||
+                        !lineActionsEnabled
+                      }
+                      onClick={() => handleLineAction(line, 'reserve')}
+                    >
+                      {lineLoadingKey === key ? '…' : 'В резерв'}
+                    </Button>
+                  ) : null}
+                  {canAddMore && inputMaxAdd >= 1 && lineActionsEnabled ? (
                     <button
                       type="button"
                       className="order-reserve-line__max-btn"
                       disabled={loading || lineLoadingKey === key}
                       onClick={() => {
-                        setLineQty((prev) => ({ ...prev, [key]: inputMaxPieces }));
-                        handleLineAction(line, lineHas ? 'unreserve' : 'reserve', inputMaxPieces);
+                        setLineQty((prev) => ({ ...prev, [key]: inputMaxAdd }));
+                        handleLineAction(line, 'reserve', inputMaxAdd);
                       }}
                     >
-                      {lineHas ? 'Снять всё' : 'Весь заказ'}
+                      Весь заказ
+                    </button>
+                  ) : null}
+                  {canRemove && inputMaxRemove >= 1 && lineActionsEnabled ? (
+                    <button
+                      type="button"
+                      className="order-reserve-line__max-btn"
+                      disabled={loading || lineLoadingKey === key}
+                      onClick={() => {
+                        setLineQty((prev) => ({ ...prev, [key]: inputMaxRemove }));
+                        handleLineAction(line, 'unreserve', inputMaxRemove);
+                      }}
+                    >
+                      Снять всё
                     </button>
                   ) : null}
                 </div>
