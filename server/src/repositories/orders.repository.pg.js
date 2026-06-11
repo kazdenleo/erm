@@ -745,6 +745,19 @@ class OrdersRepositoryPG {
     const likeTilde = `${oid}~%`;
     const likeColon = `${oid}:%`;
     const likeManualSuffix = dbMarketplace === 'manual' ? `${oid}-%` : null;
+    const params = [dbMarketplace, oid, likeTilde, likeColon];
+    let nextIdx = 5;
+    let manualSuffixSql = '';
+    if (likeManualSuffix) {
+      manualSuffixSql = `OR o.order_id LIKE $${nextIdx}`;
+      params.push(likeManualSuffix);
+      nextIdx += 1;
+    }
+    let profileSql = '';
+    if (pid) {
+      profileSql = `AND o.profile_id = $${nextIdx}::bigint`;
+      params.push(pid);
+    }
     const result = await query(
       `
       SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
@@ -764,18 +777,12 @@ class OrdersRepositoryPG {
           OR o.order_group_id = $2
           OR o.order_id LIKE $3
           OR o.order_id LIKE $4
-          ${likeManualSuffix ? 'OR o.order_id LIKE $6' : ''}
+          ${manualSuffixSql}
         )
-        ${pid ? 'AND o.profile_id = $5::bigint' : ''}
+        ${profileSql}
       ORDER BY o.id
     `,
-      pid
-        ? likeManualSuffix
-          ? [dbMarketplace, oid, likeTilde, likeColon, pid, likeManualSuffix]
-          : [dbMarketplace, oid, likeTilde, likeColon, pid]
-        : likeManualSuffix
-          ? [dbMarketplace, oid, likeTilde, likeColon, likeManualSuffix]
-          : [dbMarketplace, oid, likeTilde, likeColon]
+      params
     );
     return (result.rows || []).map(rowToCamel);
   }

@@ -1604,6 +1604,7 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   let wanted = Math.max(1, parseInt(kitsWanted, 10) || 1);
   const orderDbId = Number(meta?.order_id ?? meta?.orderId);
   let reservedBeforeKit = null;
+  let onKitForAlloc = 0;
   if (Number.isFinite(orderDbId) && orderDbId > 0) {
     reservedBeforeKit = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
     const already = reservedBeforeKit;
@@ -1623,6 +1624,7 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
       meta?.orderId != null ? String(meta.orderId).trim() : null,
       meta?.warehouse_id ?? meta?.warehouseId ?? null
     );
+    onKitForAlloc = onKit;
     const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId);
     if (onKit > 0 && fromComp > 0) {
       if (meta?.reconcile_kit_to_components || meta?.reconcile_force_mixed) {
@@ -1655,9 +1657,20 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   const reserveOpts =
     whRaw != null && String(whRaw).trim() !== '' ? { warehouseId: whRaw } : { warehouseId: null };
   let breakdown = await computeKitReservableBreakdown(kitId, reserveOpts);
+  const manualComponentsOnly =
+    meta?.manual_reserve === true &&
+    onKitForAlloc > 0 &&
+    meta?.reconcile_kit_to_components !== true &&
+    meta?.reconcile_force_mixed !== true;
+  if (manualComponentsOnly) {
+    breakdown = { ...breakdown, wholeReserveAvail: 0 };
+  }
   let alloc = allocateKitReservePriority(wanted, breakdown);
   if (alloc.kitsToReserve <= 0 && reserveOpts.warehouseId != null && !strictWarehouse) {
     breakdown = await computeKitReservableBreakdown(kitId, { warehouseId: null });
+    if (manualComponentsOnly) {
+      breakdown = { ...breakdown, wholeReserveAvail: 0 };
+    }
     alloc = allocateKitReservePriority(wanted, breakdown);
   }
   if (alloc.kitsToReserve <= 0) return 0;

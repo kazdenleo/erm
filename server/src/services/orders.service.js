@@ -4708,10 +4708,16 @@ class OrdersService {
         const showKitLine = (reserveOnWholeSku || kitReservableQty > 0) && physicalOnHand > 0;
 
         if (showKitLine) {
-          const allocHeadroom = allocateKitReservePriority(remainingKits, breakdown);
+          const breakdownForAvail =
+            reserveOnWholeSku && remainingKits > 0
+              ? { ...breakdown, wholeReserveAvail: 0 }
+              : breakdown;
+          const allocHeadroom = allocateKitReservePriority(remainingKits, breakdownForAvail);
           let availableQty = Math.min(remainingKits, allocHeadroom.kitsToReserve);
           if (maxKitsAvail > 0) availableQty = Math.min(availableQty, maxKitsAvail);
+          const preferComponentsForRemainder = reserveOnWholeSku && remainingKits > 0;
           const addFromComponents =
+            preferComponentsForRemainder ||
             allocHeadroom.fromComponents > 0 ||
             (wholeAvail <= 0 && (breakdown.fromComponents || 0) > 0 && remainingKits > 0);
           lineEntries.push({
@@ -4721,7 +4727,8 @@ class OrdersService {
             availableQty,
             lineKind: reserveOnWholeSku ? 'kit_whole' : 'kit',
             kitReserveFromComponents:
-              (!reserveOnWholeSku && reserveOnComponents) ||
+              reserveOnComponents ||
+              preferComponentsForRemainder ||
               (reserveOnWholeSku && addFromComponents),
             label: orderLineLabel || 'Комплект',
             compositionHint: fullCompositionHint

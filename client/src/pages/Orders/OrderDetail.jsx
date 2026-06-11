@@ -31,6 +31,20 @@ function orderReserveLineKey(line) {
 
 function lineReserveDisplayUnits(line) {
   const perKit = Math.max(1, Number(line.perKitQty ?? line.per_kit_qty) || 1);
+  const kind = line.lineKind;
+  if ((kind === 'kit' || kind === 'kit_whole') && perKit <= 1) {
+    const reserved = Math.max(0, Number(line.reservedQty) || 0);
+    const need = Math.max(0, Number(line.needQty) || 0);
+    return {
+      perKit: 1,
+      reserveInKitUnits: true,
+      reserved,
+      need,
+      reservedPieces: reserved,
+      needPieces: need,
+      pieceHint: null,
+    };
+  }
   if (line.lineKind === 'component' && perKit > 1) {
     const reservedPieces = Math.max(0, Number(line.reservedQty) || 0);
     const needPieces = Math.max(0, Number(line.needQty) || 0);
@@ -388,7 +402,11 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
       qtyOverride != null
         ? clampLineQty(qtyOverride, 1, max)
         : clampLineQty(lineQty[key], 1, max);
-    const apiQty = reserveViaKit
+    const reserveAsKitUnits =
+      line?.lineKind === 'kit' ||
+      line?.lineKind === 'kit_whole' ||
+      reserveViaKit;
+    const apiQty = reserveAsKitUnits
       ? lineReserveApiKitUnits(line, qty, { unreserve: isUnreserveAct })
       : lineReserveApiQuantity(line, qty, { unreserve: isUnreserveAct });
 
@@ -617,7 +635,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                         }));
                       }}
                     />
-                    <span className="order-reserve-line__qty-suffix">шт.</span>
+                    <span className="order-reserve-line__qty-suffix">
+                      {reserveInKitUnits ? 'компл.' : 'шт.'}
+                    </span>
                   </label>
                   {canRemove ? (
                     <Button
