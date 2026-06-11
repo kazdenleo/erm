@@ -81,6 +81,11 @@ export function isManualOrderRow(orderRow) {
   return String(orderRow?.marketplace || '').toLowerCase() === 'manual';
 }
 
+/** FBS и ручные заказы — резерв строго с привязанного склада, без fallback на другие склады. */
+export function isStrictWarehouseOrderRow(orderRow) {
+  return isMarketplaceFbsOrderRow(orderRow) || isManualOrderRow(orderRow);
+}
+
 /**
  * Покрытие резерва по заказу: только со склада (on_hand) или с участием «в пути» (incoming).
  * @returns {'none'|'on_hand'|'incoming'}
@@ -1083,20 +1088,21 @@ class OrdersService {
     return mappedWh;
   }
 
-  /** FBS-заказ без привязки склада — резерв недоступен (не показывать глобальный остаток). */
+  /** FBS / ручной заказ без привязки склада — резерв недоступен. */
   _fbsReserveWarehouseBlocked(orderRow, warehouseId) {
-    if (!isMarketplaceFbsOrderRow(orderRow)) return false;
+    if (!isStrictWarehouseOrderRow(orderRow)) return false;
     return warehouseId == null || String(warehouseId).trim() === '';
   }
 
   _assertFbsReserveWarehouse(orderRow, warehouseId) {
-    if (this._fbsReserveWarehouseBlocked(orderRow, warehouseId)) {
-      const err = new Error(
-        'Не определён склад FBS для заказа — настройте привязку warehouse_mappings'
-      );
-      err.statusCode = 400;
-      throw err;
-    }
+    if (!this._fbsReserveWarehouseBlocked(orderRow, warehouseId)) return;
+    const err = new Error(
+      isManualOrderRow(orderRow)
+        ? 'Не выбран склад списания для ручных заказов — укажите в Настройках → Аккаунт'
+        : 'Не определён склад FBS для заказа — настройте привязку warehouse_mappings'
+    );
+    err.statusCode = 400;
+    throw err;
   }
 
   async _reconcileKitReserveBeforeApply(orderRow, kitProductId, orderDbId, metaBase = {}) {
@@ -2066,7 +2072,7 @@ class OrdersService {
     }
 
     const warehouseId = await this._resolveWarehouseIdForOrderReserve(orderRow, productId);
-    const strictWh = isMarketplaceFbsOrderRow(orderRow);
+    const strictWh = isStrictWarehouseOrderRow(orderRow);
     if (strictWh && (warehouseId == null || String(warehouseId).trim() === '')) return;
 
     const { getProductSupplySnapshotWithClient } = await import('./sellableQuantity.service.js');
@@ -4948,7 +4954,7 @@ class OrdersService {
     }
     const orderIdStr = String(row.orderId ?? row.order_id ?? orderId);
     const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, pid);
-    const strictWh = isMarketplaceFbsOrderRow(row);
+    const strictWh = isStrictWarehouseOrderRow(row);
     this._assertFbsReserveWarehouse(row, warehouseId);
     if (doUnreserve) {
       const isKitRoot = await isKitProductId(pid);
@@ -4959,23 +4965,27 @@ class OrdersService {
           ...(components || []).map((c) => Number(c.component_product_id))
         ].filter((n) => Number.isFinite(n) && n > 0);
         let releasedAny = false;
+        const { releaseOrderReservesGroupedByWarehouse } = await import('./kitStock.service.js');
         for (const p of productIds) {
-          const netP = await this._getReservedQtyForOrderProduct(orderDbId, p);
-          if (netP <= 0) continue;
-          await stockMovementsService.applyChange(p, {
-            delta: netP,
-            type: 'unreserve',
-            reason: `Снятие резерва по заказу ${orderIdStr} (вручную, комплект)`.trim(),
-            meta: {
-              order_id: orderDbId,
-              orderId: orderIdStr,
-              warehouse_id: warehouseId,
-              manual_unreserve: true,
-              skip_auto_reserve: true,
-              kit_manual_unreserve: true
-            }
-          });
-          releasedAny = true;
+          const affected = await releaseOrderReservesGroupedByWarehouse(
+            orderDbId,
+            orderIdStr,
+            async (productId, net, orderIdLabel, meta) => {
+              await stockMovementsService.applyChange(productId, {
+                delta: net,
+                type: 'unreserve',
+                reason: `Снятие резерва по заказу ${orderIdLabel} (вручную, комплект)`.trim(),
+                meta: {
+                  ...meta,
+                  manual_unreserve: true,
+                  skip_auto_reserve: true,
+                  kit_manual_unreserve: true
+                }
+              });
+            },
+            { productId: p }
+          );
+          if (affected.length) releasedAny = true;
         }
         if (!releasedAny) {
           const err = new Error('По этой позиции нет резерва для снятия');
@@ -4999,19 +5009,32 @@ class OrdersService {
           err.statusCode = 400;
           throw err;
         }
-        await stockMovementsService.applyChange(pid, {
-          delta: release,
-          type: 'unreserve',
-          reason: `Снятие резерва по заказу ${orderIdStr} (вручную, позиция)`.trim(),
-          meta: {
-            order_id: orderDbId,
-            orderId: orderIdStr,
-            warehouse_id: warehouseId,
-            manual_unreserve: true,
-            skip_auto_reserve: true,
-            partial_line: true
-          }
-        });
+        const { releaseOrderReservesGroupedByWarehouse } = await import('./kitStock.service.js');
+        const affected = await releaseOrderReservesGroupedByWarehouse(
+          orderDbId,
+          orderIdStr,
+          async (productId, net, orderIdLabel, meta) => {
+            const rel = Math.min(net, release);
+            if (rel <= 0) return;
+            await stockMovementsService.applyChange(productId, {
+              delta: rel,
+              type: 'unreserve',
+              reason: `Снятие резерва по заказу ${orderIdLabel} (вручную, позиция)`.trim(),
+              meta: {
+                ...meta,
+                manual_unreserve: true,
+                skip_auto_reserve: true,
+                partial_line: true
+              }
+            });
+          },
+          { productId: pid }
+        );
+        if (!affected.length) {
+          const err = new Error('По этой позиции нет резерва для снятия');
+          err.statusCode = 400;
+          throw err;
+        }
       }
     } else {
       const qtyWanted =
@@ -5228,7 +5251,9 @@ class OrdersService {
       const reservedAfter = Number(afterTry.reservedQty) || 0;
       if (reservedAfter <= reservedBefore) {
         const err = new Error(
-          'Не удалось поставить резерв — проверьте остаток на складе FBS и сопоставление товара с каталогом.'
+          isManualOrderRow(rows[0])
+            ? 'Не удалось поставить резерв — проверьте остаток на складе для ручных заказов (Настройки → Аккаунт).'
+            : 'Не удалось поставить резерв — проверьте остаток на складе FBS и сопоставление товара с каталогом.'
         );
         err.statusCode = 400;
         throw err;

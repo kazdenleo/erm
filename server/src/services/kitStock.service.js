@@ -1939,22 +1939,39 @@ export async function reconcileAllMixedKitReservesForProduct(productId, hooks) {
   return changed;
 }
 
-export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unreserveFn) {
+/**
+ * Снять резерв по заказу с учётом склада каждой записи в журнале (не склад по умолчанию).
+ */
+export async function releaseOrderReservesGroupedByWarehouse(
+  orderDbId,
+  orderIdLabel,
+  unreserveFn,
+  { productId = null } = {}
+) {
   const oid = Number(orderDbId);
   if (!Number.isFinite(oid) || oid < 1) return [];
 
   const mpLabel =
     orderIdLabel != null && String(orderIdLabel).trim() !== '' ? String(orderIdLabel).trim() : null;
 
+  const params = [oid, mpLabel];
+  let productFilterSql = '';
+  const pidFilter = productId != null ? Number(productId) : NaN;
+  if (Number.isFinite(pidFilter) && pidFilter > 0) {
+    productFilterSql = ` AND product_id = $3`;
+    params.push(pidFilter);
+  }
+
   const r = await query(
     `SELECT product_id,
+            warehouse_id,
             ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_reserved
      FROM stock_movements
      WHERE type IN ('reserve', 'unreserve')
-       AND ${orderReserveMovementMatchSql('', 1, 2)}
-     GROUP BY product_id
+       AND ${orderReserveMovementMatchSql('', 1, 2)}${productFilterSql}
+     GROUP BY product_id, warehouse_id
      HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
-    [oid, mpLabel]
+    params
   );
 
   const affected = [];
@@ -1962,11 +1979,20 @@ export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unrese
     const pid = Number(row.product_id);
     const net = Number(row.net_reserved) || 0;
     if (!Number.isFinite(pid) || pid < 1 || net <= 0) continue;
-    await unreserveFn(pid, net, orderIdLabel, { order_id: oid, orderId: orderIdLabel });
+    const meta = { order_id: oid, orderId: orderIdLabel };
+    if (row.warehouse_id != null && String(row.warehouse_id).trim() !== '') {
+      const wh = Number(row.warehouse_id);
+      if (Number.isFinite(wh) && wh > 0) meta.warehouse_id = wh;
+    }
+    await unreserveFn(pid, net, orderIdLabel, meta);
     scheduleMarketplaceSyncForParentKits(pid, { source: 'order_unreserve' });
     affected.push(pid);
   }
-  return affected;
+  return [...new Set(affected)];
+}
+
+export async function releaseAllReservesForOrder(orderDbId, orderIdLabel, unreserveFn) {
+  return releaseOrderReservesGroupedByWarehouse(orderDbId, orderIdLabel, unreserveFn);
 }
 
 /**
@@ -2335,6 +2361,7 @@ export default {
   scheduleMarketplaceSyncForParentKits,
   applyKitOrderReserve,
   releaseAllReservesForOrder,
+  releaseOrderReservesGroupedByWarehouse,
   buildKitListStockContext,
   kitPhysicalOnHandFromContext,
   kitDisplayReservedFromContext,
