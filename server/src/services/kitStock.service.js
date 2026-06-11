@@ -837,8 +837,10 @@ export async function computeKitDisplayMetricsFromDb(kitProductId, options = {})
   const kitId = Number(kitProductId);
   const empty = {
     whole_on_hand: 0,
+    whole_available: 0,
     assemblable_from_components: 0,
     supplier_kit_units: 0,
+    marketplace_available: 0,
     available_total: 0
   };
   if (!Number.isFinite(kitId) || kitId < 1) return empty;
@@ -859,12 +861,18 @@ export async function computeKitDisplayMetricsFromDb(kitProductId, options = {})
 }
 
 /**
- * На МП для комплектов: целые комплекты на складе + собираемость из комплектующих (число в скобках «Доступно»).
+ * На МП для комплектов: число в скобках «Доступно» — целые к продаже + собираемость из комплектующих.
  */
 export function computeKitMarketplaceAvailableFromMetrics(display) {
-  const wholeOnHand = Math.max(0, Number(display?.whole_on_hand) || 0);
+  if (display?.marketplace_available != null) {
+    return Math.max(0, Number(display.marketplace_available) || 0);
+  }
+  const wholeAvail = Math.max(
+    0,
+    Number(display?.whole_available ?? display?.wholeAvailable ?? display?.whole_on_hand) || 0
+  );
   const assemblable = Math.max(0, Number(display?.assemblable_from_components) || 0);
-  return Math.max(0, wholeOnHand + assemblable);
+  return Math.max(0, wholeAvail + assemblable);
 }
 
 /** @deprecated Используйте computeKitMarketplaceAvailableFromMetrics */
@@ -2169,7 +2177,7 @@ export async function buildKitListStockContext(products, options = {}) {
 
 /**
  * Метрики отображения для комплектов в списке остатков.
- * kit_display: whole_on_hand, assemblable_from_components, available_total.
+ * kit_display: whole_on_hand, whole_available, assemblable_from_components, marketplace_available, available_total.
  */
 export async function attachKitDisplayMetrics(products, options = {}) {
   if (!Array.isArray(products) || products.length === 0) return;
@@ -2190,7 +2198,8 @@ export async function attachKitDisplayMetrics(products, options = {}) {
       (await readKitDisplayReservedQuantity(kitId, options)) ||
       kitDisplayReservedFromContext(kitId, ctx);
     const wholeAvail = Math.max(0, wholeOnHand + incoming - reserved);
-    const availableTotal = assemblable + wholeAvail + supplierKitUnits;
+    const marketplaceAvailable = wholeAvail + assemblable;
+    const availableTotal = marketplaceAvailable + supplierKitUnits;
 
     p.supplierStockTotal = supplierKitUnits;
     p.quantity = wholeOnHand;
@@ -2200,9 +2209,10 @@ export async function attachKitDisplayMetrics(products, options = {}) {
     p.netReservedQuantity = reserved;
     p.kit_display = {
       whole_on_hand: wholeOnHand,
+      whole_available: wholeAvail,
       assemblable_from_components: assemblable,
       supplier_kit_units: supplierKitUnits,
-      marketplace_available: wholeOnHand + assemblable,
+      marketplace_available: marketplaceAvailable,
       available_total: availableTotal
     };
   }

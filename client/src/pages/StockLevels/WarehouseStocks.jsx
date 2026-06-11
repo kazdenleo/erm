@@ -22,7 +22,8 @@ import {
   stockTableAvailable,
   isKitProduct,
   isKitStockHistoryMovement,
-  parseKitDisplayMetrics
+  parseKitDisplayMetrics,
+  formatKitAvailableDisplay
 } from '../../utils/kitStockMetrics';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -187,14 +188,21 @@ function availableFromSnapshot(snap) {
 }
 
 function formatAvailableHistoryCell(curSnap, prevSnap) {
-  const after =
-    curSnap?._kitAvailable != null && !Number.isNaN(Number(curSnap._kitAvailable))
-      ? Number(curSnap._kitAvailable)
-      : availableFromSnapshot(curSnap);
-  const prev =
-    prevSnap?._kitAvailable != null && !Number.isNaN(Number(prevSnap._kitAvailable))
-      ? Number(prevSnap._kitAvailable)
-      : availableFromSnapshot(prevSnap);
+  if (curSnap?._kitAvailableWhole != null && curSnap?._kitAvailableTotal != null) {
+    const after = formatKitAvailableDisplay({
+      whole_available: curSnap._kitAvailableWhole,
+      marketplace_available: curSnap._kitAvailableTotal,
+      assemblable_from_components: 0
+    });
+    if (prevSnap?._kitAvailableTotal == null || Number.isNaN(Number(prevSnap._kitAvailableTotal))) {
+      return after;
+    }
+    const d = curSnap._kitAvailableTotal - prevSnap._kitAvailableTotal;
+    if (d === 0) return after;
+    return `${curSnap._kitAvailableWhole} (${curSnap._kitAvailableTotal}(${d > 0 ? '+' : ''}${d}))`;
+  }
+  const after = availableFromSnapshot(curSnap);
+  const prev = availableFromSnapshot(prevSnap);
   return formatAfterDelta(after, prev);
 }
 
@@ -665,22 +673,15 @@ function buildHistoryDisplaySnapshots(
       );
       const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
       const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
-      const supplierKit = Math.max(
-        0,
-        Number(
-          kitProduct.kit_display?.supplier_kit_units ??
-            kitProduct.kit_display?.supplierKitUnits ??
-            kitProduct.supplierStockTotal ??
-            0
-        ) || 0
-      );
       for (let i = 0; i < enriched.length; i++) {
         const row = enriched[i];
         if (!row) continue;
         const res = Math.max(0, Number(row.res) || 0);
+        const wholeAvail = Math.max(0, whole + whInc - res);
         row.bal = whole;
         row.inc = whInc;
-        row._kitAvailable = Math.max(0, whole + whInc - res) + assemblable + supplierKit;
+        row._kitAvailableWhole = wholeAvail;
+        row._kitAvailableTotal = wholeAvail + assemblable;
       }
     }
   }
@@ -2578,7 +2579,7 @@ export function WarehouseStocks() {
                       title={
                         isKitProduct(row.product)
                           ? row.availableDisplay
-                            ? `Доступно ${row.availableDisplay}: слева — с учётом резерва; в скобках — целые комплекты + собираемость (на МП).`
+                            ? `Доступно ${row.availableDisplay}: слева — целые комплекты к продаже; в скобках — целые + собираемость из комплектующих (на МП).`
                             : 'Слева — доступно с резервом; в скобках — целые комплекты + собираемость (на маркетплейсы).'
                           : undefined
                       }

@@ -3,8 +3,8 @@
  *
  * - Движения (резерв, отгрузка, поступление) — только по SKU комплекта, как у обычного товара.
  * - Наличие / в пути / поставщики — по карточке комплекта (1 SKU); резерв — на SKU или сумма по комплектующим.
- * - Доступно — с учётом резерва; в скобках — целые комплекты + собираемость из комплектующих (это число уходит на МП).
- *   Пример: 5 (7) — с резервом доступно 5; в скобках 2 целых + 5 из деталей = 7 к продаже на МП.
+ * - Доступно: слева — целые комплекты к продаже (наличие + в пути − резерв); в скобках — целые + собираемость из комплектующих (на МП).
+ *   Пример: 1 (8) — 1 целый комплект; всего к продаже 1 целый + 7 из деталей = 8.
  */
 
 /** В таблице «Остатки на складе»: наличие + в пути − резерв + поставщики (не ниже 0). */
@@ -56,39 +56,79 @@ export function isKitStockHistoryMovement(movement, product) {
   return isKitStockHistoryMovementType(t);
 }
 
-/** @returns {null|{ whole_on_hand: number, assemblable_from_components: number, available_total: number }} */
+/** @returns {null|object} метрики kit_display для таблицы остатков */
 export function parseKitDisplayMetrics(product) {
   const raw = product?.kit_display ?? product?.kitDisplay ?? product?.kit_stock_split ?? product?.kitStockSplit;
   if (!raw || typeof raw !== 'object') return null;
   const n = (snake, camel) => Math.max(0, Number(raw[snake] ?? raw[camel]) || 0);
   const wholeOnHand = n('whole_on_hand', 'wholeOnHand');
   const assemblable = n('assemblable_from_components', 'assemblableFromComponents');
+  const wholeAvailable =
+    raw.whole_available != null || raw.wholeAvailable != null
+      ? n('whole_available', 'wholeAvailable')
+      : null;
+  const marketplaceAvailable =
+    raw.marketplace_available != null || raw.marketplaceAvailable != null
+      ? n('marketplace_available', 'marketplaceAvailable')
+      : null;
   const availableTotal =
     raw.available_total != null || raw.availableTotal != null
       ? n('available_total', 'availableTotal')
-      : assemblable + wholeOnHand;
+      : (marketplaceAvailable ?? wholeAvailable ?? wholeOnHand) + assemblable;
   return {
     whole_on_hand: wholeOnHand,
+    whole_available: wholeAvailable,
     assemblable_from_components: assemblable,
+    marketplace_available: marketplaceAvailable,
+    supplier_kit_units: n('supplier_kit_units', 'supplierKitUnits'),
     available_total: availableTotal
   };
 }
 
-export function formatKitAvailableDisplay(metrics) {
-  if (!metrics) return null;
-  const total = Math.max(0, Number(metrics.available_total) || 0);
-  const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
-  const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
-  const marketplaceQty = Math.max(0, whole + assemblable);
-  return `${total} (${marketplaceQty})`;
+/** Целые комплекты к продаже: наличие + в пути − резерв (без собираемости из деталей). */
+export function kitWholeAvailableFromMetrics(metrics, product = null) {
+  if (!metrics) return 0;
+  if (metrics.whole_available != null && !Number.isNaN(Number(metrics.whole_available))) {
+    return Math.max(0, Number(metrics.whole_available));
+  }
+  const wholeOnHand = Math.max(0, Number(metrics.whole_on_hand) || 0);
+  if (!product) return wholeOnHand;
+  const incoming = Math.max(0, Number(product.incoming_quantity ?? product.incomingQuantity) || 0);
+  const reserved = Math.max(
+    0,
+    Number(
+      product.net_reserved_quantity ??
+        product.netReservedQuantity ??
+        product.reserved_quantity ??
+        product.reservedQuantity
+    ) || 0
+  );
+  return Math.max(0, wholeOnHand + incoming - reserved);
 }
 
-/** Число в скобках колонки «Доступно» — целые комплекты + собираемость (для экспорта на МП). */
-export function kitMarketplaceAvailableFromMetrics(metrics) {
+/** В скобках: целые к продаже + собираемость из комплектующих. */
+export function kitSellableTotalFromMetrics(metrics, product = null) {
   if (!metrics) return 0;
-  const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
+  if (metrics.marketplace_available != null && !Number.isNaN(Number(metrics.marketplace_available))) {
+    return Math.max(0, Number(metrics.marketplace_available));
+  }
+  const wholeAvail = kitWholeAvailableFromMetrics(metrics, product);
   const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
-  return Math.max(0, whole + assemblable);
+  return wholeAvail + assemblable;
+}
+
+export function formatKitAvailableDisplay(metrics, product = null) {
+  if (!metrics) return null;
+  const wholeAvail = kitWholeAvailableFromMetrics(metrics, product);
+  const sellableTotal = kitSellableTotalFromMetrics(metrics, product);
+  return `${wholeAvail} (${sellableTotal})`;
+}
+
+/** Число в скобках колонки «Доступно» — для экспорта на МП. */
+export function kitMarketplaceAvailableFromMetrics(metrics, product = null) {
+  const base = kitSellableTotalFromMetrics(metrics, product);
+  const supplier = Math.max(0, Number(metrics?.supplier_kit_units ?? metrics?.supplierKitUnits) || 0);
+  return base + supplier;
 }
 
 /** В колонке «Поставщики» для комплекта: (N) — сколько комплектов из остатков поставщиков по составу. */
@@ -157,8 +197,10 @@ function buildKitDisplayFromProduct(product, baseMetrics, allProducts) {
   );
   return {
     whole_on_hand: wholeOnHand,
+    whole_available: wholeAvailable,
     assemblable_from_components: assemblable,
-    available_total: assemblable + wholeAvailable
+    marketplace_available: wholeAvailable + assemblable,
+    available_total: wholeAvailable + assemblable
   };
 }
 
@@ -180,8 +222,15 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
         0,
         (Number(display.whole_on_hand) || 0) + (Number(base.incoming) || 0) - (Number(base.reserved) || 0)
       );
-      const availableTotal = display.assemblable_from_components + wholeAvailable;
+      const marketplaceAvailable = wholeAvailable + display.assemblable_from_components;
+      const availableTotal = marketplaceAvailable;
       const suppliersDisplay = formatKitSupplierDisplay(product, base.suppliers);
+      const kitMetrics = {
+        ...display,
+        whole_available: wholeAvailable,
+        marketplace_available: marketplaceAvailable,
+        available_total: availableTotal
+      };
       return {
         product,
         onHand: display.whole_on_hand,
@@ -190,11 +239,8 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
         suppliers: suppliersDisplay ? 0 : base.suppliers,
         supplierDetails: base.supplierDetails,
         suppliersDisplay,
-        available: availableTotal,
-        availableDisplay: formatKitAvailableDisplay({
-          ...display,
-          available_total: availableTotal
-        })
+        available: marketplaceAvailable,
+        availableDisplay: formatKitAvailableDisplay(kitMetrics, product)
       };
     }
 

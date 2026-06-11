@@ -278,11 +278,17 @@ export function stockListAvailableQuantity(product) {
   if (!product) return 0;
   const kit = product.kit_display ?? product.kitDisplay;
   if (kit && typeof kit === 'object') {
+    if (kit.marketplace_available != null || kit.marketplaceAvailable != null) {
+      return Math.max(0, Number(kit.marketplace_available ?? kit.marketplaceAvailable) || 0);
+    }
     if (kit.available_total != null || kit.availableTotal != null) {
       return Math.max(0, Number(kit.available_total ?? kit.availableTotal) || 0);
     }
     const a = Math.max(0, Number(kit.assemblable_from_components ?? kit.assemblableFromComponents) || 0);
-    const w = Math.max(0, Number(kit.whole_on_hand ?? kit.wholeOnHand) || 0);
+    const w = Math.max(
+      0,
+      Number(kit.whole_available ?? kit.wholeAvailable ?? kit.whole_on_hand ?? kit.wholeOnHand) || 0
+    );
     return Math.max(0, a + w);
   }
   const onHand = stockListOnHandQuantity(product);
