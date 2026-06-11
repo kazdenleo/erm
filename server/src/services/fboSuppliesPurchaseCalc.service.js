@@ -221,6 +221,26 @@ function addKitComponentDemand(
 }
 
 class FboSuppliesPurchaseCalcService {
+  async assertSuppliesAccessible(supplyIds, { profileId } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const ids = normalizeSupplyIds(supplyIds);
+    if (!ids.length) {
+      const err = new Error('Выберите хотя бы одну поставку');
+      err.statusCode = 400;
+      throw err;
+    }
+    const r = await query(
+      `SELECT id FROM fbo_supplies
+       WHERE id = ANY($1::bigint[]) AND ($2::bigint IS NULL OR profile_id = $2)`,
+      [ids, pid]
+    );
+    if ((r.rows?.length ?? 0) !== ids.length) {
+      const err = new Error('Часть поставок не найдена или недоступна');
+      err.statusCode = 404;
+      throw err;
+    }
+  }
+
   async calculate(supplyIds, { profileId } = {}) {
     const pid = normalizeProfileId(profileId);
     const ids = normalizeSupplyIds(supplyIds);

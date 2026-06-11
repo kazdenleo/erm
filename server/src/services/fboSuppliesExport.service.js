@@ -4,6 +4,7 @@
 
 import ExcelJS from 'exceljs';
 import fboSuppliesPackingService from './fboSuppliesPacking.service.js';
+import fboSuppliesPurchaseCalcService from './fboSuppliesPurchaseCalc.service.js';
 
 const SHEET_NAME = 'Товары';
 
@@ -55,6 +56,20 @@ const WB_PACKING_HEADERS = [
   'ШК короба',
   'Срок годности',
 ];
+
+function purchaseRowDisplayName(row) {
+  const raw = String(row?.productName ?? '').trim();
+  if (!raw) return '—';
+  return raw.split(/\r?\n/)[0].trim() || '—';
+}
+
+function formatPurchaseToPurchaseCell(row) {
+  const qty = Number(row?.toPurchase) || 0;
+  if (row?.isKitComponentRow && Number(row?.perKit) > 1) {
+    return `${qty} (${row.perKit} шт./компл.)`;
+  }
+  return qty;
+}
 
 class FboSuppliesExportService {
   async buildPackingExportBuffer(supplyId, { profileId } = {}) {
@@ -110,6 +125,105 @@ class FboSuppliesExportService {
 
     ws.getColumn(1).width = 24;
     ws.getColumn(2).width = 14;
+
+    const buffer = await wb.xlsx.writeBuffer();
+    return Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  }
+
+  async buildPurchaseCalcExportBuffer(supplyIds, calcPayload, { profileId } = {}) {
+    let data = calcPayload;
+    const hasClientRows = Array.isArray(calcPayload?.rows) && calcPayload.rows.length > 0;
+    if (hasClientRows) {
+      await fboSuppliesPurchaseCalcService.assertSuppliesAccessible(supplyIds, { profileId });
+    } else {
+      data = await fboSuppliesPurchaseCalcService.calculate(supplyIds, { profileId });
+    }
+
+    const supplies = Array.isArray(data?.supplies) ? data.supplies : [];
+    const rows = Array.isArray(data?.rows) ? data.rows : [];
+    if (!rows.length) {
+      const err = new Error('Нет данных для выгрузки');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const totals = data?.totals || { toPurchaseQty: 0, costSum: 0 };
+    const fboWarehouse = data?.fboWarehouse;
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'ERM';
+    const ws = wb.addWorksheet('Расчёт закупки');
+
+    let rowIndex = 1;
+    if (fboWarehouse?.label) {
+      writeRow(ws, rowIndex, [`Склад FBO: ${fboWarehouse.label}`]);
+      rowIndex += 1;
+    }
+    if (supplies.length) {
+      writeRow(ws, rowIndex, [`Поставки: ${supplies.map((s) => s.label).join(', ')}`]);
+      rowIndex += 1;
+    }
+    if (rowIndex > 1) rowIndex += 1;
+
+    const headers = [
+      'Товар',
+      'Артикул',
+      'К закупке',
+      'Наличие',
+      'В пути',
+      ...supplies.map((s) => s.label || `Поставка #${s.id}`),
+      'Себест.',
+      'Итого себест.',
+    ];
+    writeRow(ws, rowIndex, headers, { bold: true });
+    const headerRow = rowIndex;
+    rowIndex += 1;
+
+    for (const row of rows) {
+      const supplyValues = supplies.map((s) => {
+        const v = row.supplyQty?.[s.id] ?? row.supplyQty?.[String(s.id)];
+        return v != null && v !== '' ? Number(v) || 0 : '';
+      });
+      writeRow(ws, rowIndex, [
+        purchaseRowDisplayName(row),
+        row.sku || '',
+        formatPurchaseToPurchaseCell(row),
+        Number(row.onHand) || 0,
+        Number(row.incoming) || 0,
+        ...supplyValues,
+        Number(row.cost) || 0,
+        Number(row.lineCostTotal) || 0,
+      ]);
+      rowIndex += 1;
+    }
+
+    const totalLabelSpan = 2;
+    const totalRow = ws.getRow(rowIndex);
+    totalRow.getCell(1).value = 'Итого';
+    totalRow.getCell(1).font = { bold: true };
+    if (totalLabelSpan > 1) {
+      ws.mergeCells(rowIndex, 1, rowIndex, totalLabelSpan);
+    }
+    totalRow.getCell(3).value = Number(totals.toPurchaseQty) || 0;
+    totalRow.getCell(3).font = { bold: true };
+    const lastCol = headers.length;
+    totalRow.getCell(lastCol).value = Number(totals.costSum) || 0;
+    totalRow.getCell(lastCol).font = { bold: true };
+
+    ws.getColumn(1).width = 36;
+    ws.getColumn(2).width = 18;
+    ws.getColumn(3).width = 14;
+    ws.getColumn(4).width = 10;
+    ws.getColumn(5).width = 10;
+    for (let c = 6; c <= 5 + supplies.length; c += 1) {
+      ws.getColumn(c).width = 14;
+    }
+    ws.getColumn(lastCol - 1).width = 12;
+    ws.getColumn(lastCol).width = 14;
+
+    if (headerRow > 1) {
+      ws.views = [{ state: 'frozen', ySplit: headerRow }];
+    }
 
     const buffer = await wb.xlsx.writeBuffer();
     return Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);

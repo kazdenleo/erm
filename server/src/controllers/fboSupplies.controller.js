@@ -282,6 +282,36 @@ class FboSuppliesController {
     }
   }
 
+  async exportPurchaseCalcExcel(req, res, next) {
+    try {
+      const profileId = req.user?.profileId ?? null;
+      const supplyIds = req.body?.supplyIds ?? req.body?.ids ?? [];
+      const calcPayload = {
+        supplies: req.body?.supplies,
+        rows: req.body?.rows,
+        totals: req.body?.totals,
+        fboWarehouse: req.body?.fboWarehouse,
+      };
+      const buffer = await fboSuppliesExportService.buildPurchaseCalcExportBuffer(
+        supplyIds,
+        calcPayload,
+        { profileId }
+      );
+      const date = new Date().toISOString().slice(0, 10);
+      const filename = `fbo_raschet_zakupki_${date}.xlsx`;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      setAttachmentXlsx(res, filename);
+      res.send(buffer);
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async addSupplyItem(req, res, next) {
     try {
       const { id: supplyId } = req.params;

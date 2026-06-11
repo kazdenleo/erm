@@ -66,6 +66,7 @@ export function FboPurchaseCalculation() {
   const [createWarehouseId, setCreateWarehouseId] = useState('');
   const [replaceCtx, setReplaceCtx] = useState(null);
   const [replaceSaving, setReplaceSaving] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
 
   const load = useCallback(async () => {
     if (!supplyIds.length) {
@@ -266,6 +267,43 @@ export function FboPurchaseCalculation() {
     [calc?.rows]
   );
 
+  const handleExportExcel = async () => {
+    if (!calc?.rows?.length || !supplyIds.length) return;
+    setExportLoading(true);
+    setErr(null);
+    try {
+      const { buffer, filename } = await fboSuppliesApi.downloadPurchaseCalcExcel({
+        supplyIds,
+        calc,
+      });
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      let msg = e.response?.data?.message || e.message || 'Не удалось выгрузить Excel';
+      if (e.response?.data instanceof ArrayBuffer) {
+        try {
+          const txt = new TextDecoder().decode(e.response.data);
+          const j = JSON.parse(txt);
+          msg = j.message || j.error || msg;
+        } catch {
+          /* ignore */
+        }
+      }
+      setErr(msg);
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
   const handleCreatePurchase = async () => {
     if (!purchaseItems.length) {
       setErr('Нет позиций к закупке (остаток и «в пути» покрывают потребность поставок)');
@@ -307,6 +345,14 @@ export function FboPurchaseCalculation() {
           ← К поставкам
         </Button>
         <h2 style={{ margin: 0, flex: 1 }}>Расчёт закупки FBO</h2>
+        <Button
+          variant="secondary"
+          size="small"
+          disabled={!calc?.rows?.length || exportLoading}
+          onClick={handleExportExcel}
+        >
+          {exportLoading ? 'Выгрузка…' : 'Excel'}
+        </Button>
         <Button
           variant="primary"
           size="small"

@@ -4,12 +4,48 @@
 
 import api from './api';
 
+function parseXlsxFilename(response, fallback) {
+  const cd = String(
+    response.headers?.['content-disposition'] ?? response.headers?.['Content-Disposition'] ?? ''
+  );
+  let filename = fallback;
+  const utf8m = cd.match(/filename\*\s*=\s*UTF-8''([^;\s]+)/i);
+  if (utf8m) {
+    try {
+      filename = decodeURIComponent(utf8m[1].trim());
+    } catch {
+      filename = utf8m[1].trim();
+    }
+  } else {
+    const quoted = cd.match(/filename\s*=\s*"([^"]+)"/i);
+    if (quoted) filename = quoted[1];
+  }
+  return filename;
+}
+
 export const fboSuppliesApi = {
   purchaseCalculation: async (supplyIds) => {
     const response = await api.post('/fbo-supplies/purchase-calculation', {
       supplyIds,
     });
     return response.data?.data ?? response.data;
+  },
+
+  downloadPurchaseCalcExcel: async ({ supplyIds, calc }) => {
+    const response = await api.post(
+      '/fbo-supplies/purchase-calculation/export/excel',
+      {
+        supplyIds,
+        supplies: calc?.supplies,
+        rows: calc?.rows,
+        totals: calc?.totals,
+        fboWarehouse: calc?.fboWarehouse,
+      },
+      { responseType: 'arraybuffer' }
+    );
+    const date = new Date().toISOString().slice(0, 10);
+    const filename = parseXlsxFilename(response, `fbo_raschet_zakupki_${date}.xlsx`);
+    return { buffer: response.data, filename };
   },
 
   list: async (params = {}) => {
@@ -79,21 +115,7 @@ export const fboSuppliesApi = {
       params: { _: Date.now() },
       responseType: 'arraybuffer',
     });
-    const cd = String(
-      response.headers?.['content-disposition'] ?? response.headers?.['Content-Disposition'] ?? ''
-    );
-    let filename = 'fbo_supplies_import_template.xlsx';
-    const utf8m = cd.match(/filename\*\s*=\s*UTF-8''([^;\s]+)/i);
-    if (utf8m) {
-      try {
-        filename = decodeURIComponent(utf8m[1].trim());
-      } catch {
-        filename = utf8m[1].trim();
-      }
-    } else {
-      const quoted = cd.match(/filename\s*=\s*"([^"]+)"/i);
-      if (quoted) filename = quoted[1];
-    }
+    let filename = parseXlsxFilename(response, 'fbo_supplies_import_template.xlsx');
     return { buffer: response.data, filename };
   },
 

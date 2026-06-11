@@ -23,6 +23,10 @@ router.post(
   '/purchase-calculation',
   wrapAsync(fboSuppliesController.purchaseCalculation.bind(fboSuppliesController))
 );
+router.post(
+  '/purchase-calculation/export/excel',
+  wrapAsync(fboSuppliesController.exportPurchaseCalcExcel.bind(fboSuppliesController))
+);
 
 router.get(
   '/import/template/excel',
