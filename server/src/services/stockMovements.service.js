@@ -377,7 +377,8 @@ class StockMovementsService {
 
       const {
         getProductSupplySnapshotWithClient,
-        getRawReservedQuantityFromMovementsWithClient
+        getRawReservedQuantityFromMovementsWithClient,
+        getReservedQuantityFromMovementsWithClient
       } = await import('./sellableQuantity.service.js');
       const orderDbIdNum = metaOut.order_id != null ? Number(metaOut.order_id) : NaN;
       const mpOrderId =
@@ -456,7 +457,20 @@ class StockMovementsService {
           throw err;
         }
       } else if (type === 'unreserve' && safeDelta > 0) {
-        const journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
+        const manualOrphan =
+          metaOut.manual_unreserve === true ||
+          metaOut.manual_unreserve === 'true' ||
+          metaOut.orphan_cleanup === true ||
+          metaOut.direct_orphan_release === true;
+        const whCap = parseStockMovementWarehouseId(metaOut.warehouse_id ?? metaOut.warehouseId);
+        let journalBeforeRaw;
+        if (manualOrphan && whCap != null) {
+          journalBeforeRaw = await getReservedQuantityFromMovementsWithClient(client, idNum, {
+            warehouseId: whCap
+          });
+        } else {
+          journalBeforeRaw = await getRawReservedQuantityFromMovementsWithClient(client, idNum);
+        }
         const cap =
           netForOrder != null && Number.isFinite(netForOrder)
             ? Math.max(0, Math.floor(netForOrder))
@@ -1163,6 +1177,11 @@ class StockMovementsService {
     }
 
     const src = Number(sourceProductId) || pid;
+    const whId = parseStockMovementWarehouseId(warehouseId);
+    const reconcileMetaBase =
+      whId != null
+        ? { warehouse_id: whId, warehouseId: whId }
+        : {};
     if (rawDrift < 0) {
       const add = Math.floor(-rawDrift);
       if (add < 1) {
@@ -1173,6 +1192,7 @@ class StockMovementsService {
         qty: add,
         reason: 'Сверка журнала резерва с заказами и FBO',
         meta: {
+          ...reconcileMetaBase,
           deficit_qty: add,
           source_product_id: src,
           journal_net_before: journalNet,
@@ -1191,6 +1211,7 @@ class StockMovementsService {
       qty: release,
       reason: 'Снятие резерва без привязки к заказу или FBO',
       meta: {
+        ...reconcileMetaBase,
         orphan_cleanup: true,
         unattributed_qty: release,
         source_product_id: src,
@@ -1321,44 +1342,99 @@ class StockMovementsService {
       whFilter != null ? { warehouseId: whFilter } : {};
 
     const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
-    const productIds = await this._productIdsForReserveRelease(idNum);
-    let remaining =
-      maxQty != null && Number.isFinite(Number(maxQty)) ? Math.floor(Number(maxQty)) : Infinity;
+    const {
+      isKitProductId,
+      getKitComponents,
+      readKitSkuNetReserved,
+      readKitDisplayReservedQuantity,
+      buildKitComponentQtyMap
+    } = await import('./kitStock.service.js');
+
+    const baseMeta = {
+      manual_unreserve: true,
+      orphan_cleanup: true,
+      source_product_id: idNum,
+      direct_orphan_release: true
+    };
+    if (whFilter != null) baseMeta.warehouse_id = whFilter;
+
+    const reason = 'Снятие лишнего резерва без заказа и FBO';
     let releasedProductLines = 0;
     let releasedQty = 0;
 
-    for (const pid of productIds) {
-      const net = await getReservedQuantityFromMovements(pid, movementOpts);
-      if (net <= 0) continue;
-      const release = remaining === Infinity ? net : Math.min(net, remaining);
-      if (release < 1) continue;
+    const isKit = await isKitProductId(idNum);
+    if (isKit) {
+      await this._reconcileKitReserveForProductModal(idNum).catch(() => {});
+      const kitUnitsTarget =
+        maxQty != null && Number.isFinite(Number(maxQty)) && Number(maxQty) > 0
+          ? Math.floor(Number(maxQty))
+          : await readKitDisplayReservedQuantity(idNum, movementOpts);
+      if (kitUnitsTarget >= 1) {
+        const onSku = await readKitSkuNetReserved(idNum, movementOpts);
+        if (onSku > 0) {
+          const release = Math.min(onSku, kitUnitsTarget);
+          await this.applyChange(idNum, {
+            delta: release,
+            type: 'unreserve',
+            reason,
+            meta: { ...baseMeta, kit_units: release }
+          });
+          releasedProductLines = 1;
+          releasedQty = release;
+        } else {
+          const components = await getKitComponents(idNum);
+          const qtyMap = buildKitComponentQtyMap(components, kitUnitsTarget);
+          for (const [cid, needQty] of qtyMap.entries()) {
+            const net = await getReservedQuantityFromMovements(cid, movementOpts);
+            const release = Math.min(net, needQty);
+            if (release < 1) continue;
+            await this.applyChange(cid, {
+              delta: release,
+              type: 'unreserve',
+              reason,
+              meta: {
+                ...baseMeta,
+                kit_component_reserve: true,
+                kit_product_id: idNum,
+                kit_units: kitUnitsTarget
+              }
+            });
+            releasedProductLines += 1;
+          }
+          if (releasedProductLines > 0) {
+            releasedQty = kitUnitsTarget;
+          }
+        }
+      }
+    } else {
+      const productIds = await this._productIdsForReserveRelease(idNum);
+      let remaining =
+        maxQty != null && Number.isFinite(Number(maxQty)) ? Math.floor(Number(maxQty)) : Infinity;
 
-      const meta = {
-        manual_unreserve: true,
-        orphan_cleanup: true,
-        source_product_id: idNum,
-        direct_orphan_release: true
-      };
-      if (whFilter != null) meta.warehouse_id = whFilter;
+      for (const pid of productIds) {
+        const net = await getReservedQuantityFromMovements(pid, movementOpts);
+        if (net <= 0) continue;
+        const release = remaining === Infinity ? net : Math.min(net, remaining);
+        if (release < 1) continue;
 
-      await this.applyChange(pid, {
-        delta: release,
-        type: 'unreserve',
-        reason: 'Снятие лишнего резерва без заказа и FBO',
-        meta
-      });
-      releasedProductLines += 1;
-      releasedQty += release;
-      if (remaining !== Infinity) {
-        remaining -= release;
-        if (remaining <= 0) break;
+        await this.applyChange(pid, {
+          delta: release,
+          type: 'unreserve',
+          reason,
+          meta: { ...baseMeta }
+        });
+        releasedProductLines += 1;
+        releasedQty += release;
+        if (remaining !== Infinity) {
+          remaining -= release;
+          if (remaining <= 0) break;
+        }
       }
     }
 
     const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
-    const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
     try {
-      if (await isKitProductId(idNum)) {
+      if (isKit) {
         const net = await readKitDisplayReservedQuantity(idNum, movementOpts);
         await syncProductReservedQuantityFromJournal(idNum, { reserved: net });
       } else {
@@ -1393,6 +1469,11 @@ class StockMovementsService {
       warehouseId != null && String(warehouseId).trim() !== ''
         ? await this.productsRepository.resolveOwnWarehouseId(warehouseId)
         : null;
+
+    const { isKitProductId } = await import('./kitStock.service.js');
+    if (await isKitProductId(idNum)) {
+      await this._reconcileKitReserveForProductModal(idNum).catch(() => {});
+    }
 
     const summary = await this.getReserveSummaryForProduct(idNum, { profileId, warehouseId: whFilter });
     const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);

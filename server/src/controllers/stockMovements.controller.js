@@ -128,21 +128,49 @@ class StockMovementsController {
       const warehouseRaw = req.query.warehouseId ?? req.query.warehouse_id ?? null;
       const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw);
 
-      const rows = await stockMovementsService.listReservedOrdersForProduct(id, {
+      let rows = await stockMovementsService.listReservedOrdersForProduct(id, {
         profileId: tid,
         warehouseId: whFilter,
         _skipShipmentReconcile: true,
         _skipStaleCleanup: true
       });
-      const fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
+      let fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
         profileId: tid
       });
-      const summary = await stockMovementsService.getReserveSummaryForProduct(id, {
+      let summary = await stockMovementsService.getReserveSummaryForProduct(id, {
         profileId: tid,
         warehouseId: whFilter,
         ordersPreloaded: rows,
         fboSuppliesPreloaded: fboSupplies
       });
+
+      const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);
+      if (orphanQty > 0 && rows.length === 0 && fboSupplies.length === 0) {
+        try {
+          await stockMovementsService.releaseUnattributedJournalReserve(id, {
+            profileId: tid,
+            warehouseId: whFilter
+          });
+          rows = await stockMovementsService.listReservedOrdersForProduct(id, {
+            profileId: tid,
+            warehouseId: whFilter,
+            _skipShipmentReconcile: true,
+            _skipStaleCleanup: true
+          });
+          fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
+            profileId: tid
+          });
+          summary = await stockMovementsService.getReserveSummaryForProduct(id, {
+            profileId: tid,
+            warehouseId: whFilter,
+            ordersPreloaded: rows,
+            fboSuppliesPreloaded: fboSupplies
+          });
+        } catch {
+          /* модалка покажет кнопку ручного снятия */
+        }
+      }
+
       return res.status(200).json({ ok: true, data: rows, fboSupplies, summary });
     } catch (error) {
       next(error);
