@@ -4708,13 +4708,21 @@ class OrdersService {
         const showKitLine = (reserveOnWholeSku || kitReservableQty > 0) && physicalOnHand > 0;
 
         if (showKitLine) {
+          const allocHeadroom = allocateKitReservePriority(remainingKits, breakdown);
+          let availableQty = Math.min(remainingKits, allocHeadroom.kitsToReserve);
+          if (maxKitsAvail > 0) availableQty = Math.min(availableQty, maxKitsAvail);
+          const addFromComponents =
+            allocHeadroom.fromComponents > 0 ||
+            (wholeAvail <= 0 && (breakdown.fromComponents || 0) > 0 && remainingKits > 0);
           lineEntries.push({
             productId: pid,
             reservedQty: reserved,
             needQty: qty,
-            availableQty: kitReservableQty,
+            availableQty,
             lineKind: reserveOnWholeSku ? 'kit_whole' : 'kit',
-            kitReserveFromComponents: !reserveOnWholeSku && reserveOnComponents,
+            kitReserveFromComponents:
+              (!reserveOnWholeSku && reserveOnComponents) ||
+              (reserveOnWholeSku && addFromComponents),
             label: orderLineLabel || 'Комплект',
             compositionHint: fullCompositionHint
           });
