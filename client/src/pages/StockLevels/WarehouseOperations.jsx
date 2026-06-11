@@ -2846,6 +2846,8 @@ export function WarehouseOperations({
                 </div>
               </>
             )}
+          </div>
+
           {renderWarehouseDocumentsList({
             title: 'Оформленные возвраты поставщику',
             emptyText: 'Нет возвратных накладных.',
