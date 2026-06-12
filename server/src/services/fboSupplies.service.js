@@ -370,6 +370,7 @@ class FboSuppliesService {
     supply.hasPackingDiscrepancy = sync.hasItems && !sync.allMatch;
     supply.packingDiscrepancies = sync.discrepancies;
     supply.statusRevertedByPacking = sync.reverted;
+    supply.statusPromotedByPacking = sync.promoted === true;
     return supply;
   }
 
