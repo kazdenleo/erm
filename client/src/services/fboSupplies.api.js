@@ -218,6 +218,11 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  syncMarketplaceContent: async (id) => {
+    const response = await api.post(`/fbo-supplies/${id}/sync-marketplace-content`, {}, { timeout: 180000 });
+    return response.data?.data ?? response.data;
+  },
+
   pullMarketplaceContent: async (id) => {
     const response = await api.post(
       `/fbo-supplies/${id}/pull-marketplace-content`,

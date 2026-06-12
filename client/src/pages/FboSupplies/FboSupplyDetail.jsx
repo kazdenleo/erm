@@ -95,6 +95,8 @@ export function FboSupplyDetail() {
   const [placementZonesMsg, setPlacementZonesMsg] = useState(null);
   const [submittingPacking, setSubmittingPacking] = useState(false);
   const [submitPackingMsg, setSubmitPackingMsg] = useState(null);
+  const [syncingMpContent, setSyncingMpContent] = useState(false);
+  const [syncMpContentMsg, setSyncMpContentMsg] = useState(null);
   const [pullingMpContent, setPullingMpContent] = useState(false);
   const [pullMpContentMsg, setPullMpContentMsg] = useState(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
@@ -407,6 +409,40 @@ export function FboSupplyDetail() {
     }
   }, [id, loadPacking]);
 
+  const handleSyncMarketplaceContent = async () => {
+    if (!supply) return;
+    const mp = supply.marketplace;
+    const mpLabel =
+      mp !== 'wb' && mp !== 'ym' && mp !== 'yandex'
+        ? 'Ozon'
+        : mp === 'wb'
+          ? 'Wildberries'
+          : 'маркетплейс';
+    if (
+      !window.confirm(
+        `Отправить изменённый состав поставки в ${mpLabel}? Количества на маркетплейсе будут приведены к значениям в ERM.`
+      )
+    ) {
+      return;
+    }
+    setSyncingMpContent(true);
+    setErr(null);
+    setSyncMpContentMsg(null);
+    try {
+      const data = await fboSuppliesApi.syncMarketplaceContent(id);
+      if (data?.supply) setSupply(data.supply);
+      else {
+        const fresh = await fboSuppliesApi.getById(id);
+        setSupply(fresh);
+      }
+      setSyncMpContentMsg(data?.message || 'Состав обновлён на маркетплейсе');
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось обновить состав на маркетплейсе');
+    } finally {
+      setSyncingMpContent(false);
+    }
+  };
+
   const handleSubmitPackingToMarketplace = async () => {
     if (!supply) return;
     const mp = supply.marketplace;
@@ -654,23 +690,32 @@ export function FboSupplyDetail() {
             {pullingMpContent ? 'Обновление…' : 'Обновить'}
           </Button>
         ) : null}
-        {canSyncOzonPlacementZones ? (
+        {supply.pendingMpContentUpdate && canSyncOzonPlacementZones ? (
+          <Button
+            variant="warning"
+            size="small"
+            disabled={syncingMpContent || saving}
+            onClick={handleSyncMarketplaceContent}
+            title="Отправить изменённый состав поставки (план) в Ozon"
+          >
+            {syncingMpContent ? 'Обновление…' : 'Обновить на маркетплейсе'}
+          </Button>
+        ) : null}
+        {isOzonSupply && canSyncOzonPlacementZones && supply.status === 'packed' ? (
           <Button
             variant="primary"
             size="small"
             disabled={submittingPacking || saving || !canSubmitPackingToMarketplace}
             onClick={handleSubmitPackingToMarketplace}
             title={
-              supply.status !== 'packed'
-                ? 'Доступно в статусе «Упакован» после полной сборки по плану'
-                : packingHasDiscrepancy
-                  ? 'Сначала устраните расхождения между планом и сборкой'
-                  : !(packing?.cargoUnits?.length > 0)
-                    ? 'Сначала создайте грузоместа на вкладке «Сборка»'
-                    : 'Отправить упакованный состав грузомест в Ozon'
+              packingHasDiscrepancy
+                ? 'Сначала устраните расхождения между планом и сборкой'
+                : !(packing?.cargoUnits?.length > 0)
+                  ? 'Сначала создайте грузоместа на вкладке «Сборка»'
+                  : 'Отправить упакованный состав грузомест в Ozon'
             }
           >
-            {submittingPacking ? 'Отправка…' : 'Обновить на маркетплейсе'}
+            {submittingPacking ? 'Отправка…' : 'Отправить состав на маркетплейс'}
           </Button>
         ) : null}
         <Button
@@ -713,6 +758,14 @@ export function FboSupplyDetail() {
       ) : null}
       {submitPackingMsg ? (
         <div className="alert alert-success">{submitPackingMsg}</div>
+      ) : null}
+      {syncMpContentMsg ? (
+        <div className="alert alert-success">{syncMpContentMsg}</div>
+      ) : null}
+      {supply.pendingMpContentUpdate && isOzonSupply ? (
+        <div className="alert alert-warning">
+          Состав поставки изменён в ERM и ещё не отправлен на Ozon. Нажмите «Обновить на маркетплейсе».
+        </div>
       ) : null}
       {pullMpContentMsg ? (
         <div className="alert alert-success">{pullMpContentMsg}</div>
