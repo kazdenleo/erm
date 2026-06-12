@@ -58,6 +58,16 @@ function fmtDt(iso) {
   });
 }
 
+function supplyExternalShipmentNumber(supply) {
+  return String(
+    supply?.externalShipmentNumber ?? supply?.external_shipment_number ?? ''
+  ).trim();
+}
+
+function supplyExternalSupplyId(supply) {
+  return String(supply?.externalSupplyId ?? supply?.external_supply_id ?? '').trim();
+}
+
 function itemToPrintProduct(it) {
   const catId = it.productCategoryId;
   return {
@@ -645,7 +655,14 @@ export function FboSupplyDetail() {
   const isOzonSupply =
     supply.marketplace !== 'wb' && supply.marketplace !== 'ym' && supply.marketplace !== 'yandex';
   const mpLabel = getMarketplaceLabel(supply.marketplace);
-  const canUseMarketplaceApi = Boolean(supply.externalShipmentNumber || supply.externalSupplyId);
+  const mpKey = String(supply.marketplace || 'ozon').toLowerCase();
+  const isFboMarketplaceSupply =
+    mpKey === 'ozon' || mpKey === 'wb' || mpKey === 'ym' || mpKey === 'yandex';
+  const hasMarketplaceExternalRef =
+    Boolean(supplyExternalShipmentNumber(supply)) || Boolean(supplyExternalSupplyId(supply));
+  const marketplaceRefBlockedTitle = hasMarketplaceExternalRef
+    ? null
+    : 'Укажите номер отгрузки или ID поставки в карточке';
   const canSubmitPackingToMarketplace =
     supply.status === 'packed' &&
     !packingHasDiscrepancy &&
@@ -670,40 +687,54 @@ export function FboSupplyDetail() {
         >
           {packingExporting ? 'Excel…' : 'Excel грузоместа'}
         </Button>
-        {canUseMarketplaceApi ? (
+        {isFboMarketplaceSupply ? (
           <Button
             variant="secondary"
             size="small"
-            disabled={pullingMpContent || saving}
+            disabled={pullingMpContent || saving || !hasMarketplaceExternalRef}
             onClick={handlePullMarketplaceContent}
-            title={`Подтянуть состав поставки с ${mpLabel} (грузоместа и упаковка не сбрасываются)`}
+            title={
+              marketplaceRefBlockedTitle ||
+              `Подтянуть состав поставки с ${mpLabel} (грузоместа и упаковка не сбрасываются)`
+            }
           >
             {pullingMpContent ? 'Обновление…' : 'Обновить'}
           </Button>
         ) : null}
-        {supply.pendingMpContentUpdate && canUseMarketplaceApi ? (
+        {supply.pendingMpContentUpdate && isFboMarketplaceSupply ? (
           <Button
             variant="warning"
             size="small"
-            disabled={syncingMpContent || saving}
+            disabled={syncingMpContent || saving || !hasMarketplaceExternalRef}
             onClick={handleSyncMarketplaceContent}
-            title={`Отправить изменённый состав поставки (план) в ${mpLabel}`}
+            title={
+              marketplaceRefBlockedTitle ||
+              `Отправить изменённый состав поставки (план) в ${mpLabel}`
+            }
           >
             {syncingMpContent ? 'Обновление…' : 'Обновить на маркетплейсе'}
           </Button>
         ) : null}
-        {canUseMarketplaceApi && supply.status === 'packed' ? (
+        {isFboMarketplaceSupply ? (
           <Button
             variant="primary"
             size="small"
-            disabled={submittingPacking || saving || !canSubmitPackingToMarketplace}
+            disabled={
+              submittingPacking ||
+              saving ||
+              !hasMarketplaceExternalRef ||
+              !canSubmitPackingToMarketplace
+            }
             onClick={handleSubmitPackingToMarketplace}
             title={
-              packingHasDiscrepancy
-                ? 'Сначала устраните расхождения между планом и сборкой'
-                : !(packing?.cargoUnits?.length > 0)
-                  ? 'Сначала создайте грузоместа на вкладке «Сборка»'
-                  : `Отправить упакованный состав грузомест в ${mpLabel}`
+              marketplaceRefBlockedTitle ||
+              (supply.status !== 'packed'
+                ? 'Доступно в статусе «Упакован» после полной сборки по плану'
+                : packingHasDiscrepancy
+                  ? 'Сначала устраните расхождения между планом и сборкой'
+                  : !(packing?.cargoUnits?.length > 0)
+                    ? 'Сначала создайте грузоместа на вкладке «Сборка»'
+                    : `Отправить упакованный состав грузомест в ${mpLabel}`)
             }
           >
             {submittingPacking ? 'Отправка…' : 'Отправить состав на маркетплейс'}
@@ -753,7 +784,7 @@ export function FboSupplyDetail() {
       {syncMpContentMsg ? (
         <div className="alert alert-success">{syncMpContentMsg}</div>
       ) : null}
-      {supply.pendingMpContentUpdate && canUseMarketplaceApi ? (
+      {supply.pendingMpContentUpdate && isFboMarketplaceSupply ? (
         <div className="alert alert-warning">
           Состав поставки изменён в ERM и ещё не отправлен на {mpLabel}. Нажмите «Обновить на маркетплейсе».
         </div>
