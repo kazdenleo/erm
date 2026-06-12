@@ -211,15 +211,15 @@ class FboSuppliesSubmitService {
       [supplyId]
     );
 
-    const supply = await fboSuppliesService.getById(supplyId, { profileId });
+    const updatedSupply = await fboSuppliesService.getById(supplyId, { profileId });
 
     return {
       marketplace: 'ozon',
       operationId,
       cargoCount: body.cargoes.length,
       poll: pollResult,
-      supply,
-      supplyStatus: supply.status,
+      supply: updatedSupply,
+      supplyStatus: updatedSupply.status,
       message:
         pollResult?.message ||
         (pollResult?.ok
