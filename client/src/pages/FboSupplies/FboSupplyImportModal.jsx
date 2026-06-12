@@ -82,12 +82,7 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
       setCandidates(list);
       setSelected(new Set(list.filter((c) => !c.alreadyImported).map((c) => c.importKey)));
       if (!list.length) {
-        const mpLabel =
-          marketplace === 'wb'
-            ? 'Wildberries'
-            : marketplace === 'ym'
-              ? 'Яндекс Маркет'
-              : 'Ozon';
+        const mpLabel = getMarketplaceLabel(marketplace);
         setErr(
           `За выбранный период ${mpLabel} не вернул поставок. Проверьте ключ в «Интеграции»${
             marketplace === 'wb' ? ' (токен категории «Поставки» FBW)' : ''
@@ -203,6 +198,12 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
           <p className="text-muted small mb-2">
             Wildberries: поставки на склад WB (FBW). Нужен API-токен категории «Поставки» в разделе
             «Интеграции».
+          </p>
+        ) : null}
+        {mode === 'api' && marketplace === 'ym' ? (
+          <p className="text-muted small mb-2">
+            Яндекс Маркет: заявки на поставку (FBY). В «Интеграции» нужны API-ключ и campaign_id с
+            доступом «Заявки на поставку».
           </p>
         ) : null}
 

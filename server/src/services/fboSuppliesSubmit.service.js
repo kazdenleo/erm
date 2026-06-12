@@ -1,5 +1,5 @@
 /**
- * Отправка состава упакованных грузомест на маркетплейс (Ozon FBO).
+ * Отправка состава упакованных грузомест на маркетплейс (FBO).
  */
 
 import { query } from '../config/database.js';
@@ -16,6 +16,22 @@ function normalizeMp(marketplace) {
   if (m === 'wb' || m === 'wildberries') return 'wb';
   if (m === 'ym' || m === 'yandex') return 'ym';
   return 'ozon';
+}
+
+function mpLabelRu(mp) {
+  if (mp === 'wb') return 'Wildberries';
+  if (mp === 'ym') return 'Яндекс Маркет';
+  return 'Ozon';
+}
+
+async function markSupplyReadyForShipment(supplyId, { profileId } = {}) {
+  await query(
+    `UPDATE fbo_supplies
+     SET status = 'ready_for_supply', updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [supplyId]
+  );
+  return fboSuppliesService.getById(supplyId, { profileId });
 }
 
 function formatOzonExpiry(value) {
@@ -81,7 +97,7 @@ async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts
 function buildOzonCargoesBody(supply, packing) {
   const ozonSupplyId = supply.externalSupplyId;
   if (!ozonSupplyId) {
-    const err = new Error('У поставки не указан ID поставки Ozon (поле «ID поставки Ozon»)');
+    const err = new Error('У поставки не указан ID поставки на маркетплейсе (поле «ID поставки»)');
     err.statusCode = 400;
     throw err;
   }
@@ -148,6 +164,7 @@ class FboSuppliesSubmitService {
   async submitPackingToMarketplace(supplyId, { profileId } = {}) {
     const supply = await fboSuppliesService.getById(supplyId, { profileId });
     const mp = normalizeMp(supply.marketplace);
+    const mpLabel = mpLabelRu(mp);
 
     if (supply.status !== 'packed') {
       const err = new Error(
@@ -157,23 +174,33 @@ class FboSuppliesSubmitService {
       throw err;
     }
 
-    if (mp === 'wb') {
-      const err = new Error(
-        'Отправка состава упаковки на Wildberries через API пока недоступна — выгрузите Excel и загрузите в личном кабинете WB'
-      );
-      err.statusCode = 400;
-      err.code = 'WB_SUBMIT_NOT_SUPPORTED';
-      throw err;
-    }
-    if (mp === 'ym') {
-      const err = new Error('Отправка состава на Яндекс Маркет через API не поддерживается');
-      err.statusCode = 400;
-      throw err;
-    }
-
     assertPackingReadyForMarketplaceSubmit(await evaluateSupplyPacking(supplyId));
 
     const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
+    const cargoCount = (packing?.cargoUnits || []).filter((c) => (c.contents || []).length > 0).length;
+
+    if (mp === 'wb') {
+      const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
+      return {
+        marketplace: 'wb',
+        cargoCount,
+        supply: updatedSupply,
+        supplyStatus: updatedSupply.status,
+        message: `Сборка зафиксирована (${cargoCount} грузомест). Статус: «Готов к отгрузке». Выгрузите Excel грузомест и загрузите файл в личном кабинете ${mpLabel}.`,
+      };
+    }
+
+    if (mp === 'ym') {
+      const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
+      return {
+        marketplace: 'ym',
+        cargoCount,
+        supply: updatedSupply,
+        supplyStatus: updatedSupply.status,
+        message: `Сборка зафиксирована (${cargoCount} грузомест). Статус: «Готов к отгрузке». Укажите состав грузомест в личном кабинете ${mpLabel}.`,
+      };
+    }
+
     const body = buildOzonCargoesBody(supply, packing);
 
     const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
@@ -204,14 +231,7 @@ class FboSuppliesSubmitService {
       pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
     }
 
-    await query(
-      `UPDATE fbo_supplies
-       SET status = 'ready_for_supply', updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1`,
-      [supplyId]
-    );
-
-    const updatedSupply = await fboSuppliesService.getById(supplyId, { profileId });
+    const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
 
     return {
       marketplace: 'ozon',
@@ -223,8 +243,8 @@ class FboSuppliesSubmitService {
       message:
         pollResult?.message ||
         (pollResult?.ok
-          ? `Грузоместа отправлены в Ozon (${body.cargoes.length} шт.). Статус: «Готов к отгрузке».`
-          : 'Запрос на установку грузомест отправлен в Ozon. Статус: «Готов к отгрузке».'),
+          ? `Грузоместа отправлены в ${mpLabel} (${body.cargoes.length} шт.). Статус: «Готов к отгрузке».`
+          : `Запрос на установку грузомест отправлен в ${mpLabel}. Статус: «Готов к отгрузке».`),
     };
   }
 }

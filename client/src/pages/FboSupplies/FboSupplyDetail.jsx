@@ -373,9 +373,10 @@ export function FboSupplyDetail() {
   }, [id]);
 
   const handlePullMarketplaceContent = useCallback(async () => {
+    const mpLabel = getMarketplaceLabel(supply?.marketplace);
     if (
       !window.confirm(
-        'Обновить состав поставки с Ozon? План и новые позиции подтянутся с маркетплейса. Упаковка в грузоместах сохранится.'
+        `Обновить состав поставки с ${mpLabel}? План и новые позиции подтянутся с маркетплейса. Упаковка в грузоместах сохранится.`
       )
     ) {
       return;
@@ -399,25 +400,19 @@ export function FboSupplyDetail() {
       if (data?.unchanged > 0) parts.push(`без изменений ${data.unchanged}`);
       setPullMpContentMsg(
         parts.length
-          ? `Состав обновлён с Ozon: ${parts.join(', ')}. Упаковка сохранена.`
-          : 'Состав поставки обновлён с Ozon. Упаковка сохранена.'
+          ? `Состав обновлён с ${mpLabel}: ${parts.join(', ')}. Упаковка сохранена.`
+          : `Состав поставки обновлён с ${mpLabel}. Упаковка сохранена.`
       );
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить состав с маркетплейса');
     } finally {
       setPullingMpContent(false);
     }
-  }, [id, loadPacking]);
+  }, [id, loadPacking, supply?.marketplace]);
 
   const handleSyncMarketplaceContent = async () => {
     if (!supply) return;
-    const mp = supply.marketplace;
-    const mpLabel =
-      mp !== 'wb' && mp !== 'ym' && mp !== 'yandex'
-        ? 'Ozon'
-        : mp === 'wb'
-          ? 'Wildberries'
-          : 'маркетплейс';
+    const mpLabel = getMarketplaceLabel(supply.marketplace);
     if (
       !window.confirm(
         `Отправить изменённый состав поставки в ${mpLabel}? Количества на маркетплейсе будут приведены к значениям в ERM.`
@@ -445,10 +440,7 @@ export function FboSupplyDetail() {
 
   const handleSubmitPackingToMarketplace = async () => {
     if (!supply) return;
-    const mp = supply.marketplace;
-    const isOzon =
-      mp !== 'wb' && mp !== 'ym' && mp !== 'yandex';
-    const mpLabel = isOzon ? 'Ozon' : mp === 'wb' ? 'Wildberries' : 'маркетплейс';
+    const mpLabel = getMarketplaceLabel(supply.marketplace);
     if (
       !window.confirm(
         `Отправить упаковку по грузоместам в ${mpLabel}? Сборка должна совпадать с планом.`
@@ -652,10 +644,9 @@ export function FboSupplyDetail() {
   const statusIdx = FBO_SUPPLY_STATUS_ORDER.indexOf(supply.status);
   const isOzonSupply =
     supply.marketplace !== 'wb' && supply.marketplace !== 'ym' && supply.marketplace !== 'yandex';
-  const canSyncOzonPlacementZones =
-    isOzonSupply && Boolean(supply.externalShipmentNumber || supply.externalSupplyId);
+  const mpLabel = getMarketplaceLabel(supply.marketplace);
+  const canUseMarketplaceApi = Boolean(supply.externalShipmentNumber || supply.externalSupplyId);
   const canSubmitPackingToMarketplace =
-    isOzonSupply &&
     supply.status === 'packed' &&
     !packingHasDiscrepancy &&
     (packing?.cargoUnits?.length ?? 0) > 0;
@@ -679,29 +670,29 @@ export function FboSupplyDetail() {
         >
           {packingExporting ? 'Excel…' : 'Excel грузоместа'}
         </Button>
-        {canSyncOzonPlacementZones ? (
+        {canUseMarketplaceApi ? (
           <Button
             variant="secondary"
             size="small"
             disabled={pullingMpContent || saving}
             onClick={handlePullMarketplaceContent}
-            title="Обновить состав поставки с Ozon (грузоместа и упаковка не сбрасываются)"
+            title={`Подтянуть состав поставки с ${mpLabel} (грузоместа и упаковка не сбрасываются)`}
           >
             {pullingMpContent ? 'Обновление…' : 'Обновить'}
           </Button>
         ) : null}
-        {supply.pendingMpContentUpdate && canSyncOzonPlacementZones ? (
+        {supply.pendingMpContentUpdate && canUseMarketplaceApi ? (
           <Button
             variant="warning"
             size="small"
             disabled={syncingMpContent || saving}
             onClick={handleSyncMarketplaceContent}
-            title="Отправить изменённый состав поставки (план) в Ozon"
+            title={`Отправить изменённый состав поставки (план) в ${mpLabel}`}
           >
             {syncingMpContent ? 'Обновление…' : 'Обновить на маркетплейсе'}
           </Button>
         ) : null}
-        {isOzonSupply && canSyncOzonPlacementZones && supply.status === 'packed' ? (
+        {canUseMarketplaceApi && supply.status === 'packed' ? (
           <Button
             variant="primary"
             size="small"
@@ -712,7 +703,7 @@ export function FboSupplyDetail() {
                 ? 'Сначала устраните расхождения между планом и сборкой'
                 : !(packing?.cargoUnits?.length > 0)
                   ? 'Сначала создайте грузоместа на вкладке «Сборка»'
-                  : 'Отправить упакованный состав грузомест в Ozon'
+                  : `Отправить упакованный состав грузомест в ${mpLabel}`
             }
           >
             {submittingPacking ? 'Отправка…' : 'Отправить состав на маркетплейс'}
@@ -762,9 +753,9 @@ export function FboSupplyDetail() {
       {syncMpContentMsg ? (
         <div className="alert alert-success">{syncMpContentMsg}</div>
       ) : null}
-      {supply.pendingMpContentUpdate && isOzonSupply ? (
+      {supply.pendingMpContentUpdate && canUseMarketplaceApi ? (
         <div className="alert alert-warning">
-          Состав поставки изменён в ERM и ещё не отправлен на Ozon. Нажмите «Обновить на маркетплейсе».
+          Состав поставки изменён в ERM и ещё не отправлен на {mpLabel}. Нажмите «Обновить на маркетплейсе».
         </div>
       ) : null}
       {pullMpContentMsg ? (
@@ -926,20 +917,32 @@ export function FboSupplyDetail() {
             placeholder="Номер с маркетплейса"
           />
         </div>
-        {isOzonSupply ? (
-          <div>
-            <label>ID поставки Ozon</label>
+        <div>
+            <label>
+              {isOzonSupply
+                ? 'ID поставки Ozon'
+                : supply.marketplace === 'wb'
+                  ? 'ID поставки WB'
+                  : supply.marketplace === 'ym' || supply.marketplace === 'yandex'
+                    ? 'ID заявки Яндекс Маркет'
+                    : 'ID поставки на маркетплейсе'}
+            </label>
             <input
               className="form-control form-control-sm"
               value={supply.externalSupplyId || ''}
               onChange={(e) => setSupply((s) => ({ ...s, externalSupplyId: e.target.value }))}
               onBlur={() => saveField({ externalSupplyId: supply.externalSupplyId || null })}
               disabled={saving}
-              placeholder="supply_id для API Ozon"
-              title="Нужен для отправки грузомест в Ozon"
+              placeholder={
+                isOzonSupply
+                  ? 'supply_id для API Ozon'
+                  : supply.marketplace === 'wb'
+                    ? 'supplyID или preorderID'
+                    : 'requestId Яндекс Маркета'
+              }
+              title={`Нужен для обмена данными с ${mpLabel}`}
             />
-          </div>
-        ) : null}
+        </div>
         <div>
           <label>Организация</label>
           <select

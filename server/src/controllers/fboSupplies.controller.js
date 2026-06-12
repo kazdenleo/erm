@@ -167,7 +167,7 @@ class FboSuppliesController {
     try {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const data = await fboSuppliesImportService.pullOzonSupplyContentFromMarketplace(id, {
+      const data = await fboSuppliesImportService.pullMarketplaceContentFromMarketplace(id, {
         profileId,
       });
       return res.status(200).json({ ok: true, data });

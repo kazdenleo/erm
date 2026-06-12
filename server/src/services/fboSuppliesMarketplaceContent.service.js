@@ -1,5 +1,5 @@
 /**
- * Синхронизация товарного состава поставки FBO с маркетплейсом (Ozon).
+ * Синхронизация товарного состава поставки FBO с маркетплейсом.
  */
 
 import { query } from '../config/database.js';
@@ -11,6 +11,12 @@ function normalizeMp(marketplace) {
   if (m === 'wb' || m === 'wildberries') return 'wb';
   if (m === 'ym' || m === 'yandex') return 'ym';
   return 'ozon';
+}
+
+function mpLabelRu(mp) {
+  if (mp === 'wb') return 'Wildberries';
+  if (mp === 'ym') return 'Яндекс Маркет';
+  return 'Ozon';
 }
 
 function extractOzonOperationId(data) {
@@ -130,24 +136,20 @@ class FboSuppliesMarketplaceContentService {
   async syncSupplyContentToMarketplace(supplyId, { profileId } = {}) {
     const supply = await fboSuppliesService.getById(supplyId, { profileId });
     const mp = normalizeMp(supply.marketplace);
+    const mpLabel = mpLabelRu(mp);
 
-    if (mp === 'wb') {
+    if (mp === 'wb' || mp === 'ym') {
       const err = new Error(
-        'Обновление состава поставки на Wildberries через API пока недоступно — измените состав в личном кабинете WB'
+        `Обновление состава поставки на ${mpLabel} через API недоступно — измените состав в личном кабинете маркетплейса`
       );
       err.statusCode = 400;
-      err.code = 'WB_CONTENT_SYNC_NOT_SUPPORTED';
-      throw err;
-    }
-    if (mp === 'ym') {
-      const err = new Error('Обновление состава на Яндекс Маркет через API не поддерживается');
-      err.statusCode = 400;
+      err.code = mp === 'wb' ? 'WB_CONTENT_SYNC_NOT_SUPPORTED' : 'YM_CONTENT_SYNC_NOT_SUPPORTED';
       throw err;
     }
 
     const ozonSupplyId = supply.externalSupplyId;
     if (!ozonSupplyId) {
-      const err = new Error('У поставки не указан ID поставки Ozon');
+      const err = new Error('У поставки не указан ID поставки на маркетплейсе');
       err.statusCode = 400;
       throw err;
     }
@@ -228,8 +230,8 @@ class FboSuppliesMarketplaceContentService {
       message:
         pollResult?.message ||
         (pollResult?.status === 'PENDING'
-          ? 'Запрос на обновление состава отправлен в Ozon'
-          : 'Состав поставки обновлён на Ozon'),
+          ? `Запрос на обновление состава отправлен в ${mpLabel}`
+          : `Состав поставки обновлён на ${mpLabel}`),
       operationId: operationId ?? null,
       status: pollResult?.status ?? 'SUBMITTED',
       itemCount: items.length,
