@@ -11,7 +11,7 @@ export const FBO_SUPPLY_STATUSES = [
 export const FBO_SUPPLY_STATUS_LABELS = {
   new: 'Новая',
   packed: 'Упакован',
-  ready_for_supply: 'Готов к поставке',
+  ready_for_supply: 'Готов к отгрузке',
   shipped: 'Отгружен',
   closed: 'Закрыт',
   return: 'Возврат',

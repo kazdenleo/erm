@@ -30,6 +30,17 @@ export async function evaluateSupplyPacking(supplyId) {
   for (const row of lines) {
     const planned = Number(row.planned) || 0;
     const packed = Number(row.packed) || 0;
+    if (planned <= 0) {
+      if (packed > 0) {
+        discrepancies.push({
+          supplyItemId: Number(row.supply_item_id),
+          planned,
+          packed,
+          discrepancy: packed - planned,
+        });
+      }
+      continue;
+    }
     if (packed !== planned) {
       discrepancies.push({
         supplyItemId: Number(row.supply_item_id),
@@ -41,7 +52,7 @@ export async function evaluateSupplyPacking(supplyId) {
   }
   const hasPlannedQty = lines.some((row) => (Number(row.planned) || 0) > 0);
   return {
-    allMatch: lines.length > 0 && discrepancies.length === 0,
+    allMatch: hasPlannedQty && discrepancies.length === 0,
     hasItems: lines.length > 0,
     hasPlannedQty,
     discrepancies,
@@ -110,7 +121,7 @@ export function assertCanSetPackedStatus(packingEval) {
 }
 
 export function assertCanSetReadyForSupply(packingEval) {
-  assertPackingComplete(packingEval, 'Готов к поставке');
+  assertPackingComplete(packingEval, 'Готов к отгрузке');
 }
 
 export function assertPackingReadyForMarketplaceSubmit(packingEval) {

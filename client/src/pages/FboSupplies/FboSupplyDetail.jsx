@@ -425,6 +425,14 @@ export function FboSupplyDetail() {
     setSubmitPackingMsg(null);
     try {
       const data = await fboSuppliesApi.submitPackingToMarketplace(id);
+      if (data?.supply) {
+        setSupply(data.supply);
+      } else if (data?.supplyStatus) {
+        setSupply((s) => (s ? { ...s, status: data.supplyStatus } : s));
+      } else {
+        const fresh = await fboSuppliesApi.getById(id);
+        setSupply(fresh);
+      }
       setSubmitPackingMsg(data?.message || 'Состав отправлен на маркетплейс');
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось отправить состав');
@@ -474,7 +482,7 @@ export function FboSupplyDetail() {
       setErr(
         newStatus === 'packed'
           ? 'Нельзя перевести в «Упакован»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
-          : 'Нельзя перевести в «Готов к поставке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
+          : 'Нельзя перевести в «Готов к отгрузке»: есть расхождения между планом и сборкой. Упакуйте по каждой позиции ровно запланированное количество.'
       );
       return;
     }
@@ -696,7 +704,7 @@ export function FboSupplyDetail() {
       {packingHasDiscrepancy ? (
         <div className="alert alert-warning">
           Есть расхождения между планом и сборкой — завершите упаковку всех позиций, чтобы перейти в
-          «Упакован» или отправить состав на маркетплейс.
+          «Упакован» / «Готов к отгрузке» или отправить состав на маркетплейс.
         </div>
       ) : null}
       {err && <div className="alert alert-danger">{err}</div>}

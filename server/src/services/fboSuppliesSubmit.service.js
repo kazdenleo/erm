@@ -2,6 +2,7 @@
  * Отправка состава упакованных грузомест на маркетплейс (Ozon FBO).
  */
 
+import { query } from '../config/database.js';
 import integrationsService from './integrations.service.js';
 import fboSuppliesService from './fboSupplies.service.js';
 import fboSuppliesPackingService from './fboSuppliesPacking.service.js';
@@ -203,16 +204,27 @@ class FboSuppliesSubmitService {
       pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
     }
 
+    await query(
+      `UPDATE fbo_supplies
+       SET status = 'ready_for_supply', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [supplyId]
+    );
+
+    const supply = await fboSuppliesService.getById(supplyId, { profileId });
+
     return {
       marketplace: 'ozon',
       operationId,
       cargoCount: body.cargoes.length,
       poll: pollResult,
+      supply,
+      supplyStatus: supply.status,
       message:
         pollResult?.message ||
         (pollResult?.ok
-          ? `Грузоместа отправлены в Ozon (${body.cargoes.length} шт.)`
-          : 'Запрос на установку грузомест отправлен в Ozon'),
+          ? `Грузоместа отправлены в Ozon (${body.cargoes.length} шт.). Статус: «Готов к отгрузке».`
+          : 'Запрос на установку грузомест отправлен в Ozon. Статус: «Готов к отгрузке».'),
     };
   }
 }

@@ -1,7 +1,7 @@
 export const FBO_SUPPLY_STATUS_LABELS = {
   new: 'Новая',
   packed: 'Упакован',
-  ready_for_supply: 'Готов к поставке',
+  ready_for_supply: 'Готов к отгрузке',
   shipped: 'Отгружен',
   closed: 'Закрыт',
   return: 'Возврат',
@@ -35,7 +35,7 @@ export function getNextFboSupplyStatus(current) {
 /** Статусы в селекте (без «Возврат» — редкий кейс). */
 export const FBO_SUPPLY_STATUS_OPTIONS = FBO_SUPPLY_STATUS_ORDER.filter((s) => s !== 'return');
 
-/** Можно выбрать статус (запрет «Упакован» и «Готов к поставке» при расхождениях). */
+/** Можно выбрать статус (запрет «Упакован» и «Готов к отгрузке» при расхождениях). */
 export function canSelectFboSupplyStatus(status, hasDiscrepancy) {
   if (!hasDiscrepancy) return true;
   return status !== 'packed' && status !== 'ready_for_supply';
@@ -56,7 +56,12 @@ export function hasPackingDiscrepancy(supply, packing) {
   if (supply?.packingAllMatch === false) return true;
   const stats = packing?.itemStats;
   if (Array.isArray(stats) && stats.length) {
-    return stats.some((s) => Number(s.packed) !== Number(s.planned));
+    return stats.some((s) => {
+      const planned = Number(s.planned) || 0;
+      const packed = Number(s.packed) || 0;
+      if (planned <= 0) return packed > 0;
+      return packed !== planned;
+    });
   }
   return false;
 }
