@@ -1171,13 +1171,15 @@ export function Orders() {
     try {
       const procurementItems = [];
       const seenProcKeys = new Set();
-      for (const r of sourceRows) {
-        for (const o of ordersArrayForPurchaseRow(r)) {
+      for (const item of items) {
+        for (const o of item.sourceOrders || []) {
           const dk = procurementStatusUpdateDedupeKey(o);
           if (seenProcKeys.has(dk)) continue;
           seenProcKeys.add(dk);
-          if (!isOrderStatusEligibleForProcurement(o.marketplace, o.status)) continue;
-          procurementItems.push({ marketplace: o.marketplace, orderId: o.orderId });
+          procurementItems.push({
+            marketplace: o.marketplace,
+            orderId: o.orderId,
+          });
         }
       }
       const note =

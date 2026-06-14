@@ -1621,8 +1621,6 @@ class PurchasesService {
     { userId, profileId, submitToSupplier = true } = {}
   ) {
     return runWithLockRetry(async () => {
-      const refs = Array.isArray(procurementItems) ? procurementItems : [];
-
       // Сначала закупка — иначе при таймауте заказы уже «В закупке», а документа нет.
       let purchaseId;
       let resolvedSupplierId =
@@ -1644,8 +1642,20 @@ class PurchasesService {
       }
 
       let procurement = { updated: 0, skipped: 0 };
-      if (refs.length > 0) {
-        const bulk = await ordersService.bulkSetToProcurement(refs, profileId, {
+      const refsFromItems = collectSourceOrdersFromPurchaseItems(items);
+      const refsForProcurement =
+        refsFromItems.length > 0
+          ? refsFromItems
+          : (Array.isArray(procurementItems) ? procurementItems : [])
+              .filter((it) => it?.marketplace != null && it?.orderId != null)
+              .map((it) => ({
+                marketplace: orderMarketplaceToDb(it.marketplace),
+                orderId: String(it.orderId).trim(),
+              }))
+              .filter((it) => it.marketplace && it.orderId);
+
+      if (refsForProcurement.length > 0) {
+        const bulk = await ordersService.bulkSetToProcurement(refsForProcurement, profileId, {
           skipReserveReapply: true,
         });
         procurement = { updated: bulk.updated, skipped: bulk.skipped };
@@ -1964,7 +1974,10 @@ class PurchasesService {
         sourceListDeleted = fullSource;
         ordersToRelease = fullSource;
         await client.query(`DELETE FROM purchase_items WHERE id = $1`, [lineId]);
-        await revertInProcurementOrdersFromSourceListInTx(client, fullSource, { profileId: pid });
+        await revertInProcurementOrdersFromSourceListInTx(client, fullSource, {
+          profileId: pid,
+          excludePurchaseId: purId,
+        });
       } else {
         mode = newExpected === rec ? 'shrink' : 'reduce';
         await client.query(
@@ -1972,7 +1985,10 @@ class PurchasesService {
           [newExpected, JSON.stringify(keptSource), lineId]
         );
         if (revertSlice.length > 0) {
-          await revertInProcurementOrdersFromSourceListInTx(client, revertSlice, { profileId: pid });
+          await revertInProcurementOrdersFromSourceListInTx(client, revertSlice, {
+            profileId: pid,
+            excludePurchaseId: purId,
+          });
         }
         ordersToRelease = revertSlice;
       }
