@@ -9,7 +9,7 @@ import { readData, writeData } from '../utils/storage.js';
 import repositoryFactory from '../config/repository-factory.js';
 import integrationsService from './integrations.service.js';
 import productsService from './products.service.js';
-import { getCache, setCache } from '../config/redis.js';
+import { getCache, setCache, deleteCache } from '../config/redis.js';
 import logger from '../utils/logger.js';
 import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
 
@@ -166,9 +166,9 @@ class SupplierStocksService {
         throw err;
       }
 
-      // Если данных нет, возвращаем null вместо ошибки
-      // Это нормальная ситуация - у поставщика может не быть товара на складе
+      // Если данных нет — обнуляем кэш (иначе остаётся устаревший stock>0 до 24 ч)
       if (!stockData) {
+        await this._markSupplierStockEmpty(apiSupplierCode, supplier, sku);
         return null;
       }
 
@@ -254,6 +254,7 @@ class SupplierStocksService {
         logger.warn(`[Supplier Stocks] Available warehouses from API: ${stockData.warehouses.map(w => w.city || w.name).join(', ')}`);
         logger.warn(`[Supplier Stocks] ⚠️ WARNING: No matches found. Returning null (strict filtering).`);
         logger.info(`[Supplier Stocks] 💡 Tip: Update supplier config with correct warehouse names from the list above.`);
+        await this._markSupplierStockEmpty(apiSupplierCode, supplier, sku);
         return null;
       }
 
@@ -281,6 +282,14 @@ class SupplierStocksService {
     if (sameDayDelivery) {
       if (stockData.deliveryDays > 0) {
         console.log(`[Supplier Stocks] Excluding ${supplier}:${sku} - deliveryDays=${stockData.deliveryDays} (sameDayDelivery=true requires 0 days)`);
+        await this._persistSupplierStockToCaches(apiSupplierCode, supplier, sku, {
+          stock: 0,
+          stockName: stockData.stockName,
+          deliveryDays: stockData.deliveryDays,
+          price: stockData.price,
+          source: 'api',
+          warehouses: stockData.warehouses || null
+        });
         return {
           supplier,
           sku,
@@ -295,6 +304,14 @@ class SupplierStocksService {
       }
     } else if (stockData.deliveryDays > 1) {
       console.log(`[Supplier Stocks] Excluding ${supplier}:${sku} - deliveryDays=${stockData.deliveryDays} (exceeds 1 day)`);
+      await this._persistSupplierStockToCaches(apiSupplierCode, supplier, sku, {
+        stock: 0,
+        stockName: stockData.stockName,
+        deliveryDays: stockData.deliveryDays,
+        price: stockData.price,
+        source: 'api',
+        warehouses: stockData.warehouses || null
+      });
       return {
         supplier,
         sku,
@@ -325,6 +342,49 @@ class SupplierStocksService {
     }
 
     return result;
+  }
+
+  /** Обнулить кэш поставщика, когда API не вернул остаток (товара нет у поставщика). */
+  async _markSupplierStockEmpty(apiSupplierCode, supplier, sku) {
+    const empty = {
+      stock: 0,
+      stockName: `Склад ${supplier}`,
+      deliveryDays: 0,
+      price: null,
+      source: 'api',
+      warehouses: null
+    };
+    try {
+      const redisKey = `supplier_stock:${apiSupplierCode}:${sku}`;
+      await deleteCache(redisKey);
+    } catch (e) {
+      logger.error('[Supplier Stocks] Redis clear error:', e.message);
+    }
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      try {
+        const supplierStocksPg = await import('./supplier_stocks.service.js');
+        const product = await productsService.getBySku(sku);
+        if (product) {
+          await supplierStocksPg.default.upsert(apiSupplierCode, sku, {
+            ...empty,
+            cached_at: new Date()
+          });
+        }
+      } catch (error) {
+        logger.error(`[Supplier Stocks] PostgreSQL zero-stock save for ${supplier}:${sku}:`, error.message);
+      }
+    }
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      try {
+        const stockCache = (await readData('supplierStockCache')) || {};
+        if (stockCache[apiSupplierCode]?.[sku]) {
+          delete stockCache[apiSupplierCode][sku];
+          await writeData('supplierStockCache', stockCache);
+        }
+      } catch (error) {
+        logger.error('[Supplier Stocks] File cache clear error:', error.message);
+      }
+    }
   }
 
   /** Сохранить остаток в PostgreSQL и файловый кэш (после фильтрации по складам). */
