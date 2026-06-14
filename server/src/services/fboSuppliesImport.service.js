@@ -2928,6 +2928,50 @@ class FboSuppliesImportService {
       updatePlacement: true,
     });
   }
+
+  /**
+   * ID заявки (order_id) и поставки (supply_id) Ozon для API обновления состава / грузомест.
+   */
+  async resolveOzonSupplyApiIds(supplyId, { profileId } = {}) {
+    const supply = await fboSuppliesService.getById(supplyId, { profileId });
+    const organizationId = supply.organizationId ?? null;
+    const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
+      profileId,
+      organizationId,
+    });
+    const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
+    const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
+    if (!clientId || !apiKey) {
+      const err = new Error(
+        'Не настроены Client ID и API Key Ozon для организации поставки. Укажите их в «Интеграции».'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts);
+    const orderId = Number(ozonSupplyOrderId(order));
+    const supplyIdRaw = ozonSupply?.supply_id ?? ozonSupply?.id;
+    const ozonSupplyId = Number(supplyIdRaw);
+
+    if (!Number.isFinite(orderId) || orderId <= 0) {
+      const err = new Error(
+        'Не удалось определить order_id заявки Ozon — проверьте номер отгрузки и ID поставки в карточке'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!Number.isFinite(ozonSupplyId) || ozonSupplyId <= 0) {
+      const err = new Error(
+        'Не удалось определить supply_id поставки Ozon — проверьте ID поставки в карточке'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    return { orderId, supplyId: ozonSupplyId, order, ozonSupply };
+  }
 }
 
 export default new FboSuppliesImportService();

@@ -5,6 +5,7 @@
 import { query } from '../config/database.js';
 import integrationsService from './integrations.service.js';
 import fboSuppliesService from './fboSupplies.service.js';
+import fboSuppliesImportService from './fboSuppliesImport.service.js';
 
 function normalizeMp(marketplace) {
   const m = String(marketplace || 'ozon').trim().toLowerCase();
@@ -38,17 +39,17 @@ function extractOzonContentUpdateStatus(data) {
   return { status, errors, raw: root };
 }
 
-function resolveOzonItemSku(item) {
+function resolveOzonContentUpdateSku(item) {
   const mpProduct = item.mpProductId ?? item.mp_product_id;
-  const n = Number(mpProduct);
-  if (Number.isFinite(n) && n > 0) return { sku: n };
+  const fromMp = Number(mpProduct);
+  if (Number.isFinite(fromMp) && fromMp > 0) return fromMp;
+
   const offer = item.sku ?? item.mpOfferId ?? item.mp_offer_id;
   if (offer != null && String(offer).trim() !== '') {
     const asNum = Number(offer);
     if (Number.isFinite(asNum) && asNum > 0 && String(asNum) === String(offer).trim()) {
-      return { sku: asNum };
+      return asNum;
     }
-    return { offer_id: String(offer).trim() };
   }
   return null;
 }
@@ -59,16 +60,16 @@ function buildOzonContentItems(supplyItems) {
   for (const it of supplyItems || []) {
     const qty = Number(it.quantity);
     if (!qty || qty <= 0) continue;
-    const skuPart = resolveOzonItemSku(it);
-    if (!skuPart) {
+    const sku = resolveOzonContentUpdateSku(it);
+    if (!sku) {
       missing.push(it.sku || it.productName || it.name || `строка #${it.id}`);
       continue;
     }
-    items.push({ ...skuPart, quantity: qty });
+    items.push({ sku, quantity: qty, quant: qty });
   }
   if (missing.length) {
     const err = new Error(
-      `Не удалось сопоставить товары с Ozon (нет SKU/артикула): ${missing.slice(0, 5).join(', ')}${
+      `Не удалось сопоставить товары с Ozon (нужен числовой SKU Ozon): ${missing.slice(0, 5).join(', ')}${
         missing.length > 5 ? '…' : ''
       }`
     );
@@ -147,17 +148,23 @@ class FboSuppliesMarketplaceContentService {
       throw err;
     }
 
-    const ozonSupplyId = supply.externalSupplyId;
-    if (!ozonSupplyId) {
-      const err = new Error('У поставки не указан ID поставки на маркетплейсе');
+    const extSupply =
+      supply.externalSupplyId != null ? String(supply.externalSupplyId).trim() : '';
+    const extNum =
+      supply.externalShipmentNumber != null ? String(supply.externalShipmentNumber).trim() : '';
+    if (!extSupply && !extNum) {
+      const err = new Error('У поставки не указан номер отгрузки или ID поставки на Ozon');
       err.statusCode = 400;
       throw err;
     }
 
     const items = buildOzonContentItems(supply.items);
-    const supplyIdNum = Number(ozonSupplyId);
+    const { orderId, supplyId: ozonSupplyId } =
+      await fboSuppliesImportService.resolveOzonSupplyApiIds(supplyId, { profileId });
+
     const body = {
-      supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
+      order_id: orderId,
+      supply_id: ozonSupplyId,
       items,
     };
 
