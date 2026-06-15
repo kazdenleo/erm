@@ -246,6 +246,15 @@ export const authController = {
                 procurement_status_enabled: profile.procurement_status_enabled !== false,
                 kits_enabled: profile.kits_enabled !== false,
                 production_enabled: profile.production_enabled !== false,
+                fbo_enabled: profile.fbo_enabled === true,
+                fbo_deduction_warehouse_id:
+                  profile.fbo_deduction_warehouse_id != null
+                    ? Number(profile.fbo_deduction_warehouse_id)
+                    : null,
+                manual_orders_warehouse_id:
+                  profile.manual_orders_warehouse_id != null
+                    ? Number(profile.manual_orders_warehouse_id)
+                    : null,
               }
             : null,
           features: {},
