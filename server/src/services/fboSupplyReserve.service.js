@@ -1,6 +1,6 @@
 /**
- * Резерв остатков под поставки FBO: только свободное наличие на складе списания,
- * очередь по дате готовности (ready_at) — сначала более ранние поставки.
+ * Резерв остатков под поставки FBO: свободное наличие на складе списания FBO
+ * и на складе ручных заказов (если задан в настройках), очередь по ready_at.
  */
 
 import { query } from '../config/database.js';
@@ -10,6 +10,49 @@ import { getProductSupplySnapshotWithClient } from './sellableQuantity.service.j
 import { NET_RESERVED_MOVEMENT_ROW_CASE_SQL } from '../constants/netReservedStockSql.js';
 
 const FBO_RESERVE_ACTIVE_STATUSES = ['new', 'packed', 'ready_for_supply'];
+
+const fboSourceWarehousesCache = new Map();
+
+function normalizeWarehouseId(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Склады-источники для FBO: склад списания + склад ручных заказов. */
+async function getFboSourceWarehouseIds(profileId) {
+  const pid = normalizeProfileId(profileId);
+  if (pid == null) return [];
+  const cacheKey = String(pid);
+  if (fboSourceWarehousesCache.has(cacheKey)) {
+    return fboSourceWarehousesCache.get(cacheKey);
+  }
+  const r = await query(
+    `SELECT fbo_deduction_warehouse_id, manual_orders_warehouse_id
+     FROM profiles WHERE id = $1`,
+    [pid]
+  );
+  const row = r.rows?.[0];
+  const ids = [];
+  for (const raw of [row?.fbo_deduction_warehouse_id, row?.manual_orders_warehouse_id]) {
+    const n = normalizeWarehouseId(raw);
+    if (n != null && !ids.includes(n)) ids.push(n);
+  }
+  fboSourceWarehousesCache.set(cacheKey, ids);
+  return ids;
+}
+
+function normalizeWarehouseIdList(warehouseId) {
+  if (Array.isArray(warehouseId)) {
+    const ids = [];
+    for (const raw of warehouseId) {
+      const n = normalizeWarehouseId(raw);
+      if (n != null && !ids.includes(n)) ids.push(n);
+    }
+    return ids;
+  }
+  const single = normalizeWarehouseId(warehouseId);
+  return single != null ? [single] : [];
+}
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -151,7 +194,7 @@ async function getWarehouseAvailablePoolForFbo(productId, warehouseId) {
   return Math.max(0, onHand - reservedOnWh);
 }
 
-/** Пул «в пути» для покрытия строк FBO (как в расчёте закупки + снимок по складу списания). */
+/** Пул «в пути» для покрытия строк FBO (глобально + по складам-источникам). */
 async function getIncomingPoolForFboProduct(productId, warehouseId = null) {
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return 0;
@@ -162,8 +205,8 @@ async function getIncomingPoolForFboProduct(productId, warehouseId = null) {
   );
   let pool = Number(globalR.rows[0]?.inc) || 0;
 
-  const wh = Number(warehouseId);
-  if (Number.isFinite(wh) && wh > 0) {
+  const warehouseIds = normalizeWarehouseIdList(warehouseId);
+  for (const wh of warehouseIds) {
     const snap = await getProductSupplySnapshotWithClient(null, pid, { warehouseId: wh });
     pool = Math.max(pool, Number(snap.incoming) || 0);
   }
@@ -181,6 +224,25 @@ async function getIncomingPoolForFboProduct(productId, warehouseId = null) {
   return Math.max(0, pool);
 }
 
+async function takeFromStockPools(stockPools, productId, warehouseIds, need) {
+  let reserved = 0;
+  let remaining = Math.max(0, Math.floor(Number(need) || 0));
+  for (const sourceWh of warehouseIds) {
+    if (remaining <= 0) break;
+    if (!stockPools.has(sourceWh)) {
+      stockPools.set(sourceWh, await getWarehouseAvailablePoolForFbo(productId, sourceWh));
+    }
+    const pool = stockPools.get(sourceWh) || 0;
+    const take = Math.min(remaining, pool);
+    if (take > 0) {
+      reserved += take;
+      stockPools.set(sourceWh, Math.max(0, pool - take));
+      remaining -= take;
+    }
+  }
+  return reserved;
+}
+
 class FboSupplyReserveService {
   /**
    * Покрытие строк FBO: с наличия (FIFO по ready_at на складе списания) и с пути (incoming).
@@ -192,44 +254,34 @@ class FboSupplyReserveService {
     const uniquePids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
     if (!uniquePids.length) return breakdown;
 
+    const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
+
     for (const productId of uniquePids) {
       const queue = await findFboReserveQueueByProduct(productId, profileId);
-      const firstWh = queue.find((row) => Number(row.deduction_warehouse_id) > 0)?.deduction_warehouse_id;
-      let incomingPool = await getIncomingPoolForFboProduct(productId, firstWh ?? null);
+      const fallbackWh = normalizeWarehouseId(
+        queue.find((row) => Number(row.deduction_warehouse_id) > 0)?.deduction_warehouse_id
+      );
+      const stockWarehouseIds =
+        sourceWarehouseIds.length > 0
+          ? sourceWarehouseIds
+          : fallbackWh != null
+            ? [fallbackWh]
+            : [];
+      let incomingPool = await getIncomingPoolForFboProduct(productId, stockWarehouseIds);
       const stockPools = new Map();
-      const incomingPoolsByWh = new Map();
 
       for (const row of queue) {
         const itemId = String(row.supply_item_id);
         const qty = Math.max(0, parseInt(row.quantity, 10) || 0);
-        const wh = Number(row.deduction_warehouse_id);
 
         let reservedFromStock = await getNetReservedForFboItem(row.supply_item_id, productId);
-        if (reservedFromStock <= 0 && Number.isFinite(wh) && wh > 0) {
-          if (!stockPools.has(wh)) {
-            stockPools.set(wh, await getWarehouseAvailablePoolForFbo(productId, wh));
-          }
-          const pool = stockPools.get(wh) || 0;
-          reservedFromStock = Math.min(qty, pool);
-          stockPools.set(wh, Math.max(0, pool - reservedFromStock));
+        if (reservedFromStock <= 0 && stockWarehouseIds.length > 0) {
+          reservedFromStock = await takeFromStockPools(stockPools, productId, stockWarehouseIds, qty);
         }
-
-        if (!Number.isFinite(wh) || wh <= 0) {
-          incomingPool = await getIncomingPoolForFboProduct(productId, null);
-        } else if (!incomingPoolsByWh.has(wh)) {
-          incomingPoolsByWh.set(wh, await getIncomingPoolForFboProduct(productId, wh));
-        }
-        const activeIncomingPool =
-          Number.isFinite(wh) && wh > 0 ? incomingPoolsByWh.get(wh) || 0 : incomingPool;
 
         const gap = Math.max(0, qty - reservedFromStock);
-        const reservedFromIncoming = Math.min(gap, activeIncomingPool);
-        const nextIncoming = Math.max(0, activeIncomingPool - reservedFromIncoming);
-        if (Number.isFinite(wh) && wh > 0) {
-          incomingPoolsByWh.set(wh, nextIncoming);
-        } else {
-          incomingPool = nextIncoming;
-        }
+        const reservedFromIncoming = Math.min(gap, incomingPool);
+        incomingPool = Math.max(0, incomingPool - reservedFromIncoming);
 
         breakdown.set(itemId, { reservedFromStock, reservedFromIncoming });
       }
@@ -357,25 +409,38 @@ class FboSupplyReserveService {
         }).catch(() => {});
       }
 
-      const byWarehouse = new Map();
-      for (const row of queue) {
-        const wh = Number(row.deduction_warehouse_id);
-        if (!Number.isFinite(wh) || wh < 1) continue;
-        if (!byWarehouse.has(wh)) byWarehouse.set(wh, []);
-        byWarehouse.get(wh).push(row);
+      const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
+      const fallbackWh = normalizeWarehouseId(
+        queue.find((row) => Number(row.deduction_warehouse_id) > 0)?.deduction_warehouse_id
+      );
+      const stockWarehouseIds =
+        sourceWarehouseIds.length > 0
+          ? sourceWarehouseIds
+          : fallbackWh != null
+            ? [fallbackWh]
+            : [];
+
+      const poolByWh = new Map();
+      for (const warehouseId of stockWarehouseIds) {
+        poolByWh.set(warehouseId, await getWarehouseReservableUnits(pid, warehouseId));
       }
 
-      for (const [warehouseId, rows] of byWarehouse) {
-        let pool = await getWarehouseReservableUnits(pid, warehouseId);
-        for (const row of rows) {
-          const itemId = row.supply_item_id;
-          const supplyId = row.fbo_supply_id;
-          const target = Math.max(0, parseInt(row.quantity, 10) || 0);
-          if (target <= 0 || pool <= 0) continue;
-          const add = Math.min(target, pool);
-          const label = row.external_shipment_number
-            ? `FBO ${row.external_shipment_number}`
-            : `FBO поставка №${supplyId}`;
+      for (const row of queue) {
+        const itemId = row.supply_item_id;
+        const supplyId = row.fbo_supply_id;
+        const target = Math.max(0, parseInt(row.quantity, 10) || 0);
+        if (target <= 0) continue;
+
+        let need = target;
+        const label = row.external_shipment_number
+          ? `FBO ${row.external_shipment_number}`
+          : `FBO поставка №${supplyId}`;
+
+        for (const warehouseId of stockWarehouseIds) {
+          if (need <= 0) break;
+          let pool = poolByWh.get(warehouseId) || 0;
+          if (pool <= 0) continue;
+          const add = Math.min(need, pool);
           try {
             await applyFboReserveDelta({
               productId: pid,
@@ -385,7 +450,8 @@ class FboSupplyReserveService {
               delta: add,
               reason: `Резерв FBO (${label})`,
             });
-            pool -= add;
+            poolByWh.set(warehouseId, pool - add);
+            need -= add;
           } catch {
             /* недостаточно доступного остатка */
           }
