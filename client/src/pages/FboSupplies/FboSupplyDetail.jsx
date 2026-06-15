@@ -644,7 +644,7 @@ export function FboSupplyDetail() {
     return (
       <div className="fbo-supplies-page">
         <p>{err || 'Поставка не найдена'}</p>
-        <Button variant="secondary" onClick={() => navigate('/fbo-supplies')}>
+        <Button variant="secondary" onClick={() => navigate('/stock-levels/fbo-supplies')}>
           К списку
         </Button>
       </div>
@@ -671,7 +671,7 @@ export function FboSupplyDetail() {
   return (
     <div className="fbo-supplies-page">
       <div className="fbo-supplies-toolbar">
-        <Button variant="secondary" size="small" onClick={() => navigate('/fbo-supplies')}>
+        <Button variant="secondary" size="small" onClick={() => navigate('/stock-levels/fbo-supplies')}>
           ← К списку
         </Button>
         <h2 style={{ margin: 0, flex: 1 }}>
@@ -751,7 +751,7 @@ export function FboSupplyDetail() {
             setErr(null);
             try {
               await fboSuppliesApi.delete(id);
-              navigate('/fbo-supplies');
+              navigate('/stock-levels/fbo-supplies');
             } catch (e) {
               setErr(e.response?.data?.message || e.message || 'Не удалось удалить поставку');
             } finally {

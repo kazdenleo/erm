@@ -5,7 +5,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
-import { purchasesApi } from '../../services/purchases.api';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useWarehouses } from '../../hooks/useWarehouses';
@@ -16,9 +15,10 @@ import {
   componentQtyToKitUnits,
   getPurchaseRowDisplayName,
   kitUnitsToComponentQty,
+  mergePurchasedProgress,
   recalcPurchaseRow,
   recalcPurchaseRows,
-  sortPurchaseRows,
+  sortPurchaseRowsWithProgress,
 } from './fboPurchaseCalcUtils';
 import { FboPurchaseReplaceModal } from './FboPurchaseReplaceModal';
 import './FboSupplies.css';
@@ -29,15 +29,29 @@ function fmtMoney(n) {
   return v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function applyCalcRows(data) {
-  const rows = sortPurchaseRows(recalcPurchaseRows(data?.rows || []));
+function applyCalcRows(data, { withProgress = false, prevRows = [] } = {}) {
+  let rows = recalcPurchaseRows(data?.rows || []);
+  if (withProgress) {
+    rows = mergePurchasedProgress(rows, prevRows.length ? prevRows : data?.rows || []);
+  }
+  rows = sortPurchaseRowsWithProgress(rows);
   const totals = calcPurchaseTotals(rows);
   return { ...data, rows, totals };
+}
+
+function isRowSelectable(row) {
+  return Boolean(row?.productId) && (Number(row.remainingToPurchase) || 0) > 0;
 }
 
 export function FboPurchaseCalculation() {
   const navigate = useNavigate();
   const location = useLocation();
+  const sessionIdFromUrl = useMemo(() => {
+    const q = new URLSearchParams(location.search).get('session');
+    const n = q != null ? parseInt(q, 10) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [location.search]);
+
   const supplyIds = useMemo(() => {
     const fromState = location.state?.supplyIds;
     if (Array.isArray(fromState) && fromState.length) {
@@ -56,6 +70,10 @@ export function FboPurchaseCalculation() {
   const { warehouses } = useWarehouses();
 
   const [calc, setCalc] = useState(null);
+  const [session, setSession] = useState(null);
+  const [purchaseLinks, setPurchaseLinks] = useState([]);
+  const [selectedRowKeys, setSelectedRowKeys] = useState(() => new Set());
+  const [successMsg, setSuccessMsg] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
   const [savingCell, setSavingCell] = useState(null);
@@ -69,28 +87,46 @@ export function FboPurchaseCalculation() {
   const [exportLoading, setExportLoading] = useState(false);
 
   const load = useCallback(async () => {
-    if (!supplyIds.length) {
+    if (!sessionIdFromUrl && !supplyIds.length) {
       setErr('Не выбраны поставки');
       setLoading(false);
       return;
     }
     setLoading(true);
     setErr(null);
+    setSuccessMsg(null);
     try {
-      const data = await fboSuppliesApi.purchaseCalculation(supplyIds);
-      setCalc(applyCalcRows(data));
+      let payload;
+      if (sessionIdFromUrl) {
+        payload = await fboSuppliesApi.getPurchaseCalcSession(sessionIdFromUrl);
+      } else {
+        payload = await fboSuppliesApi.openPurchaseCalcSession(supplyIds);
+        if (payload?.session?.id || payload?.id) {
+          const sid = payload.session?.id ?? payload.id;
+          navigate(`/stock-levels/fbo-supplies/purchase-calc?session=${sid}`, {
+            replace: true,
+            state: { supplyIds },
+          });
+        }
+      }
+      setSession(payload.session ?? { id: payload.id, supplyIds: payload.supplyIds });
+      setPurchaseLinks(payload.purchaseLinks || []);
+      setCalc(applyCalcRows(payload.calc, { withProgress: true }));
       setCreateOrganizationId(
-        data?.defaultOrganizationId != null ? String(data.defaultOrganizationId) : ''
+        payload.calc?.defaultOrganizationId != null
+          ? String(payload.calc.defaultOrganizationId)
+          : ''
       );
       setCreateWarehouseId(
-        data?.defaultWarehouseId != null ? String(data.defaultWarehouseId) : ''
+        payload.calc?.defaultWarehouseId != null ? String(payload.calc.defaultWarehouseId) : ''
       );
+      setSelectedRowKeys(new Set());
     } catch (e) {
-      setErr(e.response?.data?.message || e.message || 'Не удалось рассчитать закупку');
+      setErr(e.response?.data?.message || e.message || 'Не удалось загрузить расчёт закупки');
     } finally {
       setLoading(false);
     }
-  }, [supplyIds]);
+  }, [sessionIdFromUrl, supplyIds, navigate]);
 
   useEffect(() => {
     load();
@@ -100,10 +136,42 @@ export function FboPurchaseCalculation() {
     setCalc((prev) => {
       if (!prev) return prev;
       const nextRows = typeof updater === 'function' ? updater(prev.rows) : updater;
-      const rows = sortPurchaseRows(recalcPurchaseRows(nextRows));
+      const rows = sortPurchaseRowsWithProgress(
+        mergePurchasedProgress(recalcPurchaseRows(nextRows), prev.rows)
+      );
       return { ...prev, rows, totals: calcPurchaseTotals(rows) };
     });
   }, []);
+
+  const supplyIdsForExport = useMemo(
+    () => session?.supplyIds || supplyIds,
+    [session?.supplyIds, supplyIds]
+  );
+
+  const selectableRows = useMemo(
+    () => (calc?.rows || []).filter(isRowSelectable),
+    [calc?.rows]
+  );
+
+  const allSelectableSelected =
+    selectableRows.length > 0 && selectableRows.every((r) => selectedRowKeys.has(r.key));
+
+  const toggleRowSelected = (rowKey) => {
+    setSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allSelectableSelected) {
+      setSelectedRowKeys(new Set());
+      return;
+    }
+    setSelectedRowKeys(new Set(selectableRows.map((r) => r.key)));
+  };
 
   const handleSupplyQtyChange = (rowKey, supplyId, raw) => {
     const parsed = raw === '' ? '' : Math.max(0, parseInt(raw, 10) || 0);
@@ -259,21 +327,25 @@ export function FboPurchaseCalculation() {
     }
   };
 
-  const purchaseItems = useMemo(
+  const selectedPurchaseItems = useMemo(
     () =>
       (calc?.rows || [])
-        .filter((r) => r.productId && r.toPurchase > 0)
-        .map((r) => ({ productId: r.productId, quantity: r.toPurchase })),
-    [calc?.rows]
+        .filter((r) => selectedRowKeys.has(r.key) && isRowSelectable(r))
+        .map((r) => ({
+          rowKey: r.key,
+          productId: r.productId,
+          quantity: r.remainingToPurchase,
+        })),
+    [calc?.rows, selectedRowKeys]
   );
 
   const handleExportExcel = async () => {
-    if (!calc?.rows?.length || !supplyIds.length) return;
+    if (!calc?.rows?.length || !supplyIdsForExport.length) return;
     setExportLoading(true);
     setErr(null);
     try {
       const { buffer, filename } = await fboSuppliesApi.downloadPurchaseCalcExcel({
-        supplyIds,
+        supplyIds: supplyIdsForExport,
         calc,
       });
       const blob = new Blob([buffer], {
@@ -305,8 +377,13 @@ export function FboPurchaseCalculation() {
   };
 
   const handleCreatePurchase = async () => {
-    if (!purchaseItems.length) {
-      setErr('Нет позиций к закупке (остаток и «в пути» покрывают потребность поставок)');
+    const sid = session?.id ?? sessionIdFromUrl;
+    if (!sid) {
+      setErr('Сессия расчёта не найдена');
+      return;
+    }
+    if (!selectedPurchaseItems.length) {
+      setErr('Отметьте галочками позиции для закупки');
       return;
     }
     if (!createSupplierId) {
@@ -315,19 +392,33 @@ export function FboPurchaseCalculation() {
     }
     setPurchaseSaving(true);
     setErr(null);
+    setSuccessMsg(null);
     try {
-      const res = await purchasesApi.create({
+      const res = await fboSuppliesApi.createPurchaseFromCalcSession(sid, {
         supplierId: Number(createSupplierId),
         organizationId: Number(createOrganizationId),
         warehouseId: Number(createWarehouseId),
-        items: purchaseItems,
-        note: `Закупка по поставкам FBO: ${supplyIds.join(', ')}`,
+        items: selectedPurchaseItems,
       });
+      setSession(res.session);
+      setPurchaseLinks(res.purchaseLinks || []);
+      setCalc(applyCalcRows(res.calc, { withProgress: true }));
+      setSelectedRowKeys(new Set());
       setPurchaseOpen(false);
-      if (res?.id) {
-        navigate('/stock-levels/purchases', { state: { openPurchaseId: res.id } });
+      const pid = res.purchaseId ?? res.purchase?.id;
+      const pending = (res.calc?.rows || []).filter(isRowSelectable).length;
+      if (res.session?.status === 'completed') {
+        setSuccessMsg(
+          pid
+            ? `Закупка №${pid} создана. Все позиции расчёта оформлены — сессия завершена.`
+            : 'Все позиции расчёта оформлены — сессия завершена.'
+        );
       } else {
-        navigate('/stock-levels/purchases');
+        setSuccessMsg(
+          pid
+            ? `Закупка №${pid} создана. Осталось оформить: ${pending} поз.`
+            : `Закупка создана. Осталось оформить: ${pending} поз.`
+        );
       }
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось создать закупку');
@@ -341,7 +432,7 @@ export function FboPurchaseCalculation() {
   return (
     <div className="fbo-supplies-page">
       <div className="fbo-supplies-toolbar">
-        <Button variant="secondary" size="small" onClick={() => navigate('/fbo-supplies')}>
+        <Button variant="secondary" size="small" onClick={() => navigate('/stock-levels/fbo-supplies')}>
           ← К поставкам
         </Button>
         <h2 style={{ margin: 0, flex: 1 }}>Расчёт закупки FBO</h2>
@@ -356,22 +447,56 @@ export function FboPurchaseCalculation() {
         <Button
           variant="primary"
           size="small"
-          disabled={!purchaseItems.length}
+          disabled={!selectedPurchaseItems.length}
           onClick={() => setPurchaseOpen(true)}
         >
-          Закупить ({purchaseItems.length} поз.)
+          Закупить выбранное ({selectedPurchaseItems.length})
         </Button>
       </div>
+
+      {session?.id ? (
+        <p className="fbo-packing-hint" style={{ marginBottom: 8 }}>
+          Сессия расчёта №{session.id}
+          {session.status === 'completed' ? ' · завершена' : ' · в работе'}.
+          {selectableRows.length > 0
+            ? ` Осталось оформить: ${selectableRows.length} поз.`
+            : ' Все позиции закуплены или покрыты остатком.'}
+        </p>
+      ) : null}
+
+      {successMsg ? (
+        <div className="alert alert-success" style={{ marginBottom: 12 }}>
+          {successMsg}
+        </div>
+      ) : null}
 
       {err && <div className="alert alert-danger">{err}</div>}
 
       {calc?.fboWarehouse ? (
         <p className="fbo-packing-hint">
-          Склад FBO: <strong>{calc.fboWarehouse.label}</strong>. К закупке = сумма по выбранным
-          поставкам − наличие − в пути. Комплекты в поставке показаны как комплектующие. Количество в
-          столбцах поставок можно изменить (для комплекта — число комплектов). Кнопка ⇄ — замена
-          товара или добавление аналога.
+          Склад FBO: <strong>{calc.fboWarehouse.label}</strong>. К закупке = потребность − наличие − в пути −
+          уже оформлено. Отметьте галочками позиции и создайте закупку у нужного поставщика; можно
+          несколько закупок на одну сессию. Комплекты в поставке показаны как комплектующие.
         </p>
+      ) : null}
+
+      {purchaseLinks.length > 0 ? (
+        <div className="fbo-packing-hint" style={{ marginBottom: 12 }}>
+          <strong>Закупки по этому расчёту:</strong>{' '}
+          {purchaseLinks.map((l) => (
+            <button
+              key={l.id}
+              type="button"
+              className="btn btn-link btn-sm p-0 me-2"
+              onClick={() =>
+                navigate('/stock-levels/purchases', { state: { openPurchaseId: l.purchaseId } })
+              }
+            >
+              №{l.purchaseId}
+              {l.supplierName ? ` (${l.supplierName})` : ''}
+            </button>
+          ))}
+        </div>
       ) : null}
 
       {calc ? (
@@ -379,9 +504,19 @@ export function FboPurchaseCalculation() {
           <table className="table table-sm table-bordered fbo-purchase-calc-table">
             <thead>
               <tr>
+                <th className="fbo-pc-check-col">
+                  <input
+                    type="checkbox"
+                    checked={allSelectableSelected}
+                    disabled={!selectableRows.length}
+                    onChange={toggleSelectAll}
+                    title="Выбрать все к закупке"
+                  />
+                </th>
                 <th className="fbo-pc-sticky-col">Товар</th>
                 <th>Артикул</th>
                 <th>К закупке</th>
+                <th>Закуплено</th>
                 <th>Наличие</th>
                 <th>В пути</th>
                 {calc.supplies.map((s) => (
@@ -394,21 +529,37 @@ export function FboPurchaseCalculation() {
               </tr>
             </thead>
             <tbody>
-              {calc.rows.map((row) => (
+              {calc.rows.map((row) => {
+                const selectable = isRowSelectable(row);
+                const checked = selectedRowKeys.has(row.key);
+                return (
                 <tr
                   key={row.key}
-                  className={row.toPurchase === 0 ? 'fbo-item-row--complete' : ''}
+                  className={`${row.purchaseComplete ? 'fbo-item-row--complete' : ''}${
+                    checked ? ' fbo-pc-row-selected' : ''
+                  }`}
                 >
+                  <td className="fbo-pc-check-col">
+                    {selectable ? (
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleRowSelected(row.key)}
+                        aria-label={`Выбрать ${row.sku || row.productName || 'позицию'}`}
+                      />
+                    ) : null}
+                  </td>
                   <td className="fbo-pc-sticky-col">
                     {getPurchaseRowDisplayName(row)}
                   </td>
                   <td>{row.sku || '—'}</td>
                   <td>
-                    <strong>{row.toPurchase}</strong>
+                    <strong>{row.remainingToPurchase ?? row.toPurchase}</strong>
                     {row.isKitComponentRow && row.perKit > 1 ? (
                       <div className="text-muted small">{row.perKit} шт./компл.</div>
                     ) : null}
                   </td>
+                  <td>{row.purchasedQty > 0 ? row.purchasedQty : '—'}</td>
                   <td>{row.onHand}</td>
                   <td>{row.incoming}</td>
                   {calc.supplies.map((s) => {
@@ -475,16 +626,18 @@ export function FboPurchaseCalculation() {
                   <td>{fmtMoney(row.cost)}</td>
                   <td>{fmtMoney(row.lineCostTotal)}</td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
             <tfoot>
               <tr className="fbo-purchase-calc-tfoot">
-                <th colSpan={2} className="text-end">
-                  Итого
+                <th colSpan={3} className="text-end">
+                  Итого к закупке
                 </th>
                 <th>
                   <strong>{calc.totals.toPurchaseQty}</strong>
                 </th>
+                <th>{calc.totals.purchasedQty > 0 ? calc.totals.purchasedQty : '—'}</th>
                 <th colSpan={2 + calc.supplies.length} />
                 <th />
                 <th>
@@ -510,9 +663,18 @@ export function FboPurchaseCalculation() {
         size="medium"
       >
         <p className="text-muted small">
-          Позиций: <strong>{purchaseItems.length}</strong>, всего шт.:{' '}
-          <strong>{calc?.totals?.toPurchaseQty ?? 0}</strong>, сумма себестоимости:{' '}
-          <strong>{fmtMoney(calc?.totals?.costSum)}</strong>
+          Выбрано позиций: <strong>{selectedPurchaseItems.length}</strong>, шт.:{' '}
+          <strong>
+            {selectedPurchaseItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0)}
+          </strong>
+          , сумма себестоимости по выбранному:{' '}
+          <strong>
+            {fmtMoney(
+              (calc?.rows || [])
+                .filter((r) => selectedRowKeys.has(r.key))
+                .reduce((s, r) => s + (Number(r.lineCostTotal) || 0), 0)
+            )}
+          </strong>
         </p>
         <div className="mb-3">
           <label className="form-label">Поставщик</label>

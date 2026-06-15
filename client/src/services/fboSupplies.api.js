@@ -31,6 +31,32 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  listPurchaseCalcSessions: async () => {
+    const response = await api.get('/fbo-supplies/purchase-calculation/sessions');
+    return response.data?.data ?? response.data;
+  },
+
+  openPurchaseCalcSession: async (supplyIds) => {
+    const response = await api.post('/fbo-supplies/purchase-calculation/sessions', {
+      supplyIds,
+    });
+    return response.data?.data ?? response.data;
+  },
+
+  getPurchaseCalcSession: async (sessionId) => {
+    const response = await api.get(`/fbo-supplies/purchase-calculation/sessions/${sessionId}`);
+    return response.data?.data ?? response.data;
+  },
+
+  createPurchaseFromCalcSession: async (sessionId, payload) => {
+    const response = await api.post(
+      `/fbo-supplies/purchase-calculation/sessions/${sessionId}/purchase`,
+      payload,
+      { timeout: 120000 }
+    );
+    return response.data?.data ?? response.data;
+  },
+
   downloadPurchaseCalcExcel: async ({ supplyIds, calc }) => {
     const response = await api.post(
       '/fbo-supplies/purchase-calculation/export/excel',

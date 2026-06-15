@@ -27,6 +27,22 @@ router.post(
   '/purchase-calculation/export/excel',
   wrapAsync(fboSuppliesController.exportPurchaseCalcExcel.bind(fboSuppliesController))
 );
+router.get(
+  '/purchase-calculation/sessions',
+  wrapAsync(fboSuppliesController.listPurchaseCalcSessions.bind(fboSuppliesController))
+);
+router.post(
+  '/purchase-calculation/sessions',
+  wrapAsync(fboSuppliesController.openPurchaseCalcSession.bind(fboSuppliesController))
+);
+router.get(
+  '/purchase-calculation/sessions/:sessionId',
+  wrapAsync(fboSuppliesController.getPurchaseCalcSession.bind(fboSuppliesController))
+);
+router.post(
+  '/purchase-calculation/sessions/:sessionId/purchase',
+  wrapAsync(fboSuppliesController.createPurchaseFromCalcSession.bind(fboSuppliesController))
+);
 
 router.get(
   '/import/template/excel',

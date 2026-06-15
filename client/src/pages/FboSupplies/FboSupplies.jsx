@@ -35,7 +35,17 @@ export function FboSupplies() {
   const [templateLoading, setTemplateLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [calcLoading, setCalcLoading] = useState(false);
+  const [openCalcSessions, setOpenCalcSessions] = useState([]);
   const [deletingId, setDeletingId] = useState(null);
+
+  const loadOpenCalcSessions = useCallback(async () => {
+    try {
+      const data = await fboSuppliesApi.listPurchaseCalcSessions();
+      setOpenCalcSessions(Array.isArray(data) ? data : []);
+    } catch {
+      setOpenCalcSessions([]);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -52,7 +62,8 @@ export function FboSupplies() {
 
   useEffect(() => {
     load();
-  }, [load]);
+    void loadOpenCalcSessions();
+  }, [load, loadOpenCalcSessions]);
 
   const handleDeleteSupply = async (supplyId, e) => {
     e?.stopPropagation?.();
@@ -126,17 +137,43 @@ export function FboSupplies() {
         <Button
           variant="secondary"
           disabled={!selectedIds.size || calcLoading}
-          onClick={() => {
+          onClick={async () => {
             setCalcLoading(true);
-            navigate('/fbo-supplies/purchase-calc', {
-              state: { supplyIds: [...selectedIds] },
-            });
-            setCalcLoading(false);
+            setErr(null);
+            try {
+              const ids = [...selectedIds].map((id) => Number(id)).filter((n) => n > 0);
+              const payload = await fboSuppliesApi.openPurchaseCalcSession(ids);
+              const sid = payload?.session?.id ?? payload?.id;
+              if (!sid) throw new Error('Не удалось открыть расчёт закупки');
+              navigate(`/stock-levels/fbo-supplies/purchase-calc?session=${sid}`, {
+                state: { supplyIds: ids },
+              });
+            } catch (e) {
+              setErr(e.response?.data?.message || e.message || 'Не удалось открыть расчёт закупки');
+            } finally {
+              setCalcLoading(false);
+            }
           }}
         >
           {calcLoading ? '…' : `Рассчитать закупку${selectedIds.size ? ` (${selectedIds.size})` : ''}`}
         </Button>
       </div>
+
+      {openCalcSessions.length > 0 ? (
+        <div className="fbo-packing-hint" style={{ marginBottom: 12 }}>
+          <strong>Активные расчёты закупки:</strong>{' '}
+          {openCalcSessions.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className="btn btn-link btn-sm p-0 me-2"
+              onClick={() => navigate(`/stock-levels/fbo-supplies/purchase-calc?session=${s.id}`)}
+            >
+              №{s.id} ({Array.isArray(s.supplyIds) ? s.supplyIds.length : '—'} поставок)
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {err && <div className="alert alert-danger">{err}</div>}
 
@@ -190,7 +227,7 @@ export function FboSupplies() {
                 <tr
                   key={row.id}
                   style={{ cursor: 'pointer' }}
-                  onClick={() => navigate(`/fbo-supplies/${row.id}`)}
+                  onClick={() => navigate(`/stock-levels/fbo-supplies/${row.id}`)}
                 >
                   <td onClick={(e) => e.stopPropagation()}>
                     <input
@@ -252,7 +289,7 @@ export function FboSupplies() {
           load();
           const created = result?.created;
           if (importMode === 'excel' && created?.length === 1 && created[0]?.id) {
-            navigate(`/fbo-supplies/${created[0].id}`);
+            navigate(`/stock-levels/fbo-supplies/${created[0].id}`);
           }
         }}
       />

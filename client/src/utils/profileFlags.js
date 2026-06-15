@@ -49,3 +49,9 @@ export function isProfileProductionEnabled(profile) {
   if (profile == null) return true;
   return profile.production_enabled !== false;
 }
+
+/** Поставки FBO включены в настройках аккаунта. */
+export function isProfileFboEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(profile.fbo_enabled ?? profile.fboEnabled);
+}

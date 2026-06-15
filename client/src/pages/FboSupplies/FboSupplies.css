@@ -490,6 +490,16 @@
   max-height: min(72vh, calc(100vh - 200px));
 }
 
+.fbo-purchase-calc-table .fbo-pc-check-col {
+  width: 36px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.fbo-purchase-calc-table tr.fbo-pc-row-selected td {
+  background: rgba(13, 110, 253, 0.06);
+}
+
 .fbo-purchase-calc-table {
   font-size: 13px;
   min-width: 900px;

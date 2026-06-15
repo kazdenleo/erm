@@ -6,7 +6,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext.jsx';
-import { isProfileKitsEnabled, isProfileProductionEnabled } from '../../../utils/profileFlags.js';
+import {
+  isProfileFboEnabled,
+  isProfileKitsEnabled,
+  isProfileProductionEnabled,
+} from '../../../utils/profileFlags.js';
 import { questionsApi } from '../../../services/questions.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
 
@@ -23,7 +27,7 @@ const stockWarehouseChildren = [
   },
   { path: '/stock-levels/purchases', label: '🧾 Закупка', iconClass: 'pe-7s-cart' },
   { path: '/production', label: '🔧 Производство', iconClass: 'pe-7s-tools', requiresProduction: true },
-  { path: '/fbo-supplies', label: '📦 Поставки FBO', iconClass: 'pe-7s-box2' },
+  { path: '/stock-levels/fbo-supplies', label: '📦 Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true },
   {
     path: opsByKey.receipts_list?.to || '/stock-levels/warehouse?op=receipts_list',
     label: '📑 Приёмка',
@@ -100,6 +104,7 @@ export function Sidebar() {
   const canManageUsers = isAccountAdmin;
   const productionMenuEnabled =
     isProfileProductionEnabled(profile) && isProfileKitsEnabled(profile);
+  const fboMenuEnabled = isProfileFboEnabled(profile);
   const NONE = '__none__';
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
 
@@ -150,7 +155,8 @@ export function Sidebar() {
       return pathname === '/stock-levels/warehouse' && op === sub.warehouseOp;
     }
     const base = String(sub.path || '').split('?')[0];
-    return pathname === base;
+    if (!base) return false;
+    return pathname === base || pathname.startsWith(`${base}/`);
   }, []);
 
   const findActiveGroup = useCallback((loc) => {
@@ -182,6 +188,7 @@ export function Sidebar() {
         if (sub.profileAdminOnly && (!isProfileAdmin || isAdmin)) return false;
         if (sub.adminOnly && !canManageUsers) return false;
         if (sub.requiresProduction && !productionMenuEnabled) return false;
+        if (sub.requiresFbo && !fboMenuEnabled) return false;
         return true;
       });
       return { ...item, children };
@@ -190,7 +197,7 @@ export function Sidebar() {
       .filter((i) => !i.needsProfile || user?.profileId != null)
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, user?.profileId, productionMenuEnabled]);
+  }, [canManageUsers, isProfileAdmin, isAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 

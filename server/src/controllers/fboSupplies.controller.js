@@ -10,6 +10,7 @@ import fboSuppliesImportService from '../services/fboSuppliesImport.service.js';
 import fboSuppliesExportService from '../services/fboSuppliesExport.service.js';
 import fboSuppliesPackingService from '../services/fboSuppliesPacking.service.js';
 import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
+import fboPurchaseCalcSessionService from '../services/fboPurchaseCalcSession.service.js';
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
 import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
@@ -306,6 +307,76 @@ class FboSuppliesController {
       res.send(buffer);
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async listPurchaseCalcSessions(req, res, next) {
+    try {
+      const profileId = req.user?.profileId ?? null;
+      const data = await fboPurchaseCalcSessionService.listOpen({ profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  async openPurchaseCalcSession(req, res, next) {
+    try {
+      const profileId = req.user?.profileId ?? null;
+      const userId = req.user?.id ?? null;
+      const supplyIds = req.body?.supplyIds ?? req.body?.ids ?? [];
+      const opened = await fboPurchaseCalcSessionService.openOrCreate(supplyIds, {
+        profileId,
+        userId,
+      });
+      const view = await fboPurchaseCalcSessionService.getSessionView(opened.id, { profileId });
+      return res.status(200).json({
+        ok: true,
+        data: { ...opened, ...view },
+      });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async getPurchaseCalcSession(req, res, next) {
+    try {
+      const profileId = req.user?.profileId ?? null;
+      const sessionId = req.params.sessionId;
+      const data = await fboPurchaseCalcSessionService.getSessionView(sessionId, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 403) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async createPurchaseFromCalcSession(req, res, next) {
+    try {
+      const profileId = req.user?.profileId ?? null;
+      const userId = req.user?.id ?? null;
+      const sessionId = req.params.sessionId;
+      const body = req.body || {};
+      const data = await fboPurchaseCalcSessionService.createPurchaseFromSession(sessionId, {
+        supplierId: body.supplierId,
+        organizationId: body.organizationId ?? resolveOrganizationIdFromRequest(req),
+        warehouseId: body.warehouseId,
+        items: body.items,
+        note: body.note,
+        userId,
+        profileId,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 403) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
       }
       next(e);

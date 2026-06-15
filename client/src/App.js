@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { isProfileKitsEnabled, isProfileProductionEnabled } from './utils/profileFlags.js';
 import { ProtectedRoute } from './components/ProtectedRoute.jsx';
@@ -67,6 +67,13 @@ function ProductionRoute() {
   );
 }
 
+/** Редирект со старых URL /fbo-supplies → /stock-levels/fbo-supplies */
+function RedirectFboLegacy() {
+  const { pathname, search, hash } = useLocation();
+  const rest = pathname.replace(/^\/fbo-supplies/, '') || '';
+  return <Navigate to={`/stock-levels/fbo-supplies${rest}${search}${hash}`} replace />;
+}
+
 function App() {
   return (
     <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
@@ -109,6 +116,9 @@ function App() {
             <Route path="suppliers" element={<Navigate to="/stock-levels/warehouse" replace />} />
             <Route path="warehouse" element={<WarehouseStocks />} />
             <Route path="purchases" element={<Purchases />} />
+            <Route path="fbo-supplies/purchase-calc" element={<FboPurchaseCalculation />} />
+            <Route path="fbo-supplies/:id" element={<FboSupplyDetail />} />
+            <Route path="fbo-supplies" element={<FboSupplies />} />
             <Route path="problems" element={<Navigate to="/stock-levels/warehouse" replace />} />
           </Route>
           <Route path="/warehouses" element={<ProtectedRoute><Layout><Warehouses /></Layout></ProtectedRoute>} />
@@ -118,9 +128,7 @@ function App() {
           <Route path="/reviews" element={<ProtectedRoute><Layout><Reviews /></Layout></ProtectedRoute>} />
           <Route path="/orders/:marketplace/:orderId" element={<ProtectedRoute><Layout><OrderDetail /></Layout></ProtectedRoute>} />
           <Route path="/shipments" element={<ProtectedRoute><Layout><Shipments /></Layout></ProtectedRoute>} />
-          <Route path="/fbo-supplies" element={<ProtectedRoute><Layout><FboSupplies /></Layout></ProtectedRoute>} />
-          <Route path="/fbo-supplies/purchase-calc" element={<ProtectedRoute><Layout><FboPurchaseCalculation /></Layout></ProtectedRoute>} />
-          <Route path="/fbo-supplies/:id" element={<ProtectedRoute><Layout><FboSupplyDetail /></Layout></ProtectedRoute>} />
+          <Route path="/fbo-supplies/*" element={<ProtectedRoute><RedirectFboLegacy /></ProtectedRoute>} />
           <Route path="/assembly" element={<ProtectedRoute><Layout><Assembly /></Layout></ProtectedRoute>} />
           <Route path="/production" element={<ProtectedRoute><ProductionRoute /></ProtectedRoute>} />
           <Route path="/print/label/:orderId" element={<ProtectedRoute><PrintLabel /></ProtectedRoute>} />

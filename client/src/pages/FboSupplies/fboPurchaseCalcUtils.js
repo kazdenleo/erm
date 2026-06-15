@@ -54,12 +54,49 @@ export function recalcPurchaseRows(rows) {
 export function calcPurchaseTotals(rows) {
   return rows.reduce(
     (acc, r) => {
-      acc.toPurchaseQty += r.toPurchase || 0;
+      const rem = Number(r.remainingToPurchase ?? r.toPurchase) || 0;
+      acc.toPurchaseQty += rem;
       acc.costSum += r.lineCostTotal || 0;
+      if (r.purchasedQty != null) acc.purchasedQty += Number(r.purchasedQty) || 0;
       return acc;
     },
-    { toPurchaseQty: 0, costSum: 0 }
+    { toPurchaseQty: 0, costSum: 0, purchasedQty: 0 }
   );
+}
+
+/** После пересчёта потребности сохранить прогресс закупок по сессии. */
+export function mergePurchasedProgress(rows, prevRows = []) {
+  const purchasedByKey = new Map(
+    (prevRows || []).map((r) => [r.key, Math.max(0, Number(r.purchasedQty) || 0)])
+  );
+  return rows.map((row) => {
+    const purchasedQty = Math.max(
+      0,
+      Number(purchasedByKey.get(row.key) ?? row.purchasedQty) || 0
+    );
+    const needQty = Math.max(0, Number(row.toPurchase) || 0);
+    const remainingToPurchase = Math.max(0, needQty - purchasedQty);
+    const cost = Number(row.cost) || 0;
+    return {
+      ...row,
+      purchasedQty,
+      remainingToPurchase,
+      lineCostTotal: Math.round(remainingToPurchase * cost * 100) / 100,
+      purchaseComplete: needQty === 0 || remainingToPurchase === 0,
+    };
+  });
+}
+
+export function sortPurchaseRowsWithProgress(rows) {
+  return [...rows].sort((a, b) => {
+    const aDone = a.purchaseComplete ?? a.toPurchase === 0;
+    const bDone = b.purchaseComplete ?? b.toPurchase === 0;
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    return String(a.productName || a.sku || '').localeCompare(
+      String(b.productName || b.sku || ''),
+      'ru'
+    );
+  });
 }
 
 /** Количество комплектов в поставке по введённому количеству комплектующего. */
