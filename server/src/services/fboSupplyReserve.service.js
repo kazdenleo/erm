@@ -245,6 +245,21 @@ async function getIncomingPoolForFboProduct(productId, warehouseId = null) {
   return Math.max(0, pool);
 }
 
+async function getSourceOnHandForProduct(productId, profileId, stockWarehouseIds = null) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+  const whs =
+    stockWarehouseIds?.length > 0 ? stockWarehouseIds : await getFboSourceWarehouseIds(profileId);
+  if (!whs.length) return 0;
+  const r = await query(
+    `SELECT COALESCE(SUM(quantity), 0)::int AS total
+     FROM product_warehouse_stock
+     WHERE product_id = $1 AND warehouse_id = ANY($2::bigint[])`,
+    [pid, whs]
+  );
+  return Number(r.rows[0]?.total) || 0;
+}
+
 async function takeFromStockPools(stockPools, productId, warehouseIds, need) {
   let reserved = 0;
   let remaining = Math.max(0, Math.floor(Number(need) || 0));
@@ -323,12 +338,37 @@ class FboSupplyReserveService {
       ),
     ];
     const breakdown = await this._computeReserveBreakdownByItem(productIds, { profileId });
+    const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
+    const sourceOnHandByProduct = new Map();
+    const sourceIncomingByProduct = new Map();
+    for (const productId of productIds) {
+      sourceOnHandByProduct.set(
+        productId,
+        await getSourceOnHandForProduct(productId, profileId, sourceWarehouseIds)
+      );
+      sourceIncomingByProduct.set(
+        productId,
+        await getIncomingPoolForFboProduct(productId, sourceWarehouseIds)
+      );
+    }
 
     const out = [];
     for (const it of items) {
       const pid = it.productId ?? it.product_id;
+      const pidNum = Number(pid);
+      const sourceOnHand =
+        Number.isFinite(pidNum) && pidNum > 0 ? sourceOnHandByProduct.get(pidNum) || 0 : 0;
+      const sourceIncoming =
+        Number.isFinite(pidNum) && pidNum > 0 ? sourceIncomingByProduct.get(pidNum) || 0 : 0;
       if (!pid || !it.id) {
-        out.push({ ...it, reservedQuantity: 0, reservedFromStock: 0, reservedFromIncoming: 0 });
+        out.push({
+          ...it,
+          reservedQuantity: 0,
+          reservedFromStock: 0,
+          reservedFromIncoming: 0,
+          sourceOnHand,
+          sourceIncoming,
+        });
         continue;
       }
       const b = breakdown.get(String(it.id));
@@ -338,6 +378,8 @@ class FboSupplyReserveService {
           reservedQuantity: b.reservedFromStock,
           reservedFromStock: b.reservedFromStock,
           reservedFromIncoming: b.reservedFromIncoming,
+          sourceOnHand,
+          sourceIncoming,
         });
         continue;
       }
@@ -347,6 +389,8 @@ class FboSupplyReserveService {
         reservedQuantity: reservedFromStock,
         reservedFromStock,
         reservedFromIncoming: 0,
+        sourceOnHand,
+        sourceIncoming,
       });
     }
     return out;

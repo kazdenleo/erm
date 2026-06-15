@@ -33,6 +33,11 @@
   opacity: 0.65;
 }
 
+.fbo-reserve-breakdown__part--hint {
+  color: #b45309;
+  font-size: 10px;
+}
+
 .fbo-supplies-page {
   padding: 0 4px 24px;
 }

@@ -34,6 +34,7 @@ import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import {
   buildStatsMap,
   isSupplyItemPackingComplete,
+  sortSupplyItemsForGeneral,
   sortSupplyItemsForPacking,
 } from './fboSupplyPackingSort.js';
 import { filterSupplyItemsByQuery, normalizeProductSearchQuery } from '../../utils/productSearch';
@@ -223,6 +224,16 @@ export function FboSupplyDetail() {
   const sortedSupplyItems = useMemo(
     () => sortSupplyItemsForPacking(supply?.items || [], statsByItemId),
     [supply?.items, statsByItemId]
+  );
+
+  const generalSupplyItems = useMemo(
+    () => sortSupplyItemsForGeneral(supply?.items || []),
+    [supply?.items]
+  );
+
+  const filteredGeneralItems = useMemo(
+    () => filterSupplyItemsByQuery(generalSupplyItems, itemSearchQuery),
+    [generalSupplyItems, itemSearchQuery]
   );
 
   const filteredSupplyItems = useMemo(
@@ -878,8 +889,14 @@ export function FboSupplyDetail() {
         />
         {itemSearchActive ? (
           <span className="fbo-supply-item-search__hint muted-hint" aria-live="polite">
-            Найдено: <strong>{filteredSupplyItems.length}</strong> из{' '}
-            <strong>{sortedSupplyItems.length}</strong>
+            Найдено:{' '}
+            <strong>
+              {activeTab === 'packing' ? filteredSupplyItems.length : filteredGeneralItems.length}
+            </strong>{' '}
+            из{' '}
+            <strong>
+              {activeTab === 'packing' ? sortedSupplyItems.length : generalSupplyItems.length}
+            </strong>
           </span>
         ) : null}
       </div>
@@ -1143,8 +1160,8 @@ export function FboSupplyDetail() {
         <span className="muted-hint" aria-live="polite">
           {itemSearchActive ? (
             <>
-              Найдено: <strong>{filteredSupplyItems.length}</strong> из{' '}
-              <strong>{sortedSupplyItems.length}</strong>
+              Найдено: <strong>{filteredGeneralItems.length}</strong> из{' '}
+              <strong>{generalSupplyItems.length}</strong>
               {' · '}
             </>
           ) : null}
@@ -1199,14 +1216,14 @@ export function FboSupplyDetail() {
             </tr>
           </thead>
           <tbody>
-            {filteredSupplyItems.length === 0 ? (
+            {filteredGeneralItems.length === 0 ? (
               <tr>
                 <td colSpan={isOzonSupply ? 8 : 7} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
             ) : null}
-            {filteredSupplyItems.map((it) => {
+            {filteredGeneralItems.map((it) => {
               const canPrint = Boolean(it.productId);
               const rowSelected = selectedItemIds.has(String(it.id));
               const stat = statsByItemId.get(String(it.id));
@@ -1272,6 +1289,8 @@ export function FboSupplyDetail() {
                         reservedFromIncoming={
                           it.reservedFromIncoming ?? it.reserved_from_incoming
                         }
+                        sourceOnHand={it.sourceOnHand ?? it.source_on_hand}
+                        sourceIncoming={it.sourceIncoming ?? it.source_incoming}
                       />
                     </div>
                   </td>
