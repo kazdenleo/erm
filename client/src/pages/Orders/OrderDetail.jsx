@@ -451,7 +451,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                 title={
                   summaryCoverage === 'on_hand'
                     ? 'Со склада (в наличии)'
-                    : 'С участием товара в пути'
+                    : summaryCoverage === 'incoming'
+                      ? 'С участием товара в пути'
+                      : 'Резерв без покрытия остатком'
                 }
               >
                 {reservedQty}/{needQty}
@@ -505,7 +507,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             const lineHas =
               r > 0 || (reserveInKitUnits && (lineReserveDisplayUnits(line).reservedPieces || 0) > 0);
             const lineCoverage =
-              line.reserveCoverage ?? line.reserve_coverage ?? (lineHas ? 'incoming' : 'none');
+              line.reserveCoverage ?? line.reserve_coverage ?? (lineHas ? 'uncovered' : 'none');
             const canAddMore = remaining > 0 && bounds.inputMax > 0;
             const canRemove = r > 0 || reservedPieces > 0;
             const inputMaxAdd = bounds.inputMax;
@@ -1210,7 +1212,9 @@ export function OrderSummaryFromList({ orders, marketplace, onReserveChange }) {
           marketplace={marketplace}
           orderId={orderId}
           reserve={reserveFromList}
-          onChanged={onReserveChange}
+          onChanged={(r) => {
+            onReserveChange?.(r);
+          }}
         />
       ) : null}
       <section className="order-detail-section">

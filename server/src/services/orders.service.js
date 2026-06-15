@@ -92,18 +92,30 @@ export function isStrictWarehouseOrderRow(orderRow) {
 }
 
 /**
- * Покрытие резерва по заказу: только со склада (on_hand) или с участием «в пути» (incoming).
- * @returns {'none'|'on_hand'|'incoming'}
+ * Покрытие резерва по заказу: со склада, с «в пути» или без покрытия остатком.
+ * @returns {'none'|'on_hand'|'incoming'|'uncovered'}
  */
-export function classifyOrderReserveCoverage({ onHand = 0, reservedRaw = 0, orderReserved = 0 } = {}) {
+export function classifyOrderReserveCoverage({
+  onHand = 0,
+  incoming = 0,
+  reservedRaw = 0,
+  orderReserved = 0
+} = {}) {
   const R = Math.max(0, Math.floor(Number(orderReserved) || 0));
   if (R <= 0) return 'none';
   const H = Math.max(0, Math.floor(Number(onHand) || 0));
+  const I = Math.max(0, Math.floor(Number(incoming) || 0));
   const raw = Math.max(0, Math.floor(Number(reservedRaw) || 0));
   const reservedOthers = Math.max(0, raw - R);
-  const fromOnHand = Math.min(R, Math.max(0, H - reservedOthers));
-  if (fromOnHand >= R) return 'on_hand';
-  return 'incoming';
+  const onHandFree = Math.max(0, H - Math.min(reservedOthers, H));
+  const fromOnHand = Math.min(R, onHandFree);
+  const remaining = R - fromOnHand;
+  if (remaining <= 0) return 'on_hand';
+  const reservedBeyondOnHand = Math.max(0, reservedOthers - H);
+  const incomingFree = Math.max(0, I - reservedBeyondOnHand);
+  const fromIncoming = Math.min(remaining, incomingFree);
+  if (fromIncoming >= remaining) return 'incoming';
+  return 'uncovered';
 }
 
 /** Сколько ещё можно покрыть резервом с фактического остатка (FIFO: сначала занят on_hand). */
@@ -155,11 +167,20 @@ async function buildReserveCoverageFifoMap(productIds) {
   for (const [pid, list] of byPid) {
     const sup = supplyMap.get(pid);
     let onHandPool = sup ? Math.max(0, Math.floor(sup.onHand) || 0) : 0;
+    let incomingPool = sup ? Math.max(0, Math.floor(sup.incoming) || 0) : 0;
     for (const { oid, reserved } of list) {
       const R = Math.max(0, Math.floor(reserved));
       const fromOnHand = Math.min(R, onHandPool);
       onHandPool -= fromOnHand;
-      map.set(`${oid}:${pid}`, fromOnHand >= R ? 'on_hand' : 'incoming');
+      const remaining = R - fromOnHand;
+      const fromIncoming = Math.min(remaining, incomingPool);
+      incomingPool -= fromIncoming;
+      const uncovered = remaining - fromIncoming;
+      let kind = 'uncovered';
+      if (uncovered <= 0) {
+        kind = fromIncoming > 0 ? 'incoming' : 'on_hand';
+      }
+      map.set(`${oid}:${pid}`, kind);
     }
   }
   return map;
@@ -207,18 +228,23 @@ async function buildReserveCoverageByOrderIds(orderDbIds) {
   for (const [oid, lines] of byOrder) {
     let anyIncoming = false;
     let anyOnHand = false;
+    let anyUncovered = false;
     for (const { pid, reserved } of lines) {
       const fifoKey = `${oid}:${pid}`;
       const kind = fifoMap.has(fifoKey)
         ? fifoMap.get(fifoKey)
         : (() => {
             const sup = supplyMap.get(pid);
-            return sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
+            return sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'uncovered';
           })();
       if (kind === 'on_hand') anyOnHand = true;
       if (kind === 'incoming') anyIncoming = true;
+      if (kind === 'uncovered') anyUncovered = true;
     }
-    map.set(oid, anyIncoming ? 'incoming' : anyOnHand ? 'on_hand' : 'incoming');
+    map.set(
+      oid,
+      anyUncovered ? 'uncovered' : anyIncoming ? 'incoming' : anyOnHand ? 'on_hand' : 'uncovered'
+    );
   }
   return map;
 }
@@ -278,18 +304,21 @@ function enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap = null) {
     const sup = supplyMap.get(pid);
     line.reserveCoverage = sup
       ? classifyOrderReserveCoverage({ ...sup, orderReserved: r })
-      : 'incoming';
+      : 'uncovered';
   }
 }
 
 function reserveCoverageFromLines(lines) {
   let anyIncoming = false;
   let anyOnHand = false;
+  let anyUncovered = false;
   for (const line of lines || []) {
     const k = line.reserveCoverage;
     if (k === 'on_hand') anyOnHand = true;
     if (k === 'incoming') anyIncoming = true;
+    if (k === 'uncovered') anyUncovered = true;
   }
+  if (anyUncovered) return 'uncovered';
   if (anyIncoming) return 'incoming';
   if (anyOnHand) return 'on_hand';
   return 'none';
@@ -325,12 +354,12 @@ async function applyReserveCoverageToOrderRow(orderRow, supplyMap, coverageFifoM
   const pid = Number(orderRow.productId ?? orderRow.product_id);
   const fifoKey =
     Number.isFinite(pid) && pid > 0 && Number.isFinite(oid) && oid > 0 ? `${oid}:${pid}` : null;
-  let kind = 'incoming';
+  let kind = 'uncovered';
   if (fifoKey && coverageFifoMap?.has(fifoKey)) {
     kind = coverageFifoMap.get(fifoKey);
   } else {
     const sup = Number.isFinite(pid) && pid > 0 ? supplyMap.get(pid) : null;
-    kind = sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
+    kind = sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'uncovered';
   }
   orderRow.reserveCoverage = kind;
   orderRow.reserve_coverage = kind;
@@ -2596,12 +2625,12 @@ class OrdersService {
             Number.isFinite(pid) && pid > 0 && Number.isFinite(oid) && oid > 0
               ? `${oid}:${pid}`
               : null;
-          let kind = 'incoming';
+          let kind = 'uncovered';
           if (fifoKey && coverageFifoMap?.has(fifoKey)) {
             kind = coverageFifoMap.get(fifoKey);
           } else {
             const sup = Number.isFinite(pid) && pid > 0 ? supplyMap.get(pid) : null;
-            kind = sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
+            kind = sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'uncovered';
           }
           o.reserveCoverage = kind;
           o.reserve_coverage = kind;
@@ -3253,6 +3282,12 @@ class OrdersService {
   /** Товар для резерва/отгрузки: комплект, если заказ по SKU комплекта, даже при product_id комплектующей. */
   async _resolveProductIdForOrderStock(orderRow) {
     if (!orderRow || !repositoryFactory.isUsingPostgreSQL()) {
+      const raw = orderRow?.productId ?? orderRow?.product_id;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    // Ручной заказ: product_id задан явно при создании — комплект и комплектующие резервируются по строкам.
+    if (isManualOrderRow(orderRow)) {
       const raw = orderRow?.productId ?? orderRow?.product_id;
       const n = Number(raw);
       return Number.isFinite(n) && n > 0 ? n : null;

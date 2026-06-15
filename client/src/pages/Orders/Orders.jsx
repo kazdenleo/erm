@@ -800,7 +800,8 @@ export function Orders() {
       marketplace === 'ozon' ||
       marketplace === 'wildberries' ||
       marketplace === 'wb' ||
-      marketplace === 'yandex';
+      marketplace === 'yandex' ||
+      marketplace === 'manual';
     if (!supportsDetailApi) {
       setDetailModalData(null);
       setDetailModalError(null);
@@ -2831,7 +2832,7 @@ export function Orders() {
             )}
             {!detailModalLoading &&
               detailModalData &&
-              ['ozon', 'wildberries', 'wb', 'yandex'].includes(detailModalData.marketplace) && (
+              ['ozon', 'wildberries', 'wb', 'yandex', 'manual'].includes(detailModalData.marketplace) && (
                 <OrderDetailContent
                   data={detailModalData}
                   orderId={marketplaceOrderIdForApi(detailModalRow.orders ?? [detailModalRow.first], detailModalRow.first.marketplace)}
@@ -2844,10 +2845,11 @@ export function Orders() {
             {!detailModalLoading &&
               (!detailModalData ||
                 detailModalError ||
-                !['ozon', 'wildberries', 'wb', 'yandex'].includes(detailModalRow.first.marketplace)) && (
+                !['ozon', 'wildberries', 'wb', 'yandex', 'manual'].includes(detailModalRow.first.marketplace)) && (
                 <OrderSummaryFromList
                   orders={detailModalRow.orders}
                   marketplace={detailModalRow.first.marketplace}
+                  reserve={detailModalData?.reserve}
                   onReserveChange={() => reloadOrders({ silent: true })}
                 />
               )}
