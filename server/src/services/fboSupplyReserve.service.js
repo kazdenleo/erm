@@ -72,6 +72,27 @@ async function getNetReservedForFboItem(fboSupplyItemId, productId, client = nul
   return parseInt(r.rows?.[0]?.net ?? 0, 10) || 0;
 }
 
+/** Нетто-резерв FBO по строке в разрезе складов (для корректного снятия). */
+async function getNetReservedForFboItemByWarehouse(fboSupplyItemId, productId, client = null) {
+  const run = client?.query ? client.query.bind(client) : query;
+  const r = await run(
+    `SELECT warehouse_id,
+            GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
+     FROM stock_movements
+     WHERE product_id = $1
+       AND meta->>'fbo_supply_item_id' = $2
+       AND type IN ('reserve', 'unreserve')
+     GROUP BY warehouse_id`,
+    [productId, String(fboSupplyItemId)]
+  );
+  return (r.rows || [])
+    .map((row) => ({
+      warehouseId: normalizeWarehouseId(row.warehouse_id),
+      net: parseInt(row.net ?? 0, 10) || 0,
+    }))
+    .filter((row) => row.warehouseId != null && row.net > 0);
+}
+
 async function getNetReservedOnWarehouse(productId, warehouseId, client = null) {
   const run = client?.query ? client.query.bind(client) : query;
   const r = await run(
@@ -399,14 +420,27 @@ class FboSupplyReserveService {
         const label = row.external_shipment_number
           ? `FBO ${row.external_shipment_number}`
           : `FBO поставка №${row.fbo_supply_id}`;
-        await applyFboReserveDelta({
-          productId: pid,
-          warehouseId: row.deduction_warehouse_id,
-          supplyId: row.fbo_supply_id,
-          supplyItemId: itemId,
-          delta: -current,
-          reason: `Пересчёт резерва FBO (${label})`,
-        }).catch(() => {});
+        const byWh = await getNetReservedForFboItemByWarehouse(itemId, pid);
+        const warehouses =
+          byWh.length > 0
+            ? byWh
+            : [
+                {
+                  warehouseId: normalizeWarehouseId(row.deduction_warehouse_id),
+                  net: current,
+                },
+              ].filter((w) => w.warehouseId != null);
+        for (const { warehouseId, net } of warehouses) {
+          if (net <= 0) continue;
+          await applyFboReserveDelta({
+            productId: pid,
+            warehouseId,
+            supplyId: row.fbo_supply_id,
+            supplyItemId: itemId,
+            delta: -net,
+            reason: `Пересчёт резерва FBO (${label})`,
+          }).catch(() => {});
+        }
       }
 
       const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
@@ -495,6 +529,49 @@ class FboSupplyReserveService {
     for (const row of r.rows || []) {
       await this.rebalanceReservesForProduct(row.product_id, { profileId });
     }
+  }
+
+  /** Пересчёт резерва по всем товарам активных поставок аккаунта. */
+  async rebalanceReservesForProfile(profileId) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return { products: 0, movements: 0 };
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) return { products: 0, movements: 0 };
+
+    const r = await query(
+      `SELECT DISTINCT si.product_id
+       FROM fbo_supply_items si
+       INNER JOIN fbo_supplies s ON s.id = si.fbo_supply_id
+       WHERE s.profile_id = $1
+         AND s.deduction_warehouse_id IS NOT NULL
+         AND s.status = ANY($2::text[])
+         AND si.product_id IS NOT NULL
+       ORDER BY si.product_id`,
+      [pid, FBO_RESERVE_ACTIVE_STATUSES]
+    );
+    const productIds = (r.rows || [])
+      .map((row) => Number(row.product_id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    const movBeforeR = await query(
+      `SELECT COUNT(*)::int AS cnt FROM stock_movements WHERE meta ? 'fbo_supply_item_id'`
+    );
+    const movBefore = Number(movBeforeR.rows[0]?.cnt) || 0;
+
+    let done = 0;
+    for (const productId of productIds) {
+      await this.rebalanceReservesForProduct(productId, { profileId: pid });
+      done += 1;
+      if (done % 25 === 0 || done === productIds.length) {
+        console.log(`[FBO rebalance] ${done}/${productIds.length} товаров`);
+      }
+    }
+
+    const movAfterR = await query(
+      `SELECT COUNT(*)::int AS cnt FROM stock_movements WHERE meta ? 'fbo_supply_item_id'`
+    );
+    const movAfter = Number(movAfterR.rows[0]?.cnt) || 0;
+
+    return { products: productIds.length, movements: movAfter - movBefore };
   }
 
   async releaseReservesForSupply(supplyId, { profileId } = {}) {
