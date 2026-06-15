@@ -134,9 +134,26 @@ async function applyFboReserveDelta({ productId, warehouseId, supplyId, supplyIt
   });
 }
 
+async function getWarehouseAvailablePoolForFbo(productId, warehouseId) {
+  const pid = Number(productId);
+  const wid = Number(warehouseId);
+  if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(wid) || wid < 1) return 0;
+
+  const pwsR = await query(
+    `SELECT COALESCE(quantity, 0)::int AS on_hand
+     FROM product_warehouse_stock
+     WHERE product_id = $1 AND warehouse_id = $2`,
+    [pid, wid]
+  );
+  const onHand = Number(pwsR.rows?.[0]?.on_hand) || 0;
+  const reservedOnWh = await getNetReservedOnWarehouse(pid, wid);
+  return Math.max(0, onHand - reservedOnWh);
+}
+
 class FboSupplyReserveService {
   /**
-   * Распределение «в пути» по активным строкам FBO (FIFO по ready_at).
+   * Покрытие строк FBO: с наличия (FIFO по ready_at на складе списания) и с пути (incoming).
+   * Если в журнале уже есть резерв по строке — берём факт; иначе симулируем распределение пула.
    * @returns {Map<string, { reservedFromStock: number, reservedFromIncoming: number }>}
    */
   async _computeReserveBreakdownByItem(productIds, { profileId } = {}) {
@@ -144,18 +161,30 @@ class FboSupplyReserveService {
     const uniquePids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
     if (!uniquePids.length) return breakdown;
 
-    for (const pid of uniquePids) {
-      const queue = await findFboReserveQueueByProduct(pid, profileId);
+    for (const productId of uniquePids) {
+      const queue = await findFboReserveQueueByProduct(productId, profileId);
       const incR = await query(
         `SELECT COALESCE(incoming_quantity, 0)::int AS incoming FROM products WHERE id = $1`,
-        [pid]
+        [productId]
       );
       let incomingPool = Number(incR.rows?.[0]?.incoming) || 0;
+      const stockPools = new Map();
 
       for (const row of queue) {
         const itemId = String(row.supply_item_id);
         const qty = Math.max(0, parseInt(row.quantity, 10) || 0);
-        const reservedFromStock = await getNetReservedForFboItem(row.supply_item_id, pid);
+        const wh = Number(row.deduction_warehouse_id);
+
+        let reservedFromStock = await getNetReservedForFboItem(row.supply_item_id, productId);
+        if (reservedFromStock <= 0 && Number.isFinite(wh) && wh > 0) {
+          if (!stockPools.has(wh)) {
+            stockPools.set(wh, await getWarehouseAvailablePoolForFbo(productId, wh));
+          }
+          const pool = stockPools.get(wh) || 0;
+          reservedFromStock = Math.min(qty, pool);
+          stockPools.set(wh, Math.max(0, pool - reservedFromStock));
+        }
+
         const gap = Math.max(0, qty - reservedFromStock);
         const reservedFromIncoming = Math.min(gap, incomingPool);
         incomingPool -= reservedFromIncoming;
@@ -222,30 +251,26 @@ class FboSupplyReserveService {
        ORDER BY i.fbo_supply_id, i.id`,
       [supplyIds]
     );
-    const itemsBySupply = new Map();
-    for (const row of itemsR.rows || []) {
-      const sid = Number(row.fbo_supply_id);
-      if (!itemsBySupply.has(sid)) itemsBySupply.set(sid, []);
-      itemsBySupply.get(sid).push({
-        id: row.id,
-        productId: row.product_id,
-        quantity: row.quantity,
-      });
-    }
+    const allItems = (itemsR.rows || []).map((row) => ({
+      id: row.id,
+      fboSupplyId: row.fbo_supply_id,
+      productId: row.product_id,
+      quantity: row.quantity,
+    }));
+    const enrichedAll = await this.enrichItemsWithReserved(allItems, { profileId });
+    const enrichedByItemId = new Map(enrichedAll.map((it) => [String(it.id), it]));
 
     const totalsBySupply = new Map();
-    for (const [sid, items] of itemsBySupply) {
-      const enriched = await this.enrichItemsWithReserved(items, { profileId });
-      totalsBySupply.set(sid, {
-        reservedFromStockTotal: enriched.reduce(
-          (sum, it) => sum + (Number(it.reservedFromStock) || 0),
-          0
-        ),
-        reservedFromIncomingTotal: enriched.reduce(
-          (sum, it) => sum + (Number(it.reservedFromIncoming) || 0),
-          0
-        ),
-      });
+    for (const item of allItems) {
+      const sid = Number(item.fboSupplyId);
+      const enriched = enrichedByItemId.get(String(item.id));
+      if (!enriched) continue;
+      if (!totalsBySupply.has(sid)) {
+        totalsBySupply.set(sid, { reservedFromStockTotal: 0, reservedFromIncomingTotal: 0 });
+      }
+      const t = totalsBySupply.get(sid);
+      t.reservedFromStockTotal += Number(enriched.reservedFromStock) || 0;
+      t.reservedFromIncomingTotal += Number(enriched.reservedFromIncoming) || 0;
     }
 
     return supplies.map((s) => {

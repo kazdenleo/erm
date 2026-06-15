@@ -1237,8 +1237,15 @@ export function FboSupplyDetail() {
                     <div className="fbo-supply-qty-with-reserve">
                       <span className="fbo-supply-qty-with-reserve__qty">{it.quantity ?? 0}</span>
                       <FboSupplyReserveBreakdown
-                        reservedFromStock={it.reservedFromStock ?? it.reservedQuantity}
-                        reservedFromIncoming={it.reservedFromIncoming}
+                        reservedFromStock={
+                          it.reservedFromStock ??
+                          it.reserved_from_stock ??
+                          it.reservedQuantity ??
+                          it.reserved_quantity
+                        }
+                        reservedFromIncoming={
+                          it.reservedFromIncoming ?? it.reserved_from_incoming
+                        }
                       />
                     </div>
                   </td>
