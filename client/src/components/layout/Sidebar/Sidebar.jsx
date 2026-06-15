@@ -27,7 +27,6 @@ const stockWarehouseChildren = [
   },
   { path: '/stock-levels/purchases', label: '🧾 Закупка', iconClass: 'pe-7s-cart' },
   { path: '/production', label: '🔧 Производство', iconClass: 'pe-7s-tools', requiresProduction: true },
-  { path: '/stock-levels/fbo-supplies', label: '📦 Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true },
   {
     path: opsByKey.receipts_list?.to || '/stock-levels/warehouse?op=receipts_list',
     label: '📑 Приёмка',
@@ -70,6 +69,7 @@ const menuItems = [
   { path: '/', label: 'Аналитика', iconClass: 'pe-7s-graph2' },
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2' },
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2' },
+  { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true },
   { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment' },
   { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2' },
   {
@@ -195,6 +195,8 @@ export function Sidebar() {
     };
     return menuItems
       .filter((i) => !i.needsProfile || user?.profileId != null)
+      .filter((i) => !i.requiresFbo || fboMenuEnabled)
+      .filter((i) => !i.requiresProduction || productionMenuEnabled)
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
   }, [canManageUsers, isProfileAdmin, isAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled]);
