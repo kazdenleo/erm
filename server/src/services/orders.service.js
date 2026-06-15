@@ -2524,10 +2524,7 @@ class OrdersService {
             kitIdByOrderDbId.set(oid, pid);
             continue;
           }
-          if (componentKitMap.has(pid)) {
-            kitIdByOrderDbId.set(oid, componentKitMap.get(pid));
-            continue;
-          }
+          // Комплектующая в каталоге ≠ заказ на комплект: резерв считаем по product_id строки.
         }
 
         // Дорогой поиск по SKU заказа — только при резерве или без product_id (часто WB).
@@ -2543,9 +2540,27 @@ class OrdersService {
         let reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
         let need = orderReserveNeedQty(o);
         const kitId = oid ? kitIdByOrderDbId.get(oid) : null;
-        if (oid && kitId) {
+        const pid = Number(o.productId ?? o.product_id);
+        const sqlReserved = reserved;
+        if (oid && kitId && Number.isFinite(pid) && pid > 0 && kitPiecesMap.has(pid)) {
           reserved = await getReservedKitUnitsForOrderValidation(kitId, oid);
           need = Math.max(1, parseInt(o.quantity, 10) || 1);
+        } else if (oid && kitId && (!Number.isFinite(pid) || pid < 1)) {
+          reserved = await getReservedKitUnitsForOrderValidation(kitId, oid);
+          need = Math.max(1, parseInt(o.quantity, 10) || 1);
+        } else if (
+          oid &&
+          Number.isFinite(pid) &&
+          pid > 0 &&
+          (componentKitMap.has(pid) || (kitId && !kitPiecesMap.has(pid)))
+        ) {
+          const productReserved = await this._getReservedQtyForOrderProduct(oid, pid);
+          reserved = Math.max(sqlReserved, productReserved);
+          if (componentKitMap.has(pid)) {
+            need = Math.max(1, parseInt(o.quantity, 10) || 1);
+          } else if (reserved > need) {
+            need = await this._resolveOrderReserveNeedQtyForLight(o, kitPiecesMap, componentKitMap);
+          }
         } else if (reserved > need) {
           need = await this._resolveOrderReserveNeedQtyForLight(o, kitPiecesMap, componentKitMap);
         }
