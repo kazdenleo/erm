@@ -157,9 +157,7 @@ class StockMovementsRepositoryPG {
     const where = ['product_id = $1'];
     if (whId != null) {
       params.push(whId);
-      // Исторические движения могли быть записаны без warehouse_id — не скрываем их при фильтре по складу,
-      // иначе пользователь видит «пустую историю» при наличии приёмки/движений.
-      where.push(`(warehouse_id = $${params.length} OR warehouse_id IS NULL)`);
+      where.push(`warehouse_id = $${params.length}`);
     }
     if (pid != null) {
       params.push(pid);

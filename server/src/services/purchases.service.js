@@ -44,11 +44,32 @@ async function runWithLockRetry(fn, { attempts = 4, delayMs = 2500 } = {}) {
   throw lastErr;
 }
 
+async function getPurchaseWarehouseId(client, purchaseId) {
+  const purId = parseInt(purchaseId, 10);
+  if (!Number.isFinite(purId) || purId < 1) return null;
+  const run = client && typeof client.query === 'function' ? client.query.bind(client) : query;
+  const r = await run('SELECT warehouse_id FROM purchases WHERE id = $1', [purId]);
+  const wh = r.rows?.[0]?.warehouse_id;
+  if (wh == null || wh === '') return null;
+  const n = Number(wh);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** Записи журнала «Закупка — ожидание» после увеличения incoming (lightIncoming). */
-async function writePurchaseIncomingJournalEntries(client, purchaseId, incomingDeltas, profileId) {
+async function writePurchaseIncomingJournalEntries(
+  client,
+  purchaseId,
+  incomingDeltas,
+  profileId,
+  warehouseId = undefined
+) {
   if (!incomingDeltas?.size || purchaseId == null) return;
   const purId = parseInt(purchaseId, 10);
   if (!Number.isFinite(purId) || purId < 1) return;
+  let whId = warehouseId;
+  if (whId === undefined) {
+    whId = await getPurchaseWarehouseId(client, purchaseId);
+  }
   for (const [productId, qty] of incomingDeltas.entries()) {
     const d = Math.max(0, parseInt(qty, 10) || 0);
     const pid = Number(productId);
@@ -59,7 +80,7 @@ async function writePurchaseIncomingJournalEntries(client, purchaseId, incomingD
       quantityChange: d,
       reason: `Закупка №${purId} — ожидание`,
       meta: { purchase_id: purId },
-      warehouseId: null,
+      warehouseId: whId,
       profileId,
     });
   }
@@ -85,7 +106,8 @@ async function applyIncomingDeltasAfterCommit(deltas, { purchaseId = null, profi
      WHERE p.id = v.product_id`,
     [batchIds, batchQtys]
   );
-  await writePurchaseIncomingJournalEntries(null, purchaseId, deltas, profileId);
+  const warehouseId = purchaseId != null ? await getPurchaseWarehouseId(null, purchaseId) : null;
+  await writePurchaseIncomingJournalEntries(null, purchaseId, deltas, profileId, warehouseId);
   scheduleProcurementReserveReapply(batchIds, {
     label: 'background reserve after incoming batch update',
   });
@@ -553,13 +575,14 @@ async function addIncomingDeltaForPurchaseInTx(
     'UPDATE products SET incoming_quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
     [newIncoming, pid]
   );
+  const purchaseWarehouseId = await getPurchaseWarehouseId(client, purchaseId);
   await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
     productId: pid,
     type: 'incoming',
     quantityChange: d,
     reason: `Закупка №${purchaseId} — ожидание`,
     meta: { purchase_id: purchaseId },
-    warehouseId: null,
+    warehouseId: purchaseWarehouseId,
     profileId,
   });
 }
@@ -712,8 +735,12 @@ async function subtractIncomingForPurchaseLineRemovalInTx(client, purchaseId, pr
   if (rem <= 0) return;
   const pid = Number(productId);
   if (!Number.isFinite(pid) || pid < 1) return;
-  const purProf = await client.query('SELECT profile_id FROM purchases WHERE id = $1', [purchaseId]);
+  const purProf = await client.query(
+    'SELECT profile_id, warehouse_id FROM purchases WHERE id = $1',
+    [purchaseId]
+  );
   const profileIdForMove = purProf.rows?.[0]?.profile_id ?? null;
+  const purchaseWarehouseId = purProf.rows?.[0]?.warehouse_id ?? null;
   await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
   const pr = await client.query('SELECT COALESCE(incoming_quantity, 0) AS inc FROM products WHERE id = $1', [pid]);
   const incoming = pr.rows?.[0]?.inc != null ? Number(pr.rows[0].inc) : 0;
@@ -728,7 +755,7 @@ async function subtractIncomingForPurchaseLineRemovalInTx(client, purchaseId, pr
     quantityChange: -rem,
     reason: `Снятие ожидания при удалении строки закупки №${purchaseId}`,
     meta: { purchase_id: purchaseId, line_removed: true },
-    warehouseId: null,
+    warehouseId: purchaseWarehouseId,
     profileId: profileIdForMove,
   });
 }
@@ -1103,8 +1130,12 @@ async function recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId) {
 
 /** Снять ожидание (incoming), которое осталось по строкам закупки (после отката приёмок). */
 async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
-  const purProf = await client.query('SELECT profile_id FROM purchases WHERE id = $1', [purchaseId]);
+  const purProf = await client.query(
+    'SELECT profile_id, warehouse_id FROM purchases WHERE id = $1',
+    [purchaseId]
+  );
   const profileIdForMove = purProf.rows?.[0]?.profile_id ?? null;
+  const purchaseWarehouseId = purProf.rows?.[0]?.warehouse_id ?? null;
   const lines = await client.query(
     `SELECT product_id, expected_quantity, received_quantity FROM purchase_items WHERE purchase_id = $1 FOR UPDATE`,
     [purchaseId]
@@ -1129,7 +1160,7 @@ async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
       quantityChange: -rem,
       reason: `Сторно: снятие ожидания при удалении закупки №${purchaseId}`,
       meta: { storno: true, purchase_id: purchaseId, purchase_deleted: true },
-      warehouseId: null,
+      warehouseId: purchaseWarehouseId,
       profileId: profileIdForMove,
     });
   }
@@ -3042,7 +3073,7 @@ class PurchasesService {
               quantityChange: stockQty,
               reason: `Приёмка по закупке №${purchaseId}`,
               meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
-              warehouseId: null,
+              warehouseId: purchaseWarehouseId,
               profileId: pid,
             });
             if (moveFromIncoming > 0) {
@@ -3052,7 +3083,7 @@ class PurchasesService {
                 quantityChange: -moveFromIncoming,
                 reason: `Списание incoming по приёмке №${rid}`,
                 meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
-                warehouseId: null,
+                warehouseId: purchaseWarehouseId,
                 profileId: pid,
               });
             }

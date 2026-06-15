@@ -1179,7 +1179,6 @@ export function WarehouseStocks() {
   const [historyNetReserved, setHistoryNetReserved] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState(null);
-  const [historyWarehouseFilterIgnored, setHistoryWarehouseFilterIgnored] = useState(false);
   const [reserveModalOpen, setReserveModalOpen] = useState(false);
   /** Товар, для которого открыта модалка резерва (таблица или история). */
   const [reserveModalProduct, setReserveModalProduct] = useState(null);
@@ -1860,7 +1859,6 @@ export function WarehouseStocks() {
     if (!historyProduct) {
       setHistoryList([]);
       setHistoryNetReserved(null);
-      setHistoryWarehouseFilterIgnored(false);
       setHistoryError(null);
       return;
     }
@@ -1875,41 +1873,6 @@ export function WarehouseStocks() {
         if (cancelled) return;
         const list = res?.data ?? (Array.isArray(res) ? res : []);
         const arr = Array.isArray(list) ? list : [];
-        // Если выбран склад, но история пуста — возможно движение записано по другому складу (или без склада).
-        // В этом случае показываем историю по всем складам, чтобы не вводить в заблуждение «пустым окном».
-        if (arr.length === 0 && stockWarehouseId) {
-          return stockMovementsApi
-            .getHistory(historyProduct.id, { limit: 100 })
-            .then((res2) => {
-              if (cancelled) return;
-              const list2 = res2?.data ?? (Array.isArray(res2) ? res2 : []);
-              setHistoryList(Array.isArray(list2) ? list2 : []);
-              setHistoryWarehouseFilterIgnored(true);
-              const net2 =
-                res2?.netReserved != null
-                  ? Number(res2.netReserved)
-                  : res2?.net_reserved != null
-                    ? Number(res2.net_reserved)
-                    : null;
-              setHistoryNetReserved(Number.isFinite(net2) ? net2 : null);
-              return;
-            })
-            .catch((err) => {
-              if (!cancelled) {
-                setHistoryList([]);
-                setHistoryNetReserved(null);
-                setHistoryWarehouseFilterIgnored(false);
-                setHistoryError(
-                  err?.response?.data?.message ||
-                    (err?.code === 'ECONNABORTED'
-                      ? 'Превышено время ожидания ответа сервера'
-                      : err?.message) ||
-                    'Не удалось загрузить историю'
-                );
-              }
-            });
-        }
-        setHistoryWarehouseFilterIgnored(false);
         setHistoryList(arr);
         const net =
           res?.netReserved != null
@@ -1952,28 +1915,11 @@ export function WarehouseStocks() {
       buildHistoryDisplaySnapshots(
         displayHistoryRows,
         historyNetReserved,
-        historyWarehouseFilterIgnored ? null : stockWarehouseId,
+        stockWarehouseId,
         historyProduct
       ),
-    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyWarehouseFilterIgnored, historyProduct]
+    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyProduct]
   );
-
-  const historyWarehouseScopedAvailable = useMemo(() => {
-    if (!historyProduct || !historyWarehouseFilterIgnored || !stockWarehouseId) return null;
-    const onHand = Number(historyProduct.quantity) || 0;
-    const incoming =
-      Number(historyProduct.incoming_quantity ?? historyProduct.incomingQuantity) || 0;
-    const reserved = Math.max(
-      0,
-      Number(
-        historyProduct.net_reserved_quantity ??
-          historyProduct.netReservedQuantity ??
-          historyProduct.reserved_quantity ??
-          historyProduct.reservedQuantity
-      ) || 0
-    );
-    return stockTableAvailable({ onHand, incoming, reserved, suppliers: 0 });
-  }, [historyProduct, historyWarehouseFilterIgnored, stockWarehouseId]);
 
   const openReserveModalForProduct = useCallback((product, { pinnedList = null } = {}) => {
     if (!product?.id) return;
@@ -2845,20 +2791,7 @@ export function WarehouseStocks() {
           <p className="stock-levels-history-empty">Нет записей об изменениях остатков.</p>
         ) : (
           <>
-            {historyWarehouseFilterIgnored ? (
-              <p className="text-muted small mb-2" role="status">
-                История показана по <strong>всем складам</strong>, т.к. по выбранному складу записей не
-                найдено. Колонка «Доступно» в истории — по всем складам; в таблице остатков — только по
-                выбранному складу
-                {historyWarehouseScopedAvailable != null ? (
-                  <>
-                    {' '}
-                    (сейчас: <strong>{historyWarehouseScopedAvailable}</strong>)
-                  </>
-                ) : null}
-                .
-              </p>
-            ) : stockWarehouseId ? (
+            {stockWarehouseId ? (
               <p className="text-muted small mb-2" role="status">
                 {isKitProduct(historyProduct) ? (
                   <>
@@ -3141,7 +3074,7 @@ export function WarehouseStocks() {
                     >
                       {f.supplyId ? (
                         <Link
-                          to={`/fbo-supplies/${f.supplyId}`}
+                          to={`/stock-levels/fbo-supplies/${f.supplyId}`}
                           className="stock-levels-history-link"
                           onClick={closeReserveModal}
                         >
