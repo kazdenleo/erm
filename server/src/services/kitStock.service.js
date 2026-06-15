@@ -2441,6 +2441,7 @@ export async function attachKitDisplayMetrics(products, options = {}) {
       marketplace_available: marketplaceAvailable,
       available_total: availableTotal
     };
+    p.incoming_from_components = incomingFromComponents;
   }
 }
 

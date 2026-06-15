@@ -163,18 +163,31 @@ export function formatKitSupplierDisplay(product, directSupplierTotal = 0) {
   return null;
 }
 
-/** В колонке «В пути» для комплекта: (N) — сколько комплектов из ожидания комплектующих на складе. */
+/** Сколько комплектов в «в пути» из ожидания комплектующих (API или строки списка). */
+export function kitIncomingFromComponentsAmount(metrics, product = null, allProducts = null) {
+  const fromMetrics = Math.max(0, Number(metrics?.incoming_from_components) || 0);
+  if (fromMetrics > 0) return fromMetrics;
+  const fromProduct = Math.max(0, Number(product?.incoming_from_components ?? product?.incomingFromComponents) || 0);
+  if (fromProduct > 0) return fromProduct;
+  if (Array.isArray(allProducts) && product) {
+    return computeKitIncomingFromLoadedProducts(product, allProducts);
+  }
+  return 0;
+}
+
+/** В пути для комплекта: ожидание SKU + собираемость из «в пути» комплектующих. */
+export function kitTotalIncomingForDisplay(metrics, product, allProducts, baseIncoming = 0) {
+  const fromComponents = kitIncomingFromComponentsAmount(metrics, product, allProducts);
+  return Math.max(0, Number(baseIncoming) || 0) + fromComponents;
+}
+
+/** @deprecated Используйте kitTotalIncomingForDisplay */
 export function formatKitIncomingDisplay(product, directIncoming = 0, allProducts = null) {
   const raw = product?.kit_display ?? product?.kitDisplay;
-  let fromApi = raw?.incoming_from_components ?? raw?.incomingFromComponents ?? null;
-  if ((fromApi == null || Number(fromApi) === 0) && Array.isArray(allProducts)) {
-    fromApi = computeKitIncomingFromLoadedProducts(product, allProducts);
-  }
-  const kitUnits = Math.max(0, Number(fromApi) || 0);
+  const fromComponents = kitIncomingFromComponentsAmount(raw, product, allProducts);
   const direct = Math.max(0, Number(directIncoming) || 0);
-  if (kitUnits > 0 && direct <= 0) return `(${kitUnits})`;
-  if (kitUnits > 0 && direct > 0) return `${direct} (${kitUnits})`;
-  return null;
+  const total = direct + fromComponents;
+  return total > 0 ? String(total) : null;
 }
 
 /** Сколько комплектов можно собрать из «в пути» комплектующих (строки того же списка). */
@@ -305,7 +318,8 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
             );
       const availableTotal = marketplaceAvailable;
       const suppliersDisplay = formatKitSupplierDisplay(product, base.suppliers);
-      const incomingDisplay = formatKitIncomingDisplay(product, base.incoming, products);
+      const incomingFromComponents = kitIncomingFromComponentsAmount(display, product, products);
+      const totalIncoming = kitTotalIncomingForDisplay(display, product, products, base.incoming);
       const kitMetrics = {
         ...display,
         whole_available: wholeAvailable,
@@ -315,8 +329,8 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
       return {
         product,
         onHand: display.whole_on_hand,
-        incoming: incomingDisplay ? 0 : base.incoming,
-        incomingDisplay,
+        incoming: totalIncoming,
+        incomingFromComponents,
         reserved: base.reserved,
         suppliers: suppliersDisplay ? 0 : base.suppliers,
         supplierDetails: base.supplierDetails,

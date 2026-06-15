@@ -2494,12 +2494,12 @@ export function WarehouseStocks() {
                     <td className="sku-cell">{row.product.sku || '—'}</td>
                     <td className="name-cell">{row.product.name || 'Без названия'}</td>
                     <td>
-                      {row.incomingDisplay ? (
+                      {row.incomingFromComponents > 0 ? (
                         <span
                           className="stock-main-value"
-                          title="Сколько комплектов можно собрать из ожидания комплектующих на этом складе"
+                          title={`В т.ч. ${row.incomingFromComponents} компл. из ожидания комплектующих на этом складе`}
                         >
-                          {row.incomingDisplay}
+                          {row.incoming}
                         </span>
                       ) : (
                         row.incoming
