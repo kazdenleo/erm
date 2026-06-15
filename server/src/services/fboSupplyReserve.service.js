@@ -5,7 +5,7 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
-import stockMovementsService, { runWithProductStockLock } from './stockMovements.service.js';
+import stockMovementsService from './stockMovements.service.js';
 import { getProductSupplySnapshotWithClient } from './sellableQuantity.service.js';
 import { NET_RESERVED_MOVEMENT_ROW_CASE_SQL } from '../constants/netReservedStockSql.js';
 
@@ -406,117 +406,115 @@ class FboSupplyReserveService {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
 
-    return runWithProductStockLock(pid, async () => {
-      const queue = await findFboReserveQueueByProduct(pid, profileId);
-      const allItemIds = new Set(queue.map((r) => String(r.supply_item_id)));
+    // Без runWithProductStockLock: applyChange уже берёт pg_advisory_xact_lock по product_id.
+    // Сессионная advisory-блокировка здесь вешала бы applyChange на другом соединении.
+    const queue = await findFboReserveQueueByProduct(pid, profileId);
+    const allItemIds = new Set(queue.map((r) => String(r.supply_item_id)));
 
-      // Если нужно снять резерв (например, после списания остатка) — снимаем в обратном приоритете:
-      // сначала самые поздние поставки, чтобы более ранние по ready_at оставались зарезервированы.
-      const unreserveQueue = [...queue].sort(compareSupplyRowsForUnreserve);
-      for (const row of unreserveQueue) {
-        const itemId = row.supply_item_id;
-        const current = await getNetReservedForFboItem(itemId, pid);
-        if (current <= 0) continue;
-        const label = row.external_shipment_number
-          ? `FBO ${row.external_shipment_number}`
-          : `FBO поставка №${row.fbo_supply_id}`;
-        const byWh = await getNetReservedForFboItemByWarehouse(itemId, pid);
-        const warehouses =
-          byWh.length > 0
-            ? byWh
-            : [
-                {
-                  warehouseId: normalizeWarehouseId(row.deduction_warehouse_id),
-                  net: current,
-                },
-              ].filter((w) => w.warehouseId != null);
-        for (const { warehouseId, net } of warehouses) {
-          if (net <= 0) continue;
-          await applyFboReserveDelta({
-            productId: pid,
-            warehouseId,
-            supplyId: row.fbo_supply_id,
-            supplyItemId: itemId,
-            delta: -net,
-            reason: `Пересчёт резерва FBO (${label})`,
-          }).catch(() => {});
-        }
-      }
-
-      const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
-      const fallbackWh = normalizeWarehouseId(
-        queue.find((row) => Number(row.deduction_warehouse_id) > 0)?.deduction_warehouse_id
-      );
-      const stockWarehouseIds =
-        sourceWarehouseIds.length > 0
-          ? sourceWarehouseIds
-          : fallbackWh != null
-            ? [fallbackWh]
-            : [];
-
-      const poolByWh = new Map();
-      for (const warehouseId of stockWarehouseIds) {
-        poolByWh.set(warehouseId, await getWarehouseReservableUnits(pid, warehouseId));
-      }
-
-      for (const row of queue) {
-        const itemId = row.supply_item_id;
-        const supplyId = row.fbo_supply_id;
-        const target = Math.max(0, parseInt(row.quantity, 10) || 0);
-        if (target <= 0) continue;
-
-        let need = target;
-        const label = row.external_shipment_number
-          ? `FBO ${row.external_shipment_number}`
-          : `FBO поставка №${supplyId}`;
-
-        for (const warehouseId of stockWarehouseIds) {
-          if (need <= 0) break;
-          let pool = poolByWh.get(warehouseId) || 0;
-          if (pool <= 0) continue;
-          const add = Math.min(need, pool);
-          try {
-            await applyFboReserveDelta({
-              productId: pid,
-              warehouseId,
-              supplyId,
-              supplyItemId: itemId,
-              delta: add,
-              reason: `Резерв FBO (${label})`,
-            });
-            poolByWh.set(warehouseId, pool - add);
-            need -= add;
-          } catch {
-            /* недостаточно доступного остатка */
-          }
-        }
-      }
-
-      const orphanR = await query(
-        `SELECT DISTINCT meta->>'fbo_supply_item_id' AS item_id,
-                meta->>'fbo_supply_id' AS supply_id,
-                warehouse_id
-         FROM stock_movements
-         WHERE product_id = $1
-           AND type IN ('reserve', 'unreserve')
-           AND meta->>'fbo_supply_item_id' IS NOT NULL
-           AND meta->>'fbo_supply_id' IS NOT NULL`,
-        [pid]
-      );
-      for (const or of orphanR.rows || []) {
-        if (allItemIds.has(String(or.item_id))) continue;
-        const net = await getNetReservedForFboItem(or.item_id, pid);
+    const unreserveQueue = [...queue].sort(compareSupplyRowsForUnreserve);
+    for (const row of unreserveQueue) {
+      const itemId = row.supply_item_id;
+      const current = await getNetReservedForFboItem(itemId, pid);
+      if (current <= 0) continue;
+      const label = row.external_shipment_number
+        ? `FBO ${row.external_shipment_number}`
+        : `FBO поставка №${row.fbo_supply_id}`;
+      const byWh = await getNetReservedForFboItemByWarehouse(itemId, pid);
+      const warehouses =
+        byWh.length > 0
+          ? byWh
+          : [
+              {
+                warehouseId: normalizeWarehouseId(row.deduction_warehouse_id),
+                net: current,
+              },
+            ].filter((w) => w.warehouseId != null);
+      for (const { warehouseId, net } of warehouses) {
         if (net <= 0) continue;
         await applyFboReserveDelta({
           productId: pid,
-          warehouseId: or.warehouse_id,
-          supplyId: or.supply_id,
-          supplyItemId: or.item_id,
+          warehouseId,
+          supplyId: row.fbo_supply_id,
+          supplyItemId: itemId,
           delta: -net,
-          reason: 'Снятие резерва FBO (строка неактивна)',
+          reason: `Пересчёт резерва FBO (${label})`,
         }).catch(() => {});
       }
-    });
+    }
+
+    const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
+    const fallbackWh = normalizeWarehouseId(
+      queue.find((row) => Number(row.deduction_warehouse_id) > 0)?.deduction_warehouse_id
+    );
+    const stockWarehouseIds =
+      sourceWarehouseIds.length > 0
+        ? sourceWarehouseIds
+        : fallbackWh != null
+          ? [fallbackWh]
+          : [];
+
+    const poolByWh = new Map();
+    for (const warehouseId of stockWarehouseIds) {
+      poolByWh.set(warehouseId, await getWarehouseReservableUnits(pid, warehouseId));
+    }
+
+    for (const row of queue) {
+      const itemId = row.supply_item_id;
+      const supplyId = row.fbo_supply_id;
+      const target = Math.max(0, parseInt(row.quantity, 10) || 0);
+      if (target <= 0) continue;
+
+      let need = target;
+      const label = row.external_shipment_number
+        ? `FBO ${row.external_shipment_number}`
+        : `FBO поставка №${supplyId}`;
+
+      for (const warehouseId of stockWarehouseIds) {
+        if (need <= 0) break;
+        let pool = poolByWh.get(warehouseId) || 0;
+        if (pool <= 0) continue;
+        const add = Math.min(need, pool);
+        try {
+          await applyFboReserveDelta({
+            productId: pid,
+            warehouseId,
+            supplyId,
+            supplyItemId: itemId,
+            delta: add,
+            reason: `Резерв FBO (${label})`,
+          });
+          poolByWh.set(warehouseId, pool - add);
+          need -= add;
+        } catch {
+          /* недостаточно доступного остатка */
+        }
+      }
+    }
+
+    const orphanR = await query(
+      `SELECT DISTINCT meta->>'fbo_supply_item_id' AS item_id,
+              meta->>'fbo_supply_id' AS supply_id,
+              warehouse_id
+       FROM stock_movements
+       WHERE product_id = $1
+         AND type IN ('reserve', 'unreserve')
+         AND meta->>'fbo_supply_item_id' IS NOT NULL
+         AND meta->>'fbo_supply_id' IS NOT NULL`,
+      [pid]
+    );
+    for (const or of orphanR.rows || []) {
+      if (allItemIds.has(String(or.item_id))) continue;
+      const net = await getNetReservedForFboItem(or.item_id, pid);
+      if (net <= 0) continue;
+      await applyFboReserveDelta({
+        productId: pid,
+        warehouseId: or.warehouse_id,
+        supplyId: or.supply_id,
+        supplyItemId: or.item_id,
+        delta: -net,
+        reason: 'Снятие резерва FBO (строка неактивна)',
+      }).catch(() => {});
+    }
   }
 
   async rebalanceReservesForSupply(supplyId, { profileId } = {}) {
