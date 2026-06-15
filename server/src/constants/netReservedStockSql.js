@@ -94,6 +94,9 @@ export function allocateWarehouseScopedIncoming({
     if (legacy > 0 && wh > 0) {
       return s + ni;
     }
+    if (ni > 0) {
+      return s + ni;
+    }
     return s;
   }
 

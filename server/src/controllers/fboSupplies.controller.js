@@ -76,8 +76,11 @@ class FboSuppliesController {
   async getById(req, res, next) {
     try {
       const { id } = req.params;
-      const profileId = req.user?.profileId ?? null;
-      const data = await fboSuppliesService.getById(id, { profileId });
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(404).json({ ok: false, message: 'Поставка FBO не найдена' });
+      }
+      const data = await fboSuppliesService.getById(id, { profileId: tid });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 404) {

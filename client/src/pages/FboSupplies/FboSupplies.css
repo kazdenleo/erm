@@ -29,6 +29,10 @@
   white-space: nowrap;
 }
 
+.fbo-reserve-breakdown__part--empty {
+  opacity: 0.65;
+}
+
 .fbo-supplies-page {
   padding: 0 4px 24px;
 }

@@ -232,6 +232,21 @@ export function FboSupplyDetail() {
 
   const itemSearchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
 
+  const supplyReserveTotals = useMemo(() => {
+    const items = supply?.items || [];
+    return items.reduce(
+      (acc, it) => {
+        acc.stock +=
+          Number(it.reservedFromStock ?? it.reserved_from_stock ?? it.reservedQuantity ?? it.reserved_quantity) ||
+          0;
+        acc.incoming += Number(it.reservedFromIncoming ?? it.reserved_from_incoming) || 0;
+        acc.qty += Number(it.quantity) || 0;
+        return acc;
+      },
+      { stock: 0, incoming: 0, qty: 0 }
+    );
+  }, [supply?.items]);
+
   const packingHasDiscrepancy = hasPackingDiscrepancy(supply, packing);
 
   const handleItemQuantitySaved = useCallback(
@@ -1148,6 +1163,14 @@ export function FboSupplyDetail() {
           ) : (
             'Нет привязанных к ERM товаров — печать недоступна.'
           )}
+          {supply?.items?.length ? (
+            <>
+              {' '}
+              · покрытие:{' '}
+              <strong>{supplyReserveTotals.stock}</strong> с наличия,{' '}
+              <strong>{supplyReserveTotals.incoming}</strong> с пути (из {supplyReserveTotals.qty} шт.)
+            </>
+          ) : null}
         </span>
       </div>
       <div className="table-responsive">
@@ -1169,7 +1192,9 @@ export function FboSupplyDetail() {
               <th>Артикул</th>
               <th>Штрихкод</th>
               {isOzonSupply ? <th>Размещение</th> : null}
-              <th>Количество</th>
+              <th title="Сколько покрыто с наличия на складе списания и из ожидаемых поступлений (в пути)">
+                Количество
+              </th>
               <th style={{ width: 48 }} />
             </tr>
           </thead>
@@ -1237,6 +1262,7 @@ export function FboSupplyDetail() {
                     <div className="fbo-supply-qty-with-reserve">
                       <span className="fbo-supply-qty-with-reserve__qty">{it.quantity ?? 0}</span>
                       <FboSupplyReserveBreakdown
+                        showEmpty
                         reservedFromStock={
                           it.reservedFromStock ??
                           it.reserved_from_stock ??
