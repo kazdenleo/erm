@@ -32,6 +32,7 @@ import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import {
   normalizeMarketplaceForUI,
   orderGroupKey,
+  manualOrderGroupKeyFromOrderId,
   singleOrderListGroupKey,
   marketplaceOrderIdForApi
 } from '../../utils/orderListGroupKey';
@@ -266,6 +267,10 @@ function orderRowHasAnyAction(first) {
   return false;
 }
 
+function manualOrderCanEdit(first) {
+  return normalizeMarketplaceForUI(first?.marketplace) === 'manual' && first?.status === 'new';
+}
+
 /** Состав строки списка для закупки: `orders: []` не скрывает позицию — берём first */
 function ordersArrayForPurchaseRow(row) {
   if (!row) return [];
@@ -476,6 +481,7 @@ export function Orders() {
   const [assemblyLoading, setAssemblyLoading] = useState(false);
   const [assemblyMessage, setAssemblyMessage] = useState(null);
   const [addOrderOpen, setAddOrderOpen] = useState(false);
+  const [editManualOrderGroupId, setEditManualOrderGroupId] = useState(null);
   const [addOrderCustomerName, setAddOrderCustomerName] = useState('');
   const [addOrderCustomerPhone, setAddOrderCustomerPhone] = useState('');
   const [addOrderWarehouseId, setAddOrderWarehouseId] = useState('');
@@ -682,7 +688,7 @@ export function Orders() {
   }, [allowPrivateOrders]);
 
   useEffect(() => {
-    if (!addOrderOpen) return;
+    if (!addOrderOpen || editManualOrderGroupId) return;
     const defaultWh =
       profile?.manual_orders_warehouse_id != null && profile.manual_orders_warehouse_id !== ''
         ? String(profile.manual_orders_warehouse_id)
@@ -697,7 +703,7 @@ export function Orders() {
         setProductsList(list.filter((p) => p?.id != null));
       })
       .catch(() => setProductsList([]));
-  }, [addOrderOpen, profile]);
+  }, [addOrderOpen, editManualOrderGroupId, profile]);
 
   const buildOrdersListParams = useCallback(
     (page = currentPage) => {
@@ -1357,10 +1363,59 @@ export function Orders() {
 
   const handleAddOrderOpen = () => {
     setAddOrderError(null);
+    setEditManualOrderGroupId(null);
     setAddOrderCustomerName('');
     setAddOrderCustomerPhone('');
     setAddOrderItems([{ productId: '', productLabel: '', searchText: '', quantity: 1, price: '' }]);
     setAddOrderOpen(true);
+  };
+
+  const handleEditManualOrderOpen = (row) => {
+    const ordersInGroup = ordersArrayForPurchaseRow(row);
+    if (!ordersInGroup.length) return;
+    const first = ordersInGroup[0];
+    if (!manualOrderCanEdit(first)) return;
+    const groupId =
+      orderGroupKey(first) ||
+      manualOrderGroupKeyFromOrderId(first.orderId ?? first.order_id) ||
+      String(first.orderId ?? first.order_id ?? '').trim();
+    if (!groupId) return;
+    setAddOrderError(null);
+    setEditManualOrderGroupId(groupId);
+    setAddOrderCustomerName(String(first.customerName ?? first.customer_name ?? '').trim());
+    setAddOrderCustomerPhone(String(first.customerPhone ?? first.customer_phone ?? '').trim());
+    const wh = first.warehouseId ?? first.warehouse_id;
+    setAddOrderWarehouseId(wh != null && wh !== '' ? String(wh) : '');
+    setAddOrderItems(
+      ordersInGroup.map((o) => {
+        const productId = o.productId ?? o.product_id;
+        const name = o.productName ?? o.product_name ?? '';
+        const sku = o.offerId ?? o.offer_id ?? o.marketplaceSku ?? o.marketplace_sku ?? '';
+        const label =
+          name && sku ? `${name} (${sku})` : name || (productId ? `Товар #${productId}` : '');
+        return {
+          id: o.id,
+          productId: productId != null ? Number(productId) : '',
+          productLabel: label,
+          searchText: '',
+          quantity: Math.max(1, parseInt(o.quantity, 10) || 1),
+          price: o.price != null && o.price !== '' ? Number(o.price) : '',
+        };
+      })
+    );
+    setAddOrderOpen(true);
+    productsApi
+      .getAll({ limit: 400, listView: 'full' })
+      .then((data) => {
+        const list = Array.isArray(data) ? data : data?.data ?? data?.products ?? [];
+        setProductsList(list.filter((p) => p?.id != null));
+      })
+      .catch(() => setProductsList([]));
+  };
+
+  const handleManualOrderModalClose = () => {
+    setAddOrderOpen(false);
+    setEditManualOrderGroupId(null);
   };
 
   const addOrderAddRow = () => {
@@ -1445,7 +1500,12 @@ export function Orders() {
         setAddOrderError('Укажите цену за единицу для каждой выбранной позиции (неотрицательное число)');
         return;
       }
-      items.push({ productId, quantity, price: unitPrice });
+      items.push({
+        productId,
+        quantity,
+        price: unitPrice,
+        ...(row.id != null && row.id !== '' ? { id: Number(row.id) } : {}),
+      });
     }
     if (items.length === 0) {
       setAddOrderError('Добавьте хотя бы один товар с количеством и ценой');
@@ -1454,11 +1514,24 @@ export function Orders() {
     setAddOrderLoading(true);
     setAddOrderError(null);
     try {
-      await ordersApi.createManual({ items, customerName, customerPhone, warehouseId });
+      if (editManualOrderGroupId) {
+        await ordersApi.updateManual(editManualOrderGroupId, {
+          items,
+          customerName,
+          customerPhone,
+          warehouseId,
+        });
+      } else {
+        await ordersApi.createManual({ items, customerName, customerPhone, warehouseId });
+      }
       await reloadOrders({ silent: true });
-      setAddOrderOpen(false);
+      handleManualOrderModalClose();
     } catch (err) {
-      setAddOrderError(err.response?.data?.message || err.message || 'Не удалось добавить заказ');
+      setAddOrderError(
+        err.response?.data?.message ||
+          err.message ||
+          (editManualOrderGroupId ? 'Не удалось сохранить изменения' : 'Не удалось добавить заказ')
+      );
     } finally {
       setAddOrderLoading(false);
     }
@@ -2180,8 +2253,8 @@ export function Orders() {
 
       <Modal
         isOpen={addOrderOpen && allowPrivateOrders}
-        onClose={() => setAddOrderOpen(false)}
-        title="Добавить заказ"
+        onClose={handleManualOrderModalClose}
+        title={editManualOrderGroupId ? 'Редактировать заказ' : 'Добавить заказ'}
         size="large"
       >
         <form onSubmit={handleAddOrderSubmit} className="orders-add-form">
@@ -2322,11 +2395,17 @@ export function Orders() {
               + Добавить товар
             </Button>
             <div style={{ display: 'flex', gap: '12px' }}>
-              <Button type="button" variant="secondary" onClick={() => setAddOrderOpen(false)}>
+              <Button type="button" variant="secondary" onClick={handleManualOrderModalClose}>
                 Отмена
               </Button>
               <Button type="submit" variant="primary" disabled={addOrderLoading}>
-                {addOrderLoading ? 'Добавление...' : 'Добавить заказ'}
+                {addOrderLoading
+                  ? editManualOrderGroupId
+                    ? 'Сохранение...'
+                    : 'Добавление...'
+                  : editManualOrderGroupId
+                    ? 'Сохранить'
+                    : 'Добавить заказ'}
               </Button>
             </div>
           </div>
@@ -3441,6 +3520,18 @@ export function Orders() {
                       )}
                       {first.marketplace === 'manual' && (
                         <>
+                          {manualOrderCanEdit(first) && (
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              className="orders-action-icon"
+                              onClick={() => handleEditManualOrderOpen(row)}
+                              title="Редактировать заказ"
+                              aria-label="Редактировать заказ"
+                            >
+                              <i className="pe-7s-pen" aria-hidden />
+                            </Button>
+                          )}
                           <Button
                             variant="secondary"
                             size="small"

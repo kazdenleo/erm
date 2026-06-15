@@ -208,6 +208,11 @@ router.use('/suppliers', suppliersRoutes);
 
 // Orders API (явные маршруты до use('/orders'), чтобы PUT с :marketplace/:orderId точно находились)
 router.post('/orders/manual', requireAuth, wrapAsync(ordersController.createManual.bind(ordersController)));
+router.patch(
+  '/orders/manual/:orderGroupId',
+  requireAuth,
+  wrapAsync(ordersController.updateManual.bind(ordersController))
+);
 router.put(
   '/orders/:marketplace/:orderId/return-to-new',
   requireAuth,

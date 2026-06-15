@@ -193,6 +193,13 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Редактирование ручного заказа (статус «Новый»). */
+  updateManual: async (orderGroupId, data) => {
+    const id = encodeURIComponent(String(orderGroupId ?? '').trim());
+    const response = await api.patch(`/orders/manual/${id}`, data);
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Перевести заказ в статус «В закупке» (из «Новый»; у WB также из pending/unknown до резолва API).
    */

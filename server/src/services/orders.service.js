@@ -63,6 +63,10 @@ import integrationsService from './integrations.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonPostingNumberFromOrderId } from '../utils/ozonPosting.js';
+import {
+  getManualOrderGroupKey,
+  isManualOrderEditableStatus
+} from '../utils/manualOrderGroup.js';
 
 /** Заказ FBS с маркетплейса (не ручной) — резерв только со склада из warehouse_mappings. */
 export function isMarketplaceFbsOrderRow(orderRow) {
@@ -2858,7 +2862,11 @@ class OrdersService {
         quantity: created?.quantity ?? orderData.quantity ?? 1,
         status: created?.status ?? orderData.status ?? 'new',
         marketplace: created?.marketplace ?? orderData.marketplace,
-        deliveryAddress: created?.deliveryAddress ?? orderData.delivery_address
+        deliveryAddress: created?.deliveryAddress ?? orderData.delivery_address,
+        warehouse_id: created?.warehouseId ?? created?.warehouse_id ?? orderData.warehouse_id,
+        warehouseId: created?.warehouseId ?? created?.warehouse_id ?? orderData.warehouse_id,
+        profile_id: created?.profileId ?? created?.profile_id ?? orderData.profile_id,
+        profileId: created?.profileId ?? created?.profile_id ?? orderData.profile_id
       });
     }
     return created;
@@ -2941,7 +2949,11 @@ class OrdersService {
           status: 'new',
           marketplace: 'manual',
           deliveryAddress: null,
-          orderGroupId: orderGroupId
+          orderGroupId: orderGroupId,
+          warehouse_id: warehouseId,
+          warehouseId,
+          profile_id: Number.isFinite(profileId) && profileId > 0 ? profileId : null,
+          profileId: Number.isFinite(profileId) && profileId > 0 ? profileId : null
         });
       }
       created.push(row);
@@ -2952,6 +2964,252 @@ class OrdersService {
       throw error;
     }
     return { orderGroupId, orders: created };
+  }
+
+  /** Строки ручного заказа по ключу группы или order_id одиночной позиции. */
+  async _findManualOrderGroupRows(orderGroupId, profileId = null) {
+    const gid = String(orderGroupId ?? '').trim();
+    if (!gid) return [];
+    let rows = await this.repository.findByOrderGroupId(gid, profileId);
+    if (rows?.length) return rows;
+    const single = await this.repository.findByMarketplaceAndOrderId('manual', gid, profileId);
+    if (!single) return [];
+    if (String(single.marketplace || '').toLowerCase() !== 'manual') return [];
+    return [single];
+  }
+
+  _nextManualLineOrderId(groupKey, existingRows) {
+    const ids = new Set(
+      (existingRows || [])
+        .map((r) => String(r.orderId ?? r.order_id ?? '').trim())
+        .filter(Boolean)
+    );
+    let maxSuffix = 1;
+    for (const id of ids) {
+      if (id === groupKey) continue;
+      const m = id.match(/-(\d+)$/);
+      if (m) maxSuffix = Math.max(maxSuffix, parseInt(m[1], 10));
+    }
+    for (let n = maxSuffix + 1; n < maxSuffix + 200; n++) {
+      const candidate = `${groupKey}-${n}`;
+      if (!ids.has(candidate)) return candidate;
+    }
+    return `${groupKey}-${Date.now()}`;
+  }
+
+  async _ensureManualOrderGroupId(groupKey, rows) {
+    if (!groupKey || !Array.isArray(rows) || rows.length <= 1) return;
+    for (const r of rows) {
+      const gid = String(r.orderGroupId ?? r.order_group_id ?? '').trim();
+      if (gid === groupKey) continue;
+      const dbId = orderRowDbId(r);
+      if (!dbId) continue;
+      await this.repository.update(dbId, { order_group_id: groupKey });
+    }
+  }
+
+  /**
+   * Обновить ручной заказ (только marketplace=manual, статус «Новый»).
+   * @param {string} orderGroupId — order_group_id или order_id одиночной позиции
+   * @param {Array<{ id?: number, productId: number, quantity: number, price?: number }>} items
+   * @param {{ profileId?: number|null, customerName?: string|null, customerPhone?: string|null, warehouseId?: number|null }} [meta]
+   */
+  async updateManualWithItems(orderGroupId, items, meta = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const error = new Error('Редактирование ручных заказов поддерживается только при использовании PostgreSQL');
+      error.statusCode = 501;
+      throw error;
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      const error = new Error('Укажите хотя бы одну позицию (items: [{ productId, quantity, price }, ...])');
+      error.statusCode = 400;
+      throw error;
+    }
+    const profileId = meta.profileId != null ? Number(meta.profileId) : null;
+    const warehouseIdRaw = meta.warehouseId ?? meta.warehouse_id ?? null;
+    const warehouseId =
+      warehouseIdRaw != null && warehouseIdRaw !== '' ? Number(warehouseIdRaw) : null;
+    if (!Number.isFinite(warehouseId) || warehouseId < 1) {
+      const error = new Error('Укажите склад списания для ручного заказа');
+      error.statusCode = 400;
+      throw error;
+    }
+    const customerName =
+      meta.customerName != null && String(meta.customerName).trim() !== ''
+        ? String(meta.customerName).trim()
+        : null;
+    const customerPhone =
+      meta.customerPhone != null && String(meta.customerPhone).trim() !== ''
+        ? String(meta.customerPhone).trim()
+        : null;
+
+    const anchorId = String(orderGroupId ?? '').trim();
+    if (!anchorId) {
+      const error = new Error('Не указан идентификатор заказа');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const existingRows = await this._findManualOrderGroupRows(anchorId, profileId);
+    if (!existingRows.length) {
+      const error = new Error('Ручной заказ не найден');
+      error.statusCode = 404;
+      throw error;
+    }
+    for (const r of existingRows) {
+      if (String(r.marketplace || '').toLowerCase() !== 'manual') {
+        const error = new Error('Редактирование доступно только для ручных заказов');
+        error.statusCode = 400;
+        throw error;
+      }
+      if (!isManualOrderEditableStatus(r.status)) {
+        const error = new Error('Редактирование доступно только для заказов в статусе «Новый»');
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    const groupKey =
+      String(existingRows[0].orderGroupId ?? existingRows[0].order_group_id ?? '').trim() ||
+      getManualOrderGroupKey(existingRows[0].orderId ?? existingRows[0].order_id) ||
+      anchorId;
+
+    for (const r of existingRows) {
+      await this.releaseReserveIfExistsForOrder('manual', r.orderId ?? r.order_id);
+    }
+
+    const productsService = (await import('./products.service.js')).default;
+    const existingById = new Map(
+      existingRows
+        .map((r) => [orderRowDbId(r), r])
+        .filter(([id]) => id != null)
+    );
+    const keepDbIds = new Set();
+    const workingRows = [...existingRows];
+
+    for (const item of items) {
+      const productId = item.productId != null ? Number(item.productId) : null;
+      const quantity = Math.max(1, parseInt(item.quantity, 10) || 1);
+      if (!productId || !Number.isInteger(productId) || productId < 1) continue;
+      const productObj = await productsService.getById(productId);
+      if (!productObj) continue;
+      let price = item.price != null && item.price !== '' ? Number(item.price) : NaN;
+      if (!Number.isFinite(price) || price < 0) {
+        price =
+          productObj.cost != null
+            ? Number(productObj.cost)
+            : productObj.price != null
+              ? Number(productObj.price)
+              : 0;
+      }
+
+      const itemDbId = item.id != null ? Number(item.id) : null;
+      const existingRow =
+        itemDbId != null && Number.isFinite(itemDbId) && itemDbId > 0
+          ? existingById.get(itemDbId)
+          : null;
+
+      if (existingRow) {
+        const dbId = orderRowDbId(existingRow);
+        keepDbIds.add(dbId);
+        await this.repository.update(dbId, {
+          product_id: productId,
+          product_name: productObj.name ?? productObj.product_name ?? null,
+          quantity,
+          price,
+          customer_name: customerName,
+          customer_phone: customerPhone,
+          warehouse_id: warehouseId
+        });
+        continue;
+      }
+
+      const orderId =
+        workingRows.length === 0
+          ? groupKey
+          : this._nextManualLineOrderId(
+              groupKey,
+              workingRows
+            );
+      const orderData = {
+        profile_id: Number.isFinite(profileId) && profileId > 0 ? profileId : null,
+        marketplace: 'manual',
+        order_id: orderId,
+        order_group_id:
+          items.length > 1 ||
+          existingRows.length > 1 ||
+          existingRows[0]?.orderGroupId ||
+          existingRows[0]?.order_group_id
+            ? groupKey
+            : null,
+        product_id: productId,
+        product_name: productObj.name ?? productObj.product_name ?? null,
+        offer_id: null,
+        marketplace_sku: null,
+        quantity,
+        price,
+        status: 'new',
+        customer_name: customerName,
+        customer_phone: customerPhone,
+        warehouse_id: warehouseId
+      };
+      const row = await this.repository.create(orderData);
+      workingRows.push(row);
+      const newDbId = orderRowDbId(row);
+      if (newDbId != null) keepDbIds.add(newDbId);
+    }
+
+    if (keepDbIds.size === 0) {
+      const error = new Error('Не удалось обновить заказ: проверьте товары и цены.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    for (const r of existingRows) {
+      const dbId = orderRowDbId(r);
+      if (dbId == null || keepDbIds.has(dbId)) continue;
+      await this.repository.delete(dbId);
+    }
+
+    let finalRows = await this._findManualOrderGroupRows(groupKey, profileId);
+    if (!finalRows.length) {
+      finalRows = [];
+      for (const id of keepDbIds) {
+        const row = await this.repository.findById(id);
+        if (row) finalRows.push(row);
+      }
+      finalRows.sort((a, b) => Number(a.id) - Number(b.id));
+    }
+
+    if (finalRows.length > 1) {
+      await this._ensureManualOrderGroupId(groupKey, finalRows);
+      finalRows = await this._findManualOrderGroupRows(groupKey, profileId);
+    }
+
+    for (const row of finalRows) {
+      const oid = orderRowDbId(row);
+      const orderId = row.orderId ?? row.order_id;
+      const productId = row.productId ?? row.product_id;
+      if (!oid || !productId) continue;
+      await this._reserveForOrderIfStockAvailable({
+        id: oid,
+        orderId,
+        order_id: orderId,
+        productId,
+        product_id: productId,
+        quantity: row.quantity ?? 1,
+        status: row.status ?? 'new',
+        marketplace: 'manual',
+        deliveryAddress: null,
+        orderGroupId: groupKey,
+        warehouse_id: warehouseId,
+        warehouseId,
+        profile_id: row.profileId ?? row.profile_id ?? profileId,
+        profileId: row.profileId ?? row.profile_id ?? profileId
+      });
+    }
+
+    return { orderGroupId: groupKey, orders: finalRows };
   }
 
   /** Найти все заказы группы (для сборки) */

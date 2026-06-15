@@ -426,6 +426,102 @@ class OrdersController {
     }
   }
 
+  /**
+   * PATCH /orders/manual/:orderGroupId
+   * Body: { customerName, customerPhone, warehouseId, items: [{ id?, productId, quantity, price }, ...] }
+   */
+  async updateManual(req, res, next) {
+    try {
+      const pid = req.user?.profileId;
+      if (pid == null || pid === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту.' });
+      }
+      const prof = await profilesRepo.findById(pid);
+      if (!prof || prof.allow_private_orders !== true) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Частные заказы отключены в общих настройках аккаунта.',
+        });
+      }
+      const orderGroupId = String(req.params?.orderGroupId ?? '').trim();
+      if (!orderGroupId) {
+        return res.status(400).json({ ok: false, message: 'Не указан идентификатор заказа.' });
+      }
+      const customerName = String(req.body?.customerName ?? req.body?.customer_name ?? '').trim();
+      const customerPhone = String(req.body?.customerPhone ?? req.body?.customer_phone ?? '').trim();
+      if (!customerName) {
+        return res.status(400).json({ ok: false, message: 'Укажите ФИО покупателя.' });
+      }
+      if (!customerPhone) {
+        return res.status(400).json({ ok: false, message: 'Укажите телефон покупателя.' });
+      }
+      const rawWarehouseId = req.body?.warehouseId ?? req.body?.warehouse_id ?? null;
+      let resolvedWarehouseId = rawWarehouseId;
+      if (resolvedWarehouseId == null || resolvedWarehouseId === '') {
+        const profWh = prof?.manual_orders_warehouse_id ?? prof?.manualOrdersWarehouseId ?? null;
+        if (profWh != null && profWh !== '') resolvedWarehouseId = profWh;
+      }
+      const warehouseError = await validateManualOrderWarehouseId(pid, resolvedWarehouseId);
+      if (warehouseError) {
+        return res.status(400).json({ ok: false, message: warehouseError });
+      }
+      const warehouseId = Number(resolvedWarehouseId);
+      const items = req.body?.items;
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Укажите хотя бы одну позицию: товар, количество и цену за единицу.',
+        });
+      }
+      const parsedItems = [];
+      for (const it of items) {
+        const productId = it?.productId != null ? Number(it.productId) : null;
+        if (!productId || !Number.isInteger(productId) || productId < 1) continue;
+        const quantity = Math.max(1, parseInt(it?.quantity, 10) || 1);
+        const rawPrice = it?.price;
+        const unitPrice = rawPrice != null && rawPrice !== '' ? Number(rawPrice) : NaN;
+        if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+          return res.status(400).json({
+            ok: false,
+            message: 'Укажите цену за единицу для каждой позиции (неотрицательное число).',
+          });
+        }
+        const line = { productId, quantity, price: unitPrice };
+        if (it?.id != null && it.id !== '') {
+          const lineId = Number(it.id);
+          if (Number.isInteger(lineId) && lineId > 0) line.id = lineId;
+        }
+        parsedItems.push(line);
+      }
+      if (parsedItems.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Укажите хотя бы одну позицию: товар, количество и цену за единицу.',
+        });
+      }
+      const { orderGroupId: gid, orders } = await ordersService.updateManualWithItems(
+        orderGroupId,
+        parsedItems,
+        {
+          profileId: pid,
+          customerName,
+          customerPhone,
+          warehouseId,
+        }
+      );
+      return res.status(200).json({ ok: true, data: { orderGroupId: gid, orders } });
+    } catch (error) {
+      if (
+        error.statusCode === 404 ||
+        error.statusCode === 501 ||
+        error.statusCode === 400
+      ) {
+        return res.status(error.statusCode).json({ ok: false, message: error.message });
+      }
+      next(error);
+    }
+  }
+
   /** Пауза только фонового опроса МП; ручная кнопка «Обновить статусы» вызывает syncFbs без scheduler. */
   async getOrdersFbsSyncPause(req, res, next) {
     try {

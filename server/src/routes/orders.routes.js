@@ -34,6 +34,12 @@ router.post(
   wrapAsync(ordersController.createManual.bind(ordersController))
 );
 
+// Редактирование ручного заказа (только статус «Новый»)
+router.patch(
+  '/manual/:orderGroupId',
+  wrapAsync(ordersController.updateManual.bind(ordersController))
+);
+
 // Синхронизация FBS‑заказов (с strict rate limit)
 router.post(
   '/sync-fbs',

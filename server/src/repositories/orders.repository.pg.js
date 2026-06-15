@@ -982,7 +982,8 @@ class OrdersRepositoryPG {
     const allowedFields = [
       'product_id', 'offer_id', 'marketplace_sku', 'product_name',
       'quantity', 'price', 'status', 'customer_name', 'customer_phone',
-      'delivery_address', 'in_process_at', 'shipment_date'
+      'delivery_address', 'warehouse_id', 'order_id', 'order_group_id',
+      'in_process_at', 'shipment_date'
     ];
     
     for (const field of allowedFields) {
