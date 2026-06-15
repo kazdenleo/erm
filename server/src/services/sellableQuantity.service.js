@@ -12,7 +12,9 @@ import {
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL,
   allocateWarehouseScopedReserved,
+  allocateWarehouseScopedIncoming,
   parseStockMovementWarehouseId,
+  warehouseScopedOnHandForAllocation,
 } from '../constants/netReservedStockSql.js';
 
 export { NET_RESERVED_MOVEMENT_ROW_CASE_SQL, NET_RESERVED_SUM_EXPR_SQL, RAW_RESERVED_SUM_EXPR_SQL };
@@ -83,16 +85,70 @@ async function queryWarehouseScopedReservedFromMovements(run, productId, whId) {
   const nullReserve = Number(nullR.rows[0]?.rv ?? 0) || 0;
   const totalOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
   const legacyProductQty = Number(onHandR.rows[0]?.product_qty ?? 0) || 0;
-  let whOnHand = Number(whOnHandR.rows[0]?.qty ?? 0) || 0;
-  if (whOnHand <= 0 && totalOnHand <= 0 && legacyProductQty > 0) {
-    whOnHand = legacyProductQty;
-  }
+  const whOnHand = warehouseScopedOnHandForAllocation({
+    whOnHand: Number(whOnHandR.rows[0]?.qty ?? 0) || 0,
+    totalOnHand,
+    legacyProductQty
+  });
   return allocateWarehouseScopedReserved({
     strict,
     nullReserve,
     whOnHand,
     totalOnHand,
     legacyProductQty
+  });
+}
+
+async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
+  const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+  const wh = Number(whId);
+  if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(wh) || wh < 1) return 0;
+
+  const [strictR, nullR, whOnHandR, totalOnHandR, globalR] = await Promise.all([
+    run(
+      `SELECT GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+       FROM stock_movements
+       WHERE product_id = $1 AND LOWER(TRIM(type::text)) = 'incoming' AND warehouse_id = $2`,
+      [pid, wh]
+    ),
+    run(
+      `SELECT GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+       FROM stock_movements
+       WHERE product_id = $1 AND LOWER(TRIM(type::text)) = 'incoming' AND warehouse_id IS NULL`,
+      [pid]
+    ),
+    run(
+      `SELECT COALESCE(quantity, 0)::int AS qty
+       FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2`,
+      [pid, wh]
+    ),
+    run(
+      `SELECT COALESCE(SUM(quantity), 0)::int AS qty
+       FROM product_warehouse_stock WHERE product_id = $1`,
+      [pid]
+    ),
+    run(
+      `SELECT COALESCE(incoming_quantity, 0)::int AS inc, COALESCE(quantity, 0)::int AS legacy_qty
+       FROM products WHERE id = $1`,
+      [pid]
+    )
+  ]);
+
+  const totalOnHand = Number(totalOnHandR.rows[0]?.qty ?? 0) || 0;
+  const legacyProductQty = Number(globalR.rows[0]?.legacy_qty ?? 0) || 0;
+  const whOnHand = warehouseScopedOnHandForAllocation({
+    whOnHand: Number(whOnHandR.rows[0]?.qty ?? 0) || 0,
+    totalOnHand,
+    legacyProductQty
+  });
+
+  return allocateWarehouseScopedIncoming({
+    strict: Number(strictR.rows[0]?.inc ?? 0) || 0,
+    nullIncoming: Number(nullR.rows[0]?.inc ?? 0) || 0,
+    whOnHand,
+    totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
+    legacyProductQty,
+    globalIncoming: Number(globalR.rows[0]?.inc ?? 0) || 0
   });
 }
 
@@ -279,7 +335,7 @@ export async function getRawReservedQuantityFromMovementsWithClient(client, prod
 
 /**
  * Снимок поставки товара: наличие (сумма по всем складам или один склад), «в пути», резерв, доступно, потолок резерва.
- * incoming_quantity и резерв в журнале — на уровне product_id, не склада.
+ * При warehouseId «в пути» — по журналу incoming с warehouse_id (и доля legacy без склада).
  * @param {{ warehouseId?: number|string|null, reservedMap?: Map }} [opts]
  */
 export async function getProductSupplySnapshotWithClient(client, productId, opts = {}) {
@@ -330,11 +386,15 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
 
   let incoming = 0;
   try {
-    const pr = await run(
-      `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity FROM products WHERE id = $1`,
-      [pid]
-    );
-    incoming = Number(pr.rows[0]?.incoming_quantity ?? 0) || 0;
+    if (warehouseScoped) {
+      incoming = await readWarehouseScopedIncomingWithClient(run, pid, whId);
+    } else {
+      const pr = await run(
+        `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity FROM products WHERE id = $1`,
+        [pid]
+      );
+      incoming = Number(pr.rows[0]?.incoming_quantity ?? 0) || 0;
+    }
   } catch {
     incoming = 0;
   }

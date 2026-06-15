@@ -29,7 +29,7 @@ class ShipmentsController {
           ok: true,
           data: {
             marketplaces: shipmentsService.getMarketplaces(),
-            list: { ozon: [], wildberries: [], yandex: [] }
+            list: { ozon: [], wildberries: [], yandex: [], manual: [] }
           }
         });
       }

@@ -69,6 +69,7 @@ const menuItems = [
   { path: '/', label: 'Аналитика', iconClass: 'pe-7s-graph2' },
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2' },
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2' },
+  { path: '/shipments', label: 'Отгрузки', iconClass: 'pe-7s-upload' },
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true },
   { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment' },
   { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2' },

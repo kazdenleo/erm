@@ -34,7 +34,8 @@ function retryAfterMsFromResponse(response, fallbackMs) {
 const MARKETPLACES = [
   { code: 'ozon', name: 'Ozon', icon: '🟠', localOnly: true },
   { code: 'wildberries', name: 'Wildberries', icon: '🟣', localOnly: false },
-  { code: 'yandex', name: 'Яндекс.Маркет', icon: '🔴', localOnly: true }
+  { code: 'yandex', name: 'Яндекс.Маркет', icon: '🔴', localOnly: true },
+  { code: 'manual', name: 'Ручные заказы', icon: '📝', localOnly: true }
 ];
 
 /** Локальные поставки в JSON: без profileId не показываем пользователям с привязкой к аккаунту (мультитенант). */
@@ -183,7 +184,7 @@ async function pruneClosedLocalShipmentsForNewCreate(marketplaceCode, { profileI
 async function getShipments({ profileId, organizationId } = {}) {
   const localAll = await getLocalShipments();
   const local = localAll.filter((s) => shipmentVisibleForScope(s, profileId, organizationId));
-  const byMarketplace = { ozon: [], wildberries: [], yandex: [] };
+  const byMarketplace = { ozon: [], wildberries: [], yandex: [], manual: [] };
 
   for (const s of local) {
     if (s.stickerArchiveOnly) continue;
@@ -275,6 +276,7 @@ function normalizeShipment(s) {
     status: closed ? 'closed' : (s.status || 'draft'),
     closed,
     externalId: s.externalId,
+    warehouseId: s.warehouseId ?? s.warehouse_id ?? null,
     orderIds,
     productsCount: orderIds.length,
     createdAt: s.createdAt,
@@ -484,9 +486,9 @@ async function fetchWBSupplies(config) {
 /**
  * Создать поставку. Ozon/Яндекс — только локально. WB — создать на маркетплейсе и сохранить у себя.
  */
-async function createShipment({ marketplace, name, profileId = null, organizationId = null }) {
+async function createShipment({ marketplace, name, profileId = null, organizationId = null, warehouseId = null } = {}) {
   const code = marketplace === 'wb' ? 'wildberries' : marketplace;
-  if (!['ozon', 'wildberries', 'yandex'].includes(code)) {
+  if (!['ozon', 'wildberries', 'yandex', 'manual'].includes(code)) {
     const err = new Error('Неизвестный маркетплейс');
     err.statusCode = 400;
     throw err;
@@ -497,6 +499,30 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
   const id = generateId();
   const now = new Date().toISOString();
   const org = normalizeOrgId(organizationId);
+
+  if (code === 'manual') {
+    const whId = warehouseId != null && warehouseId !== '' ? Number(warehouseId) : NaN;
+    if (!Number.isFinite(whId) || whId < 1) {
+      const err = new Error('Укажите склад для отгрузки ручных заказов');
+      err.statusCode = 400;
+      throw err;
+    }
+    const local = {
+      id,
+      marketplace: 'manual',
+      name: name || `Отгрузка ${new Date().toLocaleDateString('ru-RU')}`,
+      status: 'draft',
+      closed: false,
+      warehouseId: whId,
+      orderIds: [],
+      createdAt: now,
+      ...(profileId != null && profileId !== '' ? { profileId } : {}),
+      ...(org ? { organizationId: org } : {}),
+    };
+    shipments.push(local);
+    await saveLocalShipments(shipments);
+    return normalizeShipment(local);
+  }
 
   if (code === 'wildberries') {
     const wbConfig = await getWildberriesConfigForScope(profileId, { organizationId });
@@ -563,26 +589,43 @@ async function createShipment({ marketplace, name, profileId = null, organizatio
  * Получить текущую открытую поставку по маркетплейсу или создать новую.
  * Используется при «Отправить на сборку»: все заказы до закрытия идут в одну поставку.
  */
-async function getOrCreateOpenShipment(marketplace, { profileId = null, organizationId = null } = {}) {
+async function getOrCreateOpenShipment(
+  marketplace,
+  { profileId = null, organizationId = null, warehouseId = null } = {}
+) {
   const code = marketplace === 'wb' ? 'wildberries' : marketplace;
-  if (!['ozon', 'wildberries', 'yandex'].includes(code)) {
+  if (!['ozon', 'wildberries', 'yandex', 'manual'].includes(code)) {
     const err = new Error('Неизвестный маркетплейс');
     err.statusCode = 400;
     throw err;
   }
   const shipments = await getLocalShipments();
   const org = normalizeOrgId(organizationId);
+  const whId =
+    code === 'manual' && warehouseId != null && warehouseId !== ''
+      ? Number(warehouseId)
+      : null;
   const open = shipments.find(s => {
     const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
     if (m !== code || s.closed === true) return false;
-    return shipmentVisibleForScope(s, profileId, org);
+    if (!shipmentVisibleForScope(s, profileId, org)) return false;
+    if (code === 'manual') {
+      const shipWh = Number(s.warehouseId ?? s.warehouse_id);
+      if (!Number.isFinite(whId) || whId < 1) return false;
+      return Number.isFinite(shipWh) && shipWh === whId;
+    }
+    return true;
   });
   if (open) return normalizeShipment(open);
   return createShipment({
     marketplace: code,
-    name: formatWbShipmentDisplayName(null, `Сборка ${new Date().toLocaleDateString('ru-RU')}`),
+    name:
+      code === 'manual'
+        ? `Отгрузка ${new Date().toLocaleDateString('ru-RU')}`
+        : formatWbShipmentDisplayName(null, `Сборка ${new Date().toLocaleDateString('ru-RU')}`),
     profileId,
-    organizationId
+    organizationId,
+    warehouseId: whId
   });
 }
 

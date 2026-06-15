@@ -1055,6 +1055,9 @@ class OrdersService {
       }
     }
     if (isManualOrderRow(orderRow)) {
+      const orderWh = orderRow.warehouse_id ?? orderRow.warehouseId ?? null;
+      const orderWhNum = orderWh != null ? Number(orderWh) : NaN;
+      if (Number.isFinite(orderWhNum) && orderWhNum > 0) return orderWhNum;
       try {
         const profileId = orderRow.profile_id ?? orderRow.profileId ?? null;
         if (profileId != null) {
@@ -1099,7 +1102,7 @@ class OrdersService {
     if (!this._fbsReserveWarehouseBlocked(orderRow, warehouseId)) return;
     const err = new Error(
       isManualOrderRow(orderRow)
-        ? 'Не выбран склад списания для ручных заказов — укажите в Настройках → Аккаунт'
+        ? 'Не выбран склад списания для ручного заказа'
         : 'Не определён склад FBS для заказа — настройте привязку warehouse_mappings'
     );
     err.statusCode = 400;
@@ -2864,7 +2867,7 @@ class OrdersService {
   /**
    * Создать ручной заказ с несколькими товарами (одна группа).
    * @param {Array<{ productId: number, quantity: number, price?: number }>} items — price за единицу (если не передана, берётся из карточки товара)
-   * @param {{ profileId?: number|null, customerName?: string|null, customerPhone?: string|null }} [meta]
+   * @param {{ profileId?: number|null, customerName?: string|null, customerPhone?: string|null, warehouseId?: number|null }} [meta]
    * @returns {Promise<object>} { orderGroupId, orders: [...] }
    */
   async createManualWithItems(items, meta = {}) {
@@ -2879,6 +2882,14 @@ class OrdersService {
       throw error;
     }
     const profileId = meta.profileId != null ? Number(meta.profileId) : null;
+    const warehouseIdRaw = meta.warehouseId ?? meta.warehouse_id ?? null;
+    const warehouseId =
+      warehouseIdRaw != null && warehouseIdRaw !== '' ? Number(warehouseIdRaw) : null;
+    if (!Number.isFinite(warehouseId) || warehouseId < 1) {
+      const error = new Error('Укажите склад списания для ручного заказа');
+      error.statusCode = 400;
+      throw error;
+    }
     const customerName =
       meta.customerName != null && String(meta.customerName).trim() !== '' ? String(meta.customerName).trim() : null;
     const customerPhone =
@@ -2915,6 +2926,7 @@ class OrdersService {
         status: 'new',
         customer_name: customerName,
         customer_phone: customerPhone,
+        warehouse_id: warehouseId,
       };
       const row = await this.repository.create(orderData);
       const oid = orderRowDbId(row);

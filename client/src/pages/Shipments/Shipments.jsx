@@ -35,7 +35,7 @@ export function Shipments() {
       const result = await shipmentsApi.getAll();
       setData(result);
     } catch (e) {
-      setError(e.message || 'Ошибка загрузки поставок');
+      setError(e.message || 'Ошибка загрузки отгрузок');
     } finally {
       setLoading(false);
     }
@@ -85,7 +85,7 @@ export function Shipments() {
     if (!shipment?.id || !shipment.closed) return;
     if (
       !window.confirm(
-        'Повторно списать остатки по заказам этой поставки? Используйте, если при закрытии списание не прошло.'
+        'Повторно списать остатки по заказам этой отгрузки? Используйте, если при закрытии списание не прошло.'
       )
     ) {
       return;
@@ -118,7 +118,7 @@ export function Shipments() {
       setOpenShipmentDetail(updated);
       await loadShipments();
     } catch (e) {
-      setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка удаления заказа из поставки');
+      setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка удаления заказа из отгрузки');
     } finally {
       setRemovingOrderId(null);
     }
@@ -213,7 +213,7 @@ export function Shipments() {
   if (loading) {
     return (
       <div className="card shipments-page">
-        <div className="loading">Загрузка поставок...</div>
+        <div className="loading">Загрузка отгрузок...</div>
       </div>
     );
   }
@@ -227,19 +227,19 @@ export function Shipments() {
   }
 
   const { marketplaces, list } = data;
-  const listByCode = list || { ozon: [], wildberries: [], yandex: [] };
+  const listByCode = list || { ozon: [], wildberries: [], yandex: [], manual: [] };
 
   return (
     <div className="card shipments-page">
       <div className="shipments-page-header">
         <div>
-          <h1 className="title">📤 Поставки (FBS)</h1>
+          <h1 className="title">📤 Отгрузки</h1>
           <p className="subtitle">
-            Ozon и Яндекс — локальные. WB — при закрытии поставка передаётся на маркетплейс; этикетка — по кнопке «Печать этикетки».
+            Ozon, Яндекс и ручные заказы — локальные отгрузки. WB — при закрытии отгрузка передаётся на маркетплейс; этикетка — по кнопке «Печать этикетки».
           </p>
         </div>
         <Button variant="primary" onClick={() => setCreateOpen(true)}>
-          + Создать поставку
+          + Создать отгрузку
         </Button>
       </div>
 
@@ -254,7 +254,7 @@ export function Shipments() {
                 <span className="shipments-section-count">({items.length})</span>
               </h2>
               {items.length === 0 ? (
-                <p className="shipments-empty">Нет поставок. Создайте поставку выше.</p>
+                <p className="shipments-empty">Нет отгрузок. Создайте отгрузку выше.</p>
               ) : (
                 <table className="shipments-table table">
                   <thead>
@@ -290,7 +290,7 @@ export function Shipments() {
                                 onClick={() => handleCloseShipment(item)}
                                 disabled={closeLoadingId === item.id}
                               >
-                                {closeLoadingId === item.id ? 'Закрытие...' : 'Закрыть поставку'}
+                                {closeLoadingId === item.id ? 'Закрытие...' : 'Закрыть отгрузку'}
                               </Button>
                             )}
                             {canPrintShipmentSticker(item) && (
@@ -302,7 +302,7 @@ export function Shipments() {
                                 title={
                                   item.wbLastSyncError
                                     ? `${item.wbLastSyncError}. При открытии выполним передачу на WB и загрузку этикетки.`
-                                    : 'Печать этикетки поставки (передача на WB при необходимости)'
+                                    : 'Печать этикетки отгрузки (передача на WB при необходимости)'
                                 }
                               >
                                 🖨️ Печать этикетки
@@ -323,7 +323,7 @@ export function Shipments() {
       <Modal
         isOpen={createOpen}
         onClose={() => { setCreateOpen(false); setCreateError(null); }}
-        title="Создать поставку"
+        title="Создать отгрузку"
       >
         <div className="shipments-modal-form">
           {createError && <div className="error" style={{ marginBottom: 12 }}>{createError}</div>}
@@ -345,7 +345,7 @@ export function Shipments() {
               type="text"
               value={createName}
               onChange={e => setCreateName(e.target.value)}
-              placeholder="Поставка №1"
+              placeholder="Отгрузка №1"
               className="shipments-input"
             />
           </label>
@@ -366,7 +366,7 @@ export function Shipments() {
           setCloseNotAssembledAction('');
           setCloseCancelledAction('');
         }}
-        title="Закрытие поставки"
+        title="Закрытие отгрузки"
         size="large"
         closeOnBackdropClick={!closeLoadingId}
         closeOnEscape={!closeLoadingId}
@@ -377,7 +377,7 @@ export function Shipments() {
               <section className="shipments-close-section">
                 <h3 className="shipments-close-section-title">Заказы вне сборки</h3>
                 <p className="shipments-close-hint">
-                  Эти заказы уже в пути, в закупке или отгружены — при закрытии будут автоматически убраны из поставки:
+                  Эти заказы уже в пути, в закупке или отгружены — при закрытии будут автоматически убраны из отгрузки:
                 </p>
                 <ul className="shipments-close-order-list">
                   {closeConfirm.preview.staleInShipment.map((o) => (
@@ -394,7 +394,7 @@ export function Shipments() {
               <section className="shipments-close-section">
                 <h3 className="shipments-close-section-title">Несобранные заказы</h3>
                 <p className="shipments-close-hint">
-                  В поставке есть заказы, которые ещё не в статусе «Собран». Выберите действие:
+                  В отгрузке есть заказы, которые ещё не в статусе «Собран». Выберите действие:
                 </p>
                 <ul className="shipments-close-order-list">
                   {closeConfirm.preview.notAssembled.map((o) => (
@@ -414,7 +414,7 @@ export function Shipments() {
                       checked={closeNotAssembledAction === 'assemble'}
                       onChange={() => setCloseNotAssembledAction('assemble')}
                     />
-                    Отметить собранными и закрыть поставку
+                    Отметить собранными и закрыть отгрузку
                   </label>
                   <label>
                     <input
@@ -424,7 +424,7 @@ export function Shipments() {
                       checked={closeNotAssembledAction === 'remove'}
                       onChange={() => setCloseNotAssembledAction('remove')}
                     />
-                    Удалить из поставки
+                    Удалить из отгрузки
                   </label>
                 </div>
               </section>
@@ -433,7 +433,7 @@ export function Shipments() {
             {(closeConfirm.preview?.cancelled?.length ?? 0) > 0 && (
               <section className="shipments-close-section">
                 <h3 className="shipments-close-section-title">Отменённые заказы</h3>
-                <p className="shipments-close-hint">В поставке есть отменённые заказы:</p>
+                <p className="shipments-close-hint">В отгрузке есть отменённые заказы:</p>
                 <ul className="shipments-close-order-list">
                   {closeConfirm.preview.cancelled.map((o) => (
                     <li key={o.orderId}>
@@ -451,7 +451,7 @@ export function Shipments() {
                       checked={closeCancelledAction === 'remove'}
                       onChange={() => setCloseCancelledAction('remove')}
                     />
-                    Убрать из поставки
+                    Убрать из отгрузки
                   </label>
                   <label>
                     <input
@@ -461,7 +461,7 @@ export function Shipments() {
                       checked={closeCancelledAction === 'keep'}
                       onChange={() => setCloseCancelledAction('keep')}
                     />
-                    Оставить в поставке (без списания со склада)
+                    Оставить в отгрузке (без списания со склада)
                   </label>
                 </div>
               </section>
@@ -497,7 +497,7 @@ export function Shipments() {
                     closeCancelledAction !== 'keep')
                 }
               >
-                {closeLoadingId ? 'Закрытие…' : 'Закрыть поставку'}
+                {closeLoadingId ? 'Закрытие…' : 'Закрыть отгрузку'}
               </Button>
             </div>
           </div>
@@ -507,7 +507,7 @@ export function Shipments() {
       <Modal
         isOpen={!!openShipmentDetail}
         onClose={() => { setOpenShipmentDetail(null); setOpenDetailError(null); }}
-        title={openShipmentDetail ? `Поставка: ${openShipmentDetail.name ?? openShipmentDetail.id}` : 'Поставка'}
+        title={openShipmentDetail ? `Отгрузка: ${openShipmentDetail.name ?? openShipmentDetail.id}` : 'Отгрузка'}
         size="large"
       >
         <div className="shipments-detail">
@@ -520,10 +520,10 @@ export function Shipments() {
                 Заказов: {openShipmentDetail.orderIds?.length ?? 0}
               </p>
               {!openShipmentDetail.orderIds?.length ? (
-                <p className="shipments-empty">В поставке нет заказов.</p>
+                <p className="shipments-empty">В отгрузке нет заказов.</p>
               ) : (
                 <div className="shipments-orders-in-shipment">
-                  <p>Заказы в поставке (можно удалить из поставки):</p>
+                  <p>Заказы в отгрузке (можно удалить из отгрузки):</p>
                   <ul className="shipments-detail-orders-list">
                     {openShipmentDetail.orderIds.map(orderId => (
                       <li key={orderId} className="shipments-detail-order-row">
@@ -535,7 +535,7 @@ export function Shipments() {
                             onClick={() => handleRemoveOrderFromShipment(orderId)}
                             disabled={removingOrderId === orderId}
                           >
-                            {removingOrderId === orderId ? 'Удаление...' : 'Удалить из поставки'}
+                            {removingOrderId === orderId ? 'Удаление...' : 'Удалить из отгрузки'}
                           </Button>
                         )}
                       </li>

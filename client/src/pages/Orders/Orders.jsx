@@ -136,7 +136,7 @@ function appendAssemblyWarnings(msg, warnings) {
 
 function appendShipmentsPendingHint(msg, result) {
   if (!result?.shipmentsPending) return msg;
-  return `${msg} Поставки на маркетплейсах создаются в фоне — обновите список заказов через 1–2 минуты.`.trim();
+  return `${msg} Отгрузки на маркетплейсах создаются в фоне — обновите список заказов через 1–2 минуты.`.trim();
 }
 
 /**
@@ -248,7 +248,7 @@ function formatMarketplaceDate(createdAt) {
 
 function orderSupportsFbsShipment(marketplace) {
   const mp = normalizeMarketplaceForUI(marketplace);
-  return ['wildberries', 'ozon', 'yandex'].includes(mp);
+  return ['wildberries', 'ozon', 'yandex', 'manual'].includes(mp);
 }
 
 function orderCanAddToOpenShipment(first) {
@@ -430,7 +430,7 @@ export function Orders() {
       setStatusFilter('new');
     }
   }, [procurementStatusEnabled, statusFilter]);
-  /** Колонка «Поставка» — только на вкладке «Собран» */
+  /** Колонка «Отгрузка» — только на вкладке «Собран» */
   const showShipmentColumn = statusFilter === 'assembled';
   /** Колонка «Стикер» — на сборке и у собранных (не на «Новый» / «В закупке») */
   const showStickerColumn = shouldShowOrdersStickerColumn(statusFilter);
@@ -478,6 +478,7 @@ export function Orders() {
   const [addOrderOpen, setAddOrderOpen] = useState(false);
   const [addOrderCustomerName, setAddOrderCustomerName] = useState('');
   const [addOrderCustomerPhone, setAddOrderCustomerPhone] = useState('');
+  const [addOrderWarehouseId, setAddOrderWarehouseId] = useState('');
   const [addOrderItems, setAddOrderItems] = useState([
     { productId: '', productLabel: '', searchText: '', quantity: 1, price: '' },
   ]);
@@ -513,6 +514,11 @@ export function Orders() {
   const procurementWarehouseOptions = useMemo(
     () => warehouseOptionsForOrganization(warehouses, procurementOrganizationId),
     [warehouses, procurementOrganizationId]
+  );
+
+  const manualOrderWarehouseOptions = useMemo(
+    () => (warehouses || []).filter((w) => w?.type === 'warehouse' && !w?.supplier_id),
+    [warehouses]
   );
 
   const showProcurementModalError = useCallback((msg) => {
@@ -677,6 +683,13 @@ export function Orders() {
 
   useEffect(() => {
     if (!addOrderOpen) return;
+    const defaultWh =
+      profile?.manual_orders_warehouse_id != null && profile.manual_orders_warehouse_id !== ''
+        ? String(profile.manual_orders_warehouse_id)
+        : profile?.manualOrdersWarehouseId != null && profile.manualOrdersWarehouseId !== ''
+          ? String(profile.manualOrdersWarehouseId)
+          : '';
+    setAddOrderWarehouseId(defaultWh);
     productsApi
       .getAll({ limit: 400, listView: 'full' })
       .then((data) => {
@@ -684,7 +697,7 @@ export function Orders() {
         setProductsList(list.filter((p) => p?.id != null));
       })
       .catch(() => setProductsList([]));
-  }, [addOrderOpen]);
+  }, [addOrderOpen, profile]);
 
   const buildOrdersListParams = useCallback(
     (page = currentPage) => {
@@ -1263,13 +1276,13 @@ export function Orders() {
       const preserved = result?.statusPreserved ?? 0;
       const allPreserved = preserved >= items.length && updated === 0;
       let msg = allPreserved
-        ? `Заказ(ы) добавлены в поставку (${items.length}), статус «Собран» сохранён.`
+        ? `Заказ(ы) добавлены в отгрузку (${items.length}), статус «Собран» сохранён.`
         : `На сборку отправлено заказов: ${items.length}${result?.updated != null ? ` (обновлено: ${updated})` : ''}.`;
       if (preserved > 0 && !allPreserved) {
         msg += ` Статус «Собран» сохранён у ${preserved} заказ(ов).`;
       }
       if (result?.shipments?.length) {
-        msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
+        msg += ` Отгрузки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
       msg = appendAssemblyWarnings(msg, result?.warnings);
       msg = appendShipmentsPendingHint(msg, result);
@@ -1416,6 +1429,11 @@ export function Orders() {
       setAddOrderError('Укажите телефон покупателя');
       return;
     }
+    const warehouseId = String(addOrderWarehouseId || '').trim();
+    if (!warehouseId) {
+      setAddOrderError('Выберите склад списания');
+      return;
+    }
     const items = [];
     for (const row of addOrderItems) {
       if (row.productId === '' || row.productId == null) continue;
@@ -1436,7 +1454,7 @@ export function Orders() {
     setAddOrderLoading(true);
     setAddOrderError(null);
     try {
-      await ordersApi.createManual({ items, customerName, customerPhone });
+      await ordersApi.createManual({ items, customerName, customerPhone, warehouseId });
       await reloadOrders({ silent: true });
       setAddOrderOpen(false);
     } catch (err) {
@@ -1776,7 +1794,7 @@ export function Orders() {
       const updated = result?.updated ?? toSend.length;
       let msg = `На сборку отправлено заказов: ${toSend.length}${result?.updated != null ? ` (обновлено: ${updated})` : ''}.`;
       if (result?.shipments?.length) {
-        msg += ` Поставки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
+        msg += ` Отгрузки: ${result.shipments.map(s => `${s.marketplace}: ${s.shipmentName}`).join('; ')}.`;
       }
       msg = appendAssemblyWarnings(msg, result?.warnings);
       msg = appendShipmentsPendingHint(msg, result);
@@ -2076,9 +2094,9 @@ export function Orders() {
             variant="secondary"
             size="small"
             onClick={() => navigate('/shipments')}
-            title="Перейти к поставкам FBS"
+            title="Перейти к отгрузкам"
           >
-            🚚 Поставки FBS
+            🚚 Отгрузки
           </Button>
           {selectedCount > 0 && (
             <Button
@@ -2127,7 +2145,7 @@ export function Orders() {
                 style={{ minWidth: 220, padding: '6px 10px', fontSize: 13 }}
                 title={
                   '«Новый» и «В закупке» — только наша база. «На сборке» — как кнопка «Отправить на сборку» ' +
-                  '(для Ozon/WB/Я.Маркет дополнительно создаётся/пополняется поставка на стороне МП).'
+                  '(для Ozon/WB/Я.Маркет дополнительно создаётся/пополняется отгрузка на стороне МП; для ручных — локальная отгрузка по складу).'
                 }
                 onChange={(e) => {
                   const v = e.target.value;
@@ -2204,6 +2222,27 @@ export function Orders() {
                 placeholder="+7 …"
               />
             </div>
+          </div>
+          <div className="form-group" style={{ marginBottom: '16px' }}>
+            <label className="label">Склад списания</label>
+            <select
+              className="form-control"
+              value={addOrderWarehouseId}
+              onChange={(e) => setAddOrderWarehouseId(e.target.value)}
+              disabled={addOrderLoading}
+            >
+              <option value="">— выберите склад —</option>
+              {manualOrderWarehouseOptions.map((w) => (
+                <option key={w.id} value={String(w.id)}>
+                  {w.address ? `${w.address} (#${w.id})` : `Склад #${w.id}`}
+                </option>
+              ))}
+            </select>
+            {manualOrderWarehouseOptions.length === 0 && (
+              <p className="text-muted small" style={{ marginTop: 6, marginBottom: 0 }}>
+                Нет складов типа «Склад». Создайте склад в разделе «Склады».
+              </p>
+            )}
           </div>
           {addOrderItems.map((row, index) => (
             <div key={index} className="orders-add-row" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', marginBottom: '12px', flexWrap: 'wrap' }}>
@@ -2927,7 +2966,7 @@ export function Orders() {
                 <th>Количество</th>
                 <th>Цена</th>
                 {showStickerColumn ? <th>Стикер</th> : null}
-                {showShipmentColumn ? <th>Поставка</th> : null}
+                {showShipmentColumn ? <th>Отгрузка</th> : null}
                 <th>Действия</th>
               </tr>
             </thead>
@@ -3390,8 +3429,8 @@ export function Orders() {
                           className="orders-action-icon"
                           onClick={() => handleSendOneToAssembly(row, { preserveAssembled: true })}
                           disabled={sendToAssemblyRowKey === row.key}
-                          title="Добавить в открытую поставку FBS (статус «Собран» не меняется)"
-                          aria-label="В поставку"
+                          title="Добавить в открытую отгрузку (статус «Собран» не меняется)"
+                          aria-label="В отгрузку"
                         >
                           {sendToAssemblyRowKey === row.key ? (
                             <span className="orders-action-icon__busy" aria-hidden>…</span>
