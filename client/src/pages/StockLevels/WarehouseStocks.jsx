@@ -23,7 +23,8 @@ import {
   isKitProduct,
   isKitStockHistoryMovement,
   parseKitDisplayMetrics,
-  formatKitAvailableDisplay
+  formatKitAvailableDisplay,
+  kitIncomingFromComponentsAmount
 } from '../../utils/kitStockMetrics';
 import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
 import { onNavigationClick } from '../../utils/navigationClick.js';
@@ -668,10 +669,12 @@ function buildHistoryDisplaySnapshots(
   if (kitProduct && isKitProduct(kitProduct) && warehouseFilterId) {
     const metrics = parseKitDisplayMetrics(kitProduct);
     if (metrics) {
-      const whInc = Math.max(
+      const kitSkuInc = Math.max(
         0,
         Number(kitProduct.incoming_quantity ?? kitProduct.incomingQuantity) || 0
       );
+      const incFromComponents = kitIncomingFromComponentsAmount(metrics, kitProduct);
+      const displayInc = kitSkuInc + incFromComponents;
       const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
       const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
       const onSkuReserved = Math.max(0, Number(metrics.reserved_on_sku) || 0);
@@ -687,28 +690,28 @@ function buildHistoryDisplaySnapshots(
       const wholeAvailCurrent =
         metrics.whole_available != null && !Number.isNaN(Number(metrics.whole_available))
           ? Math.max(0, Number(metrics.whole_available))
-          : Math.max(0, whole + whInc - onSkuReserved);
+          : Math.max(0, whole + kitSkuInc - onSkuReserved);
       const totalAvailCurrent =
         metrics.marketplace_available != null &&
         !Number.isNaN(Number(metrics.marketplace_available))
           ? Math.max(0, Number(metrics.marketplace_available))
-          : Math.max(0, whole + whInc + assemblable - displayReserved);
+          : Math.max(0, whole + kitSkuInc + assemblable - displayReserved);
       for (let i = 0; i < enriched.length; i++) {
         const row = enriched[i];
         if (!row) continue;
         if (i === 0) {
           row.bal = whole;
-          row.inc = whInc;
+          row.inc = displayInc;
           row._kitAvailableWhole = wholeAvailCurrent;
           row._kitAvailableTotal = totalAvailCurrent;
           continue;
         }
         const onSkuRes = Math.max(0, Number(row.res) || 0);
-        const wholeAvail = Math.max(0, whole + whInc - onSkuRes);
+        const wholeAvail = Math.max(0, whole + kitSkuInc - onSkuRes);
         row.bal = whole;
-        row.inc = whInc;
+        row.inc = displayInc;
         row._kitAvailableWhole = wholeAvail;
-        row._kitAvailableTotal = Math.max(0, whole + whInc + assemblable - displayReserved);
+        row._kitAvailableTotal = Math.max(0, whole + kitSkuInc + assemblable - displayReserved);
       }
     }
   }
@@ -2806,8 +2809,8 @@ export function WarehouseStocks() {
               <p className="text-muted small mb-2" role="status">
                 {isKitProduct(historyProduct) ? (
                   <>
-                    Для комплекта колонки «Наличие», «В пути» и «Доступно» — как в таблице остатков:
-                    целые комплекты на складе + собираемость из комплектующих (не сырой журнал SKU).
+                    Колонка «В пути» — целые комплекты в ожидании + комплекты, собираемые из ожидания
+                    комплектующих. «Доступно» — как в таблице остатков (без двойного учёта).
                   </>
                 ) : (
                   <>Колонка «Наличие» — по выбранному складу в фильтре таблицы (не сумма по всем складам).</>
