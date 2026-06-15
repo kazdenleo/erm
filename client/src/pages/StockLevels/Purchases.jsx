@@ -343,6 +343,10 @@ export function Purchases() {
   const [boxAddCode, setBoxAddCode] = useState('');
   const [boxAddQty, setBoxAddQty] = useState('');
   const [boxAddBusy, setBoxAddBusy] = useState(false);
+  const lastScannedProductRef = useRef(null);
+  const boxQtyDebounceRef = useRef(null);
+  const rowBoxQtyDebounceRef = useRef({});
+  const BOX_QTY_APPLY_MS = 2000;
   const [createReceiptBusy, setCreateReceiptBusy] = useState(false);
   const [extrasToResolve, setExtrasToResolve] = useState(null);
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
@@ -992,6 +996,116 @@ export function Purchases() {
     [receipt?.receipt?.id, receipt?.receipt?.status, scannerId, scheduleReceiptRefresh]
   );
 
+  const applyPurchaseReceiptBoxQty = useCallback(
+    async ({ productId = null, barcode = null, sku = null, qty, clearRowProductId = null } = {}) => {
+      const rid = receipt?.receipt?.id;
+      if (!rid || String(receipt?.receipt?.status) !== 'scanning') return;
+      const n = Math.floor(Number(qty) || 0);
+      if (n <= 0 || boxAddBusy) return;
+
+      const payload = { quantity: n, scannerId: scannerId || null };
+      const pidNum = productId != null ? Number(productId) : null;
+      if (Number.isFinite(pidNum) && pidNum > 0) {
+        payload.productId = pidNum;
+      } else {
+        const code = normalizeScanInput(String(barcode || sku || '').trim());
+        if (!code) return;
+        payload.barcode = code;
+        payload.sku = code;
+      }
+
+      try {
+        setBoxAddBusy(true);
+        setErr(null);
+        pendingScansRef.current += 1;
+        setPendingScans(pendingScansRef.current);
+
+        const res = await purchasesApi.addReceiptQuantity(rid, payload);
+        const updatedProductId = Number(res?.productId);
+        const updatedScannedQty = Number(res?.scannedQuantity);
+        if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty)) {
+          setReceipt((prev) => {
+            if (!prev?.items) return prev;
+            const nextItems = (prev.items || []).map((x) => {
+              if (Number(x?.product_id) !== updatedProductId) return x;
+              const next = { ...x, scanned_quantity: updatedScannedQty };
+              if (clearRowProductId != null && Number(clearRowProductId) === updatedProductId) {
+                next._boxQtyInput = '';
+              }
+              return next;
+            });
+            return { ...prev, items: nextItems };
+          });
+          lastScannedProductRef.current = updatedProductId;
+        }
+        if (clearRowProductId == null) {
+          setBoxAddCode('');
+          setBoxAddQty('');
+        }
+        scheduleReceiptRefresh(rid);
+        playEventSound(SOUND_EVENTS.scan_ok);
+      } catch (ex) {
+        setErr(ex.response?.data?.message || ex.message || 'Не удалось добавить количество');
+        playEventSound(SOUND_EVENTS.scan_error);
+      } finally {
+        setBoxAddBusy(false);
+        pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
+        setPendingScans(pendingScansRef.current);
+        scanRef.current?.focus();
+      }
+    },
+    [boxAddBusy, receipt?.receipt?.id, receipt?.receipt?.status, scannerId, scheduleReceiptRefresh]
+  );
+
+  const scheduleTopBoxQtyApply = useCallback(
+    (qtyStr, codeStr) => {
+      if (boxQtyDebounceRef.current) clearTimeout(boxQtyDebounceRef.current);
+      boxQtyDebounceRef.current = setTimeout(() => {
+        boxQtyDebounceRef.current = null;
+        const qty = Math.floor(Number(qtyStr) || 0);
+        if (qty <= 0) return;
+        const code = normalizeScanInput(String(codeStr || '').trim());
+        if (code) {
+          void applyPurchaseReceiptBoxQty({ barcode: code, sku: code, qty });
+          return;
+        }
+        const lastPid = lastScannedProductRef.current;
+        if (lastPid != null && Number.isFinite(Number(lastPid)) && Number(lastPid) > 0) {
+          void applyPurchaseReceiptBoxQty({ productId: lastPid, qty });
+        }
+      }, BOX_QTY_APPLY_MS);
+    },
+    [applyPurchaseReceiptBoxQty]
+  );
+
+  const scheduleRowBoxQtyApply = useCallback(
+    (productId, qtyStr) => {
+      const key = String(productId);
+      if (rowBoxQtyDebounceRef.current[key]) {
+        clearTimeout(rowBoxQtyDebounceRef.current[key]);
+      }
+      rowBoxQtyDebounceRef.current[key] = setTimeout(() => {
+        delete rowBoxQtyDebounceRef.current[key];
+        const qty = Math.floor(Number(qtyStr) || 0);
+        if (qty <= 0) return;
+        void applyPurchaseReceiptBoxQty({
+          productId,
+          qty,
+          clearRowProductId: productId,
+        });
+      }, BOX_QTY_APPLY_MS);
+    },
+    [applyPurchaseReceiptBoxQty]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (boxQtyDebounceRef.current) clearTimeout(boxQtyDebounceRef.current);
+      Object.values(rowBoxQtyDebounceRef.current).forEach((t) => clearTimeout(t));
+      rowBoxQtyDebounceRef.current = {};
+    };
+  }, [receipt?.receipt?.id]);
+
   // Пока приёмка открыта и идёт поток сканов — периодически подтягиваем состояние (на случай пропущенных строк/излишков).
   useEffect(() => {
     const rid = receipt?.receipt?.id;
@@ -1046,6 +1160,7 @@ export function Purchases() {
       const updatedProductId = Number(scanRes?.productId);
       const updatedScannedQty = Number(scanRes?.scannedQuantity);
       if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty) && updatedScannedQty >= 0) {
+        lastScannedProductRef.current = updatedProductId;
         setReceipt((prev) => {
           if (!prev?.receipt) return prev;
           const items = Array.isArray(prev.items) ? prev.items : [];
@@ -1985,11 +2100,7 @@ export function Purchases() {
             ) : null}
             {isReceiptScanning ? (
             <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
-                scan();
-              }}
+              onSubmit={(e) => e.preventDefault()}
               className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
             >
               <input
@@ -2003,25 +2114,17 @@ export function Purchases() {
 
                   // 1) Некоторые сканеры вставляют \r/\n вместо Enter
                   if (/[\r\n]/.test(v)) {
-                    // Важно: некоторые сканеры ещё и шлют Enter → не допускаем двойной отправки
                     scanDebounceRef.current = setTimeout(() => scan(v), 0);
                     return;
                   }
 
-                  // 2) Многие сканеры не отправляют Enter вообще — просто быстро "набирают" символы
-                  // Если ввод не менялся ~120мс, считаем что скан завершён и отправляем.
+                  // 2) Многие сканеры не отправляют Enter — быстрый ввод завершается паузой ~120мс
                   if (String(v).trim().length >= 4) {
                     scanDebounceRef.current = setTimeout(() => scan(v), 120);
                   }
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
-                    // Если сканер "вставил" перенос строки в значение, onChange уже отправит scan()
-                    if (/[\r\n]/.test(e.currentTarget.value)) return;
-                    scan(e.currentTarget.value);
-                  }
+                  if (e.key === 'Enter') e.preventDefault();
                 }}
                 placeholder="Сканируйте штрихкод (1 скан = +1)"
                 autoComplete="off"
@@ -2113,51 +2216,31 @@ export function Purchases() {
 
             {isReceiptScanning ? (
             <>
-            <h4 style={{ marginTop: 14 }}>Коробкой (ручной ввод)</h4>
+            <h4 style={{ marginTop: 14 }}>Коробкой</h4>
+            <p className="warehouse-ops-hint" style={{ marginTop: 0 }}>
+              Отсканируйте товар выше, затем укажите количество — через 2 с добавим +N шт. и вернём фокус в поле скана.
+              Либо введите ШК/артикул и количество в поля ниже.
+            </p>
             <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const rid = receipt?.receipt?.id;
-                const raw = String(boxAddCode || '').trim();
-                const qty = Math.floor(Number(boxAddQty) || 0);
-                if (!rid || !raw || qty <= 0 || boxAddBusy) return;
-
-                try {
-                  setBoxAddBusy(true);
-                  setErr(null);
-                  pendingScansRef.current += 1;
-                  setPendingScans(pendingScansRef.current);
-
-                  const code = normalizeScanInput(raw);
-
-                  await purchasesApi.addReceiptQuantity(rid, {
-                    quantity: qty,
-                    barcode: code,
-                    sku: code,
-                    scannerId: scannerId || null,
-                  });
-
-                  setBoxAddCode('');
-                  setBoxAddQty('');
-                  scheduleReceiptRefresh(rid);
-                } catch (ex) {
-                  setErr(ex.response?.data?.message || ex.message || 'Не удалось добавить количество');
-                } finally {
-                  setBoxAddBusy(false);
-                  pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
-                  setPendingScans(pendingScansRef.current);
-                }
-              }}
-              className="warehouse-ops-scan-form"
+              onSubmit={(e) => e.preventDefault()}
+              className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
               style={{ marginTop: 8 }}
             >
               <input
                 className="warehouse-ops-scan-input"
                 value={boxAddCode}
-                onChange={(e) => setBoxAddCode(e.target.value)}
-                placeholder="ШК или артикул (можно с префиксом A:/B- для авто-ID сканера)"
+                onChange={(e) => {
+                  const code = e.target.value;
+                  setBoxAddCode(code);
+                  scheduleTopBoxQtyApply(boxAddQty, code);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.preventDefault();
+                }}
+                placeholder="ШК или артикул (необязательно после скана)"
                 autoComplete="off"
                 spellCheck={false}
+                disabled={boxAddBusy}
               />
               <input
                 className="warehouse-ops-qty-input"
@@ -2165,13 +2248,18 @@ export function Purchases() {
                 min={1}
                 step={1}
                 value={boxAddQty}
-                onChange={(e) => setBoxAddQty(e.target.value)}
+                onChange={(e) => {
+                  const qty = e.target.value;
+                  setBoxAddQty(qty);
+                  scheduleTopBoxQtyApply(qty, boxAddCode);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.preventDefault();
+                }}
                 placeholder="Кол-во"
                 style={{ width: 120 }}
+                disabled={boxAddBusy}
               />
-              <Button type="submit" variant="secondary" disabled={boxAddBusy}>
-                Добавить
-              </Button>
             </form>
             </>
             ) : null}
@@ -2267,10 +2355,7 @@ export function Purchases() {
                                       disabled={manualQtyBusy === it.product_id}
                                       onBlur={(e) => handleManualReceiptQty(it, e.target.value)}
                                       onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                          e.preventDefault();
-                                          e.currentTarget.blur();
-                                        }
+                                        if (e.key === 'Enter') e.preventDefault();
                                       }}
                                     />
                                     {received != null ? (
@@ -2311,69 +2396,32 @@ export function Purchases() {
                         })()}
                         {isReceiptScanning ? (
                           <td>
-                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                              <input
-                                type="number"
-                                min={1}
-                                step={1}
-                                className="warehouse-ops-qty-input"
-                                style={{ width: 90 }}
-                                placeholder="+N"
-                                value={it._boxQtyInput ?? ''}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  setReceipt((prev) => {
-                                    if (!prev?.items) return prev;
-                                    const nextItems = (prev.items || []).map((x) =>
-                                      Number(x?.product_id) === Number(it.product_id)
-                                        ? { ...x, _boxQtyInput: v }
-                                        : x
-                                    );
-                                    return { ...prev, items: nextItems };
-                                  });
-                                }}
-                              />
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                size="small"
-                                onClick={async () => {
-                                  const rid = receipt?.receipt?.id;
-                                  const qty = Math.floor(Number(it._boxQtyInput) || 0);
-                                  if (!rid || qty <= 0) return;
-                                  try {
-                                    pendingScansRef.current += 1;
-                                    setPendingScans(pendingScansRef.current);
-                                    const effectiveScannerId = scannerId || null;
-                                    const res = await purchasesApi.addReceiptQuantity(rid, {
-                                      productId: it.product_id,
-                                      quantity: qty,
-                                      scannerId: effectiveScannerId,
-                                    });
-                                    const updatedProductId = Number(res?.productId);
-                                    const updatedScannedQty = Number(res?.scannedQuantity);
-                                    if (Number.isFinite(updatedProductId) && Number.isFinite(updatedScannedQty)) {
-                                      setReceipt((prev) => {
-                                        if (!prev?.items) return prev;
-                                        const nextItems = (prev.items || []).map((x) => {
-                                          if (Number(x?.product_id) !== updatedProductId) return x;
-                                          return { ...x, scanned_quantity: updatedScannedQty, _boxQtyInput: '' };
-                                        });
-                                        return { ...prev, items: nextItems };
-                                      });
-                                    }
-                                    scheduleReceiptRefresh(rid);
-                                  } catch (ex) {
-                                    setErr(ex.response?.data?.message || ex.message || 'Не удалось добавить количество');
-                                  } finally {
-                                    pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
-                                    setPendingScans(pendingScansRef.current);
-                                  }
-                                }}
-                              >
-                                Добавить
-                              </Button>
-                            </div>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              className="warehouse-ops-qty-input"
+                              style={{ width: 90 }}
+                              placeholder="+N"
+                              value={it._boxQtyInput ?? ''}
+                              disabled={boxAddBusy}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setReceipt((prev) => {
+                                  if (!prev?.items) return prev;
+                                  const nextItems = (prev.items || []).map((x) =>
+                                    Number(x?.product_id) === Number(it.product_id)
+                                      ? { ...x, _boxQtyInput: v }
+                                      : x
+                                  );
+                                  return { ...prev, items: nextItems };
+                                });
+                                scheduleRowBoxQtyApply(it.product_id, v);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') e.preventDefault();
+                              }}
+                            />
                           </td>
                         ) : null}
                       </tr>

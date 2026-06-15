@@ -281,6 +281,9 @@ export function WarehouseOperations({
   const [boxAddCode, setBoxAddCode] = useState('');
   const [boxAddQty, setBoxAddQty] = useState('');
   const [boxAddBusy, setBoxAddBusy] = useState(false);
+  const lastReceiptScannedProductRef = useRef(null);
+  const boxQtyDebounceRef = useRef(null);
+  const BOX_QTY_APPLY_MS = 2000;
   const [inviteUsers, setInviteUsers] = useState([]);
   const [inviteUserId, setInviteUserId] = useState('');
   const [inventoryInviteUserId, setInventoryInviteUserId] = useState('');
@@ -1185,11 +1188,9 @@ export function WarehouseOperations({
   const handleScanSubmit = (e) => {
     e.preventDefault();
     if (mode === MODE_RECEIPT && receiptMode === 'scan') {
-      // Поступление по скану: 1 скан = 1 шт — сразу ищем и добавляем 1
-      lookupByBarcodeOrSkuThenReceiptOne(scanValue);
-    } else {
-      lookupByBarcodeOrSku(scanValue);
+      return;
     }
+    lookupByBarcodeOrSku(scanValue);
   };
 
   /** Добавить товар в список для поступления (объединяем по productId) */
@@ -1249,6 +1250,7 @@ export function WarehouseOperations({
     setLookupError(null);
     try {
       const product = await lookupProductByAny(v, { title: 'Выберите товар для поступления', allowLinkBarcode: true });
+      lastReceiptScannedProductRef.current = product?.id ?? null;
       if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
         await addToReceiptSession(product, 1);
       } else {
@@ -1429,6 +1431,85 @@ export function WarehouseOperations({
       scanInputRef.current?.focus();
     }, SCAN_DELAY_MS);
   };
+
+  const applyWarehouseReceiptBoxQty = useCallback(
+    async ({ product = null, code = null, qty } = {}) => {
+      if (!receiptWarehouseId) {
+        setLookupError('Сначала выберите склад приёмки');
+        playEventSound(SOUND_EVENTS.scan_error);
+        return;
+      }
+      const n = Math.floor(Number(qty) || 0);
+      if (n <= 0 || boxAddBusy) return;
+
+      try {
+        setBoxAddBusy(true);
+        setLookupError(null);
+        let resolved = product;
+        if (!resolved?.id && code) {
+          const normalized = normalizeScanInput(String(code).trim());
+          if (!normalized) return;
+          resolved = await lookupProductByAny(normalized, {
+            title: 'Выберите товар для поступления',
+            allowLinkBarcode: true,
+          });
+        }
+        if (!resolved?.id) return;
+
+        if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
+          await addToReceiptSession(resolved, n);
+        } else {
+          addToReceiptList(resolved, n);
+        }
+        lastReceiptScannedProductRef.current = resolved.id;
+        setOpMessage(`В список: +${n} шт — ${resolved.name || resolved.sku}`);
+        playEventSound(SOUND_EVENTS.scan_ok);
+        setBoxAddCode('');
+        setBoxAddQty('');
+      } catch (ex) {
+        const msg = ex?.message || 'поиск не удался';
+        setLookupError(msg);
+        setOpMessage('Ошибка: ' + msg);
+        playEventSound(SOUND_EVENTS.scan_error);
+      } finally {
+        setBoxAddBusy(false);
+        scanInputRef.current?.focus();
+      }
+    },
+    [
+      addToReceiptList,
+      addToReceiptSession,
+      boxAddBusy,
+      products,
+      receiptSessionEnabled,
+      receiptSessionId,
+      receiptWarehouseId,
+    ]
+  );
+
+  const scheduleWarehouseBoxQtyApply = useCallback(
+    (qtyStr, codeStr) => {
+      if (boxQtyDebounceRef.current) clearTimeout(boxQtyDebounceRef.current);
+      boxQtyDebounceRef.current = setTimeout(() => {
+        boxQtyDebounceRef.current = null;
+        const qty = Math.floor(Number(qtyStr) || 0);
+        if (qty <= 0) return;
+        const code = normalizeScanInput(String(codeStr || '').trim());
+        if (code) {
+          void applyWarehouseReceiptBoxQty({ code, qty });
+          return;
+        }
+        const lastPid = lastReceiptScannedProductRef.current;
+        if (lastPid != null) {
+          const fromList = (products || []).find((p) => String(p.id) === String(lastPid));
+          if (fromList) {
+            void applyWarehouseReceiptBoxQty({ product: fromList, qty });
+          }
+        }
+      }, BOX_QTY_APPLY_MS);
+    },
+    [applyWarehouseReceiptBoxQty]
+  );
 
   const handleWriteOff = async () => {
     if (!foundProduct) return;
@@ -4396,7 +4477,7 @@ export function WarehouseOperations({
           {receiptMode === 'scan' && (
             <>
               <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список (1 скан = 1 шт).</p>
-              <form onSubmit={handleScanSubmit} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
                 <input
                   ref={scanInputRef}
                   type="text"
@@ -4404,6 +4485,9 @@ export function WarehouseOperations({
                   placeholder="Наведите сканер сюда"
                   value={scanValue}
                   onChange={handleReceiptScanChange}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.preventDefault();
+                  }}
                   autoComplete="off"
                   disabled={!receiptWarehouseId}
                 />
@@ -4413,55 +4497,25 @@ export function WarehouseOperations({
 
           <div style={{ marginTop: 10 }}>
             <p className="warehouse-ops-hint" style={{ marginBottom: 6 }}>
-              Коробкой: введите штрихкод/артикул и количество — добавим сразу \(+N\) в список.
+              Коробкой: отсканируйте товар выше, укажите количество — через 2 с добавим +N в список и вернём фокус в поле скана.
             </p>
             <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (!receiptWarehouseId) {
-                  setLookupError('Сначала выберите склад приёмки');
-                  playEventSound(SOUND_EVENTS.scan_error);
-                  return;
-                }
-                if (boxAddBusy) return;
-                const raw = String(boxAddCode || '').trim();
-                const qty = Math.floor(Number(boxAddQty) || 0);
-                if (!raw || qty <= 0) return;
-                const code = normalizeScanInput(raw);
-                try {
-                  setBoxAddBusy(true);
-                  setLookupError(null);
-                  const product = await lookupProductByAny(code, {
-                    title: 'Выберите товар для поступления',
-                    allowLinkBarcode: true
-                  });
-                  if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
-                    await addToReceiptSession(product, qty);
-                  } else {
-                    addToReceiptList(product, qty);
-                  }
-                  setOpMessage(`В список: +${qty} шт — ${product.name || product.sku}`);
-                  playEventSound(SOUND_EVENTS.scan_ok);
-                  setBoxAddCode('');
-                  setBoxAddQty('');
-                  scanInputRef.current?.focus();
-                } catch (ex) {
-                  const msg = ex?.message || 'поиск не удался';
-                  setLookupError(msg);
-                  setOpMessage('Ошибка: ' + msg);
-                  playEventSound(SOUND_EVENTS.scan_error);
-                } finally {
-                  setBoxAddBusy(false);
-                }
-              }}
-              className="warehouse-ops-scan-form"
+              onSubmit={(e) => e.preventDefault()}
+              className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
             >
               <input
                 type="text"
                 className="warehouse-ops-scan-input"
-                placeholder="ШК или артикул"
+                placeholder="ШК или артикул (необязательно после скана)"
                 value={boxAddCode}
-                onChange={(e) => setBoxAddCode(e.target.value)}
+                onChange={(e) => {
+                  const code = e.target.value;
+                  setBoxAddCode(code);
+                  scheduleWarehouseBoxQtyApply(boxAddQty, code);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.preventDefault();
+                }}
                 disabled={!receiptWarehouseId || boxAddBusy}
                 autoComplete="off"
                 spellCheck={false}
@@ -4474,12 +4528,16 @@ export function WarehouseOperations({
                 style={{ width: 120 }}
                 placeholder="Кол-во"
                 value={boxAddQty}
-                onChange={(e) => setBoxAddQty(e.target.value)}
+                onChange={(e) => {
+                  const qty = e.target.value;
+                  setBoxAddQty(qty);
+                  scheduleWarehouseBoxQtyApply(qty, boxAddCode);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.preventDefault();
+                }}
                 disabled={!receiptWarehouseId || boxAddBusy}
               />
-              <Button type="submit" variant="secondary" disabled={!receiptWarehouseId || boxAddBusy}>
-                Добавить
-              </Button>
             </form>
           </div>
 
