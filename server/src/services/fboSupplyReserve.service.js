@@ -135,19 +135,126 @@ async function applyFboReserveDelta({ productId, warehouseId, supplyId, supplyIt
 }
 
 class FboSupplyReserveService {
-  async enrichItemsWithReserved(items) {
+  /**
+   * Распределение «в пути» по активным строкам FBO (FIFO по ready_at).
+   * @returns {Map<string, { reservedFromStock: number, reservedFromIncoming: number }>}
+   */
+  async _computeReserveBreakdownByItem(productIds, { profileId } = {}) {
+    const breakdown = new Map();
+    const uniquePids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+    if (!uniquePids.length) return breakdown;
+
+    for (const pid of uniquePids) {
+      const queue = await findFboReserveQueueByProduct(pid, profileId);
+      const incR = await query(
+        `SELECT COALESCE(incoming_quantity, 0)::int AS incoming FROM products WHERE id = $1`,
+        [pid]
+      );
+      let incomingPool = Number(incR.rows?.[0]?.incoming) || 0;
+
+      for (const row of queue) {
+        const itemId = String(row.supply_item_id);
+        const qty = Math.max(0, parseInt(row.quantity, 10) || 0);
+        const reservedFromStock = await getNetReservedForFboItem(row.supply_item_id, pid);
+        const gap = Math.max(0, qty - reservedFromStock);
+        const reservedFromIncoming = Math.min(gap, incomingPool);
+        incomingPool -= reservedFromIncoming;
+        breakdown.set(itemId, { reservedFromStock, reservedFromIncoming });
+      }
+    }
+    return breakdown;
+  }
+
+  async enrichItemsWithReserved(items, { profileId } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(items)) return items;
+
+    const productIds = [
+      ...new Set(
+        items
+          .map((it) => it.productId ?? it.product_id)
+          .filter((id) => id != null && id !== '')
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    ];
+    const breakdown = await this._computeReserveBreakdownByItem(productIds, { profileId });
+
     const out = [];
     for (const it of items) {
       const pid = it.productId ?? it.product_id;
       if (!pid || !it.id) {
-        out.push({ ...it, reservedQuantity: 0 });
+        out.push({ ...it, reservedQuantity: 0, reservedFromStock: 0, reservedFromIncoming: 0 });
         continue;
       }
-      const reservedQuantity = await getNetReservedForFboItem(it.id, pid);
-      out.push({ ...it, reservedQuantity });
+      const b = breakdown.get(String(it.id));
+      if (b) {
+        out.push({
+          ...it,
+          reservedQuantity: b.reservedFromStock,
+          reservedFromStock: b.reservedFromStock,
+          reservedFromIncoming: b.reservedFromIncoming,
+        });
+        continue;
+      }
+      const reservedFromStock = await getNetReservedForFboItem(it.id, pid);
+      out.push({
+        ...it,
+        reservedQuantity: reservedFromStock,
+        reservedFromStock,
+        reservedFromIncoming: 0,
+      });
     }
     return out;
+  }
+
+  /** Сводка резерва для списка поставок. */
+  async enrichSuppliesListWithReserveTotals(supplies, { profileId } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(supplies) || !supplies.length) {
+      return supplies;
+    }
+    const supplyIds = supplies.map((s) => Number(s.id)).filter((id) => Number.isFinite(id) && id > 0);
+    if (!supplyIds.length) return supplies;
+
+    const itemsR = await query(
+      `SELECT i.id, i.fbo_supply_id, i.product_id, i.quantity::int AS quantity
+       FROM fbo_supply_items i
+       WHERE i.fbo_supply_id = ANY($1::bigint[])
+       ORDER BY i.fbo_supply_id, i.id`,
+      [supplyIds]
+    );
+    const itemsBySupply = new Map();
+    for (const row of itemsR.rows || []) {
+      const sid = Number(row.fbo_supply_id);
+      if (!itemsBySupply.has(sid)) itemsBySupply.set(sid, []);
+      itemsBySupply.get(sid).push({
+        id: row.id,
+        productId: row.product_id,
+        quantity: row.quantity,
+      });
+    }
+
+    const totalsBySupply = new Map();
+    for (const [sid, items] of itemsBySupply) {
+      const enriched = await this.enrichItemsWithReserved(items, { profileId });
+      totalsBySupply.set(sid, {
+        reservedFromStockTotal: enriched.reduce(
+          (sum, it) => sum + (Number(it.reservedFromStock) || 0),
+          0
+        ),
+        reservedFromIncomingTotal: enriched.reduce(
+          (sum, it) => sum + (Number(it.reservedFromIncoming) || 0),
+          0
+        ),
+      });
+    }
+
+    return supplies.map((s) => {
+      const t = totalsBySupply.get(Number(s.id));
+      if (!t) {
+        return { ...s, reservedFromStockTotal: 0, reservedFromIncomingTotal: 0 };
+      }
+      return { ...s, ...t };
+    });
   }
 
   /**

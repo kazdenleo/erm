@@ -1,3 +1,34 @@
+.fbo-supply-qty-with-reserve {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  line-height: 1.3;
+}
+
+.fbo-supply-qty-with-reserve__qty {
+  font-weight: 600;
+}
+
+.fbo-reserve-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.25;
+}
+
+.fbo-reserve-breakdown--inline {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fbo-reserve-breakdown__part {
+  white-space: nowrap;
+}
+
 .fbo-supplies-page {
   padding: 0 4px 24px;
 }

@@ -30,7 +30,7 @@ import {
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
-import { FboSupplyItemPackingCell } from './FboSupplyItemPackingCell.jsx';
+import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import {
   buildStatsMap,
   isSupplyItemPackingComplete,
@@ -1169,7 +1169,7 @@ export function FboSupplyDetail() {
               <th>Артикул</th>
               <th>Штрихкод</th>
               {isOzonSupply ? <th>Размещение</th> : null}
-              <th title="План / упаковано; нажмите на план (слева), чтобы изменить количество в поставке">Расхождения</th>
+              <th>Количество</th>
               <th style={{ width: 48 }} />
             </tr>
           </thead>
@@ -1185,8 +1185,6 @@ export function FboSupplyDetail() {
               const canPrint = Boolean(it.productId);
               const rowSelected = selectedItemIds.has(String(it.id));
               const stat = statsByItemId.get(String(it.id));
-              const planned = stat?.planned ?? it.quantity ?? 0;
-              const packed = stat?.packed ?? 0;
               const packingComplete = isSupplyItemPackingComplete(stat, it);
               return (
                 <tr
@@ -1235,24 +1233,14 @@ export function FboSupplyDetail() {
                       </span>
                     </td>
                   ) : null}
-                  <td onClick={(e) => e.stopPropagation()}>
-                    <FboSupplyItemPackingCell
-                      supplyId={id}
-                      itemId={it.id}
-                      packed={packed}
-                      planned={planned}
-                      disabled={saving}
-                      onSaved={handleItemQuantitySaved}
-                      onBreakdownClick={() =>
-                        setBreakdownItem({
-                          ...it,
-                          packed,
-                          planned,
-                          stat,
-                          byCargo: stat?.byCargo || [],
-                        })
-                      }
-                    />
+                  <td>
+                    <div className="fbo-supply-qty-with-reserve">
+                      <span className="fbo-supply-qty-with-reserve__qty">{it.quantity ?? 0}</span>
+                      <FboSupplyReserveBreakdown
+                        reservedFromStock={it.reservedFromStock ?? it.reservedQuantity}
+                        reservedFromIncoming={it.reservedFromIncoming}
+                      />
+                    </div>
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <Button

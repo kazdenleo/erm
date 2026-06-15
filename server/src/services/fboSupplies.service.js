@@ -63,6 +63,14 @@ function mapSupplyRow(row) {
     marketplaceContentSyncedAt: row.marketplace_content_synced_at ?? null,
     itemCount: row.items_quantity_total != null ? Number(row.items_quantity_total) : undefined,
     itemsLineCount: row.items_line_count != null ? Number(row.items_line_count) : undefined,
+    reservedFromStockTotal:
+      row.reserved_from_stock_total != null
+        ? Number(row.reserved_from_stock_total)
+        : row.reservedFromStockTotal ?? undefined,
+    reservedFromIncomingTotal:
+      row.reserved_from_incoming_total != null
+        ? Number(row.reserved_from_incoming_total)
+        : row.reservedFromIncomingTotal ?? undefined,
     items: row.items,
   };
 }
@@ -90,6 +98,14 @@ function mapItemRow(row) {
     marketplaceQuantity: row.mp_quantity != null ? Number(row.mp_quantity) : null,
     reservedQuantity:
       row.reserved_quantity != null ? Number(row.reserved_quantity) : row.reservedQuantity ?? undefined,
+    reservedFromStock:
+      row.reserved_from_stock != null
+        ? Number(row.reserved_from_stock)
+        : row.reservedFromStock ?? undefined,
+    reservedFromIncoming:
+      row.reserved_from_incoming != null
+        ? Number(row.reserved_from_incoming)
+        : row.reservedFromIncoming ?? undefined,
     barcode: row.barcode,
     sku: row.sku,
     mpOfferId: row.mp_offer_id,
@@ -337,7 +353,8 @@ class FboSuppliesService {
     params.push(Math.min(500, Math.max(1, parseInt(limit, 10) || 200)));
     sql += ` ORDER BY s.created_at DESC LIMIT $${params.length}`;
     const r = await query(sql, params);
-    return (r.rows || []).map(mapSupplyRow);
+    const rows = (r.rows || []).map(mapSupplyRow);
+    return fboSupplyReserveService.enrichSuppliesListWithReserveTotals(rows, { profileId: pid });
   }
 
   async getById(id, { profileId } = {}) {
@@ -362,7 +379,8 @@ class FboSuppliesService {
       [id]
     );
     supply.items = await fboSupplyReserveService.enrichItemsWithReserved(
-      (itemsR.rows || []).map(mapItemRow)
+      (itemsR.rows || []).map(mapItemRow),
+      { profileId: pid }
     );
     const sync = await syncSupplyStatusForPacking(id);
     supply.status = sync.status;

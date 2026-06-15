@@ -8,6 +8,7 @@ import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
 import { FboSupplyImportModal } from './FboSupplyImportModal';
 import { getFboSupplyStatusLabel, getMarketplaceLabel } from '../../constants/fboSupplyStatuses';
+import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import './FboSupplies.css';
 
 function fmtDt(iso) {
@@ -257,7 +258,16 @@ export function FboSupplies() {
                       : '—'}
                   </td>
                   <td>{row.organizationName || '—'}</td>
-                  <td>{row.itemCount ?? '—'}</td>
+                  <td>
+                    <div className="fbo-supply-qty-with-reserve">
+                      <span className="fbo-supply-qty-with-reserve__qty">{row.itemCount ?? '—'}</span>
+                      <FboSupplyReserveBreakdown
+                        inline
+                        reservedFromStock={row.reservedFromStockTotal}
+                        reservedFromIncoming={row.reservedFromIncomingTotal}
+                      />
+                    </div>
+                  </td>
                   <td>
                     <span className="badge bg-light text-dark">{getFboSupplyStatusLabel(row.status)}</span>
                   </td>
