@@ -18,6 +18,37 @@ function emptyRow() {
   return { productId: '', quantity: 1, unitPrice: '' };
 }
 
+/** Объединить строки черновика: одинаковые productId — сумма кол-ва; цена из нового файла, если указана. */
+function mergeExpectedDraftItems(existing, incoming) {
+  const map = new Map();
+  const ingest = (row) => {
+    const productId = String(row?.productId ?? '').trim();
+    if (!productId) return;
+    const qty = Math.max(1, Number(row.quantity) || 1);
+    const priceRaw = row.unitPrice;
+    const price =
+      priceRaw === '' || priceRaw == null || Number.isNaN(Number(priceRaw))
+        ? null
+        : Number(priceRaw);
+    const prev = map.get(productId);
+    if (!prev) {
+      map.set(productId, {
+        productId,
+        quantity: qty,
+        unitPrice: price != null ? String(price) : '',
+      });
+      return;
+    }
+    const nextQty = (Number(prev.quantity) || 0) + qty;
+    const nextPrice = price != null ? String(price) : prev.unitPrice;
+    map.set(productId, { ...prev, quantity: nextQty, unitPrice: nextPrice });
+  };
+  for (const row of existing || []) ingest(row);
+  for (const row of incoming || []) ingest(row);
+  const merged = [...map.values()];
+  return merged.length > 0 ? merged : [emptyRow()];
+}
+
 export function PurchaseExpectedDraftModal({
   isOpen,
   onClose,
@@ -210,12 +241,14 @@ export function PurchaseExpectedDraftModal({
               : '',
       }));
       if (tableItems.length === 0) throw new Error('В файле нет распознанных позиций');
-      setItems(tableItems);
+      const merged = mergeExpectedDraftItems(items, tableItems);
+      setItems(merged);
       const productsFromExcel = (res?.products || []).filter((p) => p?.id != null);
       if (productsFromExcel.length > 0) {
         mergeProductLists([], productsFromExcel);
       }
-      let info = `Загружено из Excel: ${res.excelDataRows ?? '—'} строк → ${tableItems.length} поз.`;
+      const mergedTotal = merged.filter((x) => x.productId).length;
+      let info = `Дозагружено из Excel: ${tableItems.length} поз. из файла · всего в документе: ${mergedTotal} поз.`;
       if (Array.isArray(res.unresolved) && res.unresolved.length > 0) {
         info += ` · не найдено артикулов: ${res.unresolved.length}`;
       }
@@ -240,7 +273,8 @@ export function PurchaseExpectedDraftModal({
       ) : (
         <>
           <p className="muted" style={{ marginBottom: 12 }}>
-            Черновик плана поставки: добавьте позиции вручную или из Excel (Артикул · Количество · Цена).
+            Черновик плана поставки: добавьте позиции вручную или дозагружайте Excel (Артикул · Количество · Цена).
+            Повторная загрузка дополняет документ: совпадающие артикулы суммируются по количеству.
             Кнопка «Применить к закупке» перенесёт ожидаемые кол-ва и цены в строки закупки; при приёмке
             сравнение идёт с этим черновиком.
           </p>
@@ -266,7 +300,7 @@ export function PurchaseExpectedDraftModal({
               disabled={excelLoading}
               onClick={() => excelInputRef.current?.click()}
             >
-              {excelLoading ? 'Загрузка…' : 'Загрузить из Excel'}
+              {excelLoading ? 'Загрузка…' : 'Дозагрузить из Excel'}
             </Button>
           </div>
           {excelInfo ? (
