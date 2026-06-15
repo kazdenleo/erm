@@ -69,6 +69,60 @@ export function allocateWarehouseScopedReserved({
 }
 
 /**
+ * «В пути» по складу: строго по warehouse_id + доля legacy (warehouse_id IS NULL) по наличию;
+ * если в журнале нет incoming — доля products.incoming_quantity по наличию на складе.
+ */
+export function allocateWarehouseScopedIncoming({
+  strict = 0,
+  nullIncoming = 0,
+  whOnHand = 0,
+  totalOnHand = 0,
+  legacyProductQty = 0,
+  globalIncoming = 0
+} = {}) {
+  const s = Math.max(0, Math.floor(Number(strict) || 0));
+  const ni = Math.max(0, Math.floor(Number(nullIncoming) || 0));
+  const wh = Math.max(0, Math.floor(Number(whOnHand) || 0));
+  const total = Math.max(0, Math.floor(Number(totalOnHand) || 0));
+  const legacy = Math.max(0, Math.floor(Number(legacyProductQty) || 0));
+  const globalInc = Math.max(0, Math.floor(Number(globalIncoming) || 0));
+
+  if (s > 0 || ni > 0) {
+    if (total > 0) {
+      return s + Math.floor(ni * (wh / total));
+    }
+    if (legacy > 0 && wh > 0) {
+      return s + ni;
+    }
+    return s;
+  }
+
+  if (globalInc <= 0) return 0;
+  if (total > 0) {
+    return Math.floor(globalInc * (wh / total));
+  }
+  if (legacy > 0 && wh > 0) {
+    return globalInc;
+  }
+  return globalInc;
+}
+
+/** Наличие на выбранном складе для доли legacy; не подставляем products.quantity, если остаток на других складах. */
+export function warehouseScopedOnHandForAllocation({
+  whOnHand = 0,
+  totalOnHand = 0,
+  legacyProductQty = 0
+} = {}) {
+  const wh = Math.max(0, Math.floor(Number(whOnHand) || 0));
+  const total = Math.max(0, Math.floor(Number(totalOnHand) || 0));
+  const legacy = Math.max(0, Math.floor(Number(legacyProductQty) || 0));
+  if (wh > 0) return wh;
+  if (total > 0) return 0;
+  if (legacy > 0) return legacy;
+  return 0;
+}
+
+/**
  * SQL-фрагмент: движения резерва по заказу (orders.id и/или номер на МП в meta).
  * @param {string} [alias=''] — префикс таблицы, например `sm.`
  * @param {number} orderDbIdParam — индекс $N для orders.id

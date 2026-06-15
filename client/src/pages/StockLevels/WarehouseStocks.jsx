@@ -2493,7 +2493,18 @@ export function WarehouseStocks() {
                   >
                     <td className="sku-cell">{row.product.sku || '—'}</td>
                     <td className="name-cell">{row.product.name || 'Без названия'}</td>
-                    <td>{row.incoming}</td>
+                    <td>
+                      {row.incomingDisplay ? (
+                        <span
+                          className="stock-main-value"
+                          title="Сколько комплектов можно собрать из ожидания комплектующих на этом складе"
+                        >
+                          {row.incomingDisplay}
+                        </span>
+                      ) : (
+                        row.incoming
+                      )}
+                    </td>
                     <td className="main-warehouse-cell" onClick={(e) => e.stopPropagation()}>
                       {allowManualStockEdit ? (
                         isKitProduct(row.product) ? (

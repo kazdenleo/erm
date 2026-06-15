@@ -896,6 +896,17 @@ class ProductsRepositoryPG {
             }
             p.quantity_warehouse_id = wid;
           });
+          const { batchWarehouseScopedIncomingMap } = await import('../services/kitStock.service.js');
+          const incomingMap = await batchWarehouseScopedIncomingMap(productIds, { warehouseId: wid });
+          products.forEach((p) => {
+            const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+            if (!Number.isFinite(nid)) return;
+            if (incomingMap.has(nid)) {
+              const inc = Math.max(0, Number(incomingMap.get(nid)) || 0);
+              p.incoming_quantity = inc;
+              p.incomingQuantity = inc;
+            }
+          });
         }
       }
     }

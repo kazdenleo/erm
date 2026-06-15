@@ -82,6 +82,7 @@ export function parseKitDisplayMetrics(product) {
     whole_available: wholeAvailable,
     reserved_on_sku: reservedOnSku,
     assemblable_from_components: assemblable,
+    incoming_from_components: n('incoming_from_components', 'incomingFromComponents'),
     marketplace_available: marketplaceAvailable,
     supplier_kit_units: n('supplier_kit_units', 'supplierKitUnits'),
     available_total: availableTotal
@@ -162,6 +163,48 @@ export function formatKitSupplierDisplay(product, directSupplierTotal = 0) {
   return null;
 }
 
+/** В колонке «В пути» для комплекта: (N) — сколько комплектов из ожидания комплектующих на складе. */
+export function formatKitIncomingDisplay(product, directIncoming = 0, allProducts = null) {
+  const raw = product?.kit_display ?? product?.kitDisplay;
+  let fromApi = raw?.incoming_from_components ?? raw?.incomingFromComponents ?? null;
+  if ((fromApi == null || Number(fromApi) === 0) && Array.isArray(allProducts)) {
+    fromApi = computeKitIncomingFromLoadedProducts(product, allProducts);
+  }
+  const kitUnits = Math.max(0, Number(fromApi) || 0);
+  const direct = Math.max(0, Number(directIncoming) || 0);
+  if (kitUnits > 0 && direct <= 0) return `(${kitUnits})`;
+  if (kitUnits > 0 && direct > 0) return `${direct} (${kitUnits})`;
+  return null;
+}
+
+/** Сколько комплектов можно собрать из «в пути» комплектующих (строки того же списка). */
+export function computeKitIncomingFromLoadedProducts(kitProduct, allProducts) {
+  const comps = kitProduct?.kit_components;
+  if (!Array.isArray(comps) || comps.length === 0) return 0;
+
+  const byId = new Map((allProducts || []).map((p) => [String(p.id), p]));
+  let minKits = Infinity;
+  for (const c of comps) {
+    const cid = c.productId ?? c.component_product_id;
+    if (cid == null || cid === '') {
+      minKits = 0;
+      break;
+    }
+    const comp = byId.get(String(cid));
+    if (!comp) {
+      minKits = 0;
+      break;
+    }
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    const onHand = Number(comp.quantity) || 0;
+    const incoming = Number(comp.incoming_quantity ?? comp.incomingQuantity) || 0;
+    const reserved = Number(comp.reserved_quantity ?? comp.reservedQuantity) || 0;
+    const incomingOnly = Math.max(0, incoming - Math.max(0, reserved - onHand));
+    minKits = Math.min(minKits, Math.floor(incomingOnly / perKit));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
 /** Собираемость из комплектующих по строкам того же списка (если с API не пришёл kit_display). */
 export function computeAssemblableFromLoadedProducts(kitProduct, allProducts) {
   const comps = kitProduct?.kit_components;
@@ -208,6 +251,7 @@ function buildKitDisplayFromProduct(product, baseMetrics, allProducts) {
 
   const wholeOnHand = Math.max(0, Number(product.quantity) || 0);
   const assemblable = computeAssemblableFromLoadedProducts(product, allProducts);
+  const incomingFromComponents = computeKitIncomingFromLoadedProducts(product, allProducts);
   const wholeAvailable = Math.max(
     0,
     wholeOnHand + (Number(baseMetrics.incoming) || 0) - (Number(baseMetrics.reserved) || 0)
@@ -216,6 +260,7 @@ function buildKitDisplayFromProduct(product, baseMetrics, allProducts) {
     whole_on_hand: wholeOnHand,
     whole_available: wholeAvailable,
     assemblable_from_components: assemblable,
+    incoming_from_components: incomingFromComponents,
     marketplace_available: wholeAvailable + assemblable,
     available_total: wholeAvailable + assemblable
   };
@@ -260,6 +305,7 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
             );
       const availableTotal = marketplaceAvailable;
       const suppliersDisplay = formatKitSupplierDisplay(product, base.suppliers);
+      const incomingDisplay = formatKitIncomingDisplay(product, base.incoming, products);
       const kitMetrics = {
         ...display,
         whole_available: wholeAvailable,
@@ -269,7 +315,8 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
       return {
         product,
         onHand: display.whole_on_hand,
-        incoming: base.incoming,
+        incoming: incomingDisplay ? 0 : base.incoming,
+        incomingDisplay,
         reserved: base.reserved,
         suppliers: suppliersDisplay ? 0 : base.suppliers,
         supplierDetails: base.supplierDetails,

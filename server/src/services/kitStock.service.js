@@ -8,9 +8,11 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import {
   NET_RESERVED_SUM_EXPR_SQL,
+  allocateWarehouseScopedIncoming,
   allocateWarehouseScopedReserved,
   orderReserveMovementMatchSql,
-  parseStockMovementWarehouseId
+  parseStockMovementWarehouseId,
+  warehouseScopedOnHandForAllocation
 } from '../constants/netReservedStockSql.js';
 import {
   computeAvailableQuantity,
@@ -1047,10 +1049,11 @@ async function warehouseScopedNetReservedForProduct(productId, whId) {
   const nullReserve = Number(nullR.rows[0]?.rv ?? 0) || 0;
   const totalOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
   const legacyProductQty = Number(onHandR.rows[0]?.product_qty ?? 0) || 0;
-  let whOnHand = Number(whOnHandR.rows[0]?.qty ?? 0) || 0;
-  if (whOnHand <= 0 && totalOnHand <= 0 && legacyProductQty > 0) {
-    whOnHand = legacyProductQty;
-  }
+  const whOnHand = warehouseScopedOnHandForAllocation({
+    whOnHand: Number(whOnHandR.rows[0]?.qty ?? 0) || 0,
+    totalOnHand,
+    legacyProductQty
+  });
   return allocateWarehouseScopedReserved({
     strict,
     nullReserve,
@@ -1121,10 +1124,11 @@ async function warehouseScopedNetReservedMap(productIds, whId) {
   for (const pid of ids) {
     const totalOnHand = totalOnHandMap.get(pid) ?? 0;
     const legacyProductQty = legacyMap.get(pid) ?? 0;
-    let whOnHand = whOnHandMap.get(pid) ?? 0;
-    if (whOnHand <= 0 && totalOnHand <= 0 && legacyProductQty > 0) {
-      whOnHand = legacyProductQty;
-    }
+    const whOnHand = warehouseScopedOnHandForAllocation({
+      whOnHand: whOnHandMap.get(pid) ?? 0,
+      totalOnHand,
+      legacyProductQty
+    });
     map.set(
       pid,
       allocateWarehouseScopedReserved({
@@ -2134,15 +2138,108 @@ async function batchKitJournalBalanceMap(kitIds) {
   );
 }
 
-async function batchIncomingMap(productIds) {
+async function batchIncomingMap(productIds, opts = {}) {
   const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
   if (!ids.length) return new Map();
-  const r = await query(
-    `SELECT id, COALESCE(incoming_quantity, 0)::int AS incoming_quantity
-     FROM products WHERE id = ANY($1::bigint[])`,
-    [ids]
+
+  const wid = parseWarehouseIdFromOpts(opts);
+  if (wid == null) {
+    const r = await query(
+      `SELECT id, COALESCE(incoming_quantity, 0)::int AS incoming_quantity
+       FROM products WHERE id = ANY($1::bigint[])`,
+      [ids]
+    );
+    return new Map((r.rows || []).map((row) => [Number(row.id), Number(row.incoming_quantity) || 0]));
+  }
+
+  const [strictR, nullR, whOnHandR, totalOnHandR, globalR] = await Promise.all([
+    query(
+      `SELECT product_id,
+              GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND LOWER(TRIM(type::text)) = 'incoming'
+         AND warehouse_id = $2
+       GROUP BY product_id`,
+      [ids, wid]
+    ),
+    query(
+      `SELECT product_id,
+              GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND LOWER(TRIM(type::text)) = 'incoming'
+         AND warehouse_id IS NULL
+       GROUP BY product_id`,
+      [ids]
+    ),
+    query(
+      `SELECT product_id, COALESCE(quantity, 0)::int AS qty
+       FROM product_warehouse_stock
+       WHERE product_id = ANY($1::bigint[]) AND warehouse_id = $2`,
+      [ids, wid]
+    ),
+    query(
+      `SELECT product_id, COALESCE(SUM(quantity), 0)::int AS qty
+       FROM product_warehouse_stock
+       WHERE product_id = ANY($1::bigint[])
+       GROUP BY product_id`,
+      [ids]
+    ),
+    query(
+      `SELECT id, COALESCE(incoming_quantity, 0)::int AS inc, COALESCE(quantity, 0)::int AS legacy_qty
+       FROM products WHERE id = ANY($1::bigint[])`,
+      [ids]
+    )
+  ]);
+
+  const strictMap = new Map(
+    (strictR.rows || []).map((row) => [Number(row.product_id), Number(row.inc) || 0])
   );
-  return new Map((r.rows || []).map((row) => [Number(row.id), Number(row.incoming_quantity) || 0]));
+  const nullMap = new Map(
+    (nullR.rows || []).map((row) => [Number(row.product_id), Number(row.inc) || 0])
+  );
+  const whOnHandMap = new Map(
+    (whOnHandR.rows || []).map((row) => [Number(row.product_id), Number(row.qty) || 0])
+  );
+  const totalOnHandMap = new Map(
+    (totalOnHandR.rows || []).map((row) => [Number(row.product_id), Number(row.qty) || 0])
+  );
+  const globalIncMap = new Map();
+  const legacyMap = new Map();
+  for (const row of globalR.rows || []) {
+    const pid = Number(row.id);
+    globalIncMap.set(pid, Number(row.inc) || 0);
+    legacyMap.set(pid, Number(row.legacy_qty) || 0);
+  }
+
+  const map = new Map();
+  for (const pid of ids) {
+    const totalOnHand = totalOnHandMap.get(pid) ?? 0;
+    const legacyProductQty = legacyMap.get(pid) ?? 0;
+    const whOnHand = warehouseScopedOnHandForAllocation({
+      whOnHand: whOnHandMap.get(pid) ?? 0,
+      totalOnHand,
+      legacyProductQty
+    });
+    map.set(
+      pid,
+      allocateWarehouseScopedIncoming({
+        strict: strictMap.get(pid) ?? 0,
+        nullIncoming: nullMap.get(pid) ?? 0,
+        whOnHand,
+        totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
+        legacyProductQty,
+        globalIncoming: globalIncMap.get(pid) ?? 0
+      })
+    );
+  }
+  return map;
+}
+
+/** Пакетно: «в пути» по складу для списка товаров (как batchIncomingMap). */
+export async function batchWarehouseScopedIncomingMap(productIds, opts = {}) {
+  return batchIncomingMap(productIds, opts);
 }
 
 async function batchSupplierStockMap(productIds, opts = {}) {
@@ -2194,6 +2291,23 @@ function assemblableFromContext(kitId, ctx) {
         (ctx.reservedMap.get(pid) || 0)
     );
     minKits = Math.min(minKits, Math.floor(avail / perKit));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
+}
+
+/** Сколько комплектов можно собрать только из «в пути» комплектующих на выбранном складе. */
+function kitIncomingFromComponentsFromContext(kitId, ctx) {
+  const comps = ctx.componentsByKit.get(kitId) || [];
+  if (comps.length === 0) return 0;
+  let minKits = Infinity;
+  for (const c of comps) {
+    const pid = Number(c.component_product_id ?? c.productId);
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    const onHand = Math.max(0, ctx.compOnHand.get(pid) || 0);
+    const incoming = Math.max(0, ctx.compIncoming.get(pid) || 0);
+    const reserved = Math.max(0, ctx.reservedMap.get(pid) || 0);
+    const incomingOnly = Math.max(0, incoming - Math.max(0, reserved - onHand));
+    minKits = Math.min(minKits, Math.floor(incomingOnly / perKit));
   }
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
@@ -2262,7 +2376,7 @@ export async function buildKitListStockContext(products, options = {}) {
       batchKitJournalBalanceMap(kitIds),
       batchNetReservedMap([...kitIds, ...compIds], options),
       batchWarehouseOnHandMap(compIds, options),
-      batchIncomingMap(compIds),
+      batchIncomingMap(compIds, options),
       batchSupplierStockMap(compIds, options)
     ]);
 
@@ -2296,6 +2410,7 @@ export async function attachKitDisplayMetrics(products, options = {}) {
 
     const wholeOnHand = kitPhysicalOnHandFromContext(kitId, ctx);
     const assemblable = assemblableFromContext(kitId, ctx);
+    const incomingFromComponents = kitIncomingFromComponentsFromContext(kitId, ctx);
     const supplierSyncOn = options.supplierSyncEnabled !== false;
     const supplierKitUnits = supplierSyncOn ? supplierKitUnitsFromContext(kitId, ctx) : 0;
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
@@ -2321,6 +2436,7 @@ export async function attachKitDisplayMetrics(products, options = {}) {
       whole_available: wholeAvail,
       reserved_on_sku: onSkuReserved,
       assemblable_from_components: assemblable,
+      incoming_from_components: incomingFromComponents,
       supplier_kit_units: supplierKitUnits,
       marketplace_available: marketplaceAvailable,
       available_total: availableTotal
@@ -2376,6 +2492,7 @@ export default {
   releaseAllReservesForOrder,
   releaseOrderReservesGroupedByWarehouse,
   buildKitListStockContext,
+  batchWarehouseScopedIncomingMap,
   kitPhysicalOnHandFromContext,
   kitDisplayReservedFromContext,
   attachKitDisplayMetrics,
