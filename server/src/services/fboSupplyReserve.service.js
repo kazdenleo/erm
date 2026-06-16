@@ -632,17 +632,31 @@ class FboSupplyReserveService {
     );
     for (const row of itemsR.rows || []) {
       const productId = Number(row.product_id);
-      const net = await getNetReservedForFboItem(row.id, productId);
+      const itemId = row.id;
+      const net = await getNetReservedForFboItem(itemId, productId);
       if (net <= 0) continue;
-      const wh = row.deduction_warehouse_id;
-      await applyFboReserveDelta({
-        productId,
-        warehouseId: wh,
-        supplyId,
-        supplyItemId: row.id,
-        delta: -net,
-        reason: `Снятие резерва FBO (поставка №${supplyId})`,
-      }).catch(() => {});
+      const label = `Снятие резерва FBO (поставка №${supplyId})`;
+      const byWh = await getNetReservedForFboItemByWarehouse(itemId, productId);
+      const warehouses =
+        byWh.length > 0
+          ? byWh
+          : [
+              {
+                warehouseId: normalizeWarehouseId(row.deduction_warehouse_id),
+                net,
+              },
+            ].filter((w) => w.warehouseId != null);
+      for (const { warehouseId, net: whNet } of warehouses) {
+        if (whNet <= 0 || warehouseId == null) continue;
+        await applyFboReserveDelta({
+          productId,
+          warehouseId,
+          supplyId,
+          supplyItemId: itemId,
+          delta: -whNet,
+          reason: label,
+        }).catch(() => {});
+      }
     }
   }
 
