@@ -2152,7 +2152,7 @@ async function batchIncomingMap(productIds, opts = {}) {
     return new Map((r.rows || []).map((row) => [Number(row.id), Number(row.incoming_quantity) || 0]));
   }
 
-  const [strictR, nullR, whOnHandR, totalOnHandR, globalR] = await Promise.all([
+  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR] = await Promise.all([
     query(
       `SELECT product_id,
               GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
@@ -2190,6 +2190,13 @@ async function batchIncomingMap(productIds, opts = {}) {
       `SELECT id, COALESCE(incoming_quantity, 0)::int AS inc, COALESCE(quantity, 0)::int AS legacy_qty
        FROM products WHERE id = ANY($1::bigint[])`,
       [ids]
+    ),
+    query(
+      `SELECT DISTINCT product_id
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND LOWER(TRIM(type::text)) = 'incoming'`,
+      [ids]
     )
   ]);
 
@@ -2204,6 +2211,9 @@ async function batchIncomingMap(productIds, opts = {}) {
   );
   const totalOnHandMap = new Map(
     (totalOnHandR.rows || []).map((row) => [Number(row.product_id), Number(row.qty) || 0])
+  );
+  const journalIncomingSet = new Set(
+    (journalR.rows || []).map((row) => Number(row.product_id)).filter((n) => Number.isFinite(n))
   );
   const globalIncMap = new Map();
   const legacyMap = new Map();
@@ -2230,7 +2240,8 @@ async function batchIncomingMap(productIds, opts = {}) {
         whOnHand,
         totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
         legacyProductQty,
-        globalIncoming: globalIncMap.get(pid) ?? 0
+        globalIncoming: globalIncMap.get(pid) ?? 0,
+        hasIncomingJournal: journalIncomingSet.has(pid)
       })
     );
   }
