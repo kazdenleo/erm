@@ -9,6 +9,7 @@ export function FboSupplyReserveBreakdown({
   reservedFromIncoming = 0,
   sourceOnHand = null,
   sourceIncoming = null,
+  reserveDisabled = false,
   inline = false,
   showEmpty = false,
 }) {
@@ -16,6 +17,39 @@ export function FboSupplyReserveBreakdown({
   const incoming = Number(reservedFromIncoming) || 0;
   const onHand = sourceOnHand != null ? Number(sourceOnHand) || 0 : null;
   const onPath = sourceIncoming != null ? Number(sourceIncoming) || 0 : null;
+
+  if (reserveDisabled) {
+    const hints = [];
+    if (onHand != null && onHand > 0) {
+      hints.push(
+        <span key="onhand" className="fbo-reserve-breakdown__part fbo-reserve-breakdown__part--hint" title="Остаток на складах (резерв не ведётся)">
+          склад: {onHand}
+        </span>
+      );
+    }
+    if (onPath != null && onPath > 0) {
+      hints.push(
+        <span key="incoming-hint" className="fbo-reserve-breakdown__part fbo-reserve-breakdown__part--hint" title="Ожидаемые поступления (резерв не ведётся)">
+          в пути: {onPath}
+        </span>
+      );
+    }
+    if (!hints.length && !showEmpty) return null;
+    if (!hints.length && showEmpty) {
+      return (
+        <span className="fbo-reserve-breakdown fbo-reserve-breakdown--disabled">
+          <span className="fbo-reserve-breakdown__part fbo-reserve-breakdown__part--empty" title="Включите «Списать остатки при отгрузке», чтобы резервировать товар">
+            резерв выкл.
+          </span>
+        </span>
+      );
+    }
+    return (
+      <span className={['fbo-reserve-breakdown', inline ? 'fbo-reserve-breakdown--inline' : ''].filter(Boolean).join(' ')}>
+        {hints}
+      </span>
+    );
+  }
 
   if (stock <= 0 && incoming <= 0 && !showEmpty) return null;
 

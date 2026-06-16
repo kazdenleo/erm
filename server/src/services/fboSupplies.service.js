@@ -383,7 +383,7 @@ class FboSuppliesService {
     );
     supply.items = await fboSupplyReserveService.enrichItemsWithReserved(
       (itemsR.rows || []).map(mapItemRow),
-      { profileId: pid }
+      { profileId: pid, reserveEnabled: supply.deductStock === true }
     );
     const sync = await syncSupplyStatusForPacking(id);
     supply.status = sync.status;
@@ -497,7 +497,7 @@ class FboSuppliesService {
       return newId;
     });
 
-    if (!skipReserveRebalance) {
+    if (!skipReserveRebalance && payload.deductStock !== false) {
       const runReserveRebalance = () =>
         fboSupplyReserveService.rebalanceReservesForSupply(supplyId, { profileId: pid }).catch((e) => {
           console.warn('[FboSupplies] reserve after create:', e?.message || e);
@@ -633,10 +633,11 @@ class FboSuppliesService {
     } else {
       if (!result.deductStock) {
         await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+      } else {
+        await fboSupplyReserveService.rebalanceReservesForSupply(id, { profileId: pid }).catch((e) => {
+          console.warn('[FboSupplies] reserve after update:', e?.message || e);
+        });
       }
-      await fboSupplyReserveService.rebalanceReservesForSupply(id, { profileId: pid }).catch((e) => {
-        console.warn('[FboSupplies] reserve after update:', e?.message || e);
-      });
     }
     return this.getById(id, { profileId: pid });
   }

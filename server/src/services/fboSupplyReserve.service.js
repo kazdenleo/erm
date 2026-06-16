@@ -326,7 +326,7 @@ class FboSupplyReserveService {
     return breakdown;
   }
 
-  async enrichItemsWithReserved(items, { profileId } = {}) {
+  async enrichItemsWithReserved(items, { profileId, reserveEnabled = true } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(items)) return items;
 
     const productIds = [
@@ -338,7 +338,10 @@ class FboSupplyReserveService {
           .filter((id) => Number.isFinite(id) && id > 0)
       ),
     ];
-    const breakdown = await this._computeReserveBreakdownByItem(productIds, { profileId });
+    const breakdown =
+      reserveEnabled === true
+        ? await this._computeReserveBreakdownByItem(productIds, { profileId })
+        : new Map();
     const sourceWarehouseIds = await getFboSourceWarehouseIds(profileId);
     const sourceOnHandByProduct = new Map();
     const sourceIncomingByProduct = new Map();
@@ -373,12 +376,23 @@ class FboSupplyReserveService {
         continue;
       }
       const b = breakdown.get(String(it.id));
-      if (b) {
+      if (b && reserveEnabled === true) {
         out.push({
           ...it,
           reservedQuantity: b.reservedFromStock,
           reservedFromStock: b.reservedFromStock,
           reservedFromIncoming: b.reservedFromIncoming,
+          sourceOnHand,
+          sourceIncoming,
+        });
+        continue;
+      }
+      if (reserveEnabled !== true) {
+        out.push({
+          ...it,
+          reservedQuantity: 0,
+          reservedFromStock: 0,
+          reservedFromIncoming: 0,
           sourceOnHand,
           sourceIncoming,
         });
@@ -418,8 +432,24 @@ class FboSupplyReserveService {
       productId: row.product_id,
       quantity: row.quantity,
     }));
-    const enrichedAll = await this.enrichItemsWithReserved(allItems, { profileId });
-    const enrichedByItemId = new Map(enrichedAll.map((it) => [String(it.id), it]));
+
+    const deductBySupply = new Map(
+      supplies.map((s) => [Number(s.id), s.deductStock === true])
+    );
+
+    const enrichedByItemId = new Map();
+    for (const s of supplies) {
+      const sid = Number(s.id);
+      const batch = allItems.filter((it) => Number(it.fboSupplyId) === sid);
+      if (!batch.length) continue;
+      const enriched = await this.enrichItemsWithReserved(batch, {
+        profileId,
+        reserveEnabled: deductBySupply.get(sid) === true,
+      });
+      for (const it of enriched) {
+        enrichedByItemId.set(String(it.id), it);
+      }
+    }
 
     const totalsBySupply = new Map();
     for (const item of allItems) {

@@ -1104,6 +1104,11 @@ export function FboSupplyDetail() {
               disabled={saving}
             />
           </div>
+          {!supply.deductStock ? (
+            <p className="text-muted small mb-0 mt-1">
+              Остатки не резервируются. Включите, чтобы зарезервировать товар под эту поставку.
+            </p>
+          ) : null}
         </div>
         <div>
           <label>Создана</label>
@@ -1181,12 +1186,19 @@ export function FboSupplyDetail() {
             'Нет привязанных к ERM товаров — печать недоступна.'
           )}
           {supply?.items?.length ? (
-            <>
-              {' '}
-              · покрытие:{' '}
-              <strong>{supplyReserveTotals.stock}</strong> с наличия,{' '}
-              <strong>{supplyReserveTotals.incoming}</strong> с пути (из {supplyReserveTotals.qty} шт.)
-            </>
+            supply.deductStock ? (
+              <>
+                {' '}
+                · покрытие:{' '}
+                <strong>{supplyReserveTotals.stock}</strong> с наличия,{' '}
+                <strong>{supplyReserveTotals.incoming}</strong> с пути (из {supplyReserveTotals.qty} шт.)
+              </>
+            ) : (
+              <>
+                {' '}
+                · <span title="Включите «Списать остатки при отгрузке» для резерва остатков">резерв отключён</span>
+              </>
+            )
           ) : null}
         </span>
       </div>
@@ -1280,6 +1292,7 @@ export function FboSupplyDetail() {
                       <span className="fbo-supply-qty-with-reserve__qty">{it.quantity ?? 0}</span>
                       <FboSupplyReserveBreakdown
                         showEmpty
+                        reserveDisabled={!supply.deductStock}
                         reservedFromStock={
                           it.reservedFromStock ??
                           it.reserved_from_stock ??

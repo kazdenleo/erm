@@ -263,6 +263,7 @@ export function FboSupplies() {
                       <span className="fbo-supply-qty-with-reserve__qty">{row.itemCount ?? '—'}</span>
                       <FboSupplyReserveBreakdown
                         inline
+                        reserveDisabled={row.deductStock === false}
                         reservedFromStock={
                           row.reservedFromStockTotal ?? row.reserved_from_stock_total
                         }
