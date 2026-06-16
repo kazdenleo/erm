@@ -26,15 +26,15 @@ describe('classifyOrderReserveCoverage', () => {
     ).toBe('incoming');
   });
 
-  test('без покрытия при нулевом остатке и нулевом incoming', () => {
+  test('при нулевом incoming в снимке — всё равно в пути, если резерв есть', () => {
     expect(
       classifyOrderReserveCoverage({ onHand: 0, incoming: 0, reservedRaw: 1, orderReserved: 1 })
-    ).toBe('uncovered');
+    ).toBe('incoming');
   });
 
-  test('без покрытия, если incoming уже занят другими резервами', () => {
+  test('FIFO: incoming занят другими — резерв отображаем как в пути', () => {
     expect(
       classifyOrderReserveCoverage({ onHand: 0, incoming: 1, reservedRaw: 3, orderReserved: 2 })
-    ).toBe('uncovered');
+    ).toBe('incoming');
   });
 });

@@ -509,7 +509,7 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             const lineHas =
               r > 0 || (reserveInKitUnits && (lineReserveDisplayUnits(line).reservedPieces || 0) > 0);
             const lineCoverage =
-              line.reserveCoverage ?? line.reserve_coverage ?? (lineHas ? 'uncovered' : 'none');
+              line.reserveCoverage ?? line.reserve_coverage ?? (lineHas ? 'incoming' : 'none');
             const canAddMore = remaining > 0 && bounds.inputMax > 0;
             const canRemove = r > 0 || reservedPieces > 0;
             const inputMaxAdd = bounds.inputMax;

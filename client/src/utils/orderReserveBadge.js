@@ -16,14 +16,11 @@ export function orderReserveBadgeCounts({ qty, reservedQty, needQty }) {
 export function groupReserveCoverageKind(ordersOrLines) {
   let anyIncoming = false;
   let anyOnHand = false;
-  let anyUncovered = false;
   for (const item of ordersOrLines || []) {
     const k = String(item.reserveCoverage ?? item.reserve_coverage ?? 'none').toLowerCase();
     if (k === 'on_hand') anyOnHand = true;
-    if (k === 'incoming') anyIncoming = true;
-    if (k === 'uncovered') anyUncovered = true;
+    if (k === 'incoming' || k === 'uncovered') anyIncoming = true;
   }
-  if (anyUncovered) return 'uncovered';
   if (anyIncoming) return 'incoming';
   if (anyOnHand) return 'on_hand';
   return 'none';
@@ -31,9 +28,7 @@ export function groupReserveCoverageKind(ordersOrLines) {
 
 export function reserveBadgeClassName(coverageKind) {
   if (coverageKind === 'on_hand') return 'orders-reserve-badge orders-reserve-badge--on-hand';
-  if (coverageKind === 'incoming') return 'orders-reserve-badge orders-reserve-badge--incoming';
-  if (coverageKind === 'uncovered') return 'orders-reserve-badge orders-reserve-badge--uncovered';
-  return 'orders-reserve-badge orders-reserve-badge--uncovered';
+  return 'orders-reserve-badge orders-reserve-badge--incoming';
 }
 
 export function formatOrderReserveBadgeTitle({
@@ -48,11 +43,7 @@ export function formatOrderReserveBadgeTitle({
   const sourceHint =
     coverageKind === 'on_hand'
       ? '\nПокрытие: со склада (в наличии).'
-      : coverageKind === 'incoming'
-        ? '\nПокрытие: с участием товара в пути.'
-        : coverageKind === 'uncovered'
-          ? '\nПокрытие: резерв без остатка и без ожидаемой поставки (снимите резерв или добавьте закупку).'
-          : '';
+      : '\nПокрытие: с участием товара в пути.';
   const head = `Зарезервировано ${reservedQty} из ${needQty}${fully}${sourceHint}`;
   const pool = [];
   if (Array.isArray(lines) && lines.length) pool.push(...lines);
@@ -73,8 +64,7 @@ export function formatOrderReserveBadgeTitle({
       const r = Number(l.reservedQty) || 0;
       const n = Number(l.needQty) || 0;
       const k = l.reserveCoverage ?? l.reserve_coverage;
-      const src =
-        k === 'on_hand' ? ' склад' : k === 'incoming' ? ' в пути' : k === 'uncovered' ? ' без покрытия' : '';
+      const src = k === 'on_hand' ? ' склад' : r > 0 ? ' в пути' : '';
       return `${label}: ${r}/${n}${src}`;
     })
     .join('\n');
