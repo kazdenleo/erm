@@ -97,10 +97,10 @@ export function allocateWarehouseScopedIncoming({
       : strict + nullSum;
 
   if (hasIncomingJournal) {
-    if (journalNetGlobal <= 0) return 0;
     if (hasWarehouseIncomingJournal) {
       return Math.max(0, strict);
     }
+    if (journalNetGlobal <= 0) return 0;
     const whPositive = Math.max(0, strict);
     const nullPositive = Math.max(0, nullSum);
     if (nullPositive <= 0) return whPositive;

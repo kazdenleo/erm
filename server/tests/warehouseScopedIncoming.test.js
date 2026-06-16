@@ -111,4 +111,18 @@ describe('allocateWarehouseScopedIncoming', () => {
       })
     ).toBe(1);
   });
+
+  test('закупка +1 на складе при отрицательном legacy null — не обнуляем в пути', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: 1,
+        nullRaw: -2,
+        globalJournalNet: -1,
+        whOnHand: 1,
+        totalOnHand: 1,
+        hasIncomingJournal: true,
+        hasWarehouseIncomingJournal: true
+      })
+    ).toBe(1);
+  });
 });
