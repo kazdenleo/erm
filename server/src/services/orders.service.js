@@ -5346,8 +5346,7 @@ class OrdersService {
       throw err;
     }
 
-    const scopeRows = rows.filter((r) => orderRowDbId(r) === orderDbId);
-    const before = await this._lightOrderReserveSnapshot(scopeRows.length ? scopeRows : [row]);
+    const before = await this._lightOrderReserveSnapshot(rows);
     const net = await this._getReservedQtyForOrderProduct(orderDbId, pid);
     const act = String(action || 'toggle').toLowerCase();
     let doUnreserve = false;
@@ -5540,7 +5539,7 @@ class OrdersService {
         if (qtyWanted != null && qtyWanted > 0) {
           if ((await isKitProductId(pid)) && already >= orderQty) {
             const afterAlready = await enrichReserveSummaryCoverage(
-              await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]),
+              await this._summarizeReserveForRows(rows),
               { light: true }
             );
             return {
@@ -5621,7 +5620,7 @@ class OrdersService {
     }
 
     const after = await enrichReserveSummaryCoverage(
-      await this._summarizeReserveForRows(scopeRows.length ? scopeRows : [row]),
+      await this._summarizeReserveForRows(rows),
       { light: true }
     );
     return {
