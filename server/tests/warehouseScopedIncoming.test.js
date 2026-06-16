@@ -80,4 +80,18 @@ describe('allocateWarehouseScopedIncoming', () => {
       })
     ).toBe(2);
   });
+
+  test('на складе есть incoming в журнале — не добавляем legacy null (как история)', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: 1,
+        nullRaw: 2,
+        whOnHand: 1,
+        totalOnHand: 1,
+        globalIncoming: 3,
+        hasIncomingJournal: true,
+        hasWarehouseIncomingJournal: true
+      })
+    ).toBe(1);
+  });
 });

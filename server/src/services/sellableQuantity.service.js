@@ -104,7 +104,8 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
   const wh = Number(whId);
   if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(wh) || wh < 1) return 0;
 
-  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR] = await Promise.all([
+  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR, whJournalR] =
+    await Promise.all([
     run(
       `SELECT COALESCE(SUM(quantity_change), 0)::int AS inc
        FROM stock_movements
@@ -142,6 +143,15 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
     run(
       `SELECT 1 AS ok FROM stock_movements WHERE product_id = $1 LIMIT 1`,
       [pid]
+    ),
+    run(
+      `SELECT 1 AS ok
+       FROM stock_movements
+       WHERE product_id = $1
+         AND LOWER(TRIM(type::text)) = 'incoming'
+         AND warehouse_id = $2
+       LIMIT 1`,
+      [pid, wh]
     )
   ]);
 
@@ -161,7 +171,8 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
     legacyProductQty,
     globalIncoming: Number(globalR.rows[0]?.inc ?? 0) || 0,
     hasIncomingJournal: (journalR.rows?.length ?? 0) > 0,
-    hasStockJournal: (stockJournalR.rows?.length ?? 0) > 0
+    hasStockJournal: (stockJournalR.rows?.length ?? 0) > 0,
+    hasWarehouseIncomingJournal: (whJournalR.rows?.length ?? 0) > 0
   });
 }
 

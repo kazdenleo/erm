@@ -2195,7 +2195,8 @@ async function batchIncomingMap(productIds, opts = {}) {
     );
   }
 
-  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR] = await Promise.all([
+  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR, whJournalR] =
+    await Promise.all([
     query(
       `SELECT product_id,
               COALESCE(SUM(quantity_change), 0)::int AS inc
@@ -2246,6 +2247,14 @@ async function batchIncomingMap(productIds, opts = {}) {
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])`,
       [ids]
+    ),
+    query(
+      `SELECT DISTINCT product_id
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND LOWER(TRIM(type::text)) = 'incoming'
+         AND warehouse_id = $2`,
+      [ids, wid]
     )
   ]);
 
@@ -2266,6 +2275,9 @@ async function batchIncomingMap(productIds, opts = {}) {
   );
   const stockJournalSet = new Set(
     (stockJournalR.rows || []).map((row) => Number(row.product_id)).filter((n) => Number.isFinite(n))
+  );
+  const whIncomingJournalSet = new Set(
+    (whJournalR.rows || []).map((row) => Number(row.product_id)).filter((n) => Number.isFinite(n))
   );
   const globalIncMap = new Map();
   const legacyMap = new Map();
@@ -2294,7 +2306,8 @@ async function batchIncomingMap(productIds, opts = {}) {
         legacyProductQty,
         globalIncoming: globalIncMap.get(pid) ?? 0,
         hasIncomingJournal: journalIncomingSet.has(pid),
-        hasStockJournal: stockJournalSet.has(pid)
+        hasStockJournal: stockJournalSet.has(pid),
+        hasWarehouseIncomingJournal: whIncomingJournalSet.has(pid)
       })
     );
   }
