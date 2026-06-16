@@ -2155,7 +2155,7 @@ async function batchIncomingMap(productIds, opts = {}) {
   const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR] = await Promise.all([
     query(
       `SELECT product_id,
-              GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+              COALESCE(SUM(quantity_change), 0)::int AS inc
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])
          AND LOWER(TRIM(type::text)) = 'incoming'
@@ -2165,7 +2165,7 @@ async function batchIncomingMap(productIds, opts = {}) {
     ),
     query(
       `SELECT product_id,
-              GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+              COALESCE(SUM(quantity_change), 0)::int AS inc
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])
          AND LOWER(TRIM(type::text)) = 'incoming'
@@ -2235,8 +2235,8 @@ async function batchIncomingMap(productIds, opts = {}) {
     map.set(
       pid,
       allocateWarehouseScopedIncoming({
-        strict: strictMap.get(pid) ?? 0,
-        nullIncoming: nullMap.get(pid) ?? 0,
+        strictRaw: strictMap.get(pid) ?? 0,
+        nullRaw: nullMap.get(pid) ?? 0,
         whOnHand,
         totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
         legacyProductQty,

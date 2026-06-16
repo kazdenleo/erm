@@ -106,13 +106,13 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
 
   const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR] = await Promise.all([
     run(
-      `SELECT GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+      `SELECT COALESCE(SUM(quantity_change), 0)::int AS inc
        FROM stock_movements
        WHERE product_id = $1 AND LOWER(TRIM(type::text)) = 'incoming' AND warehouse_id = $2`,
       [pid, wh]
     ),
     run(
-      `SELECT GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+      `SELECT COALESCE(SUM(quantity_change), 0)::int AS inc
        FROM stock_movements
        WHERE product_id = $1 AND LOWER(TRIM(type::text)) = 'incoming' AND warehouse_id IS NULL`,
       [pid]
@@ -150,8 +150,8 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
   });
 
   return allocateWarehouseScopedIncoming({
-    strict: Number(strictR.rows[0]?.inc ?? 0) || 0,
-    nullIncoming: Number(nullR.rows[0]?.inc ?? 0) || 0,
+    strictRaw: Number(strictR.rows[0]?.inc ?? 0) || 0,
+    nullRaw: Number(nullR.rows[0]?.inc ?? 0) || 0,
     whOnHand,
     totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
     legacyProductQty,

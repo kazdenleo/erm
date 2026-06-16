@@ -255,7 +255,17 @@ async function batchProductReserveSupplyMap(productIds) {
   if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
   const r = await query(
     `SELECT p.id,
-      COALESCE(p.incoming_quantity, 0)::int AS incoming,
+      CASE
+        WHEN EXISTS (
+          SELECT 1 FROM stock_movements smj
+          WHERE smj.product_id = p.id AND LOWER(TRIM(smj.type::text)) = 'incoming'
+        ) THEN GREATEST(0, COALESCE((
+          SELECT SUM(quantity_change)::int
+          FROM stock_movements smj
+          WHERE smj.product_id = p.id AND LOWER(TRIM(smj.type::text)) = 'incoming'
+        ), 0))
+        ELSE COALESCE(p.incoming_quantity, 0)::int
+      END AS incoming,
       CASE
         WHEN EXISTS (SELECT 1 FROM product_warehouse_stock pws WHERE pws.product_id = p.id)
         THEN COALESCE((

@@ -69,40 +69,35 @@ export function allocateWarehouseScopedReserved({
 }
 
 /**
- * «В пути» по складу: строго по warehouse_id + доля legacy (warehouse_id IS NULL) по наличию;
- * если в журнале нет incoming — доля products.incoming_quantity по наличию на складе.
- * Если в журнале уже есть движения incoming, а на этом складе нетто 0 — не подставляем globalIncoming.
+ * «В пути» по складу: нетто по журналу incoming (склад + доля legacy без warehouse_id).
+ * Если в журнале нет incoming — доля products.incoming_quantity по наличию на складе.
+ * Учитываем сумму quantity_change без GREATEST по корзинам: иначе +2 (NULL) и −2 (склад) дают ложные 2 «в пути».
  */
 export function allocateWarehouseScopedIncoming({
-  strict = 0,
-  nullIncoming = 0,
+  strictRaw = 0,
+  nullRaw = 0,
   whOnHand = 0,
   totalOnHand = 0,
   legacyProductQty = 0,
   globalIncoming = 0,
   hasIncomingJournal = false
 } = {}) {
-  const s = Math.max(0, Math.floor(Number(strict) || 0));
-  const ni = Math.max(0, Math.floor(Number(nullIncoming) || 0));
+  const strict = Math.floor(Number(strictRaw) || 0);
+  const nullSum = Math.floor(Number(nullRaw) || 0);
   const wh = Math.max(0, Math.floor(Number(whOnHand) || 0));
   const total = Math.max(0, Math.floor(Number(totalOnHand) || 0));
   const legacy = Math.max(0, Math.floor(Number(legacyProductQty) || 0));
   const globalInc = Math.max(0, Math.floor(Number(globalIncoming) || 0));
 
-  if (s > 0 || ni > 0) {
-    if (total > 0) {
-      return s + Math.floor(ni * (wh / total));
-    }
-    if (legacy > 0 && wh > 0) {
-      return s + ni;
-    }
-    if (ni > 0) {
-      return s + ni;
-    }
-    return s;
-  }
-
   if (hasIncomingJournal) {
+    const totalJournalNet = strict + nullSum;
+    if (totalJournalNet <= 0) return 0;
+    const whPositive = Math.max(0, strict);
+    const nullPositive = Math.max(0, nullSum);
+    if (nullPositive <= 0) return whPositive;
+    if (total > 0) return whPositive + Math.floor(nullPositive * (wh / total));
+    if (legacy > 0 && wh > 0) return whPositive + nullPositive;
+    if (whPositive > 0) return whPositive;
     return 0;
   }
 
