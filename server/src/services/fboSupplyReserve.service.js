@@ -663,20 +663,10 @@ class FboSupplyReserveService {
     for (const row of itemsR.rows || []) {
       const productId = Number(row.product_id);
       const itemId = row.id;
-      const net = await getNetReservedForFboItem(itemId, productId);
-      if (net <= 0) continue;
       const label = `Снятие резерва FBO (поставка №${supplyId})`;
       const byWh = await getNetReservedForFboItemByWarehouse(itemId, productId);
-      const warehouses =
-        byWh.length > 0
-          ? byWh
-          : [
-              {
-                warehouseId: normalizeWarehouseId(row.deduction_warehouse_id),
-                net,
-              },
-            ].filter((w) => w.warehouseId != null);
-      for (const { warehouseId, net: whNet } of warehouses) {
+      if (!byWh.length) continue;
+      for (const { warehouseId, net: whNet } of byWh) {
         if (whNet <= 0 || warehouseId == null) continue;
         await applyFboReserveDelta({
           productId,

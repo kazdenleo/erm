@@ -410,11 +410,18 @@ class StockMovementsService {
         fboItemIdRaw != null &&
         String(fboItemIdRaw).trim() !== ''
       ) {
+        const fboWh = parseStockMovementWarehouseId(metaOut.warehouse_id ?? metaOut.warehouseId);
+        const fboParams = [idNum, String(fboItemIdRaw).trim()];
+        let fboWhSql = '';
+        if (fboWh != null) {
+          fboWhSql = ' AND warehouse_id = $3';
+          fboParams.push(fboWh);
+        }
         const fboR = await client.query(
           `SELECT GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
            FROM stock_movements
-           WHERE product_id = $1 AND meta->>'fbo_supply_item_id' = $2`,
-          [idNum, String(fboItemIdRaw).trim()]
+           WHERE product_id = $1 AND meta->>'fbo_supply_item_id' = $2${fboWhSql}`,
+          fboParams
         );
         netForOrder = Number(fboR.rows?.[0]?.net ?? 0) || 0;
       }
