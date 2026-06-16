@@ -259,11 +259,20 @@ async function batchProductReserveSupplyMap(productIds) {
         WHEN EXISTS (
           SELECT 1 FROM stock_movements smj
           WHERE smj.product_id = p.id AND LOWER(TRIM(smj.type::text)) = 'incoming'
-        ) THEN GREATEST(0, COALESCE((
-          SELECT SUM(quantity_change)::int
-          FROM stock_movements smj
-          WHERE smj.product_id = p.id AND LOWER(TRIM(smj.type::text)) = 'incoming'
-        ), 0))
+        ) THEN GREATEST(
+          GREATEST(0, COALESCE((
+            SELECT SUM(quantity_change)::int
+            FROM stock_movements smj
+            WHERE smj.product_id = p.id AND LOWER(TRIM(smj.type::text)) = 'incoming'
+          ), 0)),
+          COALESCE((
+            SELECT incoming_after::int
+            FROM stock_movements sm
+            WHERE sm.product_id = p.id AND sm.incoming_after IS NOT NULL
+            ORDER BY sm.created_at DESC, sm.id DESC
+            LIMIT 1
+          ), 0)
+        )
         ELSE COALESCE(p.incoming_quantity, 0)::int
       END AS incoming,
       CASE
