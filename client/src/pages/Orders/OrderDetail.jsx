@@ -471,7 +471,9 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
             <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>
               {summaryCoverage === 'on_hand'
                 ? 'Плашка зелёная — резерв покрыт наличием на складе.'
-                : 'Плашка серая — в резерве есть товар «в пути».'}
+                : summaryCoverage === 'incoming'
+                  ? 'Плашка серая — в резерве есть товар «в пути».'
+                  : 'Плашка жёлтая — резерв есть, но на складе и в закупках товара нет; снимите резерв или добавьте поставку.'}
             </p>
           ) : null}
           <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>

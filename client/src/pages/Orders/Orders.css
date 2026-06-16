@@ -159,6 +159,13 @@
   border: 1px solid rgba(108, 117, 125, 0.35);
 }
 
+/* Резерв без покрытия остатком / ожиданием */
+.orders-reserve-badge--uncovered {
+  color: #856404;
+  background: rgba(255, 193, 7, 0.18);
+  border: 1px solid rgba(255, 193, 7, 0.45);
+}
+
 .orders-checkbox-label {
   display: inline-flex;
   align-items: center;

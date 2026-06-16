@@ -71,6 +71,12 @@
   border: 1px solid rgba(108, 117, 125, 0.35);
 }
 
+.orders-reserve-badge--uncovered {
+  color: #856404;
+  background: rgba(255, 193, 7, 0.18);
+  border: 1px solid rgba(255, 193, 7, 0.45);
+}
+
 .detail-dl {
   margin: 0;
   display: grid;
