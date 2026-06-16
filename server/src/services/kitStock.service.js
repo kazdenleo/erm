@@ -2195,7 +2195,7 @@ async function batchIncomingMap(productIds, opts = {}) {
     );
   }
 
-  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR, whJournalR, globalNetR] =
+  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR, whJournalR, globalNetR, snapshotR] =
     await Promise.all([
     query(
       `SELECT product_id,
@@ -2263,6 +2263,15 @@ async function batchIncomingMap(productIds, opts = {}) {
          AND LOWER(TRIM(type::text)) = 'incoming'
        GROUP BY product_id`,
       [ids]
+    ),
+    query(
+      `SELECT DISTINCT ON (product_id) product_id, incoming_after::int AS inc
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND warehouse_id = $2
+         AND incoming_after IS NOT NULL
+       ORDER BY product_id, created_at DESC, id DESC`,
+      [ids, wid]
     )
   ]);
 
@@ -2289,6 +2298,9 @@ async function batchIncomingMap(productIds, opts = {}) {
   );
   const globalJournalNetMap = new Map(
     (globalNetR.rows || []).map((row) => [Number(row.product_id), Number(row.inc) || 0])
+  );
+  const incomingSnapshotMap = new Map(
+    (snapshotR.rows || []).map((row) => [Number(row.product_id), Number(row.inc) || 0])
   );
   const globalIncMap = new Map();
   const legacyMap = new Map();
@@ -2319,7 +2331,10 @@ async function batchIncomingMap(productIds, opts = {}) {
         globalJournalNet: globalJournalNetMap.get(pid) ?? 0,
         hasIncomingJournal: journalIncomingSet.has(pid),
         hasStockJournal: stockJournalSet.has(pid),
-        hasWarehouseIncomingJournal: whIncomingJournalSet.has(pid)
+        hasWarehouseIncomingJournal: whIncomingJournalSet.has(pid),
+        warehouseIncomingSnapshot: incomingSnapshotMap.has(pid)
+          ? incomingSnapshotMap.get(pid)
+          : null
       })
     );
   }

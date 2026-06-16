@@ -125,4 +125,20 @@ describe('allocateWarehouseScopedIncoming', () => {
       })
     ).toBe(1);
   });
+
+  test('отрицательный SUM incoming на складе — берём снимок incoming_after', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: -2,
+        nullRaw: 3,
+        globalJournalNet: 1,
+        whOnHand: 1,
+        totalOnHand: 1,
+        globalIncoming: 1,
+        hasIncomingJournal: true,
+        hasWarehouseIncomingJournal: true,
+        warehouseIncomingSnapshot: 1
+      })
+    ).toBe(1);
+  });
 });

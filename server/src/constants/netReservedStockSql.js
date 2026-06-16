@@ -83,7 +83,8 @@ export function allocateWarehouseScopedIncoming({
   globalJournalNet = null,
   hasIncomingJournal = false,
   hasStockJournal = false,
-  hasWarehouseIncomingJournal = false
+  hasWarehouseIncomingJournal = false,
+  warehouseIncomingSnapshot = null
 } = {}) {
   const strict = Math.floor(Number(strictRaw) || 0);
   const nullSum = Math.floor(Number(nullRaw) || 0);
@@ -95,10 +96,16 @@ export function allocateWarehouseScopedIncoming({
     globalJournalNet != null && Number.isFinite(Number(globalJournalNet))
       ? Math.floor(Number(globalJournalNet))
       : strict + nullSum;
+  const snapshotInc =
+    warehouseIncomingSnapshot != null && Number.isFinite(Number(warehouseIncomingSnapshot))
+      ? Math.max(0, Math.floor(Number(warehouseIncomingSnapshot)))
+      : null;
 
   if (hasIncomingJournal) {
     if (hasWarehouseIncomingJournal) {
-      return Math.max(0, strict);
+      const strictPositive = Math.max(0, strict);
+      if (strict < 0 && snapshotInc != null) return snapshotInc;
+      return strictPositive;
     }
     if (journalNetGlobal <= 0) return 0;
     const whPositive = Math.max(0, strict);
