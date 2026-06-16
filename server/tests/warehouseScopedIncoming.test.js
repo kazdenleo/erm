@@ -41,6 +41,20 @@ describe('allocateWarehouseScopedIncoming', () => {
     ).toBe(3);
   });
 
+  test('закупка +2 без склада, списание −2 на другом складе — нетто 0', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: 0,
+        nullRaw: 2,
+        whOnHand: 7,
+        totalOnHand: 9,
+        globalIncoming: 0,
+        globalJournalNet: 0,
+        hasIncomingJournal: true
+      })
+    ).toBe(0);
+  });
+
   test('закупка +2 без склада, списание −2 на складе — нетто 0 (не показываем 2 в пути)', () => {
     expect(
       allocateWarehouseScopedIncoming({
@@ -49,6 +63,7 @@ describe('allocateWarehouseScopedIncoming', () => {
         whOnHand: 0,
         totalOnHand: 0,
         globalIncoming: 2,
+        globalJournalNet: 0,
         hasIncomingJournal: true
       })
     ).toBe(0);
@@ -76,6 +91,7 @@ describe('allocateWarehouseScopedIncoming', () => {
         whOnHand: 5,
         totalOnHand: 10,
         globalIncoming: 0,
+        globalJournalNet: 4,
         hasIncomingJournal: true
       })
     ).toBe(2);
@@ -89,6 +105,7 @@ describe('allocateWarehouseScopedIncoming', () => {
         whOnHand: 1,
         totalOnHand: 1,
         globalIncoming: 3,
+        globalJournalNet: 1,
         hasIncomingJournal: true,
         hasWarehouseIncomingJournal: true
       })

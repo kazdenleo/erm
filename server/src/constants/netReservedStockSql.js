@@ -80,6 +80,7 @@ export function allocateWarehouseScopedIncoming({
   totalOnHand = 0,
   legacyProductQty = 0,
   globalIncoming = 0,
+  globalJournalNet = null,
   hasIncomingJournal = false,
   hasStockJournal = false,
   hasWarehouseIncomingJournal = false
@@ -90,10 +91,13 @@ export function allocateWarehouseScopedIncoming({
   const total = Math.max(0, Math.floor(Number(totalOnHand) || 0));
   const legacy = Math.max(0, Math.floor(Number(legacyProductQty) || 0));
   const globalInc = Math.max(0, Math.floor(Number(globalIncoming) || 0));
+  const journalNetGlobal =
+    globalJournalNet != null && Number.isFinite(Number(globalJournalNet))
+      ? Math.floor(Number(globalJournalNet))
+      : strict + nullSum;
 
   if (hasIncomingJournal) {
-    const totalJournalNet = strict + nullSum;
-    if (totalJournalNet <= 0) return 0;
+    if (journalNetGlobal <= 0) return 0;
     if (hasWarehouseIncomingJournal) {
       return Math.max(0, strict);
     }
