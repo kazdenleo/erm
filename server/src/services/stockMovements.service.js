@@ -404,6 +404,20 @@ class StockMovementsService {
           whCap
         );
       }
+      const fboItemIdRaw = metaOut.fbo_supply_item_id;
+      if (
+        netForOrder == null &&
+        fboItemIdRaw != null &&
+        String(fboItemIdRaw).trim() !== ''
+      ) {
+        const fboR = await client.query(
+          `SELECT GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
+           FROM stock_movements
+           WHERE product_id = $1 AND meta->>'fbo_supply_item_id' = $2`,
+          [idNum, String(fboItemIdRaw).trim()]
+        );
+        netForOrder = Number(fboR.rows?.[0]?.net ?? 0) || 0;
+      }
 
       const journalReconcile =
         metaOut.journal_reconcile === true || metaOut.journal_reconcile === 'true';
