@@ -369,6 +369,9 @@ class FboSuppliesService {
       throw err;
     }
     const supply = mapSupplyRow(r.rows[0]);
+    if (!supply.deductStock && !FBO_RESERVE_TERMINAL_STATUSES.has(supply.status)) {
+      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+    }
     const itemsR = await query(
       `SELECT i.*, p.name AS product_name, p.user_category_id AS product_category_id,
               (SELECT elem->>'url' FROM jsonb_array_elements(COALESCE(p.images, '[]'::jsonb)) AS elem LIMIT 1) AS product_image
@@ -628,6 +631,9 @@ class FboSuppliesService {
     } else if (FBO_RESERVE_TERMINAL_STATUSES.has(result.status)) {
       await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
     } else {
+      if (!result.deductStock) {
+        await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+      }
       await fboSupplyReserveService.rebalanceReservesForSupply(id, { profileId: pid }).catch((e) => {
         console.warn('[FboSupplies] reserve after update:', e?.message || e);
       });

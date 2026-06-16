@@ -1,6 +1,6 @@
 /**
- * Резерв остатков под поставки FBO: свободное наличие на складе списания FBO
- * и на складе ручных заказов (если задан в настройках), очередь по ready_at.
+ * Резерв остатков под поставки FBO: только если включено «Списать остатки при отгрузке»
+ * и задан склад списания; очередь по ready_at.
  */
 
 import { query } from '../config/database.js';
@@ -131,6 +131,7 @@ async function findFboReserveQueueByProduct(productId, profileId = null) {
      WHERE si.product_id = $1
        AND ($2::bigint IS NULL OR s.profile_id = $2)
        AND s.deduction_warehouse_id IS NOT NULL
+       AND COALESCE(s.deduct_stock, false) = true
        AND s.status = ANY($3::text[])
      ORDER BY s.ready_at ASC NULLS LAST, s.id ASC, si.id ASC`,
     [productId, pid, FBO_RESERVE_ACTIVE_STATUSES]
@@ -585,6 +586,7 @@ class FboSupplyReserveService {
        INNER JOIN fbo_supplies s ON s.id = si.fbo_supply_id
        WHERE s.profile_id = $1
          AND s.deduction_warehouse_id IS NOT NULL
+         AND COALESCE(s.deduct_stock, false) = true
          AND s.status = ANY($2::text[])
          AND si.product_id IS NOT NULL
        ORDER BY si.product_id`,
