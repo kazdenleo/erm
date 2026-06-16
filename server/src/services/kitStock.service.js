@@ -2144,15 +2144,58 @@ async function batchIncomingMap(productIds, opts = {}) {
 
   const wid = parseWarehouseIdFromOpts(opts);
   if (wid == null) {
-    const r = await query(
-      `SELECT id, COALESCE(incoming_quantity, 0)::int AS incoming_quantity
-       FROM products WHERE id = ANY($1::bigint[])`,
-      [ids]
+    const [productsR, incomingSumR, incomingExistsR, stockExistsR] = await Promise.all([
+      query(
+        `SELECT id, COALESCE(incoming_quantity, 0)::int AS incoming_quantity
+         FROM products WHERE id = ANY($1::bigint[])`,
+        [ids]
+      ),
+      query(
+        `SELECT product_id, GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+         FROM stock_movements
+         WHERE product_id = ANY($1::bigint[])
+           AND LOWER(TRIM(type::text)) = 'incoming'
+         GROUP BY product_id`,
+        [ids]
+      ),
+      query(
+        `SELECT DISTINCT product_id
+         FROM stock_movements
+         WHERE product_id = ANY($1::bigint[])
+           AND LOWER(TRIM(type::text)) = 'incoming'`,
+        [ids]
+      ),
+      query(
+        `SELECT DISTINCT product_id
+         FROM stock_movements
+         WHERE product_id = ANY($1::bigint[])`,
+        [ids]
+      )
+    ]);
+    const incomingSumMap = new Map(
+      (incomingSumR.rows || []).map((row) => [Number(row.product_id), Number(row.inc) || 0])
     );
-    return new Map((r.rows || []).map((row) => [Number(row.id), Number(row.incoming_quantity) || 0]));
+    const incomingExistsSet = new Set(
+      (incomingExistsR.rows || []).map((row) => Number(row.product_id)).filter((n) => Number.isFinite(n))
+    );
+    const stockExistsSet = new Set(
+      (stockExistsR.rows || []).map((row) => Number(row.product_id)).filter((n) => Number.isFinite(n))
+    );
+    return new Map(
+      (productsR.rows || []).map((row) => {
+        const pid = Number(row.id);
+        let inc = Number(row.incoming_quantity) || 0;
+        if (incomingExistsSet.has(pid)) {
+          inc = incomingSumMap.get(pid) ?? 0;
+        } else if (stockExistsSet.has(pid)) {
+          inc = 0;
+        }
+        return [pid, Math.max(0, inc)];
+      })
+    );
   }
 
-  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR] = await Promise.all([
+  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR] = await Promise.all([
     query(
       `SELECT product_id,
               COALESCE(SUM(quantity_change), 0)::int AS inc
@@ -2197,6 +2240,12 @@ async function batchIncomingMap(productIds, opts = {}) {
        WHERE product_id = ANY($1::bigint[])
          AND LOWER(TRIM(type::text)) = 'incoming'`,
       [ids]
+    ),
+    query(
+      `SELECT DISTINCT product_id
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])`,
+      [ids]
     )
   ]);
 
@@ -2214,6 +2263,9 @@ async function batchIncomingMap(productIds, opts = {}) {
   );
   const journalIncomingSet = new Set(
     (journalR.rows || []).map((row) => Number(row.product_id)).filter((n) => Number.isFinite(n))
+  );
+  const stockJournalSet = new Set(
+    (stockJournalR.rows || []).map((row) => Number(row.product_id)).filter((n) => Number.isFinite(n))
   );
   const globalIncMap = new Map();
   const legacyMap = new Map();
@@ -2241,7 +2293,8 @@ async function batchIncomingMap(productIds, opts = {}) {
         totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
         legacyProductQty,
         globalIncoming: globalIncMap.get(pid) ?? 0,
-        hasIncomingJournal: journalIncomingSet.has(pid)
+        hasIncomingJournal: journalIncomingSet.has(pid),
+        hasStockJournal: stockJournalSet.has(pid)
       })
     );
   }

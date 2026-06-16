@@ -71,7 +71,7 @@ export function allocateWarehouseScopedReserved({
 /**
  * «В пути» по складу: нетто по журналу incoming (склад + доля legacy без warehouse_id).
  * Если в журнале нет incoming — доля products.incoming_quantity по наличию на складе.
- * Учитываем сумму quantity_change без GREATEST по корзинам: иначе +2 (NULL) и −2 (склад) дают ложные 2 «в пути».
+ * Если в журнале есть другие движения, но нет incoming — не подставляем устаревший products.incoming_quantity.
  */
 export function allocateWarehouseScopedIncoming({
   strictRaw = 0,
@@ -80,7 +80,8 @@ export function allocateWarehouseScopedIncoming({
   totalOnHand = 0,
   legacyProductQty = 0,
   globalIncoming = 0,
-  hasIncomingJournal = false
+  hasIncomingJournal = false,
+  hasStockJournal = false
 } = {}) {
   const strict = Math.floor(Number(strictRaw) || 0);
   const nullSum = Math.floor(Number(nullRaw) || 0);
@@ -98,6 +99,10 @@ export function allocateWarehouseScopedIncoming({
     if (total > 0) return whPositive + Math.floor(nullPositive * (wh / total));
     if (legacy > 0 && wh > 0) return whPositive + nullPositive;
     if (whPositive > 0) return whPositive;
+    return 0;
+  }
+
+  if (!hasIncomingJournal && hasStockJournal) {
     return 0;
   }
 

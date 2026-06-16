@@ -54,6 +54,20 @@ describe('allocateWarehouseScopedIncoming', () => {
     ).toBe(0);
   });
 
+  test('журнал движений есть, incoming нет — устаревший globalIncoming игнорируем', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: 0,
+        nullRaw: 0,
+        whOnHand: 7,
+        totalOnHand: 7,
+        globalIncoming: 7,
+        hasIncomingJournal: false,
+        hasStockJournal: true
+      })
+    ).toBe(0);
+  });
+
   test('ожидание только в legacy-корзине — доля по наличию на складе', () => {
     expect(
       allocateWarehouseScopedIncoming({
