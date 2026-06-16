@@ -707,8 +707,8 @@ class StockMovementsService {
 
     const {
       isKitProductId,
-      getNetReservedForOrderProduct,
-      getReservedKitUnitsFromComponentsForOrder,
+      getKitComponents,
+      getReservedKitUnitsForManualOrderGroup,
       getReservedKitUnitsForOrderValidation
     } = await import('./kitStock.service.js');
     const isKit = await isKitProductId(idNum);
@@ -811,6 +811,7 @@ class StockMovementsService {
     const { getOrderStatusLabel } = await import('../constants/orderStatuses.js');
 
     const out = [];
+    const seenManualKitGroups = new Set();
     for (const r of res.rows || []) {
       const movementOrderDbId = Number(r.movement_order_db_id);
       const orderDbId = Number(r.id);
@@ -839,18 +840,68 @@ class StockMovementsService {
 
       if (!Number.isFinite(orderDbId) || orderDbId < 1) continue;
 
+      const ordRow = await query(
+        `SELECT product_id, marketplace, order_group_id, order_id FROM orders WHERE id = $1 LIMIT 1`,
+        [orderDbId]
+      );
+      const rowProductId = Number(ordRow.rows?.[0]?.product_id);
+      const rowMp = String(ordRow.rows?.[0]?.marketplace || '').toLowerCase();
+      const rowGroupId = String(ordRow.rows?.[0]?.order_group_id || '').trim();
+      if (
+        isKit &&
+        rowMp === 'manual' &&
+        Number.isFinite(rowProductId) &&
+        rowProductId > 0 &&
+        rowProductId !== idNum
+      ) {
+        const comps = await getKitComponents(idNum);
+        const isLooseComponentLine = (comps || []).some(
+          (c) => Number(c.component_product_id) === rowProductId
+        );
+        if (isLooseComponentLine) continue;
+      }
+
       let reservedQty = Number(r.sku_net_qty) || 0;
+      let displayOrderId = r.order_id;
       if (isKit) {
-        reservedQty = await getReservedKitUnitsForOrderValidation(idNum, orderDbId);
+        if (rowMp === 'manual' && rowGroupId) {
+          if (seenManualKitGroups.has(rowGroupId)) continue;
+          seenManualKitGroups.add(rowGroupId);
+          reservedQty = await getReservedKitUnitsForManualOrderGroup(idNum, rowGroupId, {
+            warehouseId,
+            profileId: tid
+          });
+          const kitLine = await query(
+            `SELECT order_id FROM orders
+             WHERE marketplace = 'manual' AND order_group_id = $1 AND product_id = $2
+             ORDER BY id ASC LIMIT 1`,
+            [rowGroupId, idNum]
+          );
+          if (kitLine.rows?.[0]?.order_id) {
+            displayOrderId = kitLine.rows[0].order_id;
+          }
+        } else {
+          reservedQty = await getReservedKitUnitsForOrderValidation(idNum, orderDbId);
+        }
       }
       if (reservedQty <= 0) continue;
 
       const status = r.status != null ? String(r.status) : '';
+      const mpRaw = String(r.marketplace || '').toLowerCase();
+      const marketplace =
+        mpRaw === 'manual'
+          ? 'manual'
+          : mpRaw === 'wb'
+            ? 'wildberries'
+            : mpRaw === 'ym'
+              ? 'yandex'
+              : mpRaw === 'ozon'
+                ? 'ozon'
+                : mpRaw || 'ozon';
       out.push({
         orderDbId,
-        marketplace:
-          r.marketplace === 'wb' ? 'wildberries' : r.marketplace === 'ym' ? 'yandex' : 'ozon',
-        orderId: r.order_id,
+        marketplace,
+        orderId: displayOrderId,
         status,
         statusLabel: getOrderStatusLabel(status),
         reservedQty,
@@ -858,6 +909,48 @@ class StockMovementsService {
         ...(isKit ? { kitSkuNetQty: Number(r.sku_net_qty) || 0 } : {})
       });
     }
+
+    if (isKit) {
+      const manualGroupParams = [idNum];
+      let manualGroupProfileSql = '';
+      if (tid != null && Number.isFinite(tid) && tid > 0) {
+        manualGroupParams.push(tid);
+        manualGroupProfileSql = `AND profile_id = $${manualGroupParams.length}`;
+      }
+      const manualGroupsRes = await query(
+        `SELECT DISTINCT ON (order_group_id)
+                order_group_id, id, order_id, status
+         FROM orders
+         WHERE marketplace = 'manual'
+           AND product_id = $1
+           AND order_group_id IS NOT NULL
+           AND TRIM(order_group_id) <> ''
+           ${manualGroupProfileSql}
+         ORDER BY order_group_id, id ASC`,
+        manualGroupParams
+      );
+      for (const gr of manualGroupsRes.rows || []) {
+        const gid = String(gr.order_group_id || '').trim();
+        if (!gid || seenManualKitGroups.has(gid)) continue;
+        const reservedQty = await getReservedKitUnitsForManualOrderGroup(idNum, gid, {
+          warehouseId,
+          profileId: tid
+        });
+        if (reservedQty <= 0) continue;
+        seenManualKitGroups.add(gid);
+        const status = gr.status != null ? String(gr.status) : '';
+        out.push({
+          orderDbId: Number(gr.id),
+          marketplace: 'manual',
+          orderId: gr.order_id,
+          status,
+          statusLabel: getOrderStatusLabel(status),
+          reservedQty,
+          staleReserve: isOrderTerminalNoReserve(status)
+        });
+      }
+    }
+
     return out;
   }
 
@@ -971,17 +1064,19 @@ class StockMovementsService {
           });
     const ordersReservedQty = orders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
 
-    const { isKitProductId, readKitDisplayReservedQuantity, getKitComponents } =
+    const { isKitProductId, readKitDisplayReservedQuantityForStockSummary, getKitComponents } =
       await import('./kitStock.service.js');
     const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
 
     const isKit = await isKitProductId(idNum);
-    const movementOpts =
-      warehouseId != null && parseStockMovementWarehouseId(warehouseId) != null
+    const movementOpts = {
+      ...(warehouseId != null && parseStockMovementWarehouseId(warehouseId) != null
         ? { warehouseId: parseStockMovementWarehouseId(warehouseId) }
-        : {};
+        : {}),
+      ...(profileId != null && profileId !== '' ? { profileId } : {})
+    };
     const displayReservedQty = isKit
-      ? await readKitDisplayReservedQuantity(idNum, movementOpts)
+      ? await readKitDisplayReservedQuantityForStockSummary(idNum, movementOpts)
       : await getReservedQuantityFromMovements(idNum, movementOpts);
 
     let componentJournalReserve = 0;

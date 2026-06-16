@@ -1296,6 +1296,82 @@ export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
 }
 
 /**
+ * Резерв комплектующих по отдельным строкам ручного заказа (не сборка под строку комплекта).
+ * @returns {Promise<Map<number, number>>} component_product_id → шт. в резерве
+ */
+export async function manualLooseComponentReservesByProduct(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return new Map();
+
+  const components = await getKitComponents(kitId);
+  const compIds = components
+    .map((c) => Number(c.component_product_id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (!compIds.length) return new Map();
+
+  const profileId = opts.profileId != null ? Number(opts.profileId) : null;
+  const whId = parseStockMovementWarehouseId(opts.warehouseId ?? opts.warehouse_id);
+
+  const params = [kitId, compIds];
+  let profileSql = '';
+  if (Number.isFinite(profileId) && profileId > 0) {
+    params.push(profileId);
+    profileSql = `AND o.profile_id = $${params.length}`;
+  }
+
+  const r = await query(
+    `SELECT o.id, o.product_id
+     FROM orders o
+     WHERE o.marketplace = 'manual'
+       AND o.product_id = ANY($2::bigint[])
+       AND o.product_id <> $1
+       AND o.order_group_id IS NOT NULL
+       AND TRIM(o.order_group_id) <> ''
+       AND EXISTS (
+         SELECT 1 FROM orders ok
+         WHERE ok.marketplace = 'manual'
+           AND ok.order_group_id = o.order_group_id
+           AND ok.product_id = $1
+       )
+       ${profileSql}`,
+    params
+  );
+
+  const out = new Map();
+  for (const row of r.rows || []) {
+    const pid = Number(row.product_id);
+    const oid = Number(row.id);
+    if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(oid) || oid < 1) continue;
+    const net = await getNetReservedForOrderProduct(oid, pid, null, whId);
+    if (net <= 0) continue;
+    out.set(pid, (out.get(pid) || 0) + net);
+  }
+  return out;
+}
+
+/**
+ * Колонка «Резерв» комплекта в модалке остатков: без двойного учёта комплектующих,
+ * зарезервированных отдельными строками ручного заказа (те же SKU, но другая позиция заказа).
+ */
+export async function readKitDisplayReservedQuantityForStockSummary(kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return 0;
+  const onSku = await readKitSkuNetReserved(kitId, opts);
+  const components = await getKitComponents(kitId);
+  if (components.length === 0) return onSku > 0 ? onSku : 0;
+  const compMap = await readKitComponentsNetReservedMap(kitId, opts);
+  // Двойной учёт (SKU + комплектующие) бывает только при резерве на SKU комплекта.
+  const looseMap =
+    onSku > 0 ? await manualLooseComponentReservesByProduct(kitId, opts) : new Map();
+  const fromComp = minKitUnitsFromComponentReserves(components, (pid) => {
+    const gross = compMap.get(pid) ?? 0;
+    const loose = looseMap.get(pid) ?? 0;
+    return Math.max(0, gross - loose);
+  });
+  return resolveKitDisplayReservedQty(onSku, fromComp);
+}
+
+/**
  * План отгрузки комплекта по заказу: целые SKU и/или комплектующие, без двойного списания.
  * @returns {Promise<{ wholeUnitsToShip: number, componentKitUnitsToShip: number }>}
  */
@@ -1445,6 +1521,71 @@ export async function getReservedKitUnitsFromComponentsForOrder(kitProductId, or
     nets.set(pid, await getNetReservedForOrderProduct(oid, pid));
   }
   return minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0);
+}
+
+/**
+ * Резерв комплекта по всей группе ручного заказа (строка комплекта + отдельные строки комплектующих).
+ */
+export async function getReservedKitUnitsForManualOrderGroup(
+  kitProductId,
+  orderGroupId,
+  opts = {}
+) {
+  const kitId = Number(kitProductId);
+  const gid = String(orderGroupId || '').trim();
+  if (!Number.isFinite(kitId) || kitId < 1 || !gid) return 0;
+
+  const whId = parseStockMovementWarehouseId(opts.warehouseId ?? opts.warehouse_id);
+  const profileId = opts.profileId != null ? Number(opts.profileId) : null;
+
+  const params = [gid];
+  let profileSql = '';
+  if (Number.isFinite(profileId) && profileId > 0) {
+    params.push(profileId);
+    profileSql = `AND profile_id = $${params.length}`;
+  }
+
+  const r = await query(
+    `SELECT id, product_id, quantity, order_id
+     FROM orders
+     WHERE marketplace = 'manual'
+       AND order_group_id = $1
+       ${profileSql}`,
+    params
+  );
+  const rows = r.rows || [];
+  if (!rows.length) return 0;
+
+  const kitRow = rows.find((row) => Number(row.product_id) === kitId);
+  const onKit = kitRow
+    ? await getNetReservedForOrderProduct(
+        Number(kitRow.id),
+        kitId,
+        kitRow.order_id != null ? String(kitRow.order_id).trim() : null,
+        whId
+      )
+    : 0;
+
+  const components = await getKitComponents(kitId);
+  const nets = new Map();
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1 || nets.has(pid)) continue;
+    let sum = 0;
+    for (const row of rows) {
+      if (Number(row.product_id) !== pid) continue;
+      sum += await getNetReservedForOrderProduct(
+        Number(row.id),
+        pid,
+        row.order_id != null ? String(row.order_id).trim() : null,
+        whId
+      );
+    }
+    nets.set(pid, sum);
+  }
+  const fromComp = minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0);
+  const orderQty = kitRow ? Math.max(1, parseInt(kitRow.quantity, 10) || 1) : null;
+  return resolveComplementaryKitReserveUnits(onKit, fromComp, orderQty);
 }
 
 /**
@@ -2580,6 +2721,7 @@ export default {
   reconcileAllMixedKitReservesForProduct,
   getReservedKitUnitsForOrder,
   getReservedKitUnitsFromComponentsForOrder,
+  getReservedKitUnitsForManualOrderGroup,
   getReservedKitUnitsForOrderValidation,
   computeKitMarketplaceStock,
   readKitStockFromDb,
@@ -2608,6 +2750,8 @@ export default {
   readKitPhysicalOnHandFromDb,
   readKitSkuNetReserved,
   readKitDisplayReservedQuantity,
+  readKitDisplayReservedQuantityForStockSummary,
+  manualLooseComponentReservesByProduct,
   readKitComponentsNetReservedMap,
   resolveKitOrderShipmentPlan,
   kitOrderReserveExceedsOnHand,
