@@ -165,6 +165,35 @@ function isTerminalMarketplaceStatus(status) {
   return s === 'cancelled' || s === 'delivered';
 }
 
+/** Статусы МП, при которых «В закупке» может перейти вперёд по синку (не откат в «Новый»). */
+const PROCUREMENT_ADVANCE_MP_STATUSES = new Set([
+  'in_assembly',
+  'wb_assembly',
+  'assembled',
+  'shipped',
+  'in_transit',
+  'delivered',
+  'cancelled',
+]);
+
+export function shouldAdvanceFromProcurement(incomingStatus) {
+  const s = String(incomingStatus ?? '').toLowerCase();
+  if (!s) return false;
+  if (PROCUREMENT_ADVANCE_MP_STATUSES.has(s)) return true;
+  return localStatusPriority(s) > LOCAL_STATUS_PRIORITY.in_procurement;
+}
+
+/** Локально «В закупке»: держим статус, пока МП не ушёл дальше по цепочке. */
+export function mergeStatusWithProcurement(existing, incomingStatus) {
+  if (String(existing?.status ?? '').toLowerCase() !== 'in_procurement') {
+    return incomingStatus;
+  }
+  if (shouldAdvanceFromProcurement(incomingStatus)) {
+    return String(incomingStatus).toLowerCase();
+  }
+  return 'in_procurement';
+}
+
 function isLogisticsOrTerminalMpStatus(status) {
   const s = String(status ?? '').toLowerCase();
   return s === 'in_transit' || s === 'shipped' || s === 'delivered' || s === 'cancelled';
@@ -231,9 +260,13 @@ function statusCatchUpPriority(status) {
  */
 function shouldForceMpStatusOnRefresh(existing, incomingStatus, refreshStatuses) {
   if (!refreshStatuses || !existing || incomingStatus == null || incomingStatus === '') return false;
+  const localS = String(existing.status ?? '').toLowerCase();
+  const incomingS = String(incomingStatus).toLowerCase();
   const localStale = new Set(['new', 'unknown', WB_STATUS_UNKNOWN, WB_STATUS_PENDING]);
   const mpProgress = new Set(['in_transit', 'shipped', 'delivered', 'cancelled']);
-  return localStale.has(String(existing.status ?? '').toLowerCase()) && mpProgress.has(String(incomingStatus).toLowerCase());
+  if (localStale.has(localS) && mpProgress.has(incomingS)) return true;
+  if (localS === 'in_procurement' && shouldAdvanceFromProcurement(incomingS)) return true;
+  return false;
 }
 
 /**
@@ -245,6 +278,10 @@ function preventAutoInAssembly(existing, incomingStatus) {
   if (incomingStatus !== 'in_assembly') return incomingStatus;
   // Если пользователь уже отправил в сборку в ERM — оставляем.
   if (existing?.status === 'in_assembly') return 'in_assembly';
+  // С МП «На сборке» при локальной «В закупке» — разрешаем синхронизацию вперёд.
+  if (existing?.status === 'in_procurement' && shouldAdvanceFromProcurement('in_assembly')) {
+    return 'in_assembly';
+  }
   // Иначе держим локальный статус (или new для впервые увиденного заказа).
   if (existing?.status) return existing.status;
   return 'new';
@@ -734,12 +771,8 @@ class OrdersSyncService {
       let nextStatus = order.status;
       if (shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses)) {
         nextStatus = String(order.status).toLowerCase();
-      } else if (isTerminalMarketplaceStatus(order.status)) {
-        // Терминальные статусы маркетплейса всегда должны побеждать локальные якоря "в закупке".
-        // Иначе отменённый заказ может "залипнуть" в in_procurement.
-        nextStatus = String(order.status).toLowerCase();
       } else if (existing?.status === 'in_procurement') {
-        nextStatus = existing.status;
+        nextStatus = mergeStatusWithProcurement(existing, order.status);
       } else if (
         incomingMatchesProcurementAnchors(order, procurementAnchors) &&
         existingAllowsProcurementAnchor(existing)
@@ -923,10 +956,8 @@ class OrdersSyncService {
             let nextStatus = order.status;
             if (shouldForceMpStatusOnRefresh(existing, nextStatus, refreshStatuses)) {
               nextStatus = String(order.status).toLowerCase();
-            } else if (isTerminalMarketplaceStatus(order.status)) {
-              nextStatus = String(order.status).toLowerCase();
             } else if (existing?.status === 'in_procurement') {
-              nextStatus = existing.status;
+              nextStatus = mergeStatusWithProcurement(existing, order.status);
             } else if (existing) {
               nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
             }
@@ -1192,10 +1223,8 @@ class OrdersSyncService {
     let lastMerged = null;
 
     const mergeOzonRow = (existing, incoming) => {
-      let nextStatus = incoming.status;
-      if (existing?.status === 'in_procurement' && !isTerminalMarketplaceStatus(incoming.status)) {
-        nextStatus = existing.status;
-      } else if (existing) {
+      let nextStatus = mergeStatusWithProcurement(existing, incoming.status);
+      if (existing && String(existing.status ?? '').toLowerCase() !== 'in_procurement') {
         nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
         if (existing.returnedToNewAt) {
           nextStatus = applyReturnedToNewStatusGuard(nextStatus);
@@ -1310,10 +1339,8 @@ class OrdersSyncService {
     let lastMerged = null;
 
     const mergeYmRow = (existing, incoming) => {
-      let nextStatus = incoming.status;
-      if (existing?.status === 'in_procurement' && !isTerminalMarketplaceStatus(incoming.status)) {
-        nextStatus = existing.status;
-      } else if (existing) {
+      let nextStatus = mergeStatusWithProcurement(existing, incoming.status);
+      if (existing && String(existing.status ?? '').toLowerCase() !== 'in_procurement') {
         nextStatus = preserveOzonYandexLocalStatus(existing, nextStatus);
         if (existing.returnedToNewAt) {
           nextStatus = applyReturnedToNewStatusGuard(nextStatus);
