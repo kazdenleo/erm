@@ -97,6 +97,56 @@ async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts
   return { ok: true, status: 'PENDING', message: 'Запрос принят, проверьте статус в личном кабинете Ozon' };
 }
 
+async function pollOzonCargoesDeleteStatus(operationId, ozonApiOpts, { maxAttempts = 20 } = {}) {
+  for (let i = 0; i < maxAttempts; i++) {
+    if (i > 0) {
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    const data = await integrationsService._ozonApiPost(
+      '/v1/cargoes/delete/status',
+      { operation_id: operationId },
+      ozonApiOpts
+    );
+    const root = data?.result ?? data ?? {};
+    const status = String(root.status ?? root.state ?? '').toUpperCase();
+    if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'DONE') {
+      return { ok: true, status, raw: root };
+    }
+    if (status === 'FAILED' || status === 'ERROR') {
+      const err = new Error('Ozon не удалил лишние грузоместа');
+      err.statusCode = 400;
+      err.details = root;
+      throw err;
+    }
+  }
+  const err = new Error('Ozon не подтвердил удаление лишних грузомест вовремя');
+  err.statusCode = 400;
+  err.code = 'OZON_CARGO_DELETE_PENDING';
+  throw err;
+}
+
+async function deleteOzonCargoesByIds(ozonSupplyId, cargoIds, ozonApiOpts) {
+  const ids = (cargoIds || []).map((id) => String(id).trim()).filter(Boolean);
+  if (!ids.length) return;
+
+  const supplyIdNum = Number(ozonSupplyId);
+  const deleteData = await integrationsService._ozonApiPost(
+    '/v1/cargoes/delete',
+    {
+      supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
+      cargo_ids: ids,
+    },
+    ozonApiOpts
+  );
+  const operationId = extractOzonOperationId(deleteData);
+  if (!operationId) {
+    const err = new Error('Ozon не вернул идентификатор операции удаления грузомест');
+    err.statusCode = 400;
+    throw err;
+  }
+  await pollOzonCargoesDeleteStatus(operationId, ozonApiOpts);
+}
+
 async function verifyOzonCargoesSubmitResult(submitPlan, ermBarcodes, ozonSupplyId, ozonApiOpts, pollResult) {
   assertOzonCargoesCreateCompleted(pollResult);
   const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
@@ -201,9 +251,27 @@ export function findExtraOzonCargoes(ozonCargoes, ermBarcodes) {
     .filter((id) => id && !ermSet.has(id));
 }
 
-export function resolveOzonDeleteCurrentVersion(ozonCargoes) {
-  // false — Ozon ДОБАВЛЯЕТ грузоместа к существующим; true — заменяет весь состав поставки.
-  return (ozonCargoes || []).length > 0;
+export function resolveOzonDeleteCurrentVersion(_ozonCargoes, submitMode = 'create') {
+  // true — Ozon удаляет все ГМ и создаёт заново с НОВЫМИ cargo_id на этикетках.
+  // false — заполняет/дополняет существующие пустые (NONE) грузоместа по key=cargo_id.
+  if (submitMode === 'update') return false;
+  return false;
+}
+
+export function assertOzonFilledCargoResubmitAllowed(submitPlan, ozonCargoes) {
+  const ozonById = new Map((ozonCargoes || []).map((c) => [c.cargoId, c]));
+  const filled = (submitPlan || [])
+    .map((entry) => ozonById.get(entry.ozonCargoId))
+    .filter((cargo) => cargo && isOzonCargoFilled(cargo));
+  if (!filled.length) return;
+  const ids = filled.map((c) => c.cargoId).join(', ');
+  const err = new Error(
+    `Состав грузомест уже заполнен в Ozon (${ids}). Чтобы изменить количество с сохранением номера на этикетке, очистите состав этих грузомест в личном кабинете Ozon (до пустого состояния) и отправьте из ERM снова. Не используйте полную замену — Ozon выдаст новые номера.`
+  );
+  err.statusCode = 400;
+  err.code = 'OZON_CARGO_ALREADY_FILLED';
+  err.details = { cargoIds: filled.map((c) => c.cargoId) };
+  throw err;
 }
 
 export function assertOzonCargoesCreateCompleted(pollResult) {
@@ -512,14 +580,29 @@ class FboSuppliesSubmitService {
       { profileId }
     );
 
-    const ozonCargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
-    const submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoes);
-    const submitMode = submitPlan[0]?.mode ?? 'create';
-    const ermBarcodes = submitPlan.map((p) => p.ermBarcode);
+    let ozonCargoesCurrent = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    let submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoesCurrent);
+    let submitMode = submitPlan[0]?.mode ?? 'create';
+    let ermBarcodes = submitPlan.map((p) => p.ermBarcode);
     const cargoIdsBefore = submitPlan.map((p) => p.ozonCargoId);
 
-    const deleteCurrentVersion = resolveOzonDeleteCurrentVersion(ozonCargoes);
-    const extraOzonCargoIds = findExtraOzonCargoes(ozonCargoes, ermBarcodes);
+    const extraOzonCargoIds = findExtraOzonCargoes(ozonCargoesCurrent, ermBarcodes);
+    if (extraOzonCargoIds.length) {
+      logger.info('[FBO Ozon] deleting extra cargoes before submit', {
+        supplyId,
+        ozonSupplyId,
+        extraOzonCargoIds,
+      });
+      await deleteOzonCargoesByIds(ozonSupplyId, extraOzonCargoIds, ozonApiOpts);
+      ozonCargoesCurrent = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+      submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoesCurrent);
+      submitMode = submitPlan[0]?.mode ?? 'create';
+      ermBarcodes = submitPlan.map((p) => p.ermBarcode);
+    }
+
+    assertOzonFilledCargoResubmitAllowed(submitPlan, ozonCargoesCurrent);
+
+    const deleteCurrentVersion = resolveOzonDeleteCurrentVersion(ozonCargoesCurrent, submitMode);
 
     const body = buildOzonCargoesBody(supply, packing, {
       ozonSupplyId,

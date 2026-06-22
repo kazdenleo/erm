@@ -2,6 +2,7 @@ import {
   assertNoExtraOzonCargoesAfterSubmit,
   assertOzonCargoBarcodesMatchExisting,
   assertOzonCargoesCreateCompleted,
+  assertOzonFilledCargoResubmitAllowed,
   assertOzonPollCargoIdsMatchPlan,
   assertPlanCargoIdsStillPresent,
   buildOzonCargoSubmitPlan,
@@ -134,9 +135,29 @@ describe('resolveOzonCargoesForSubmit', () => {
 });
 
 describe('resolveOzonDeleteCurrentVersion', () => {
-  test('returns true when Ozon already has cargoes', () => {
-    expect(resolveOzonDeleteCurrentVersion([{ cargoId: '1' }])).toBe(true);
-    expect(resolveOzonDeleteCurrentVersion([])).toBe(false);
+  test('always false to preserve cargo_id on labels', () => {
+    expect(resolveOzonDeleteCurrentVersion([{ cargoId: '1' }], 'update')).toBe(false);
+    expect(resolveOzonDeleteCurrentVersion([], 'create')).toBe(false);
+  });
+});
+
+describe('assertOzonFilledCargoResubmitAllowed', () => {
+  test('blocks resubmit when Ozon cargo already has composition', () => {
+    const plan = [{ ozonCargoId: '1022086008662000' }];
+    expect(() =>
+      assertOzonFilledCargoResubmitAllowed(plan, [
+        { cargoId: '1022086008662000', contentType: 'MONO', bundleId: 'b1' },
+      ])
+    ).toThrow(/уже заполнен/);
+  });
+
+  test('allows first fill when cargo is empty', () => {
+    const plan = [{ ozonCargoId: '1022086008662000' }];
+    expect(() =>
+      assertOzonFilledCargoResubmitAllowed(plan, [
+        { cargoId: '1022086008662000', contentType: 'NONE', bundleId: '' },
+      ])
+    ).not.toThrow();
   });
 });
 
