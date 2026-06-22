@@ -1,4 +1,6 @@
 import {
+  assertNoExtraOzonCargoes,
+  assertNoExtraOzonCargoesAfterSubmit,
   assertOzonCargoBarcodesMatchExisting,
   assertOzonPollCargoIdsMatchPlan,
   assertPlanCargoIdsStillPresent,
@@ -35,7 +37,7 @@ describe('buildOzonCargoesBody', () => {
   const ozonCargoes = [{ cargoId: '1022086000854000', contentType: 'NONE', bundleId: '' }];
   const submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoes);
 
-  test('uses ordinal request keys; items use product barcode', () => {
+  test('uses cargo_id as request key; items use product barcode', () => {
     const body = buildOzonCargoesBody(supply, packing, {
       ozonSupplyId: 987654321,
       submitPlan,
@@ -43,13 +45,13 @@ describe('buildOzonCargoesBody', () => {
 
     expect(body.supply_id).toBe(987654321);
     expect(body.delete_current_version).toBe(false);
-    expect(body.cargoes[0].key).toBe('1');
+    expect(body.cargoes[0].key).toBe('1022086000854000');
     expect(body.cargoes[0].value.items[0].barcode).toBe('4601234567890');
   });
 });
 
 describe('buildOzonCargoSubmitPlan', () => {
-  test('maps ERM barcode to ordinal key by Ozon cargo_id order', () => {
+  test('maps ERM barcode to cargo_id request key', () => {
     const plan = buildOzonCargoSubmitPlan(
       {
         cargoUnits: [
@@ -73,13 +75,13 @@ describe('buildOzonCargoSubmitPlan', () => {
 
     expect(plan).toHaveLength(2);
     expect(plan[0]).toMatchObject({
-      requestKey: '1',
+      requestKey: '1022086000854000',
       ozonCargoId: '1022086000854000',
       ermBarcode: '1022086000854000',
       mode: 'create',
     });
     expect(plan[1]).toMatchObject({
-      requestKey: '2',
+      requestKey: '1022086001533000',
       ozonCargoId: '1022086001533000',
       ermBarcode: '1022086001533000',
       mode: 'create',
@@ -164,16 +166,41 @@ describe('assertOzonCargoBarcodesMatchExisting', () => {
   });
 });
 
+describe('assertNoExtraOzonCargoes', () => {
+  test('rejects when Ozon has cargo not in ERM assembly', () => {
+    expect(() =>
+      assertNoExtraOzonCargoes(
+        [
+          { cargoId: '1022086008662000', contentType: 'MONO', bundleId: 'b' },
+          { cargoId: '1022086038261000', contentType: 'MONO', bundleId: 'b' },
+        ],
+        ['1022086008662000']
+      )
+    ).toThrow(/лишние грузоместа/);
+  });
+});
+
+describe('assertNoExtraOzonCargoesAfterSubmit', () => {
+  test('rejects when Ozon created extra cargo', () => {
+    expect(() =>
+      assertNoExtraOzonCargoesAfterSubmit(
+        ['1022086008662000'],
+        [{ cargoId: '1022086008662000' }, { cargoId: '1022086038261000' }]
+      )
+    ).toThrow(/дополнительные грузоместа/);
+  });
+});
+
 describe('assertOzonPollCargoIdsMatchPlan', () => {
   test('rejects when Ozon assigns different cargo_id', () => {
     const plan = [
       {
-        requestKey: '1',
-        ozonCargoId: '1022086000854000',
-        ermBarcode: '1022086000854000',
+        requestKey: '1022086008662000',
+        ozonCargoId: '1022086008662000',
+        ermBarcode: '1022086008662000',
       },
     ];
-    const mapping = new Map([['1', '1022086001533000']]);
+    const mapping = new Map([['1022086008662000', '1022086038261000']]);
     expect(() => assertOzonPollCargoIdsMatchPlan(plan, mapping)).toThrow(/другие ID/);
   });
 });
@@ -235,9 +262,9 @@ describe('parseOzonSupplyCargoIds', () => {
 describe('extractOzonCargoIdMapping', () => {
   test('reads key to cargo_id from poll result', () => {
     const mapping = extractOzonCargoIdMapping({
-      cargoes: [{ key: '1', value: { cargo_id: 1022086000854000 } }],
+      cargoes: [{ key: '1022086000854000', value: { cargo_id: 1022086000854000 } }],
     });
-    expect(mapping.get('1')).toBe('1022086000854000');
+    expect(mapping.get('1022086000854000')).toBe('1022086000854000');
   });
 });
 

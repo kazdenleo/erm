@@ -179,9 +179,39 @@ export function resolveOzonCargoesForSubmit(ozonCargoes, ermBarcodes) {
   );
 }
 
+export function assertNoExtraOzonCargoes(ozonCargoes, ermBarcodes) {
+  const ermSet = new Set((ermBarcodes || []).map((id) => String(id).trim()).filter(Boolean));
+  const extra = (ozonCargoes || [])
+    .map((c) => c.cargoId)
+    .filter((id) => id && !ermSet.has(id));
+  if (!extra.length) return;
+  const err = new Error(
+    `В Ozon есть лишние грузоместа, которых нет в сборке ERM: ${extra.join(', ')}. Удалите их в личном кабинете Ozon и повторите отправку.`
+  );
+  err.statusCode = 400;
+  err.code = 'OZON_EXTRA_CARGOES';
+  err.details = { extraOzonCargoIds: extra, ermBarcodes: [...ermSet] };
+  throw err;
+}
+
 export function detectOzonCargoSubmitMode(ozonCargoesForSubmit) {
   const filled = (ozonCargoesForSubmit || []).some(isOzonCargoFilled);
   return filled ? 'update' : 'create';
+}
+
+export function assertNoExtraOzonCargoesAfterSubmit(ermBarcodes, ozonCargoesAfter) {
+  const ermSet = new Set((ermBarcodes || []).map((id) => String(id).trim()).filter(Boolean));
+  const extra = (ozonCargoesAfter || [])
+    .map((c) => c.cargoId)
+    .filter((id) => id && !ermSet.has(id));
+  if (!extra.length) return;
+  const err = new Error(
+    `Ozon создал дополнительные грузоместа: ${extra.join(', ')}. Состав мог задвоиться — удалите лишние грузоместа в личном кабинете Ozon.`
+  );
+  err.statusCode = 400;
+  err.code = 'OZON_EXTRA_CARGOES_CREATED';
+  err.details = { extraOzonCargoIds: extra, ermBarcodes: [...ermSet] };
+  throw err;
 }
 
 export function extractOzonCargoIdMapping(pollData) {
@@ -213,15 +243,19 @@ function packedCargoBarcodes(packing) {
 }
 
 /**
- * Ozon: key — служебный идентификатор в запросе, cargo_id на этикетке — отдельное поле.
- * Сопоставляем ШК ERM с cargo_id из Ozon, в API уходят порядковые key «1», «2», …
+ * Сопоставляем ШК ERM с cargo_id Ozon; в API key = cargo_id (номер на этикетке).
  */
 export function buildOzonCargoSubmitPlan(packing, ozonCargoesForSubmit) {
   const packedUnits = packedCargoUnits(packing);
   const ermBarcodes = packedUnits.map((u) => ozonCargoKeyFromUnit(u)).filter(Boolean);
-  const ozonSorted = resolveOzonCargoesForSubmit(ozonCargoesForSubmit, ermBarcodes);
 
-  assertOzonCargoBarcodesMatchExisting(ermBarcodes, ozonSorted.map((c) => c.cargoId));
+  assertNoExtraOzonCargoes(ozonCargoesForSubmit, ermBarcodes);
+  assertOzonCargoBarcodesMatchExisting(
+    ermBarcodes,
+    (ozonCargoesForSubmit || []).map((c) => c.cargoId)
+  );
+
+  const ozonSorted = resolveOzonCargoesForSubmit(ozonCargoesForSubmit, ermBarcodes);
 
   const ozonById = new Map(ozonSorted.map((c) => [c.cargoId, c]));
   const pairs = packedUnits.map((unit) => {
@@ -241,8 +275,8 @@ export function buildOzonCargoSubmitPlan(packing, ozonCargoesForSubmit) {
 
   const mode = detectOzonCargoSubmitMode(ozonSorted);
 
-  return pairs.map((pair, index) => ({
-    requestKey: String(index + 1),
+  return pairs.map((pair) => ({
+    requestKey: pair.ozonCargo.cargoId,
     ozonCargoId: pair.ozonCargo.cargoId,
     ermBarcode: ozonCargoKeyFromUnit(pair.unit),
     unit: pair.unit,
@@ -459,6 +493,7 @@ class FboSuppliesSubmitService {
     const ozonCargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
     const submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoes);
     const submitMode = submitPlan[0]?.mode ?? 'create';
+    const ermBarcodes = submitPlan.map((p) => p.ermBarcode);
     const cargoIdsBefore = submitPlan.map((p) => p.ozonCargoId);
 
     const body = buildOzonCargoesBody(supply, packing, {
@@ -489,10 +524,10 @@ class FboSuppliesSubmitService {
       assertOzonPollCargoIdsMatchPlan(submitPlan, cargoIdMapping);
       const ozonCargoesAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
       assertPlanCargoIdsStillPresent(submitPlan, ozonCargoesAfter);
+      assertNoExtraOzonCargoesAfterSubmit(ermBarcodes, ozonCargoesAfter);
     }
 
     const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
-    const ermBarcodes = submitPlan.map((p) => p.ermBarcode);
 
     return {
       marketplace: 'ozon',
