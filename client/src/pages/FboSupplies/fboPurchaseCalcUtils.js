@@ -31,6 +31,18 @@ export function computeSupplyComponentQtyTotal(row) {
 }
 
 export function recalcPurchaseRow(row) {
+  if (row.rowType === 'kit' || row.isKitHeader) {
+    const supplyQtyTotal = Object.values(row.supplyQty || {}).reduce(
+      (s, v) => s + (Number(v) || 0),
+      0
+    );
+    return {
+      ...row,
+      supplyQtyTotal,
+      toPurchase: 0,
+      lineCostTotal: 0,
+    };
+  }
   const supplyQty = { ...(row.supplyQty || {}) };
   const supplyQtyTotal = computeSupplyComponentQtyTotal({ ...row, supplyQty });
   const onHand = Number(row.onHand) || 0;
@@ -51,8 +63,12 @@ export function recalcPurchaseRows(rows) {
   return rows.map(recalcPurchaseRow);
 }
 
+export function isPurchasablePurchaseRow(row) {
+  return row?.rowType !== 'kit' && !row?.isKitHeader;
+}
+
 export function calcPurchaseTotals(rows) {
-  return rows.reduce(
+  return rows.filter(isPurchasablePurchaseRow).reduce(
     (acc, r) => {
       const rem = Number(r.remainingToPurchase ?? r.toPurchase) || 0;
       acc.toPurchaseQty += rem;
@@ -70,6 +86,15 @@ export function mergePurchasedProgress(rows, prevRows = []) {
     (prevRows || []).map((r) => [r.key, Math.max(0, Number(r.purchasedQty) || 0)])
   );
   return rows.map((row) => {
+    if (!isPurchasablePurchaseRow(row)) {
+      return {
+        ...row,
+        purchasedQty: 0,
+        remainingToPurchase: 0,
+        lineCostTotal: 0,
+        purchaseComplete: true,
+      };
+    }
     const purchasedQty = Math.max(
       0,
       Number(purchasedByKey.get(row.key) ?? row.purchasedQty) || 0
@@ -87,16 +112,48 @@ export function mergePurchasedProgress(rows, prevRows = []) {
   });
 }
 
-export function sortPurchaseRowsWithProgress(rows) {
-  return [...rows].sort((a, b) => {
-    const aDone = a.purchaseComplete ?? a.toPurchase === 0;
-    const bDone = b.purchaseComplete ?? b.toPurchase === 0;
-    if (aDone !== bDone) return aDone ? 1 : -1;
-    return String(a.productName || a.sku || '').localeCompare(
-      String(b.productName || b.sku || ''),
-      'ru'
+function groupPurchaseComplete(group) {
+  if (group.header) {
+    return (group.components || []).every(
+      (r) => r.purchaseComplete ?? (Number(r.toPurchase) || 0) === 0
     );
+  }
+  const row = group.components?.[0];
+  return row ? row.purchaseComplete ?? (Number(row.toPurchase) || 0) === 0 : true;
+}
+
+export function sortPurchaseRowsWithProgress(rows) {
+  const groups = [];
+  let current = null;
+  for (const row of rows) {
+    if (row.rowType === 'kit' || row.isKitHeader) {
+      current = { header: row, components: [] };
+      groups.push(current);
+      continue;
+    }
+    if (row.rowType === 'component' && current) {
+      current.components.push(row);
+      continue;
+    }
+    current = null;
+    groups.push({ header: null, components: [row] });
+  }
+
+  groups.sort((a, b) => {
+    const aDone = groupPurchaseComplete(a);
+    const bDone = groupPurchaseComplete(b);
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    const aName = a.header?.productName || a.components[0]?.productName || '';
+    const bName = b.header?.productName || b.components[0]?.productName || '';
+    return String(aName).localeCompare(String(bName), 'ru');
   });
+
+  const out = [];
+  for (const g of groups) {
+    if (g.header) out.push(g.header);
+    out.push(...g.components);
+  }
+  return out;
 }
 
 /** Количество комплектов в поставке по введённому количеству комплектующего. */
@@ -114,7 +171,14 @@ export function kitUnitsToComponentQty(kitQty, perKit) {
 export function getPurchaseRowDisplayName(row) {
   const raw = String(row?.productName ?? '').trim();
   if (!raw) return '—';
-  return raw.split(/\r?\n/)[0].trim() || '—';
+  const first = raw.split(/\r?\n/)[0].trim() || '—';
+  if (row?.rowType === 'kit' || row?.isKitHeader) {
+    return first;
+  }
+  if (row?.rowType === 'component') {
+    return first;
+  }
+  return first;
 }
 
 export function sortPurchaseRows(rows) {

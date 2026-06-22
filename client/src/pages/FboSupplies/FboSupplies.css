@@ -614,6 +614,36 @@
   pointer-events: none;
 }
 
+.fbo-purchase-calc-table tr.fbo-pc-kit-header-row td {
+  background: #f1f5f9;
+  border-top: 2px solid #cbd5e1;
+  vertical-align: middle;
+}
+
+.fbo-purchase-calc-table tr.fbo-pc-kit-header-row td.fbo-pc-sticky-col {
+  background: #f1f5f9;
+}
+
+.fbo-pc-kit-header-name {
+  font-weight: 600;
+}
+
+.fbo-purchase-calc-table tr.fbo-pc-kit-component-row td.fbo-pc-sticky-col {
+  padding-left: 1.25rem;
+}
+
+.fbo-pc-kit-component-name {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.fbo-pc-kit-component-marker {
+  color: #64748b;
+  flex-shrink: 0;
+  line-height: 1.35;
+}
+
 .fbo-cargo-card--overweight {
   border-color: #f59e0b;
 }

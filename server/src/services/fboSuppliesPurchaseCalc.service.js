@@ -74,11 +74,6 @@ async function loadProductInfoById(productIds) {
   return map;
 }
 
-function mergeKitSource(sources, kitProductId, label) {
-  if (!sources.some((s) => s.kitProductId === kitProductId)) {
-    sources.push({ kitProductId, label: label || `Комплект #${kitProductId}` });
-  }
-}
 
 function toSupplyCellPart(meta) {
   return {
@@ -178,27 +173,83 @@ function addPlainSupplyLine(agg, supplyId, supplyItemId, qty) {
   agg.supplyItemIds.push(supplyItemId);
 }
 
-function addKitComponentDemand(
-  rowMap,
+function mergeKitHeaderCell(existing, meta) {
+  if (!existing) {
+    return { supplyItemId: meta.supplyItemId, quantity: meta.quantity, isKitLine: true };
+  }
+  if (
+    !existing.parts &&
+    existing.supplyItemId === meta.supplyItemId
+  ) {
+    return { ...existing, quantity: (Number(existing.quantity) || 0) + meta.quantity };
+  }
+  const parts = existing.parts || [
+    { supplyItemId: existing.supplyItemId, quantity: existing.quantity },
+  ];
+  const idx = parts.findIndex((p) => p.supplyItemId === meta.supplyItemId);
+  if (idx >= 0) {
+    parts[idx] = {
+      supplyItemId: meta.supplyItemId,
+      quantity: (Number(parts[idx].quantity) || 0) + meta.quantity,
+    };
+  } else {
+    parts.push({ supplyItemId: meta.supplyItemId, quantity: meta.quantity });
+  }
+  const totalQty = parts.reduce((s, p) => s + (Number(p.quantity) || 0), 0);
+  return {
+    isKitLine: true,
+    parts,
+    multiSource: parts.length > 1,
+    supplyItemId: parts[0].supplyItemId,
+    quantity: totalQty,
+  };
+}
+
+function addKitLine(
+  kitHeaderMap,
+  componentRowMap,
   {
     supplyId,
     supplyItemId,
     kitProductId,
     kitQty,
     kitLabel,
+    kitSku,
     components,
     productInfoById,
     onHandByProduct,
     incomingByProduct,
   }
 ) {
+  if (!kitHeaderMap.has(kitProductId)) {
+    kitHeaderMap.set(kitProductId, {
+      key: `kit:p:${kitProductId}`,
+      rowType: 'kit',
+      kitProductId,
+      productName: kitLabel,
+      sku: kitSku || null,
+      supplyQty: {},
+      supplyCells: {},
+      supplyItemIds: [],
+    });
+  }
+  const header = kitHeaderMap.get(kitProductId);
+  header.supplyQty[supplyId] = (Number(header.supplyQty[supplyId]) || 0) + kitQty;
+  header.supplyCells[supplyId] = mergeKitHeaderCell(header.supplyCells[supplyId], {
+    supplyItemId,
+    quantity: kitQty,
+  });
+  if (!header.supplyItemIds.includes(supplyItemId)) {
+    header.supplyItemIds.push(supplyItemId);
+  }
+
   for (const comp of components) {
     const compId = comp.component_product_id;
     const perKit = comp.quantity;
     const componentQty = kitQty * perKit;
     const info = productInfoById.get(compId) || {};
-    const key = `p:${compId}`;
-    const agg = ensureProductRow(rowMap, key, {
+    const compKey = `kit:p:${kitProductId}:c:${compId}`;
+    const agg = ensureProductRow(componentRowMap, compKey, {
       productId: compId,
       productName: info.name || `Товар #${compId}`,
       sku: info.sku || null,
@@ -207,7 +258,10 @@ function addKitComponentDemand(
       onHand: onHandByProduct.get(compId) ?? 0,
       incoming: incomingByProduct.get(compId) ?? 0,
     });
-    mergeKitSource(agg.kitSources, kitProductId, kitLabel);
+    agg.rowType = 'component';
+    agg.parentKey = header.key;
+    agg.kitProductId = kitProductId;
+    agg.kitSources = [{ kitProductId, label: kitLabel }];
     const prevQty = agg.supplyQty[supplyId] || 0;
     agg.supplyQty[supplyId] = prevQty + componentQty;
     agg.supplyCells[supplyId] = mergeSupplyCell(agg.supplyCells[supplyId], {
@@ -216,8 +270,125 @@ function addKitComponentDemand(
       kitProductId,
       perKit,
     });
-    agg.supplyItemIds.push(supplyItemId);
+    if (!agg.supplyItemIds.includes(supplyItemId)) {
+      agg.supplyItemIds.push(supplyItemId);
+    }
   }
+}
+
+function finalizeKitHeaderRow(header) {
+  const supplyQtyTotal = Object.values(header.supplyQty || {}).reduce(
+    (s, v) => s + (Number(v) || 0),
+    0
+  );
+  return {
+    ...header,
+    rowType: 'kit',
+    isKitHeader: true,
+    supplyQtyTotal,
+    onHand: null,
+    incoming: null,
+    cost: null,
+    toPurchase: 0,
+    lineCostTotal: 0,
+    perKit: null,
+    isKitComponentRow: false,
+  };
+}
+
+function finalizePurchaseRow(r) {
+  for (const [supplyId, cell] of Object.entries(r.supplyCells || {})) {
+    if (!cell?.isKitComponent) continue;
+    const perKit = Math.max(1, Number(cell.perKit) || 1);
+    const kitUnits = Number(cell.quantity) || 0;
+    const componentQty = kitUnits * perKit;
+    const stored = Number(r.supplyQty[supplyId]) || 0;
+    if (!stored || stored === kitUnits) {
+      r.supplyQty[supplyId] = componentQty;
+    }
+  }
+  const isKitComponentRow = r.rowType === 'component' || (r.kitSources?.length ?? 0) > 0;
+  const perKit = isKitComponentRow ? rowPerKitFromCells(r) : 1;
+  r.supplyQtyTotal = computeSupplyComponentQtyTotal(r);
+  const available = (Number(r.onHand) || 0) + (Number(r.incoming) || 0);
+  const toPurchase = Math.max(0, r.supplyQtyTotal - available);
+  const lineCostTotal = Math.round(toPurchase * r.cost * 100) / 100;
+  return {
+    ...r,
+    rowType: r.rowType || (isKitComponentRow ? 'component' : 'plain'),
+    isKitComponentRow,
+    perKit,
+    toPurchase,
+    lineCostTotal,
+  };
+}
+
+function groupPurchaseComplete(group) {
+  if (group.header) {
+    return (group.components || []).every((r) => (Number(r.toPurchase) || 0) === 0);
+  }
+  const row = group.components?.[0];
+  return row ? (Number(row.toPurchase) || 0) === 0 : true;
+}
+
+function sortPurchaseDisplayRows(rows) {
+  const groups = [];
+  let current = null;
+  for (const row of rows) {
+    if (row.rowType === 'kit' || row.isKitHeader) {
+      current = { header: row, components: [] };
+      groups.push(current);
+      continue;
+    }
+    if (row.rowType === 'component' && current) {
+      current.components.push(row);
+      continue;
+    }
+    current = null;
+    groups.push({ header: null, components: [row] });
+  }
+
+  groups.sort((a, b) => {
+    const aDone = groupPurchaseComplete(a);
+    const bDone = groupPurchaseComplete(b);
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    const aName = a.header?.productName || a.components[0]?.productName || '';
+    const bName = b.header?.productName || b.components[0]?.productName || '';
+    return String(aName).localeCompare(String(bName), 'ru');
+  });
+
+  const out = [];
+  for (const g of groups) {
+    if (g.header) out.push(g.header);
+    out.push(...g.components);
+  }
+  return out;
+}
+
+function buildPurchaseDisplayRows(kitHeaderMap, componentRowMap, plainRowMap) {
+  const componentRows = [...componentRowMap.values()].map(finalizePurchaseRow);
+  const plainRows = [...plainRowMap.values()].map((r) =>
+    finalizePurchaseRow({ ...r, rowType: 'plain' })
+  );
+
+  const kitHeaders = [...kitHeaderMap.values()]
+    .map(finalizeKitHeaderRow)
+    .sort((a, b) =>
+      String(a.productName || a.sku || '').localeCompare(String(b.productName || b.sku || ''), 'ru')
+    );
+
+  const rows = [];
+  for (const header of kitHeaders) {
+    rows.push(header);
+    const comps = componentRows
+      .filter((r) => r.kitProductId === header.kitProductId)
+      .sort((a, b) =>
+        String(a.productName || a.sku || '').localeCompare(String(b.productName || b.sku || ''), 'ru')
+      );
+    rows.push(...comps);
+  }
+  rows.push(...plainRows);
+  return sortPurchaseDisplayRows(rows);
 }
 
 class FboSuppliesPurchaseCalcService {
@@ -341,7 +512,12 @@ class FboSuppliesPurchaseCalcService {
     ];
 
     const stockProductIds = [...new Set([...plainProductIds, ...componentIds])];
-    const productInfoById = await loadProductInfoById([...componentIds, ...plainProductIds]);
+    const kitIdsWithComponents = [...kitComponentsByKitId.keys()];
+    const productInfoById = await loadProductInfoById([
+      ...componentIds,
+      ...plainProductIds,
+      ...kitIdsWithComponents,
+    ]);
 
     const onHandByProduct = new Map();
     if (stockProductIds.length) {
@@ -369,7 +545,9 @@ class FboSuppliesPurchaseCalcService {
       }
     }
 
-    const rowMap = new Map();
+    const kitHeaderMap = new Map();
+    const componentRowMap = new Map();
+    const plainRowMap = new Map();
 
     for (const row of itemsR.rows || []) {
       const supplyId = Number(row.fbo_supply_id);
@@ -378,12 +556,14 @@ class FboSuppliesPurchaseCalcService {
       const components = productId != null ? kitComponentsByKitId.get(productId) : null;
 
       if (components?.length) {
-        addKitComponentDemand(rowMap, {
+        const kitInfo = productInfoById.get(productId) || {};
+        addKitLine(kitHeaderMap, componentRowMap, {
           supplyId,
           supplyItemId: row.supply_item_id,
           kitProductId: productId,
           kitQty: qty,
-          kitLabel: row.product_name || row.sku || `Комплект #${productId}`,
+          kitLabel: row.product_name || kitInfo.name || row.sku || `Комплект #${productId}`,
+          kitSku: row.sku || kitInfo.sku || null,
           components,
           productInfoById,
           onHandByProduct,
@@ -394,7 +574,7 @@ class FboSuppliesPurchaseCalcService {
 
       const key = productId != null ? `p:${productId}` : `item:${row.supply_item_id}`;
       const info = productId != null ? productInfoById.get(productId) : null;
-      const agg = ensureProductRow(rowMap, key, {
+      const agg = ensureProductRow(plainRowMap, key, {
         productId,
         productName: row.product_name || info?.name,
         sku: row.sku || info?.sku,
@@ -409,43 +589,10 @@ class FboSuppliesPurchaseCalcService {
       addPlainSupplyLine(agg, supplyId, row.supply_item_id, qty);
     }
 
-    const rows = [...rowMap.values()].map((r) => {
-      for (const [supplyId, cell] of Object.entries(r.supplyCells || {})) {
-        if (!cell?.isKitComponent) continue;
-        const perKit = Math.max(1, Number(cell.perKit) || 1);
-        const kitUnits = Number(cell.quantity) || 0;
-        const componentQty = kitUnits * perKit;
-        const stored = Number(r.supplyQty[supplyId]) || 0;
-        if (!stored || stored === kitUnits) {
-          r.supplyQty[supplyId] = componentQty;
-        }
-      }
-      const isKitComponentRow = (r.kitSources?.length ?? 0) > 0;
-      const perKit = isKitComponentRow ? rowPerKitFromCells(r) : 1;
-      r.supplyQtyTotal = computeSupplyComponentQtyTotal(r);
-      const available = (Number(r.onHand) || 0) + (Number(r.incoming) || 0);
-      const toPurchase = Math.max(0, r.supplyQtyTotal - available);
-      const lineCostTotal = Math.round(toPurchase * r.cost * 100) / 100;
-      return {
-        ...r,
-        isKitComponentRow,
-        perKit,
-        toPurchase,
-        lineCostTotal,
-      };
-    });
+    const rows = buildPurchaseDisplayRows(kitHeaderMap, componentRowMap, plainRowMap);
 
-    rows.sort((a, b) => {
-      const aDone = a.toPurchase === 0;
-      const bDone = b.toPurchase === 0;
-      if (aDone !== bDone) return aDone ? 1 : -1;
-      return String(a.productName || a.sku || '').localeCompare(
-        String(b.productName || b.sku || ''),
-        'ru'
-      );
-    });
-
-    const totals = rows.reduce(
+    const purchasableRows = rows.filter((r) => r.rowType !== 'kit' && !r.isKitHeader);
+    const totals = purchasableRows.reduce(
       (acc, r) => {
         acc.toPurchaseQty += r.toPurchase;
         acc.costSum += r.lineCostTotal;

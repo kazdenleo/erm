@@ -62,11 +62,15 @@ const WB_PACKING_HEADERS = [
 function purchaseRowDisplayName(row) {
   const raw = String(row?.productName ?? '').trim();
   if (!raw) return '—';
-  return raw.split(/\r?\n/)[0].trim() || '—';
+  const first = raw.split(/\r?\n/)[0].trim() || '—';
+  if (row?.rowType === 'kit' || row?.isKitHeader) return `[комплект] ${first}`;
+  if (row?.rowType === 'component') return `  ↳ ${first}`;
+  return first;
 }
 
 function formatPurchaseToPurchaseCell(row) {
-  const qty = Number(row?.toPurchase) || 0;
+  if (row?.rowType === 'kit' || row?.isKitHeader) return '';
+  const qty = Number(row?.remainingToPurchase ?? row?.toPurchase) || 0;
   if (row?.isKitComponentRow && Number(row?.perKit) > 1) {
     return `${qty} (${row.perKit} шт./компл.)`;
   }
@@ -191,6 +195,7 @@ class FboSuppliesExportService {
     rowIndex += 1;
 
     for (const row of rows) {
+      const isKitHeader = row.rowType === 'kit' || row.isKitHeader;
       const supplyValues = supplies.map((s) => {
         const v = row.supplyQty?.[s.id] ?? row.supplyQty?.[String(s.id)];
         return v != null && v !== '' ? Number(v) || 0 : '';
@@ -199,11 +204,11 @@ class FboSuppliesExportService {
         purchaseRowDisplayName(row),
         row.sku || '',
         formatPurchaseToPurchaseCell(row),
-        Number(row.onHand) || 0,
-        Number(row.incoming) || 0,
+        isKitHeader ? '' : Number(row.onHand) || 0,
+        isKitHeader ? '' : Number(row.incoming) || 0,
         ...supplyValues,
-        Number(row.cost) || 0,
-        Number(row.lineCostTotal) || 0,
+        isKitHeader ? '' : Number(row.cost) || 0,
+        isKitHeader ? '' : Number(row.lineCostTotal) || 0,
       ]);
       rowIndex += 1;
     }

@@ -14,6 +14,7 @@ import {
   calcPurchaseTotals,
   componentQtyToKitUnits,
   getPurchaseRowDisplayName,
+  isPurchasablePurchaseRow,
   kitUnitsToComponentQty,
   mergePurchasedProgress,
   recalcPurchaseRow,
@@ -40,7 +41,7 @@ function applyCalcRows(data, { withProgress = false, prevRows = [] } = {}) {
 }
 
 function isRowSelectable(row) {
-  return Boolean(row?.productId) && (Number(row.remainingToPurchase) || 0) > 0;
+  return isPurchasablePurchaseRow(row) && Boolean(row?.productId) && (Number(row.remainingToPurchase) || 0) > 0;
 }
 
 export function FboPurchaseCalculation() {
@@ -193,6 +194,59 @@ export function FboPurchaseCalculation() {
     if (!cell?.supplyItemId) return;
 
     const raw = row.supplyQty[supplyId];
+    const isKitHeader = row.rowType === 'kit' || row.isKitHeader;
+
+    if (isKitHeader) {
+      const kitQty = raw === '' || raw == null ? 0 : Math.max(0, parseInt(raw, 10) || 0);
+      const savedKitQty = Number(cell.quantity) || 0;
+
+      if (cell.multiSource || cell.parts?.length > 1) {
+        setErr('Несколько строк комплекта в этой поставке — измените количество в карточке поставки');
+        return;
+      }
+
+      if (kitQty === savedKitQty) {
+        if (raw === '') {
+          updateRows((rows) =>
+            rows.map((r) =>
+              r.key === row.key
+                ? { ...r, supplyQty: { ...r.supplyQty, [supplyId]: savedKitQty } }
+                : r
+            )
+          );
+        }
+        return;
+      }
+
+      const cellKey = `${supplyId}:${cell.supplyItemId}`;
+      setSavingCell(cellKey);
+      setErr(null);
+      try {
+        const result = await fboSuppliesApi.updateSupplyItem(
+          supplyId,
+          cell.supplyItemId,
+          kitQty
+        );
+        if (result.deleted) {
+          await load();
+        } else {
+          await load();
+        }
+      } catch (e) {
+        setErr(e.response?.data?.message || e.message || 'Не удалось сохранить количество');
+        updateRows((rows) =>
+          rows.map((r) =>
+            r.key === row.key
+              ? { ...r, supplyQty: { ...r.supplyQty, [supplyId]: savedKitQty } }
+              : r
+          )
+        );
+      } finally {
+        setSavingCell(null);
+      }
+      return;
+    }
+
     const componentQty = raw === '' || raw == null ? 0 : Math.max(0, parseInt(raw, 10) || 0);
 
     if (cell.multiSource || cell.parts?.length > 1) {
@@ -285,8 +339,8 @@ export function FboPurchaseCalculation() {
     } finally {
       setSavingCell(null);
     }
-  },
-    [calc?.rows, updateRows]
+    },
+    [calc?.rows, updateRows, load]
   );
 
   const openReplace = (row, supply, cell) => {
@@ -476,7 +530,7 @@ export function FboPurchaseCalculation() {
         <p className="fbo-packing-hint">
           Склад FBO: <strong>{calc.fboWarehouse.label}</strong>. К закупке = потребность − наличие − в пути −
           уже оформлено. Отметьте галочками позиции и создайте закупку у нужного поставщика; можно
-          несколько закупок на одну сессию. Комплекты в поставке показаны как комплектующие.
+          несколько закупок на одну сессию. Комплекты показаны отдельной строкой; ниже — комплектующие к закупке.
         </p>
       ) : null}
 
@@ -530,14 +584,19 @@ export function FboPurchaseCalculation() {
             </thead>
             <tbody>
               {calc.rows.map((row) => {
+                const isKitHeader = row.rowType === 'kit' || row.isKitHeader;
+                const isComponent = row.rowType === 'component';
                 const selectable = isRowSelectable(row);
                 const checked = selectedRowKeys.has(row.key);
                 return (
                 <tr
                   key={row.key}
-                  className={`${row.purchaseComplete ? 'fbo-item-row--complete' : ''}${
-                    checked ? ' fbo-pc-row-selected' : ''
-                  }`}
+                  className={[
+                    row.purchaseComplete && !isKitHeader ? 'fbo-item-row--complete' : '',
+                    checked ? 'fbo-pc-row-selected' : '',
+                    isKitHeader ? 'fbo-pc-kit-header-row' : '',
+                    isComponent ? 'fbo-pc-kit-component-row' : '',
+                  ].filter(Boolean).join(' ')}
                 >
                   <td className="fbo-pc-check-col">
                     {selectable ? (
@@ -550,18 +609,34 @@ export function FboPurchaseCalculation() {
                     ) : null}
                   </td>
                   <td className="fbo-pc-sticky-col">
-                    {getPurchaseRowDisplayName(row)}
+                    {isKitHeader ? (
+                      <div className="fbo-pc-kit-header-name">
+                        <span className="badge bg-secondary me-1">комплект</span>
+                        {getPurchaseRowDisplayName(row)}
+                      </div>
+                    ) : (
+                      <div className={isComponent ? 'fbo-pc-kit-component-name' : undefined}>
+                        {isComponent ? <span className="fbo-pc-kit-component-marker" aria-hidden>↳</span> : null}
+                        {getPurchaseRowDisplayName(row)}
+                      </div>
+                    )}
                   </td>
                   <td>{row.sku || '—'}</td>
                   <td>
-                    <strong>{row.remainingToPurchase ?? row.toPurchase}</strong>
-                    {row.isKitComponentRow && row.perKit > 1 ? (
-                      <div className="text-muted small">{row.perKit} шт./компл.</div>
-                    ) : null}
+                    {isKitHeader ? (
+                      <span className="text-muted">—</span>
+                    ) : (
+                      <>
+                        <strong>{row.remainingToPurchase ?? row.toPurchase}</strong>
+                        {row.isKitComponentRow && row.perKit > 1 ? (
+                          <div className="text-muted small">{row.perKit} шт./компл.</div>
+                        ) : null}
+                      </>
+                    )}
                   </td>
-                  <td>{row.purchasedQty > 0 ? row.purchasedQty : '—'}</td>
-                  <td>{row.onHand}</td>
-                  <td>{row.incoming}</td>
+                  <td>{isKitHeader ? '—' : row.purchasedQty > 0 ? row.purchasedQty : '—'}</td>
+                  <td>{isKitHeader ? '—' : row.onHand}</td>
+                  <td>{isKitHeader ? '—' : row.incoming}</td>
                   {calc.supplies.map((s) => {
                     const cell = row.supplyCells?.[s.id];
                     const cellKey = cell?.supplyItemId
@@ -570,9 +645,14 @@ export function FboPurchaseCalculation() {
                     const isSaving = savingCell === cellKey;
                     const val = row.supplyQty[s.id];
                     const readOnlyCell =
-                      !cell?.supplyItemId || cell.multiSource || (cell.parts?.length ?? 0) > 1;
+                      !cell?.supplyItemId ||
+                      cell.multiSource ||
+                      (cell.parts?.length ?? 0) > 1;
                     const canReplace =
-                      cell?.supplyItemId && !cell.multiSource && !(cell.parts?.length > 1);
+                      !isKitHeader &&
+                      cell?.supplyItemId &&
+                      !cell.multiSource &&
+                      !(cell.parts?.length > 1);
                     const replaceTitle = cell?.isKitComponent
                       ? 'Добавить аналог в поставку'
                       : 'Заменить товар в поставке';
@@ -596,11 +676,13 @@ export function FboPurchaseCalculation() {
                             }`}
                             value={val ?? 0}
                             disabled={isSaving}
-                          title={
-                            cell.isKitComponent
-                              ? `${cell.quantity ?? 0} компл. × ${cell.perKit ?? 1} шт. В поставке сохраняется число комплектов.`
-                              : undefined
-                          }
+                            title={
+                              isKitHeader
+                                ? 'Количество комплектов в поставке'
+                                : cell.isKitComponent
+                                  ? `${cell.quantity ?? 0} компл. × ${cell.perKit ?? 1} шт. В поставке сохраняется число комплектов.`
+                                  : undefined
+                            }
                             onChange={(e) =>
                               handleSupplyQtyChange(row.key, s.id, e.target.value)
                             }
@@ -623,8 +705,8 @@ export function FboPurchaseCalculation() {
                       </td>
                     );
                   })}
-                  <td>{fmtMoney(row.cost)}</td>
-                  <td>{fmtMoney(row.lineCostTotal)}</td>
+                  <td>{isKitHeader ? '—' : fmtMoney(row.cost)}</td>
+                  <td>{isKitHeader ? '—' : fmtMoney(row.lineCostTotal)}</td>
                 </tr>
               );
               })}

@@ -28,8 +28,55 @@ function supplyIdsHash(supplyIds) {
   return crypto.createHash('sha256').update(supplyIds.join(',')).digest('hex');
 }
 
+function sortSessionPurchaseRows(rows) {
+  const groups = [];
+  let current = null;
+  for (const row of rows) {
+    if (row.rowType === 'kit' || row.isKitHeader) {
+      current = { header: row, components: [] };
+      groups.push(current);
+      continue;
+    }
+    if (row.rowType === 'component' && current) {
+      current.components.push(row);
+      continue;
+    }
+    current = null;
+    groups.push({ header: null, components: [row] });
+  }
+  groups.sort((ga, gb) => {
+    const aDone = ga.header
+      ? ga.components.every((r) => r.purchaseComplete)
+      : ga.components[0]?.purchaseComplete;
+    const bDone = gb.header
+      ? gb.components.every((r) => r.purchaseComplete)
+      : gb.components[0]?.purchaseComplete;
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    const aName = ga.header?.productName || ga.components[0]?.productName || '';
+    const bName = gb.header?.productName || gb.components[0]?.productName || '';
+    return String(aName).localeCompare(String(bName), 'ru');
+  });
+  const out = [];
+  for (const g of groups) {
+    if (g.header) out.push(g.header);
+    out.push(...g.components);
+  }
+  return out;
+}
+
 function applyRowState(calc, rowStateByKey) {
-  const rows = (calc.rows || []).map((row) => {
+  const isPurchasable = (row) => row.rowType !== 'kit' && !row.isKitHeader;
+  const rows = sortSessionPurchaseRows(
+    (calc.rows || []).map((row) => {
+    if (!isPurchasable(row)) {
+      return {
+        ...row,
+        purchasedQty: 0,
+        remainingToPurchase: 0,
+        lineCostTotal: 0,
+        purchaseComplete: true,
+      };
+    }
     const st = rowStateByKey.get(row.key) || {};
     const purchasedQty = Math.max(0, Number(st.purchasedQty) || 0);
     const needQty = Math.max(0, Number(row.toPurchase) || 0);
@@ -43,19 +90,11 @@ function applyRowState(calc, rowStateByKey) {
       lineCostTotal,
       purchaseComplete: needQty === 0 || remainingToPurchase === 0,
     };
-  });
+    })
+  );
 
-  rows.sort((a, b) => {
-    const aDone = a.purchaseComplete;
-    const bDone = b.purchaseComplete;
-    if (aDone !== bDone) return aDone ? 1 : -1;
-    return String(a.productName || a.sku || '').localeCompare(
-      String(b.productName || b.sku || ''),
-      'ru'
-    );
-  });
-
-  const totals = rows.reduce(
+  const purchasableRows = rows.filter(isPurchasable);
+  const totals = purchasableRows.reduce(
     (acc, r) => {
       acc.toPurchaseQty += r.remainingToPurchase || 0;
       acc.purchasedQty += r.purchasedQty || 0;
@@ -67,7 +106,7 @@ function applyRowState(calc, rowStateByKey) {
   );
   totals.costSum = Math.round(totals.costSum * 100) / 100;
 
-  const pendingRows = rows.filter((r) => r.remainingToPurchase > 0 && r.productId);
+  const pendingRows = purchasableRows.filter((r) => r.remainingToPurchase > 0 && r.productId);
   const allComplete = pendingRows.length === 0;
 
   return { ...calc, rows, totals, allComplete };
