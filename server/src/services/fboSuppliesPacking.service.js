@@ -14,7 +14,9 @@ import {
 } from '../utils/fboPackingLimits.js';
 import {
   buildPlacementMixingMessage,
+  ozonCargoTypeExportLabel,
   ozonPlacementMixingKey,
+  ozonPlacementZoneForExport,
   ozonPlacementZoneLabel,
   ozonPlacementZonesConflict,
 } from '../constants/ozonPlacementZones.js';
@@ -630,14 +632,24 @@ class FboSuppliesPackingService {
   async getPackingExportRows(supplyId, { profileId } = {}) {
     const supply = await assertSupplyAccess(supplyId, profileId);
     const r = await query(
-      `SELECT cc.id, cc.quantity, cc.placement_zone, cc.expires_at,
-              cu.barcode AS cargo_barcode,
-              TRIM(COALESCE(i.sku, p.sku, '')) AS article,
+      `SELECT cc.id, cc.quantity, cc.placement_zone AS content_placement_zone, cc.expires_at,
+              cu.barcode AS cargo_barcode, cu.cargo_kind,
+              TRIM(COALESCE(i.mp_offer_id, i.sku, p.sku, '')) AS article,
+              TRIM(COALESCE(
+                NULLIF(TRIM(i.mp_product_id), ''),
+                (SELECT ps.marketplace_product_id::text
+                 FROM product_skus ps
+                 WHERE ps.product_id = p.id AND ps.marketplace = 'ozon'
+                 ORDER BY ps.id
+                 LIMIT 1),
+                ''
+              )) AS ozon_article,
               TRIM(COALESCE(
                 i.barcode,
                 (SELECT b.barcode FROM barcodes b WHERE b.product_id = p.id ORDER BY b.id LIMIT 1),
                 ''
-              )) AS product_barcode
+              )) AS product_barcode,
+              i.placement_zone AS item_placement_zone, i.ozon_tags
        FROM fbo_supply_cargo_contents cc
        JOIN fbo_supply_cargo_units cu ON cu.id = cc.cargo_unit_id
        JOIN fbo_supply_items i ON i.id = cc.fbo_supply_item_id
@@ -646,17 +658,57 @@ class FboSuppliesPackingService {
        ORDER BY cu.id ASC, cc.id ASC`,
       [supplyId]
     );
-    return {
-      marketplace: supply.marketplace,
-      rows: (r.rows || []).map((row) => ({
+
+    const productRows = (r.rows || []).map((row) => {
+      const placementZone =
+        row.content_placement_zone != null && String(row.content_placement_zone).trim() !== ''
+          ? String(row.content_placement_zone).trim()
+          : row.item_placement_zone != null
+            ? String(row.item_placement_zone).trim()
+            : '';
+      const ozonTags = row.ozon_tags;
+      return {
         id: row.id,
         quantity: Number(row.quantity),
-        placementZone: row.placement_zone != null ? String(row.placement_zone).trim() : '',
+        placementZone,
+        placementZoneLabel: ozonPlacementZoneForExport(placementZone, ozonTags),
         expiresAt: row.expires_at,
         cargoBarcode: row.cargo_barcode,
+        cargoTypeLabel: ozonCargoTypeExportLabel(row.cargo_kind),
         article: row.article,
+        ozonArticle: row.ozon_article,
         productBarcode: row.product_barcode,
-      })),
+        isEmptyCargo: false,
+      };
+    });
+
+    const emptyCargoRes = await query(
+      `SELECT cu.barcode AS cargo_barcode, cu.cargo_kind
+       FROM fbo_supply_cargo_units cu
+       WHERE cu.fbo_supply_id = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM fbo_supply_cargo_contents cc WHERE cc.cargo_unit_id = cu.id
+         )
+       ORDER BY cu.id ASC`,
+      [supplyId]
+    );
+    const emptyCargoRows = (emptyCargoRes.rows || []).map((row) => ({
+      id: null,
+      quantity: '',
+      placementZone: '',
+      placementZoneLabel: '',
+      expiresAt: null,
+      cargoBarcode: row.cargo_barcode,
+      cargoTypeLabel: ozonCargoTypeExportLabel(row.cargo_kind),
+      article: '',
+      ozonArticle: '',
+      productBarcode: '',
+      isEmptyCargo: true,
+    }));
+
+    return {
+      marketplace: supply.marketplace,
+      rows: [...productRows, ...emptyCargoRows],
     };
   }
 

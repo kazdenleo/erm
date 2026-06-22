@@ -68,6 +68,20 @@ export function ozonPlacementZoneLabel(placementZone, ozonTags) {
   return ZONE_LABELS[key] || key;
 }
 
+/** Текст зоны для Excel-шаблона Ozon (содержимое грузомест). */
+export function ozonPlacementZoneForExport(placementZone, ozonTags) {
+  const label = ozonPlacementZoneLabel(placementZone, ozonTags);
+  if (label === 'Сортируемый') return 'Сортируемый товар';
+  if (label === 'Несортируемый') return 'Несортируемый товар';
+  if (label === '—') return '';
+  return label;
+}
+
+/** Тип грузоместа для колонки «Тип ГМ» в шаблоне Ozon. */
+export function ozonCargoTypeExportLabel(cargoKind) {
+  return cargoKind === 'pallet' ? 'Паллета' : 'Коробка';
+}
+
 export function ozonPlacementZonesConflict(keyA, keyB) {
   if (!keyA || !keyB) return false;
   return keyA !== keyB;
