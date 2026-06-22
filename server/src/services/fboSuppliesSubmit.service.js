@@ -12,6 +12,7 @@ import {
   evaluateSupplyPacking,
 } from '../utils/fboSupplyPackingCheck.js';
 import logger from '../utils/logger.js';
+import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 
 function normalizeMp(marketplace) {
   const m = String(marketplace || 'ozon').trim().toLowerCase();
@@ -69,12 +70,12 @@ function extractOzonCreateInfoStatus(data) {
   return { status, errors, raw: root, cargoes };
 }
 
-async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts = 20 } = {}) {
+async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts = 20, pollIntervalMs = 2000 } = {}) {
   for (let i = 0; i < maxAttempts; i++) {
     if (i > 0) {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, pollIntervalMs));
     }
-    const data = await integrationsService._ozonApiPost(
+    const data = await ozonApiPostWithRetry(
       '/v2/cargoes/create/info',
       { operation_id: operationId },
       ozonApiOpts
@@ -97,12 +98,12 @@ async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts
   return { ok: true, status: 'PENDING', message: 'Запрос принят, проверьте статус в личном кабинете Ozon' };
 }
 
-async function pollOzonCargoesDeleteStatus(operationId, ozonApiOpts, { maxAttempts = 20 } = {}) {
+async function pollOzonCargoesDeleteStatus(operationId, ozonApiOpts, { maxAttempts = 20, pollIntervalMs = 2000 } = {}) {
   for (let i = 0; i < maxAttempts; i++) {
     if (i > 0) {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, pollIntervalMs));
     }
-    const data = await integrationsService._ozonApiPost(
+    const data = await ozonApiPostWithRetry(
       '/v1/cargoes/delete/status',
       { operation_id: operationId },
       ozonApiOpts
@@ -130,7 +131,7 @@ async function deleteOzonCargoesByIds(ozonSupplyId, cargoIds, ozonApiOpts) {
   if (!ids.length) return;
 
   const supplyIdNum = Number(ozonSupplyId);
-  const deleteData = await integrationsService._ozonApiPost(
+  const deleteData = await ozonApiPostWithRetry(
     '/v1/cargoes/delete',
     {
       supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
@@ -148,7 +149,7 @@ async function deleteOzonCargoesByIds(ozonSupplyId, cargoIds, ozonApiOpts) {
 }
 
 async function executeOzonCargoesCreate(body, ozonApiOpts) {
-  const createData = await integrationsService._ozonApiPost('/v1/cargoes/create', body, ozonApiOpts);
+  const createData = await ozonApiPostWithRetry('/v1/cargoes/create', body, ozonApiOpts);
   const operationId = extractOzonOperationId(createData);
   if (!operationId) {
     const err = new Error('Ozon не вернул идентификатор операции установки грузомест');
@@ -207,7 +208,7 @@ export function parseOzonSupplyCargoIds(data, ozonSupplyId) {
 }
 
 export async function fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts) {
-  const data = await integrationsService._ozonApiPost(
+  const data = await ozonApiPostWithRetry(
     '/v1/cargoes/get',
     { supply_ids: [String(ozonSupplyId)] },
     ozonApiOpts
@@ -673,24 +674,14 @@ class FboSuppliesSubmitService {
       requestKeys: body.cargoes.map((c) => c.key),
     });
 
-    const createData = await integrationsService._ozonApiPost('/v1/cargoes/create', body, ozonApiOpts);
-    const operationId = extractOzonOperationId(createData);
-
-    let pollResult = null;
-    if (operationId) {
-      pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
-      await verifyOzonCargoesSubmitResult(
-        submitPlan,
-        ermBarcodes,
-        ozonSupplyId,
-        ozonApiOpts,
-        pollResult
-      );
-    } else {
-      const err = new Error('Ozon не вернул идентификатор операции установки грузомест');
-      err.statusCode = 400;
-      throw err;
-    }
+    const { operationId, pollResult } = await executeOzonCargoesCreate(body, ozonApiOpts);
+    await verifyOzonCargoesSubmitResult(
+      submitPlan,
+      ermBarcodes,
+      ozonSupplyId,
+      ozonApiOpts,
+      pollResult
+    );
 
     const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
 

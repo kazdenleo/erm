@@ -12,39 +12,20 @@ import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { parseOzonBundleRowMeta } from '../constants/ozonPlacementZones.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
+import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 
 const WB_SUPPLIES_API = 'https://supplies-api.wildberries.ru';
 const YM_API = 'https://api.partner.market.yandex.ru';
 
 const ITEMS_SHEET = 'Товары';
 
-const OZON_SELLER_API_MIN_GAP_MS = 450;
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-let ozonSellerApiLastAt = 0;
-
 function isOzonRateLimitError(err) {
   const msg = String(err?.message ?? '');
   return msg.includes('429') || /rate limit/i.test(msg);
-}
-
-async function ozonApiPostWithRetry(path, body, ozonApiOpts, { maxAttempts = 5, minGapMs = OZON_SELLER_API_MIN_GAP_MS } = {}) {
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (minGapMs > 0) {
-      const wait = ozonSellerApiLastAt + minGapMs - Date.now();
-      if (wait > 0) await sleep(wait);
-    }
-    ozonSellerApiLastAt = Date.now();
-    try {
-      return await integrationsService._ozonApiPost(path, body, ozonApiOpts);
-    } catch (e) {
-      if (!isOzonRateLimitError(e) || attempt >= maxAttempts - 1) throw e;
-      await sleep(800 * 2 ** attempt);
-    }
-  }
 }
 
 function generateDraftExternalNumber() {
