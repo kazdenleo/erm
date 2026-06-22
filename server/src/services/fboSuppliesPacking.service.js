@@ -69,6 +69,12 @@ function mapContentLine(row) {
     productName: row.product_name,
     sku: row.sku,
     barcode: row.item_barcode,
+    productBarcode:
+      row.product_barcode != null && String(row.product_barcode).trim() !== ''
+        ? String(row.product_barcode).trim()
+        : row.item_barcode != null
+          ? String(row.item_barcode).trim()
+          : '',
     quantity: qty,
     plannedQuantity: Number(row.planned_qty),
     placementZone: row.placement_zone ?? null,
@@ -241,6 +247,11 @@ class FboSuppliesPackingService {
       `SELECT cc.id, cc.cargo_unit_id, cc.fbo_supply_item_id, cc.quantity,
               cc.placement_zone, cc.expires_at,
               i.product_id, i.sku, i.barcode AS item_barcode, i.quantity AS planned_qty,
+              TRIM(COALESCE(
+                i.barcode,
+                (SELECT b.barcode FROM barcodes b WHERE b.product_id = p.id ORDER BY b.id LIMIT 1),
+                ''
+              )) AS product_barcode,
               i.placement_zone AS item_placement_zone, i.ozon_tags AS item_ozon_tags,
               COALESCE(p.name, i.name) AS product_name,
               p.weight AS product_weight,

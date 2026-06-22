@@ -94,7 +94,15 @@ async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts
   return { ok: true, status: 'PENDING', message: 'Запрос принят, проверьте статус в личном кабинете Ozon' };
 }
 
-function buildOzonCargoesBody(supply, packing) {
+function resolveOzonCargoItemBarcode(line) {
+  const fromProduct =
+    line?.productBarcode != null ? String(line.productBarcode).trim() : '';
+  if (fromProduct) return fromProduct;
+  const fromItem = line?.barcode != null ? String(line.barcode).trim() : '';
+  return fromItem;
+}
+
+export function buildOzonCargoesBody(supply, packing) {
   const ozonSupplyId = supply.externalSupplyId;
   if (!ozonSupplyId) {
     const err = new Error('У поставки не указан ID поставки на маркетплейсе (поле «ID поставки»)');
@@ -116,16 +124,20 @@ function buildOzonCargoesBody(supply, packing) {
 
     const items = [];
     for (const line of lines) {
-      const offerId = line.sku != null ? String(line.sku).trim() : '';
-      if (!offerId) continue;
+      const productBarcode = resolveOzonCargoItemBarcode(line);
+      if (!productBarcode) {
+        const err = new Error(
+          `У товара «${line.productName || line.sku || 'без названия'}» не указан штрихкод — Ozon принимает состав грузомест только по ШК товара`
+        );
+        err.statusCode = 400;
+        throw err;
+      }
       const item = {
-        offer_id: offerId,
+        barcode: productBarcode,
         quantity: Number(line.quantity) || 0,
       };
       const expiry = formatOzonExpiry(line.expiresAt);
       if (expiry) item.expires_at = expiry;
-      const zone = line.placementZone != null ? String(line.placementZone).trim() : '';
-      if (zone) item.placement_zone = zone;
       if (item.quantity > 0) items.push(item);
     }
 
@@ -156,6 +168,7 @@ function buildOzonCargoesBody(supply, packing) {
   const supplyIdNum = Number(ozonSupplyId);
   return {
     supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
+    delete_current_version: true,
     cargoes,
   };
 }
