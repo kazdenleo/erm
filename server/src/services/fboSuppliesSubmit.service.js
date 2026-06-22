@@ -102,7 +102,78 @@ function resolveOzonCargoItemBarcode(line) {
   return fromItem;
 }
 
-export function buildOzonCargoesBody(supply, packing) {
+/** ID грузомест Ozon (cargo_id) для поставки — из /v1/cargoes/get. */
+export function parseOzonSupplyCargoIds(data, ozonSupplyId) {
+  const supplies = data?.result?.supply ?? data?.supply ?? [];
+  const list = Array.isArray(supplies) ? supplies : [];
+  const match =
+    list.find((s) => String(s?.supply_id ?? '') === String(ozonSupplyId)) ?? list[0];
+  const cargoes = match?.cargoes ?? [];
+  return cargoes
+    .map((c) => c?.cargo_id)
+    .filter((id) => id != null && String(id).trim() !== '')
+    .map((id) => String(id).trim());
+}
+
+export function extractOzonCargoIdMapping(pollData) {
+  const root = pollData?.data ?? pollData?.raw ?? pollData ?? {};
+  const cargoes = root?.cargoes ?? root?.result?.cargoes ?? [];
+  const mapping = new Map();
+  for (const entry of cargoes || []) {
+    const key = entry?.key != null ? String(entry.key).trim() : '';
+    const cargoId = entry?.value?.cargo_id ?? entry?.cargo_id;
+    if (key && cargoId != null && String(cargoId).trim() !== '') {
+      mapping.set(key, String(cargoId).trim());
+    }
+  }
+  return mapping;
+}
+
+function resolveOzonCargoKey(ermBarcode, ozonCargoIds) {
+  const code = ermBarcode != null ? String(ermBarcode).trim() : '';
+  if (!code) return code;
+  if (!ozonCargoIds?.length) return code;
+  const ozonSet = new Set(ozonCargoIds.map((id) => String(id).trim()));
+  if (ozonSet.has(code)) return code;
+  return null;
+}
+
+function buildCargoKeyMismatchError(ermBarcodes, ozonCargoIds) {
+  const err = new Error(
+    `Штрихкоды грузомест в сборке не совпадают с Ozon. В Ozon: ${ozonCargoIds.join(', ')}. В сборке: ${ermBarcodes.join(', ')}. Укажите в сборке те же номера, что в личном кабинете Ozon (колонка «ID грузоместа»).`
+  );
+  err.statusCode = 400;
+  err.code = 'OZON_CARGO_BARCODE_MISMATCH';
+  err.details = { ozonCargoIds, ermBarcodes };
+  return err;
+}
+
+async function fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts) {
+  try {
+    const data = await integrationsService._ozonApiPost(
+      '/v1/cargoes/get',
+      { supply_ids: [String(ozonSupplyId)] },
+      ozonApiOpts
+    );
+    return parseOzonSupplyCargoIds(data, ozonSupplyId);
+  } catch {
+    return [];
+  }
+}
+
+async function syncCargoBarcodesFromOzon(supplyId, mapping) {
+  for (const [localKey, ozonCargoId] of mapping) {
+    if (!localKey || !ozonCargoId || localKey === ozonCargoId) continue;
+    await query(
+      `UPDATE fbo_supply_cargo_units
+       SET barcode = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE fbo_supply_id = $2 AND TRIM(barcode) = $3`,
+      [ozonCargoId, supplyId, localKey]
+    );
+  }
+}
+
+export function buildOzonCargoesBody(supply, packing, { ozonCargoIds = null } = {}) {
   const ozonSupplyId = supply.externalSupplyId;
   if (!ozonSupplyId) {
     const err = new Error('У поставки не указан ID поставки на маркетплейсе (поле «ID поставки»)');
@@ -117,8 +188,30 @@ export function buildOzonCargoesBody(supply, packing) {
     throw err;
   }
 
+  const packedUnits = cargoUnits.filter((c) => (c.contents || []).length > 0);
+  const ermBarcodes = packedUnits
+    .map((c) => (c.barcode != null ? String(c.barcode).trim() : ''))
+    .filter(Boolean);
+  const ozonIds = Array.isArray(ozonCargoIds)
+    ? ozonCargoIds.map((id) => String(id).trim()).filter(Boolean)
+    : null;
+
+  if (ozonIds?.length) {
+    const unresolved = ermBarcodes.filter((code) => !ozonIds.includes(code));
+    if (unresolved.length) {
+      throw buildCargoKeyMismatchError(ermBarcodes, ozonIds);
+    }
+    if (ermBarcodes.length !== ozonIds.length) {
+      const err = new Error(
+        `Количество грузомест в сборке (${ermBarcodes.length}) не совпадает с Ozon (${ozonIds.length}). Проверьте состав в личном кабинете Ozon.`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
   const cargoes = [];
-  for (const cargo of cargoUnits) {
+  for (const cargo of packedUnits) {
     const lines = cargo.contents || [];
     if (!lines.length) continue;
 
@@ -150,8 +243,13 @@ export function buildOzonCargoesBody(supply, packing) {
       throw err;
     }
 
+    const cargoKey = resolveOzonCargoKey(barcode, ozonIds) ?? barcode;
+    if (ozonIds?.length && !ozonIds.includes(cargoKey)) {
+      throw buildCargoKeyMismatchError(ermBarcodes, ozonIds);
+    }
+
     cargoes.push({
-      key: barcode,
+      key: cargoKey,
       value: {
         type: ozonCargoType(cargo.cargoKind),
         items,
@@ -168,7 +266,6 @@ export function buildOzonCargoesBody(supply, packing) {
   const supplyIdNum = Number(ozonSupplyId);
   return {
     supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
-    delete_current_version: true,
     cargoes,
   };
 }
@@ -214,8 +311,6 @@ class FboSuppliesSubmitService {
       };
     }
 
-    const body = buildOzonCargoesBody(supply, packing);
-
     const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
       profileId,
       organizationId: supply.organizationId ?? null,
@@ -236,12 +331,21 @@ class FboSuppliesSubmitService {
       ozonOverride: ozonCfg,
     };
 
+    const ozonSupplyId = supply.externalSupplyId;
+    const ozonCargoIds = await fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts);
+    const body = buildOzonCargoesBody(supply, packing, { ozonCargoIds });
+
     const createData = await integrationsService._ozonApiPost('/v1/cargoes/create', body, ozonApiOpts);
     const operationId = extractOzonOperationId(createData);
 
     let pollResult = null;
     if (operationId) {
       pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
+    }
+
+    const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
+    if (cargoIdMapping.size) {
+      await syncCargoBarcodesFromOzon(supplyId, cargoIdMapping);
     }
 
     const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });

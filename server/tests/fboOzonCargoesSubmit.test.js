@@ -1,4 +1,8 @@
-import { buildOzonCargoesBody } from '../src/services/fboSuppliesSubmit.service.js';
+import {
+  buildOzonCargoesBody,
+  extractOzonCargoIdMapping,
+  parseOzonSupplyCargoIds,
+} from '../src/services/fboSuppliesSubmit.service.js';
 
 describe('buildOzonCargoesBody', () => {
   const supply = { externalSupplyId: '12345678' };
@@ -22,30 +26,48 @@ describe('buildOzonCargoesBody', () => {
     });
 
     expect(body.supply_id).toBe(12345678);
-    expect(body.delete_current_version).toBe(true);
+    expect(body.delete_current_version).toBeUndefined();
     expect(body.cargoes).toHaveLength(1);
     expect(body.cargoes[0].key).toBe('1022085884189001');
     expect(body.cargoes[0].value.type).toBe('BOX');
     expect(body.cargoes[0].value.items).toEqual([
       { barcode: '4601234567890', quantity: 3, expires_at: '2026-12-31' },
     ]);
-    expect(body.cargoes[0].value.items[0]).not.toHaveProperty('offer_id');
-    expect(body.cargoes[0].value.items[0]).not.toHaveProperty('placement_zone');
   });
 
-  test('falls back to line.barcode when productBarcode is empty', () => {
-    const body = buildOzonCargoesBody(supply, {
-      cargoUnits: [
+  test('requires matching Ozon cargo_id when cargoes already exist in Ozon', () => {
+    expect(() =>
+      buildOzonCargoesBody(
+        supply,
         {
-          barcode: 'CARGO-2',
-          cargoKind: 'pallet',
-          contents: [{ barcode: '4609999999999', quantity: 1 }],
+          cargoUnits: [
+            {
+              barcode: '1022085963765000',
+              cargoKind: 'box',
+              contents: [{ productBarcode: '4601234567890', quantity: 1 }],
+            },
+          ],
         },
-      ],
-    });
+        { ozonCargoIds: ['1022085981237000'] }
+      )
+    ).toThrow(/не совпадают с Ozon/);
+  });
 
-    expect(body.cargoes[0].value.type).toBe('PALLET');
-    expect(body.cargoes[0].value.items[0].barcode).toBe('4609999999999');
+  test('uses Ozon cargo_id as key when barcodes match', () => {
+    const body = buildOzonCargoesBody(
+      supply,
+      {
+        cargoUnits: [
+          {
+            barcode: '1022085981237000',
+            cargoKind: 'box',
+            contents: [{ productBarcode: '4601234567890', quantity: 1 }],
+          },
+        ],
+      },
+      { ozonCargoIds: ['1022085981237000'] }
+    );
+    expect(body.cargoes[0].key).toBe('1022085981237000');
   });
 
   test('throws when product barcode is missing', () => {
@@ -60,5 +82,35 @@ describe('buildOzonCargoesBody', () => {
         ],
       })
     ).toThrow(/штрихкод/);
+  });
+});
+
+describe('parseOzonSupplyCargoIds', () => {
+  test('extracts cargo_id list for supply', () => {
+    const ids = parseOzonSupplyCargoIds(
+      {
+        result: {
+          supply: [
+            {
+              supply_id: 12345678,
+              cargoes: [{ cargo_id: 1022085981237000 }],
+            },
+          ],
+        },
+      },
+      '12345678'
+    );
+    expect(ids).toEqual(['1022085981237000']);
+  });
+});
+
+describe('extractOzonCargoIdMapping', () => {
+  test('maps request key to Ozon cargo_id', () => {
+    const map = extractOzonCargoIdMapping({
+      data: {
+        cargoes: [{ key: 'client-1', value: { cargo_id: 1022085981237000 } }],
+      },
+    });
+    expect(map.get('client-1')).toBe('1022085981237000');
   });
 });
