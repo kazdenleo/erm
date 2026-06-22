@@ -147,28 +147,41 @@ export async function fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts) {
   return cargoes.map((c) => c.cargoId);
 }
 
-export function selectOzonCargoesForCompositionSubmit(ozonCargoes) {
-  const list = ozonCargoes || [];
-  const empty = list.filter((c) => {
-    if (c.contentType === 'MONO' || c.contentType === 'MIX') return false;
-    if (c.bundleId) return false;
-    return true;
-  });
-  return empty.sort((a, b) => a.cargoId.localeCompare(b.cargoId, undefined, { numeric: true }));
+export function isOzonCargoFilled(cargo) {
+  return (
+    cargo?.contentType === 'MONO' ||
+    cargo?.contentType === 'MIX' ||
+    Boolean(cargo?.bundleId)
+  );
 }
 
-export function assertOzonCargoesNotFilledYet(ozonCargoes) {
-  const filled = (ozonCargoes || []).filter(
-    (c) => c.contentType === 'MONO' || c.contentType === 'MIX' || c.bundleId
+/** Грузоместа Ozon, сопоставленные со ШК из сборки ERM (пустые и уже заполненные). */
+export function resolveOzonCargoesForSubmit(ozonCargoes, ermBarcodes) {
+  const erm = (ermBarcodes || []).map((id) => String(id).trim()).filter(Boolean);
+  const ozonById = new Map(
+    (ozonCargoes || [])
+      .filter((c) => c?.cargoId)
+      .map((c) => [c.cargoId, c])
   );
-  if (!filled.length) return;
-  const ids = filled.map((c) => c.cargoId).join(', ');
-  const err = new Error(
-    `Состав грузомест уже установлен в Ozon (${ids}). Повторная отправка через API создаёт новые номера. Измените состав в личном кабинете Ozon или удалите грузоместа и создайте заново.`
+  const matched = erm.map((barcode) => ozonById.get(barcode)).filter(Boolean);
+  if (matched.length !== erm.length) {
+    const found = new Set(matched.map((c) => c.cargoId));
+    const missing = erm.filter((code) => !found.has(code));
+    const err = new Error(
+      `Штрихкоды грузомест в сборке не найдены в Ozon: ${missing.join(', ')}. Отсканируйте актуальные этикетки из личного кабинета Ozon.`
+    );
+    err.statusCode = 400;
+    err.code = 'OZON_CARGO_BARCODE_MISMATCH';
+    throw err;
+  }
+  return matched.sort((a, b) =>
+    a.cargoId.localeCompare(b.cargoId, undefined, { numeric: true })
   );
-  err.statusCode = 400;
-  err.code = 'OZON_CARGO_ALREADY_FILLED';
-  throw err;
+}
+
+export function detectOzonCargoSubmitMode(ozonCargoesForSubmit) {
+  const filled = (ozonCargoesForSubmit || []).some(isOzonCargoFilled);
+  return filled ? 'update' : 'create';
 }
 
 export function extractOzonCargoIdMapping(pollData) {
@@ -204,9 +217,9 @@ function packedCargoBarcodes(packing) {
  * Сопоставляем ШК ERM с cargo_id из Ozon, в API уходят порядковые key «1», «2», …
  */
 export function buildOzonCargoSubmitPlan(packing, ozonCargoesForSubmit) {
-  const ozonSorted = selectOzonCargoesForCompositionSubmit(ozonCargoesForSubmit);
   const packedUnits = packedCargoUnits(packing);
   const ermBarcodes = packedUnits.map((u) => ozonCargoKeyFromUnit(u)).filter(Boolean);
+  const ozonSorted = resolveOzonCargoesForSubmit(ozonCargoesForSubmit, ermBarcodes);
 
   assertOzonCargoBarcodesMatchExisting(ermBarcodes, ozonSorted.map((c) => c.cargoId));
 
@@ -226,11 +239,14 @@ export function buildOzonCargoSubmitPlan(packing, ozonCargoesForSubmit) {
     a.ozonCargo.cargoId.localeCompare(b.ozonCargo.cargoId, undefined, { numeric: true })
   );
 
+  const mode = detectOzonCargoSubmitMode(ozonSorted);
+
   return pairs.map((pair, index) => ({
     requestKey: String(index + 1),
     ozonCargoId: pair.ozonCargo.cargoId,
     ermBarcode: ozonCargoKeyFromUnit(pair.unit),
     unit: pair.unit,
+    mode,
   }));
 }
 
@@ -289,20 +305,25 @@ export function assertOzonPollCargoIdsMatchPlan(plan, mapping) {
   throw err;
 }
 
-export function assertOzonCargoIdsUnchanged(beforeIds, afterIds) {
-  const before = [...beforeIds].map(String).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  const after = [...afterIds].map(String).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  if (before.join(',') === after.join(',')) return;
+export function assertPlanCargoIdsStillPresent(plan, ozonCargoesAfter) {
+  const afterSet = new Set(
+    (ozonCargoesAfter || [])
+      .map((c) => (typeof c === 'string' ? c : c?.cargoId))
+      .filter(Boolean)
+      .map(String)
+  );
+  const missing = (plan || []).filter((entry) => !afterSet.has(String(entry.ozonCargoId)));
+  if (!missing.length) return;
   const err = new Error(
-    `Ozon изменил номера грузомест после отправки. Было: ${before.join(', ')}. Стало: ${after.join(', ')}. Состав мог не сохраниться — проверьте личный кабинет.`
+    `Ozon изменил номера грузомест после отправки. Не найдены: ${missing.map((m) => m.ozonCargoId).join(', ')}. Состав мог не сохраниться — проверьте личный кабинет.`
   );
   err.statusCode = 400;
   err.code = 'OZON_CARGO_ID_CHANGED';
-  err.details = { before, after };
+  err.details = { missing: missing.map((m) => m.ozonCargoId), after: [...afterSet] };
   throw err;
 }
 
-export function buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan } = {}) {
+export function buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan, deleteCurrentVersion = false } = {}) {
   const supplyIdRaw = ozonSupplyId ?? supply.externalSupplyId;
   if (!supplyIdRaw) {
     const err = new Error('У поставки не указан ID поставки на маркетплейсе (поле «ID поставки»)');
@@ -359,7 +380,8 @@ export function buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan
   const supplyIdNum = Number(supplyIdRaw);
   return {
     supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : supplyIdRaw,
-    delete_current_version: false,
+    // false — обновить состав существующих грузомест; true — удалить и создать новые cargo_id
+    delete_current_version: Boolean(deleteCurrentVersion),
     cargoes,
   };
 }
@@ -370,9 +392,13 @@ class FboSuppliesSubmitService {
     const mp = normalizeMp(supply.marketplace);
     const mpLabel = mpLabelRu(mp);
 
-    if (supply.status !== 'packed') {
+    const canSubmitOzonPacking =
+      supply.status === 'packed' || supply.status === 'ready_for_supply';
+    if (mp === 'ozon' ? !canSubmitOzonPacking : supply.status !== 'packed') {
       const err = new Error(
-        'Отправить состав грузомест на маркетплейс можно только в статусе «Упакован»'
+        mp === 'ozon'
+          ? 'Отправить или обновить состав грузомест на Ozon можно в статусе «Упакован» или «Готов к отгрузке»'
+          : 'Отправить состав грузомест на маркетплейс можно только в статусе «Упакован»'
       );
       err.statusCode = 400;
       throw err;
@@ -431,18 +457,23 @@ class FboSuppliesSubmitService {
     );
 
     const ozonCargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
-    assertOzonCargoesNotFilledYet(ozonCargoes);
-    const ozonCargoesForSubmit = selectOzonCargoesForCompositionSubmit(ozonCargoes);
-    const submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoesForSubmit);
-    const cargoIdsBefore = ozonCargoesForSubmit.map((c) => c.cargoId);
+    const submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoes);
+    const submitMode = submitPlan[0]?.mode ?? 'create';
+    const cargoIdsBefore = submitPlan.map((p) => p.ozonCargoId);
 
-    const body = buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan });
+    const body = buildOzonCargoesBody(supply, packing, {
+      ozonSupplyId,
+      submitPlan,
+      deleteCurrentVersion: false,
+    });
     logger.info('[FBO Ozon] cargoes/create request', {
       supplyId,
       ozonSupplyId,
+      submitMode,
       cargoIdsBefore,
       ermBarcodes: submitPlan.map((p) => p.ermBarcode),
       requestKeys: body.cargoes.map((c) => c.key),
+      deleteCurrentVersion: body.delete_current_version,
     });
 
     const createData = await integrationsService._ozonApiPost('/v1/cargoes/create', body, ozonApiOpts);
@@ -456,8 +487,8 @@ class FboSuppliesSubmitService {
     if (pollResult?.ok && pollResult.status !== 'PENDING') {
       const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
       assertOzonPollCargoIdsMatchPlan(submitPlan, cargoIdMapping);
-      const cargoIdsAfter = await fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts);
-      assertOzonCargoIdsUnchanged(cargoIdsBefore, cargoIdsAfter);
+      const ozonCargoesAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+      assertPlanCargoIdsStillPresent(submitPlan, ozonCargoesAfter);
     }
 
     const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
@@ -475,7 +506,9 @@ class FboSuppliesSubmitService {
       message:
         pollResult?.message ||
         (pollResult?.ok
-          ? `Грузоместа отправлены в ${mpLabel} (${body.cargoes.length} шт.): ${ermBarcodes.join(', ')}. Статус: «Готов к отгрузке».`
+          ? submitMode === 'update'
+            ? `Состав грузомест обновлён в ${mpLabel} (${body.cargoes.length} шт.): ${ermBarcodes.join(', ')}. Номера грузомест сохранены.`
+            : `Грузоместа отправлены в ${mpLabel} (${body.cargoes.length} шт.): ${ermBarcodes.join(', ')}. Статус: «Готов к отгрузке».`
           : `Запрос на установку грузомест отправлен в ${mpLabel}. Статус: «Готов к отгрузке».`),
     };
   }

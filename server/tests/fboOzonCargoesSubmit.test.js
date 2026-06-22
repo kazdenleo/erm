@@ -1,15 +1,16 @@
 import {
   assertOzonCargoBarcodesMatchExisting,
-  assertOzonCargoIdsUnchanged,
-  assertOzonCargoesNotFilledYet,
   assertOzonPollCargoIdsMatchPlan,
+  assertPlanCargoIdsStillPresent,
   buildOzonCargoSubmitPlan,
   buildOzonCargoesBody,
+  detectOzonCargoSubmitMode,
   extractOzonCargoIdMapping,
+  isOzonCargoFilled,
   ozonCargoKeyFromUnit,
   parseOzonSupplyCargoIds,
   parseOzonSupplyCargoes,
-  selectOzonCargoesForCompositionSubmit,
+  resolveOzonCargoesForSubmit,
 } from '../src/services/fboSuppliesSubmit.service.js';
 
 describe('buildOzonCargoesBody', () => {
@@ -75,12 +76,65 @@ describe('buildOzonCargoSubmitPlan', () => {
       requestKey: '1',
       ozonCargoId: '1022086000854000',
       ermBarcode: '1022086000854000',
+      mode: 'create',
     });
     expect(plan[1]).toMatchObject({
       requestKey: '2',
       ozonCargoId: '1022086001533000',
       ermBarcode: '1022086001533000',
+      mode: 'create',
     });
+  });
+
+  test('allows update when cargo already has composition', () => {
+    const plan = buildOzonCargoSubmitPlan(
+      {
+        cargoUnits: [
+          {
+            id: 1,
+            barcode: '1022086008662000',
+            contents: [{ productBarcode: '111', quantity: 1 }],
+          },
+        ],
+      },
+      [{ cargoId: '1022086008662000', contentType: 'MONO', bundleId: 'b1' }]
+    );
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0].mode).toBe('update');
+    expect(plan[0].ozonCargoId).toBe('1022086008662000');
+  });
+});
+
+describe('resolveOzonCargoesForSubmit', () => {
+  test('matches erm barcodes to ozon cargo_id', () => {
+    const matched = resolveOzonCargoesForSubmit(
+      [
+        { cargoId: '2', contentType: 'MONO', bundleId: 'b' },
+        { cargoId: '1', contentType: 'NONE', bundleId: '' },
+      ],
+      ['1']
+    );
+    expect(matched.map((c) => c.cargoId)).toEqual(['1']);
+  });
+});
+
+describe('detectOzonCargoSubmitMode', () => {
+  test('returns update when any cargo is filled', () => {
+    expect(
+      detectOzonCargoSubmitMode([{ cargoId: '1', contentType: 'MONO', bundleId: '' }])
+    ).toBe('update');
+    expect(
+      detectOzonCargoSubmitMode([{ cargoId: '1', contentType: 'NONE', bundleId: '' }])
+    ).toBe('create');
+  });
+});
+
+describe('isOzonCargoFilled', () => {
+  test('detects MONO/MIX/bundle', () => {
+    expect(isOzonCargoFilled({ contentType: 'MONO', bundleId: '' })).toBe(true);
+    expect(isOzonCargoFilled({ contentType: 'NONE', bundleId: 'b' })).toBe(true);
+    expect(isOzonCargoFilled({ contentType: 'NONE', bundleId: '' })).toBe(false);
   });
 });
 
@@ -110,16 +164,6 @@ describe('assertOzonCargoBarcodesMatchExisting', () => {
   });
 });
 
-describe('assertOzonCargoesNotFilledYet', () => {
-  test('rejects when cargo already has composition', () => {
-    expect(() =>
-      assertOzonCargoesNotFilledYet([
-        { cargoId: '1022086000854000', contentType: 'MONO', bundleId: 'b1' },
-      ])
-    ).toThrow(/уже установлен в Ozon/);
-  });
-});
-
 describe('assertOzonPollCargoIdsMatchPlan', () => {
   test('rejects when Ozon assigns different cargo_id', () => {
     const plan = [
@@ -134,11 +178,12 @@ describe('assertOzonPollCargoIdsMatchPlan', () => {
   });
 });
 
-describe('assertOzonCargoIdsUnchanged', () => {
-  test('rejects when cargo ids changed after submit', () => {
-    expect(() =>
-      assertOzonCargoIdsUnchanged(['1022086000854000'], ['1022086001533000'])
-    ).toThrow(/изменил номера/);
+describe('assertPlanCargoIdsStillPresent', () => {
+  test('rejects when plan cargo id missing after submit', () => {
+    const plan = [{ ozonCargoId: '1022086000854000' }];
+    expect(() => assertPlanCargoIdsStillPresent(plan, [{ cargoId: '1022086001533000' }])).toThrow(
+      /изменил номера/
+    );
   });
 });
 
@@ -165,16 +210,6 @@ describe('parseOzonSupplyCargoes', () => {
         type: '',
       },
     ]);
-  });
-});
-
-describe('selectOzonCargoesForCompositionSubmit', () => {
-  test('skips cargoes that already have composition', () => {
-    const selected = selectOzonCargoesForCompositionSubmit([
-      { cargoId: '1', contentType: 'MONO', bundleId: 'b' },
-      { cargoId: '2', contentType: 'NONE', bundleId: '' },
-    ]);
-    expect(selected.map((c) => c.cargoId)).toEqual(['2']);
   });
 });
 

@@ -690,7 +690,7 @@ export function FboSupplyDetail() {
     ? null
     : 'Укажите номер отгрузки или ID поставки в карточке';
   const canSubmitPackingToMarketplace =
-    supply.status === 'packed' &&
+    (supply.status === 'packed' || (mpKey === 'ozon' && supply.status === 'ready_for_supply')) &&
     !packingHasDiscrepancy &&
     (packing?.cargoUnits?.length ?? 0) > 0;
 
@@ -754,13 +754,17 @@ export function FboSupplyDetail() {
             onClick={handleSubmitPackingToMarketplace}
             title={
               marketplaceRefBlockedTitle ||
-              (supply.status !== 'packed'
+              (!canSubmitPackingToMarketplace &&
+              supply.status !== 'packed' &&
+              !(mpKey === 'ozon' && supply.status === 'ready_for_supply')
                 ? 'Доступно в статусе «Упакован» после полной сборки по плану'
                 : packingHasDiscrepancy
                   ? 'Сначала устраните расхождения между планом и сборкой'
                   : !(packing?.cargoUnits?.length > 0)
                     ? 'Сначала создайте грузоместа на вкладке «Сборка»'
-                    : `Отправить упакованный состав грузомест в ${mpLabel}`)
+                    : mpKey === 'ozon' && supply.status === 'ready_for_supply'
+                      ? `Обновить состав грузомест в ${mpLabel} (номера сохраняются)`
+                      : `Отправить упакованный состав грузомест в ${mpLabel}`)
             }
           >
             {submittingPacking ? 'Отправка…' : 'Отправить состав на маркетплейс'}
