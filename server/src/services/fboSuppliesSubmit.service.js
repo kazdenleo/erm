@@ -69,7 +69,7 @@ function extractOzonCreateInfoStatus(data) {
   return { status, errors, raw: root, cargoes };
 }
 
-async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts = 12 } = {}) {
+async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts = 20 } = {}) {
   for (let i = 0; i < maxAttempts; i++) {
     if (i > 0) {
       await new Promise((r) => setTimeout(r, 1500));
@@ -95,6 +95,16 @@ async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts
     }
   }
   return { ok: true, status: 'PENDING', message: 'Запрос принят, проверьте статус в личном кабинете Ozon' };
+}
+
+async function verifyOzonCargoesSubmitResult(submitPlan, ermBarcodes, ozonSupplyId, ozonApiOpts, pollResult) {
+  assertOzonCargoesCreateCompleted(pollResult);
+  const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
+  assertOzonPollCargoIdsMatchPlan(submitPlan, cargoIdMapping);
+  const ozonCargoesAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+  assertPlanCargoIdsStillPresent(submitPlan, ozonCargoesAfter);
+  assertNoExtraOzonCargoesAfterSubmit(ermBarcodes, ozonCargoesAfter);
+  return ozonCargoesAfter;
 }
 
 function resolveOzonCargoItemBarcode(line) {
@@ -179,24 +189,37 @@ export function resolveOzonCargoesForSubmit(ozonCargoes, ermBarcodes) {
   );
 }
 
-export function assertNoExtraOzonCargoes(ozonCargoes, ermBarcodes) {
-  const ermSet = new Set((ermBarcodes || []).map((id) => String(id).trim()).filter(Boolean));
-  const extra = (ozonCargoes || [])
-    .map((c) => c.cargoId)
-    .filter((id) => id && !ermSet.has(id));
-  if (!extra.length) return;
-  const err = new Error(
-    `В Ozon есть лишние грузоместа, которых нет в сборке ERM: ${extra.join(', ')}. Удалите их в личном кабинете Ozon и повторите отправку.`
-  );
-  err.statusCode = 400;
-  err.code = 'OZON_EXTRA_CARGOES';
-  err.details = { extraOzonCargoIds: extra, ermBarcodes: [...ermSet] };
-  throw err;
-}
-
 export function detectOzonCargoSubmitMode(ozonCargoesForSubmit) {
   const filled = (ozonCargoesForSubmit || []).some(isOzonCargoFilled);
   return filled ? 'update' : 'create';
+}
+
+export function findExtraOzonCargoes(ozonCargoes, ermBarcodes) {
+  const ermSet = new Set((ermBarcodes || []).map((id) => String(id).trim()).filter(Boolean));
+  return (ozonCargoes || [])
+    .map((c) => c.cargoId)
+    .filter((id) => id && !ermSet.has(id));
+}
+
+export function resolveOzonDeleteCurrentVersion(ozonCargoes) {
+  // false — Ozon ДОБАВЛЯЕТ грузоместа к существующим; true — заменяет весь состав поставки.
+  return (ozonCargoes || []).length > 0;
+}
+
+export function assertOzonCargoesCreateCompleted(pollResult) {
+  if (!pollResult?.ok) {
+    const err = new Error('Ozon не принял установку грузомест');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (pollResult.status === 'PENDING') {
+    const err = new Error(
+      'Ozon не подтвердил установку грузомест вовремя. Проверьте личный кабинет — состав мог не сохраниться.'
+    );
+    err.statusCode = 400;
+    err.code = 'OZON_CARGO_CREATE_PENDING';
+    throw err;
+  }
 }
 
 export function assertNoExtraOzonCargoesAfterSubmit(ermBarcodes, ozonCargoesAfter) {
@@ -249,7 +272,6 @@ export function buildOzonCargoSubmitPlan(packing, ozonCargoesForSubmit) {
   const packedUnits = packedCargoUnits(packing);
   const ermBarcodes = packedUnits.map((u) => ozonCargoKeyFromUnit(u)).filter(Boolean);
 
-  assertNoExtraOzonCargoes(ozonCargoesForSubmit, ermBarcodes);
   assertOzonCargoBarcodesMatchExisting(
     ermBarcodes,
     (ozonCargoesForSubmit || []).map((c) => c.cargoId)
@@ -414,7 +436,7 @@ export function buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan
   const supplyIdNum = Number(supplyIdRaw);
   return {
     supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : supplyIdRaw,
-    // false — обновить состав существующих грузомест; true — удалить и создать новые cargo_id
+    // true — заменить весь состав (иначе Ozon добавляет новые ГМ); key = cargo_id
     delete_current_version: Boolean(deleteCurrentVersion),
     cargoes,
   };
@@ -496,19 +518,23 @@ class FboSuppliesSubmitService {
     const ermBarcodes = submitPlan.map((p) => p.ermBarcode);
     const cargoIdsBefore = submitPlan.map((p) => p.ozonCargoId);
 
+    const deleteCurrentVersion = resolveOzonDeleteCurrentVersion(ozonCargoes);
+    const extraOzonCargoIds = findExtraOzonCargoes(ozonCargoes, ermBarcodes);
+
     const body = buildOzonCargoesBody(supply, packing, {
       ozonSupplyId,
       submitPlan,
-      deleteCurrentVersion: false,
+      deleteCurrentVersion,
     });
     logger.info('[FBO Ozon] cargoes/create request', {
       supplyId,
       ozonSupplyId,
       submitMode,
+      deleteCurrentVersion,
+      extraOzonCargoIds,
       cargoIdsBefore,
       ermBarcodes: submitPlan.map((p) => p.ermBarcode),
       requestKeys: body.cargoes.map((c) => c.key),
-      deleteCurrentVersion: body.delete_current_version,
     });
 
     const createData = await integrationsService._ozonApiPost('/v1/cargoes/create', body, ozonApiOpts);
@@ -517,14 +543,17 @@ class FboSuppliesSubmitService {
     let pollResult = null;
     if (operationId) {
       pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
-    }
-
-    if (pollResult?.ok && pollResult.status !== 'PENDING') {
-      const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
-      assertOzonPollCargoIdsMatchPlan(submitPlan, cargoIdMapping);
-      const ozonCargoesAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
-      assertPlanCargoIdsStillPresent(submitPlan, ozonCargoesAfter);
-      assertNoExtraOzonCargoesAfterSubmit(ermBarcodes, ozonCargoesAfter);
+      await verifyOzonCargoesSubmitResult(
+        submitPlan,
+        ermBarcodes,
+        ozonSupplyId,
+        ozonApiOpts,
+        pollResult
+      );
+    } else {
+      const err = new Error('Ozon не вернул идентификатор операции установки грузомест');
+      err.statusCode = 400;
+      throw err;
     }
 
     const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });

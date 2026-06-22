@@ -1,18 +1,20 @@
 import {
-  assertNoExtraOzonCargoes,
   assertNoExtraOzonCargoesAfterSubmit,
   assertOzonCargoBarcodesMatchExisting,
+  assertOzonCargoesCreateCompleted,
   assertOzonPollCargoIdsMatchPlan,
   assertPlanCargoIdsStillPresent,
   buildOzonCargoSubmitPlan,
   buildOzonCargoesBody,
   detectOzonCargoSubmitMode,
   extractOzonCargoIdMapping,
+  findExtraOzonCargoes,
   isOzonCargoFilled,
   ozonCargoKeyFromUnit,
   parseOzonSupplyCargoIds,
   parseOzonSupplyCargoes,
   resolveOzonCargoesForSubmit,
+  resolveOzonDeleteCurrentVersion,
 } from '../src/services/fboSuppliesSubmit.service.js';
 
 describe('buildOzonCargoesBody', () => {
@@ -47,6 +49,16 @@ describe('buildOzonCargoesBody', () => {
     expect(body.delete_current_version).toBe(false);
     expect(body.cargoes[0].key).toBe('1022086000854000');
     expect(body.cargoes[0].value.items[0].barcode).toBe('4601234567890');
+  });
+
+  test('sets delete_current_version when replacing existing Ozon cargoes', () => {
+    const body = buildOzonCargoesBody(supply, packing, {
+      ozonSupplyId: 987654321,
+      submitPlan,
+      deleteCurrentVersion: true,
+    });
+
+    expect(body.delete_current_version).toBe(true);
   });
 });
 
@@ -121,6 +133,32 @@ describe('resolveOzonCargoesForSubmit', () => {
   });
 });
 
+describe('resolveOzonDeleteCurrentVersion', () => {
+  test('returns true when Ozon already has cargoes', () => {
+    expect(resolveOzonDeleteCurrentVersion([{ cargoId: '1' }])).toBe(true);
+    expect(resolveOzonDeleteCurrentVersion([])).toBe(false);
+  });
+});
+
+describe('findExtraOzonCargoes', () => {
+  test('lists Ozon cargo ids not in ERM assembly', () => {
+    expect(
+      findExtraOzonCargoes(
+        [{ cargoId: '1022086008662000' }, { cargoId: '1022086044388000' }],
+        ['1022086008662000']
+      )
+    ).toEqual(['1022086044388000']);
+  });
+});
+
+describe('assertOzonCargoesCreateCompleted', () => {
+  test('rejects PENDING poll result', () => {
+    expect(() => assertOzonCargoesCreateCompleted({ ok: true, status: 'PENDING' })).toThrow(
+      /не подтвердил/
+    );
+  });
+});
+
 describe('detectOzonCargoSubmitMode', () => {
   test('returns update when any cargo is filled', () => {
     expect(
@@ -163,20 +201,6 @@ describe('assertOzonCargoBarcodesMatchExisting', () => {
         ['1022086000854000']
       )
     ).not.toThrow();
-  });
-});
-
-describe('assertNoExtraOzonCargoes', () => {
-  test('rejects when Ozon has cargo not in ERM assembly', () => {
-    expect(() =>
-      assertNoExtraOzonCargoes(
-        [
-          { cargoId: '1022086008662000', contentType: 'MONO', bundleId: 'b' },
-          { cargoId: '1022086038261000', contentType: 'MONO', bundleId: 'b' },
-        ],
-        ['1022086008662000']
-      )
-    ).toThrow(/лишние грузоместа/);
   });
 });
 
