@@ -11,6 +11,7 @@ import {
   assertPackingReadyForMarketplaceSubmit,
   evaluateSupplyPacking,
 } from '../utils/fboSupplyPackingCheck.js';
+import logger from '../utils/logger.js';
 
 function normalizeMp(marketplace) {
   const m = String(marketplace || 'ozon').trim().toLowerCase();
@@ -64,7 +65,8 @@ function extractOzonCreateInfoStatus(data) {
   const root = data?.result ?? data ?? {};
   const status = String(root.status ?? root.state ?? '').toUpperCase();
   const errors = root.errors ?? root.error ?? null;
-  return { status, errors, raw: root };
+  const cargoes = root.cargoes ?? root.result?.cargoes ?? [];
+  return { status, errors, raw: root, cargoes };
 }
 
 async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts = 12 } = {}) {
@@ -79,7 +81,7 @@ async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts
     );
     const info = extractOzonCreateInfoStatus(data);
     if (info.status === 'SUCCESS' || info.status === 'COMPLETED' || info.status === 'DONE') {
-      return { ok: true, status: info.status, data: info.raw };
+      return { ok: true, status: info.status, data: info.raw, cargoes: info.cargoes };
     }
     if (info.status === 'FAILED' || info.status === 'ERROR') {
       const err = new Error(
@@ -103,35 +105,79 @@ function resolveOzonCargoItemBarcode(line) {
   return fromItem;
 }
 
-/** Штрихкод грузоместа из сборки — уходит в Ozon как key без подмены. */
+/** Штрихкод грузоместа из сборки ERM. */
 export function ozonCargoKeyFromUnit(cargo) {
   return cargo?.barcode != null ? String(cargo.barcode).trim() : '';
 }
 
-export function parseOzonSupplyCargoIds(data, ozonSupplyId) {
+function parseOzonSupplyList(data, ozonSupplyId) {
   const supplies = data?.result?.supply ?? data?.supply ?? [];
   const list = Array.isArray(supplies) ? supplies : [];
-  const match =
-    list.find((s) => String(s?.supply_id ?? '') === String(ozonSupplyId)) ?? list[0];
-  const cargoes = match?.cargoes ?? [];
-  return cargoes
-    .map((c) => c?.cargo_id)
-    .filter((id) => id != null && String(id).trim() !== '')
-    .map((id) => String(id).trim());
+  return list.find((s) => String(s?.supply_id ?? '') === String(ozonSupplyId)) ?? list[0] ?? null;
 }
 
-export async function fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts) {
+export function parseOzonSupplyCargoes(data, ozonSupplyId) {
+  const match = parseOzonSupplyList(data, ozonSupplyId);
+  const cargoes = match?.cargoes ?? [];
+  return (Array.isArray(cargoes) ? cargoes : [])
+    .map((c) => ({
+      cargoId: c?.cargo_id != null ? String(c.cargo_id).trim() : '',
+      contentType: c?.content_type != null ? String(c.content_type).trim().toUpperCase() : '',
+      bundleId: c?.bundle_id != null ? String(c.bundle_id).trim() : '',
+      type: c?.type != null ? String(c.type).trim().toUpperCase() : '',
+    }))
+    .filter((c) => c.cargoId);
+}
+
+export function parseOzonSupplyCargoIds(data, ozonSupplyId) {
+  return parseOzonSupplyCargoes(data, ozonSupplyId).map((c) => c.cargoId);
+}
+
+export async function fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts) {
   const data = await integrationsService._ozonApiPost(
     '/v1/cargoes/get',
     { supply_ids: [String(ozonSupplyId)] },
     ozonApiOpts
   );
-  return parseOzonSupplyCargoIds(data, ozonSupplyId);
+  return parseOzonSupplyCargoes(data, ozonSupplyId);
+}
+
+export async function fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts) {
+  const cargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+  return cargoes.map((c) => c.cargoId);
+}
+
+export function selectOzonCargoesForCompositionSubmit(ozonCargoes) {
+  const list = ozonCargoes || [];
+  const empty = list.filter((c) => {
+    if (c.contentType === 'MONO' || c.contentType === 'MIX') return false;
+    if (c.bundleId) return false;
+    return true;
+  });
+  return empty.sort((a, b) => a.cargoId.localeCompare(b.cargoId, undefined, { numeric: true }));
+}
+
+export function assertOzonCargoesNotFilledYet(ozonCargoes) {
+  const filled = (ozonCargoes || []).filter(
+    (c) => c.contentType === 'MONO' || c.contentType === 'MIX' || c.bundleId
+  );
+  if (!filled.length) return;
+  const ids = filled.map((c) => c.cargoId).join(', ');
+  const err = new Error(
+    `Состав грузомест уже установлен в Ozon (${ids}). Повторная отправка через API создаёт новые номера. Измените состав в личном кабинете Ozon или удалите грузоместа и создайте заново.`
+  );
+  err.statusCode = 400;
+  err.code = 'OZON_CARGO_ALREADY_FILLED';
+  throw err;
 }
 
 export function extractOzonCargoIdMapping(pollData) {
-  const root = pollData?.data ?? pollData?.raw ?? pollData ?? {};
-  const cargoes = root?.cargoes ?? root?.result?.cargoes ?? [];
+  const cargoes =
+    pollData?.cargoes ??
+    pollData?.data?.cargoes ??
+    pollData?.raw?.cargoes ??
+    pollData?.result?.cargoes ??
+    [];
   const mapping = new Map();
   for (const entry of cargoes || []) {
     const key = entry?.key != null ? String(entry.key).trim() : '';
@@ -143,17 +189,53 @@ export function extractOzonCargoIdMapping(pollData) {
   return mapping;
 }
 
-function packedCargoBarcodes(packing) {
+function packedCargoUnits(packing) {
   return (packing?.cargoUnits || [])
     .filter((c) => (c.contents || []).length > 0)
-    .sort((a, b) => Number(a.id) - Number(b.id))
-    .map((c) => ozonCargoKeyFromUnit(c))
-    .filter(Boolean);
+    .sort((a, b) => Number(a.id) - Number(b.id));
+}
+
+function packedCargoBarcodes(packing) {
+  return packedCargoUnits(packing).map((c) => ozonCargoKeyFromUnit(c)).filter(Boolean);
 }
 
 /**
- * Ozon принимает key только для грузомест, уже созданных в ЛК (cargo_id).
- * Не подменяем номера — только проверяем, что в сборке те же ID, что в Ozon.
+ * Ozon: key — служебный идентификатор в запросе, cargo_id на этикетке — отдельное поле.
+ * Сопоставляем ШК ERM с cargo_id из Ozon, в API уходят порядковые key «1», «2», …
+ */
+export function buildOzonCargoSubmitPlan(packing, ozonCargoesForSubmit) {
+  const ozonSorted = selectOzonCargoesForCompositionSubmit(ozonCargoesForSubmit);
+  const packedUnits = packedCargoUnits(packing);
+  const ermBarcodes = packedUnits.map((u) => ozonCargoKeyFromUnit(u)).filter(Boolean);
+
+  assertOzonCargoBarcodesMatchExisting(ermBarcodes, ozonSorted.map((c) => c.cargoId));
+
+  const ozonById = new Map(ozonSorted.map((c) => [c.cargoId, c]));
+  const pairs = packedUnits.map((unit) => {
+    const barcode = ozonCargoKeyFromUnit(unit);
+    const ozonCargo = ozonById.get(barcode);
+    if (!ozonCargo) {
+      const err = new Error(`Не удалось сопоставить грузоместо ERM «${barcode}» с Ozon`);
+      err.statusCode = 400;
+      throw err;
+    }
+    return { unit, ozonCargo };
+  });
+
+  pairs.sort((a, b) =>
+    a.ozonCargo.cargoId.localeCompare(b.ozonCargo.cargoId, undefined, { numeric: true })
+  );
+
+  return pairs.map((pair, index) => ({
+    requestKey: String(index + 1),
+    ozonCargoId: pair.ozonCargo.cargoId,
+    ermBarcode: ozonCargoKeyFromUnit(pair.unit),
+    unit: pair.unit,
+  }));
+}
+
+/**
+ * Проверяем, что ШК в сборке ERM совпадают с cargo_id в Ozon.
  */
 export function assertOzonCargoBarcodesMatchExisting(ermBarcodes, ozonCargoIds) {
   const ozonIds = (ozonCargoIds || []).map((id) => String(id).trim()).filter(Boolean);
@@ -188,16 +270,39 @@ export function assertOzonCargoBarcodesMatchExisting(ermBarcodes, ozonCargoIds) 
   }
 }
 
-function buildCargoIdMismatchWarning(sentKeys, mapping) {
-  if (!mapping?.size) return null;
-  const mismatches = sentKeys
-    .filter((key) => mapping.has(key) && mapping.get(key) !== key)
-    .map((key) => `${key} → ${mapping.get(key)}`);
-  if (!mismatches.length) return null;
-  return `Ozon присвоил другие ID грузомест: ${mismatches.join(', ')}. Проверьте, что грузоместа созданы в ЛК Ozon до отправки.`;
+export function assertOzonPollCargoIdsMatchPlan(plan, mapping) {
+  const mismatches = [];
+  for (const entry of plan) {
+    const assigned = mapping.get(entry.requestKey);
+    if (!assigned) continue;
+    if (assigned !== entry.ozonCargoId) {
+      mismatches.push(`${entry.ermBarcode} (key ${entry.requestKey}) → ${assigned}`);
+    }
+  }
+  if (!mismatches.length) return;
+  const err = new Error(
+    `Ozon присвоил другие ID грузомест: ${mismatches.join(', ')}. Состав не сохранён — проверьте личный кабинет Ozon.`
+  );
+  err.statusCode = 400;
+  err.code = 'OZON_CARGO_ID_CHANGED';
+  err.details = { mismatches, plan, mapping: Object.fromEntries(mapping) };
+  throw err;
 }
 
-export function buildOzonCargoesBody(supply, packing, { ozonSupplyId } = {}) {
+export function assertOzonCargoIdsUnchanged(beforeIds, afterIds) {
+  const before = [...beforeIds].map(String).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const after = [...afterIds].map(String).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (before.join(',') === after.join(',')) return;
+  const err = new Error(
+    `Ozon изменил номера грузомест после отправки. Было: ${before.join(', ')}. Стало: ${after.join(', ')}. Состав мог не сохраниться — проверьте личный кабинет.`
+  );
+  err.statusCode = 400;
+  err.code = 'OZON_CARGO_ID_CHANGED';
+  err.details = { before, after };
+  throw err;
+}
+
+export function buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan } = {}) {
   const supplyIdRaw = ozonSupplyId ?? supply.externalSupplyId;
   if (!supplyIdRaw) {
     const err = new Error('У поставки не указан ID поставки на маркетплейсе (поле «ID поставки»)');
@@ -205,21 +310,16 @@ export function buildOzonCargoesBody(supply, packing, { ozonSupplyId } = {}) {
     throw err;
   }
 
-  const cargoUnits = packing?.cargoUnits || [];
-  if (!cargoUnits.length) {
+  const plan = submitPlan ?? buildOzonCargoSubmitPlan(packing, []);
+  if (!plan.length) {
     const err = new Error('Нет грузомест — сначала выполните сборку');
     err.statusCode = 400;
     throw err;
   }
 
-  const packedUnits = cargoUnits
-    .filter((c) => (c.contents || []).length > 0)
-    .sort((a, b) => Number(a.id) - Number(b.id));
-
   const cargoes = [];
-  for (const cargo of packedUnits) {
-    const lines = cargo.contents || [];
-
+  for (const entry of plan) {
+    const lines = entry.unit.contents || [];
     const items = [];
     for (const line of lines) {
       const productBarcode = resolveOzonCargoItemBarcode(line);
@@ -241,17 +341,10 @@ export function buildOzonCargoesBody(supply, packing, { ozonSupplyId } = {}) {
 
     if (!items.length) continue;
 
-    const cargoKey = ozonCargoKeyFromUnit(cargo);
-    if (!cargoKey) {
-      const err = new Error('У грузоместа не указан штрихкод (ШК ГМ)');
-      err.statusCode = 400;
-      throw err;
-    }
-
     cargoes.push({
-      key: cargoKey,
+      key: entry.requestKey,
       value: {
-        type: ozonCargoType(cargo.cargoKind),
+        type: ozonCargoType(entry.unit.cargoKind),
         items,
       },
     });
@@ -266,6 +359,7 @@ export function buildOzonCargoesBody(supply, packing, { ozonSupplyId } = {}) {
   const supplyIdNum = Number(supplyIdRaw);
   return {
     supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : supplyIdRaw,
+    delete_current_version: false,
     cargoes,
   };
 }
@@ -287,7 +381,7 @@ class FboSuppliesSubmitService {
     assertPackingReadyForMarketplaceSubmit(await evaluateSupplyPacking(supplyId));
 
     const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
-    const cargoCount = (packing?.cargoUnits || []).filter((c) => (c.contents || []).length > 0).length;
+    const cargoCount = packedCargoUnits(packing).length;
 
     if (mp === 'wb') {
       const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
@@ -335,10 +429,21 @@ class FboSuppliesSubmitService {
       supplyId,
       { profileId }
     );
-    const ozonCargoIds = await fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts);
-    assertOzonCargoBarcodesMatchExisting(packedCargoBarcodes(packing), ozonCargoIds);
 
-    const body = buildOzonCargoesBody(supply, packing, { ozonSupplyId });
+    const ozonCargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    assertOzonCargoesNotFilledYet(ozonCargoes);
+    const ozonCargoesForSubmit = selectOzonCargoesForCompositionSubmit(ozonCargoes);
+    const submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoesForSubmit);
+    const cargoIdsBefore = ozonCargoesForSubmit.map((c) => c.cargoId);
+
+    const body = buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan });
+    logger.info('[FBO Ozon] cargoes/create request', {
+      supplyId,
+      ozonSupplyId,
+      cargoIdsBefore,
+      ermBarcodes: submitPlan.map((p) => p.ermBarcode),
+      requestKeys: body.cargoes.map((c) => c.key),
+    });
 
     const createData = await integrationsService._ozonApiPost('/v1/cargoes/create', body, ozonApiOpts);
     const operationId = extractOzonOperationId(createData);
@@ -348,25 +453,29 @@ class FboSuppliesSubmitService {
       pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
     }
 
+    if (pollResult?.ok && pollResult.status !== 'PENDING') {
+      const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
+      assertOzonPollCargoIdsMatchPlan(submitPlan, cargoIdMapping);
+      const cargoIdsAfter = await fetchOzonSupplyCargoIds(ozonSupplyId, ozonApiOpts);
+      assertOzonCargoIdsUnchanged(cargoIdsBefore, cargoIdsAfter);
+    }
+
     const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
-    const sentCargoKeys = body.cargoes.map((c) => c.key);
-    const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
-    const idMismatchWarning = buildCargoIdMismatchWarning(sentCargoKeys, cargoIdMapping);
+    const ermBarcodes = submitPlan.map((p) => p.ermBarcode);
 
     return {
       marketplace: 'ozon',
       operationId,
       cargoCount: body.cargoes.length,
-      sentCargoKeys,
+      sentCargoKeys: ermBarcodes,
       ozonSupplyId,
       poll: pollResult,
       supply: updatedSupply,
       supplyStatus: updatedSupply.status,
       message:
-        idMismatchWarning ||
         pollResult?.message ||
         (pollResult?.ok
-          ? `Грузоместа отправлены в ${mpLabel} (${body.cargoes.length} шт.): ${sentCargoKeys.join(', ')}. Статус: «Готов к отгрузке».`
+          ? `Грузоместа отправлены в ${mpLabel} (${body.cargoes.length} шт.): ${ermBarcodes.join(', ')}. Статус: «Готов к отгрузке».`
           : `Запрос на установку грузомест отправлен в ${mpLabel}. Статус: «Готов к отгрузке».`),
     };
   }
