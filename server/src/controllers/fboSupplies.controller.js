@@ -12,6 +12,7 @@ import fboSuppliesPackingService from '../services/fboSuppliesPacking.service.js
 import fboSuppliesPurchaseCalcService from '../services/fboSuppliesPurchaseCalc.service.js';
 import fboPurchaseCalcSessionService from '../services/fboPurchaseCalcSession.service.js';
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
+import fboSuppliesOzonCargoesService from '../services/fboSuppliesOzonCargoes.service.js';
 import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
@@ -432,10 +433,115 @@ class FboSuppliesController {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
       const data = await fboSuppliesPackingService.getPackingState(id, { profileId });
+      const supply = await fboSuppliesService.getById(id, { profileId });
+      const mp = String(supply?.marketplace || 'ozon').toLowerCase();
+      const isOzon = mp !== 'wb' && mp !== 'ym' && mp !== 'yandex';
+      if (isOzon && (supply?.externalSupplyId || supply?.externalShipmentNumber)) {
+        try {
+          data.ozonMeta = await fboSuppliesOzonCargoesService.getPackingOzonMeta(id, { profileId });
+        } catch (ozonErr) {
+          data.ozonMeta = {
+            error: ozonErr.message,
+            canSubmitCompositionViaApi: false,
+            filledCargoWarning: null,
+          };
+        }
+      }
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 404) {
         return res.status(404).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async createOzonCargoUnits(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const { count, cargoKind } = req.body || {};
+      const data = await fboSuppliesOzonCargoesService.createEmptyCargoesOnOzon(id, {
+        count,
+        cargoKind,
+        profileId,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({
+          ok: false,
+          message: e.message,
+          code: e.code || undefined,
+        });
+      }
+      next(e);
+    }
+  }
+
+  async downloadCargoLabels(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const raw = req.query?.cargoIds ?? req.query?.cargo_ids ?? '';
+      const cargoIds = String(raw)
+        .split(/[,;\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const { buffer, cargoIds: ids } = await fboSuppliesOzonCargoesService.fetchCargoLabelsPdf(
+        id,
+        cargoIds,
+        { profileId }
+      );
+      const filename = `ozon_cargo_labels_${id}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      return res.send(buffer);
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message, code: e.code });
+      }
+      next(e);
+    }
+  }
+
+  async printCargoLabels(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const raw = req.query?.cargoIds ?? req.query?.cargo_ids ?? '';
+      const cargoIds = String(raw)
+        .split(/[,;\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const { buffer } = await fboSuppliesOzonCargoesService.fetchCargoLabelsPdf(id, cargoIds, {
+        profileId,
+      });
+      const b64 = buffer.toString('base64');
+      const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Этикетки грузомест</title>
+  <style>body{margin:0}iframe{width:100%;height:100vh;border:none}</style>
+</head>
+<body>
+  <iframe id="labelFrame" src="data:application/pdf;base64,${b64}"></iframe>
+  <script>
+    (function(){
+      var done=false;
+      function doPrint(){if(done)return;done=true;try{window.focus();window.print();}catch(e){}}
+      document.getElementById('labelFrame').addEventListener('load',function(){setTimeout(doPrint,400);});
+      setTimeout(doPrint,1500);
+    })();
+  </script>
+</body>
+</html>`;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(html);
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).send(`<p>${e.message}</p>`);
       }
       next(e);
     }

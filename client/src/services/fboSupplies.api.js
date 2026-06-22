@@ -244,6 +244,51 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  createOzonCargoUnits: async (id, { count = 1, cargoKind = 'box' } = {}) => {
+    const response = await api.post(
+      `/fbo-supplies/${id}/packing/ozon-cargoes/create`,
+      { count, cargoKind },
+      { timeout: 180000 }
+    );
+    return response.data?.data ?? response.data;
+  },
+
+  downloadCargoLabels: async (id, cargoIds) => {
+    const ids = (cargoIds || []).filter(Boolean).join(',');
+    const response = await api.get(`/fbo-supplies/${id}/packing/cargo-labels`, {
+      params: { cargoIds: ids },
+      responseType: 'arraybuffer',
+      timeout: 180000,
+    });
+    return response.data;
+  },
+
+  printCargoLabels: async (id, cargoIds) => {
+    const ids = (cargoIds || []).filter(Boolean).join(',');
+    const response = await api.get(`/fbo-supplies/${id}/packing/cargo-labels`, {
+      params: { cargoIds: ids },
+      responseType: 'arraybuffer',
+      timeout: 180000,
+    });
+    const blob = new Blob([response.data], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, '_blank');
+    if (w) {
+      w.addEventListener('load', () => {
+        setTimeout(() => {
+          try {
+            w.focus();
+            w.print();
+          } catch {
+            /* ignore */
+          }
+        }, 500);
+      });
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    return { ok: true };
+  },
+
   syncMarketplaceContent: async (id) => {
     const response = await api.post(`/fbo-supplies/${id}/sync-marketplace-content`, {}, { timeout: 180000 });
     return response.data?.data ?? response.data;

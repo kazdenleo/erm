@@ -67,6 +67,18 @@ router.get(
   wrapAsync(fboSuppliesController.downloadPackingExcel.bind(fboSuppliesController))
 );
 router.get('/:id/packing', wrapAsync(fboSuppliesController.getPacking.bind(fboSuppliesController)));
+router.post(
+  '/:id/packing/ozon-cargoes/create',
+  wrapAsync(fboSuppliesController.createOzonCargoUnits.bind(fboSuppliesController))
+);
+router.get(
+  '/:id/packing/cargo-labels',
+  wrapAsync(fboSuppliesController.downloadCargoLabels.bind(fboSuppliesController))
+);
+router.get(
+  '/:id/packing/cargo-labels/print',
+  wrapAsync(fboSuppliesController.printCargoLabels.bind(fboSuppliesController))
+);
 router.patch(
   '/:id/packing/contents/:contentId',
   wrapAsync(fboSuppliesController.packingUpdateContent.bind(fboSuppliesController))

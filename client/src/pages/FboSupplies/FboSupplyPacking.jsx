@@ -83,6 +83,8 @@ export function FboSupplyPacking({
   const [activeCargoUnitId, setActiveCargoUnitId] = useState(null);
   const [removeModalOpen, setRemoveModalOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [creatingOnOzon, setCreatingOnOzon] = useState(false);
+  const [printingLabels, setPrintingLabels] = useState(false);
   const [newCargoMode, setNewCargoMode] = useState(false);
   const [weightWarning, setWeightWarning] = useState(null);
   const [placementWarning, setPlacementWarning] = useState(null);
@@ -108,6 +110,7 @@ export function FboSupplyPacking({
   const itemSearchActive = Boolean(normalizeProductSearchQuery(itemSearchQuery));
 
   const cargoUnits = packing?.cargoUnits || [];
+  const ozonMeta = packing?.ozonMeta;
 
   const sortedCargoUnits = useMemo(() => {
     if (!activeCargoUnitId) return cargoUnits;
@@ -220,6 +223,68 @@ export function FboSupplyPacking({
     }
   };
 
+  const handleCreateOnOzon = async (cargoKind = 'box') => {
+    if (
+      !window.confirm(
+        cargoKind === 'pallet'
+          ? 'Создать новую паллету на Ozon и добавить в сборку ERM?'
+          : 'Создать новую коробку на Ozon и добавить в сборку ERM?'
+      )
+    ) {
+      return;
+    }
+    setCreatingOnOzon(true);
+    setScanError(null);
+    setScanMsg(null);
+    try {
+      const data = await fboSuppliesApi.createOzonCargoUnits(supplyId, { count: 1, cargoKind });
+      if (data?.packing) {
+        onPackingChange(
+          { ...data.packing, ozonMeta: data.ozonMeta ?? data.packing.ozonMeta },
+          {
+            ozonMeta: data.ozonMeta,
+          }
+        );
+        if (data.created?.length) {
+          const last = data.created[data.created.length - 1];
+          if (last?.cargoUnitId) setActiveCargoUnitId(last.cargoUnitId);
+        }
+      }
+      setScanMsg(data?.message || 'Грузоместо создано на Ozon');
+      playEventSound(SOUND_EVENTS.scan_ok);
+    } catch (e) {
+      playEventSound(SOUND_EVENTS.scan_error);
+      setScanError(e.response?.data?.message || e.message || 'Не удалось создать грузоместо на Ozon');
+    } finally {
+      setCreatingOnOzon(false);
+    }
+  };
+
+  const handlePrintCargoLabels = async (cargoIds, e) => {
+    e?.stopPropagation?.();
+    const ids = (cargoIds || []).filter(Boolean);
+    if (!ids.length) return;
+    setPrintingLabels(true);
+    setScanError(null);
+    try {
+      await fboSuppliesApi.printCargoLabels(supplyId, ids);
+      setScanMsg(`Печать этикеток: ${ids.join(', ')}`);
+    } catch (e) {
+      setScanError(e.response?.data?.message || e.message || 'Не удалось получить этикетки');
+    } finally {
+      setPrintingLabels(false);
+    }
+  };
+
+  const handlePrintAllCargoLabels = async () => {
+    const ids = cargoUnits.map((c) => c.barcode).filter(Boolean);
+    if (!ids.length) {
+      setScanError('Нет грузомест с номерами для печати этикеток');
+      return;
+    }
+    await handlePrintCargoLabels(ids);
+  };
+
   const handleDeleteCargo = async (cargoUnitId, e) => {
     e?.stopPropagation?.();
     if (!window.confirm('Удалить грузоместо и весь его состав?')) return;
@@ -282,11 +347,10 @@ export function FboSupplyPacking({
           hint={
             isOzon ? (
               <>
-                Нажмите <strong>«Новое грузоместо»</strong> и отсканируйте штрихкод коробки.
-                Затем сканируйте <strong>товары из поставки</strong> (+1 шт. за скан).
-                Для следующей коробки снова нажмите «Новое грузоместо».
-                В одном грузоместе нельзя смешивать <strong>сортируемый</strong> и{' '}
-                <strong>несортируемый</strong> товар.
+                Создайте грузоместо кнопкой <strong>«Создать на Ozon»</strong> или отсканируйте этикетку
+                через <strong>«Новое грузоместо»</strong>. Затем сканируйте <strong>товары из поставки</strong>{' '}
+                (+1 шт. за скан). Если состав в Ozon уже заполнен — обновляйте через{' '}
+                <strong>Excel</strong>, а не кнопку отправки состава.
               </>
             ) : (
               <>
@@ -300,12 +364,34 @@ export function FboSupplyPacking({
           <Button
             type="button"
             variant={newCargoMode ? 'primary' : 'secondary'}
-            disabled={scanLoading}
+            disabled={scanLoading || creatingOnOzon}
             onClick={handleNewCargoMode}
             title="Добавить или переключить грузоместо по скану коробки"
           >
             {newCargoMode ? 'Отмена' : 'Новое грузоместо'}
           </Button>
+          {isOzon ? (
+            <>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={scanLoading || creatingOnOzon || printingLabels}
+                onClick={() => handleCreateOnOzon('box')}
+                title="Создать пустую коробку на Ozon и добавить в сборку"
+              >
+                {creatingOnOzon ? 'Ozon…' : 'Создать на Ozon'}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={scanLoading || creatingOnOzon || printingLabels || !cargoUnits.length}
+                onClick={handlePrintAllCargoLabels}
+                title="Скачать этикетки всех грузомест и отправить на печать"
+              >
+                {printingLabels ? 'Этикетки…' : 'Печать этикеток'}
+              </Button>
+            </>
+          ) : null}
           <Button
             type="button"
             variant="secondary"
@@ -360,6 +446,13 @@ export function FboSupplyPacking({
         <div className="alert alert-warning">{activeWeightWarning}</div>
       ) : null}
       {scanMsg && !scanError && <div className="alert alert-success">{scanMsg}</div>}
+
+      {ozonMeta?.filledCargoWarning ? (
+        <div className="alert alert-warning">{ozonMeta.filledCargoWarning}</div>
+      ) : null}
+      {ozonMeta?.error ? (
+        <div className="alert alert-warning">Ozon: {ozonMeta.error}</div>
+      ) : null}
 
       <div className="fbo-items-toolbar">
         <h4 className="fbo-packing-section-title" style={{ margin: 0, flex: 1 }}>
@@ -431,6 +524,17 @@ export function FboSupplyPacking({
                     ) : null}
                   </span>
                   <span className="text-muted small">{fmtDt(cargo.createdAt)}</span>
+                  {isOzon && cargo.barcode ? (
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      disabled={printingLabels}
+                      onClick={(e) => handlePrintCargoLabels([cargo.barcode], e)}
+                      title="Печать этикетки грузоместа"
+                    >
+                      Этикетка
+                    </Button>
+                  ) : null}
                   <Button
                     variant="secondary"
                     size="small"

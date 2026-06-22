@@ -477,9 +477,23 @@ export function FboSupplyDetail() {
   const handleSubmitPackingToMarketplace = async () => {
     if (!supply) return;
     const mpLabel = getMarketplaceLabel(supply.marketplace);
+    const ozonMeta = packing?.ozonMeta;
+    if (
+      isOzonSupply &&
+      ozonMeta &&
+      ozonMeta.canSubmitCompositionViaApi === false
+    ) {
+      setErr(
+        ozonMeta.filledCargoWarning ||
+          'Состав грузомест уже заполнен в Ozon. Выгрузите Excel и загрузите его в личном кабинете Ozon.'
+      );
+      return;
+    }
     if (
       !window.confirm(
-        `Отправить упаковку по грузоместам в ${mpLabel}? Сборка должна совпадать с планом.`
+        mpKey === 'ozon'
+          ? `Отправить упаковку по грузоместам в ${mpLabel}? Сборка должна совпадать с планом. Грузоместа в Ozon должны быть пустыми (без состава).`
+          : `Отправить упаковку по грузоместам в ${mpLabel}? Сборка должна совпадать с планом.`
       )
     ) {
       return;
@@ -689,10 +703,14 @@ export function FboSupplyDetail() {
   const marketplaceRefBlockedTitle = hasMarketplaceExternalRef
     ? null
     : 'Укажите номер отгрузки или ID поставки в карточке';
+  const ozonMeta = packing?.ozonMeta;
+  const ozonSubmitBlocked =
+    isOzonSupply && ozonMeta && ozonMeta.canSubmitCompositionViaApi === false;
   const canSubmitPackingToMarketplace =
     (supply.status === 'packed' || (mpKey === 'ozon' && supply.status === 'ready_for_supply')) &&
     !packingHasDiscrepancy &&
-    (packing?.cargoUnits?.length ?? 0) > 0;
+    (packing?.cargoUnits?.length ?? 0) > 0 &&
+    !ozonSubmitBlocked;
 
   return (
     <div className="fbo-supplies-page">
@@ -762,7 +780,9 @@ export function FboSupplyDetail() {
                   ? 'Сначала устраните расхождения между планом и сборкой'
                   : !(packing?.cargoUnits?.length > 0)
                     ? 'Сначала создайте грузоместа на вкладке «Сборка»'
-                    : mpKey === 'ozon' && supply.status === 'ready_for_supply'
+                    : ozonSubmitBlocked
+                  ? 'Состав уже заполнен в Ozon — используйте Excel, а не отправку из ERM'
+                  : mpKey === 'ozon' && supply.status === 'ready_for_supply'
                       ? `Обновить состав грузомест в ${mpLabel} (номера сохраняются)`
                       : `Отправить упакованный состав грузомест в ${mpLabel}`)
             }
@@ -796,6 +816,19 @@ export function FboSupplyDetail() {
       {supply?.statusRevertedByPacking ? (
         <div className="alert alert-warning">
           Статус сброшен в «Новая»: сборка не совпадает с планом поставки.
+        </div>
+      ) : null}
+      {ozonMeta?.filledCargoWarning && activeTab !== 'packing' ? (
+        <div className="alert alert-warning">
+          {ozonMeta.filledCargoWarning}{' '}
+          <button
+            type="button"
+            className="btn btn-link btn-sm p-0 align-baseline"
+            disabled={packingExporting || !(packing?.cargoUnits?.length > 0)}
+            onClick={handleExportPackingExcel}
+          >
+            Выгрузить Excel
+          </button>
         </div>
       ) : null}
       {packingHasDiscrepancy ? (

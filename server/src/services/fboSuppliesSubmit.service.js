@@ -70,7 +70,11 @@ function extractOzonCreateInfoStatus(data) {
   return { status, errors, raw: root, cargoes };
 }
 
-async function pollOzonCargoesCreateInfo(operationId, ozonApiOpts, { maxAttempts = 20, pollIntervalMs = 2000 } = {}) {
+async function pollOzonCargoesCreateInfo(
+  operationId,
+  ozonApiOpts,
+  { maxAttempts = 40, pollIntervalMs = 2500 } = {}
+) {
   for (let i = 0; i < maxAttempts; i++) {
     if (i > 0) {
       await new Promise((r) => setTimeout(r, pollIntervalMs));
@@ -148,7 +152,29 @@ async function deleteOzonCargoesByIds(ozonSupplyId, cargoIds, ozonApiOpts) {
   await pollOzonCargoesDeleteStatus(operationId, ozonApiOpts);
 }
 
-async function executeOzonCargoesCreate(body, ozonApiOpts) {
+async function extendOzonCargoesCreatePoll(pollResult, operationId, ozonApiOpts) {
+  if (pollResult?.status !== 'PENDING') return pollResult;
+  for (let i = 0; i < 12; i++) {
+    await new Promise((r) => setTimeout(r, 4000));
+    const retry = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts, {
+      maxAttempts: 1,
+      pollIntervalMs: 0,
+    });
+    if (retry.status !== 'PENDING') return retry;
+  }
+  return pollResult;
+}
+
+async function pruneOzonExtraCargoes(ozonSupplyId, ermBarcodes, ozonApiOpts) {
+  let ozonCargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+  const extra = findExtraOzonCargoes(ozonCargoes, ermBarcodes);
+  if (!extra.length) return ozonCargoes;
+  logger.info('[FBO Ozon] deleting extra cargoes', { ozonSupplyId, extraOzonCargoIds: extra });
+  await deleteOzonCargoesByIds(ozonSupplyId, extra, ozonApiOpts);
+  return fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+}
+
+export async function executeOzonCargoesCreate(body, ozonApiOpts) {
   const createData = await ozonApiPostWithRetry('/v1/cargoes/create', body, ozonApiOpts);
   const operationId = extractOzonOperationId(createData);
   if (!operationId) {
@@ -156,18 +182,54 @@ async function executeOzonCargoesCreate(body, ozonApiOpts) {
     err.statusCode = 400;
     throw err;
   }
-  const pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
-  assertOzonCargoesCreateCompleted(pollResult);
+  let pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
+  pollResult = await extendOzonCargoesCreatePoll(pollResult, operationId, ozonApiOpts);
   return { operationId, pollResult };
 }
 
+export function assertPlanCargoesFilledAfterSubmit(submitPlan, ozonCargoesAfter) {
+  const ozonById = new Map((ozonCargoesAfter || []).map((c) => [c.cargoId, c]));
+  const notFilled = (submitPlan || []).filter((entry) => {
+    const ozon = ozonById.get(entry.ozonCargoId);
+    return !ozon || !isOzonCargoFilled(ozon);
+  });
+  if (!notFilled.length) return;
+  const ids = notFilled.map((e) => e.ozonCargoId).join(', ');
+  const err = new Error(
+    `Ozon не заполнил состав грузомест (${ids}). Проверьте личный кабинет и повторите отправку.`
+  );
+  err.statusCode = 400;
+  err.code = 'OZON_CARGO_NOT_FILLED';
+  throw err;
+}
+
 async function verifyOzonCargoesSubmitResult(submitPlan, ermBarcodes, ozonSupplyId, ozonApiOpts, pollResult) {
+  if (pollResult?.status === 'PENDING') {
+    try {
+      const ozonCargoesAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+      assertPlanCargoIdsStillPresent(submitPlan, ozonCargoesAfter);
+      assertNoExtraOzonCargoesAfterSubmit(ermBarcodes, ozonCargoesAfter);
+      assertPlanCargoesFilledAfterSubmit(submitPlan, ozonCargoesAfter);
+      const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
+      if (cargoIdMapping.size) {
+        assertOzonPollCargoIdsMatchPlan(submitPlan, cargoIdMapping);
+      }
+      return ozonCargoesAfter;
+    } catch (verifyErr) {
+      logger.warn('[FBO Ozon] PENDING poll, fetch verify failed', {
+        ozonSupplyId,
+        error: verifyErr.message,
+      });
+    }
+  }
+
   assertOzonCargoesCreateCompleted(pollResult);
   const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
   assertOzonPollCargoIdsMatchPlan(submitPlan, cargoIdMapping);
   const ozonCargoesAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
   assertPlanCargoIdsStillPresent(submitPlan, ozonCargoesAfter);
   assertNoExtraOzonCargoesAfterSubmit(ermBarcodes, ozonCargoesAfter);
+  assertPlanCargoesFilledAfterSubmit(submitPlan, ozonCargoesAfter);
   return ozonCargoesAfter;
 }
 
@@ -278,37 +340,17 @@ export function listFilledOzonCargoesInPlan(submitPlan, ozonCargoes) {
     .filter(({ ozon }) => ozon && isOzonCargoFilled(ozon));
 }
 
-export function buildOzonCargoesResetBody(supply, submitPlan, ozonCargoes, ozonSupplyId) {
+/** Перед отправкой: в Ozon грузоместа должны быть пустыми (NONE), иначе состав не перезапишется. */
+export function assertOzonEmptyCargoesForSubmit(submitPlan, ozonCargoes) {
   const filled = listFilledOzonCargoesInPlan(submitPlan, ozonCargoes);
-  if (!filled.length) return null;
-
-  const supplyIdRaw = ozonSupplyId ?? supply.externalSupplyId;
-  const supplyIdNum = Number(supplyIdRaw);
-  const cargoes = filled.map(({ entry }) => ({
-    key: entry.requestKey,
-    value: {
-      type: ozonCargoType(entry.unit.cargoKind),
-      items: [],
-    },
-  }));
-
-  return {
-    supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : supplyIdRaw,
-    delete_current_version: false,
-    cargoes,
-  };
-}
-
-export function assertOzonCargoesReadyForRefill(submitPlan, ozonCargoes) {
-  const stillFilled = listFilledOzonCargoesInPlan(submitPlan, ozonCargoes);
-  if (!stillFilled.length) return;
-  const ids = stillFilled.map(({ ozon }) => ozon.cargoId).join(', ');
+  if (!filled.length) return;
+  const ids = filled.map(({ ozon }) => ozon.cargoId).join(', ');
   const err = new Error(
-    `Ozon не освободил грузоместа для обновления состава (${ids}). Очистите состав вручную в личном кабинете Ozon и повторите отправку.`
+    `Состав грузомест уже заполнен в Ozon (${ids}). Отправка из ERM не изменит его — выгрузите Excel по грузоместам и загрузите файл в личном кабинете Ozon (вкладка «Грузоместа»). Чтобы отправить через ERM, сначала очистите состав в ЛК Ozon.`
   );
   err.statusCode = 400;
-  err.code = 'OZON_CARGO_RESET_FAILED';
-  err.details = { cargoIds: stillFilled.map(({ ozon }) => ozon.cargoId) };
+  err.code = 'OZON_CARGO_ALREADY_FILLED';
+  err.details = { cargoIds: filled.map(({ ozon }) => ozon.cargoId) };
   throw err;
 }
 
@@ -626,35 +668,13 @@ class FboSuppliesSubmitService {
 
     const extraOzonCargoIds = findExtraOzonCargoes(ozonCargoesCurrent, ermBarcodes);
     if (extraOzonCargoIds.length) {
-      logger.info('[FBO Ozon] deleting extra cargoes before submit', {
-        supplyId,
-        ozonSupplyId,
-        extraOzonCargoIds,
-      });
-      await deleteOzonCargoesByIds(ozonSupplyId, extraOzonCargoIds, ozonApiOpts);
-      ozonCargoesCurrent = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+      ozonCargoesCurrent = await pruneOzonExtraCargoes(ozonSupplyId, ermBarcodes, ozonApiOpts);
       submitPlan = buildOzonCargoSubmitPlan(packing, ozonCargoesCurrent);
       submitMode = submitPlan[0]?.mode ?? 'create';
       ermBarcodes = submitPlan.map((p) => p.ermBarcode);
     }
 
-    const resetBody = buildOzonCargoesResetBody(
-      supply,
-      submitPlan,
-      ozonCargoesCurrent,
-      ozonSupplyId
-    );
-    if (resetBody) {
-      logger.info('[FBO Ozon] resetting filled cargoes before update', {
-        supplyId,
-        ozonSupplyId,
-        cargoIds: resetBody.cargoes.map((c) => c.key),
-      });
-      await executeOzonCargoesCreate(resetBody, ozonApiOpts);
-      ozonCargoesCurrent = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
-      assertOzonCargoesReadyForRefill(submitPlan, ozonCargoesCurrent);
-      submitMode = 'update';
-    }
+    assertOzonEmptyCargoesForSubmit(submitPlan, ozonCargoesCurrent);
 
     const deleteCurrentVersion = resolveOzonDeleteCurrentVersion();
 
@@ -682,6 +702,7 @@ class FboSuppliesSubmitService {
       ozonApiOpts,
       pollResult
     );
+    await pruneOzonExtraCargoes(ozonSupplyId, ermBarcodes, ozonApiOpts);
 
     const updatedSupply = await markSupplyReadyForShipment(supplyId, { profileId });
 

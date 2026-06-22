@@ -2,12 +2,12 @@ import {
   assertNoExtraOzonCargoesAfterSubmit,
   assertOzonCargoBarcodesMatchExisting,
   assertOzonCargoesCreateCompleted,
-  assertOzonCargoesReadyForRefill,
+  assertOzonEmptyCargoesForSubmit,
   assertOzonPollCargoIdsMatchPlan,
   assertPlanCargoIdsStillPresent,
+  assertPlanCargoesFilledAfterSubmit,
   buildOzonCargoSubmitPlan,
   buildOzonCargoesBody,
-  buildOzonCargoesResetBody,
   detectOzonCargoSubmitMode,
   extractOzonCargoIdMapping,
   findExtraOzonCargoes,
@@ -141,49 +141,34 @@ describe('resolveOzonDeleteCurrentVersion', () => {
   });
 });
 
-describe('buildOzonCargoesResetBody', () => {
-  const supply = { externalSupplyId: '12345678' };
-  const submitPlan = [
-    {
-      requestKey: '1022086008662000',
-      ozonCargoId: '1022086008662000',
-      ermBarcode: '1022086008662000',
-      unit: { cargoKind: 'box', contents: [{ productBarcode: '111', quantity: 10 }] },
-    },
-  ];
-
-  test('builds empty-items reset for filled cargoes', () => {
-    const body = buildOzonCargoesResetBody(
-      supply,
-      submitPlan,
-      [{ cargoId: '1022086008662000', contentType: 'MONO', bundleId: 'b1' }],
-      987654321
-    );
-    expect(body.supply_id).toBe(987654321);
-    expect(body.delete_current_version).toBe(false);
-    expect(body.cargoes[0].key).toBe('1022086008662000');
-    expect(body.cargoes[0].value.items).toEqual([]);
+describe('assertOzonEmptyCargoesForSubmit', () => {
+  test('blocks when Ozon cargo already has composition', () => {
+    const plan = [{ ozonCargoId: '1022086008662000' }];
+    expect(() =>
+      assertOzonEmptyCargoesForSubmit(plan, [
+        { cargoId: '1022086008662000', contentType: 'MONO', bundleId: 'b1' },
+      ])
+    ).toThrow(/уже заполнен/);
   });
 
-  test('returns null when all cargoes are empty', () => {
-    const body = buildOzonCargoesResetBody(
-      supply,
-      submitPlan,
-      [{ cargoId: '1022086008662000', contentType: 'NONE', bundleId: '' }],
-      987654321
-    );
-    expect(body).toBeNull();
+  test('allows first fill when cargo is empty', () => {
+    const plan = [{ ozonCargoId: '1022086008662000' }];
+    expect(() =>
+      assertOzonEmptyCargoesForSubmit(plan, [
+        { cargoId: '1022086008662000', contentType: 'NONE', bundleId: '' },
+      ])
+    ).not.toThrow();
   });
 });
 
-describe('assertOzonCargoesReadyForRefill', () => {
-  test('rejects when cargo is still filled after reset attempt', () => {
+describe('assertPlanCargoesFilledAfterSubmit', () => {
+  test('rejects when cargo not filled after submit', () => {
     const plan = [{ ozonCargoId: '1022086008662000' }];
     expect(() =>
-      assertOzonCargoesReadyForRefill(plan, [
-        { cargoId: '1022086008662000', contentType: 'MONO', bundleId: 'b1' },
+      assertPlanCargoesFilledAfterSubmit(plan, [
+        { cargoId: '1022086008662000', contentType: 'NONE', bundleId: '' },
       ])
-    ).toThrow(/не освободил/);
+    ).toThrow(/не заполнил/);
   });
 });
 
