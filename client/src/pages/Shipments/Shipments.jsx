@@ -112,6 +112,8 @@ export function Shipments() {
     }
   };
 
+  const isWbShipment = (shipment) => shipment?.marketplace === 'wildberries';
+
   const handleRemoveOrderFromShipment = async (orderId) => {
     if (!openShipmentDetail || openShipmentDetail.closed) return;
     setRemovingOrderId(orderId);
@@ -130,7 +132,14 @@ export function Shipments() {
       }
       await loadShipments();
     } catch (e) {
-      setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка удаления заказа из отгрузки');
+      setOpenDetailError(
+        getApiErrorMessage(
+          e,
+          isWbShipment(openShipmentDetail)
+            ? 'Ошибка переноса заказа в другую поставку'
+            : 'Ошибка удаления заказа из отгрузки'
+        )
+      );
     } finally {
       setRemovingOrderId(null);
     }
@@ -538,7 +547,11 @@ export function Shipments() {
                 <p className="shipments-empty">В отгрузке нет заказов.</p>
               ) : (
                 <div className="shipments-orders-in-shipment">
-                  <p>Заказы в отгрузке (можно удалить из отгрузки):</p>
+                  <p>
+                    {isWbShipment(openShipmentDetail)
+                      ? 'Заказы в поставке (можно перенести в другую поставку):'
+                      : 'Заказы в отгрузке (можно удалить из отгрузки):'}
+                  </p>
                   <ul className="shipments-detail-orders-list">
                     {openShipmentDetail.orderIds.map(orderId => (
                       <li key={orderId} className="shipments-detail-order-row">
@@ -550,7 +563,13 @@ export function Shipments() {
                             onClick={() => handleRemoveOrderFromShipment(orderId)}
                             disabled={removingOrderId === orderId}
                           >
-                            {removingOrderId === orderId ? 'Удаление...' : 'Удалить из отгрузки'}
+                            {removingOrderId === orderId
+                              ? isWbShipment(openShipmentDetail)
+                                ? 'Перенос…'
+                                : 'Удаление…'
+                              : isWbShipment(openShipmentDetail)
+                                ? 'Перенести в другую поставку'
+                                : 'Удалить из отгрузки'}
                           </Button>
                         )}
                       </li>
