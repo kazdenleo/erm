@@ -234,6 +234,38 @@
   min-width: 200px;
 }
 
+.fbo-open-calc-sessions-banner {
+  margin: 12px 0 16px;
+  padding: 12px 16px;
+  border: 1px solid #93c5fd;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.fbo-open-calc-sessions-banner--loading {
+  color: #475569;
+  font-size: 14px;
+}
+
+.fbo-open-calc-sessions-banner__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e3a8a;
+  margin-bottom: 4px;
+}
+
+.fbo-open-calc-sessions-banner__hint {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.fbo-open-calc-sessions-banner__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .fbo-packing-hint {
   font-size: 13px;
   color: #64748b;

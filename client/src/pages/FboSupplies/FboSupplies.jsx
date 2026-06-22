@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
 import { FboSupplyImportModal } from './FboSupplyImportModal';
@@ -29,6 +29,7 @@ function fmtDate(v) {
 
 export function FboSupplies() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -37,14 +38,23 @@ export function FboSupplies() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [calcLoading, setCalcLoading] = useState(false);
   const [openCalcSessions, setOpenCalcSessions] = useState([]);
+  const [calcSessionsLoading, setCalcSessionsLoading] = useState(false);
+  const [calcSessionsErr, setCalcSessionsErr] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
 
   const loadOpenCalcSessions = useCallback(async () => {
+    setCalcSessionsLoading(true);
+    setCalcSessionsErr(null);
     try {
       const data = await fboSuppliesApi.listPurchaseCalcSessions();
       setOpenCalcSessions(Array.isArray(data) ? data : []);
-    } catch {
+    } catch (e) {
       setOpenCalcSessions([]);
+      setCalcSessionsErr(
+        e.response?.data?.message || e.message || 'Не удалось загрузить активные расчёты закупки'
+      );
+    } finally {
+      setCalcSessionsLoading(false);
     }
   }, []);
 
@@ -65,6 +75,19 @@ export function FboSupplies() {
     load();
     void loadOpenCalcSessions();
   }, [load, loadOpenCalcSessions]);
+
+  useEffect(() => {
+    if (!location.pathname.includes('/fbo-supplies')) return;
+    void loadOpenCalcSessions();
+  }, [location.pathname, location.key, loadOpenCalcSessions]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      void loadOpenCalcSessions();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [loadOpenCalcSessions]);
 
   const handleDeleteSupply = async (supplyId, e) => {
     e?.stopPropagation?.();
@@ -160,27 +183,49 @@ export function FboSupplies() {
         </Button>
       </div>
 
+      {calcSessionsErr ? (
+        <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+          {calcSessionsErr}
+        </div>
+      ) : null}
+
+      {calcSessionsLoading && !openCalcSessions.length ? (
+        <div className="fbo-open-calc-sessions-banner fbo-open-calc-sessions-banner--loading">
+          Загрузка активных расчётов закупки…
+        </div>
+      ) : null}
+
       {openCalcSessions.length > 0 ? (
-        <div className="fbo-packing-hint fbo-open-calc-sessions" style={{ marginBottom: 12 }}>
-          <strong>Незавершённые расчёты закупки</strong> — можно продолжить позже:{' '}
-          {openCalcSessions.map((s) => {
-            const pending =
-              s.pendingPositions != null ? s.pendingPositions : null;
-            const label =
-              pending != null
-                ? `№${s.id} (${Array.isArray(s.supplyIds) ? s.supplyIds.length : '—'} поставок, осталось ${pending} поз.)`
-                : `№${s.id} (${Array.isArray(s.supplyIds) ? s.supplyIds.length : '—'} поставок)`;
-            return (
-              <button
-                key={s.id}
-                type="button"
-                className="btn btn-link btn-sm p-0 me-2"
-                onClick={() => navigate(`/stock-levels/fbo-supplies/purchase-calc?session=${s.id}`)}
-              >
-                {label}
-              </button>
-            );
-          })}
+        <div className="fbo-open-calc-sessions-banner" role="status">
+          <div className="fbo-open-calc-sessions-banner__title">Незавершённые расчёты закупки</div>
+          <p className="fbo-open-calc-sessions-banner__hint">
+            Можно прерваться и продолжить позже — прогресс закупок сохраняется.
+          </p>
+          <div className="fbo-open-calc-sessions-banner__links">
+            {openCalcSessions.map((s) => {
+              const supplyCount = Array.isArray(s.supplyIds) ? s.supplyIds.length : 0;
+              const purchased = Number(s.purchasedQty) || 0;
+              const extra =
+                s.pendingPositions != null
+                  ? `, осталось ${s.pendingPositions} поз.`
+                  : purchased > 0
+                    ? `, закуплено ${purchased} шт.`
+                    : s.hasPurchaseProgress
+                      ? ', в работе'
+                      : '';
+              return (
+                <Button
+                  key={s.id}
+                  type="button"
+                  variant="secondary"
+                  size="small"
+                  onClick={() => navigate(`/stock-levels/fbo-supplies/purchase-calc?session=${s.id}`)}
+                >
+                  Расчёт №{s.id} ({supplyCount} поставок{extra})
+                </Button>
+              );
+            })}
+          </div>
         </div>
       ) : null}
 

@@ -183,38 +183,27 @@ class FboPurchaseCalcSessionService {
     const pid = normalizeProfileId(profileId);
     if (!pid) return [];
     const r = await query(
-      `SELECT id, supply_ids, status, created_at, updated_at
-       FROM fbo_purchase_calc_sessions
-       WHERE profile_id = $1 AND status = 'open'
-       ORDER BY updated_at DESC`,
+      `SELECT s.id, s.supply_ids, s.status, s.created_at, s.updated_at,
+              (SELECT COUNT(*)::int FROM fbo_purchase_calc_row_state rs WHERE rs.session_id = s.id) AS state_rows,
+              (SELECT COALESCE(SUM(rs.purchased_qty), 0)::int FROM fbo_purchase_calc_row_state rs WHERE rs.session_id = s.id) AS purchased_qty
+       FROM fbo_purchase_calc_sessions s
+       WHERE s.profile_id = $1 AND s.status = 'open'
+       ORDER BY s.updated_at DESC`,
       [pid]
     );
-    const base = (r.rows || []).map((row) => ({
-      id: Number(row.id),
-      supplyIds: row.supply_ids,
-      status: row.status,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
-
-    const enriched = [];
-    for (const session of base) {
-      try {
-        const supplyIds = normalizeSupplyIds(session.supplyIds);
-        const calc = await fboSuppliesPurchaseCalcService.calculate(supplyIds, { profileId: pid });
-        const rowStateMaps = await loadRowStateMap(session.id);
-        const merged = applyRowState(calc, rowStateMaps);
-        enriched.push({
-          ...session,
-          pendingPositions: merged.pendingPositions ?? 0,
-          purchasedQty: merged.totals?.purchasedQty ?? 0,
-          toPurchaseQty: merged.totals?.toPurchaseQty ?? 0,
-        });
-      } catch {
-        enriched.push({ ...session, pendingPositions: null, purchasedQty: null, toPurchaseQty: null });
-      }
-    }
-    return enriched;
+    return (r.rows || []).map((row) => {
+      const supplyIds = normalizeSupplyIds(row.supply_ids);
+      const purchasedQty = Number(row.purchased_qty) || 0;
+      return {
+        id: Number(row.id),
+        supplyIds,
+        status: row.status,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        purchasedQty,
+        hasPurchaseProgress: purchasedQty > 0 || (Number(row.state_rows) || 0) > 0,
+      };
+    });
   }
 
   /** Найти открытую сессию или создать новую по набору поставок. */
