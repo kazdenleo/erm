@@ -99,19 +99,98 @@ export function buildOzonPackingSubmitPreview(packing, ozonCargoes) {
   };
 }
 
-export function buildOzonEmptyCargoesBody(ozonSupplyId, slots) {
+export function buildOzonEmptyCargoesBody(ozonSupplyId, slots, { includeEmptyItems = false } = {}) {
   const supplyIdNum = Number(ozonSupplyId);
   return {
     supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
     delete_current_version: false,
-    cargoes: (slots || []).map((slot) => ({
-      key: slot.key,
-      value: {
-        type: ozonCargoType(slot.cargoKind),
-        items: [],
-      },
-    })),
+    cargoes: (slots || []).map((slot) => {
+      const value = { type: ozonCargoType(slot.cargoKind) };
+      if (includeEmptyItems) value.items = [];
+      return { key: slot.key, value };
+    }),
   };
+}
+
+function formatOzonCreateError(err, pollResult) {
+  const fromPoll =
+    pollResult?.data?.errors ??
+    pollResult?.raw?.errors ??
+    pollResult?.errors ??
+    null;
+  if (typeof fromPoll === 'string' && fromPoll.trim()) return fromPoll.trim();
+  if (fromPoll?.message) return String(fromPoll.message);
+  if (Array.isArray(fromPoll) && fromPoll.length) {
+    return fromPoll.map((e) => e?.message || e?.description || JSON.stringify(e)).join('; ');
+  }
+  return err?.message || 'Ozon отклонил создание грузомест';
+}
+
+async function waitForNewOzonCargoIds(ozonSupplyId, beforeIds, ozonApiOpts, { maxAttempts = 20, intervalMs = 3000 } = {}) {
+  for (let i = 0; i < maxAttempts; i++) {
+    if (i > 0) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    const ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    const newIds = ozonAfter
+      .map((c) => c.cargoId)
+      .filter((id) => id && !beforeIds.has(id));
+    if (newIds.length) return { newIds, ozonAfter };
+  }
+  const ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+  return {
+    newIds: ozonAfter.map((c) => c.cargoId).filter((id) => id && !beforeIds.has(id)),
+    ozonAfter,
+  };
+}
+
+async function insertErmCargoUnits(supplyId, cargoIds, cargoKind) {
+  const kind = cargoKind === 'pallet' ? 'pallet' : 'box';
+  const created = [];
+  for (const cargoId of cargoIds) {
+    const exists = await query(
+      `SELECT id FROM fbo_supply_cargo_units WHERE fbo_supply_id = $1 AND barcode = $2 LIMIT 1`,
+      [supplyId, cargoId]
+    );
+    if (exists.rows?.length) {
+      created.push({ cargoId, cargoUnitId: exists.rows[0].id, existed: true });
+      continue;
+    }
+    const ins = await query(
+      `INSERT INTO fbo_supply_cargo_units (fbo_supply_id, barcode, cargo_kind)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [supplyId, cargoId, kind]
+    );
+    created.push({
+      cargoId,
+      cargoUnitId: ins.rows[0]?.id,
+      existed: false,
+    });
+  }
+  return created;
+}
+
+async function runOzonEmptyCargoCreate(ozonSupplyId, slots, ozonApiOpts) {
+  const variants = [
+    buildOzonEmptyCargoesBody(ozonSupplyId, slots, { includeEmptyItems: false }),
+    buildOzonEmptyCargoesBody(ozonSupplyId, slots, { includeEmptyItems: true }),
+  ];
+  let lastErr = null;
+  for (const body of variants) {
+    try {
+      const result = await executeOzonCargoesCreate(body, ozonApiOpts);
+      return result;
+    } catch (err) {
+      lastErr = err;
+      logger.warn('[FBO Ozon] create empty cargoes variant failed', {
+        ozonSupplyId,
+        includeEmptyItems: Boolean(body.cargoes?.[0]?.value?.items),
+        error: err.message,
+      });
+    }
+  }
+  throw lastErr || new Error('Ozon не принял запрос на создание грузомест');
 }
 
 function labelsCacheDir() {
@@ -209,20 +288,38 @@ class FboSuppliesOzonCargoesService {
     const beforeIds = new Set(ozonBefore.map((c) => c.cargoId));
 
     const slots = Array.from({ length: qty }, (_, i) => ({
-      key: `erm-new-${Date.now()}-${i}`,
+      key: `erm-${crypto.randomUUID()}`,
       cargoKind: kind,
     }));
-    const body = buildOzonEmptyCargoesBody(ozonSupplyId, slots);
     logger.info('[FBO Ozon] create empty cargoes', { supplyId, ozonSupplyId, qty, kind });
 
-    const { operationId, pollResult } = await executeOzonCargoesCreate(body, ozonApiOpts);
+    let operationId = null;
+    let pollResult = null;
+    try {
+      ({ operationId, pollResult } = await runOzonEmptyCargoCreate(ozonSupplyId, slots, ozonApiOpts));
+    } catch (err) {
+      const waited = await waitForNewOzonCargoIds(ozonSupplyId, beforeIds, ozonApiOpts, {
+        maxAttempts: 5,
+        intervalMs: 2000,
+      });
+      if (waited.newIds.length) {
+        pollResult = { status: 'SUCCESS', ok: true };
+      } else {
+        const msg = formatOzonCreateError(err, pollResult);
+        const e = new Error(msg);
+        e.statusCode = 400;
+        e.code = err.code || 'OZON_CARGO_CREATE_FAILED';
+        throw e;
+      }
+    }
+
     const mapping = extractOzonCargoIdMapping(pollResult);
     let newCargoIds = slots
       .map((slot) => mapping.get(slot.key))
       .filter(Boolean)
       .map(String);
 
-    const ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    let ozonAfter = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
     if (newCargoIds.length < qty) {
       newCargoIds = ozonAfter
         .map((c) => c.cargoId)
@@ -230,36 +327,23 @@ class FboSuppliesOzonCargoesService {
     }
 
     if (!newCargoIds.length) {
+      const waited = await waitForNewOzonCargoIds(ozonSupplyId, beforeIds, ozonApiOpts);
+      newCargoIds = waited.newIds;
+      ozonAfter = waited.ozonAfter;
+    }
+
+    if (!newCargoIds.length) {
       const err = new Error(
-        'Ozon не вернул номера новых грузомест. Проверьте личный кабинет Ozon и повторите.'
+        pollResult?.status === 'PENDING'
+          ? 'Ozon ещё обрабатывает создание грузомест. Подождите минуту, нажмите «Подтянуть из Ozon» или проверьте личный кабинет.'
+          : 'Ozon не вернул номера новых грузомест. Создайте коробку в личном кабинете Ozon и нажмите «Подтянуть из Ozon».'
       );
       err.statusCode = 400;
+      err.code = 'OZON_CARGO_CREATE_NO_IDS';
       throw err;
     }
 
-    const created = [];
-    for (const cargoId of newCargoIds) {
-      const exists = await query(
-        `SELECT id FROM fbo_supply_cargo_units WHERE fbo_supply_id = $1 AND barcode = $2 LIMIT 1`,
-        [supplyId, cargoId]
-      );
-      if (exists.rows?.length) {
-        created.push({ cargoId, cargoUnitId: exists.rows[0].id, existed: true });
-        continue;
-      }
-      const ins = await query(
-        `INSERT INTO fbo_supply_cargo_units (fbo_supply_id, barcode, cargo_kind)
-         VALUES ($1, $2, $3)
-         RETURNING id`,
-        [supplyId, cargoId, kind]
-      );
-      created.push({
-        cargoId,
-        cargoUnitId: ins.rows[0]?.id,
-        existed: false,
-      });
-    }
-
+    const created = await insertErmCargoUnits(supplyId, newCargoIds, kind);
     const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
     const ozonMeta = buildOzonPackingSubmitPreview(packing, ozonAfter);
 
@@ -270,6 +354,36 @@ class FboSuppliesOzonCargoesService {
       packing,
       ozonMeta,
       message: `Создано ${newCargoIds.length} грузомест на Ozon: ${newCargoIds.join(', ')}. Распечатайте этикетки и продолжите сборку.`,
+    };
+  }
+
+  async syncOzonCargoesToErm(supplyId, { profileId } = {}) {
+    const { ozonSupplyId, ozonApiOpts } = await resolveOzonApiContext(supplyId, { profileId });
+    const ozonCargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    const ozonIds = ozonCargoes.map((c) => c.cargoId).filter(Boolean);
+    if (!ozonIds.length) {
+      const err = new Error(
+        'В Ozon пока нет грузомест для этой поставки. Сначала создайте их в личном кабинете или кнопкой «Создать на Ozon».'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const created = await insertErmCargoUnits(supplyId, ozonIds, 'box');
+    const added = created.filter((c) => !c.existed);
+    const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
+    const ozonMeta = buildOzonPackingSubmitPreview(packing, ozonCargoes);
+
+    return {
+      createdCargoIds: ozonIds,
+      created,
+      addedCount: added.length,
+      packing,
+      ozonMeta,
+      message:
+        added.length > 0
+          ? `Добавлено ${added.length} грузомест из Ozon: ${added.map((c) => c.cargoId).join(', ')}`
+          : 'Все грузоместа Ozon уже есть в сборке ERM',
     };
   }
 

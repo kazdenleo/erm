@@ -253,6 +253,15 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  syncOzonCargoUnits: async (id) => {
+    const response = await api.post(
+      `/fbo-supplies/${id}/packing/ozon-cargoes/sync`,
+      {},
+      { timeout: 120000 }
+    );
+    return response.data?.data ?? response.data;
+  },
+
   downloadCargoLabels: async (id, cargoIds) => {
     const ids = (cargoIds || []).filter(Boolean).join(',');
     const response = await api.get(`/fbo-supplies/${id}/packing/cargo-labels`, {

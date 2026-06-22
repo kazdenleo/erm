@@ -41,11 +41,21 @@ describe('buildOzonPackingSubmitPreview', () => {
 });
 
 describe('buildOzonEmptyCargoesBody', () => {
-  test('creates empty box slots without delete_current_version', () => {
+  test('creates box slots without delete_current_version', () => {
     const body = buildOzonEmptyCargoesBody(12345, [{ key: 'erm-1', cargoKind: 'box' }]);
     expect(body.supply_id).toBe(12345);
     expect(body.delete_current_version).toBe(false);
-    expect(body.cargoes[0].value.items).toEqual([]);
     expect(body.cargoes[0].value.type).toBe('BOX');
+    expect(body.cargoes[0].value.items).toBeUndefined();
+  });
+
+  test('can include empty items array when requested', () => {
+    const body = buildOzonEmptyCargoesBody(
+      12345,
+      [{ key: 'erm-1', cargoKind: 'pallet' }],
+      { includeEmptyItems: true }
+    );
+    expect(body.cargoes[0].value.type).toBe('PALLET');
+    expect(body.cargoes[0].value.items).toEqual([]);
   });
 });

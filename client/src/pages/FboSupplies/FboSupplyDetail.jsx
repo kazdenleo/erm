@@ -31,6 +31,8 @@ import {
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
+import { FboSupplyItemPackingCell } from './FboSupplyItemPackingCell.jsx';
+import { FboPurchaseReplaceModal } from './FboPurchaseReplaceModal.jsx';
 import {
   buildStatsMap,
   isSupplyItemPackingComplete,
@@ -111,6 +113,8 @@ export function FboSupplyDetail() {
   const [pullingMpContent, setPullingMpContent] = useState(false);
   const [pullMpContentMsg, setPullMpContentMsg] = useState(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
+  const [replaceCtx, setReplaceCtx] = useState(null);
+  const [replaceSaving, setReplaceSaving] = useState(false);
   const selectAllItemsRef = useRef(null);
   const autoPlacementSyncAttemptedRef = useRef(null);
 
@@ -317,6 +321,61 @@ export function FboSupplyDetail() {
     },
     [id, loadPacking]
   );
+
+  const canEditSupplyComposition =
+    supply &&
+    !['shipped', 'closed', 'return'].includes(String(supply.status || '').toLowerCase());
+
+  const handleOpenAddSupplyItem = () => {
+    if (!canEditSupplyComposition) return;
+    setReplaceCtx({
+      supplyId: id,
+      supplyLabel: supply?.externalShipmentNumber
+        ? `№ ${supply.id} · ${supply.externalShipmentNumber}`
+        : `№ ${supply.id}`,
+      mode: 'add',
+      defaultQty: 1,
+    });
+  };
+
+  const handleOpenReplaceSupplyItem = (item) => {
+    if (!canEditSupplyComposition || !item?.productId) return;
+    setReplaceCtx({
+      supplyId: id,
+      supplyLabel: supply?.externalShipmentNumber
+        ? `№ ${supply.id} · ${supply.externalShipmentNumber}`
+        : `№ ${supply.id}`,
+      mode: 'replace',
+      supplyItemId: item.id,
+      currentProductName: item.productName || item.name,
+      currentSku: item.sku,
+      defaultQty: Math.max(1, Number(item.quantity) || 1),
+    });
+  };
+
+  const handleReplaceConfirm = async ({ productId, quantity }) => {
+    if (!replaceCtx) return;
+    setReplaceSaving(true);
+    setErr(null);
+    try {
+      if (replaceCtx.mode === 'add') {
+        await fboSuppliesApi.addSupplyItem(replaceCtx.supplyId, { productId, quantity });
+      } else {
+        await fboSuppliesApi.replaceSupplyItem(replaceCtx.supplyId, replaceCtx.supplyItemId, {
+          productId,
+          quantity,
+        });
+      }
+      setReplaceCtx(null);
+      const fresh = await fboSuppliesApi.getById(id);
+      setSupply(fresh);
+      await loadPacking();
+    } catch (e) {
+      setErr(e.response?.data?.message || e.message || 'Не удалось сохранить состав');
+    } finally {
+      setReplaceSaving(false);
+    }
+  };
 
   const handlePackingChange = useCallback((newPacking, meta) => {
     setPacking(newPacking);
@@ -1166,7 +1225,21 @@ export function FboSupplyDetail() {
       </div>
 
       <h3 style={{ fontSize: 16, marginBottom: 8 }}>Товары поставки</h3>
+      {!canEditSupplyComposition ? (
+        <p className="text-muted small mb-2">
+          Состав нельзя менять в статусе «{getFboSupplyStatusLabel(supply.status)}».
+        </p>
+      ) : (
+        <p className="text-muted small mb-2">
+          Нажмите на количество, чтобы изменить или удалить строку (0). Добавление и замена — кнопками ниже.
+        </p>
+      )}
       <div className="fbo-items-toolbar">
+        {canEditSupplyComposition ? (
+          <Button variant="secondary" size="small" onClick={handleOpenAddSupplyItem}>
+            Добавить товар
+          </Button>
+        ) : null}
         <Button
           variant="primary"
           size="small"
@@ -1261,13 +1334,14 @@ export function FboSupplyDetail() {
               <th title="Сколько покрыто с наличия на складе списания и из ожидаемых поступлений (в пути)">
                 Количество
               </th>
+              <th style={{ width: 88 }}>Действия</th>
               <th style={{ width: 48 }} />
             </tr>
           </thead>
           <tbody>
             {filteredGeneralItems.length === 0 ? (
               <tr>
-                <td colSpan={isOzonSupply ? 8 : 7} className="text-muted text-center py-3">
+                <td colSpan={isOzonSupply ? 9 : 8} className="text-muted text-center py-3">
                   {itemSearchActive ? 'Ничего не найдено' : 'Нет строк'}
                 </td>
               </tr>
@@ -1326,7 +1400,15 @@ export function FboSupplyDetail() {
                   ) : null}
                   <td>
                     <div className="fbo-supply-qty-with-reserve">
-                      <span className="fbo-supply-qty-with-reserve__qty">{it.quantity ?? 0}</span>
+                      <FboSupplyItemPackingCell
+                        supplyId={id}
+                        itemId={it.id}
+                        packed={stat?.packed ?? 0}
+                        planned={it.quantity ?? 0}
+                        disabled={!canEditSupplyComposition}
+                        onSaved={handleItemQuantitySaved}
+                        onBreakdownClick={() => setBreakdownItem(it)}
+                      />
                       <FboSupplyReserveBreakdown
                         showEmpty
                         reserveDisabled={!supply.deductStock}
@@ -1343,6 +1425,22 @@ export function FboSupplyDetail() {
                         sourceIncoming={it.sourceIncoming ?? it.source_incoming}
                       />
                     </div>
+                  </td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    {canEditSupplyComposition && it.productId ? (
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        className="btn-icon btn-icon-only"
+                        title="Заменить товар в строке"
+                        aria-label="Заменить товар"
+                        onClick={() => handleOpenReplaceSupplyItem(it)}
+                      >
+                        ⇄
+                      </Button>
+                    ) : (
+                      '—'
+                    )}
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <Button
@@ -1365,6 +1463,13 @@ export function FboSupplyDetail() {
       </div>
       </>
       ) : null}
+
+      <FboPurchaseReplaceModal
+        context={replaceCtx}
+        saving={replaceSaving}
+        onClose={() => !replaceSaving && setReplaceCtx(null)}
+        onConfirm={handleReplaceConfirm}
+      />
 
       <ProductLabelPrintModal
         isOpen={Boolean(labelPrintItem)}

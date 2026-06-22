@@ -84,6 +84,7 @@ export function FboSupplyPacking({
   const [removeModalOpen, setRemoveModalOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [creatingOnOzon, setCreatingOnOzon] = useState(false);
+  const [syncingFromOzon, setSyncingFromOzon] = useState(false);
   const [printingLabels, setPrintingLabels] = useState(false);
   const [newCargoMode, setNewCargoMode] = useState(false);
   const [weightWarning, setWeightWarning] = useState(null);
@@ -224,15 +225,6 @@ export function FboSupplyPacking({
   };
 
   const handleCreateOnOzon = async (cargoKind = 'box') => {
-    if (
-      !window.confirm(
-        cargoKind === 'pallet'
-          ? 'Создать новую паллету на Ozon и добавить в сборку ERM?'
-          : 'Создать новую коробку на Ozon и добавить в сборку ERM?'
-      )
-    ) {
-      return;
-    }
     setCreatingOnOzon(true);
     setScanError(null);
     setScanMsg(null);
@@ -257,6 +249,30 @@ export function FboSupplyPacking({
       setScanError(e.response?.data?.message || e.message || 'Не удалось создать грузоместо на Ozon');
     } finally {
       setCreatingOnOzon(false);
+    }
+  };
+
+  const handleSyncFromOzon = async () => {
+    setSyncingFromOzon(true);
+    setScanError(null);
+    setScanMsg(null);
+    try {
+      const data = await fboSuppliesApi.syncOzonCargoUnits(supplyId);
+      if (data?.packing) {
+        onPackingChange(
+          { ...data.packing, ozonMeta: data.ozonMeta ?? data.packing.ozonMeta },
+          { ozonMeta: data.ozonMeta }
+        );
+        const lastNew = (data.created || []).filter((c) => !c.existed).pop();
+        if (lastNew?.cargoUnitId) setActiveCargoUnitId(lastNew.cargoUnitId);
+      }
+      setScanMsg(data?.message || 'Грузоместа синхронизированы из Ozon');
+      playEventSound(SOUND_EVENTS.scan_ok);
+    } catch (e) {
+      playEventSound(SOUND_EVENTS.scan_error);
+      setScanError(e.response?.data?.message || e.message || 'Не удалось подтянуть грузоместа из Ozon');
+    } finally {
+      setSyncingFromOzon(false);
     }
   };
 
@@ -375,11 +391,20 @@ export function FboSupplyPacking({
               <Button
                 type="button"
                 variant="secondary"
-                disabled={scanLoading || creatingOnOzon || printingLabels}
+                disabled={scanLoading || creatingOnOzon || syncingFromOzon || printingLabels}
                 onClick={() => handleCreateOnOzon('box')}
                 title="Создать пустую коробку на Ozon и добавить в сборку"
               >
                 {creatingOnOzon ? 'Ozon…' : 'Создать на Ozon'}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={scanLoading || creatingOnOzon || syncingFromOzon || printingLabels}
+                onClick={handleSyncFromOzon}
+                title="Подтянуть номера грузомест из Ozon в сборку ERM"
+              >
+                {syncingFromOzon ? 'Синхр…' : 'Подтянуть из Ozon'}
               </Button>
               <Button
                 type="button"
