@@ -377,7 +377,7 @@ export function FboSupplyPacking({
       <p className="fbo-packing-hint" style={{ marginTop: 4 }}>
         {marketplace === 'wb'
           ? 'Формат WB: баркод, кол-во, ШК короба, срок годности.'
-          : 'Формат Ozon: ШК товара, артикул, артикул Ozon, кол-во, зона, срок годности, ШК ГМ, тип ГМ.'}
+          : 'Формат Ozon: ШК товара, артикул, кол-во, зона, срок годности, ШК ГМ, тип ГМ.'}
       </p>
       {cargoUnits.length === 0 ? (
         <p className="text-muted">

@@ -45,7 +45,6 @@ function normalizeMp(marketplace) {
 const OZON_PACKING_HEADERS = [
   'ШК товара',
   'Артикул товара',
-  'Артикул Ozon',
   'Кол-во товаров',
   'Зона размещения',
   'Срок годности ДО в формате YYYY-MM-DD (не более 1 СГ на 1 SKU в 1 ГМ)',
@@ -102,7 +101,6 @@ class FboSuppliesExportService {
           : [
               row.productBarcode || '',
               row.article || '',
-              row.ozonArticle || '',
               row.isEmptyCargo ? '' : row.quantity,
               row.placementZoneLabel || row.placementZone || '',
               expiry,
@@ -112,7 +110,7 @@ class FboSuppliesExportService {
       writeRow(ws, i + 2, values);
     });
 
-    const ozonColWidths = [18, 18, 16, 14, 22, 36, 18, 18];
+    const ozonColWidths = [18, 18, 14, 22, 36, 18, 18];
     headers.forEach((_, colIndex) => {
       ws.getColumn(colIndex + 1).width = mp === 'wb' ? (colIndex === 0 ? 22 : 16) : (ozonColWidths[colIndex] || 16);
     });

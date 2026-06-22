@@ -636,15 +636,6 @@ class FboSuppliesPackingService {
               cu.barcode AS cargo_barcode, cu.cargo_kind,
               TRIM(COALESCE(i.mp_offer_id, i.sku, p.sku, '')) AS article,
               TRIM(COALESCE(
-                NULLIF(TRIM(i.mp_product_id), ''),
-                (SELECT ps.marketplace_product_id::text
-                 FROM product_skus ps
-                 WHERE ps.product_id = p.id AND ps.marketplace = 'ozon'
-                 ORDER BY ps.id
-                 LIMIT 1),
-                ''
-              )) AS ozon_article,
-              TRIM(COALESCE(
                 i.barcode,
                 (SELECT b.barcode FROM barcodes b WHERE b.product_id = p.id ORDER BY b.id LIMIT 1),
                 ''
@@ -676,7 +667,6 @@ class FboSuppliesPackingService {
         cargoBarcode: row.cargo_barcode,
         cargoTypeLabel: ozonCargoTypeExportLabel(row.cargo_kind),
         article: row.article,
-        ozonArticle: row.ozon_article,
         productBarcode: row.product_barcode,
         isEmptyCargo: false,
       };
@@ -701,7 +691,6 @@ class FboSuppliesPackingService {
       cargoBarcode: row.cargo_barcode,
       cargoTypeLabel: ozonCargoTypeExportLabel(row.cargo_kind),
       article: '',
-      ozonArticle: '',
       productBarcode: '',
       isEmptyCargo: true,
     }));
