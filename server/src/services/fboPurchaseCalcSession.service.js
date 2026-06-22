@@ -64,8 +64,18 @@ function sortSessionPurchaseRows(rows) {
   return out;
 }
 
-function applyRowState(calc, rowStateByKey) {
+function applyRowState(calc, rowStateMaps) {
   const isPurchasable = (row) => row.rowType !== 'kit' && !row.isKitHeader;
+  const byKey = rowStateMaps?.byKey || rowStateMaps || new Map();
+  const byProductId = rowStateMaps?.byProductId || new Map();
+  const productRowCount = new Map();
+  for (const row of calc.rows || []) {
+    if (!isPurchasable(row) || !row.productId) continue;
+    const pid = Number(row.productId);
+    productRowCount.set(pid, (productRowCount.get(pid) || 0) + 1);
+  }
+  const lookupCtx = { byKey, byProductId, productRowCount };
+
   const rows = sortSessionPurchaseRows(
     (calc.rows || []).map((row) => {
     if (!isPurchasable(row)) {
@@ -77,8 +87,7 @@ function applyRowState(calc, rowStateByKey) {
         purchaseComplete: true,
       };
     }
-    const st = rowStateByKey.get(row.key) || {};
-    const purchasedQty = Math.max(0, Number(st.purchasedQty) || 0);
+    const purchasedQty = resolvePurchasedQty(row, lookupCtx);
     const needQty = Math.max(0, Number(row.toPurchase) || 0);
     const remainingToPurchase = Math.max(0, needQty - purchasedQty);
     const cost = Number(row.cost) || 0;
@@ -106,10 +115,12 @@ function applyRowState(calc, rowStateByKey) {
   );
   totals.costSum = Math.round(totals.costSum * 100) / 100;
 
-  const pendingRows = purchasableRows.filter((r) => r.remainingToPurchase > 0 && r.productId);
+  const pendingRows = purchasableRows.filter(
+    (r) => (Number(r.toPurchase) || 0) > 0 && (Number(r.remainingToPurchase) || 0) > 0 && r.productId
+  );
   const allComplete = pendingRows.length === 0;
 
-  return { ...calc, rows, totals, allComplete };
+  return { ...calc, rows, totals, allComplete, pendingPositions: pendingRows.length };
 }
 
 async function loadRowStateMap(sessionId) {
@@ -119,14 +130,37 @@ async function loadRowStateMap(sessionId) {
      WHERE session_id = $1`,
     [sessionId]
   );
-  const map = new Map();
+  const byKey = new Map();
+  const byProductId = new Map();
   for (const row of r.rows || []) {
-    map.set(String(row.row_key), {
-      purchasedQty: Number(row.purchased_qty) || 0,
+    const purchasedQty = Number(row.purchased_qty) || 0;
+    byKey.set(String(row.row_key), {
+      purchasedQty,
       productId: row.product_id != null ? Number(row.product_id) : null,
     });
+    const pid = row.product_id != null ? Number(row.product_id) : null;
+    if (pid != null && pid > 0) {
+      byProductId.set(pid, (byProductId.get(pid) || 0) + purchasedQty);
+    }
   }
-  return map;
+  return { byKey, byProductId };
+}
+
+function resolvePurchasedQty(row, { byKey, byProductId, productRowCount }) {
+  const direct = byKey.get(String(row.key));
+  if (direct) return Math.max(0, Number(direct.purchasedQty) || 0);
+
+  const pid = row.productId != null ? Number(row.productId) : null;
+  if (!pid || pid < 1) return 0;
+
+  const legacyKey = `p:${pid}`;
+  const legacy = byKey.get(legacyKey);
+  if (legacy) return Math.max(0, Number(legacy.purchasedQty) || 0);
+
+  if ((productRowCount.get(pid) || 0) === 1) {
+    return Math.max(0, Number(byProductId.get(pid)) || 0);
+  }
+  return 0;
 }
 
 async function assertSessionInProfile(client, sessionId, profileId) {
@@ -155,13 +189,32 @@ class FboPurchaseCalcSessionService {
        ORDER BY updated_at DESC`,
       [pid]
     );
-    return (r.rows || []).map((row) => ({
+    const base = (r.rows || []).map((row) => ({
       id: Number(row.id),
       supplyIds: row.supply_ids,
       status: row.status,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+
+    const enriched = [];
+    for (const session of base) {
+      try {
+        const supplyIds = normalizeSupplyIds(session.supplyIds);
+        const calc = await fboSuppliesPurchaseCalcService.calculate(supplyIds, { profileId: pid });
+        const rowStateMaps = await loadRowStateMap(session.id);
+        const merged = applyRowState(calc, rowStateMaps);
+        enriched.push({
+          ...session,
+          pendingPositions: merged.pendingPositions ?? 0,
+          purchasedQty: merged.totals?.purchasedQty ?? 0,
+          toPurchaseQty: merged.totals?.toPurchaseQty ?? 0,
+        });
+      } catch {
+        enriched.push({ ...session, pendingPositions: null, purchasedQty: null, toPurchaseQty: null });
+      }
+    }
+    return enriched;
   }
 
   /** Найти открытую сессию или создать новую по набору поставок. */
@@ -231,8 +284,8 @@ class FboPurchaseCalcSessionService {
 
     const supplyIds = normalizeSupplyIds(session.supply_ids);
     const calc = await fboSuppliesPurchaseCalcService.calculate(supplyIds, { profileId: pid });
-    const rowStateByKey = await loadRowStateMap(sid);
-    const merged = applyRowState(calc, rowStateByKey);
+    const rowStateMaps = await loadRowStateMap(sid);
+    const merged = applyRowState(calc, rowStateMaps);
 
     const linksR = await query(
       `SELECT l.id, l.purchase_id, l.supplier_id, l.items, l.created_at, s.name AS supplier_name

@@ -85,6 +85,19 @@ export function mergePurchasedProgress(rows, prevRows = []) {
   const purchasedByKey = new Map(
     (prevRows || []).map((r) => [r.key, Math.max(0, Number(r.purchasedQty) || 0)])
   );
+  const purchasedByProduct = new Map();
+  for (const r of prevRows || []) {
+    if (!r?.productId) continue;
+    const pid = Number(r.productId);
+    purchasedByProduct.set(pid, (purchasedByProduct.get(pid) || 0) + (Number(r.purchasedQty) || 0));
+  }
+  const productRowCount = new Map();
+  for (const row of rows || []) {
+    if (!isPurchasablePurchaseRow(row) || !row.productId) continue;
+    const pid = Number(row.productId);
+    productRowCount.set(pid, (productRowCount.get(pid) || 0) + 1);
+  }
+
   return rows.map((row) => {
     if (!isPurchasablePurchaseRow(row)) {
       return {
@@ -95,10 +108,19 @@ export function mergePurchasedProgress(rows, prevRows = []) {
         purchaseComplete: true,
       };
     }
-    const purchasedQty = Math.max(
-      0,
-      Number(purchasedByKey.get(row.key) ?? row.purchasedQty) || 0
-    );
+    let purchasedQty = Math.max(0, Number(purchasedByKey.get(row.key)) || 0);
+    if (!purchasedQty && row.productId) {
+      const pid = Number(row.productId);
+      const legacyKey = `p:${pid}`;
+      if (purchasedByKey.has(legacyKey)) {
+        purchasedQty = Math.max(0, Number(purchasedByKey.get(legacyKey)) || 0);
+      } else if ((productRowCount.get(pid) || 0) === 1) {
+        purchasedQty = Math.max(0, Number(purchasedByProduct.get(pid)) || 0);
+      }
+    }
+    if (!purchasedQty) {
+      purchasedQty = Math.max(0, Number(row.purchasedQty) || 0);
+    }
     const needQty = Math.max(0, Number(row.toPurchase) || 0);
     const remainingToPurchase = Math.max(0, needQty - purchasedQty);
     const cost = Number(row.cost) || 0;

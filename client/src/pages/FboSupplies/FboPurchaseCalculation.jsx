@@ -501,7 +501,7 @@ export function FboPurchaseCalculation() {
         <Button
           variant="primary"
           size="small"
-          disabled={!selectedPurchaseItems.length}
+          disabled={!selectedPurchaseItems.length || session?.status === 'completed'}
           onClick={() => setPurchaseOpen(true)}
         >
           Закупить выбранное ({selectedPurchaseItems.length})
@@ -512,9 +512,17 @@ export function FboPurchaseCalculation() {
         <p className="fbo-packing-hint" style={{ marginBottom: 8 }}>
           Сессия расчёта №{session.id}
           {session.status === 'completed' ? ' · завершена' : ' · в работе'}.
-          {selectableRows.length > 0
-            ? ` Осталось оформить: ${selectableRows.length} поз.`
-            : ' Все позиции закуплены или покрыты остатком.'}
+          {session.status === 'completed' ? (
+            ' Все позиции оформлены.'
+          ) : selectableRows.length > 0 ? (
+            <>
+              {' '}
+              Осталось оформить: <strong>{selectableRows.length}</strong> поз. Можно закрыть страницу и
+              продолжить позже — ссылка на расчёт в списке поставок FBO.
+            </>
+          ) : (
+            ' Все позиции закуплены или покрыты остатком.'
+          )}
         </p>
       ) : null}
 

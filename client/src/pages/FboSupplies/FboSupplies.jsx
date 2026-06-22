@@ -161,18 +161,26 @@ export function FboSupplies() {
       </div>
 
       {openCalcSessions.length > 0 ? (
-        <div className="fbo-packing-hint" style={{ marginBottom: 12 }}>
-          <strong>Активные расчёты закупки:</strong>{' '}
-          {openCalcSessions.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className="btn btn-link btn-sm p-0 me-2"
-              onClick={() => navigate(`/stock-levels/fbo-supplies/purchase-calc?session=${s.id}`)}
-            >
-              №{s.id} ({Array.isArray(s.supplyIds) ? s.supplyIds.length : '—'} поставок)
-            </button>
-          ))}
+        <div className="fbo-packing-hint fbo-open-calc-sessions" style={{ marginBottom: 12 }}>
+          <strong>Незавершённые расчёты закупки</strong> — можно продолжить позже:{' '}
+          {openCalcSessions.map((s) => {
+            const pending =
+              s.pendingPositions != null ? s.pendingPositions : null;
+            const label =
+              pending != null
+                ? `№${s.id} (${Array.isArray(s.supplyIds) ? s.supplyIds.length : '—'} поставок, осталось ${pending} поз.)`
+                : `№${s.id} (${Array.isArray(s.supplyIds) ? s.supplyIds.length : '—'} поставок)`;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                className="btn btn-link btn-sm p-0 me-2"
+                onClick={() => navigate(`/stock-levels/fbo-supplies/purchase-calc?session=${s.id}`)}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
       ) : null}
 
