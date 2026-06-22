@@ -193,7 +193,11 @@ class ShipmentsController {
       }
       const { id } = req.params;
       const { orderIds } = req.body || {};
-      const shipment = await shipmentsService.removeOrdersFromShipment(id, orderIds, { profileId: sp.profileId, organizationId: sp.organizationId });
+      const shipment = await shipmentsService.removeOrdersFromShipment(id, orderIds, {
+        profileId: sp.profileId,
+        organizationId: sp.organizationId,
+        relocateWbToNewSupply: true,
+      });
       return res.status(200).json({ ok: true, data: shipment });
     } catch (error) {
       if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });

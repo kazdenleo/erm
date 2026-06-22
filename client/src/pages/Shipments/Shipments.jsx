@@ -22,6 +22,7 @@ export function Shipments() {
   const [closeLoadingId, setCloseLoadingId] = useState(null);
   const [openShipmentDetail, setOpenShipmentDetail] = useState(null);
   const [openDetailError, setOpenDetailError] = useState(null);
+  const [openDetailMessage, setOpenDetailMessage] = useState(null);
   const [removingOrderId, setRemovingOrderId] = useState(null);
   const [closeConfirm, setCloseConfirm] = useState(null);
   const [closeNotAssembledAction, setCloseNotAssembledAction] = useState('');
@@ -78,6 +79,7 @@ export function Shipments() {
 
   const openShipmentDetailModal = (shipment) => {
     setOpenDetailError(null);
+    setOpenDetailMessage(null);
     setOpenShipmentDetail(shipment);
   };
 
@@ -113,9 +115,19 @@ export function Shipments() {
   const handleRemoveOrderFromShipment = async (orderId) => {
     if (!openShipmentDetail || openShipmentDetail.closed) return;
     setRemovingOrderId(orderId);
+    setOpenDetailMessage(null);
     try {
       const updated = await shipmentsApi.removeOrders(openShipmentDetail.id, [orderId]);
-      setOpenShipmentDetail(updated);
+      const { relocatedShipment, ...shipment } = updated || {};
+      setOpenShipmentDetail(shipment);
+      if (relocatedShipment) {
+        const label = relocatedShipment.name || relocatedShipment.id || 'новая отгрузка';
+        setOpenDetailMessage(
+          openShipmentDetail.marketplace === 'wildberries'
+            ? `Заказ перенесён в новую поставку WB: ${label}`
+            : `Заказ перенесён в отгрузку: ${label}`
+        );
+      }
       await loadShipments();
     } catch (e) {
       setOpenDetailError(e.response?.data?.message || e.message || 'Ошибка удаления заказа из отгрузки');
@@ -506,12 +518,15 @@ export function Shipments() {
 
       <Modal
         isOpen={!!openShipmentDetail}
-        onClose={() => { setOpenShipmentDetail(null); setOpenDetailError(null); }}
+        onClose={() => { setOpenShipmentDetail(null); setOpenDetailError(null); setOpenDetailMessage(null); }}
         title={openShipmentDetail ? `Отгрузка: ${openShipmentDetail.name ?? openShipmentDetail.id}` : 'Отгрузка'}
         size="large"
       >
         <div className="shipments-detail">
           {openDetailError && <div className="error" style={{ marginBottom: 12 }}>{openDetailError}</div>}
+          {openDetailMessage && (
+            <div className="shipments-detail-info" style={{ marginBottom: 12 }}>{openDetailMessage}</div>
+          )}
           {openShipmentDetail && (
             <>
               <p className="shipments-detail-meta">

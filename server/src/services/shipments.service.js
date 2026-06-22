@@ -1609,10 +1609,33 @@ async function getShipmentById(shipmentId, { profileId = null, organizationId = 
 }
 
 /**
- * Удалить заказы из поставки (только локальная запись; для WB заказ на маркетплейсе остаётся в поставке).
- * Только для локальных поставок (id вида ship-*). Не закрытые поставки можно редактировать.
+ * Перенести заказы WB в новую отгрузку (новая supply в ЛК WB).
  */
-async function removeOrdersFromShipment(shipmentId, orderIdsToRemove, { profileId = null, organizationId = null } = {}) {
+async function relocateWildberriesOrdersToNewShipment(sourceShip, orderIds, { profileId = null, organizationId = null } = {}) {
+  const ids = [...new Set((orderIds || []).map((id) => String(id).trim()).filter(Boolean))];
+  if (!ids.length) return null;
+
+  const prof = sourceShip.profileId ?? profileId;
+  const org = sourceShip.organizationId ?? organizationId;
+  const newShip = await createShipment({
+    marketplace: 'wildberries',
+    name: formatWbShipmentDisplayName(null, `Сборка ${new Date().toLocaleDateString('ru-RU')}`),
+    profileId: prof,
+    organizationId: org,
+  });
+
+  return addOrdersToShipment(newShip.id, ids, { profileId: prof, organizationId: org });
+}
+
+/**
+ * Удалить заказы из поставки.
+ * Ozon/Яндекс — только локально. WB: убрать из текущей supply; при relocateWbToNewSupply — новая поставка.
+ */
+async function removeOrdersFromShipment(
+  shipmentId,
+  orderIdsToRemove,
+  { profileId = null, organizationId = null, relocateWbToNewSupply = false } = {}
+) {
   if (!Array.isArray(orderIdsToRemove) || orderIdsToRemove.length === 0) {
     const err = new Error('Передайте массив orderIds для удаления');
     err.statusCode = 400;
@@ -1636,9 +1659,13 @@ async function removeOrdersFromShipment(shipmentId, orderIdsToRemove, { profileI
     throw err;
   }
 
-  // Если это WB и поставка уже создана на WB — удаляем и на маркетплейсе тоже.
-  if (ship.marketplace === 'wildberries' && ship.externalId) {
-    const wbConfig = await getWildberriesConfigForScope(ship.profileId, { organizationId });
+  const isWb = ship.marketplace === 'wildberries' || ship.marketplace === 'wb';
+  const wbConfig =
+    isWb && ship.externalId
+      ? await getWildberriesConfigForScope(ship.profileId, { organizationId })
+      : null;
+
+  if (isWb && ship.externalId) {
     if (!wbConfig?.api_key) {
       const err = new Error('Wildberries API не настроен');
       err.statusCode = 400;
@@ -1651,7 +1678,23 @@ async function removeOrdersFromShipment(shipmentId, orderIdsToRemove, { profileI
   const had = ship.orderIds || [];
   ship.orderIds = had.filter(id => !toRemove.has(String(id)));
   await saveLocalShipments(shipments);
-  return normalizeShipment(ship);
+
+  let relocatedShipment = null;
+  if (isWb && relocateWbToNewSupply) {
+    relocatedShipment = await relocateWildberriesOrdersToNewShipment(ship, orderIdsToRemove, {
+      profileId,
+      organizationId,
+    });
+    logger.info(
+      `[Shipments WB] Relocated ${orderIdsToRemove.length} order(s) from ${shipmentId} to ${relocatedShipment?.id}`
+    );
+  }
+
+  const out = normalizeShipment(ship);
+  if (relocatedShipment) {
+    out.relocatedShipment = relocatedShipment;
+  }
+  return out;
 }
 
 /**
@@ -1674,7 +1717,11 @@ async function removeOrderFromOpenShipments(marketplace, orderId, { profileId = 
     const ids = (ship.orderIds || []).map(String);
     if (!ids.includes(oid)) continue;
     try {
-      await removeOrdersFromShipment(ship.id, [oid], { profileId, organizationId });
+      await removeOrdersFromShipment(ship.id, [oid], {
+        profileId,
+        organizationId,
+        relocateWbToNewSupply: false,
+      });
       removedFrom.push(ship.id);
     } catch (e) {
       logger.warn(`[Shipments] removeOrderFromOpenShipments ${ship.id} / ${oid}: ${e?.message || e}`);
