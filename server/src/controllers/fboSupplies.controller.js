@@ -24,6 +24,23 @@ function setAttachmentXlsx(res, filename) {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`);
 }
 
+/** Профиль для сессий расчёта закупки — как у списка поставок + заголовок X-Account-Id. */
+function resolveFboProfileId(req) {
+  const tid = tenantListProfileId(req);
+  if (tid === TENANT_LIST_EMPTY) {
+    const h = req.get('x-account-id') || req.get('X-Account-Id');
+    const n = h != null && String(h).trim() !== '' ? Number(String(h).trim()) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : TENANT_LIST_EMPTY;
+  }
+  if (tid == null) {
+    const h = req.get('x-account-id') || req.get('X-Account-Id');
+    const n = h != null && String(h).trim() !== '' ? Number(String(h).trim()) : NaN;
+    if (Number.isFinite(n) && n > 0) return n;
+    return null;
+  }
+  return tid;
+}
+
 /** Организация из тела запроса или заголовка (как на странице «Интеграции»). */
 function resolveOrganizationIdFromRequest(req) {
   const fromBody = req.body?.organizationId ?? req.body?.organization_id ?? null;
@@ -319,8 +336,11 @@ class FboSuppliesController {
 
   async listPurchaseCalcSessions(req, res, next) {
     try {
-      const profileId = req.user?.profileId ?? null;
-      const data = await fboPurchaseCalcSessionService.listOpen({ profileId });
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      const data = await fboPurchaseCalcSessionService.listOpen({ profileId: tid });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       next(e);
@@ -329,7 +349,14 @@ class FboSuppliesController {
 
   async openPurchaseCalcSession(req, res, next) {
     try {
-      const profileId = req.user?.profileId ?? null;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Действие доступно только пользователям с привязкой к аккаунту (профилю)',
+        });
+      }
+      const profileId = tid;
       const userId = req.user?.id ?? null;
       const supplyIds = req.body?.supplyIds ?? req.body?.ids ?? [];
       const opened = await fboPurchaseCalcSessionService.openOrCreate(supplyIds, {
@@ -351,7 +378,11 @@ class FboSuppliesController {
 
   async getPurchaseCalcSession(req, res, next) {
     try {
-      const profileId = req.user?.profileId ?? null;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Сессия недоступна' });
+      }
+      const profileId = tid;
       const sessionId = req.params.sessionId;
       const data = await fboPurchaseCalcSessionService.getSessionView(sessionId, { profileId });
       return res.status(200).json({ ok: true, data });
@@ -365,7 +396,14 @@ class FboSuppliesController {
 
   async createPurchaseFromCalcSession(req, res, next) {
     try {
-      const profileId = req.user?.profileId ?? null;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Действие доступно только пользователям с привязкой к аккаунту (профилю)',
+        });
+      }
+      const profileId = tid;
       const userId = req.user?.id ?? null;
       const sessionId = req.params.sessionId;
       const body = req.body || {};

@@ -266,6 +266,15 @@
   gap: 8px;
 }
 
+.fbo-open-calc-sessions-banner--current {
+  border-color: #fcd34d;
+  background: #fffbeb;
+}
+
+.fbo-open-calc-sessions-banner--current .fbo-open-calc-sessions-banner__title {
+  color: #92400e;
+}
+
 .fbo-packing-hint {
   font-size: 13px;
   color: #64748b;

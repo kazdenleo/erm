@@ -22,6 +22,7 @@ import {
   sortPurchaseRowsWithProgress,
 } from './fboPurchaseCalcUtils';
 import { FboPurchaseReplaceModal } from './FboPurchaseReplaceModal';
+import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
 import './FboSupplies.css';
 
 function fmtMoney(n) {
@@ -485,6 +486,8 @@ export function FboPurchaseCalculation() {
 
   return (
     <div className="fbo-supplies-page">
+      <FboOpenCalcSessionsBanner excludeSessionId={session?.id ?? sessionIdFromUrl} compact />
+
       <div className="fbo-supplies-toolbar">
         <Button variant="secondary" size="small" onClick={() => navigate('/stock-levels/fbo-supplies')}>
           ← К поставкам
@@ -508,21 +511,22 @@ export function FboPurchaseCalculation() {
         </Button>
       </div>
 
-      {session?.id ? (
+      {session?.id && session.status !== 'completed' ? (
+        <div className="fbo-open-calc-sessions-banner fbo-open-calc-sessions-banner--current" role="status">
+          <div className="fbo-open-calc-sessions-banner__title">
+            Текущий расчёт закупки №{session.id} · в работе
+          </div>
+          <p className="fbo-open-calc-sessions-banner__hint">
+            {selectableRows.length > 0
+              ? `Осталось оформить: ${selectableRows.length} поз. Прогресс сохраняется — можно вернуться позже через «Поставки FBO».`
+              : 'Все позиции закуплены или покрыты остатком.'}
+          </p>
+        </div>
+      ) : null}
+
+      {session?.id && session.status === 'completed' ? (
         <p className="fbo-packing-hint" style={{ marginBottom: 8 }}>
-          Сессия расчёта №{session.id}
-          {session.status === 'completed' ? ' · завершена' : ' · в работе'}.
-          {session.status === 'completed' ? (
-            ' Все позиции оформлены.'
-          ) : selectableRows.length > 0 ? (
-            <>
-              {' '}
-              Осталось оформить: <strong>{selectableRows.length}</strong> поз. Можно закрыть страницу и
-              продолжить позже — ссылка на расчёт в списке поставок FBO.
-            </>
-          ) : (
-            ' Все позиции закуплены или покрыты остатком.'
-          )}
+          Сессия расчёта №{session.id} · завершена. Все позиции оформлены.
         </p>
       ) : null}
 

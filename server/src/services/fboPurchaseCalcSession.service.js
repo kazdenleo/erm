@@ -181,16 +181,18 @@ async function assertSessionInProfile(client, sessionId, profileId) {
 class FboPurchaseCalcSessionService {
   async listOpen({ profileId } = {}) {
     const pid = normalizeProfileId(profileId);
-    if (!pid) return [];
-    const r = await query(
-      `SELECT s.id, s.supply_ids, s.status, s.created_at, s.updated_at,
+    const params = [];
+    let sql = `SELECT s.id, s.supply_ids, s.status, s.created_at, s.updated_at,
               (SELECT COUNT(*)::int FROM fbo_purchase_calc_row_state rs WHERE rs.session_id = s.id) AS state_rows,
               (SELECT COALESCE(SUM(rs.purchased_qty), 0)::int FROM fbo_purchase_calc_row_state rs WHERE rs.session_id = s.id) AS purchased_qty
        FROM fbo_purchase_calc_sessions s
-       WHERE s.profile_id = $1 AND s.status = 'open'
-       ORDER BY s.updated_at DESC`,
-      [pid]
-    );
+       WHERE s.status = 'open'`;
+    if (pid != null) {
+      params.push(pid);
+      sql += ` AND s.profile_id = $${params.length}`;
+    }
+    sql += ` ORDER BY s.updated_at DESC`;
+    const r = await query(sql, params);
     return (r.rows || []).map((row) => {
       const supplyIds = normalizeSupplyIds(row.supply_ids);
       const purchasedQty = Number(row.purchased_qty) || 0;
