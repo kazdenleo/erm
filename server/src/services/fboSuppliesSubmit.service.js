@@ -147,6 +147,19 @@ async function deleteOzonCargoesByIds(ozonSupplyId, cargoIds, ozonApiOpts) {
   await pollOzonCargoesDeleteStatus(operationId, ozonApiOpts);
 }
 
+async function executeOzonCargoesCreate(body, ozonApiOpts) {
+  const createData = await integrationsService._ozonApiPost('/v1/cargoes/create', body, ozonApiOpts);
+  const operationId = extractOzonOperationId(createData);
+  if (!operationId) {
+    const err = new Error('Ozon не вернул идентификатор операции установки грузомест');
+    err.statusCode = 400;
+    throw err;
+  }
+  const pollResult = await pollOzonCargoesCreateInfo(operationId, ozonApiOpts);
+  assertOzonCargoesCreateCompleted(pollResult);
+  return { operationId, pollResult };
+}
+
 async function verifyOzonCargoesSubmitResult(submitPlan, ermBarcodes, ozonSupplyId, ozonApiOpts, pollResult) {
   assertOzonCargoesCreateCompleted(pollResult);
   const cargoIdMapping = extractOzonCargoIdMapping(pollResult);
@@ -251,26 +264,50 @@ export function findExtraOzonCargoes(ozonCargoes, ermBarcodes) {
     .filter((id) => id && !ermSet.has(id));
 }
 
-export function resolveOzonDeleteCurrentVersion(_ozonCargoes, submitMode = 'create') {
-  // true — Ozon удаляет все ГМ и создаёт заново с НОВЫМИ cargo_id на этикетках.
-  // false — заполняет/дополняет существующие пустые (NONE) грузоместа по key=cargo_id.
-  if (submitMode === 'update') return false;
+export function resolveOzonDeleteCurrentVersion() {
+  // true — Ozon удаляет все ГМ и создаёт заново с новыми cargo_id.
+  // false + key=cargo_id — заполняет пустые (NONE) или обновляет после сброса состава.
   return false;
 }
 
-export function assertOzonFilledCargoResubmitAllowed(submitPlan, ozonCargoes) {
+export function listFilledOzonCargoesInPlan(submitPlan, ozonCargoes) {
   const ozonById = new Map((ozonCargoes || []).map((c) => [c.cargoId, c]));
-  const filled = (submitPlan || [])
-    .map((entry) => ozonById.get(entry.ozonCargoId))
-    .filter((cargo) => cargo && isOzonCargoFilled(cargo));
-  if (!filled.length) return;
-  const ids = filled.map((c) => c.cargoId).join(', ');
+  return (submitPlan || [])
+    .map((entry) => ({ entry, ozon: ozonById.get(entry.ozonCargoId) }))
+    .filter(({ ozon }) => ozon && isOzonCargoFilled(ozon));
+}
+
+export function buildOzonCargoesResetBody(supply, submitPlan, ozonCargoes, ozonSupplyId) {
+  const filled = listFilledOzonCargoesInPlan(submitPlan, ozonCargoes);
+  if (!filled.length) return null;
+
+  const supplyIdRaw = ozonSupplyId ?? supply.externalSupplyId;
+  const supplyIdNum = Number(supplyIdRaw);
+  const cargoes = filled.map(({ entry }) => ({
+    key: entry.requestKey,
+    value: {
+      type: ozonCargoType(entry.unit.cargoKind),
+      items: [],
+    },
+  }));
+
+  return {
+    supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : supplyIdRaw,
+    delete_current_version: false,
+    cargoes,
+  };
+}
+
+export function assertOzonCargoesReadyForRefill(submitPlan, ozonCargoes) {
+  const stillFilled = listFilledOzonCargoesInPlan(submitPlan, ozonCargoes);
+  if (!stillFilled.length) return;
+  const ids = stillFilled.map(({ ozon }) => ozon.cargoId).join(', ');
   const err = new Error(
-    `Состав грузомест уже заполнен в Ozon (${ids}). Чтобы изменить количество с сохранением номера на этикетке, очистите состав этих грузомест в личном кабинете Ozon (до пустого состояния) и отправьте из ERM снова. Не используйте полную замену — Ozon выдаст новые номера.`
+    `Ozon не освободил грузоместа для обновления состава (${ids}). Очистите состав вручную в личном кабинете Ozon и повторите отправку.`
   );
   err.statusCode = 400;
-  err.code = 'OZON_CARGO_ALREADY_FILLED';
-  err.details = { cargoIds: filled.map((c) => c.cargoId) };
+  err.code = 'OZON_CARGO_RESET_FAILED';
+  err.details = { cargoIds: stillFilled.map(({ ozon }) => ozon.cargoId) };
   throw err;
 }
 
@@ -504,7 +541,7 @@ export function buildOzonCargoesBody(supply, packing, { ozonSupplyId, submitPlan
   const supplyIdNum = Number(supplyIdRaw);
   return {
     supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : supplyIdRaw,
-    // true — заменить весь состав (иначе Ozon добавляет новые ГМ); key = cargo_id
+    // false + key=cargo_id: обновление состава без смены номеров (после сброса или для пустых ГМ)
     delete_current_version: Boolean(deleteCurrentVersion),
     cargoes,
   };
@@ -600,9 +637,25 @@ class FboSuppliesSubmitService {
       ermBarcodes = submitPlan.map((p) => p.ermBarcode);
     }
 
-    assertOzonFilledCargoResubmitAllowed(submitPlan, ozonCargoesCurrent);
+    const resetBody = buildOzonCargoesResetBody(
+      supply,
+      submitPlan,
+      ozonCargoesCurrent,
+      ozonSupplyId
+    );
+    if (resetBody) {
+      logger.info('[FBO Ozon] resetting filled cargoes before update', {
+        supplyId,
+        ozonSupplyId,
+        cargoIds: resetBody.cargoes.map((c) => c.key),
+      });
+      await executeOzonCargoesCreate(resetBody, ozonApiOpts);
+      ozonCargoesCurrent = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+      assertOzonCargoesReadyForRefill(submitPlan, ozonCargoesCurrent);
+      submitMode = 'update';
+    }
 
-    const deleteCurrentVersion = resolveOzonDeleteCurrentVersion(ozonCargoesCurrent, submitMode);
+    const deleteCurrentVersion = resolveOzonDeleteCurrentVersion();
 
     const body = buildOzonCargoesBody(supply, packing, {
       ozonSupplyId,
