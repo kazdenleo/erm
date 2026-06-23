@@ -23,6 +23,21 @@ function parseXlsxFilename(response, fallback) {
   return filename;
 }
 
+function parseApiErrorPayload(error, fallback = 'Ошибка запроса') {
+  const data = error?.response?.data;
+  if (data instanceof ArrayBuffer) {
+    try {
+      const txt = new TextDecoder().decode(data);
+      const j = JSON.parse(txt);
+      return j.message || j.error || txt || fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  if (typeof data === 'string' && data.trim()) return data;
+  return data?.message || data?.error || error?.message || fallback;
+}
+
 export const fboSuppliesApi = {
   purchaseCalculation: async (supplyIds) => {
     const response = await api.post('/fbo-supplies/purchase-calculation', {
@@ -262,24 +277,34 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
-  downloadCargoLabels: async (id, cargoIds) => {
+  downloadCargoLabels: async (id, cargoIds, { refresh = false } = {}) => {
     const ids = (cargoIds || []).filter(Boolean).join(',');
-    const response = await api.get(`/fbo-supplies/${id}/packing/cargo-labels`, {
-      params: { cargoIds: ids },
-      responseType: 'arraybuffer',
-      timeout: 180000,
-    });
-    return response.data;
+    try {
+      const response = await api.get(`/fbo-supplies/${id}/packing/cargo-labels`, {
+        params: { cargoIds: ids, ...(refresh ? { refresh: '1' } : {}) },
+        responseType: 'arraybuffer',
+        timeout: 180000,
+      });
+      return response.data;
+    } catch (e) {
+      throw new Error(parseApiErrorPayload(e, 'Не удалось скачать этикетки грузомест'));
+    }
   },
 
-  printCargoLabels: async (id, cargoIds) => {
+  printCargoLabels: async (id, cargoIds, { refresh = false } = {}) => {
     const ids = (cargoIds || []).filter(Boolean).join(',');
-    const response = await api.get(`/fbo-supplies/${id}/packing/cargo-labels`, {
-      params: { cargoIds: ids },
-      responseType: 'arraybuffer',
-      timeout: 180000,
-    });
-    const blob = new Blob([response.data], { type: 'application/pdf' });
+    let buffer;
+    try {
+      const response = await api.get(`/fbo-supplies/${id}/packing/cargo-labels`, {
+        params: { cargoIds: ids, ...(refresh ? { refresh: '1' } : {}) },
+        responseType: 'arraybuffer',
+        timeout: 180000,
+      });
+      buffer = response.data;
+    } catch (e) {
+      throw new Error(parseApiErrorPayload(e, 'Не удалось получить этикетки грузомест'));
+    }
+    const blob = new Blob([buffer], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const w = window.open(url, '_blank');
     if (w) {

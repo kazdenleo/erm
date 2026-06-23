@@ -497,12 +497,18 @@ class FboSuppliesController {
   async createOzonCargoUnits(req, res, next) {
     try {
       const { id } = req.params;
-      const profileId = req.user?.profileId ?? null;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Действие доступно только пользователям с привязкой к аккаунту (профилю)',
+        });
+      }
       const { count, cargoKind } = req.body || {};
       const data = await fboSuppliesOzonCargoesService.createEmptyCargoesOnOzon(id, {
         count,
         cargoKind,
-        profileId,
+        profileId: tid,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
@@ -520,8 +526,14 @@ class FboSuppliesController {
   async syncOzonCargoUnits(req, res, next) {
     try {
       const { id } = req.params;
-      const profileId = req.user?.profileId ?? null;
-      const data = await fboSuppliesOzonCargoesService.syncOzonCargoesToErm(id, { profileId });
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Действие доступно только пользователям с привязкой к аккаунту (профилю)',
+        });
+      }
+      const data = await fboSuppliesOzonCargoesService.syncOzonCargoesToErm(id, { profileId: tid });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {
@@ -538,7 +550,10 @@ class FboSuppliesController {
   async downloadCargoLabels(req, res, next) {
     try {
       const { id } = req.params;
-      const profileId = req.user?.profileId ?? null;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Этикетки недоступны без привязки к аккаунту' });
+      }
       const raw = req.query?.cargoIds ?? req.query?.cargo_ids ?? '';
       const cargoIds = String(raw)
         .split(/[,;\s]+/)
@@ -547,7 +562,7 @@ class FboSuppliesController {
       const { buffer, cargoIds: ids } = await fboSuppliesOzonCargoesService.fetchCargoLabelsPdf(
         id,
         cargoIds,
-        { profileId }
+        { profileId: tid, useCache: req.query?.refresh !== '1' }
       );
       const filename = `ozon_cargo_labels_${id}.pdf`;
       res.setHeader('Content-Type', 'application/pdf');
@@ -564,14 +579,18 @@ class FboSuppliesController {
   async printCargoLabels(req, res, next) {
     try {
       const { id } = req.params;
-      const profileId = req.user?.profileId ?? null;
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).send('<p>Этикетки недоступны без привязки к аккаунту</p>');
+      }
       const raw = req.query?.cargoIds ?? req.query?.cargo_ids ?? '';
       const cargoIds = String(raw)
         .split(/[,;\s]+/)
         .map((s) => s.trim())
         .filter(Boolean);
       const { buffer } = await fboSuppliesOzonCargoesService.fetchCargoLabelsPdf(id, cargoIds, {
-        profileId,
+        profileId: tid,
+        useCache: req.query?.refresh !== '1',
       });
       const b64 = buffer.toString('base64');
       const html = `<!DOCTYPE html>

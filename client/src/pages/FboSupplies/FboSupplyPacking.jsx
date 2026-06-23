@@ -83,7 +83,7 @@ export function FboSupplyPacking({
   const [activeCargoUnitId, setActiveCargoUnitId] = useState(null);
   const [removeModalOpen, setRemoveModalOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [creatingOnOzon, setCreatingOnOzon] = useState(false);
+  const [creatingOnOzon, setCreatingOnOzon] = useState(null);
   const [syncingFromOzon, setSyncingFromOzon] = useState(false);
   const [printingLabels, setPrintingLabels] = useState(false);
   const [newCargoMode, setNewCargoMode] = useState(false);
@@ -225,7 +225,7 @@ export function FboSupplyPacking({
   };
 
   const handleCreateOnOzon = async (cargoKind = 'box') => {
-    setCreatingOnOzon(true);
+    setCreatingOnOzon(cargoKind);
     setScanError(null);
     setScanMsg(null);
     try {
@@ -248,7 +248,7 @@ export function FboSupplyPacking({
       playEventSound(SOUND_EVENTS.scan_error);
       setScanError(e.response?.data?.message || e.message || 'Не удалось создать грузоместо на Ozon');
     } finally {
-      setCreatingOnOzon(false);
+      setCreatingOnOzon(null);
     }
   };
 
@@ -286,7 +286,7 @@ export function FboSupplyPacking({
       await fboSuppliesApi.printCargoLabels(supplyId, ids);
       setScanMsg(`Печать этикеток: ${ids.join(', ')}`);
     } catch (e) {
-      setScanError(e.response?.data?.message || e.message || 'Не удалось получить этикетки');
+      setScanError(e.message || e.response?.data?.message || 'Не удалось получить этикетки');
     } finally {
       setPrintingLabels(false);
     }
@@ -363,8 +363,9 @@ export function FboSupplyPacking({
           hint={
             isOzon ? (
               <>
-                Создайте грузоместо кнопкой <strong>«Создать на Ozon»</strong> или отсканируйте этикетку
-                через <strong>«Новое грузоместо»</strong>. Затем сканируйте <strong>товары из поставки</strong>{' '}
+                Создайте грузоместо кнопкой <strong>«Короб на Ozon»</strong> или{' '}
+                <strong>«Паллета на Ozon»</strong>, либо отсканируйте этикетку через{' '}
+                <strong>«Новое грузоместо»</strong>. Затем сканируйте <strong>товары из поставки</strong>{' '}
                 (+1 шт. за скан). Если состав в Ozon уже заполнен — обновляйте через{' '}
                 <strong>Excel</strong>, а не кнопку отправки состава.
               </>
@@ -395,7 +396,16 @@ export function FboSupplyPacking({
                 onClick={() => handleCreateOnOzon('box')}
                 title="Создать пустую коробку на Ozon и добавить в сборку"
               >
-                {creatingOnOzon ? 'Ozon…' : 'Создать на Ozon'}
+                {creatingOnOzon === 'box' ? 'Ozon…' : 'Короб на Ozon'}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={scanLoading || creatingOnOzon || syncingFromOzon || printingLabels}
+                onClick={() => handleCreateOnOzon('pallet')}
+                title="Создать пустую паллету на Ozon и добавить в сборку"
+              >
+                {creatingOnOzon === 'pallet' ? 'Ozon…' : 'Паллета на Ozon'}
               </Button>
               <Button
                 type="button"

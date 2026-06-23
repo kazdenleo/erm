@@ -1,6 +1,8 @@
 import {
   buildOzonEmptyCargoesBody,
+  buildOzonCargoLabelsCreateBody,
   buildOzonPackingSubmitPreview,
+  ozonCargoKindFromOzonType,
 } from '../src/services/fboSuppliesOzonCargoes.service.js';
 
 describe('buildOzonPackingSubmitPreview', () => {
@@ -57,5 +59,27 @@ describe('buildOzonEmptyCargoesBody', () => {
     );
     expect(body.cargoes[0].value.type).toBe('PALLET');
     expect(body.cargoes[0].value.items).toEqual([]);
+  });
+});
+
+describe('buildOzonCargoLabelsCreateBody', () => {
+  test('includes BOX and PALLET types per cargo', () => {
+    const body = buildOzonCargoLabelsCreateBody(999, [
+      { cargoId: '1001', type: 'BOX' },
+      { cargoId: '1002', cargoKind: 'pallet' },
+    ]);
+    expect(body.supply_id).toBe(999);
+    expect(body.cargoes).toEqual([
+      { cargo_id: 1001, type: 'BOX' },
+      { cargo_id: 1002, type: 'PALLET' },
+    ]);
+  });
+});
+
+describe('ozonCargoKindFromOzonType', () => {
+  test('maps Ozon types to erm kinds', () => {
+    expect(ozonCargoKindFromOzonType('PALLET')).toBe('pallet');
+    expect(ozonCargoKindFromOzonType('BOX')).toBe('box');
+    expect(ozonCargoKindFromOzonType('')).toBe('box');
   });
 });

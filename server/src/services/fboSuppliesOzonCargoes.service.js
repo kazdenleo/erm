@@ -30,6 +30,28 @@ function ozonCargoType(cargoKind) {
   return cargoKind === 'pallet' ? 'PALLET' : 'BOX';
 }
 
+/** Тип грузоместа Ozon (PALLET/BOX) → cargo_kind в ERM. */
+export function ozonCargoKindFromOzonType(type) {
+  return String(type || '').trim().toUpperCase() === 'PALLET' ? 'pallet' : 'box';
+}
+
+/** Тело запроса Ozon POST /v1/cargoes-label/create (у каждого ГМ нужен type). */
+export function buildOzonCargoLabelsCreateBody(ozonSupplyId, cargoEntries) {
+  const supplyIdNum = Number(ozonSupplyId);
+  return {
+    supply_id: Number.isFinite(supplyIdNum) ? supplyIdNum : ozonSupplyId,
+    cargoes: (cargoEntries || []).map((entry) => {
+      const cargoId = entry?.cargoId ?? entry?.cargo_id ?? entry;
+      const type =
+        entry?.type === 'PALLET' || entry?.cargoKind === 'pallet' ? 'PALLET' : 'BOX';
+      return {
+        cargo_id: Number(cargoId) || cargoId,
+        type,
+      };
+    }),
+  };
+}
+
 async function resolveOzonApiContext(supplyId, { profileId } = {}) {
   const supply = await fboSuppliesService.getById(supplyId, { profileId });
   const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
@@ -144,28 +166,48 @@ async function waitForNewOzonCargoIds(ozonSupplyId, beforeIds, ozonApiOpts, { ma
   };
 }
 
-async function insertErmCargoUnits(supplyId, cargoIds, cargoKind) {
-  const kind = cargoKind === 'pallet' ? 'pallet' : 'box';
+async function insertErmCargoUnits(supplyId, entries) {
+  const list = (entries || []).map((entry) => {
+    if (entry && typeof entry === 'object' && entry.cargoId != null) {
+      return {
+        cargoId: String(entry.cargoId).trim(),
+        cargoKind: entry.cargoKind === 'pallet' ? 'pallet' : 'box',
+      };
+    }
+    return {
+      cargoId: String(entry).trim(),
+      cargoKind: 'box',
+    };
+  });
   const created = [];
-  for (const cargoId of cargoIds) {
+  for (const { cargoId, cargoKind } of list) {
+    if (!cargoId) continue;
     const exists = await query(
-      `SELECT id FROM fbo_supply_cargo_units WHERE fbo_supply_id = $1 AND barcode = $2 LIMIT 1`,
+      `SELECT id, cargo_kind FROM fbo_supply_cargo_units WHERE fbo_supply_id = $1 AND barcode = $2 LIMIT 1`,
       [supplyId, cargoId]
     );
     if (exists.rows?.length) {
-      created.push({ cargoId, cargoUnitId: exists.rows[0].id, existed: true });
+      const row = exists.rows[0];
+      if (row.cargo_kind !== cargoKind) {
+        await query(`UPDATE fbo_supply_cargo_units SET cargo_kind = $2 WHERE id = $1`, [
+          row.id,
+          cargoKind,
+        ]);
+      }
+      created.push({ cargoId, cargoUnitId: row.id, existed: true, cargoKind });
       continue;
     }
     const ins = await query(
       `INSERT INTO fbo_supply_cargo_units (fbo_supply_id, barcode, cargo_kind)
        VALUES ($1, $2, $3)
        RETURNING id`,
-      [supplyId, cargoId, kind]
+      [supplyId, cargoId, cargoKind]
     );
     created.push({
       cargoId,
       cargoUnitId: ins.rows[0]?.id,
       existed: false,
+      cargoKind,
     });
   }
   return created;
@@ -199,10 +241,18 @@ function labelsCacheDir() {
   return dir;
 }
 
-function labelsCachePath(supplyId, cargoIds) {
+function labelsCachePath(supplyId, cargoEntries) {
+  const parts = (cargoEntries || []).map((e) => {
+    if (e && typeof e === 'object') {
+      const id = e.cargoId ?? e.cargo_id ?? '';
+      const type = e.type ?? e.cargoKind ?? 'BOX';
+      return `${id}:${type}`;
+    }
+    return String(e);
+  });
   const hash = crypto
     .createHash('md5')
-    .update([supplyId, ...(cargoIds || [])].join(':'))
+    .update([supplyId, ...parts].join(':'))
     .digest('hex');
   return join(labelsCacheDir(), `${supplyId}_${hash}.pdf`);
 }
@@ -240,13 +290,22 @@ async function pollOzonCargoLabels(operationId, ozonApiOpts, { maxAttempts = 30,
     );
     const root = data?.result ?? data ?? {};
     const status = String(root.status ?? root.state ?? '').toUpperCase();
+    const fileGuid =
+      root.file_guid ??
+      root.fileGuid ??
+      root.result?.file_guid ??
+      root.result?.fileGuid ??
+      data?.file_guid ??
+      data?.fileGuid;
     if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'DONE') {
-      const fileGuid = root.file_guid ?? root.fileGuid ?? root.result?.file_guid;
       if (!fileGuid) {
         const err = new Error('Ozon не вернул идентификатор файла этикеток');
         err.statusCode = 400;
         throw err;
       }
+      return String(fileGuid).trim();
+    }
+    if (fileGuid && status !== 'FAILED' && status !== 'ERROR') {
       return String(fileGuid).trim();
     }
     if (status === 'FAILED' || status === 'ERROR') {
@@ -343,7 +402,10 @@ class FboSuppliesOzonCargoesService {
       throw err;
     }
 
-    const created = await insertErmCargoUnits(supplyId, newCargoIds, kind);
+    const created = await insertErmCargoUnits(
+      supplyId,
+      newCargoIds.map((cargoId) => ({ cargoId, cargoKind: kind }))
+    );
     const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
     const ozonMeta = buildOzonPackingSubmitPreview(packing, ozonAfter);
 
@@ -363,13 +425,19 @@ class FboSuppliesOzonCargoesService {
     const ozonIds = ozonCargoes.map((c) => c.cargoId).filter(Boolean);
     if (!ozonIds.length) {
       const err = new Error(
-        'В Ozon пока нет грузомест для этой поставки. Сначала создайте их в личном кабинете или кнопкой «Создать на Ozon».'
+        'В Ozon пока нет грузомест для этой поставки. Сначала создайте их в личном кабинете или кнопками «Короб на Ozon» / «Паллета на Ozon».'
       );
       err.statusCode = 400;
       throw err;
     }
 
-    const created = await insertErmCargoUnits(supplyId, ozonIds, 'box');
+    const created = await insertErmCargoUnits(
+      supplyId,
+      ozonCargoes.map((c) => ({
+        cargoId: c.cargoId,
+        cargoKind: ozonCargoKindFromOzonType(c.type),
+      }))
+    );
     const added = created.filter((c) => !c.existed);
     const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
     const ozonMeta = buildOzonPackingSubmitPreview(packing, ozonCargoes);
@@ -395,15 +463,17 @@ class FboSuppliesOzonCargoesService {
       throw err;
     }
 
-    const cachePath = labelsCachePath(supplyId, ids);
-    if (useCache && fs.existsSync(cachePath)) {
-      return { buffer: fs.readFileSync(cachePath), cached: true, cargoIds: ids };
-    }
-
     const { ozonSupplyId, ozonApiOpts, ozonCfg } = await resolveOzonApiContext(supplyId, {
       profileId,
     });
+    const packing = await fboSuppliesPackingService.getPackingState(supplyId, { profileId });
+    const ermKindByBarcode = new Map(
+      (packing?.cargoUnits || [])
+        .filter((u) => u?.barcode)
+        .map((u) => [String(u.barcode).trim(), u.cargoKind === 'pallet' ? 'PALLET' : 'BOX'])
+    );
     const ozonCargoes = await fetchOzonSupplyCargoes(ozonSupplyId, ozonApiOpts);
+    const ozonById = new Map(ozonCargoes.map((c) => [c.cargoId, c]));
     const ozonSet = new Set(ozonCargoes.map((c) => c.cargoId));
     const unknown = ids.filter((id) => !ozonSet.has(id));
     if (unknown.length) {
@@ -415,16 +485,27 @@ class FboSuppliesOzonCargoesService {
       throw err;
     }
 
-    const createData = await ozonApiPostWithRetry(
-      '/v1/cargoes-label/create',
-      {
-        supply_id: Number(ozonSupplyId) || ozonSupplyId,
-        cargoes: ids.map((cargo_id) => ({
-          cargo_id: Number(cargo_id) || cargo_id,
-        })),
-      },
-      ozonApiOpts
-    );
+    const cargoEntries = ids.map((id) => {
+      const ozon = ozonById.get(id);
+      const ermType = ermKindByBarcode.get(id);
+      const ozonType = ozon?.type === 'PALLET' ? 'PALLET' : ozon?.type === 'BOX' ? 'BOX' : null;
+      const type = ermType || ozonType || 'BOX';
+      return { cargoId: id, type };
+    });
+
+    const cachePath = labelsCachePath(supplyId, cargoEntries);
+    if (useCache && fs.existsSync(cachePath)) {
+      return { buffer: fs.readFileSync(cachePath), cached: true, cargoIds: ids };
+    }
+
+    const labelBody = buildOzonCargoLabelsCreateBody(ozonSupplyId, cargoEntries);
+    logger.info('[FBO Ozon] cargoes-label/create', {
+      supplyId,
+      ozonSupplyId,
+      cargoes: labelBody.cargoes,
+    });
+
+    const createData = await ozonApiPostWithRetry('/v1/cargoes-label/create', labelBody, ozonApiOpts);
     const operationId =
       createData?.operation_id ??
       createData?.operationId ??
