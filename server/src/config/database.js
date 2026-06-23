@@ -18,9 +18,10 @@ function shouldUsePostgreSQL() {
 
 // Создаем пул соединений только если PostgreSQL включен
 let pool = null;
+/** После graceful shutdown новые запросы к БД не открывают пул заново. */
+let poolClosed = false;
 
-if (shouldUsePostgreSQL()) {
-  // Создаем конфигурацию пула (password только если указан)
+function buildPoolConfig() {
   const poolConfig = {
     host: config.database.host,
     port: config.database.port,
@@ -30,52 +31,69 @@ if (shouldUsePostgreSQL()) {
     min: config.database.pool.min,
     idleTimeoutMillis: config.database.pool.idleTimeoutMillis,
     connectionTimeoutMillis: config.database.pool.connectionTimeoutMillis,
-    // Автоматическая реконнекция
     allowExitOnIdle: false,
   };
-  
-  // Добавляем password только если он указан (не пустая строка)
+
   if (config.database.password && config.database.password.trim() !== '') {
     poolConfig.password = config.database.password;
   }
-  
-  pool = new Pool(poolConfig);
 
-  // Обработка ошибок пула
-  pool.on('error', (err, client) => {
+  return poolConfig;
+}
+
+function attachPoolListeners(activePool) {
+  activePool.on('error', (err) => {
     logger.error('Unexpected error on idle database client', {
       error: err.message,
       stack: err.stack,
     });
   });
 
-  // Логирование событий пула (только в development)
   if (config.isDevelopment) {
-    pool.on('connect', () => {
+    activePool.on('connect', () => {
       logger.debug('New database client connected');
     });
 
-    pool.on('acquire', () => {
+    activePool.on('acquire', () => {
       logger.debug('Database client acquired from pool');
     });
 
-    pool.on('remove', () => {
+    activePool.on('remove', () => {
       logger.debug('Database client removed from pool');
     });
   }
+}
+
+function createPoolInstance() {
+  const activePool = new Pool(buildPoolConfig());
+  attachPoolListeners(activePool);
+  return activePool;
+}
+
+function ensurePool() {
+  if (poolClosed) return null;
+  if (pool) return pool;
+  if (!shouldUsePostgreSQL()) return null;
+  pool = createPoolInstance();
+  return pool;
+}
+
+if (shouldUsePostgreSQL()) {
+  pool = createPoolInstance();
 }
 
 /**
  * Функция для выполнения запросов
  */
 export async function query(text, params) {
-  if (!pool) {
+  const activePool = ensurePool();
+  if (!activePool) {
     throw new Error('PostgreSQL pool is not initialized. Check USE_POSTGRESQL setting.');
   }
 
   const start = Date.now();
   try {
-    const res = await pool.query(text, params);
+    const res = await activePool.query(text, params);
     const duration = Date.now() - start;
     
     if (config.isDevelopment) {
@@ -111,13 +129,14 @@ export async function query(text, params) {
  * Функция для получения клиента из пула (для транзакций)
  */
 export async function getClient() {
-  if (!pool) {
+  const activePool = ensurePool();
+  if (!activePool) {
     throw new Error('PostgreSQL pool is not initialized. Check USE_POSTGRESQL setting.');
   }
 
   let client;
   try {
-    client = await pool.connect();
+    client = await activePool.connect();
   } catch (error) {
     const stats = getPoolStats();
     const msg = String(error?.message || '');
@@ -187,12 +206,13 @@ export async function transaction(callback, { lockTimeoutMs = 20000, statementTi
 
 /** Статистика пула (для /health и диагностики перегрузки). */
 export function getPoolStats() {
-  if (!pool) return null;
+  const activePool = ensurePool();
+  if (!activePool) return null;
   return {
-    total: pool.totalCount,
-    idle: pool.idleCount,
-    waiting: pool.waitingCount,
-    max: pool.options?.max ?? null,
+    total: activePool.totalCount,
+    idle: activePool.idleCount,
+    waiting: activePool.waitingCount,
+    max: activePool.options?.max ?? null,
   };
 }
 
@@ -200,7 +220,8 @@ export function getPoolStats() {
  * Функция для проверки подключения
  */
 export async function testConnection() {
-  if (!pool) {
+  const activePool = ensurePool();
+  if (!activePool) {
     logger.warn('PostgreSQL pool is not initialized');
     return false;
   }
@@ -226,11 +247,13 @@ export async function testConnection() {
  */
 export async function closePool() {
   if (!pool) {
+    poolClosed = true;
     return;
   }
 
   const p = pool;
   pool = null;
+  poolClosed = true;
   try {
     logger.info('Closing database pool...');
     await p.end();
@@ -242,17 +265,8 @@ export async function closePool() {
   }
 }
 
-// Graceful shutdown при завершении процесса
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, closing database pool...');
-  await closePool();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, closing database pool...');
-  await closePool();
-  process.exit(0);
-});
+export function isPoolAvailable() {
+  return !poolClosed && Boolean(ensurePool());
+}
 
 export default pool;

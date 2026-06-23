@@ -146,6 +146,14 @@ class FboSuppliesController {
       if (e.statusCode === 400 || e.statusCode === 404) {
         return res.status(e.statusCode).json({ ok: false, message: e.message });
       }
+      if (/PostgreSQL pool is not initialized/i.test(String(e?.message || ''))) {
+        return res.status(503).json({
+          ok: false,
+          message:
+            'Временная ошибка подключения к базе данных. Подождите 10–20 секунд и повторите. Если не помогло — сообщите администратору.',
+          code: 'DB_POOL_NOT_READY',
+        });
+      }
       next(e);
     }
   }
