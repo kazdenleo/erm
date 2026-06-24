@@ -1181,8 +1181,8 @@ async function minKitUnitsFromComponentReservesAsync(components, getReservedAsyn
 }
 
 /**
- * Резерв в колонке «Резерв» для комплекта — та же формула, что readKitDisplayReservedQuantity / история:
- * целые на SKU и/или min(⌊резерв_i / qty_i⌋) по комплектующим; при обоих путях — компонентный min.
+ * Резерв в колонке «Резерв» для комплекта — в таблице остатков только SKU комплекта;
+ * для сводок/истории — readKitDisplayReservedQuantity (SKU + сборка из комплектующих).
  */
 function kitTotalDisplayReservedFromContext(kitId, ctx) {
   const onSku = Math.max(0, ctx.reservedMap.get(kitId) || 0);
@@ -1210,7 +1210,20 @@ export async function readKitComponentsNetReservedMap(kitProductId, opts = {}) {
   try {
     if (warehouseScoped) {
       const compIds = (await getKitComponents(kitId)).map((c) => c.component_product_id);
-      return warehouseScopedNetReservedMap(compIds, whId);
+      const journalMap = await warehouseScopedNetReservedMap(compIds, whId);
+      const { batchOrderAttributedReservedMap, mergeJournalAndOrderAttributedReserved } =
+        await import('./sellableQuantity.service.js');
+      const orderMap = await batchOrderAttributedReservedMap(compIds, opts);
+      const map = new Map();
+      for (const pid of compIds) {
+        const n = Number(pid);
+        if (!Number.isFinite(n) || n < 1) continue;
+        map.set(
+          n,
+          mergeJournalAndOrderAttributedReserved(journalMap.get(n) ?? 0, orderMap.get(n) ?? 0)
+        );
+      }
+      return map;
     }
     const r = await query(
       `SELECT sm.product_id,
@@ -1223,11 +1236,22 @@ export async function readKitComponentsNetReservedMap(kitProductId, opts = {}) {
        GROUP BY sm.product_id`,
       [kitId]
     );
-    const map = new Map();
+    const journalMap = new Map();
     for (const row of r.rows || []) {
       const pid = Number(row.product_id);
       if (!Number.isFinite(pid) || pid < 1) continue;
-      map.set(pid, Math.max(0, Number(row.rv) || 0));
+      journalMap.set(pid, Math.max(0, Number(row.rv) || 0));
+    }
+    const compIds = [...journalMap.keys()];
+    const { batchOrderAttributedReservedMap, mergeJournalAndOrderAttributedReserved } =
+      await import('./sellableQuantity.service.js');
+    const orderMap = await batchOrderAttributedReservedMap(compIds, opts);
+    const map = new Map();
+    for (const pid of compIds) {
+      map.set(
+        pid,
+        mergeJournalAndOrderAttributedReserved(journalMap.get(pid) ?? 0, orderMap.get(pid) ?? 0)
+      );
     }
     return map;
   } catch {
@@ -1284,6 +1308,15 @@ export async function sumKitComponentsNetReserved(kitProductId, opts = {}) {
   }
 }
 
+/**
+ * Резерв в колонке «Резерв» таблицы остатков: только целые комплекты (SKU комплекта).
+ * Резерв под сборку из деталей — в колонке комплектующих (шт.), не дублируем на строке комплекта.
+ */
+export async function readKitStockTableReservedQuantity(kitProductId, opts = {}) {
+  return readKitSkuNetReserved(kitProductId, opts);
+}
+
+/** Полный резерв комплекта (SKU + сборка из комплектующих) — заказы, история, сверка. */
 export async function readKitDisplayReservedQuantity(kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return 0;
@@ -1623,6 +1656,71 @@ export async function getReservedKitUnitsForOrderValidation(kitProductId, orderD
     /* ignore */
   }
   return resolveComplementaryKitReserveUnits(onKit, fromComp, orderQty);
+}
+
+/** Нетто-резерв по строке FBO (движения с meta.fbo_supply_item_id). */
+export async function getNetReservedForFboSupplyItem(productId, fboSupplyItemId) {
+  const pid = Number(productId);
+  const itemId = String(fboSupplyItemId ?? '').trim();
+  if (!Number.isFinite(pid) || pid < 1 || !itemId) return 0;
+  const r = await query(
+    `SELECT GREATEST(0, COALESCE(SUM(
+      CASE WHEN type = 'reserve' THEN ABS(quantity_change) WHEN type = 'unreserve' THEN -ABS(quantity_change) ELSE 0 END
+    ), 0))::int AS net
+     FROM stock_movements
+     WHERE product_id = $1
+       AND meta->>'fbo_supply_item_id' = $2
+       AND type IN ('reserve', 'unreserve')`,
+    [pid, itemId]
+  );
+  return parseInt(r.rows?.[0]?.net ?? 0, 10) || 0;
+}
+
+/** Нетто-резерв комплектов из комплектующих под строку FBO. */
+export async function getReservedKitUnitsFromComponentsForFboItem(kitProductId, fboSupplyItemId) {
+  const kitId = Number(kitProductId);
+  const itemId = String(fboSupplyItemId ?? '').trim();
+  if (!Number.isFinite(kitId) || kitId < 1 || !itemId) return 0;
+
+  const components = await getKitComponents(kitId);
+  if (components.length === 0) return 0;
+
+  const nets = new Map();
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1 || nets.has(pid)) continue;
+    nets.set(pid, await getNetReservedForFboSupplyItem(pid, itemId));
+  }
+  return minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0);
+}
+
+/** Сколько комплектов зарезервировано под строку FBO (целые SKU + из комплектующих). */
+export async function getReservedKitUnitsForFboItem(kitProductId, fboSupplyItemId, lineQty = null) {
+  const kitId = Number(kitProductId);
+  const itemId = String(fboSupplyItemId ?? '').trim();
+  if (!Number.isFinite(kitId) || kitId < 1 || !itemId) return 0;
+
+  const onKit = await getNetReservedForFboSupplyItem(kitId, itemId);
+  const fromComp = await getReservedKitUnitsFromComponentsForFboItem(kitId, itemId);
+  const qty =
+    lineQty != null && !Number.isNaN(Number(lineQty))
+      ? Math.max(0, Math.floor(Number(lineQty)) || 0)
+      : null;
+  return resolveComplementaryKitReserveUnits(onKit, fromComp, qty);
+}
+
+/** Сколько комплектов можно собрать из пулов комплектующих (симуляция FBO FIFO). */
+export function computeAssemblableFromComponentPoolMap(components, componentPools) {
+  if (!components?.length) return 0;
+  let minKits = Infinity;
+  for (const c of components) {
+    const pid = Number(c.component_product_id);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+    const avail = Math.max(0, Number(componentPools?.get?.(pid)) || 0);
+    minKits = Math.min(minKits, Math.floor(avail / perKit));
+  }
+  return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
 /**
@@ -2244,19 +2342,32 @@ async function batchNetReservedMap(productIds, opts = {}) {
         : Number(whRaw)
       : null;
   const warehouseScoped = Number.isFinite(whId) && whId > 0;
+  let journalMap;
   if (warehouseScoped) {
-    return warehouseScopedNetReservedMap(ids, whId);
-  }
-  const r = await query(
-    `SELECT product_id,
+    journalMap = await warehouseScopedNetReservedMap(ids, whId);
+  } else {
+    const r = await query(
+      `SELECT product_id,
      ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
    FROM stock_movements
    WHERE product_id = ANY($1::bigint[])
      AND type IN ('reserve', 'unreserve')
    GROUP BY product_id`,
-    [ids]
-  );
-  return new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0]));
+      [ids]
+    );
+    journalMap = new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0]));
+  }
+  const { batchOrderAttributedReservedMap, mergeJournalAndOrderAttributedReserved } =
+    await import('./sellableQuantity.service.js');
+  const orderMap = await batchOrderAttributedReservedMap(ids, opts);
+  const out = new Map();
+  for (const id of ids) {
+    out.set(
+      id,
+      mergeJournalAndOrderAttributedReserved(journalMap.get(id) ?? 0, orderMap.get(id) ?? 0)
+    );
+  }
+  return out;
 }
 
 async function batchKitJournalBalanceMap(kitIds) {
@@ -2660,26 +2771,26 @@ export async function attachKitDisplayMetrics(products, options = {}) {
     const supplierKitUnits = supplierSyncOn ? supplierKitUnitsFromContext(kitId, ctx) : 0;
     const incoming = Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0);
     const onSkuReserved = await readKitSkuNetReserved(kitId, options);
-    const displayReserved =
-      (await readKitDisplayReservedQuantity(kitId, options)) ||
-      kitDisplayReservedFromContext(kitId, ctx);
+    const comps = ctx.componentsByKit?.get(kitId) || [];
+    const reservedFromComponents = comps.length
+      ? minKitUnitsFromComponentReserves(comps, (pid) => ctx.reservedMap.get(pid) ?? 0)
+      : 0;
     const wholeAvail = Math.max(0, wholeOnHand + incoming - onSkuReserved);
-    const marketplaceAvailable = Math.max(
-      0,
-      wholeOnHand + incoming + assemblable - displayReserved
-    );
+    // assemblable уже учитывает резерв комплектующих; вычитать displayReserved повторно нельзя.
+    const marketplaceAvailable = Math.max(0, wholeAvail + assemblable);
     const availableTotal = marketplaceAvailable + supplierKitUnits;
 
     p.supplierStockTotal = supplierKitUnits;
     p.quantity = wholeOnHand;
-    p.reserved_quantity = displayReserved;
-    p.net_reserved_quantity = displayReserved;
-    p.reservedQuantity = displayReserved;
-    p.netReservedQuantity = displayReserved;
+    p.reserved_quantity = onSkuReserved;
+    p.net_reserved_quantity = onSkuReserved;
+    p.reservedQuantity = onSkuReserved;
+    p.netReservedQuantity = onSkuReserved;
     p.kit_display = {
       whole_on_hand: wholeOnHand,
       whole_available: wholeAvail,
       reserved_on_sku: onSkuReserved,
+      reserved_from_components: reservedFromComponents,
       assemblable_from_components: assemblable,
       incoming_from_components: incomingFromComponents,
       supplier_kit_units: supplierKitUnits,
@@ -2723,6 +2834,10 @@ export default {
   getReservedKitUnitsFromComponentsForOrder,
   getReservedKitUnitsForManualOrderGroup,
   getReservedKitUnitsForOrderValidation,
+  getNetReservedForFboSupplyItem,
+  getReservedKitUnitsFromComponentsForFboItem,
+  getReservedKitUnitsForFboItem,
+  computeAssemblableFromComponentPoolMap,
   computeKitMarketplaceStock,
   readKitStockFromDb,
   readKitMarketplaceStockFromDb,
@@ -2750,6 +2865,7 @@ export default {
   readKitPhysicalOnHandFromDb,
   readKitSkuNetReserved,
   readKitDisplayReservedQuantity,
+  readKitStockTableReservedQuantity,
   readKitDisplayReservedQuantityForStockSummary,
   manualLooseComponentReservesByProduct,
   readKitComponentsNetReservedMap,
