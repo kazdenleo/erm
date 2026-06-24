@@ -49,6 +49,15 @@ describe('supplierOrderAdapters/shared', () => {
     expect(picked.gid).toBe('2');
   });
 
+  test('pickWarehouseLine works with Mikado zakazCode', () => {
+    const lines = [
+      { warehouseName: 'Москва', stock: 5, zakazCode: 'Z1' },
+      { warehouseName: 'СПб', stock: 20, zakazCode: 'Z2' },
+    ];
+    const picked = pickWarehouseLine(lines, { warehouseName: 'Москва', quantity: 1 });
+    expect(picked.zakazCode).toBe('Z1');
+  });
+
   test('pickWarehouseLine allows external warehouse with zero stock', () => {
     const lines = [
       { warehouseName: 'Ext', stock: 0, gid: 'ext' },

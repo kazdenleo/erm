@@ -1,5 +1,5 @@
 /**
- * Планировщик закупок по заказу: резерв (склад + в пути) → закупка дефицита у поставщика.
+ * Планировщик закупок по заказу: резерв со склада → API поставщика → закупка → резерв под заказ.
  */
 
 import { query, transaction } from '../config/database.js';
@@ -19,6 +19,7 @@ import {
   computeProcurementDeficit,
   fulfillmentLineStatusFromQuantities,
 } from '../utils/orderProcurementCoverage.js';
+import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { isKitProductId, getKitComponents } from './kitStock.service.js';
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -66,7 +67,7 @@ async function loadOrderRows(profileId, marketplace, orderId) {
 
   const head = await query(
     `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
-            o.profile_id
+            o.profile_id, o.offer_id, o.marketplace_sku, o.product_name
      FROM orders o
      WHERE o.profile_id = $1 AND o.marketplace = $2 AND o.order_id = $3
      LIMIT 1`,
@@ -79,7 +80,7 @@ async function loadOrderRows(profileId, marketplace, orderId) {
   if (gid) {
     const group = await query(
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
-              o.profile_id
+              o.profile_id, o.offer_id, o.marketplace_sku, o.product_name
        FROM orders o
        WHERE o.profile_id = $1 AND o.order_group_id = $2
        ORDER BY o.id ASC`,
@@ -88,6 +89,33 @@ async function loadOrderRows(profileId, marketplace, orderId) {
     return group.rows || [];
   }
   return [row];
+}
+
+/** Сопоставить product_id по offer_id / SKU (как при резерве). */
+async function resolveOrderRowProductId(row) {
+  const raw = row?.product_id ?? row?.productId;
+  const existing = raw != null && String(raw).trim() !== '' ? Number(raw) : null;
+  if (Number.isFinite(existing) && existing > 0) {
+    return { ...row, product_id: existing, productId: existing };
+  }
+  const orderRowForResolve = {
+    id: row.id,
+    marketplace: row.marketplace,
+    offerId: row.offer_id,
+    offer_id: row.offer_id,
+    sku: row.marketplace_sku,
+    marketplace_sku: row.marketplace_sku,
+    productName: row.product_name,
+    product_name: row.product_name,
+    productId: row.product_id,
+    product_id: row.product_id,
+    quantity: row.quantity,
+    status: row.status,
+  };
+  const resolved = await ordersService._resolveProductIdForOrderStock(orderRowForResolve);
+  const pid = resolved != null ? Number(resolved) : null;
+  if (!Number.isFinite(pid) || pid < 1) return null;
+  return { ...row, product_id: pid, productId: pid };
 }
 
 async function resolveDefaultOrgAndWarehouse(profileId) {
@@ -206,6 +234,24 @@ async function loadSuppliersForWarehouse(profileId, warehouseId) {
     (all.rows || []).map((row) => ({ ...row, supplier_id: row.id })),
     { priorityFrom: 'index' }
   ).map((s) => ({ ...s, warehousePriority: 999 }));
+}
+
+async function loadSupplierForProfile(supplierId, profileId) {
+  const sid = Number(supplierId);
+  const pid = normalizeProfileId(profileId);
+  if (!Number.isFinite(sid) || sid < 1) return null;
+  if (pid != null) {
+    const r = await query(
+      `SELECT id, name, code, api_config, profile_id FROM suppliers WHERE id = $1 AND profile_id = $2 LIMIT 1`,
+      [sid, pid]
+    );
+    if (r.rows?.[0]) return r.rows[0];
+  }
+  const fallback = await query(
+    `SELECT id, name, code, api_config, profile_id FROM suppliers WHERE id = $1 LIMIT 1`,
+    [sid]
+  );
+  return fallback.rows?.[0] || null;
 }
 
 async function rankSupplierCandidates(productId, suppliers, qty) {
@@ -384,21 +430,6 @@ async function upsertFulfillmentLine(
   );
 }
 
-async function findOpenAutoPurchaseId(client, { profileId, supplierId, arrivalBucket }) {
-  const marker = `[auto-arrival:${arrivalBucket}]%`;
-  const r = await client.query(
-    `SELECT id, note FROM purchases
-     WHERE profile_id = $1 AND supplier_id = $2 AND status = 'open' AND note LIKE $3
-     ORDER BY created_at DESC, id DESC LIMIT 1`,
-    [profileId, supplierId, marker]
-  );
-  const row = r.rows?.[0];
-  if (!row) return null;
-  const note = String(row.note || '');
-  if (!note.includes(`[auto-arrival:${arrivalBucket}]`)) return null;
-  return Number(row.id);
-}
-
 async function sumOpenPurchaseTotal(client, purchaseId, supplierId) {
   const r = await client.query(
     `SELECT COALESCE(SUM(
@@ -471,7 +502,7 @@ function groupKey(supplierId, arrivalBucket) {
 
 class OrderProcurementPlannerService {
   /**
-   * Отправить заказ в закупку: резерв → закупка дефицита.
+   * Отправить заказ в закупку: резерв со склада → API поставщика → закупка дефицита → резерв.
    */
   async runForMarketplaceOrder(
     marketplace,
@@ -550,14 +581,36 @@ class OrderProcurementPlannerService {
 
     // 2) Разбор потребности и расчёт дефицита
     const demandLines = [];
+    const unresolvedOrders = [];
     for (const row of eligibleRows) {
-      const expanded = await expandOrderRowToDemandLines(row, suppliers);
+      const resolvedRow = await resolveOrderRowProductId(row);
+      if (!resolvedRow) {
+        unresolvedOrders.push(String(row.order_id || '').trim() || row.id);
+        continue;
+      }
+      const expanded = await expandOrderRowToDemandLines(resolvedRow, suppliers);
       demandLines.push(...expanded);
       const procKey = `${row.marketplace}|${row.order_id}`;
       if (!seenProc.has(procKey)) {
         seenProc.add(procKey);
         procurementItems.push({ marketplace: row.marketplace, orderId: row.order_id });
       }
+    }
+
+    if (!demandLines.length) {
+      const hint =
+        unresolvedOrders.length > 0
+          ? 'Сопоставьте товар в каталоге (артикул Ozon / SKU в карточке товара).'
+          : 'Нет позиций для закупки.';
+      return {
+        ok: false,
+        error: unresolvedOrders.length > 0 ? 'product_not_resolved' : 'no_demand',
+        message:
+          unresolvedOrders.length > 0
+            ? `Не определён товар в каталоге для заказа. ${hint}`
+            : hint,
+        unresolvedOrders,
+      };
     }
 
     for (const line of demandLines) {
@@ -702,6 +755,7 @@ class OrderProcurementPlannerService {
           purchasePrice: it.purchasePrice,
         })),
         note,
+        supplierWarehouseName: g.supplierWarehouseName,
       };
       if (g.existingPurchaseId) {
         payload.existingPurchaseId = g.existingPurchaseId;
@@ -764,13 +818,15 @@ class OrderProcurementPlannerService {
           supplierId: g.supplierId,
           message: e?.message || String(e),
         });
+        const failReason =
+          e?.supplierSubmit?.message || e?.message || 'Ошибка закупки или отправки поставщику';
         for (const it of g.items) {
           const lr = lineResults.find(
             (x) => x.lineKey === it.lineKey && x.productId === it.productId
           );
           if (lr) {
             lr.status = 'manual_required';
-            lr.manualReason = e?.message || 'Ошибка создания закупки';
+            lr.manualReason = failReason;
             lr.purchased = it.coverage.purchased;
             lr.deficit = it.quantity;
           }
@@ -778,11 +834,30 @@ class OrderProcurementPlannerService {
       }
     }
 
-    // 4) Сохранить строки без закупки (только резерв)
+    // 4) Сохранить строки покрытия (резерв и manual_required после сбоя закупки)
     for (const lr of lineResults) {
-      if (lr.status === 'manual_required' && lr.deficit > 0) continue;
       const dl = demandLines.find((d) => d.lineKey === lr.lineKey);
       if (!dl) continue;
+
+      if (lr.status === 'manual_required' && lr.deficit > 0) {
+        await upsertFulfillmentLine(null, {
+          profileId: pid,
+          orderDbId: dl.orderDbId,
+          marketplace: dl.marketplace,
+          orderId: dl.orderId,
+          lineKey: lr.lineKey,
+          productId: lr.productId,
+          kitProductId: lr.kitProductId,
+          quantityNeeded: lr.need,
+          quantityReserved: lr.reserved,
+          quantityPurchased: lr.purchased,
+          purchaseItemId: null,
+          status: lr.status,
+          manualReason: lr.manualReason,
+        });
+        continue;
+      }
+
       const already = await query(
         `SELECT 1 FROM order_fulfillment_lines
          WHERE profile_id = $1 AND order_db_id = $2 AND line_key = $3`,
@@ -825,6 +900,7 @@ class OrderProcurementPlannerService {
     }
 
     const reserveOnly =
+      !purchasesTouched.length &&
       lineResults.length > 0 &&
       lineResults.every((l) => l.deficit <= 0 && l.status !== 'manual_required');
 
@@ -833,15 +909,25 @@ class OrderProcurementPlannerService {
       message = `Зарезервировано ${totalReserved} шт. по заказу, закупка не требуется`;
     } else if (purchasesTouched.length) {
       const p = purchasesTouched[0];
-      message =
-        totalReserved > 0
-          ? `Зарезервировано ${totalReserved} шт., закуплено ${totalPurchased} шт. (закупка №${p.purchaseId})`
-          : `Закуплено ${totalPurchased} шт. (закупка №${p.purchaseId})`;
+      const sentToSupplier = Boolean(p.supplierSubmit?.submitted);
+      if (sentToSupplier) {
+        message =
+          totalReserved > 0
+            ? `Отправлено поставщику, закуплено ${totalPurchased} шт., зарезервировано ${totalReserved} шт. (закупка №${p.purchaseId})`
+            : `Отправлено поставщику, закуплено ${totalPurchased} шт. (закупка №${p.purchaseId})`;
+      } else {
+        message =
+          totalReserved > 0
+            ? `Закуплено ${totalPurchased} шт., зарезервировано ${totalReserved} шт. (закупка №${p.purchaseId})`
+            : `Закуплено ${totalPurchased} шт. (закупка №${p.purchaseId})`;
+      }
       if (p.supplierSubmit?.message) {
         message += `. ${p.supplierSubmit.message}`;
       }
     } else {
-      message = 'Обработка заказа завершена';
+      message = lineResults.length
+        ? 'Обработка заказа завершена'
+        : 'Нет позиций для закупки по заказу';
     }
 
     if (manualLines.length) {
@@ -1015,11 +1101,7 @@ class OrderProcurementPlannerService {
       };
     }
 
-    const supplierRes = await query(
-      `SELECT id, name, api_config FROM suppliers WHERE id = $1 AND profile_id = $2`,
-      [sid, pid]
-    );
-    const supplierRow = supplierRes.rows?.[0];
+    const supplierRow = await loadSupplierForProfile(sid, pid);
     if (!supplierRow) {
       return { ok: false, error: 'supplier_not_found', message: 'Поставщик не найден' };
     }
@@ -1091,6 +1173,7 @@ class OrderProcurementPlannerService {
         purchasePrice: it.purchasePrice,
       })),
       note,
+      supplierWarehouseName: dates.supplierWarehouseName,
     };
 
     const openId =
@@ -1125,7 +1208,10 @@ class OrderProcurementPlannerService {
       return {
         ok: false,
         error: 'procure_failed',
-        message: e?.message || 'Не удалось создать закупку',
+        message:
+          e?.supplierSubmit?.message ||
+          e?.message ||
+          'Не удалось отправить заказ поставщику или создать закупку',
       };
     }
 
@@ -1161,7 +1247,7 @@ class OrderProcurementPlannerService {
       });
     }
 
-    let message = `Ручная закупка оформлена (закупка №${purchaseId})`;
+    let message = `Заказ отправлен поставщику, оформлена закупка №${purchaseId}`;
     if (supplierSubmit?.message) {
       message += `. ${supplierSubmit.message}`;
     }
