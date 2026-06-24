@@ -73,6 +73,46 @@
   margin: 16px 0 20px;
 }
 
+.fbo-status-badge {
+  display: inline-block;
+  padding: 0.35em 0.65em;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.fbo-status-badge--new {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.fbo-status-badge--packed {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.fbo-status-badge--ready_for_supply {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.fbo-status-badge--shipped {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.fbo-status-badge--closed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.fbo-status-badge--return {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
 .fbo-status-step {
   padding: 6px 12px;
   border-radius: 6px;
@@ -93,15 +133,30 @@
 }
 
 .fbo-status-step.active {
-  background: #2563eb;
-  color: #fff;
   font-weight: 600;
+  color: #fff;
+  border-color: transparent;
 }
 
 .fbo-status-step.done {
-  background: #dbeafe;
-  color: #1e40af;
+  font-weight: 500;
+  border: 1px solid transparent;
 }
+
+.fbo-status-step--new.active { background: #64748b; }
+.fbo-status-step--new.done { background: #e2e8f0; color: #475569; }
+
+.fbo-status-step--packed.active { background: #2563eb; }
+.fbo-status-step--packed.done { background: #dbeafe; color: #1d4ed8; }
+
+.fbo-status-step--ready_for_supply.active { background: #d97706; }
+.fbo-status-step--ready_for_supply.done { background: #fef3c7; color: #b45309; }
+
+.fbo-status-step--shipped.active { background: #7c3aed; }
+.fbo-status-step--shipped.done { background: #ede9fe; color: #6d28d9; }
+
+.fbo-status-step--closed.active { background: #16a34a; }
+.fbo-status-step--closed.done { background: #dcfce7; color: #15803d; }
 
 .fbo-supply-meta {
   display: grid;

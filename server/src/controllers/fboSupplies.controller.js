@@ -172,6 +172,20 @@ class FboSuppliesController {
     }
   }
 
+  async syncMarketplaceStatus(req, res, next) {
+    try {
+      const { id } = req.params;
+      const profileId = req.user?.profileId ?? null;
+      const data = await fboSuppliesImportService.syncSupplyStatusFromMarketplace(id, { profileId });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async syncMarketplaceContent(req, res, next) {
     try {
       const { id } = req.params;

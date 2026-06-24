@@ -7,7 +7,8 @@ import { useNavigate } from 'react-router-dom';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
 import { FboSupplyImportModal } from './FboSupplyImportModal';
-import { getFboSupplyStatusLabel, getMarketplaceLabel } from '../../constants/fboSupplyStatuses';
+import { getMarketplaceLabel } from '../../constants/fboSupplyStatuses';
+import { FboSupplyStatusBadge } from '../../components/fbo/FboSupplyStatusBadge';
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
 import './FboSupplies.css';
@@ -250,7 +251,7 @@ export function FboSupplies() {
                     </div>
                   </td>
                   <td>
-                    <span className="badge bg-light text-dark">{getFboSupplyStatusLabel(row.status)}</span>
+                    <FboSupplyStatusBadge status={row.status} />
                   </td>
                   <td>{fmtDt(row.createdAt)}</td>
                   <td onClick={(e) => e.stopPropagation()}>

@@ -111,6 +111,10 @@ router.get('/:id', wrapAsync(fboSuppliesController.getById.bind(fboSuppliesContr
 router.put('/:id', wrapAsync(fboSuppliesController.update.bind(fboSuppliesController)));
 router.post('/:id/advance-status', wrapAsync(fboSuppliesController.advanceStatus.bind(fboSuppliesController)));
 router.post(
+  '/:id/sync-marketplace-status',
+  wrapAsync(fboSuppliesController.syncMarketplaceStatus.bind(fboSuppliesController))
+);
+router.post(
   '/:id/sync-ozon-placement-zones',
   wrapAsync(fboSuppliesController.syncOzonPlacementZones.bind(fboSuppliesController))
 );

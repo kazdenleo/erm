@@ -25,10 +25,12 @@ import {
   canSelectFboSupplyStatus,
   fboSupplyStatusBlockedTitle,
   getFboSupplyStatusLabel,
+  getFboSupplyStatusClass,
   getMarketplaceLabel,
   hasPackingDiscrepancy,
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
+import { FboSupplyStatusBadge } from '../../components/fbo/FboSupplyStatusBadge.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
 import { FboSupplyItemGeneralQty } from './FboSupplyItemGeneralQty.jsx';
 import { getFboItemReserveParts } from './fboSupplyItemReserve.js';
@@ -112,11 +114,16 @@ export function FboSupplyDetail() {
   const [syncMpContentMsg, setSyncMpContentMsg] = useState(null);
   const [pullingMpContent, setPullingMpContent] = useState(false);
   const [pullMpContentMsg, setPullMpContentMsg] = useState(null);
+  const [statusSyncing, setStatusSyncing] = useState(false);
+  const [statusSyncMsg, setStatusSyncMsg] = useState(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const [replaceCtx, setReplaceCtx] = useState(null);
   const [replaceSaving, setReplaceSaving] = useState(false);
   const selectAllItemsRef = useRef(null);
   const autoPlacementSyncAttemptedRef = useRef(null);
+  const statusSyncInFlightRef = useRef(false);
+
+  const STATUS_SYNC_POLL_MS = 90000;
 
   const deductionWarehouses = useMemo(
     () => filterDeductionWarehouses(allWarehouses, supply?.deductionWarehouseId),
@@ -613,6 +620,35 @@ export function FboSupplyDetail() {
     }
   };
 
+  const runMarketplaceStatusSync = useCallback(
+    async (silent = false) => {
+      if (!id || statusSyncInFlightRef.current) return null;
+      statusSyncInFlightRef.current = true;
+      if (!silent) setStatusSyncing(true);
+      try {
+        const data = await fboSuppliesApi.syncMarketplaceStatus(id);
+        if (data?.updated && data.supply) {
+          applyStatusChangeResult(data.supply);
+          setStatusSyncMsg(data.message || 'Статус обновлён с маркетплейса');
+        } else if (!silent) {
+          setStatusSyncMsg(data?.message || null);
+        }
+        return data;
+      } catch (e) {
+        if (!silent) {
+          setStatusSyncMsg(
+            e.response?.data?.message || e.message || 'Не удалось обновить статус с маркетплейса'
+          );
+        }
+        return null;
+      } finally {
+        statusSyncInFlightRef.current = false;
+        if (!silent) setStatusSyncing(false);
+      }
+    },
+    [id]
+  );
+
   const handleStatusChange = async (newStatus) => {
     if (!supply || newStatus === supply.status) return;
     if (!canSelectFboSupplyStatus(newStatus, packingHasDiscrepancy)) {
@@ -634,6 +670,16 @@ export function FboSupplyDetail() {
       setSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (!id || !supply?.status) return undefined;
+    const st = String(supply.status).toLowerCase();
+    if (!['ready_for_supply', 'shipped'].includes(st)) return undefined;
+    const timer = setInterval(() => {
+      runMarketplaceStatusSync(true);
+    }, STATUS_SYNC_POLL_MS);
+    return () => clearInterval(timer);
+  }, [id, supply?.status, runMarketplaceStatusSync]);
 
   const toggleItemSelected = (itemId, e) => {
     e?.stopPropagation?.();
@@ -770,6 +816,10 @@ export function FboSupplyDetail() {
     !packingHasDiscrepancy &&
     (packing?.cargoUnits?.length ?? 0) > 0 &&
     !ozonSubmitBlocked;
+  const canSyncMarketplaceStatus =
+    isFboMarketplaceSupply &&
+    hasMarketplaceExternalRef &&
+    ['ready_for_supply', 'shipped', 'closed'].includes(String(supply.status || '').toLowerCase());
 
   return (
     <div className="fbo-supplies-page">
@@ -777,9 +827,12 @@ export function FboSupplyDetail() {
         <Button variant="secondary" size="small" onClick={() => navigate('/stock-levels/fbo-supplies')}>
           ← К списку
         </Button>
-        <h2 style={{ margin: 0, flex: 1 }}>
-          Поставка FBO № {supply.id}
-          {supply.externalShipmentNumber ? ` · ${supply.externalShipmentNumber}` : ''}
+        <h2 style={{ margin: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span>
+            Поставка FBO № {supply.id}
+            {supply.externalShipmentNumber ? ` · ${supply.externalShipmentNumber}` : ''}
+          </span>
+          <FboSupplyStatusBadge status={supply.status} />
         </h2>
         <Button
           variant="secondary"
@@ -847,6 +900,17 @@ export function FboSupplyDetail() {
             }
           >
             {submittingPacking ? 'Отправка…' : 'Отправить состав на маркетплейс'}
+          </Button>
+        ) : null}
+        {canSyncMarketplaceStatus ? (
+          <Button
+            variant="secondary"
+            size="small"
+            disabled={statusSyncing || saving}
+            onClick={() => runMarketplaceStatusSync(false)}
+            title={`Обновить статус поставки с ${mpLabel}`}
+          >
+            {statusSyncing ? 'Статус…' : 'Статус с МП'}
           </Button>
         ) : null}
         <Button
@@ -931,17 +995,22 @@ export function FboSupplyDetail() {
         </p>
       )}
 
+      {statusSyncMsg ? (
+        <div className="alert alert-info">{statusSyncMsg}</div>
+      ) : null}
+
       <div className="fbo-status-stepper">
         {FBO_SUPPLY_STATUS_OPTIONS.map((s, i) => {
           const done = i < statusIdx;
           const active = s === supply.status;
           const blocked = !canSelectFboSupplyStatus(s, packingHasDiscrepancy);
           const blockedTitle = fboSupplyStatusBlockedTitle(s, packingHasDiscrepancy);
+          const statusClass = getFboSupplyStatusClass(s);
           return (
             <button
               key={s}
               type="button"
-              className={`fbo-status-step${active ? ' active' : ''}${done ? ' done' : ''}${blocked ? ' blocked' : ''}`}
+              className={`fbo-status-step fbo-status-step--${statusClass}${active ? ' active' : ''}${done ? ' done' : ''}${blocked ? ' blocked' : ''}`}
               disabled={saving || blocked}
               title={blockedTitle || `Установить: ${getFboSupplyStatusLabel(s)}`}
               onClick={() => handleStatusChange(s)}

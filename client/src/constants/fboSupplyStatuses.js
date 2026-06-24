@@ -26,6 +26,18 @@ export function getFboSupplyStatusLabel(status) {
   return FBO_SUPPLY_STATUS_LABELS[status] || status || '—';
 }
 
+/** CSS-модификатор для бейджа / степпера по статусу. */
+export function getFboSupplyStatusClass(status) {
+  const key = String(status || '').toLowerCase();
+  if (FBO_SUPPLY_STATUS_ORDER.includes(key)) return key;
+  return 'unknown';
+}
+
+export function getFboSupplyStatusRank(status) {
+  const idx = FBO_SUPPLY_STATUS_ORDER.indexOf(status);
+  return idx >= 0 ? idx : -1;
+}
+
 export function getNextFboSupplyStatus(current) {
   const idx = FBO_SUPPLY_STATUS_ORDER.indexOf(current);
   if (idx < 0 || idx >= FBO_SUPPLY_STATUS_ORDER.length - 2) return null;

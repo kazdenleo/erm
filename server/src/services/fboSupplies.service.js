@@ -641,7 +641,20 @@ class FboSuppliesService {
         });
       }
     }
-    return this.getById(id, { profileId: pid });
+
+    if (['ready_for_supply', 'shipped'].includes(result.status)) {
+      try {
+        const { default: fboSuppliesImportService } = await import('./fboSuppliesImport.service.js');
+        const sync = await fboSuppliesImportService.syncSupplyStatusFromMarketplace(id, { profileId: pid });
+        if (sync?.updated && sync.supply) {
+          result = sync.supply;
+        }
+      } catch (e) {
+        console.warn('[FboSupplies] marketplace status sync:', e?.message || e);
+      }
+    }
+
+    return result;
   }
 
   async advanceStatus(id, { profileId } = {}) {

@@ -12,7 +12,7 @@ import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { parseOzonBundleRowMeta } from '../constants/ozonPlacementZones.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
-import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { pickStatusAfterMarketplaceSync } from '../constants/fboSupplyStatuses.js';
 
 const WB_SUPPLIES_API = 'https://supplies-api.wildberries.ru';
 const YM_API = 'https://api.partner.market.yandex.ru';
@@ -1833,31 +1833,141 @@ async function mapWbGoodsToMpItems(list, { profileId } = {}) {
   return items;
 }
 
-async function resolveWbGoodsApiIdForSupply(supply, apiKey) {
-  const extId =
-    supply.externalSupplyId != null ? String(supply.externalSupplyId).trim() : '';
-  if (extId) return extId;
-
-  const extNum =
-    supply.externalShipmentNumber != null ? String(supply.externalShipmentNumber).trim() : '';
-  if (!extNum) return null;
-
+async function fetchWbSuppliesListRows(apiKey, daysBack = 365) {
   const listData = await wbFbwRequest('/api/v1/supplies', {
     apiKey,
     method: 'POST',
-    body: buildWbSuppliesListBody(365),
+    body: buildWbSuppliesListBody(daysBack),
   });
   let rows = parseWbSuppliesListResponse(listData);
   if (!rows.length) {
-    const fallbackData = await wbFbwRequest('/api/v1/supplies', {
-      apiKey,
-      method: 'POST',
-      body: {},
-    });
+    const fallbackData = await wbFbwRequest('/api/v1/supplies', { apiKey, method: 'POST', body: {} });
     rows = parseWbSuppliesListResponse(fallbackData);
   }
-  const hit = rows.find((row) => wbExternalShipmentNumber(row) === extNum);
-  return hit ? wbSupplyGoodsApiId(hit) : null;
+  return rows;
+}
+
+async function resolveWbSupplyRowForErmSupply(supply, apiKey) {
+  const extId = supply.externalSupplyId != null ? String(supply.externalSupplyId).trim() : '';
+  const extNum =
+    supply.externalShipmentNumber != null ? String(supply.externalShipmentNumber).trim() : '';
+  if (!extId && !extNum) return null;
+
+  const rows = await fetchWbSuppliesListRows(apiKey);
+  if (extId) {
+    const byId = rows.find((row) => {
+      const gid = wbSupplyGoodsApiId(row);
+      return gid && gid === extId;
+    });
+    if (byId) return byId;
+  }
+  if (extNum) {
+    return rows.find((row) => wbExternalShipmentNumber(row) === extNum) || null;
+  }
+  return null;
+}
+
+async function resolveYmSupplyRequestForErmSupply(supply, { profileId } = {}) {
+  const ymConfig = await integrationsService.getMarketplaceConfig('yandex', {
+    profileId,
+    organizationId: supply.organizationId ?? null,
+  });
+  const apiKey = ymConfig?.api_key ?? ymConfig?.apiKey;
+  const campaignId = ymConfig?.campaign_id ?? ymConfig?.campaignId;
+  if (!apiKey || !ymApiKeyHeader(apiKey) || !campaignId) return null;
+
+  const targetId = supply.externalSupplyId != null ? String(supply.externalSupplyId).trim() : '';
+  const targetNum =
+    supply.externalShipmentNumber != null ? String(supply.externalShipmentNumber).trim() : '';
+  if (!targetId && !targetNum) return null;
+
+  const since = new Date();
+  since.setDate(since.getDate() - 365);
+  const listData = await ymRequest(
+    `/v2/campaigns/${encodeURIComponent(String(campaignId))}/supply-requests?limit=100`,
+    {
+      apiKey,
+      method: 'POST',
+      body: {
+        requestTypes: ['SUPPLY'],
+        requestDateFrom: since.toISOString(),
+        requestDateTo: new Date().toISOString(),
+      },
+    }
+  );
+  const requests = listData?.result?.requests ?? listData?.requests ?? [];
+  for (const req of requests) {
+    const reqId = req.id?.id ?? req.id ?? req.requestId;
+    const reqIdStr = reqId != null ? String(reqId).trim() : '';
+    const extNum = String(req.id?.warehouseRequestId ?? req.warehouseRequestId ?? reqIdStr ?? '').trim();
+    if (targetId && reqIdStr === targetId) return req;
+    if (targetNum && (extNum === targetNum || reqIdStr === targetNum)) return req;
+  }
+  return null;
+}
+
+async function fetchMarketplaceStatusForSupply(supply, { profileId } = {}) {
+  const mp = String(supply.marketplace || 'ozon').trim().toLowerCase();
+  const organizationId = supply.organizationId ?? null;
+
+  if (mp === 'ozon') {
+    const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
+    const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
+    const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
+    if (!clientId || !apiKey) {
+      const err = new Error('Не настроены Client ID и API Key Ozon');
+      err.statusCode = 400;
+      throw err;
+    }
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts);
+    const rawState = ozonSupply?.state ?? order?.state ?? order?.status ?? null;
+    return { status: mapOzonStateToStatus(rawState), rawState: rawState != null ? String(rawState) : null };
+  }
+
+  if (mp === 'wb' || mp.includes('wild')) {
+    const wbConfig = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
+    const apiKey = wbConfig?.api_key ?? wbConfig?.apiKey;
+    if (!apiKey || !String(apiKey).trim()) {
+      const err = new Error('Не настроен API-ключ Wildberries (FBW)');
+      err.statusCode = 400;
+      throw err;
+    }
+    const row = await resolveWbSupplyRowForErmSupply(supply, apiKey);
+    if (!row) {
+      const err = new Error('Поставка не найдена в Wildberries по номеру отгрузки');
+      err.statusCode = 404;
+      throw err;
+    }
+    const rawState = row.statusName ?? row.status ?? row.statusID ?? null;
+    return {
+      status: mapWbStateToStatus(rawState),
+      rawState: rawState != null ? String(rawState) : null,
+    };
+  }
+
+  if (mp === 'ym' || mp.includes('yandex')) {
+    const req = await resolveYmSupplyRequestForErmSupply(supply, { profileId });
+    if (!req) {
+      const err = new Error('Заявка не найдена в Яндекс.Маркете по номеру отгрузки');
+      err.statusCode = 404;
+      throw err;
+    }
+    const rawState = req.status ?? null;
+    return {
+      status: mapYmStateToStatus(rawState),
+      rawState: rawState != null ? String(rawState) : null,
+    };
+  }
+
+  const err = new Error(`Синхронизация статуса не поддерживается для маркетплейса: ${mp}`);
+  err.statusCode = 400;
+  throw err;
+}
+
+async function resolveWbGoodsApiIdForSupply(supply, apiKey) {
+  const row = await resolveWbSupplyRowForErmSupply(supply, apiKey);
+  return row ? wbSupplyGoodsApiId(row) : null;
 }
 
 async function fetchWbMpItemsForSupply(supply, { profileId } = {}) {
@@ -2908,6 +3018,41 @@ class FboSuppliesImportService {
       profileId,
       updatePlacement: true,
     });
+  }
+
+  /**
+   * Синхронизировать статус поставки с маркетплейсом (только продвижение вперёд или «Возврат»).
+   */
+  async syncSupplyStatusFromMarketplace(supplyId, { profileId } = {}) {
+    const supply = await fboSuppliesService.getById(supplyId, { profileId });
+    const mpInfo = await fetchMarketplaceStatusForSupply(supply, { profileId });
+    const previousStatus = supply.status;
+    const targetStatus = pickStatusAfterMarketplaceSync(previousStatus, mpInfo?.status);
+
+    if (targetStatus === previousStatus) {
+      return {
+        updated: false,
+        supply,
+        previousStatus,
+        marketplaceStatus: mpInfo?.status ?? null,
+        marketplaceState: mpInfo?.rawState ?? null,
+        message: 'Статус совпадает с маркетплейсом или на МП ещё не продвинулся',
+      };
+    }
+
+    const updated = await fboSuppliesService.update(
+      supplyId,
+      { status: targetStatus },
+      { profileId }
+    );
+    return {
+      updated: true,
+      supply: updated,
+      previousStatus,
+      marketplaceStatus: mpInfo?.status ?? null,
+      marketplaceState: mpInfo?.rawState ?? null,
+      message: `Статус обновлён: ${previousStatus} → ${targetStatus}`,
+    };
   }
 
   /**

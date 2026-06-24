@@ -31,3 +31,19 @@ export function getNextFboSupplyStatus(current) {
   if (idx < 0 || idx >= FBO_SUPPLY_STATUS_ORDER.length - 2) return null;
   return FBO_SUPPLY_STATUS_ORDER[idx + 1];
 }
+
+export function getFboSupplyStatusRank(status) {
+  const idx = FBO_SUPPLY_STATUS_ORDER.indexOf(status);
+  return idx >= 0 ? idx : -1;
+}
+
+/** Статус после синхронизации с МП: только вперёд по цепочке или «Возврат». */
+export function pickStatusAfterMarketplaceSync(current, marketplaceStatus) {
+  if (!marketplaceStatus || !FBO_SUPPLY_STATUSES.includes(marketplaceStatus)) return current;
+  if (marketplaceStatus === 'return') return 'return';
+  if (current === 'return') return current;
+  const curR = getFboSupplyStatusRank(current);
+  const mpR = getFboSupplyStatusRank(marketplaceStatus);
+  if (curR < 0 || mpR < 0) return current;
+  return mpR > curR ? marketplaceStatus : current;
+}

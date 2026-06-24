@@ -28,13 +28,7 @@ function mpLabelRu(mp) {
 }
 
 async function markSupplyReadyForShipment(supplyId, { profileId } = {}) {
-  await query(
-    `UPDATE fbo_supplies
-     SET status = 'ready_for_supply', updated_at = CURRENT_TIMESTAMP
-     WHERE id = $1`,
-    [supplyId]
-  );
-  return fboSuppliesService.getById(supplyId, { profileId });
+  return fboSuppliesService.update(supplyId, { status: 'ready_for_supply' }, { profileId });
 }
 
 function formatOzonExpiry(value) {
