@@ -22,6 +22,26 @@ import {
 
 const FBO_RESERVE_ACTIVE_STATUSES = ['new', 'packed', 'ready_for_supply'];
 
+/** Приоритет в очереди резерва: упакованные и готовые раньше черновиков. */
+export function fboReserveStatusRank(status) {
+  const s = String(status || '').trim();
+  if (s === 'packed') return 0;
+  if (s === 'ready_for_supply') return 1;
+  if (s === 'new') return 2;
+  return 3;
+}
+
+const FBO_RESERVE_QUEUE_ORDER_SQL = `
+  CASE s.status
+    WHEN 'packed' THEN 0
+    WHEN 'ready_for_supply' THEN 1
+    WHEN 'new' THEN 2
+    ELSE 3
+  END,
+  s.ready_at ASC NULLS LAST,
+  s.id ASC,
+  si.id ASC`;
+
 const fboSourceWarehousesCache = new Map();
 
 function normalizeWarehouseId(v) {
@@ -154,7 +174,7 @@ async function findFboReserveQueuesByProducts(productIds, profileId = null) {
        AND s.deduction_warehouse_id IS NOT NULL
        AND COALESCE(s.deduct_stock, false) = true
        AND s.status = ANY($3::text[])
-     ORDER BY si.product_id, s.ready_at ASC NULLS LAST, s.id ASC, si.id ASC`,
+     ORDER BY si.product_id, ${FBO_RESERVE_QUEUE_ORDER_SQL}`,
     [uniquePids, profId, FBO_RESERVE_ACTIVE_STATUSES]
   );
   for (const row of r.rows || []) {
@@ -304,8 +324,12 @@ function readyAtTs(v) {
   return Number.isFinite(t) ? t : null;
 }
 
-/** Снимать резерв — с самых поздних поставок (LIFO по ready_at). */
+/** Снимать резерв — с самых поздних / низкоприоритетных поставок (обратный порядок очереди). */
 function compareSupplyRowsForUnreserve(a, b) {
+  const sa = fboReserveStatusRank(a?.status);
+  const sb = fboReserveStatusRank(b?.status);
+  if (sa !== sb) return sb - sa;
+
   const ta = readyAtTs(a?.ready_at);
   const tb = readyAtTs(b?.ready_at);
   // null → в конец (как "самая поздняя / неизвестная")
@@ -313,9 +337,9 @@ function compareSupplyRowsForUnreserve(a, b) {
   const nb = tb == null;
   if (na && nb) {
     // fallback по id, чтобы было детерминированно
-    const sa = Number(a?.fbo_supply_id) || 0;
-    const sb = Number(b?.fbo_supply_id) || 0;
-    if (sa !== sb) return sb - sa;
+    const supplyA = Number(a?.fbo_supply_id) || 0;
+    const supplyB = Number(b?.fbo_supply_id) || 0;
+    if (supplyA !== supplyB) return supplyB - supplyA;
     const ia = Number(a?.supply_item_id) || 0;
     const ib = Number(b?.supply_item_id) || 0;
     return ib - ia;
@@ -323,9 +347,9 @@ function compareSupplyRowsForUnreserve(a, b) {
   if (na) return -1; // a(null) раньше в сортировке DESC (т.е. "снимать первым")
   if (nb) return 1;
   if (ta !== tb) return tb - ta; // поздние раньше
-  const sa = Number(a?.fbo_supply_id) || 0;
-  const sb = Number(b?.fbo_supply_id) || 0;
-  if (sa !== sb) return sb - sa;
+  const supplyA = Number(a?.fbo_supply_id) || 0;
+  const supplyB = Number(b?.fbo_supply_id) || 0;
+  if (supplyA !== supplyB) return supplyB - supplyA;
   const ia = Number(a?.supply_item_id) || 0;
   const ib = Number(b?.supply_item_id) || 0;
   return ib - ia;
@@ -400,22 +424,47 @@ function buildWarehouseCandidates(deductionWarehouseId, stockWarehouseIds) {
 }
 
 async function createKitFboReserveSimulator(kitId, stockWarehouseIds) {
+  return buildKitStockPoolsForWarehouses(kitId, stockWarehouseIds);
+}
+
+/** Пул целых комплектов и комплектующих по нескольким складам-источникам FBO. */
+async function buildKitStockPoolsForWarehouses(kitId, stockWarehouseIds) {
+  const whs = normalizeWarehouseIdList(stockWarehouseIds);
   const components = await getKitComponents(kitId);
   let wholeRemaining = 0;
   const componentPools = new Map();
-  for (const wh of stockWarehouseIds) {
+  for (const wh of whs) {
     wholeRemaining += await getWarehouseAvailablePoolForFbo(kitId, wh);
-  }
-  for (const c of components) {
-    const pid = Number(c.component_product_id);
-    if (!Number.isFinite(pid) || pid < 1) continue;
-    let total = 0;
-    for (const wh of stockWarehouseIds) {
-      total += await getWarehouseAvailablePoolForFbo(pid, wh);
+    for (const c of components) {
+      const pid = Number(c.component_product_id);
+      if (!Number.isFinite(pid) || pid < 1) continue;
+      const pool = await getWarehouseAvailablePoolForFbo(pid, wh);
+      componentPools.set(pid, (componentPools.get(pid) || 0) + pool);
     }
-    componentPools.set(pid, (componentPools.get(pid) || 0) + total);
   }
   return { components, wholeRemaining, componentPools };
+}
+
+async function computeKitReservableBreakdownForWarehouseIds(kitId, warehouseIds) {
+  const whs = normalizeWarehouseIdList(warehouseIds);
+  if (!whs.length) {
+    return { wholeAvail: 0, wholeReserveAvail: 0, fromComponents: 0, total: 0, physicalOnHand: 0 };
+  }
+  const { components, wholeRemaining, componentPools } = await buildKitStockPoolsForWarehouses(kitId, whs);
+  const fromComponents = computeAssemblableFromComponentPoolMap(components, componentPools);
+  const allocCap = allocateKitReservePriority(9999, {
+    wholeAvail: wholeRemaining,
+    wholeReserveAvail: wholeRemaining,
+    fromComponents,
+    physicalOnHand: wholeRemaining,
+  });
+  return {
+    wholeAvail: wholeRemaining,
+    wholeReserveAvail: wholeRemaining,
+    fromComponents,
+    total: allocCap.kitsToReserve,
+    physicalOnHand: wholeRemaining,
+  };
 }
 
 function simulateKitReserveFromPools(sim, wanted) {
@@ -456,12 +505,15 @@ async function applyKitFboReserve(
   if (!Number.isFinite(kitId) || kitId < 1 || wanted <= 0) return 0;
 
   const whCandidates = buildWarehouseCandidates(deductionWarehouseId, stockWarehouseIds);
-  const primaryWh = normalizeWarehouseId(deductionWarehouseId);
-  const reserveOpts = primaryWh != null ? { warehouseId: primaryWh } : { warehouseId: null };
+  const stockWhs = normalizeWarehouseIdList(stockWarehouseIds);
+  const poolWhs = stockWhs.length > 0 ? stockWhs : whCandidates;
 
-  let breakdown = await computeKitReservableBreakdown(kitId, reserveOpts);
+  let breakdown =
+    poolWhs.length > 0
+      ? await computeKitReservableBreakdownForWarehouseIds(kitId, poolWhs)
+      : await computeKitReservableBreakdown(kitId, { warehouseId: null });
   let alloc = allocateKitReservePriority(wanted, breakdown);
-  if (alloc.kitsToReserve <= 0 && primaryWh != null) {
+  if (alloc.kitsToReserve <= 0 && poolWhs.length > 0) {
     breakdown = await computeKitReservableBreakdown(kitId, { warehouseId: null });
     alloc = allocateKitReservePriority(wanted, breakdown);
   }
@@ -495,14 +547,10 @@ async function applyKitFboReserve(
   }
 
   if (alloc.fromComponents > 0) {
-    const assemblable = await computeAssemblableFromComponents(kitId, reserveOpts);
-    let fromComp = Math.min(alloc.fromComponents, assemblable);
-    if (fromComp > 0 && primaryWh == null) {
-      const globalAsm = await computeAssemblableFromComponents(kitId, { warehouseId: null });
-      fromComp = Math.min(fromComp, globalAsm);
-    }
+    const { components, componentPools } = await buildKitStockPoolsForWarehouses(kitId, poolWhs);
+    const assemblable = computeAssemblableFromComponentPoolMap(components, componentPools);
+    const fromComp = Math.min(alloc.fromComponents, assemblable);
     if (fromComp > 0) {
-      const components = await getKitComponents(kitId);
       const compQtyMap = buildKitComponentQtyMap(components, fromComp);
       for (const [compId, compQty] of compQtyMap) {
         let needQty = compQty;
@@ -733,7 +781,10 @@ class FboSupplyReserveService {
     const sourceIncomingByProduct = incomingByProduct;
     for (const productId of productIds) {
       if (await isKitProductId(productId)) {
-        const breakdownKit = await computeKitReservableBreakdown(productId, { warehouseId: null });
+        const breakdownKit =
+          sourceWarehouseIds.length > 0
+            ? await computeKitReservableBreakdownForWarehouseIds(productId, sourceWarehouseIds)
+            : await computeKitReservableBreakdown(productId, { warehouseId: null });
         sourceOnHandByProduct.set(productId, Number(breakdownKit.total) || 0);
         continue;
       }

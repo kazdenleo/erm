@@ -5,6 +5,7 @@ import {
   computeAssemblableFromComponentPoolMap,
   resolveComplementaryKitReserveUnits,
 } from '../src/services/kitStock.service.js';
+import { fboReserveStatusRank } from '../src/services/fboSupplyReserve.service.js';
 
 test('allocateKitReservePriority: whole first, then components', () => {
   const alloc = allocateKitReservePriority(5, {
@@ -31,4 +32,10 @@ test('resolveComplementaryKitReserveUnits for FBO line without double count', ()
   assert.equal(resolveComplementaryKitReserveUnits(0, 4, 10), 4);
   assert.equal(resolveComplementaryKitReserveUnits(3, 0, 10), 3);
   assert.equal(resolveComplementaryKitReserveUnits(2, 3, 10), 5);
+});
+
+test('fboReserveStatusRank: packed before new in reserve queue', () => {
+  assert.ok(fboReserveStatusRank('packed') < fboReserveStatusRank('new'));
+  assert.ok(fboReserveStatusRank('ready_for_supply') < fboReserveStatusRank('new'));
+  assert.ok(fboReserveStatusRank('packed') < fboReserveStatusRank('ready_for_supply'));
 });
