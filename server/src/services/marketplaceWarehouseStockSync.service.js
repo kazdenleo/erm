@@ -556,7 +556,7 @@ export async function runBulkWarehouseStockSync(productIds, organizationId, opts
 
   const concurrency = Math.max(
     1,
-    Math.min(12, parseInt(process.env.MP_STOCK_PUSH_CONCURRENCY || '4', 10) || 4)
+    Math.min(12, parseInt(process.env.MP_STOCK_PUSH_CONCURRENCY || '1', 10) || 1)
   );
   let index = 0;
 
@@ -650,7 +650,7 @@ export async function syncMarketplaceStocksForProductIds(productIds, opts = {}) 
 
   const concurrency = Math.max(
     1,
-    Math.min(12, parseInt(process.env.MP_STOCK_PUSH_CONCURRENCY || '4', 10) || 4)
+    Math.min(12, parseInt(process.env.MP_STOCK_PUSH_CONCURRENCY || '1', 10) || 1)
   );
   const batchSize = Math.max(
     10,

@@ -7,6 +7,45 @@ import { query } from '../config/database.js';
 import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
+import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimitStatus(status, text = '') {
+  const s = Number(status);
+  if (s === 429) return true;
+  const t = String(text || '').toLowerCase();
+  return t.includes('too many requests') || t.includes('rate limit');
+}
+
+async function fetchWithRateLimitRetry(url, options, { maxAttempts = 4, label = 'API' } = {}) {
+  let lastResponse = null;
+  let lastText = '';
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const response = await fetch(url, options);
+    lastResponse = response;
+    lastText = await response.text().catch(() => '');
+    if (!isRateLimitStatus(response.status, lastText) || attempt >= maxAttempts - 1) {
+      return { response, text: lastText };
+    }
+    const retryAfter = parseInt(response.headers?.get?.('retry-after'), 10);
+    const waitMs =
+      Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : Math.min(30_000, 1500 * 2 ** attempt);
+    logger.warn(`[MP Stock Push] ${label} rate limited 429, retry in ${Math.round(waitMs / 1000)}s`);
+    await sleep(waitMs);
+  }
+  return { response: lastResponse, text: lastText };
+}
+
+let wbStockPushQueue = Promise.resolve();
+
+function withWbStockPushLock(fn) {
+  const run = wbStockPushQueue.then(fn, fn);
+  wbStockPushQueue = run.catch(() => {});
+  return run;
+}
 
 function mpConfig(cfg, type) {
   return integrationsService.getMarketplaceConfig(type, cfg);
@@ -142,23 +181,11 @@ async function pushOzon(ctx, quantity, organizationId, profileId) {
   if (offerId) stockRow.offer_id = offerId;
   if (productId && Number.isFinite(productId)) stockRow.product_id = productId;
 
-  const response = await fetch('https://api-seller.ozon.ru/v2/products/stocks', {
-    method: 'POST',
-    headers: ozonHeaders(cfg),
-    body: JSON.stringify({ stocks: [stockRow] })
-  });
-  const text = await response.text().catch(() => '');
-  if (!response.ok) {
-    const err = new Error(`Ozon stocks: ${response.status} ${text.substring(0, 300)}`);
-    err.statusCode = response.status;
-    throw err;
-  }
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { raw: text };
-  }
+  const data = await ozonApiPostWithRetry(
+    '/v2/products/stocks',
+    { stocks: [stockRow] },
+    { profileId, organizationId }
+  );
   const rowErrors = (data?.result || [])
     .flatMap((row) => (Array.isArray(row?.errors) ? row.errors : []))
     .filter(Boolean);
@@ -214,26 +241,28 @@ async function pushWildberries(ctx, quantity, organizationId, profileId) {
     return { marketplace: 'wb', ok: false, skipped: true, reason: 'no_wb_barcode' };
   }
 
-  const response = await fetch(
-    `https://marketplace-api.wildberries.ru/api/v3/stocks/${encodeURIComponent(mpWarehouseId)}`,
-    {
-      method: 'PUT',
-      headers: {
-        Authorization: String(apiKey),
-        'Content-Type': 'application/json',
-        Accept: 'application/json'
+  return withWbStockPushLock(async () => {
+    const { response, text } = await fetchWithRateLimitRetry(
+      `https://marketplace-api.wildberries.ru/api/v3/stocks/${encodeURIComponent(mpWarehouseId)}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: String(apiKey),
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: JSON.stringify({ stocks: [{ sku: barcode, amount: quantity }] })
       },
-      body: JSON.stringify({ stocks: [{ sku: barcode, amount: quantity }] })
+      { label: 'WB stocks' }
+    );
+    if (!response.ok) {
+      const err = new Error(`WB stocks: ${response.status} ${text.substring(0, 300)}`);
+      err.statusCode = response.status;
+      throw err;
     }
-  );
-  const text = await response.text().catch(() => '');
-  if (!response.ok) {
-    const err = new Error(`WB stocks: ${response.status} ${text.substring(0, 300)}`);
-    err.statusCode = response.status;
-    throw err;
-  }
-  logger.info(`[MP Stock Push] WB OK product=${ctx.product?.id} barcode=${barcode} qty=${quantity} wh=${mpWarehouseId}`);
-  return { marketplace: 'wb', ok: true, quantity, warehouseId: mpWarehouseId, barcode };
+    logger.info(`[MP Stock Push] WB OK product=${ctx.product?.id} barcode=${barcode} qty=${quantity} wh=${mpWarehouseId}`);
+    return { marketplace: 'wb', ok: true, quantity, warehouseId: mpWarehouseId, barcode };
+  });
 }
 
 async function pushYandex(ctx, quantity, organizationId, profileId) {

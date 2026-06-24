@@ -1581,6 +1581,10 @@ export function WarehouseStocks() {
       .map((r) => `${r.marketplace}: ${r.error}`);
     if (failSamples.length > 0) {
       details += `\n\nОшибки API:\n${failSamples.join('\n')}`;
+      if (failSamples.some((line) => /429|rate limit|too many requests/i.test(line))) {
+        details +=
+          '\n\nЛимит запросов маркетплейса (429). Подождите 15–30 секунд и отправьте снова — повтор уже выполняется автоматически.';
+      }
     }
     else if (pushed === 0 && failed === 0 && skipped === 0 && (data?.noMappings ?? 0) > 0) {
       details +=
@@ -3041,8 +3045,9 @@ export function WarehouseStocks() {
                     В журнале по выбранному складу: <strong>{reserveJournalQty}</strong> шт., но
                     заказы и поставки FBO не найдены
                     {reserveOrphanQty > 0 ? ` (лишний резерв: ${reserveOrphanQty} шт.)` : ''}.
-                    При открытии модалки лишний резерв снимается автоматически; если цифра не
-                    совпадает с колонкой «Резерв», нажмите кнопку ниже.
+                    {reserveSummary?.isKit && Number(reserveSummary?.componentJournalReserve) > 0
+                      ? ' Резерв учтён по комплектующим — список заказов должен появиться ниже после обновления.'
+                      : ' При открытии модалки лишний резерв снимается автоматически; если цифра не совпадает с колонкой «Резерв», нажмите кнопку ниже.'}
                   </p>
                   {reserveError && (
                     <p className="text-danger small mb-2" role="alert">
@@ -3063,6 +3068,12 @@ export function WarehouseStocks() {
                     </Button>
                   </div>
                 </>
+              ) : reserveSummary?.isKit && Number(reserveSummary?.componentJournalReserve) > 0 ? (
+                <p className="text-muted mb-2">
+                  Резерв по комплектующим: <strong>{reserveSummary.componentJournalReserve}</strong> шт.
+                  в журнале (на SKU комплекта — 0). Откройте комплектующие в таблице остатков, чтобы
+                  увидеть заказы с резервом.
+                </p>
               ) : (
                 <p className="text-muted mb-2">Нет активного резерва по заказам и поставкам FBO.</p>
               )

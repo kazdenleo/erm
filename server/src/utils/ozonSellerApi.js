@@ -7,17 +7,19 @@ import integrationsService from '../services/integrations.service.js';
 export const OZON_SELLER_API_MIN_GAP_MS = 550;
 
 let ozonSellerApiLastAt = 0;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+let ozonSellerApiQueue = Promise.resolve();
 
 export function isOzonRateLimitError(err) {
   const msg = String(err?.message ?? '');
   return msg.includes('429') || /rate limit/i.test(msg);
 }
 
-export async function ozonApiPostWithRetry(
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ozonApiPostWithRetryInner(
   path,
   body,
   ozonApiOpts,
@@ -47,4 +49,15 @@ export async function ozonApiPostWithRetry(
       await sleep(1000 * 2 ** attempt);
     }
   }
+}
+
+export async function ozonApiPostWithRetry(
+  path,
+  body,
+  ozonApiOpts,
+  opts = {}
+) {
+  const run = ozonSellerApiQueue.then(() => ozonApiPostWithRetryInner(path, body, ozonApiOpts, opts));
+  ozonSellerApiQueue = run.catch(() => {});
+  return run;
 }
