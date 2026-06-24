@@ -352,7 +352,7 @@ function buildFindAllFilters(options = {}) {
   }
 
   if (brandId) {
-    ({ whereSql, params, paramIndex } = appendBrandIdFilter(whereSql, params, paramIndex, brandId));
+    ({ whereSql, paramIndex } = appendBrandIdFilter(whereSql, params, paramIndex, brandId));
   }
 
   const categoryIdRaw = normalizeListCategoryId(categoryId);
@@ -592,7 +592,11 @@ class ProductsRepositoryPG {
     let strictByPid = new Map();
     let nullByPid = new Map();
     try {
-      const { NET_RESERVED_SUM_EXPR_SQL } = await import('../services/sellableQuantity.service.js');
+      const {
+        NET_RESERVED_SUM_EXPR_SQL,
+        batchOrderAttributedReservedMap,
+        mergeJournalAndOrderAttributedReserved,
+      } = await import('../services/sellableQuantity.service.js');
       const { allocateWarehouseScopedReserved } = await import('../constants/netReservedStockSql.js');
       if (warehouseScoped) {
         const [strictAgg, nullAgg] = await Promise.all([
@@ -627,22 +631,28 @@ class ProductsRepositoryPG {
           if (!key) continue;
           nullByPid.set(key, Number(r.rv) || 0);
         }
+        const orderAttrMap = await batchOrderAttributedReservedMap(numericIds, { warehouseId: whId });
         for (const p of products) {
           const key = productIdMapKey(p.id);
           if (!key) continue;
+          const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
           const pwsTotal = Math.max(0, Number(p.quantity_pws_total) || 0);
           const legacy = Math.max(0, Number(p.quantity_legacy) || 0);
           const totalOnHand = pwsTotal > 0 ? pwsTotal : legacy;
           const whOnHand = Math.max(0, Number(p.quantity) || 0);
+          const journalAllocated = allocateWarehouseScopedReserved({
+            strict: strictByPid.get(key) ?? 0,
+            nullReserve: nullByPid.get(key) ?? 0,
+            whOnHand,
+            totalOnHand,
+            legacyProductQty: legacy
+          });
           byPid.set(
             key,
-            allocateWarehouseScopedReserved({
-              strict: strictByPid.get(key) ?? 0,
-              nullReserve: nullByPid.get(key) ?? 0,
-              whOnHand,
-              totalOnHand,
-              legacyProductQty: legacy
-            })
+            mergeJournalAndOrderAttributedReserved(
+              journalAllocated,
+              Number.isFinite(nid) ? orderAttrMap.get(nid) ?? 0 : 0
+            )
           );
         }
       } else {
@@ -655,10 +665,23 @@ class ProductsRepositoryPG {
            GROUP BY product_id`,
           [numericIds]
         );
+        const orderAttrMap = await batchOrderAttributedReservedMap(numericIds, {});
         for (const r of agg.rows || []) {
           const key = productIdMapKey(r.product_id);
           if (!key) continue;
-          byPid.set(key, Number(r.rv) || 0);
+          const nid = Number(r.product_id);
+          byPid.set(
+            key,
+            mergeJournalAndOrderAttributedReserved(
+              Number(r.rv) || 0,
+              Number.isFinite(nid) ? orderAttrMap.get(nid) ?? 0 : 0
+            )
+          );
+        }
+        for (const [nid, rv] of orderAttrMap.entries()) {
+          const key = productIdMapKey(nid);
+          if (!key || byPid.has(key)) continue;
+          if (rv > 0) byPid.set(key, rv);
         }
       }
     } catch (e) {
@@ -1302,13 +1325,13 @@ class ProductsRepositoryPG {
     );
 
     if (hasKits) {
-      const { readKitDisplayReservedQuantity, isKitCatalogProduct: isKitCat } =
+      const { readKitStockTableReservedQuantity, isKitCatalogProduct: isKitCat } =
         await import('../services/kitStock.service.js');
       for (const p of products) {
         if (!isKitCat(p)) continue;
         const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
         if (!Number.isFinite(nid) || nid < 1) continue;
-        const rv = await readKitDisplayReservedQuantity(nid, options);
+        const rv = await readKitStockTableReservedQuantity(nid, options);
         p.reserved_quantity = rv;
         p.net_reserved_quantity = rv;
         p.reservedQuantity = rv;
@@ -1586,7 +1609,7 @@ class ProductsRepositoryPG {
        FROM products p
        WHERE COALESCE(p.is_archived, false) = false
          AND LOWER(TRIM(COALESCE(p.sku, ''))) = LOWER(TRIM($1))
-       ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 1 ELSE 0 END, p.id
+       ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 0 ELSE 1 END, p.id
        LIMIT 1`,
       [trimmed]
     );
@@ -1598,7 +1621,7 @@ class ProductsRepositoryPG {
        JOIN product_skus ps ON ps.product_id = p.id
        WHERE COALESCE(p.is_archived, false) = false
          AND LOWER(TRIM(COALESCE(ps.sku::text, ''))) = LOWER(TRIM($1))
-       ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 1 ELSE 0 END, p.id
+       ORDER BY CASE WHEN ${kitCatalogProductSql('p')} THEN 0 ELSE 1 END, p.id
        LIMIT 1`,
       [trimmed]
     );
@@ -2551,7 +2574,7 @@ class ProductsRepositoryPG {
     let paramIndex = 1;
 
     if (options.brandId) {
-      ({ whereSql, params, paramIndex } = appendBrandIdFilter(
+      ({ whereSql, paramIndex } = appendBrandIdFilter(
         whereSql,
         params,
         paramIndex,

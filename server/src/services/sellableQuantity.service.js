@@ -14,10 +14,53 @@ import {
   allocateWarehouseScopedReserved,
   allocateWarehouseScopedIncoming,
   parseStockMovementWarehouseId,
+  stockMovementMetaOrderKeySql,
   warehouseScopedOnHandForAllocation,
 } from '../constants/netReservedStockSql.js';
 
 export { NET_RESERVED_MOVEMENT_ROW_CASE_SQL, NET_RESERVED_SUM_EXPR_SQL, RAW_RESERVED_SUM_EXPR_SQL };
+
+export function mergeJournalAndOrderAttributedReserved(journalQty, orderAttributedQty) {
+  const j = Math.max(0, Math.floor(Number(journalQty) || 0));
+  const o = Math.max(0, Math.floor(Number(orderAttributedQty) || 0));
+  return Math.max(j, o);
+}
+
+/**
+ * Сумма положительных нетто-резервов по заказам (meta order_id / orderId).
+ * Нужна, когда глобальный нетто в журнале = 0 после «сиротского» unreserve, а по заказам резерв есть.
+ */
+export async function batchOrderAttributedReservedMap(productIds, opts = {}) {
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  if (!ids.length) return new Map();
+
+  const whId = parseStockMovementWarehouseId(opts.warehouseId ?? opts.warehouse_id);
+  const meta = stockMovementMetaOrderKeySql('');
+  const params = [ids];
+  let whSql = '';
+  if (whId != null) {
+    params.push(whId);
+    whSql = ` AND warehouse_id = $${params.length}`;
+  }
+
+  const r = await query(
+    `SELECT product_id, COALESCE(SUM(sub.rv), 0)::int AS total
+     FROM (
+       SELECT product_id,
+         ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND type IN ('reserve', 'unreserve')
+         AND ${meta} IS NOT NULL
+         AND TRIM(${meta}) <> ''${whSql}
+       GROUP BY product_id, ${meta}
+       HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
+     ) sub
+     GROUP BY product_id`,
+    params
+  );
+  return new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.total) || 0]));
+}
 
 /**
  * Привести products.reserved_quantity к журналу (или к правилу отображения комплекта).
@@ -199,16 +242,20 @@ export async function getReservedQuantityFromMovements(productId, opts = {}) {
   if (!Number.isFinite(pid) || pid < 1) return 0;
   const whId = parseStockMovementWarehouseId(opts.warehouseId ?? opts.warehouse_id);
   try {
+    let journalNet = 0;
     if (whId != null) {
-      return await queryWarehouseScopedReservedFromMovements(query, pid, whId);
+      journalNet = await queryWarehouseScopedReservedFromMovements(query, pid, whId);
+    } else {
+      const r = await query(
+        `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+         FROM stock_movements
+         WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
+        [pid]
+      );
+      journalNet = Number(r.rows[0]?.rv ?? 0) || 0;
     }
-    const r = await query(
-      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve')`,
-      [pid]
-    );
-    return Number(r.rows[0]?.rv ?? 0) || 0;
+    const orderMap = await batchOrderAttributedReservedMap([pid], opts);
+    return mergeJournalAndOrderAttributedReserved(journalNet, orderMap.get(pid) ?? 0);
   } catch {
     const pr = await query(
       `SELECT COALESCE(reserved_quantity, 0)::int AS reserved FROM products WHERE id = $1`,
@@ -501,6 +548,8 @@ export default {
   getReservableSupplyUnits,
   getReservableSupplyUnitsWithClient,
   getReserveableUnitsWithClient,
+  batchOrderAttributedReservedMap,
+  mergeJournalAndOrderAttributedReserved,
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL
