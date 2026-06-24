@@ -12,54 +12,6 @@ import {
   isCorruptBarcodeString,
   shouldUseBarcodeDigitFallback,
 } from '../utils/productBarcodes.js';
-import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
-import { enrichOzonCalculatorFromBrandSettings } from '../utils/ozonBrandPromotion.js';
-import { enrichCalculatorVolumeFromProduct, resolveProductVolumeLiters } from '../utils/productVolume.js';
-import { calculateMinPrice } from '../services/min-price-calculator.service.js';
-
-function attachBrandOzonPromotionFields(product) {
-  const enabled = product.ozon_brand_promotion_enabled === true;
-  product.brandOzonPromotionEnabled = enabled;
-  const percentRaw = product.ozon_brand_promotion_percent;
-  product.brandOzonPromotionPercent =
-    percentRaw != null && percentRaw !== '' && !Number.isNaN(Number(percentRaw))
-      ? Number(percentRaw)
-      : null;
-  return product;
-}
-
-function enrichStoredOzonDetails(product, ozonDetails) {
-  attachBrandOzonPromotionFields(product);
-  if (!ozonDetails || typeof ozonDetails !== 'object') return ozonDetails ?? null;
-  let out = ozonDetails;
-  if (product.brandOzonPromotionEnabled) {
-    out = enrichOzonCalculatorFromBrandSettings(out, {
-      enabled: true,
-      percent: product.brandOzonPromotionPercent,
-    });
-  }
-  return enrichCalculatorVolumeFromProduct(out, product);
-}
-
-function enrichStoredMarketplaceDetails(product, details) {
-  if (!details || typeof details !== 'object') return details ?? null;
-  return enrichCalculatorVolumeFromProduct(details, product);
-}
-
-function reconcileStoredOzonMinPrice(product, storedPrice, ozonDetails) {
-  const enriched = enrichStoredOzonDetails(product, ozonDetails ?? null);
-  product.storedCalculationDetailsOzon = enriched;
-  if (!enriched?.commissions || storedPrice == null) {
-    product.storedMinPriceOzon = storedPrice ?? null;
-    return;
-  }
-  const basePrice =
-    (Number(product.cost) || 0) +
-    (Number(product.additional_expenses ?? product.additionalExpenses) || 0);
-  const minProfit = product.min_price ?? product.minPrice;
-  const recalced = calculateMinPrice(basePrice, enriched, 'ozon', minProfit, product);
-  product.storedMinPriceOzon = recalced != null ? recalced : storedPrice;
-}
 
 function mapBarcodeDbRow(row) {
   return {
@@ -146,7 +98,8 @@ const STOCK_LIST_SELECT = `
  */
 async function upsertProductSkuRow(client, { productId, marketplace, skuRaw, marketplaceProductId }) {
   const mp = String(marketplace || '').toLowerCase();
-  const sku = normalizeMarketplaceSku(skuRaw);
+  const sku =
+    skuRaw != null && String(skuRaw).trim() !== '' ? String(skuRaw).trim() : null;
   let mpid =
     marketplaceProductId != null && marketplaceProductId !== ''
       ? Number(marketplaceProductId)
@@ -882,18 +835,8 @@ class ProductsRepositoryPG {
       : `
         p.*,
         b.name as brand_name,
-        CASE
-          WHEN p.brand_id IS NOT NULL THEN b.ozon_brand_promotion_enabled
-          ELSE b_mp.ozon_brand_promotion_enabled
-        END AS ozon_brand_promotion_enabled,
-        CASE
-          WHEN p.brand_id IS NOT NULL THEN b.ozon_brand_promotion_percent
-          ELSE b_mp.ozon_brand_promotion_percent
-        END AS ozon_brand_promotion_percent,
         uc.name as category_name,
         o.name as organization_name,
-        o.tax_system as organization_tax_system,
-        o.vat as organization_vat,
         NULL as category_marketplace
       `;
     let sql = `
@@ -901,15 +844,6 @@ class ProductsRepositoryPG {
         ${selectCols}
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
-      LEFT JOIN LATERAL (
-        SELECT ozon_brand_promotion_percent, ozon_brand_promotion_enabled
-        FROM brands b2
-        WHERE p.brand_id IS NULL
-          AND LOWER(TRIM(b2.name)) = LOWER(TRIM(COALESCE(p.mp_ozon_brand, '')))
-          AND TRIM(COALESCE(p.mp_ozon_brand, '')) <> ''
-        ORDER BY b2.id DESC
-        LIMIT 1
-      ) b_mp ON true
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
       LEFT JOIN organizations o ON p.organization_id = o.id
       ${whereSql}
@@ -1220,12 +1154,12 @@ class ProductsRepositoryPG {
         // Сохранённые минимальные цены и детали расчёта по маркетплейсам (из product_marketplace_prices)
         const idKey = String(typeof product.id === 'number' ? product.id : parseInt(product.id, 10) || product.id);
         const stored = pricesByProduct[idKey] || pricesByProduct[String(product.id)] || {};
+        product.storedMinPriceOzon = stored.ozon ?? null;
         product.storedMinPriceWb = stored.wb ?? null;
         product.storedMinPriceYm = stored.ym ?? null;
-        reconcileStoredOzonMinPrice(product, stored.ozon ?? null, stored.ozonDetails ?? null);
-        product.storedCalculationDetailsWb = enrichStoredMarketplaceDetails(product, stored.wbDetails ?? null);
-        product.storedCalculationDetailsYm = enrichStoredMarketplaceDetails(product, stored.ymDetails ?? null);
-        product.effectiveVolume = resolveProductVolumeLiters(product);
+        product.storedCalculationDetailsOzon = stored.ozonDetails ?? null;
+        product.storedCalculationDetailsWb = stored.wbDetails ?? null;
+        product.storedCalculationDetailsYm = stored.ymDetails ?? null;
         if (stored.updated_at) product.storedMinPriceUpdatedAt = stored.updated_at;
       });
 
@@ -1546,10 +1480,10 @@ class ProductsRepositoryPG {
     }
     skusResult.rows.forEach(row => {
       if (row.marketplace === 'ozon') {
-        product.sku_ozon = normalizeMarketplaceSku(row.sku);
+        product.sku_ozon = row.sku;
         product.ozon_product_id = row.marketplace_product_id != null ? Number(row.marketplace_product_id) : null;
-      } else if (row.marketplace === 'wb') product.sku_wb = normalizeMarketplaceSku(row.sku);
-      else if (row.marketplace === 'ym') product.sku_ym = normalizeMarketplaceSku(row.sku);
+      } else if (row.marketplace === 'wb') product.sku_wb = row.sku;
+      else if (row.marketplace === 'ym') product.sku_ym = row.sku;
     });
     applyWbListingFields(product);
     await this._reconcileReservedQuantityFromMovements([product]);
