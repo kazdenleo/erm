@@ -8,6 +8,7 @@ import {
   warehouseNameMatches,
   xmlTag,
 } from '../src/services/supplierOrderAdapters/shared.js';
+import { parseMoskvorechieOrderResponse } from '../src/services/supplierOrderAdapters/moskvorechie.adapter.js';
 
 describe('supplierOrderAdapters/shared', () => {
   test('xmlTag extracts tag text', () => {
@@ -39,7 +40,49 @@ describe('supplierOrderAdapters/shared', () => {
     expect(picked.gid).toBe('2');
   });
 
+  test('pickWarehouseLine ignores lines without gid', () => {
+    const lines = [
+      { warehouseName: 'A', stock: 100 },
+      { warehouseName: 'B', stock: 1, gid: '2' },
+    ];
+    const picked = pickWarehouseLine(lines, { quantity: 1 });
+    expect(picked.gid).toBe('2');
+  });
+
+  test('pickWarehouseLine allows external warehouse with zero stock', () => {
+    const lines = [
+      { warehouseName: 'Ext', stock: 0, gid: 'ext' },
+      { warehouseName: 'Main', stock: 0, gid: 'main' },
+    ];
+    const picked = pickWarehouseLine(lines, { quantity: 3 });
+    expect(picked?.gid).toBeTruthy();
+  });
+
   test('normalizeWarehouseName collapses spaces', () => {
     expect(normalizeWarehouseName('  Склад   MSK  ')).toBe('склад msk');
+  });
+});
+
+describe('moskvorechie.adapter parseMoskvorechieOrderResponse', () => {
+  test('accepts order_id in result object', () => {
+    const r = parseMoskvorechieOrderResponse(JSON.stringify({ result: { order_id: 'Z123' } }));
+    expect(r.ok).toBe(true);
+    expect(r.orderId).toBe('Z123');
+  });
+
+  test('rejects empty response', () => {
+    const r = parseMoskvorechieOrderResponse('');
+    expect(r.ok).toBe(false);
+  });
+
+  test('rejects response without order_id', () => {
+    const r = parseMoskvorechieOrderResponse(JSON.stringify({ result: { success: true } }));
+    expect(r.ok).toBe(false);
+  });
+
+  test('surfaces API error field', () => {
+    const r = parseMoskvorechieOrderResponse(JSON.stringify({ error: 'Нет доступа' }));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('Нет доступа');
   });
 });

@@ -34,7 +34,7 @@ function parseMoskvorechieOffers(responseText, sku) {
   }
 }
 
-async function lookupMoskvorechieOffer({ sku, brand, config }) {
+async function fetchMoskvorechieOffers({ sku, brand, config }) {
   const apiKey = apiKeyFromConfig(config);
   const params = new URLSearchParams({
     l: config.user_id,
@@ -56,7 +56,18 @@ async function lookupMoskvorechieOffer({ sku, brand, config }) {
     throw new Error(`Moskvorechie price_by_nr_firm: HTTP ${response.status}`);
   }
   const text = await response.text();
-  const offers = parseMoskvorechieOffers(text, sku);
+  return { text, offers: parseMoskvorechieOffers(text, sku) };
+}
+
+async function lookupMoskvorechieOffer({ sku, brand, config }) {
+  const trimmedBrand = String(brand || '').trim();
+  let { text, offers } = await fetchMoskvorechieOffers({ sku, brand: trimmedBrand, config });
+
+  if (!offers.length && trimmedBrand) {
+    logger.info('[MoskvorechieOrder] retry lookup without brand', { sku, brand: trimmedBrand });
+    ({ text, offers } = await fetchMoskvorechieOffers({ sku, brand: '', config }));
+  }
+
   if (!offers.length) {
     let errMsg = 'Товар не найден у Moskvorechie';
     try {
@@ -70,15 +81,30 @@ async function lookupMoskvorechieOffer({ sku, brand, config }) {
   return { ok: true, offers };
 }
 
-function parseMoskvorechieOrderResponse(text) {
+export function parseMoskvorechieOrderResponse(text) {
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return { ok: false, message: 'Пустой ответ Moskvorechie' };
+  }
+
   try {
-    const data = JSON.parse(text);
+    const data = JSON.parse(raw);
     if (data?.error) {
       return { ok: false, message: String(data.error) };
     }
+    if (data?.success === false || data?.ok === false) {
+      return {
+        ok: false,
+        message: String(data.message || data.error || 'Moskvorechie отклонил заказ'),
+      };
+    }
+
     if (data?.result != null) {
       const result = data.result;
-      if (typeof result === 'object' && result !== null) {
+      if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+        if (result.error || result.err) {
+          return { ok: false, message: String(result.error || result.err) };
+        }
         const orderId =
           result.order_id ?? result.orderId ?? result.id ?? result.zid ?? null;
         if (orderId) {
@@ -92,23 +118,45 @@ function parseMoskvorechieOrderResponse(text) {
         }
       }
       if (Array.isArray(result) && result.length > 0) {
-        const first = result[0];
-        const orderId = first?.order_id ?? first?.id ?? first?.zid ?? null;
-        if (orderId) {
-          return { ok: true, orderId: String(orderId), message: 'Заказ отправлен Moskvorechie' };
+        const errors = result
+          .map((item) => item?.error || item?.err || item?.message)
+          .filter(Boolean);
+        const orderIds = result
+          .map((item) => item?.order_id ?? item?.orderId ?? item?.id ?? item?.zid ?? null)
+          .filter(Boolean);
+        if (orderIds.length) {
+          return {
+            ok: true,
+            orderId: String(orderIds[0]),
+            message: 'Заказ отправлен Moskvorechie',
+          };
+        }
+        if (errors.length) {
+          return { ok: false, message: String(errors[0]) };
         }
       }
     }
+
     if (data?.success === true || data?.ok === true) {
-      return { ok: true, message: 'Заказ отправлен Moskvorechie' };
+      const orderId = data.order_id ?? data.orderId ?? data.id ?? data.zid ?? null;
+      return {
+        ok: true,
+        orderId: orderId != null ? String(orderId) : null,
+        message: 'Заказ отправлен Moskvorechie',
+      };
     }
-    return { ok: true, message: 'Запрос Moskvorechie выполнен' };
+
+    return {
+      ok: false,
+      message: 'Moskvorechie не подтвердил заказ (нет order_id в ответе)',
+      raw: raw.slice(0, 500),
+    };
   } catch {
-    const lower = String(text || '').toLowerCase();
+    const lower = raw.toLowerCase();
     if (lower.includes('error') || lower.includes('ошиб')) {
-      return { ok: false, message: text.slice(0, 300) };
+      return { ok: false, message: raw.slice(0, 300) };
     }
-    return { ok: true, message: 'Запрос Moskvorechie выполнен' };
+    return { ok: false, message: 'Не удалось разобрать ответ Moskvorechie', raw: raw.slice(0, 500) };
   }
 }
 
@@ -142,6 +190,11 @@ async function submitMoskvorechieOrder({ config, integrationConfig, orderLines, 
     throw new Error(`Moskvorechie ${act}: HTTP ${response.status}`);
   }
   const text = await response.text();
+  logger.info('[MoskvorechieOrder] make_orders response', {
+    act,
+    lines: orderLines.length,
+    preview: text.slice(0, 500),
+  });
   return parseMoskvorechieOrderResponse(text);
 }
 

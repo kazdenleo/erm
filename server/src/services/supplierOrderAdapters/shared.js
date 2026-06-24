@@ -46,9 +46,10 @@ export function warehouseNameMatches(actual, preferred) {
 
 export function pickWarehouseLine(lines, { warehouseName, quantity } = {}) {
   const qty = Math.max(1, parseInt(quantity, 10) || 1);
-  let candidates = (lines || []).filter((l) => (l.stock ?? 0) >= qty);
+  const pool = (lines || []).filter((l) => l.gid);
+  let candidates = pool.filter((l) => (l.stock ?? 0) >= qty);
   if (!candidates.length) {
-    candidates = [...(lines || [])];
+    candidates = [...pool];
   }
   if (warehouseName) {
     const matched = candidates.filter((l) => warehouseNameMatches(l.warehouseName, warehouseName));
