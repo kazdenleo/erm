@@ -12,6 +12,17 @@ const router = express.Router();
 // Получить все пользовательские категории
 router.get('/', wrapAsync(userCategoriesController.getAll.bind(userCategoriesController)));
 
+// Комиссии по сопоставленным категориям Ozon/YM (до /:id)
+router.post(
+  '/marketplace-commissions-preview',
+  wrapAsync(userCategoriesController.previewMarketplaceCommissions.bind(userCategoriesController))
+);
+
+router.post(
+  '/marketplace-commissions-refresh',
+  wrapAsync(userCategoriesController.refreshMarketplaceCommissions.bind(userCategoriesController))
+);
+
 // Получить пользовательскую категорию по ID
 router.get('/:id', wrapAsync(userCategoriesController.getById.bind(userCategoriesController)));
 

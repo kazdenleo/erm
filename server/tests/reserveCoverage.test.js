@@ -37,4 +37,10 @@ describe('classifyOrderReserveCoverage', () => {
       classifyOrderReserveCoverage({ onHand: 0, incoming: 1, reservedRaw: 3, orderReserved: 2 })
     ).toBe('incoming');
   });
+
+  test('нет свободного on_hand — резерв других занял наличие', () => {
+    expect(
+      classifyOrderReserveCoverage({ onHand: 1, incoming: 2, reservedRaw: 3, orderReserved: 1 })
+    ).toBe('incoming');
+  });
 });

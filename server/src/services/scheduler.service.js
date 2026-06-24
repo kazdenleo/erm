@@ -16,6 +16,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import wbMarketplaceService from './wbMarketplace.service.js';
 import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
+import categoryMarketplaceCommissionsService from './categoryMarketplaceCommissions.service.js';
 import ordersSyncService from './orders.sync.service.js';
 import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
@@ -309,6 +310,29 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
+      // Кэш комиссий Ozon/YM по сопоставленным категориям — после обновления справочников YM
+      const mpCategoryCommissionsJob = cron.schedule('45 2 * * *', async () => {
+        await runSchedulerDbJob('mp-category-commissions', async () => {
+          logger.info('[Scheduler] Starting MP category commissions cache refresh...');
+          try {
+            const result = await categoryMarketplaceCommissionsService.refreshAllCommissions({}, 'nightly');
+            logger.info('[Scheduler] MP category commissions cache refresh completed', result);
+          } catch (error) {
+            logger.error('[Scheduler] MP category commissions cache refresh failed:', error);
+            await addRuntimeNotification({
+              type: 'job_failed',
+              severity: 'error',
+              source: 'scheduler',
+              title: 'Сбой ночного обновления комиссий Ozon/YM',
+              message: `MP category commissions refresh failed: ${error?.message || String(error)}`,
+            });
+          }
+        });
+      }, {
+        scheduled: false,
+        timezone: 'Europe/Moscow',
+      });
+
       // Один раз в сутки после свежих комиссий: кэш калькулятора из MP API → массовый пересчёт из БД.
       // Днём — только recalculate-one / смена данных по товару (live для этого SKU).
       const minPricesNightlyCron = getMinPricesNightlyCron();
@@ -535,8 +559,15 @@ class SchedulerService {
       this.jobs.push({
         name: 'ym-categories-update',
         job: ymCategoriesJob,
-        schedule: '0 2 * * *',
-        description: 'Обновление категорий Яндекс.Маркета каждый день в 2:00'
+        schedule: '30 2 * * *',
+        description: 'Обновление категорий Яндекс.Маркета каждый день в 2:30'
+      });
+
+      this.jobs.push({
+        name: 'mp-category-commissions',
+        job: mpCategoryCommissionsJob,
+        schedule: '45 2 * * *',
+        description: 'Кэш комиссий Ozon/YM по сопоставленным категориям — 2:45 МСК'
       });
 
       this.jobs.push({
@@ -752,6 +783,14 @@ class SchedulerService {
             logger.info('[Scheduler] Yandex categories update completed successfully');
           }).catch((error) => logger.error('[Scheduler] Yandex categories update failed:', error));
         }, 90 * 60 * 1000);
+
+        setTimeout(() => {
+          void runSchedulerDbJob('mp-category-commissions', async () => {
+            logger.info('[Scheduler] Starting MP category commissions cache refresh...');
+            await categoryMarketplaceCommissionsService.refreshAllCommissions({}, 'nightly');
+            logger.info('[Scheduler] MP category commissions cache refresh completed');
+          }).catch((error) => logger.error('[Scheduler] MP category commissions refresh failed:', error));
+        }, 105 * 60 * 1000);
 
         setTimeout(() => {
           void runSchedulerDbJob('min-prices-nightly', async () => {

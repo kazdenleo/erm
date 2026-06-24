@@ -7,19 +7,43 @@ import express from 'express';
 import wbMarketplaceService from '../services/wbMarketplace.service.js';
 import schedulerService from '../services/scheduler.service.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
+import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
 const router = express.Router();
+
+function wbUpdateScopeFromRequest(req) {
+  const scope = {};
+  const tid = tenantListProfileId(req);
+  if (tid !== TENANT_LIST_EMPTY && tid != null && tid !== '') {
+    scope.profileId = tid;
+  }
+  const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+  const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+  if (organizationId) scope.organizationId = organizationId;
+  return scope;
+}
 
 /**
  * POST /api/wb-marketplace/update
  * Ручной запуск обновления категорий и комиссий WB
  */
 router.post('/update', wrapAsync(async (req, res) => {
-  const result = await wbMarketplaceService.updateCategoriesAndCommissions();
+  const scope = wbUpdateScopeFromRequest(req);
+  const result = await wbMarketplaceService.updateCategoriesAndCommissions(scope);
+  if (result?.skipped || result?.success === false) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        result?.message === 'WB API key not configured'
+          ? 'API-ключ Wildberries не найден. Проверьте кабинет WB в Интеграции → Маркетплейсы (для выбранной организации).'
+          : (result?.message || 'Не удалось обновить категории WB'),
+      data: result,
+    });
+  }
   res.json({
     ok: true,
     message: 'WB categories and commissions updated successfully',
-    data: result
+    data: result,
   });
 }));
 
@@ -69,4 +93,3 @@ router.get('/scheduler/status', wrapAsync(async (req, res) => {
 }));
 
 export default router;
-

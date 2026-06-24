@@ -110,29 +110,13 @@ export function kitWholeAvailableFromMetrics(metrics, product = null) {
   return Math.max(0, wholeOnHand + incoming - reserved);
 }
 
-/** В скобках: всего к продаже с учётом резерва (целые + собираемость − резерв комплекта). */
+/** В скобках: всего к продаже на МП (целые к продаже + собираемость из комплектующих). */
 export function kitSellableTotalFromMetrics(metrics, product = null) {
   if (!metrics) return 0;
   if (metrics.marketplace_available != null && !Number.isNaN(Number(metrics.marketplace_available))) {
     return Math.max(0, Number(metrics.marketplace_available));
   }
-  const wholeOnHand = Math.max(0, Number(metrics.whole_on_hand) || 0);
-  const incoming = product
-    ? Math.max(0, Number(product.incoming_quantity ?? product.incomingQuantity) || 0)
-    : 0;
-  const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
-  const displayReserved = product
-    ? Math.max(
-        0,
-        Number(
-          product.net_reserved_quantity ??
-            product.netReservedQuantity ??
-            product.reserved_quantity ??
-            product.reservedQuantity
-        ) || 0
-      )
-    : 0;
-  return Math.max(0, wholeOnHand + incoming + assemblable - displayReserved);
+  return Math.max(0, kitWholeAvailableFromMetrics(metrics, product) + (Number(metrics.assemblable_from_components) || 0));
 }
 
 export function formatKitAvailableDisplay(metrics, product = null) {
@@ -309,13 +293,7 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
         display.marketplace_available != null &&
         !Number.isNaN(Number(display.marketplace_available))
           ? Math.max(0, Number(display.marketplace_available))
-          : Math.max(
-              0,
-              (Number(display.whole_on_hand) || 0) +
-                (Number(base.incoming) || 0) +
-                display.assemblable_from_components -
-                displayReserved
-            );
+          : Math.max(0, wholeAvailable + (Number(display.assemblable_from_components) || 0));
       const availableTotal = marketplaceAvailable;
       const suppliersDisplay = formatKitSupplierDisplay(product, base.suppliers);
       const incomingFromComponents = kitIncomingFromComponentsAmount(display, product, products);

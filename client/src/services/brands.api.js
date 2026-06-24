@@ -1,6 +1,5 @@
 /**
  * Brands API Service
- * Сервис для работы с брендами через API
  */
 
 import api from './api.js';
@@ -29,6 +28,15 @@ export const brandsApi = {
   async delete(id) {
     const response = await api.delete(`/brands/${id}`);
     return response.data;
-  }
-};
+  },
 
+  async getMpBrandCandidates(id) {
+    const response = await api.get(`/brands/${id}/mp-brand-candidates`);
+    return response.data;
+  },
+
+  async syncMpBrands(id, { apply = true } = {}) {
+    const response = await api.post(`/brands/${id}/sync-mp-brands`, { apply });
+    return response.data;
+  },
+};

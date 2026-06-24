@@ -56,7 +56,9 @@ class OrderSupplierOrderService {
             ? 409
             : proc?.error === 'manual_required'
               ? 422
-              : 400;
+              : proc?.error === 'product_not_resolved' || proc?.error === 'no_demand'
+                ? 400
+                : 400;
       err.details = proc;
       throw err;
     }

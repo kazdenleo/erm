@@ -24,6 +24,7 @@ export function accountSettingsFromProfile(profile) {
           ? String(profile.fboDeductionWarehouseId)
           : '',
     require_reserved_stock_for_assembly: isProfileBoolFlag(profile.require_reserved_stock_for_assembly),
+    auto_send_to_assembly_on_reserve: isProfileBoolFlag(profile.auto_send_to_assembly_on_reserve),
     allow_manual_warehouse_stock_edit: isProfileBoolFlag(profile.allow_manual_warehouse_stock_edit),
     allow_stock_history_reset: isProfileBoolFlag(profile.allow_stock_history_reset),
     procurement_status_enabled: profile.procurement_status_enabled !== false,

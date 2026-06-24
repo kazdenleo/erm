@@ -239,6 +239,8 @@ export const authController = {
                 allow_private_orders: profile.allow_private_orders === true,
                 require_reserved_stock_for_assembly:
                   profile.require_reserved_stock_for_assembly === true,
+                auto_send_to_assembly_on_reserve:
+                  profile.auto_send_to_assembly_on_reserve === true,
                 allow_manual_warehouse_stock_edit:
                   profile.allow_manual_warehouse_stock_edit === true,
                 allow_stock_history_reset: profile.allow_stock_history_reset === true,

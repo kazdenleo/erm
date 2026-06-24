@@ -3,12 +3,21 @@
  * Форма создания/редактирования категории
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Button } from '../../common/Button/Button';
 import { categoriesApi } from '../../../services/categories.api';
 import { categoryMappingsApi } from '../../../services/categoryMappings.api';
 import { integrationsApi } from '../../../services/integrations.api';
+import { userCategoriesApi } from '../../../services/userCategories.api';
+import { CommissionSchemesRow } from '../../Categories/CategoryMarketplaceMappingBlock';
+import {
+  buildWbCommissionsMap,
+  getWbCommissionSchemesForDisplay,
+  getMpPriceCalcSchemeKey,
+  resolveMpCommissionEntry,
+} from '../../../utils/marketplaceCategoryCommissions';
 import api from '../../../services/api';
+import '../../../pages/Categories/Categories.css';
 
 /** Сравнение путей Ozon: пробелы, ›/>, ё→е (часто расходится с отображением в UI) */
 function normalizeOzonPathForMatch(s) {
@@ -23,6 +32,104 @@ function normalizeOzonPathForMatch(s) {
 }
 
 /** Из составного id Ozon «descriptionCategoryId_typeId» в списке категорий */
+function formatWbCategoryList(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map((cat) => ({
+    id: cat.subjectID ?? cat.id,
+    name: cat.subjectName ?? cat.name,
+    marketplace_category_id: cat.subjectID ?? cat.id,
+    marketplace: 'wb',
+    parent_id: cat.parentID ?? cat.parent_id,
+    parent_name: cat.parentName ?? cat.parent_name,
+  }));
+}
+
+function parseMarketplaceMappings(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const p = JSON.parse(raw);
+      return typeof p === 'object' && p ? p : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function isPlaceholderMappingName(name) {
+  if (!name || typeof name !== 'string') return true;
+  return /^(WB|Ozon|Яндекс\.Маркет) #\d+/i.test(name.trim()) || name.startsWith('ID ');
+}
+
+function mappingLabelFromCategory(category, mp) {
+  const key = mp === 'yandex' ? 'ym' : mp;
+  const rows = category?.mappings?.[key];
+  const row = Array.isArray(rows) ? rows[0] : null;
+  const name = row?.marketplace_category_name;
+  if (name && !isPlaceholderMappingName(name)) return name;
+  const mm = parseMarketplaceMappings(category?.marketplace_mappings);
+  if (key === 'ozon' && mm?.ozon_display) return mm.ozon_display;
+  if (key === 'ym' && mm?.ym_display) return mm.ym_display;
+  return null;
+}
+
+function wbNameFromCommissionRow(row) {
+  if (!row) return null;
+  let rawData = row.raw_data;
+  if (typeof rawData === 'string') {
+    try {
+      rawData = JSON.parse(rawData);
+    } catch {
+      rawData = null;
+    }
+  }
+  return rawData?.subjectName ?? row.subjectName ?? row.category_name ?? row.categoryName ?? null;
+}
+
+async function loadMpCommissionsPreview({ ozon, ym, userCategoryId }) {
+  const ozonItems = ozon
+    ? [{ id: ozon, userCategoryId: userCategoryId ?? null }]
+    : [];
+  const ymItems = ym
+    ? [{ id: String(ym), userCategoryId: userCategoryId ?? null }]
+    : [];
+  if (!ozonItems.length && !ymItems.length) {
+    return { ozon: {}, ym: {} };
+  }
+
+  const dbRes = await userCategoriesApi.previewMarketplaceCommissions({
+    ozon: ozonItems,
+    ym: ymItems,
+    dbOnly: true,
+  });
+  const dbData = dbRes?.data ?? dbRes;
+  let ozonMap = dbData?.ozon && typeof dbData.ozon === 'object' ? { ...dbData.ozon } : {};
+  let ymMap = dbData?.ym && typeof dbData.ym === 'object' ? { ...dbData.ym } : {};
+
+  const needLiveOzon = ozonItems.filter((item) => {
+    const entry = resolveMpCommissionEntry({ ozon: ozonMap }, 'ozon', item.id);
+    return !(entry?.schemes?.length > 0);
+  });
+  const needLiveYm = ymItems.filter((item) => {
+    const entry = resolveMpCommissionEntry({ ym: ymMap }, 'ym', item.id);
+    return !(entry?.schemes?.length > 0);
+  });
+
+  if (needLiveOzon.length || needLiveYm.length) {
+    const liveRes = await userCategoriesApi.previewMarketplaceCommissions({
+      ozon: needLiveOzon.length ? needLiveOzon : undefined,
+      ym: needLiveYm.length ? needLiveYm : undefined,
+    });
+    const liveData = liveRes?.data ?? liveRes;
+    if (liveData?.ozon) ozonMap = { ...ozonMap, ...liveData.ozon };
+    if (liveData?.ym) ymMap = { ...ymMap, ...liveData.ym };
+  }
+
+  return { ozon: ozonMap, ym: ymMap };
+}
+
 function parseOzonCompositeId(ozonCategoryId) {
   const raw = ozonCategoryId != null ? String(ozonCategoryId).trim() : '';
   const u = raw.indexOf('_');
@@ -37,7 +144,7 @@ function parseOzonCompositeId(ozonCategoryId) {
   return { descId, typeId };
 }
 
-export function CategoryForm({ category, categories = [], allAttributes = [], marketplaceCategories: propsMarketplace, marketplaceCategoriesLoading: propsLoading, onRefreshOzonCategories, onSubmit, onCancel }) {
+export function CategoryForm({ category, categories = [], allAttributes = [], marketplaceCategories: propsMarketplace, marketplaceCategoriesLoading: propsLoading, onRefreshOzonCategories, onRefreshWbCategories, onSubmit, onCancel }) {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -65,12 +172,93 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
   const [ozonDropdownOpen, setOzonDropdownOpen] = useState(false);
   const [ozonSelectedCategory, setOzonSelectedCategory] = useState(null);
   const [ozonRefreshing, setOzonRefreshing] = useState(false);
+  const [wbRefreshing, setWbRefreshing] = useState(false);
+  const [wbRefreshError, setWbRefreshError] = useState('');
   const [wbSearchQuery, setWbSearchQuery] = useState('');
   const [wbDropdownOpen, setWbDropdownOpen] = useState(false);
   const [wbSelectedCategory, setWbSelectedCategory] = useState(null);
   const [ymSearchQuery, setYmSearchQuery] = useState('');
   const [ymDropdownOpen, setYmDropdownOpen] = useState(false);
   const [ymSelectedCategory, setYmSelectedCategory] = useState(null);
+  const [wbCommissionsReport, setWbCommissionsReport] = useState([]);
+  const [mpCommissionsPreview, setMpCommissionsPreview] = useState({ ozon: {}, ym: {} });
+  const [mpCommissionsLoading, setMpCommissionsLoading] = useState(false);
+  const [mpCommissionsRefreshing, setMpCommissionsRefreshing] = useState(false);
+  /** null | 'wb' | 'ozon' | 'ym' — открытый выбор категории МП */
+  const [editingMpMapping, setEditingMpMapping] = useState(null);
+
+  const wbCommissionsByCategoryId = useMemo(
+    () => buildWbCommissionsMap(wbCommissionsReport),
+    [wbCommissionsReport]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    integrationsApi
+      .getWildberriesCommissions()
+      .then((res) => {
+        if (cancelled) return;
+        const report = res?.data?.report ?? res?.report ?? [];
+        setWbCommissionsReport(Array.isArray(report) ? report : []);
+      })
+      .catch(() => {
+        if (!cancelled) setWbCommissionsReport([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ozonId = formData.ozonCategoryId;
+    const ymId = formData.ymCategoryId;
+    if (!ozonId && !ymId) {
+      setMpCommissionsPreview({ ozon: {}, ym: {} });
+      setMpCommissionsLoading(false);
+      return undefined;
+    }
+    setMpCommissionsLoading(true);
+    loadMpCommissionsPreview({
+      ozon: ozonId,
+      ym: ymId,
+      userCategoryId: category?.id,
+    })
+      .then((preview) => {
+        if (!cancelled) setMpCommissionsPreview(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setMpCommissionsPreview({ ozon: {}, ym: {} });
+      })
+      .finally(() => {
+        if (!cancelled) setMpCommissionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.ozonCategoryId, formData.ymCategoryId, category?.id]);
+
+  const handleRefreshMpCommissions = async () => {
+    setMpCommissionsRefreshing(true);
+    try {
+      const ozon = formData.ozonCategoryId
+        ? [{ id: formData.ozonCategoryId, userCategoryId: category?.id ?? null }]
+        : [];
+      const ym = formData.ymCategoryId
+        ? [{ id: String(formData.ymCategoryId), userCategoryId: category?.id ?? null }]
+        : [];
+      const res = await userCategoriesApi.previewMarketplaceCommissions({ ozon, ym });
+      const data = res?.data ?? res;
+      setMpCommissionsPreview({
+        ozon: data?.ozon && typeof data.ozon === 'object' ? data.ozon : {},
+        ym: data?.ym && typeof data.ym === 'object' ? data.ym : {},
+      });
+    } catch (e) {
+      alert('Не удалось обновить комиссии Ozon/YM: ' + (e?.response?.data?.message || e.message));
+    } finally {
+      setMpCommissionsRefreshing(false);
+    }
+  };
 
   const useProps = propsMarketplace != null && typeof propsMarketplace === 'object';
   const effective = useProps ? propsMarketplace : marketplaceCategories;
@@ -78,33 +266,249 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
     ? { wb: propsLoading, ozon: propsLoading, ym: propsLoading }
     : loadingCategories;
 
-  // Загрузка категорий маркетплейсов только если не переданы снаружи (кэш со страницы)
+  // Справочники категорий МП — только при открытии выбора (не грузим при каждом открытии карточки)
   useEffect(() => {
-    if (useProps) return;
+    if (useProps || !editingMpMapping) return undefined;
     let cancelled = false;
     const load = async () => {
-      setLoadingCategories(prev => ({ ...prev, wb: true, ozon: true, ym: true }));
+      setLoadingCategories((prev) => ({ ...prev, wb: true, ozon: true, ym: true }));
       try {
         const [wbRes, ozonRes, ymRes] = await Promise.all([
           categoriesApi.getAll('wb'),
           categoriesApi.getAll('ozon'),
-          categoriesApi.getAll('ym')
+          categoriesApi.getAll('ym'),
         ]);
         if (cancelled) return;
         setMarketplaceCategories({
           wb: wbRes?.data || [],
           ozon: ozonRes?.data || ozonRes || [],
-          ym: ymRes?.data || []
+          ym: ymRes?.data || [],
         });
       } catch (e) {
         if (!cancelled) console.error('[CategoryForm] Error loading marketplace categories:', e);
       } finally {
-        if (!cancelled) setLoadingCategories(prev => ({ ...prev, wb: false, ozon: false, ym: false }));
+        if (!cancelled) setLoadingCategories((prev) => ({ ...prev, wb: false, ozon: false, ym: false }));
       }
     };
     load();
-    return () => { cancelled = true; };
-  }, [useProps]);
+    return () => {
+      cancelled = true;
+    };
+  }, [useProps, editingMpMapping]);
+
+  useEffect(() => {
+    setEditingMpMapping(null);
+  }, [category?.id]);
+
+  // ID и подписи сопоставлений — сразу из marketplace_mappings / enrich, без полных справочников МП
+  useEffect(() => {
+    if (!category) return;
+    const mm = parseMarketplaceMappings(category.marketplace_mappings);
+    if (!mm) return;
+
+    const wbId = mm.wb ? String(mm.wb) : '';
+    const ozonId = mm.ozon ? String(mm.ozon) : '';
+    const ymId = mm.ym ? String(mm.ym) : '';
+
+    setFormData((prev) => ({
+      ...prev,
+      wbCategoryId: wbId || prev.wbCategoryId,
+      ozonCategoryId: ozonId || prev.ozonCategoryId,
+      ymCategoryId: ymId || prev.ymCategoryId,
+    }));
+
+    const wbLabel = mappingLabelFromCategory(category, 'wb');
+    if (wbLabel && !isPlaceholderMappingName(wbLabel)) {
+      setWbSearchQuery(wbLabel);
+    } else if (wbId) {
+      const fromReport = wbNameFromCommissionRow(wbCommissionsByCategoryId.get(wbId));
+      if (fromReport) setWbSearchQuery(fromReport);
+    }
+
+    if (mm.ozon_display) {
+      setOzonSearchQuery(mm.ozon_display);
+    } else {
+      const ozonLabel = mappingLabelFromCategory(category, 'ozon');
+      if (ozonLabel && !isPlaceholderMappingName(ozonLabel)) setOzonSearchQuery(ozonLabel);
+    }
+
+    const ymLabel = mappingLabelFromCategory(category, 'ym');
+    if (mm.ym_display) {
+      setYmSearchQuery(mm.ym_display);
+    } else if (ymLabel && !isPlaceholderMappingName(ymLabel)) {
+      setYmSearchQuery(ymLabel);
+    }
+  }, [category?.id, category?.marketplace_mappings, category?.mappings, wbCommissionsByCategoryId]);
+
+  useEffect(() => {
+    const ymId = formData.ymCategoryId;
+    if (!ymId) return undefined;
+    const stored = mappingLabelFromCategory(category, 'ym');
+    if (stored && !isPlaceholderMappingName(stored)) return undefined;
+    if (ymSearchQuery && !isPlaceholderMappingName(ymSearchQuery)) return undefined;
+
+    let cancelled = false;
+    categoriesApi
+      .getById(ymId)
+      .then((res) => {
+        if (cancelled) return;
+        const cat = res?.data ?? res;
+        const label = cat?.path || cat?.name;
+        if (label) {
+          setYmSearchQuery(label);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.ymCategoryId, category, ymSearchQuery]);
+
+  const getMpCommissionSchemes = (marketplace, categoryId) => {
+    const mp = String(marketplace || '').toLowerCase();
+    const id = categoryId != null ? String(categoryId) : '';
+    if (!id) return { schemes: [], note: null, priceCalcSchemeKey: null };
+    if (mp === 'wb' || mp === 'wildberries') {
+      const row = wbCommissionsByCategoryId.get(id);
+      const wb = getWbCommissionSchemesForDisplay(row);
+      return {
+        schemes: wb.schemes,
+        note: wb.note,
+        priceCalcSchemeKey: wb.priceCalcSchemeKey,
+      };
+    }
+    const entry = resolveMpCommissionEntry(mpCommissionsPreview, mp, id);
+    const schemes = (entry?.schemes || []).map((s) => ({
+      ...s,
+      display: s.display ?? (s.percent != null ? `${s.percent}%` : null),
+    }));
+    return {
+      schemes,
+      note: entry?.note ?? null,
+      priceCalcSchemeKey: getMpPriceCalcSchemeKey(mp),
+    };
+  };
+
+  const toggleMpEdit = (mp) => {
+    setEditingMpMapping((prev) => (prev === mp ? null : mp));
+  };
+
+  const closeMpEdit = () => setEditingMpMapping(null);
+
+  const mpDisplayName = (mp) => {
+    const stored = mappingLabelFromCategory(category, mp);
+    if (mp === 'wb') {
+      if (!formData.wbCategoryId) return null;
+      return (
+        stored ||
+        wbSelectedCategory?.name ||
+        wbNameFromCommissionRow(wbCommissionsByCategoryId.get(String(formData.wbCategoryId))) ||
+        (wbSearchQuery && !isPlaceholderMappingName(wbSearchQuery) ? wbSearchQuery : null) ||
+        `ID ${formData.wbCategoryId}`
+      );
+    }
+    if (mp === 'ozon') {
+      if (!formData.ozonCategoryId) return null;
+      return (
+        stored ||
+        ozonSelectedCategory?.path ||
+        ozonSelectedCategory?.name ||
+        (ozonSearchQuery && !isPlaceholderMappingName(ozonSearchQuery) ? ozonSearchQuery : null) ||
+        `ID ${formData.ozonCategoryId}`
+      );
+    }
+    if (mp === 'ym') {
+      if (!formData.ymCategoryId) return null;
+      return (
+        stored ||
+        ymSelectedCategory?.path ||
+        ymSelectedCategory?.name ||
+        (ymSearchQuery && !isPlaceholderMappingName(ymSearchQuery) ? ymSearchQuery : null) ||
+        `ID ${formData.ymCategoryId}`
+      );
+    }
+    return null;
+  };
+
+  const renderMpSummaryRow = (mp, badgeClass, mpLabel, categoryId) => {
+    const name = mpDisplayName(mp);
+    const mapped = Boolean(categoryId);
+    const { schemes, note, priceCalcSchemeKey } = mapped
+      ? getMpCommissionSchemes(mp, categoryId)
+      : { schemes: [], note: null, priceCalcSchemeKey: null };
+    const commissionNote = mpCommissionsLoading && mapped && (mp === 'ozon' || mp === 'ym')
+      ? 'Загрузка комиссий…'
+      : note;
+    return (
+      <div
+        key={mp}
+        className="category-form-mp-row"
+        style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', flexWrap: 'wrap' }}>
+          <span className={`mp-badge ${badgeClass}`} style={{ marginTop: '2px' }}>
+            {badgeClass === 'wb' ? 'WB' : badgeClass === 'ozon' ? 'OZ' : 'YM'}
+          </span>
+          <div style={{ flex: 1, minWidth: '180px' }}>
+            <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '2px' }}>{mpLabel}</div>
+            <div style={{ fontSize: '13px', fontWeight: 500, color: mapped ? 'var(--text)' : 'var(--muted)' }}>
+              {mapped ? name : 'Не сопоставлено'}
+            </div>
+            {mapped && (
+              <CommissionSchemesRow
+                schemes={schemes}
+                note={commissionNote}
+                priceCalcSchemeKey={priceCalcSchemeKey}
+              />
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              onClick={() => toggleMpEdit(mp)}
+            >
+              {editingMpMapping === mp ? 'Скрыть' : mapped ? 'Изменить' : 'Выбрать'}
+            </Button>
+            {mapped && (
+              <button
+                type="button"
+                title="Убрать сопоставление"
+                onClick={() => {
+                  closeMpEdit();
+                  if (mp === 'wb') {
+                    setWbSelectedCategory(null);
+                    setWbSearchQuery('');
+                    handleChange('wbCategoryId', '');
+                  } else if (mp === 'ozon') {
+                    setOzonSelectedCategory(null);
+                    setOzonSearchQuery('');
+                    handleChange('ozonCategoryId', '');
+                  } else {
+                    setYmSelectedCategory(null);
+                    setYmSearchQuery('');
+                    handleChange('ymCategoryId', '');
+                  }
+                }}
+                style={{
+                  padding: '4px 8px',
+                  background: 'transparent',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  color: '#6b7280',
+                  fontSize: '12px',
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // Загрузка существующих маппингов для категории
   // Выполняется после загрузки категорий маркетплейсов
@@ -396,6 +800,10 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
     }
     const isOzonType = String(ozonCategoryId || '').includes('_');
     const ozonDisplay = (isOzonType && (ozonSelectedCategory?.path || ozonSearchQuery)) ? (ozonSelectedCategory?.path || ozonSearchQuery) : null;
+    const ymDisplay =
+      ymSelectedCategory?.path ||
+      ymSelectedCategory?.name ||
+      (ymSearchQuery && !isPlaceholderMappingName(ymSearchQuery) ? ymSearchQuery : null);
     const payload = {
       name: formData.name.trim(),
       description: formData.description.trim() || null,
@@ -409,7 +817,8 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
         ...(ozonDescId != null && ozonTypeId != null && ozonTypeId > 0
           ? { ozon_description_category_id: ozonDescId, ozon_type_id: ozonTypeId }
           : {}),
-        ym: ymCategoryId && !isNaN(ymCategoryId) && ymCategoryId > 0 ? ymCategoryId : null
+        ym: ymCategoryId && !isNaN(ymCategoryId) && ymCategoryId > 0 ? ymCategoryId : null,
+        ...(ymDisplay ? { ym_display: ymDisplay } : {}),
       }
     };
 
@@ -591,17 +1000,73 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
           🏪 Сопоставление с маркетплейсами
         </h4>
         <p style={{fontSize: '12px', color: 'var(--muted)', marginBottom: '16px'}}>
-          Выберите соответствующие категории маркетплейсов. Сопоставления будут применены ко всем товарам этой категории.
+          Сопоставления применяются ко всем товарам категории. Нажмите «Изменить» или «Выбрать» для выбора категории маркетплейса.
         </p>
 
-        {/* Wildberries */}
+        {renderMpSummaryRow('wb', 'wb', 'Wildberries', formData.wbCategoryId)}
+        {renderMpSummaryRow('ozon', 'ozon', 'Ozon', formData.ozonCategoryId)}
+        {renderMpSummaryRow('ym', 'ym', 'Яндекс.Маркет', formData.ymCategoryId)}
+
+        {(formData.ozonCategoryId || formData.ymCategoryId) && (
+          <div style={{ marginBottom: '12px' }}>
+            <button
+              type="button"
+              onClick={handleRefreshMpCommissions}
+              disabled={mpCommissionsRefreshing}
+              style={{ fontSize: '11px', padding: '2px 8px', cursor: mpCommissionsRefreshing ? 'not-allowed' : 'pointer' }}
+            >
+              {mpCommissionsRefreshing ? 'Обновление комиссий…' : 'Обновить комиссии Ozon/YM из API'}
+            </button>
+          </div>
+        )}
+
+        {editingMpMapping === 'wb' && (
         <div className="field" style={{marginBottom: '12px', position: 'relative'}}>
           <label className="label" htmlFor="wbCategory" style={{fontSize: '12px'}}>
             <span style={{display: 'inline-flex', alignItems: 'center', gap: '4px'}}>
               <span className="mp-badge wb">WB</span>
-              Wildberries
+              Wildberries — выбор категории
             </span>
+            <button
+              type="button"
+              onClick={async () => {
+                setWbRefreshing(true);
+                setWbRefreshError('');
+                try {
+                  const updateRes = await integrationsApi.updateWildberriesCategories();
+                  const payload = updateRes?.data ?? updateRes;
+                  if (updateRes?.ok === false || payload?.skipped || payload?.success === false) {
+                    throw new Error(
+                      updateRes?.error ||
+                        (payload?.message === 'WB API key not configured'
+                          ? 'API-ключ Wildberries не найден. Проверьте кабинет WB в Интеграции → Маркетплейсы (для выбранной организации).'
+                          : (payload?.message || 'Не удалось обновить категории WB'))
+                    );
+                  }
+                  const res = await integrationsApi.getWildberriesCategories();
+                  const formatted = formatWbCategoryList(res?.data ?? res);
+                  if (onRefreshWbCategories) onRefreshWbCategories(formatted);
+                  else setMarketplaceCategories((prev) => ({ ...prev, wb: formatted }));
+                } catch (e) {
+                  console.error('[CategoryForm] WB refresh failed:', e);
+                  const msg = e?.response?.data?.error || e?.response?.data?.message || e?.message || 'Ошибка обновления категорий WB';
+                  setWbRefreshError(msg);
+                } finally {
+                  setWbRefreshing(false);
+                }
+              }}
+              disabled={wbRefreshing}
+              style={{ marginLeft: '8px', fontSize: '11px', padding: '2px 8px', cursor: wbRefreshing ? 'not-allowed' : 'pointer', opacity: wbRefreshing ? 0.7 : 1 }}
+            >
+              {wbRefreshing ? 'Загрузка…' : (effective.wb.length > 0 ? 'Обновить список' : 'Загрузить список категорий')}
+            </button>
           </label>
+          <p style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px', marginBottom: '6px' }}>
+            Список подтягивается из API WB (категории и комиссии). Автообновление — раз в сутки около 1:00 МСК.
+          </p>
+          {wbRefreshError && (
+            <p style={{ fontSize: '11px', color: 'var(--error, #dc2626)', marginBottom: '6px' }}>{wbRefreshError}</p>
+          )}
           {loading.wb ? (
             <div style={{padding: '8px', color: 'var(--muted)', fontSize: '12px'}}>Загрузка категорий...</div>
           ) : (
@@ -656,7 +1121,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                                 padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f3f4f6',
                                 background: wbSelectedCategory?.id === cat.id ? '#f3f4f6' : '#fff', color: '#1a1a1a'
                               }}
-                              onMouseDown={(e) => { e.preventDefault(); setWbSelectedCategory(cat); setWbSearchQuery(cat.name || ''); handleChange('wbCategoryId', String(cat.id)); setWbDropdownOpen(false); }}
+                              onMouseDown={(e) => { e.preventDefault(); setWbSelectedCategory(cat); setWbSearchQuery(cat.name || ''); handleChange('wbCategoryId', String(cat.id)); setWbDropdownOpen(false); closeMpEdit(); }}
                             >
                               <div style={{fontSize: '13px', fontWeight: 500}}>{cat.name}</div>
                               {cat.parent_name && <div style={{fontSize: '11px', color: '#6b7280', marginTop: '2px'}}>{cat.parent_name}</div>}
@@ -680,13 +1145,14 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
             </div>
           )}
         </div>
+        )}
 
-        {/* Ozon */}
+        {editingMpMapping === 'ozon' && (
         <div className="field" style={{marginBottom: '12px', position: 'relative'}}>
           <label className="label" htmlFor="ozonCategory" style={{fontSize: '12px'}}>
             <span style={{display: 'inline-flex', alignItems: 'center', gap: '4px'}}>
               <span className="mp-badge ozon">OZ</span>
-              Ozon
+              Ozon — выбор категории
             </span>
             {(
               <button
@@ -796,6 +1262,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                               setOzonSearchQuery(isType && cat.path ? cat.path : (cat.name || ''));
                               handleChange('ozonCategoryId', cat.id);
                               setOzonDropdownOpen(false);
+                              closeMpEdit();
                             }}
                             onMouseEnter={(e) => { e.currentTarget.style.background = '#f3f4f6'; }}
                             onMouseLeave={(e) => { e.currentTarget.style.background = ozonSelectedCategory?.id === cat.id ? '#f3f4f6' : '#fff'; }}
@@ -832,13 +1299,14 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
             </div>
           )}
         </div>
+        )}
 
-        {/* Yandex Market */}
+        {editingMpMapping === 'ym' && (
         <div className="field" style={{marginBottom: '12px', position: 'relative'}}>
           <label className="label" htmlFor="ymCategory" style={{fontSize: '12px'}}>
             <span style={{display: 'inline-flex', alignItems: 'center', gap: '4px'}}>
               <span className="mp-badge ym">YM</span>
-              Yandex Market
+              Яндекс.Маркет — выбор категории
             </span>
           </label>
           {loading.ym ? (
@@ -895,7 +1363,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
                                 padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f3f4f6',
                                 background: ymSelectedCategory?.id === cat.id ? '#f3f4f6' : '#fff', color: '#1a1a1a'
                               }}
-                              onMouseDown={(e) => { e.preventDefault(); setYmSelectedCategory(cat); setYmSearchQuery(cat.name || ''); handleChange('ymCategoryId', String(cat.id)); setYmDropdownOpen(false); }}
+                              onMouseDown={(e) => { e.preventDefault(); setYmSelectedCategory(cat); setYmSearchQuery(cat.name || ''); handleChange('ymCategoryId', String(cat.id)); setYmDropdownOpen(false); closeMpEdit(); }}
                             >
                               <div style={{fontSize: '13px', fontWeight: 500}}>{cat.name}</div>
                               {cat.path && cat.path !== cat.name && <div style={{fontSize: '11px', color: '#6b7280', marginTop: '2px'}}>{cat.path}</div>}
@@ -919,6 +1387,7 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
             </div>
           )}
         </div>
+        )}
       </div>
 
       {Object.keys(errors).length > 0 && (

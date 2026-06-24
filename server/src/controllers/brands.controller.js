@@ -5,8 +5,32 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import brandsService, {
+  attachBrandDetails,
+  syncBrandMappingsFromCatalog,
+  normalizeMappingsPayload,
+  suggestOzonBrandMapping,
+  collectMpBrandCandidatesFromProducts,
+  scheduleOzonMinPriceRecalcForBrand,
+  promoSettingsChanged,
+} from '../services/brands.service.js';
 
 const brandsRepository = repositoryFactory.getBrandsRepository();
+
+async function assertBrandAccess(brandId, profileId) {
+  const cur = await brandsRepository.findById(brandId);
+  if (!cur) {
+    const err = new Error('Бренд не найден');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (Number(cur.profile_id) !== Number(profileId)) {
+    const err = new Error('Нет доступа');
+    err.statusCode = 403;
+    throw err;
+  }
+  return cur;
+}
 
 export const brandsController = {
   async getAll(req, res, next) {
@@ -16,7 +40,8 @@ export const brandsController = {
         return res.json({ ok: true, data: [] });
       }
       const brands = await brandsRepository.findAll(tid != null ? { profileId: tid } : {});
-      res.json({ ok: true, data: brands });
+      const enriched = await Promise.all(brands.map((b) => attachBrandDetails(b)));
+      res.json({ ok: true, data: enriched });
     } catch (error) {
       next(error);
     }
@@ -29,7 +54,7 @@ export const brandsController = {
       if (!brand) {
         return res.status(404).json({ ok: false, message: 'Бренд не найден' });
       }
-      res.json({ ok: true, data: brand });
+      res.json({ ok: true, data: await attachBrandDetails(brand) });
     } catch (error) {
       next(error);
     }
@@ -43,7 +68,11 @@ export const brandsController = {
       }
       const brandData = req.body;
       const brand = await brandsRepository.create(brandData, { profileId: tid });
-      res.status(201).json({ ok: true, data: brand });
+      const mappings = normalizeMappingsPayload(brandData.marketplace_mappings ?? brandData.marketplaceMappings);
+      if (mappings.length > 0 && brand?.id) {
+        await brandsRepository.replaceMarketplaceMappings(brand.id, mappings);
+      }
+      res.status(201).json({ ok: true, data: await attachBrandDetails(brand) });
     } catch (error) {
       next(error);
     }
@@ -56,20 +85,24 @@ export const brandsController = {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
       const { id } = req.params;
-      const cur = await brandsRepository.findById(id);
-      if (!cur) {
-        return res.status(404).json({ ok: false, message: 'Бренд не найден' });
-      }
-      if (Number(cur.profile_id) !== Number(tid)) {
-        return res.status(403).json({ ok: false, message: 'Нет доступа' });
-      }
+      const prev = await assertBrandAccess(id, tid);
       const updates = req.body;
       const brand = await brandsRepository.update(id, updates);
       if (!brand) {
         return res.status(404).json({ ok: false, message: 'Бренд не найден' });
       }
-      res.json({ ok: true, data: brand });
+      if (updates.marketplace_mappings != null || updates.marketplaceMappings != null) {
+        const mappings = normalizeMappingsPayload(
+          updates.marketplace_mappings ?? updates.marketplaceMappings
+        );
+        await brandsRepository.replaceMarketplaceMappings(id, mappings);
+      }
+      if (promoSettingsChanged(updates, prev)) {
+        scheduleOzonMinPriceRecalcForBrand(id);
+      }
+      res.json({ ok: true, data: await attachBrandDetails(brand) });
     } catch (error) {
+      if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
       next(error);
     }
   },
@@ -81,21 +114,65 @@ export const brandsController = {
         return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
       }
       const { id } = req.params;
-      const cur = await brandsRepository.findById(id);
-      if (!cur) {
-        return res.status(404).json({ ok: false, message: 'Бренд не найден' });
-      }
-      if (Number(cur.profile_id) !== Number(tid)) {
-        return res.status(403).json({ ok: false, message: 'Нет доступа' });
-      }
+      await assertBrandAccess(id, tid);
       const deleted = await brandsRepository.delete(id);
       if (!deleted) {
         return res.status(404).json({ ok: false, message: 'Бренд не найден' });
       }
       res.json({ ok: true, message: 'Бренд удален' });
     } catch (error) {
+      if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
       next(error);
     }
-  }
-};
+  },
 
+  /** POST /brands/:id/sync-mp-brands — подсказки и опционально применение сопоставлений */
+  async syncMpBrands(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const { id } = req.params;
+      const brand = await assertBrandAccess(id, tid);
+      const apply = req.body?.apply !== false;
+      const result = await syncBrandMappingsFromCatalog(id, tid, { apply });
+      res.json({
+        ok: true,
+        data: {
+          ...result,
+          brand: await attachBrandDetails(brand),
+        },
+      });
+    } catch (error) {
+      if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
+      next(error);
+    }
+  },
+
+  /** GET /brands/:id/mp-brand-candidates */
+  async getMpBrandCandidates(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY || tid == null) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const { id } = req.params;
+      const brand = await assertBrandAccess(id, tid);
+      const fromProducts = await collectMpBrandCandidatesFromProducts(id, tid);
+      const ozon = await suggestOzonBrandMapping(brand, tid);
+      res.json({
+        ok: true,
+        data: {
+          ozon: ozon.candidates,
+          wb: fromProducts.wb,
+          ym: fromProducts.ym,
+          ozon_category_pair: ozon.pair,
+        },
+      });
+    } catch (error) {
+      if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
+      next(error);
+    }
+  },
+};

@@ -205,17 +205,9 @@ class InventorySessionsLiveService {
     }
   }
 
-  async addScan({ sessionId, code, quantity = 1, userId = null }) {
-    const s = this._getSessionStrict(sessionId);
-    const q = clampInt(quantity, 1, 1000000);
-    const product = await this._resolveProduct(code);
-    if (!product?.id) {
-      const err = new Error('Товар не найден');
-      err.statusCode = 404;
-      throw err;
-    }
-
+  async _addProductScan(s, product, quantity, userId = null) {
     const pid = Number(product.id);
+    const q = clampInt(quantity, 1, 1000000);
     const prev = s.items.get(pid);
     const current = await this._warehouseQty(pid, s.warehouseId);
     if (prev) {
@@ -237,6 +229,19 @@ class InventorySessionsLiveService {
       this._touchUserScan(row, userId);
       s.items.set(pid, row);
     }
+  }
+
+  async addScan({ sessionId, code, quantity = 1, userId = null }) {
+    const s = this._getSessionStrict(sessionId);
+    const q = clampInt(quantity, 1, 1000000);
+    const product = await this._resolveProduct(code);
+    if (!product?.id) {
+      const err = new Error('Товар не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    await this._addProductScan(s, product, q, userId);
 
     this._touch(s);
     return this._serialize(s, { sortUserId: userId });

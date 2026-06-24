@@ -21,6 +21,14 @@ import {
 } from '../../../hooks/useProductLabelPrint.js';
 import { resolveApiBaseUrl } from '../../../services/api.js';
 import { createAsyncQueue } from '../../../utils/asyncQueue.js';
+import { COUNTRY_OPTIONS } from '../../../constants/countryOptions.js';
+import { certificatesApi } from '../../../services/certificates.api.js';
+import { brandsApi } from '../../../services/brands.api.js';
+import {
+  applyCertAutofillToAttributes,
+  certSourceHasAnyDocument,
+  filterBrandCertsForCategory,
+} from '../../../utils/productCertAttributeAutofill.js';
 import {
   BARCODE_MP_TOGGLES,
   EMPTY_BARCODE_ROW,
@@ -227,56 +235,6 @@ function vatCodeToText(code) {
   return '';
 }
 
-const COUNTRY_OPTIONS = [
-  'Россия',
-  'Китай',
-  'Беларусь',
-  'Казахстан',
-  'Узбекистан',
-  'Турция',
-  'Индия',
-  'Вьетнам',
-  'Таиланд',
-  'Южная Корея',
-  'Япония',
-  'Германия',
-  'Франция',
-  'Италия',
-  'Испания',
-  'Польша',
-  'Чехия',
-  'Словакия',
-  'Венгрия',
-  'США',
-  'Канада',
-  'Мексика',
-  'Бразилия',
-  'Аргентина',
-  'ОАЭ',
-  'Египет',
-  'ЮАР',
-  'Иран',
-  'Пакистан',
-  'Индонезия',
-  'Малайзия',
-  'Сингапур',
-  'Тайвань',
-  'Нидерланды',
-  'Бельгия',
-  'Австрия',
-  'Швейцария',
-  'Швеция',
-  'Норвегия',
-  'Финляндия',
-  'Дания',
-  'Португалия',
-  'Румыния',
-  'Болгария',
-  'Сербия',
-  'Австралия',
-  'Новая Зеландия'
-];
-
 /** Как у useProducts: ответ GET /products { ok, data: Product[] }. */
 function normalizeProductsFromListPayload(raw) {
   if (raw == null) return [];
@@ -474,6 +432,7 @@ export function ProductForm({
   const [imageError, setImageError] = useState('');
   const [imageDropActive, setImageDropActive] = useState(false);
   const imageFileInputRef = useRef(null);
+  const [brandCategoryCerts, setBrandCategoryCerts] = useState([]);
   /** Для каких товаров уже подставили вес/габариты из карточки */
   const ozonFilledFromProductIdRef = useRef(null);
   /** ID товара, для которого уже синхронизировали атрибуты из ozonFetchedProduct в форму */
@@ -730,6 +689,40 @@ export function ProductForm({
     return brands.find((x) => String(x?.name || '').trim().toLowerCase() === b) || null;
   }, [brands, formData.brand]);
 
+  useEffect(() => {
+    const br = selectedBrandForCert;
+    const catId = String(formData.categoryId || '').trim();
+    if (!br?.id || !catId) {
+      setBrandCategoryCerts([]);
+      return;
+    }
+    let cancelled = false;
+    certificatesApi
+      .getAll({ brandId: br.id, includeExpired: false })
+      .then((res) => {
+        if (cancelled) return;
+        const all = Array.isArray(res?.data) ? res.data : [];
+        setBrandCategoryCerts(filterBrandCertsForCategory(all, catId));
+      })
+      .catch(() => {
+        if (!cancelled) setBrandCategoryCerts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedBrandForCert?.id, formData.categoryId]);
+
+  const mpMappingByMarketplace = useMemo(() => {
+    const br = selectedBrandForCert;
+    const map = {};
+    const list = br?.marketplace_mappings ?? br?.marketplaceMappings ?? [];
+    for (const row of list) {
+      const mp = String(row.marketplace || '').toLowerCase();
+      if (mp) map[mp] = row;
+    }
+    return map;
+  }, [selectedBrandForCert]);
+
   const selectedOrganization = useMemo(() => {
     const oid = String(formData.organizationId || '').trim();
     if (!oid) return null;
@@ -744,6 +737,10 @@ export function ProductForm({
   const certSource = useMemo(() => {
     const cat = selectedCategoryForCert || {};
     const br = selectedBrandForCert || {};
+    const registry = Array.isArray(brandCategoryCerts) ? brandCategoryCerts : [];
+    const certRow = registry.find((c) => c.document_type === 'certificate') || registry[0] || null;
+    const declRow = registry.find((c) => c.document_type === 'declaration') || null;
+    const regRow = registry.find((c) => c.document_type === 'registration') || null;
 
     const pickStr = (a, b) => {
       const v = a != null ? a : b;
@@ -755,36 +752,68 @@ export function ProductForm({
     const pickDate = (a, b) => {
       const s = pickStr(a, b);
       if (!s) return '';
-      // ISO datetime -> date-only
       return s.includes('T') ? s.slice(0, 10) : s.slice(0, 10);
     };
 
     const certificate = {
-      number: pickStr(cat.certificate_number, br.certificate_number || cat.certificateNumber),
-      validFrom: pickDate(cat.certificate_valid_from, br.certificate_valid_from),
-      validTo: pickDate(cat.certificate_valid_to, br.certificate_valid_to),
+      number: pickStr(certRow?.certificate_number, pickStr(cat.certificate_number, br.certificate_number || cat.certificateNumber)),
+      validFrom: pickDate(certRow?.valid_from, pickStr(cat.certificate_valid_from, br.certificate_valid_from)),
+      validTo: pickDate(certRow?.valid_to, pickStr(cat.certificate_valid_to, br.certificate_valid_to)),
     };
     const declaration = {
-      number: pickStr(cat.declaration_number, br.declaration_number),
-      validFrom: pickDate(cat.declaration_valid_from, br.declaration_valid_from),
-      validTo: pickDate(cat.declaration_valid_to, br.declaration_valid_to),
+      number: pickStr(declRow?.certificate_number, pickStr(cat.declaration_number, br.declaration_number)),
+      validFrom: pickDate(declRow?.valid_from, pickStr(cat.declaration_valid_from, br.declaration_valid_from)),
+      validTo: pickDate(declRow?.valid_to, pickStr(cat.declaration_valid_to, br.declaration_valid_to)),
     };
     const registration = {
-      number: pickStr(cat.registration_number, br.registration_number),
-      validFrom: pickDate(cat.registration_valid_from, br.registration_valid_from),
-      validTo: pickDate(cat.registration_valid_to, br.registration_valid_to),
+      number: pickStr(regRow?.certificate_number, pickStr(cat.registration_number, br.registration_number)),
+      validFrom: pickDate(regRow?.valid_from, pickStr(cat.registration_valid_from, br.registration_valid_from)),
+      validTo: pickDate(regRow?.valid_to, pickStr(cat.registration_valid_to, br.registration_valid_to)),
     };
 
-    // сохраняем совместимые поля для уже существующих useEffect'ов (Ozon/YM)
+    const primaryDocType =
+      certRow?.document_type || declRow?.document_type || regRow?.document_type || 'certificate';
+
+    const number = firstNonEmpty(
+      certificate.number,
+      declaration.number,
+      registration.number
+    );
+    const validFrom = firstNonEmpty(certificate.validFrom, declaration.validFrom, registration.validFrom);
+    const validTo = firstNonEmpty(certificate.validTo, declaration.validTo, registration.validTo);
+
     return {
       certificate,
       declaration,
       registration,
-      number: certificate.number ? String(certificate.number).slice(0, 1000) : '',
-      validFrom: certificate.validFrom,
-      validTo: certificate.validTo
+      primaryDocType,
+      number: number ? String(number).slice(0, 1000) : '',
+      validFrom,
+      validTo,
     };
-  }, [selectedCategoryForCert, selectedBrandForCert]);
+  }, [selectedCategoryForCert, selectedBrandForCert, brandCategoryCerts]);
+
+  function firstNonEmpty(...vals) {
+    for (const v of vals) {
+      if (v != null && String(v).trim() !== '') return String(v).trim();
+    }
+    return '';
+  }
+
+  const resolveOzonEnumValue = useCallback(
+    (attr, textValue) => {
+      const attrId = attr?.id;
+      const dict = attrId != null ? ozonDictValues[attrId] : null;
+      if (!Array.isArray(dict) || dict.length === 0) return textValue;
+      const norm = normalizeAttrName(textValue);
+      const hit = dict.find((v) => normalizeAttrName(v.value ?? v.name ?? '') === norm);
+      if (hit?.id != null) return String(hit.id);
+      const partial = dict.find((v) => normalizeAttrName(v.value ?? v.name ?? '').includes(norm));
+      if (partial?.id != null) return String(partial.id);
+      return textValue;
+    },
+    [ozonDictValues]
+  );
 
   // Подгружаем выбранную категорию по ID для актуальных marketplace_mappings
   const [categoryDetails, setCategoryDetails] = useState(null);
@@ -979,31 +1008,15 @@ export function ProductForm({
   // Автоподстановка значений документа в Ozon-атрибуты по названию поля
   useEffect(() => {
     if (!ozonAttributes?.length) return;
-    if (!certSource.number && !certSource.validFrom && !certSource.validTo) return;
-    setOzonAttributeValues((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const attr of ozonAttributes) {
-        const key = String(attr.id);
-        if (!isEmptyMarketplaceValue(next[key])) continue;
-        const n = normalizeAttrName(attr?.name);
-        const isDoc = /номер/.test(n) && /(сертифик|декларац|свидетельств|сгр|документ)/.test(n);
-        const isFrom = /(дата начала|начал.*действ)/.test(n) && /(сертифик|декларац|свидетельств|сгр|документ)/.test(n);
-        const isTo = /(дата оконч|срок действ|действителен до|окончан.*действ)/.test(n) && /(сертифик|декларац|свидетельств|сгр|документ)/.test(n);
-        if (isDoc && certSource.number) {
-          next[key] = certSource.number;
-          changed = true;
-        } else if (isFrom && certSource.validFrom) {
-          next[key] = certSource.validFrom;
-          changed = true;
-        } else if (isTo && certSource.validTo) {
-          next[key] = certSource.validTo;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [ozonAttributes, certSource]);
+    if (!certSourceHasAnyDocument(certSource)) return;
+    setOzonAttributeValues((prev) =>
+      applyCertAutofillToAttributes(ozonAttributes, certSource, prev, {
+        getAttrKey: (attr) => String(attr.id),
+        getAttrName: (attr) => attr?.name ?? '',
+        resolveEnumValue: resolveOzonEnumValue,
+      })
+    );
+  }, [ozonAttributes, certSource, resolveOzonEnumValue]);
 
   // Автоподстановка НДС в Ozon-атрибуты (по названию поля)
   useEffect(() => {
@@ -1100,80 +1113,27 @@ export function ProductForm({
     return () => { cancelled = true; };
   }, [activeTab, formData.categoryId, effectiveWbSubjectId, wbSubjectId, wbAttributesOrganizationId]);
 
+  const wbAttrKey = useCallback((a) => {
+    const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
+    return id != null ? String(id) : String(a?.name || '');
+  }, []);
+
+  const wbAttrName = useCallback(
+    (a) => a?.name ?? a?.charcName ?? a?.characteristic_name ?? '',
+    []
+  );
+
   // Автоподстановка значений документа в WB-атрибуты по названию поля
   useEffect(() => {
     if (!wbCategoryAttributes?.length) return;
-    const hasAnyDoc =
-      Boolean(certSource?.certificate?.number || certSource?.certificate?.validFrom || certSource?.certificate?.validTo ||
-        certSource?.declaration?.number || certSource?.declaration?.validFrom || certSource?.declaration?.validTo ||
-        certSource?.registration?.number || certSource?.registration?.validFrom || certSource?.registration?.validTo);
-    if (!hasAnyDoc) return;
-    setWbAttributeValues((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const a of wbCategoryAttributes) {
-        const id = a?.charcID ?? a?.characteristic_id ?? a?.id ?? a?.attribute_id ?? a?.name;
-        const key = id != null ? String(id) : String(a?.name || '');
-        if (!isEmptyMarketplaceValue(next[key])) continue;
-        const name = a?.name ?? a?.charcName ?? a?.characteristic_name ?? '';
-        const n = normalizeAttrName(name);
-        const hasDocKeyword = /(сертифик|декларац|свидетельств|сгр|документ)/.test(n);
-        const explicitDeclaration = /декларац/.test(n);
-        const explicitRegistration = /свидетельств/.test(n) || /сгр/.test(n);
-        const explicitCertificate = /сертифик/.test(n);
-        const mentionedTypesCount =
-          (explicitDeclaration ? 1 : 0) +
-          (explicitRegistration ? 1 : 0) +
-          (explicitCertificate ? 1 : 0);
-        // Если в названии упомянуто сразу несколько типов ("сертификата/декларации") — считаем поле обобщённым и разрешаем fallback
-        const explicitType = mentionedTypesCount === 1;
-
-        const docType =
-          explicitDeclaration
-            ? 'declaration'
-            : explicitRegistration
-              ? 'registration'
-              : 'certificate';
-        const doc = certSource?.[docType] || certSource?.certificate || {};
-
-        const isNumberAttr = /номер/.test(n) && hasDocKeyword;
-        const isRegDateAttr = /дата регистрац/.test(n) && hasDocKeyword;
-        const isFromAttr = (/(дата начала|начал.*действ)/.test(n) || isRegDateAttr) && hasDocKeyword;
-        const isToAttr = /(дата оконч|срок действ|действителен до|окончан.*действ)/.test(n) && hasDocKeyword;
-
-        if (isNumberAttr && doc?.number) {
-          next[key] = doc.number;
-          changed = true;
-        } else if (isNumberAttr && !explicitType) {
-          // Только для "обобщённых" полей (без явного типа документа) — подставляем любое доступное
-          const fallbackNumber = certSource?.certificate?.number || certSource?.declaration?.number || certSource?.registration?.number;
-          if (fallbackNumber) {
-            next[key] = fallbackNumber;
-            changed = true;
-          }
-        } else if (isFromAttr && doc?.validFrom) {
-          next[key] = doc.validFrom;
-          changed = true;
-        } else if (isFromAttr && !explicitType) {
-          const fallbackFrom = certSource?.certificate?.validFrom || certSource?.declaration?.validFrom || certSource?.registration?.validFrom;
-          if (fallbackFrom) {
-            next[key] = fallbackFrom;
-            changed = true;
-          }
-        } else if (isToAttr && doc?.validTo) {
-          next[key] = doc.validTo;
-          changed = true;
-        } else if (isToAttr && !explicitType) {
-          const fallbackTo = certSource?.certificate?.validTo || certSource?.declaration?.validTo || certSource?.registration?.validTo;
-          if (fallbackTo) {
-            next[key] = fallbackTo;
-            changed = true;
-          }
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [wbCategoryAttributes, certSource]);
+    if (!certSourceHasAnyDocument(certSource)) return;
+    setWbAttributeValues((prev) =>
+      applyCertAutofillToAttributes(wbCategoryAttributes, certSource, prev, {
+        getAttrKey: wbAttrKey,
+        getAttrName: wbAttrName,
+      })
+    );
+  }, [wbCategoryAttributes, certSource, wbAttrKey, wbAttrName]);
 
   // Автоподстановка НДС в WB-атрибуты (по названию поля)
   useEffect(() => {
@@ -1230,31 +1190,33 @@ export function ProductForm({
   // Автоподстановка значений документа в YM-атрибуты по названию параметра
   useEffect(() => {
     if (!ymCategoryAttributes?.length) return;
-    if (!certSource.number && !certSource.validFrom && !certSource.validTo) return;
-    setYmAttributeValues((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const a of ymCategoryAttributes) {
-        const key = String(a.id);
-        if (!isEmptyMarketplaceValue(next[key])) continue;
-        const n = normalizeAttrName(a?.name);
-        const isDoc = /номер/.test(n) && /(сертифик|декларац|свидетельств|сгр|документ)/.test(n);
-        const isFrom = /(дата начала|начал.*действ)/.test(n) && /(сертифик|декларац|свидетельств|сгр|документ)/.test(n);
-        const isTo = /(дата оконч|срок действ|действителен до|окончан.*действ)/.test(n) && /(сертифик|декларац|свидетельств|сгр|документ)/.test(n);
-        if (isDoc && certSource.number) {
-          next[key] = certSource.number;
-          changed = true;
-        } else if (isFrom && certSource.validFrom) {
-          next[key] = certSource.validFrom;
-          changed = true;
-        } else if (isTo && certSource.validTo) {
-          next[key] = certSource.validTo;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
+    if (!certSourceHasAnyDocument(certSource)) return;
+    setYmAttributeValues((prev) =>
+      applyCertAutofillToAttributes(ymCategoryAttributes, certSource, prev, {
+        getAttrKey: (a) => String(a.id),
+        getAttrName: (a) => a?.name ?? '',
+      })
+    );
   }, [ymCategoryAttributes, certSource]);
+
+  // Автоподстановка сертификата в атрибуты категории (основная вкладка)
+  useEffect(() => {
+    if (!categoryAttributes?.length) return;
+    if (!certSourceHasAnyDocument(certSource)) return;
+    setFormData((prev) => {
+      const nextAttrs = applyCertAutofillToAttributes(
+        categoryAttributes,
+        certSource,
+        prev.attributeValues || {},
+        {
+          getAttrKey: (attr) => String(attr.id),
+          getAttrName: (attr) => attr?.name ?? '',
+        }
+      );
+      if (nextAttrs === prev.attributeValues) return prev;
+      return { ...prev, attributeValues: nextAttrs };
+    });
+  }, [categoryAttributes, certSource]);
 
   // Автоподстановка НДС в YM-атрибуты (по названию параметра)
   useEffect(() => {
@@ -1807,6 +1769,86 @@ export function ProductForm({
     }
   }, [formData.length, formData.width, formData.height]);
 
+  const applyBrandMarketplaceDefaults = useCallback((brandRow) => {
+    if (!brandRow) return;
+    const mappings = brandRow.marketplace_mappings ?? brandRow.marketplaceMappings ?? [];
+    const byMp = {};
+    for (const m of mappings) {
+      byMp[String(m.marketplace || '').toLowerCase()] = m;
+    }
+    const manufacturerCountry = brandRow.manufacturer_country ?? brandRow.manufacturerCountry ?? '';
+
+    setFormData((prev) => {
+      const next = { ...prev };
+      const oz = byMp.ozon;
+      const wb = byMp.wb;
+      if (oz?.mp_brand_name) next.mp_ozon_brand = String(oz.mp_brand_name);
+      if (wb?.mp_brand_name) next.mp_wb_brand = String(wb.mp_brand_name);
+      if (manufacturerCountry && !String(prev.country_of_origin || '').trim()) {
+        next.country_of_origin = String(manufacturerCountry);
+      }
+      return next;
+    });
+
+    const ozId = byMp.ozon?.mp_brand_id;
+    if (ozId != null && String(ozId).trim() !== '') {
+      setOzonAttributeValues((prev) => ({ ...prev, '85': String(ozId) }));
+    }
+  }, []);
+
+  useEffect(() => {
+    const country =
+      selectedBrandForCert?.manufacturer_country ?? selectedBrandForCert?.manufacturerCountry ?? '';
+    if (!country) return;
+
+    const fillCountryAttrs = (attrs, setter) => {
+      if (!attrs?.length) return;
+      setter((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const attr of attrs) {
+          const key = String(attr.id);
+          if (!isEmptyMarketplaceValue(next[key])) continue;
+          const n = normalizeAttrName(attr?.name);
+          if (!/(страна|country|производств)/i.test(n)) continue;
+          next[key] = String(country);
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    };
+
+    fillCountryAttrs(ozonAttributes, setOzonAttributeValues);
+    fillCountryAttrs(wbCategoryAttributes, setWbAttributeValues);
+    fillCountryAttrs(ymCategoryAttributes, setYmAttributeValues);
+  }, [
+    selectedBrandForCert,
+    ozonAttributes,
+    wbCategoryAttributes,
+    ymCategoryAttributes,
+  ]);
+
+  useEffect(() => {
+    const oz = mpMappingByMarketplace.ozon;
+    if (!oz) return;
+    if (oz.mp_brand_id != null && String(oz.mp_brand_id).trim() !== '') {
+      const id = String(oz.mp_brand_id).trim();
+      setOzonAttributeValues((prev) => {
+        if (prev['85'] === id) return prev;
+        return { ...prev, '85': id };
+      });
+    } else if (oz.mp_brand_name && ozonDictValues[85]?.length) {
+      const name = String(oz.mp_brand_name).trim().toLowerCase();
+      const hit = ozonDictValues[85].find(
+        (v) => String(v.value ?? v.name ?? '').trim().toLowerCase() === name
+      );
+      if (hit?.id != null) {
+        const id = String(hit.id);
+        setOzonAttributeValues((prev) => ({ ...prev, '85': id }));
+      }
+    }
+  }, [mpMappingByMarketplace, ozonDictValues]);
+
   const handleChange = (field, value) => {
     if (field === 'organizationId') {
       const org = organizations.find(o => String(o.id) === String(value));
@@ -1830,6 +1872,26 @@ export function ProductForm({
       });
     }
   };
+
+  const handleBrandSelect = useCallback(
+    (brandName) => {
+      const name = String(brandName || '').trim();
+      setFormData((prev) => ({ ...prev, brand: name }));
+      if (!name) return;
+      const local =
+        brands.find((x) => String(x?.name || '').trim() === name) ||
+        brands.find((x) => String(x?.name || '').trim().toLowerCase() === name.toLowerCase());
+      if (local) {
+        applyBrandMarketplaceDefaults(local);
+        if (!local.marketplace_mappings && local.id) {
+          brandsApi.getById(local.id).then((res) => {
+            if (res?.data) applyBrandMarketplaceDefaults(res.data);
+          }).catch(() => {});
+        }
+      }
+    },
+    [brands, applyBrandMarketplaceDefaults]
+  );
 
   const mergeMpField = (prev, updated, key) =>
     Object.prototype.hasOwnProperty.call(updated, key) ? (updated[key] ?? '') : prev[key];
@@ -3206,7 +3268,7 @@ export function ProductForm({
               id="brand"
             className="form-select form-select-sm"
               value={formData.brand}
-              onChange={(e) => handleChange('brand', e.target.value)}
+              onChange={(e) => handleBrandSelect(e.target.value)}
             >
               <option value="">-- Выберите бренд --</option>
               {brands.map(brand => (

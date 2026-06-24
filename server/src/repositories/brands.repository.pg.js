@@ -74,19 +74,43 @@ class BrandsRepositoryPG {
     const certificateNumber = payload.certificate_number ?? payload.certificateNumber ?? null;
     const certificateValidFrom = payload.certificate_valid_from ?? payload.certificateValidFrom ?? null;
     const certificateValidTo = payload.certificate_valid_to ?? payload.certificateValidTo ?? null;
+    const ozonBrandPromotionPercent = payload.ozon_brand_promotion_percent ?? payload.ozonBrandPromotionPercent ?? null;
+    const ozonBrandPromotionEnabled =
+      payload.ozon_brand_promotion_enabled === true ||
+      payload.ozon_brand_promotion_enabled === '1' ||
+      payload.ozonBrandPromotionEnabled === true ||
+      payload.ozonBrandPromotionEnabled === '1';
+    const manufacturerCountry =
+      payload.manufacturer_country ?? payload.manufacturerCountry ?? null;
 
     const result = await query(
-      `INSERT INTO brands (profile_id, name, description, website, certificate_number, certificate_valid_from, certificate_valid_to)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO brands (profile_id, name, description, website, certificate_number, certificate_valid_from, certificate_valid_to, ozon_brand_promotion_percent, ozon_brand_promotion_enabled, manufacturer_country)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (profile_id, LOWER(TRIM(name))) DO UPDATE SET
          description = COALESCE(EXCLUDED.description, brands.description),
          website = COALESCE(EXCLUDED.website, brands.website),
          certificate_number = COALESCE(EXCLUDED.certificate_number, brands.certificate_number),
          certificate_valid_from = COALESCE(EXCLUDED.certificate_valid_from, brands.certificate_valid_from),
          certificate_valid_to = COALESCE(EXCLUDED.certificate_valid_to, brands.certificate_valid_to),
+         ozon_brand_promotion_percent = COALESCE(EXCLUDED.ozon_brand_promotion_percent, brands.ozon_brand_promotion_percent),
+         ozon_brand_promotion_enabled = COALESCE(EXCLUDED.ozon_brand_promotion_enabled, brands.ozon_brand_promotion_enabled),
+         manufacturer_country = COALESCE(EXCLUDED.manufacturer_country, brands.manufacturer_country),
          updated_at = CURRENT_TIMESTAMP
        RETURNING *`,
-      [profileId, name, description, website, certificateNumber, certificateValidFrom, certificateValidTo]
+      [
+        profileId,
+        name,
+        description,
+        website,
+        certificateNumber,
+        certificateValidFrom,
+        certificateValidTo,
+        ozonBrandPromotionPercent,
+        ozonBrandPromotionEnabled,
+        manufacturerCountry != null && String(manufacturerCountry).trim() !== ''
+          ? String(manufacturerCountry).trim()
+          : null,
+      ]
     );
 
     return result.rows[0] || await this.findByName(name, profileId);
@@ -115,12 +139,25 @@ class BrandsRepositoryPG {
       certificate_valid_from: 'certificate_valid_from',
       certificateValidTo: 'certificate_valid_to',
       certificate_valid_to: 'certificate_valid_to',
+      ozonBrandPromotionPercent: 'ozon_brand_promotion_percent',
+      ozon_brand_promotion_percent: 'ozon_brand_promotion_percent',
+      ozonBrandPromotionEnabled: 'ozon_brand_promotion_enabled',
+      ozon_brand_promotion_enabled: 'ozon_brand_promotion_enabled',
+      manufacturerCountry: 'manufacturer_country',
+      manufacturer_country: 'manufacturer_country',
     };
 
     for (const [k, col] of Object.entries(map)) {
       if (payload.hasOwnProperty(k)) {
-        updateFields.push(`${col} = $${paramIndex++}`);
-        params.push(payload[k] === '' ? null : payload[k]);
+        if (col === 'ozon_brand_promotion_enabled') {
+          updateFields.push(`${col} = $${paramIndex++}`);
+          params.push(
+            payload[k] === true || payload[k] === '1' || payload[k] === 'true'
+          );
+        } else {
+          updateFields.push(`${col} = $${paramIndex++}`);
+          params.push(payload[k] === '' ? null : payload[k]);
+        }
       }
     }
 
@@ -141,6 +178,58 @@ class BrandsRepositoryPG {
   async delete(id) {
     const result = await query('DELETE FROM brands WHERE id = $1 RETURNING id', [id]);
     return result.rows.length > 0;
+  }
+
+  async findMarketplaceMappings(brandId) {
+    const bid = Number(brandId);
+    if (!Number.isFinite(bid) || bid < 1) return [];
+    const r = await query(
+      `SELECT id, brand_id, marketplace, mp_brand_name, mp_brand_id, mp_meta, created_at, updated_at
+       FROM brand_marketplace_mappings
+       WHERE brand_id = $1
+       ORDER BY marketplace`,
+      [bid]
+    );
+    return r.rows || [];
+  }
+
+  async upsertMarketplaceMapping(brandId, marketplace, data = {}) {
+    const bid = Number(brandId);
+    const mp = String(marketplace || '').trim().toLowerCase();
+    if (!Number.isFinite(bid) || bid < 1 || !mp) return null;
+    const name =
+      data.mp_brand_name != null && String(data.mp_brand_name).trim() !== ''
+        ? String(data.mp_brand_name).trim()
+        : null;
+    const mpId =
+      data.mp_brand_id != null && String(data.mp_brand_id).trim() !== ''
+        ? String(data.mp_brand_id).trim()
+        : null;
+    const meta = data.mp_meta != null ? JSON.stringify(data.mp_meta) : null;
+    const r = await query(
+      `INSERT INTO brand_marketplace_mappings (brand_id, marketplace, mp_brand_name, mp_brand_id, mp_meta)
+       VALUES ($1, $2, $3, $4, $5::jsonb)
+       ON CONFLICT (brand_id, marketplace) DO UPDATE SET
+         mp_brand_name = EXCLUDED.mp_brand_name,
+         mp_brand_id = EXCLUDED.mp_brand_id,
+         mp_meta = COALESCE(EXCLUDED.mp_meta, brand_marketplace_mappings.mp_meta),
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [bid, mp, name, mpId, meta]
+    );
+    return r.rows[0] || null;
+  }
+
+  async replaceMarketplaceMappings(brandId, items = []) {
+    const bid = Number(brandId);
+    if (!Number.isFinite(bid) || bid < 1) return [];
+    await query('DELETE FROM brand_marketplace_mappings WHERE brand_id = $1', [bid]);
+    const out = [];
+    for (const item of items) {
+      const row = await this.upsertMarketplaceMapping(bid, item.marketplace, item);
+      if (row) out.push(row);
+    }
+    return out;
   }
 }
 

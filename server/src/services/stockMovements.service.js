@@ -570,11 +570,17 @@ class StockMovementsService {
     const productAfter = await this.productsRepository.findById(idNum);
     const totalAfter = productAfter?.quantity != null ? Number(productAfter.quantity) : 0;
 
-    scheduleStockMovementMarketplaceSync(idNum, {
-      source: `stock_movement:${type}`,
-      warehouseId,
-      organizationId: orgId
-    });
+    const skipMpSync =
+      metaOut.skip_marketplace_sync === true ||
+      metaOut.skip_marketplace_sync === 'true' ||
+      metaOut.fbo_bulk_rebalance === true;
+    if (!skipMpSync) {
+      scheduleStockMovementMarketplaceSync(idNum, {
+        source: `stock_movement:${type}`,
+        warehouseId,
+        organizationId: orgId
+      });
+    }
 
     return {
       productId: idNum,
@@ -723,39 +729,7 @@ class StockMovementsService {
     const params = [idNum];
 
     const metaKeySql = stockMovementMetaOrderKeySql('');
-    const res = await query(
-      `WITH order_keys AS (
-         SELECT DISTINCT ${metaKeySql} AS meta_key
-         FROM stock_movements
-         WHERE (${movementScopeSql})
-           AND type IN ('reserve', 'unreserve')
-           AND ${metaKeySql} IS NOT NULL
-           AND TRIM(${metaKeySql}) <> ''
-       ),
-       sku_net AS (
-         SELECT ${metaKeySql} AS meta_key,
-           ${NET_RESERVED_SUM_EXPR_SQL}::int AS sku_net_qty
-         FROM stock_movements
-         WHERE product_id = $1
-           AND type IN ('reserve', 'unreserve')
-           AND ${metaKeySql} IS NOT NULL
-           AND TRIM(${metaKeySql}) <> ''
-         GROUP BY 1
-         HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
-       )
-       SELECT o.id,
-              o.marketplace,
-              o.order_id,
-              o.status,
-              COALESCE(sku_net.sku_net_qty, 0) AS sku_net_qty,
-              (o.id IS NULL) AS order_missing,
-              CASE
-                WHEN order_keys.meta_key ~ '^[0-9]+$' THEN order_keys.meta_key::bigint
-                ELSE NULL
-              END AS movement_order_db_id
-       FROM order_keys
-       INNER JOIN sku_net ON sku_net.meta_key = order_keys.meta_key
-       LEFT JOIN LATERAL (
+    const orderLateralSql = `LEFT JOIN LATERAL (
          SELECT o.id, o.marketplace, o.order_id, o.status, o.created_at
          FROM orders o
          WHERE (order_keys.meta_key ~ '^[0-9]+$' AND o.id = order_keys.meta_key::bigint)
@@ -766,11 +740,71 @@ class StockMovementsService {
          ORDER BY CASE WHEN order_keys.meta_key ~ '^[0-9]+$' AND o.id = order_keys.meta_key::bigint THEN 0 ELSE 1 END,
                   o.id DESC
          LIMIT 1
-       ) o ON true
-       ORDER BY o.created_at DESC NULLS LAST, order_keys.meta_key DESC
-       LIMIT 200`,
-      params
-    );
+       ) o ON true`;
+
+    const res = isKit
+      ? await query(
+          `WITH order_keys AS (
+             SELECT DISTINCT ${metaKeySql} AS meta_key
+             FROM stock_movements
+             WHERE (${movementScopeSql})
+               AND type IN ('reserve', 'unreserve')
+               AND ${metaKeySql} IS NOT NULL
+               AND TRIM(${metaKeySql}) <> ''
+           )
+           SELECT o.id,
+                  o.marketplace,
+                  o.order_id,
+                  o.status,
+                  0 AS sku_net_qty,
+                  (o.id IS NULL) AS order_missing,
+                  CASE
+                    WHEN order_keys.meta_key ~ '^[0-9]+$' THEN order_keys.meta_key::bigint
+                    ELSE NULL
+                  END AS movement_order_db_id
+           FROM order_keys
+           ${orderLateralSql}
+           ORDER BY o.created_at DESC NULLS LAST, order_keys.meta_key DESC
+           LIMIT 200`,
+          params
+        )
+      : await query(
+          `WITH order_keys AS (
+             SELECT DISTINCT ${metaKeySql} AS meta_key
+             FROM stock_movements
+             WHERE (${movementScopeSql})
+               AND type IN ('reserve', 'unreserve')
+               AND ${metaKeySql} IS NOT NULL
+               AND TRIM(${metaKeySql}) <> ''
+           ),
+           sku_net AS (
+             SELECT ${metaKeySql} AS meta_key,
+               ${NET_RESERVED_SUM_EXPR_SQL}::int AS sku_net_qty
+             FROM stock_movements
+             WHERE product_id = $1
+               AND type IN ('reserve', 'unreserve')
+               AND ${metaKeySql} IS NOT NULL
+               AND TRIM(${metaKeySql}) <> ''
+             GROUP BY 1
+             HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
+           )
+           SELECT o.id,
+                  o.marketplace,
+                  o.order_id,
+                  o.status,
+                  COALESCE(sku_net.sku_net_qty, 0) AS sku_net_qty,
+                  (o.id IS NULL) AS order_missing,
+                  CASE
+                    WHEN order_keys.meta_key ~ '^[0-9]+$' THEN order_keys.meta_key::bigint
+                    ELSE NULL
+                  END AS movement_order_db_id
+           FROM order_keys
+           INNER JOIN sku_net ON sku_net.meta_key = order_keys.meta_key
+           ${orderLateralSql}
+           ORDER BY o.created_at DESC NULLS LAST, order_keys.meta_key DESC
+           LIMIT 200`,
+          params
+        );
 
     if (!_skipStaleCleanup && (res.rows?.length ?? 0) > 0) {
       const { default: ordersService, isOrderTerminalNoReserve } = await import('./orders.service.js');
@@ -812,6 +846,7 @@ class StockMovementsService {
 
     const out = [];
     const seenManualKitGroups = new Set();
+    const seenKitOrderDbIds = new Set();
     for (const r of res.rows || []) {
       const movementOrderDbId = Number(r.movement_order_db_id);
       const orderDbId = Number(r.id);
@@ -839,6 +874,7 @@ class StockMovementsService {
       }
 
       if (!Number.isFinite(orderDbId) || orderDbId < 1) continue;
+      if (isKit && seenKitOrderDbIds.has(orderDbId)) continue;
 
       const ordRow = await query(
         `SELECT product_id, marketplace, order_group_id, order_id FROM orders WHERE id = $1 LIMIT 1`,
@@ -885,6 +921,7 @@ class StockMovementsService {
         }
       }
       if (reservedQty <= 0) continue;
+      if (isKit) seenKitOrderDbIds.add(orderDbId);
 
       const status = r.status != null ? String(r.status) : '';
       const mpRaw = String(r.marketplace || '').toLowerCase();

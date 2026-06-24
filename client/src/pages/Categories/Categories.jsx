@@ -3,9 +3,8 @@
  * Страница управления категориями
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useUserCategories } from '../../hooks/useUserCategories';
-import { categoriesApi } from '../../services/categories.api';
 import { categoryMappingsApi } from '../../services/categoryMappings.api';
 import { userCategoriesApi } from '../../services/userCategories.api';
 import { productAttributesApi } from '../../services/productAttributes.api';
@@ -13,8 +12,26 @@ import { productsApi } from '../../services/products.api';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { CategoryForm } from '../../components/forms/CategoryForm/CategoryForm';
+import {
+  enrichUserCategoriesWithMappings,
+  getCategoryMarketplaceLinkBadges,
+} from '../../utils/enrichUserCategories';
 import api from '../../services/api';
 import './Categories.css';
+
+function CategoryMpBadges({ category }) {
+  const badges = getCategoryMarketplaceLinkBadges(category);
+  if (!badges.length) return null;
+  return (
+    <span className="category-mp-link-badges" aria-label="Сопоставлено с маркетплейсами">
+      {badges.map((b) => (
+        <span key={b.key} className={`mp-badge ${b.className}`} title={b.title}>
+          {b.label}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export function Categories() {
   const { categories, mappings, loading, error, createCategory, updateCategory, deleteCategory, loadData } = useUserCategories();
@@ -23,226 +40,67 @@ export function Categories() {
   const [categoryForForm, setCategoryForForm] = useState(null);
   const [allAttributes, setAllAttributes] = useState([]);
   const [categoriesWithMappings, setCategoriesWithMappings] = useState([]);
-  /** null — ещё не грузили; после загрузки — объект (CategoryForm берёт из пропсов и не дублирует запрос) */
-  const [marketplaceCategories, setMarketplaceCategories] = useState(null);
-  const [marketplaceCategoriesLoading, setMarketplaceCategoriesLoading] = useState(false);
 
-  // Тяжёлые справочники (Ozon/YM/WB + атрибуты) — после первого кадра, чтобы список категорий появился сразу
+  const wbNameMap = useMemo(() => new Map(), []);
+
+  // Атрибуты — только при открытии формы (не блокируют список)
   useEffect(() => {
+    if (!isModalOpen || allAttributes.length > 0) return undefined;
     let cancelled = false;
-    let scheduleId;
-    let scheduledViaIdleCallback = false;
-    const load = async () => {
-      setMarketplaceCategoriesLoading(true);
-      try {
-        const [wbRes, ozonRes, ymRes, attrRes] = await Promise.all([
-          categoriesApi.getAll('wb'),
-          categoriesApi.getAll('ozon'),
-          categoriesApi.getAll('ym'),
-          productAttributesApi.getAll()
-        ]);
-        if (cancelled) return;
-        setMarketplaceCategories({
-          wb: wbRes?.data || [],
-          ozon: ozonRes?.data || ozonRes || [],
-          ym: ymRes?.data || []
-        });
-        setAllAttributes(attrRes?.data || []);
-      } catch (e) {
-        if (!cancelled) console.error('[Categories] Error loading marketplace categories or attributes:', e);
-        if (!cancelled) {
-          setMarketplaceCategories({ wb: [], ozon: [], ym: [] });
-        }
-      } finally {
-        if (!cancelled) setMarketplaceCategoriesLoading(false);
-      }
-    };
-    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-      scheduledViaIdleCallback = true;
-      scheduleId = window.requestIdleCallback(() => {
-        void load();
-      }, { timeout: 3000 });
-    } else if (typeof window !== 'undefined') {
-      scheduleId = window.setTimeout(() => {
-        void load();
-      }, 150);
-    } else {
-      void load();
-    }
+    productAttributesApi
+      .getAll()
+      .then((res) => {
+        if (!cancelled) setAllAttributes(res?.data || []);
+      })
+      .catch((e) => {
+        if (!cancelled) console.error('[Categories] Error loading attributes:', e);
+      });
     return () => {
       cancelled = true;
-      if (typeof window !== 'undefined' && scheduleId != null) {
-        if (scheduledViaIdleCallback && typeof window.cancelIdleCallback === 'function') {
-          window.cancelIdleCallback(scheduleId);
-        } else {
-          window.clearTimeout(scheduleId);
-        }
-      }
     };
-  }, []);
+  }, [isModalOpen, allAttributes.length]);
 
-  // Обогащаем категории данными о маппингах и количестве товаров
+  // Сопоставления из marketplace_mappings — сразу, без ожидания API
+  useEffect(() => {
+    if (!categories.length) {
+      setCategoriesWithMappings([]);
+      return;
+    }
+    setCategoriesWithMappings((prev) => {
+      const counts = {};
+      for (const c of prev) {
+        if (c?.id != null && c.productsCount > 0) counts[String(c.id)] = c.productsCount;
+      }
+      return enrichUserCategoriesWithMappings(categories, mappings, {}, { wbNameMap }).map((c) => ({
+        ...c,
+        productsCount: counts[String(c.id)] ?? c.productsCount ?? 0,
+      }));
+    });
+  }, [categories, mappings, wbNameMap]);
+
+  // Счётчики товаров — отдельный лёгкий запрос
   useEffect(() => {
     let cancelled = false;
-    const enrichCategories = async () => {
-      if (!categories.length) {
-        setCategoriesWithMappings([]);
-        return;
-      }
+    if (!categories.length) return undefined;
 
-      try {
-        // Лёгкий запрос id товаров по категории + маппинги из хука (без повторного GET /category-mappings)
-        const groupedRes = await productsApi.getProductIdsGroupedByUserCategory();
+    productsApi
+      .getProductIdsGroupedByUserCategory()
+      .then((groupedRes) => {
         if (cancelled) return;
+        const productIdsByCategory =
+          groupedRes?.data && typeof groupedRes.data === 'object' ? groupedRes.data : {};
+        setCategoriesWithMappings(
+          enrichUserCategoriesWithMappings(categories, mappings, productIdsByCategory, { wbNameMap })
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) console.error('[Categories] Error loading product counts:', err);
+      });
 
-        const productIdsByCategory = groupedRes?.data && typeof groupedRes.data === 'object' ? groupedRes.data : {};
-        const allMappings = Array.isArray(mappings) ? mappings : [];
-
-        // Группируем маппинги по product_id для быстрого поиска
-        const mappingsByProductId = {};
-        for (const m of allMappings) {
-          if (m.product_id === undefined || m.product_id === null) continue;
-          const k = String(m.product_id);
-          if (!mappingsByProductId[k]) mappingsByProductId[k] = [];
-          mappingsByProductId[k].push(m);
-        }
-
-        // Справочники маркетплейсов (могут ещё грузиться в фоне — тогда имена подтянутся при следующем проходе)
-        const mpCats = marketplaceCategories ?? { wb: [], ozon: [], ym: [] };
-        const resolveCategoryName = (mp, catId) => {
-          if (!catId) return null;
-          const list = (mp === 'wb' || mp === 'wildberries') ? mpCats.wb : mp === 'ozon' ? mpCats.ozon : (mp === 'ym' || mp === 'yandex') ? mpCats.ym : [];
-          const s = String(catId);
-          const c = list.find(x => String(x.id || x.marketplace_category_id) === s || String(x.marketplace_category_id) === s);
-          return c?.name || null;
-        };
-
-        const enriched = categories.map((category) => {
-          const productIds = productIdsByCategory[String(category.id)] || [];
-          const productsCount = productIds.length;
-          let categoryMappings = productIds.flatMap((pid) => mappingsByProductId[String(pid)] || []);
-          // Подставляем имена категорий (getAll возвращает "Unknown Category", resolve по marketplaceCategories)
-          categoryMappings = categoryMappings.map(m => {
-            const name = resolveCategoryName(m.marketplace, m.category_id);
-            return { ...m, marketplace_category_name: name || m.marketplace_category_name || 'Unknown Category' };
-          });
-
-          // Группируем маппинги по маркетплейсам (из товаров)
-            const mappingsByMarketplace = {};
-            categoryMappings.forEach(mapping => {
-              const marketplace = mapping.marketplace;
-              if (!mappingsByMarketplace[marketplace]) {
-                mappingsByMarketplace[marketplace] = [];
-              }
-              const exists = mappingsByMarketplace[marketplace].some(
-                m => m.marketplace_category_id === mapping.marketplace_category_id || 
-                     m.category_id === mapping.category_id
-              );
-              if (!exists) {
-                mappingsByMarketplace[marketplace].push(mapping);
-              }
-            });
-            
-            // Также проверяем marketplace_mappings категории, даже если есть маппинги из товаров
-            // Это нужно для случаев, когда у товаров нет маппингов, но они есть в категории
-            if (category.marketplace_mappings) {
-              let mm;
-              try {
-                mm = typeof category.marketplace_mappings === 'string'
-                  ? JSON.parse(category.marketplace_mappings)
-                  : category.marketplace_mappings;
-              } catch (_) {
-                mm = null;
-              }
-              
-              if (mm && typeof mm === 'object') {
-                // Загружаем реальные названия категорий маркетплейсов по их ID
-                if (mm.wb && !mappingsByMarketplace.wb) {
-                  const wbCategory = mpCats.wb.find(cat => 
-                    String(cat.id) === String(mm.wb) || 
-                    String(cat.marketplace_category_id) === String(mm.wb)
-                  );
-                  mappingsByMarketplace.wb = [{
-                    marketplace_category_name: wbCategory?.name || 'Категория не найдена',
-                    category_id: mm.wb,
-                    marketplace_category_id: mm.wb
-                  }];
-                }
-                if (mm.ozon) {
-                  const ozonCategoryIdStr = String(mm.ozon);
-
-                  const ozonCategory = mpCats.ozon.find(cat => {
-                    const catIdStr = String(cat.id || '');
-                    const catMarketplaceIdStr = String(cat.marketplace_category_id || '');
-                    
-                    if (catIdStr === ozonCategoryIdStr || catMarketplaceIdStr === ozonCategoryIdStr) {
-                      return true;
-                    }
-
-                    const catIdClean = catIdStr.replace(/^ozon_/, '');
-                    const catMarketplaceIdClean = catMarketplaceIdStr.replace(/^ozon_/, '');
-                    const mappingIdClean = ozonCategoryIdStr.replace(/^ozon_/, '');
-
-                    if (catIdClean === mappingIdClean || catMarketplaceIdClean === mappingIdClean) {
-                      return true;
-                    }
-                    if (catIdStr === `ozon_${mappingIdClean}` || catMarketplaceIdStr === `ozon_${mappingIdClean}`) {
-                      return true;
-                    }
-                    if (`ozon_${catIdClean}` === ozonCategoryIdStr || `ozon_${catMarketplaceIdClean}` === ozonCategoryIdStr) {
-                      return true;
-                    }
-
-                    return false;
-                  });
-
-                  const ozonDisplayName = mm.ozon_display || ozonCategory?.path || ozonCategory?.name || 'Категория не найдена';
-                  if (!mappingsByMarketplace.ozon || mappingsByMarketplace.ozon.length === 0) {
-                    mappingsByMarketplace.ozon = [{
-                      marketplace_category_name: ozonDisplayName,
-                      category_id: mm.ozon,
-                      marketplace_category_id: mm.ozon
-                    }];
-                  } else {
-                    const existingMapping = mappingsByMarketplace.ozon[0];
-                    existingMapping.marketplace_category_name = ozonDisplayName;
-                  }
-                }
-                if (mm.ym) {
-                  const ymCategory = mpCats.ym.find(cat => 
-                    String(cat.id) === String(mm.ym) || 
-                    String(cat.marketplace_category_id) === String(mm.ym)
-                  );
-                  mappingsByMarketplace.ym = [{
-                    marketplace_category_name: ymCategory?.name || 'Категория не найдена',
-                    category_id: mm.ym,
-                    marketplace_category_id: mm.ym
-                  }];
-                }
-              }
-            }
-
-          return {
-            ...category,
-            productsCount,
-            mappings: mappingsByMarketplace
-          };
-        });
-
-        if (!cancelled) setCategoriesWithMappings(enriched);
-      } catch (err) {
-        if (!cancelled) console.error('[Categories] Error enriching categories:', err);
-        if (!cancelled) setCategoriesWithMappings([]);
-      }
+    return () => {
+      cancelled = true;
     };
-
-    if (categories.length > 0) {
-      enrichCategories();
-    } else {
-      setCategoriesWithMappings([]);
-    }
-    return () => { cancelled = true; };
-  }, [categories, mappings, marketplaceCategories]);
+  }, [categories, mappings, wbNameMap]);
 
   const handleCreate = () => {
     setEditingCategory(null);
@@ -257,11 +115,26 @@ export function Categories() {
     try {
       const res = await userCategoriesApi.getById(category.id);
       const full = res?.data ?? res;
-      if (full && full.id) setCategoryForForm(full);
+      if (full && full.id) {
+        setCategoryForForm({
+          ...full,
+          mappings: category.mappings ?? full.mappings,
+          productsCount: category.productsCount ?? full.productsCount,
+        });
+      }
     } catch (e) {
       console.error('[Categories] Error loading category for edit:', e);
     }
   };
+
+  const categoryForFormMerged = useMemo(() => {
+    const base = categoryForForm ?? editingCategory;
+    if (!base) return null;
+    return {
+      ...base,
+      mappings: editingCategory?.mappings ?? base.mappings,
+    };
+  }, [categoryForForm, editingCategory]);
 
   const handleSubmit = async (categoryData) => {
     try {
@@ -615,8 +488,15 @@ export function Categories() {
 
   return (
     <div className="card">
-      <h1 className="title">📦 Категории</h1>
-      <p className="subtitle">Создание и сопоставление категорий товаров с маркетплейсами</p>
+      <div className="categories-page-header">
+        <div className="categories-page-header__main">
+          <h1 className="title">📦 Категории</h1>
+          <p className="subtitle">Создание категорий и сопоставление с маркетплейсами — настройки и комиссии в карточке категории</p>
+        </div>
+        <div className="categories-page-header__actions">
+          <Button variant="primary" onClick={handleCreate}>➕ Добавить категорию</Button>
+        </div>
+      </div>
 
       <div className="categories-list" style={{marginTop: '16px'}}>
         {categories.length === 0 ? (
@@ -628,60 +508,66 @@ export function Categories() {
           <div>
             {parentCategories.map(category => {
               const children = subCategories.filter(sub => sub.parent_id === category.id);
-              const marketplaceNames = {
-                'wb': 'Wildberries',
-                'ozon': 'Ozon',
-                'ym': 'Yandex Market'
-              };
               
               return (
-                <div key={category.id} className="category-item">
+                <div
+                  key={category.id}
+                  className="category-item category-item--clickable"
+                  onClick={() => handleEdit(category)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleEdit(category);
+                    }
+                  }}
+                >
                   <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flex: 1}}>
                     <div style={{flex: 1}}>
-                      <div style={{fontSize: '14px', fontWeight: 500, marginBottom: '4px'}}>
-                        {category.name}
+                      <div className="category-title-row">
+                        <span style={{fontSize: '14px', fontWeight: 500}}>{category.name}</span>
+                        <CategoryMpBadges category={category} />
                       </div>
                       {category.description && (
                         <div style={{fontSize: '12px', color: 'var(--muted)', marginBottom: '4px'}}>
                           {category.description}
                         </div>
                       )}
-                      <div style={{fontSize: '12px', color: 'var(--muted)', marginBottom: '8px'}}>
+                      <div style={{fontSize: '12px', color: 'var(--muted)'}}>
                         Товаров: {category.productsCount || 0}
                       </div>
-                      
-                      {/* Показываем сопоставления с маркетплейсами */}
-                      {category.mappings && Object.keys(category.mappings).length > 0 && (
-                        <div style={{marginTop: '8px', padding: '8px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '4px'}}>
-                          <div style={{fontSize: '12px', fontWeight: 500, marginBottom: '4px', color: 'var(--text)'}}>
-                            Сопоставлено с маркетплейсами:
-                          </div>
-                          {Object.entries(category.mappings).map(([marketplace, mappingsList]) => {
-                            // Берем первый маппинг для этого маркетплейса
-                            const mapping = mappingsList[0];
-                            return (
-                              <div key={marketplace} style={{fontSize: '11px', color: 'var(--muted)', marginBottom: '2px'}}>
-                                <span style={{fontWeight: 500}}>{marketplaceNames[marketplace] || marketplace}:</span>{' '}
-                                {mapping.marketplace_category_name || 'Категория не найдена'}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
                       {children.length > 0 && (
                         <div style={{marginTop: '8px', paddingLeft: '20px'}}>
                           {children.map(child => (
-                            <div key={child.id} style={{fontSize: '13px', color: 'var(--muted)', marginBottom: '4px'}}>
-                              ↳ {child.name}
+                            <div
+                              key={child.id}
+                              style={{fontSize: '13px', color: 'var(--muted)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap'}}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEdit(child);
+                              }}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleEdit(child);
+                                }
+                              }}
+                            >
+                              <span>↳ {child.name}</span>
+                              <CategoryMpBadges category={child} />
                               {child.productsCount > 0 && (
-                                <span style={{fontSize: '11px', marginLeft: '8px'}}>({child.productsCount} товаров)</span>
+                                <span style={{fontSize: '11px'}}>({child.productsCount} товаров)</span>
                               )}
                             </div>
                           ))}
                         </div>
                       )}
                     </div>
-                    <div style={{display: 'flex', gap: '8px'}}>
+                    <div style={{display: 'flex', gap: '8px'}} onClick={(e) => e.stopPropagation()}>
                       <Button 
                         variant="secondary" 
                         size="small"
@@ -704,20 +590,37 @@ export function Categories() {
               );
             })}
             {subCategories.filter(sub => !parentCategories.find(p => p.id === sub.parent_id)).map(category => (
-              <div key={category.id} className="category-item" style={{marginLeft: '20px'}}>
-                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', flex: 1}}>
+              <div
+                key={category.id}
+                className="category-item category-item--clickable"
+                style={{marginLeft: '20px'}}
+                onClick={() => handleEdit(category)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleEdit(category);
+                  }
+                }}
+              >
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flex: 1}}>
                   <div style={{flex: 1}}>
                     <div style={{fontSize: '13px', color: 'var(--muted)', marginBottom: '4px'}}>↳ Подкатегория</div>
-                    <div style={{fontSize: '14px', fontWeight: 500, marginBottom: '4px'}}>
-                      {category.name}
+                    <div className="category-title-row">
+                      <span style={{fontSize: '14px', fontWeight: 500}}>{category.name}</span>
+                      <CategoryMpBadges category={category} />
                     </div>
                     {category.description && (
-                      <div style={{fontSize: '12px', color: 'var(--muted)'}}>
+                      <div style={{fontSize: '12px', color: 'var(--muted)', marginBottom: '4px'}}>
                         {category.description}
                       </div>
                     )}
+                    <div style={{fontSize: '12px', color: 'var(--muted)'}}>
+                      Товаров: {category.productsCount || 0}
+                    </div>
                   </div>
-                  <div style={{display: 'flex', gap: '8px'}}>
+                  <div style={{display: 'flex', gap: '8px'}} onClick={(e) => e.stopPropagation()}>
                     <Button 
                       variant="secondary" 
                       size="small"
@@ -742,24 +645,6 @@ export function Categories() {
         )}
       </div>
 
-      <div className="actions" style={{marginTop: '16px'}}>
-        <Button variant="primary" onClick={handleCreate}>➕ Добавить категорию</Button>
-        <Button variant="secondary">Импорт категорий</Button>
-        {categories.length > 0 && (
-          <Button 
-            variant="secondary" 
-            onClick={() => {
-              if (window.confirm('Вы уверены, что хотите удалить все категории?')) {
-                categories.forEach(cat => deleteCategory(cat.id));
-              }
-            }}
-            style={{color: '#fca5a5', borderColor: '#fca5a5'}}
-          >
-            Очистить все
-          </Button>
-        )}
-      </div>
-
       <Modal
         isOpen={isModalOpen}
         onClose={() => {
@@ -768,20 +653,12 @@ export function Categories() {
           setCategoryForForm(null);
         }}
         title={editingCategory ? 'Редактировать категорию' : 'Добавить категорию'}
-        size="medium"
+        size="large"
       >
         <CategoryForm
-          category={categoryForForm ?? editingCategory}
+          category={categoryForFormMerged}
           categories={categoriesWithMappings.length > 0 ? categoriesWithMappings : categories}
           allAttributes={allAttributes}
-          marketplaceCategories={marketplaceCategories}
-          marketplaceCategoriesLoading={marketplaceCategoriesLoading}
-          onRefreshOzonCategories={(ozonList) =>
-            setMarketplaceCategories((prev) => ({
-              ...(prev || { wb: [], ozon: [], ym: [] }),
-              ozon: ozonList || [],
-            }))
-          }
           onSubmit={handleSubmit}
           onCancel={() => {
             setIsModalOpen(false);

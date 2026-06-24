@@ -25,6 +25,8 @@ import {
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
+import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
+import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters, resolveProductVolumeLiters } from '../../utils/productVolume.js';
 
 const PRICES_LIST_PAGE_SIZES = [50, 100, 200];
 
@@ -146,9 +148,7 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
   // Логистика: для WB пересчитываем из logistics_base + logistics_liter (как в PriceDetailsModal), иначе из API
   let logisticsCost = 0;
   if (marketplace === 'wb' && calculator.logistics_base !== undefined && calculator.logistics_liter !== undefined) {
-    const volume = calculator.volume_weight !== undefined && calculator.volume_weight !== null
-      ? calculator.volume_weight
-      : (Number(product?.volume) || 0);
+    const volume = resolveEffectiveVolumeLiters(calculator, product) || 0;
     if (volume && volume > 1) {
       const additionalLiters = Math.ceil(volume - 1);
       logisticsCost = calculator.logistics_base + calculator.logistics_liter * additionalLiters;
@@ -1407,9 +1407,9 @@ export function Prices() {
                             </button>
                           ) : (product.name || 'Без названия')}
                         </div>
-                        {product.volume && (
+                        {resolveProductVolumeLiters(product) != null && (
                           <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px'}}>
-                            Объем: {parseFloat(product.volume).toFixed(2)} л
+                            Объем: {resolveProductVolumeLiters(product).toFixed(2)} л
                           </div>
                         )}
                       </td>
@@ -1608,7 +1608,13 @@ export function Prices() {
           const fromStored = priceModal.product && priceModal.marketplace
             ? (priceModal.marketplace === 'ozon' ? priceModal.product.storedCalculationDetailsOzon : priceModal.marketplace === 'wb' ? priceModal.product.storedCalculationDetailsWb : priceModal.product.storedCalculationDetailsYm)
             : null;
-          return fromState ?? fromModal ?? fromStored ?? null;
+          const raw = fromState ?? fromModal ?? fromStored ?? null;
+          if (!raw || !priceModal.product) return raw;
+          let enriched = enrichCalculatorVolumeFromProduct(raw, priceModal.product);
+          if (priceModal.marketplace === 'ozon') {
+            enriched = enrichOzonCalculatorFromProduct(enriched, priceModal.product);
+          }
+          return enriched;
         })()}
         wbAcquiringPercent={wbAcquiringPercent}
         wbGemServicesPercent={wbGemServicesPercent}

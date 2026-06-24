@@ -6,6 +6,7 @@
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
 import integrationsService from '../services/integrations.service.js';
+import categoryMarketplaceCommissionsService from '../services/categoryMarketplaceCommissions.service.js';
 import { resolveOzonDescTypePair } from '../services/productsExport.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 
@@ -437,6 +438,53 @@ class UserCategoriesController {
       category.attribute_ids = (attrResult.rows || []).map((r) => r.attribute_id);
       
       return res.status(200).json({ ok: true, data: category });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async previewMarketplaceCommissions(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId =
+        orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const scope = { profileId: tid, organizationId };
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const dbOnly =
+        req.query?.db_only === '1' ||
+        req.query?.dbOnly === '1' ||
+        body.dbOnly === true ||
+        body.db_only === true;
+      const data = await categoryMarketplaceCommissionsService.getPreview(
+        {
+          ozon: body.ozon,
+          ym: body.ym,
+        },
+        scope,
+        { dbOnly, source: dbOnly ? 'db' : 'live' }
+      );
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async refreshMarketplaceCommissions(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId =
+        orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const scope = { profileId: tid, organizationId };
+      const result = await categoryMarketplaceCommissionsService.refreshAllCommissions(scope, 'manual');
+      return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       next(error);
     }

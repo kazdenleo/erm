@@ -270,6 +270,14 @@ export const integrationsApi = {
   },
 
   /**
+   * Обновить категории и комиссии Wildberries из API (ночной джоб — то же самое)
+   */
+  updateWildberriesCategories: async () => {
+    const response = await api.post('/wb-marketplace/update');
+    return response.data;
+  },
+
+  /**
    * Получить категории Яндекс.Маркета
    * @param {boolean} [opts.dbOnly] — только из БД, без вызова API (быстрая загрузка)
    */

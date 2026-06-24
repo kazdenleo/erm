@@ -17,7 +17,10 @@ import path from 'path';
 import repositoryFactory from '../config/repository-factory.js';
 import { calculateMinPrice } from './min-price-calculator.service.js';
 import { applyOzonV5ItemToCalculator } from './ozon-v5-item-calculator.js';
-import { extractWbWarehouseList } from '../utils/wbTariffs.js';
+import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js';
+import { extractWbWarehouseList, findWbTariffWarehouse } from '../utils/wbTariffs.js';
+import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
+import { resolveProductVolumeLiters } from '../utils/productVolume.js';
 
 // Временная функция для получения кэшированных данных WB
 function getWBCachedData() {
@@ -180,7 +183,7 @@ class PricesService {
 
   /** v5 по offer_id; при пустом ответе — product_id из v3 или синтетическая запись для applyOzonV5ItemToCalculator */
   async _resolveOzonV5PriceItem(offer_id, client_id, api_key) {
-    const oid = String(offer_id).trim();
+    const oid = normalizeMarketplaceSku(offer_id);
     if (!oid) return null;
 
     let items = await this._fetchOzonV5PriceItems({ offer_id: [oid] }, client_id, api_key);
@@ -955,11 +958,15 @@ class PricesService {
   }
 
   async _getProductIdByMarketplaceSku(marketplace, sku) {
-    if (!sku) return null;
+    const normalized = normalizeMarketplaceSku(sku);
+    if (!normalized) return null;
     const mp = this._mpDbMarketplace(marketplace);
     const r = await query(
-      `SELECT product_id FROM product_skus WHERE marketplace = $1 AND sku = $2 LIMIT 1`,
-      [mp, String(sku).trim()]
+      `SELECT product_id FROM product_skus
+       WHERE marketplace = $1
+         AND TRIM(TRAILING ';' FROM TRIM(sku)) = $2
+       LIMIT 1`,
+      [mp, normalized]
     );
     return r.rows[0]?.product_id ?? null;
   }
@@ -975,6 +982,55 @@ class PricesService {
       if (String(e.message || '').includes('does not exist')) return null;
       throw e;
     }
+  }
+
+  async _getBrandOzonPromotionPercent(brandId) {
+    if (brandId == null || brandId === '') return null;
+    try {
+      const r = await query(
+        `SELECT ozon_brand_promotion_percent, ozon_brand_promotion_enabled
+         FROM brands WHERE id = $1`,
+        [brandId]
+      );
+      const row = r.rows[0];
+      if (!row || row.ozon_brand_promotion_enabled !== true) return null;
+      return row.ozon_brand_promotion_percent ?? null;
+    } catch (e) {
+      if (
+        String(e.message || '').includes('ozon_brand_promotion_percent') ||
+        String(e.message || '').includes('ozon_brand_promotion_enabled')
+      ) {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  async _resolveBrandIdForProduct(productId, brandId = null) {
+    if (brandId != null && brandId !== '') return brandId;
+    if (productId == null) return null;
+    const r = await query(
+      `SELECT p.brand_id,
+              (SELECT b2.id FROM brands b2
+               WHERE LOWER(TRIM(b2.name)) = LOWER(TRIM(COALESCE(p.mp_ozon_brand, '')))
+               ORDER BY b2.id DESC
+               LIMIT 1) AS brand_id_from_mp_name
+       FROM products p
+       WHERE p.id = $1`,
+      [productId]
+    );
+    const row = r.rows[0];
+    return row?.brand_id ?? row?.brand_id_from_mp_name ?? null;
+  }
+
+  async _enrichOzonCalculatorBrandPromotion(calculator, { productId = null, brandId = null } = {}) {
+    if (!calculator || typeof calculator !== 'object') return calculator;
+
+    const bid = await this._resolveBrandIdForProduct(productId, brandId);
+    if (bid == null) return calculator;
+
+    const brandPercent = await this._getBrandOzonPromotionPercent(bid);
+    return applyOzonBrandPromotionFallback(calculator, brandPercent);
   }
 
   async _upsertMpCalculatorCache(productId, marketplace, calculator, source = 'api') {
@@ -1091,7 +1147,10 @@ class PricesService {
                 [oid]
               );
               for (const pr of pidsRes.rows) {
-                await this._upsertMpCalculatorCache(pr.product_id, 'ozon', built.calculator, 'batch_v5');
+                const calculator = await this._enrichOzonCalculatorBrandPromotion(built.calculator, {
+                  productId: pr.product_id,
+                });
+                await this._upsertMpCalculatorCache(pr.product_id, 'ozon', calculator, 'batch_v5');
                 updated++;
                 if (limit != null && updated >= limit) break;
               }
@@ -1240,15 +1299,20 @@ class PricesService {
   async getOzonPrices(offer_id, options = {}) {
     try {
       const source = options.source || 'live';
+      const normalizedOfferId = normalizeMarketplaceSku(offer_id);
+      if (!normalizedOfferId) {
+        return { found: false, error: 'Не указан артикул Ozon (offer_id)' };
+      }
 
       if (source === 'cache') {
-        const pid = await this._getProductIdByMarketplaceSku('ozon', offer_id);
+        const pid = await this._getProductIdByMarketplaceSku('ozon', normalizedOfferId);
         if (!pid) {
           return { found: false, error: 'Товар с таким Ozon offer_id не найден в каталоге' };
         }
         const cached = await this._getMpCalculatorCacheRow(pid, 'ozon');
         if (cached?.calculator) {
-          return { found: true, calculator: cached.calculator, fromCache: true };
+          const calculator = await this._enrichOzonCalculatorBrandPromotion(cached.calculator, { productId: pid });
+          return { found: true, calculator, fromCache: true };
         }
         return {
           found: false,
@@ -1265,11 +1329,11 @@ class PricesService {
         };
       }
 
-      console.log(`[Prices Service] Getting Ozon prices for offer_id: ${offer_id}`);
+      console.log(`[Prices Service] Getting Ozon prices for offer_id: ${normalizedOfferId}`);
 
       let item;
       try {
-        item = await this._resolveOzonV5PriceItem(offer_id, client_id, api_key);
+        item = await this._resolveOzonV5PriceItem(normalizedOfferId, client_id, api_key);
       } catch (apiErr) {
         console.error('[Prices Service] Ozon API error:', apiErr.message);
         return {
@@ -1281,12 +1345,16 @@ class PricesService {
       if (!item) {
         return {
           found: false,
-          error: `Товар «${offer_id}» не найден в кабинете Ozon. Проверьте артикул Ozon в карточке и что товар есть в этом кабинете.`,
+          error: `Товар «${normalizedOfferId}» не найден в кабинете Ozon. Проверьте артикул Ozon в карточке и что товар есть в этом кабинете.`,
         };
       }
-      const built = await applyOzonV5ItemToCalculator(item, offer_id, client_id, api_key);
+      const built = await applyOzonV5ItemToCalculator(item, normalizedOfferId, client_id, api_key);
       if (built.found && built.calculator) {
-        await this._tryUpsertMpCalculatorCacheFromOffer('ozon', offer_id, built.calculator, 'live_v5');
+        const pid = await this._getProductIdByMarketplaceSku('ozon', normalizedOfferId);
+        built.calculator = await this._enrichOzonCalculatorBrandPromotion(built.calculator, { productId: pid });
+        if (pid) {
+          await this._upsertMpCalculatorCache(pid, 'ozon', built.calculator, 'live_v5');
+        }
       }
       return built;
     } catch (error) {
@@ -1481,30 +1549,34 @@ class PricesService {
       }
       
       // Ищем склад для расчета логистики через маппинг основного склада
-      // Автоматически используем склад WB, сопоставленный с основным складом в warehouse_mappings
       let finalWbWarehouseName = null;
-      
+      let mainWarehouseWbName = null;
+
       console.log(`[Prices Service] ========== WB WAREHOUSE MAPPING SEARCH ==========`);
       console.log(`[Prices Service] Provided wbWarehouseName: "${wbWarehouseName || 'none'}"`);
-      
+
       try {
-        // Находим основной склад (main_warehouse_id IS NULL)
         const mainWarehouseResult = await query(
           `SELECT id FROM warehouses WHERE main_warehouse_id IS NULL AND type = 'warehouse' LIMIT 1`
         );
-        
+
         console.log(`[Prices Service] Main warehouse query result: ${mainWarehouseResult.rows.length} rows`);
-        
+
         const warehouseMappingsRepo = repositoryFactory.getRepository('warehouse_mappings');
         if (mainWarehouseResult.rows.length > 0) {
           const mainWarehouseId = mainWarehouseResult.rows[0].id;
           console.log(`[Prices Service] ✓ Found main warehouse ID: ${mainWarehouseId}`);
-          
-          // Находим маппинг для основного склада и WB маркетплейса
+
+          const whRow = await query('SELECT wb_warehouse_name FROM warehouses WHERE id = $1', [mainWarehouseId]);
+          mainWarehouseWbName =
+            whRow.rows[0]?.wb_warehouse_name != null && String(whRow.rows[0].wb_warehouse_name).trim() !== ''
+              ? String(whRow.rows[0].wb_warehouse_name).trim()
+              : null;
+
           console.log(`[Prices Service] Searching for warehouse mapping: warehouse_id=${mainWarehouseId}, marketplace='wb'`);
-          
+
           const mapping = await warehouseMappingsRepo.findByWarehouseAndMarketplace(mainWarehouseId, 'wb');
-          
+
           if (mapping && mapping.marketplace_warehouse_id) {
             finalWbWarehouseName = mapping.marketplace_warehouse_id;
             console.log(`[Prices Service] ✓✓✓ Found warehouse mapping for main warehouse: "${finalWbWarehouseName}"`);
@@ -1512,14 +1584,8 @@ class PricesService {
           } else {
             console.log(`[Prices Service] ✗ No warehouse mapping found for main warehouse ID ${mainWarehouseId}`);
             console.log(`[Prices Service] Mapping result:`, mapping);
-            // Пробуем взять имя склада WB из поля основного склада (warehouses.wb_warehouse_name)
-            const whRow = await query(
-              'SELECT wb_warehouse_name FROM warehouses WHERE id = $1',
-              [mainWarehouseId]
-            );
-            const fromWarehouse = whRow.rows[0]?.wb_warehouse_name;
-            if (fromWarehouse && String(fromWarehouse).trim()) {
-              finalWbWarehouseName = String(fromWarehouse).trim();
+            if (mainWarehouseWbName) {
+              finalWbWarehouseName = mainWarehouseWbName;
               console.log(`[Prices Service] ✓ Using wb_warehouse_name from main warehouse: "${finalWbWarehouseName}"`);
             }
             // Если привязка есть у другого склада — берём любой маппинг WB
@@ -1582,19 +1648,17 @@ class PricesService {
       }
 
       // Находим тарифы для конкретного склада
-      let selectedBoxTariffs = null;
+      let selectedBoxTariffs = findWbTariffWarehouse(warehouseList, finalWbWarehouseName);
 
-      // Убираем префикс "Маркетплейс: " если он есть
-      const normalizedName = finalWbWarehouseName.replace(/^Маркетплейс:\s*/i, '').trim();
-
-      // Ищем склад по имени (точное совпадение или регистронезависимое). Поле может быть warehouseName или geoName
-      selectedBoxTariffs = warehouseList.find(w => {
-        const wName = (w.warehouseName ?? w.geoName ?? '').toString().trim();
-        return wName === finalWbWarehouseName ||
-               wName === normalizedName ||
-               wName.toLowerCase() === finalWbWarehouseName.toLowerCase() ||
-               wName.toLowerCase() === normalizedName.toLowerCase();
-      });
+      if (!selectedBoxTariffs && mainWarehouseWbName && mainWarehouseWbName !== finalWbWarehouseName) {
+        selectedBoxTariffs = findWbTariffWarehouse(warehouseList, mainWarehouseWbName);
+        if (selectedBoxTariffs) {
+          logger.warn(
+            `[Prices Service] WB mapping "${finalWbWarehouseName}" not in tariffs; using main warehouse "${mainWarehouseWbName}"`
+          );
+          finalWbWarehouseName = mainWarehouseWbName;
+        }
+      }
 
       if (!selectedBoxTariffs) {
         const availableWarehouses = warehouseList.map(w => w.warehouseName ?? w.geoName).filter(Boolean).join(', ');
@@ -1625,7 +1689,7 @@ class PricesService {
         let productResult;
         if (productIdOpt != null && String(productIdOpt).trim() !== '') {
           productResult = await query(
-            `SELECT p.id, p.sku, p.volume, p.cost, p.price,
+            `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
                     ps_wb.sku as sku_wb
              FROM products p
              LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -1638,14 +1702,14 @@ class PricesService {
           const isNmId = /^\d+$/.test(offerTrim);
           productResult = await query(
             isNmId
-              ? `SELECT p.id, p.sku, p.volume, p.cost, p.price,
+              ? `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
                         ps_wb.sku as sku_wb
                  FROM products p
                  LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
                  WHERE ps_wb.sku = $1 OR p.sku = $1
                     OR TRIM(COALESCE(p.wb_draft::jsonb->>'nmId', p.wb_draft::jsonb->>'nmID', '')) = $1
                  LIMIT 1`
-              : `SELECT p.id, p.sku, p.volume, p.cost, p.price,
+              : `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
                         ps_wb.sku as sku_wb
                  FROM products p
                  LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -1659,9 +1723,9 @@ class PricesService {
           const row = productResult.rows[0];
           console.log(`[Prices Service] Found product: id=${row.id}, sku="${row.sku}", sku_wb="${row.sku_wb || 'N/A'}", cost=${row.cost}, price=${row.price}`);
           
-          if (row.volume) {
-            productVolume = parseFloat(row.volume);
-            console.log(`[Prices Service] Got product volume from database: ${productVolume} liters for ${offer_id}`);
+          productVolume = resolveProductVolumeLiters(row);
+          if (productVolume != null) {
+            console.log(`[Prices Service] Got product volume: ${productVolume} liters for ${offer_id}`);
           }
           
           // Получаем себестоимость (cost) - может быть число или null
@@ -2234,7 +2298,7 @@ class PricesService {
         acquiring_amount_rub: agencyAmount,
         processing_cost: processingCost,
         logistics_cost: logisticsCost,
-        volume_weight: productRow?.volume ? parseFloat(productRow.volume) : (length * width * height / 1e6),
+        volume_weight: resolveProductVolumeLiters(productRow),
         ymTariffs: {
           FEE: { name: 'Размещение товара на Маркете (комиссия)', percent: feePercent, amount: feeTariff?.amount ?? 0 },
           AGENCY_COMMISSION: { name: 'Приём платежа покупателя (эквайринг)', amount: Number(agencyTariff?.amount) || 0, valueType: agencyValueType, value: agencyValueNum },
@@ -2282,6 +2346,9 @@ class PricesService {
     };
     if (calc.brand_promotion_percent != null && !isNaN(Number(calc.brand_promotion_percent))) {
       out.brand_promotion_percent = Number(calc.brand_promotion_percent);
+    }
+    if (calc.brand_promotion_source) {
+      out.brand_promotion_source = String(calc.brand_promotion_source);
     }
     if (marketplace === 'ym' && calc.ymTariffs) out.ymTariffs = calc.ymTariffs;
     if (!out.commissions || typeof out.commissions !== 'object') return null;
@@ -2424,10 +2491,10 @@ class PricesService {
     }
 
     const mappings = await categoryMappingsRepo.findAll({ productId });
-    const skuOzon = product.sku_ozon || product.sku;
+    const skuOzon = normalizeMarketplaceSku(product.sku_ozon) || normalizeMarketplaceSku(product.sku);
     const skuWb =
-      resolveWbVendorOfferId(product) || resolveWbNmId(product) || product.sku_wb || product.sku;
-    const skuYm = product.sku_ym || product.sku;
+      resolveWbVendorOfferId(product) || resolveWbNmId(product) || normalizeMarketplaceSku(product.sku_wb) || normalizeMarketplaceSku(product.sku);
+    const skuYm = normalizeMarketplaceSku(product.sku_ym) || normalizeMarketplaceSku(product.sku);
     const wbMapping = mappings.find(m => m.marketplace === 'wb' || m.marketplace === 'wildberries');
     const ymMapping = mappings.find(m => m.marketplace === 'ym' || m.marketplace === 'yandex');
     const wbCategoryId = wbMapping?.category_id ?? null;
@@ -2453,8 +2520,12 @@ class PricesService {
         const ozonResult = await this.getOzonPrices(skuOzon, mpOpts);
         const data = ozonResult?.data ?? ozonResult;
         if (data?.found && data?.calculator) {
-          const price = calculateMinPrice(basePrice, data.calculator, 'ozon', minProfit, product);
-          if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, data.calculator);
+          const calculator = await this._enrichOzonCalculatorBrandPromotion(data.calculator, {
+            productId,
+            brandId: product.brand_id ?? product.brandId,
+          });
+          const price = calculateMinPrice(basePrice, calculator, 'ozon', minProfit, product);
+          if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, calculator);
         } else if (data?.error) {
           errors.ozon = data.error;
           logger.warn(`[Prices Service] recalc Ozon for product ${productId}:`, data.error);

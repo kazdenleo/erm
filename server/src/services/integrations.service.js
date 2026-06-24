@@ -161,6 +161,8 @@ class IntegrationsService {
           return anyForProfile.config;
         }
       }
+      const anyConfig = await this._findAnyMarketplaceConfig(type, { profileId });
+      if (anyConfig) return anyConfig;
       return {};
     } else {
       // Старое хранилище
@@ -3664,14 +3666,9 @@ class IntegrationsService {
    * Загрузить комиссии из API Wildberries
    * @private
    */
-  async _fetchWildberriesCommissionsFromAPI(locale = 'ru') {
-    const config = await this.getMarketplaceConfig('wildberries');
-    if (!config || !config.api_key) {
-      const err = new Error('API ключ Wildberries не настроен');
-      err.statusCode = 400;
-      throw err;
-    }
-    const apiKey = this._normalizeWbToken(config.api_key);
+  async _fetchWildberriesCommissionsFromAPI(locale = 'ru', scope = {}) {
+    const config = await this.getMarketplaceConfig('wildberries', scope);
+    const apiKey = this._normalizeWbToken(config?.api_key ?? config?.apiKey);
     if (!apiKey) {
       const err = new Error('API ключ Wildberries не настроен');
       err.statusCode = 400;
@@ -3699,21 +3696,23 @@ class IntegrationsService {
    * Обновить комиссии Wildberries (вызывается из планировщика)
    * Загружает комиссии из API и сохраняет в БД
    */
-  async updateWildberriesCommissions() {
+  async updateWildberriesCommissions(scope = {}) {
     try {
-      logger.info('[Integrations Service] Starting WB commissions update...');
+      logger.info('[Integrations Service] Starting WB commissions update...', {
+        profileId: scope.profileId ?? null,
+        organizationId: scope.organizationId ?? null,
+      });
       
-      const config = await this.getMarketplaceConfig('wildberries');
-      if (!config || !config.api_key) {
+      const config = await this.getMarketplaceConfig('wildberries', scope);
+      const apiKey = this._normalizeWbToken(config?.api_key ?? config?.apiKey);
+      if (!apiKey) {
         logger.warn('[Integrations Service] WB API key not configured, skipping commissions update');
         return { success: false, message: 'API ключ не настроен' };
       }
 
-      // Импортируем wbMarketplaceService для сохранения в БД
       const wbMarketplaceService = (await import('./wbMarketplace.service.js')).default;
 
-      // Загружаем комиссии из API (используем русскую локаль)
-      const commissionsData = await this._fetchWildberriesCommissionsFromAPI('ru');
+      const commissionsData = await this._fetchWildberriesCommissionsFromAPI('ru', scope);
       
       // Преобразуем данные в формат для сохранения в БД
       // API возвращает { report: [...] }, где каждый элемент имеет структуру:
@@ -3753,6 +3752,56 @@ class IntegrationsService {
       logger.error('[Integrations Service] Error updating WB commissions:', error);
       throw error;
     }
+  }
+
+  /**
+   * Найти любой конфиг маркетплейса с ключами (кабинет организации или integrations).
+   * Для ночных задач — без profileId; для UI — в рамках профиля пользователя.
+   * @private
+   */
+  async _findAnyMarketplaceConfig(type, { profileId = null } = {}) {
+    if (!this.usePostgreSQL) return null;
+    try {
+      let cabSql = `
+        SELECT mc.config
+        FROM marketplace_cabinets mc
+        INNER JOIN organizations o ON o.id = mc.organization_id
+        WHERE mc.marketplace_type = $1
+          AND COALESCE(mc.is_active, true) = true`;
+      const cabParams = [type];
+      if (profileId != null && profileId !== '') {
+        cabSql += ` AND o.profile_id = $2`;
+        cabParams.push(profileId);
+      }
+      cabSql += ` ORDER BY o.name ASC NULLS LAST, mc.sort_order ASC NULLS LAST, mc.id ASC`;
+      const cabResult = await query(cabSql, cabParams);
+      for (const row of cabResult.rows || []) {
+        const parsed =
+          this._safeParseJsonMaybe(row.config) ??
+          (row.config && typeof row.config === 'object' ? row.config : null);
+        if (parsed && this._hasCredentialsForBalance(type, parsed)) return parsed;
+      }
+
+      let intSql = `
+        SELECT config FROM integrations
+        WHERE code = $1 AND type = 'marketplace' AND is_active = true`;
+      const intParams = [type];
+      if (profileId != null && profileId !== '') {
+        intSql += ` AND profile_id = $2`;
+        intParams.push(profileId);
+      }
+      intSql += ` ORDER BY updated_at DESC NULLS LAST, id DESC`;
+      const intResult = await query(intSql, intParams);
+      for (const row of intResult.rows || []) {
+        const parsed =
+          this._safeParseJsonMaybe(row.config) ??
+          (row.config && typeof row.config === 'object' ? row.config : null);
+        if (parsed && this._hasCredentialsForBalance(type, parsed)) return parsed;
+      }
+    } catch (e) {
+      logger.warn('[Integrations Service] _findAnyMarketplaceConfig:', e?.message || e);
+    }
+    return null;
   }
 
   /** Есть ли в объекте конфига учётные данные для запроса баланса / API. */

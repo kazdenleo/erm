@@ -371,25 +371,32 @@ class WBMarketplaceService {
 
   /**
    * Обновить категории и комиссии WB
+   * @param {{ profileId?: number|string|null, organizationId?: number|string|null }} [scope]
    */
-  async updateCategoriesAndCommissions() {
+  async updateCategoriesAndCommissions(scope = {}) {
     try {
-      logger.info('[WB Marketplace] Starting update of categories and commissions...');
+      logger.info('[WB Marketplace] Starting update of categories and commissions...', {
+        profileId: scope.profileId ?? null,
+        organizationId: scope.organizationId ?? null,
+      });
       
-      // Получаем конфигурацию WB
-      const wbConfig = await integrationsService.getMarketplaceConfig('wildberries');
-      if (!wbConfig || !wbConfig.api_key) {
-        logger.warn('[WB Marketplace] WB API key not configured, skipping update');
-        return { success: false, skipped: true, message: 'WB API key not configured' };
+      const wbConfig = await integrationsService.getMarketplaceConfig('wildberries', scope);
+      const apiKey = integrationsService._normalizeWbToken(wbConfig?.api_key ?? wbConfig?.apiKey);
+      if (!apiKey) {
+        logger.warn('[WB Marketplace] WB API key not configured, skipping update', scope);
+        return {
+          success: false,
+          skipped: true,
+          message: 'WB API key not configured',
+        };
       }
       
-      // Загружаем и сохраняем категории
-      const rawCategories = await this.loadCategoriesFromAPI(wbConfig.api_key);
+      const rawCategories = await this.loadCategoriesFromAPI(apiKey);
       const transformedCategories = this.transformCategories(rawCategories);
       const categoriesResult = await this.saveCategories(transformedCategories);
       
       // Загружаем и сохраняем комиссии
-      const commissions = await this.loadCommissionsFromAPI(wbConfig.api_key);
+      const commissions = await this.loadCommissionsFromAPI(apiKey);
       const commissionsResult = await this.saveCommissions(commissions);
       
       logger.info('[WB Marketplace] Update completed successfully', {

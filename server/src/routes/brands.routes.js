@@ -10,6 +10,8 @@ import { wrapAsync } from '../middleware/errorHandler.js';
 const router = express.Router();
 
 router.get('/', wrapAsync(brandsController.getAll));
+router.get('/:id/mp-brand-candidates', wrapAsync(brandsController.getMpBrandCandidates));
+router.post('/:id/sync-mp-brands', wrapAsync(brandsController.syncMpBrands));
 router.get('/:id', wrapAsync(brandsController.getById));
 router.post('/', wrapAsync(brandsController.create));
 router.put('/:id', wrapAsync(brandsController.update));

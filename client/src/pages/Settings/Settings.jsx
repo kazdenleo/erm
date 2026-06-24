@@ -38,6 +38,7 @@ export function Settings() {
     fbo_enabled: false,
     fbo_deduction_warehouse_id: '',
     require_reserved_stock_for_assembly: false,
+    auto_send_to_assembly_on_reserve: false,
     allow_manual_warehouse_stock_edit: false,
     allow_stock_history_reset: false,
     procurement_status_enabled: true,
@@ -100,6 +101,7 @@ export function Settings() {
         fbo_enabled: form.fbo_enabled,
         fbo_deduction_warehouse_id: form.fbo_enabled ? form.fbo_deduction_warehouse_id || null : null,
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
+        auto_send_to_assembly_on_reserve: form.auto_send_to_assembly_on_reserve,
         allow_manual_warehouse_stock_edit: form.allow_manual_warehouse_stock_edit,
         allow_stock_history_reset: form.allow_stock_history_reset,
         procurement_status_enabled: form.procurement_status_enabled,
@@ -397,6 +399,23 @@ export function Settings() {
                   <strong>Производство</strong>
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
                     Если выключено — раздел «Производство» (сборка комплектов из комплектующих) скрыт в меню и недоступен по API.
+                  </span>
+                </span>
+              </label>
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.auto_send_to_assembly_on_reserve === true}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, auto_send_to_assembly_on_reserve: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Автоотправка на сборку при резерве</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Если включено — заказ в статусе «Новый» или «В закупке» автоматически переводится «На сборку»,
+                    когда под него полностью зарезервирован товар с фактического остатка на складе
+                    (как при нажатии «Отправить на сборку»).
                   </span>
                 </span>
               </label>

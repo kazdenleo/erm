@@ -28,3 +28,25 @@ export function extractWbWarehouseList(boxTariffsData) {
 export function hasWbTariffsWarehouseList(boxTariffsData) {
   return extractWbWarehouseList(boxTariffsData).length > 0;
 }
+
+export function wbTariffWarehouseLabel(row) {
+  return (row?.warehouseName ?? row?.geoName ?? '').toString().trim();
+}
+
+/** Поиск строки тарифа WB по имени склада (с учётом префикса «Маркетплейс:»). */
+export function findWbTariffWarehouse(warehouseList, requestedName) {
+  if (!requestedName || !Array.isArray(warehouseList) || !warehouseList.length) return null;
+  const req = String(requestedName).trim();
+  const normalizedName = req.replace(/^Маркетплейс:\s*/i, '').trim();
+  return (
+    warehouseList.find((w) => {
+      const wName = wbTariffWarehouseLabel(w);
+      return (
+        wName === req ||
+        wName === normalizedName ||
+        wName.toLowerCase() === req.toLowerCase() ||
+        wName.toLowerCase() === normalizedName.toLowerCase()
+      );
+    }) || null
+  );
+}

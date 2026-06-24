@@ -6,6 +6,8 @@
 import React from 'react';
 import { Modal } from '../common/Modal/Modal';
 import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile } from '../../utils/organizationTaxRates.js';
+import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
+import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters } from '../../utils/productVolume.js';
 import './PriceDetailsModal.css';
 
 export function PriceDetailsModal({
@@ -64,8 +66,15 @@ export function PriceDetailsModal({
     );
   }
 
-  // Проверяем, есть ли ошибка в calculatorData
-  if (calculatorData.error) {
+  const resolvedCalculatorData = enrichCalculatorVolumeFromProduct(
+    marketplace === 'ozon'
+      ? enrichOzonCalculatorFromProduct(calculatorData, product)
+      : calculatorData,
+    product
+  );
+
+  // Проверяем, есть ли ошибка в resolvedCalculatorData
+  if (resolvedCalculatorData.error) {
     return (
       <Modal
         isOpen={isOpen}
@@ -75,7 +84,7 @@ export function PriceDetailsModal({
       >
         <div className="price-details" style={{ padding: '20px', textAlign: 'center' }}>
           <div style={{ color: '#ef4444', fontSize: '18px', marginBottom: '20px' }}>
-            ❌ {calculatorData.error}
+            ❌ {resolvedCalculatorData.error}
           </div>
           <p style={{ color: '#6b7280', marginTop: '20px' }}>
             Пожалуйста, проверьте настройки склада и попробуйте снова.
@@ -90,7 +99,7 @@ export function PriceDetailsModal({
   }
 
   // Извлекаем данные из калькулятора. Расчёт по схеме FBS: для WB — только комиссия FBS (Маркетплейс).
-  const commissions = calculatorData.commissions || {};
+  const commissions = resolvedCalculatorData.commissions || {};
   const emptyCommission = { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 };
   
   // ВАЖНО: Для WB используем ТОЛЬКО FBS комиссию (kgvpMarketplace), НЕ FBO!
@@ -135,27 +144,27 @@ export function PriceDetailsModal({
     console.log(`[PriceDetailsModal] WB acquiring percent from settings: ${acquiring}%`);
   } else {
     // Для других маркетплейсов используем значение из API
-    acquiring = Number(calculatorData.acquiring) || 0;
+    acquiring = Number(resolvedCalculatorData.acquiring) || 0;
   }
   // Обработка заказа: используем значение из API
   console.log(`[PriceDetailsModal] ========== PROCESSING COST DEBUG ==========`);
-  console.log(`[PriceDetailsModal] Full calculatorData:`, JSON.stringify(calculatorData, null, 2));
-  console.log(`[PriceDetailsModal] calculatorData.processing_cost:`, calculatorData.processing_cost);
-  console.log(`[PriceDetailsModal] calculatorData.processing_cost type:`, typeof calculatorData.processing_cost);
-  console.log(`[PriceDetailsModal] calculatorData.commissions:`, calculatorData.commissions);
-  console.log(`[PriceDetailsModal] calculatorData.commissions.FBS:`, calculatorData.commissions?.FBS);
-  console.log(`[PriceDetailsModal] calculatorData.commissions.FBS?.first_mile_amount:`, calculatorData.commissions?.FBS?.first_mile_amount);
+  console.log(`[PriceDetailsModal] Full resolvedCalculatorData:`, JSON.stringify(resolvedCalculatorData, null, 2));
+  console.log(`[PriceDetailsModal] resolvedCalculatorData.processing_cost:`, resolvedCalculatorData.processing_cost);
+  console.log(`[PriceDetailsModal] resolvedCalculatorData.processing_cost type:`, typeof resolvedCalculatorData.processing_cost);
+  console.log(`[PriceDetailsModal] resolvedCalculatorData.commissions:`, resolvedCalculatorData.commissions);
+  console.log(`[PriceDetailsModal] resolvedCalculatorData.commissions.FBS:`, resolvedCalculatorData.commissions?.FBS);
+  console.log(`[PriceDetailsModal] resolvedCalculatorData.commissions.FBS?.first_mile_amount:`, resolvedCalculatorData.commissions?.FBS?.first_mile_amount);
   
   // Обработка заказа: Ozon — из API; YM — SORTING; WB — нет
   let processingCost = 0;
   if (marketplace === 'ozon') {
-    processingCost = calculatorData.processing_cost !== undefined && calculatorData.processing_cost !== null
-      ? Number(calculatorData.processing_cost)
+    processingCost = resolvedCalculatorData.processing_cost !== undefined && resolvedCalculatorData.processing_cost !== null
+      ? Number(resolvedCalculatorData.processing_cost)
       : 0;
     console.log(`[PriceDetailsModal] Ozon processing cost (from API): ${processingCost}`);
   } else if (marketplace === 'ym') {
-    processingCost = calculatorData.processing_cost !== undefined && calculatorData.processing_cost !== null
-      ? Number(calculatorData.processing_cost)
+    processingCost = resolvedCalculatorData.processing_cost !== undefined && resolvedCalculatorData.processing_cost !== null
+      ? Number(resolvedCalculatorData.processing_cost)
       : 0;
     console.log(`[PriceDetailsModal] YM processing cost (SORTING): ${processingCost}`);
   }
@@ -163,22 +172,20 @@ export function PriceDetailsModal({
   
   // Логистика: пересчитываем для WB с учетом округления, для других маркетплейсов используем значение из API
   let logisticsCost = 0;
-  if (marketplace === 'wb' && calculatorData.logistics_base !== undefined && calculatorData.logistics_liter !== undefined) {
+  if (marketplace === 'wb' && resolvedCalculatorData.logistics_base !== undefined && resolvedCalculatorData.logistics_liter !== undefined) {
     // Для WB пересчитываем логистику с учетом округления (volume - 1) вверх
-    const volume = calculatorData.volume_weight !== undefined && calculatorData.volume_weight !== null 
-      ? calculatorData.volume_weight 
-      : (Number(product.volume) || 0);
+    const volume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product) || 0;
     
     if (volume && volume > 1) {
       const additionalLiters = Math.ceil(volume - 1);
-      logisticsCost = calculatorData.logistics_base + calculatorData.logistics_liter * additionalLiters;
+      logisticsCost = resolvedCalculatorData.logistics_base + resolvedCalculatorData.logistics_liter * additionalLiters;
     } else {
-      logisticsCost = calculatorData.logistics_base;
+      logisticsCost = resolvedCalculatorData.logistics_base;
     }
   } else {
     // Для других маркетплейсов используем значение из API
-    logisticsCost = calculatorData.logistics_cost !== undefined && calculatorData.logistics_cost !== null
-      ? Number(calculatorData.logistics_cost)
+    logisticsCost = resolvedCalculatorData.logistics_cost !== undefined && resolvedCalculatorData.logistics_cost !== null
+      ? Number(resolvedCalculatorData.logistics_cost)
       : 0;
     // Для Ozon: округляем логистику до целого числа
     if (marketplace === 'ozon' && logisticsCost > 0) {
@@ -192,10 +199,10 @@ export function PriceDetailsModal({
   let deliveryToCustomer = (commission.delivery_amount !== undefined && commission.delivery_amount !== null)
     ? Number(commission.delivery_amount)
     : 0;
-  if (marketplace === 'ym' && calculatorData.ymTariffs) {
-    const d = calculatorData.ymTariffs.DELIVERY_TO_CUSTOMER;
-    const cr = calculatorData.ymTariffs.CROSSREGIONAL_DELIVERY;
-    const ex = calculatorData.ymTariffs.EXPRESS_DELIVERY;
+  if (marketplace === 'ym' && resolvedCalculatorData.ymTariffs) {
+    const d = resolvedCalculatorData.ymTariffs.DELIVERY_TO_CUSTOMER;
+    const cr = resolvedCalculatorData.ymTariffs.CROSSREGIONAL_DELIVERY;
+    const ex = resolvedCalculatorData.ymTariffs.EXPRESS_DELIVERY;
     const atPrice = (t) => {
       if (!t) return 0;
       const vt = (t.valueType || 'absolute').toLowerCase();
@@ -260,17 +267,12 @@ export function PriceDetailsModal({
     returnRate: returnRate
   });
   
-  // Комиссия за продвижение бренда — только из API/калькулятора
-  const brandPromotionPercent = (calculatorData.brand_promotion_percent != null && !isNaN(Number(calculatorData.brand_promotion_percent)))
-    ? Number(calculatorData.brand_promotion_percent) / 100
+  // Комиссия за продвижение бренда — из API или настроек бренда
+  const brandPromotionPercent = (resolvedCalculatorData.brand_promotion_percent != null && !isNaN(Number(resolvedCalculatorData.brand_promotion_percent)))
+    ? Number(resolvedCalculatorData.brand_promotion_percent) / 100
     : 0;
   
-  // Объем товара (для отображения)
-  const productVolume = marketplace === 'ozon' 
-    ? (Number(product.volume) || Number(product.volume_weight) || Number(calculatorData.volume_weight) || 0)
-    : marketplace === 'wb'
-    ? (Number(calculatorData.volume_weight) || Number(product.volume) || 0)
-    : 0;
+  const productVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product) || 0;
   
   // Обработка отправления (fbs_first_mile_max_amount) - отдельная статья расходов
   const shipmentProcessingCost = marketplace === 'ozon' 
@@ -284,8 +286,8 @@ export function PriceDetailsModal({
     processingCost: processingCost, // Обработка отправления
     shipmentProcessingCost: shipmentProcessingCost, // Обработка отправления из API
     productVolume: productVolume, // Объем (для отображения)
-    calculatorLogisticsCost: calculatorData.logistics_cost,
-    calculatorData: calculatorData
+    calculatorLogisticsCost: resolvedCalculatorData.logistics_cost,
+    resolvedCalculatorData: resolvedCalculatorData
   });
   
   // Проценты (преобразуем в числа)
@@ -327,9 +329,9 @@ export function PriceDetailsModal({
   // absolute = фиксированная сумма в ₽, relative = процент от цены
   let ymAgencyDisplay = 0;
   let ymPaymentTransferDisplay = 0;
-  if (marketplace === 'ym' && calculatorData.ymTariffs) {
-    const agency = calculatorData.ymTariffs.AGENCY_COMMISSION;
-    const payment = calculatorData.ymTariffs.PAYMENT_TRANSFER;
+  if (marketplace === 'ym' && resolvedCalculatorData.ymTariffs) {
+    const agency = resolvedCalculatorData.ymTariffs.AGENCY_COMMISSION;
+    const payment = resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER;
     const agencyValueType = (agency?.valueType || 'absolute').toLowerCase();
     const agencyValue = Number(agency?.value) || Number(agency?.amount) || 0;
     const paymentValueType = (payment?.valueType || 'absolute').toLowerCase();
@@ -404,9 +406,9 @@ export function PriceDetailsModal({
     return `= ${base} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (прибыль до налога: цена − расходы − НДС)`;
   })();
 
-  const isEstimatedTariffs = marketplace === 'wb' && calculatorData._estimatedTariffs;
+  const isEstimatedTariffs = marketplace === 'wb' && resolvedCalculatorData._estimatedTariffs;
 
-  const headerVolume = Number(product.volume) || Number(calculatorData?.volume_weight) || 0;
+  const headerVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product) || 0;
 
   return (
     <Modal
@@ -488,22 +490,19 @@ export function PriceDetailsModal({
               <span className="price-breakdown-value">
                 {logisticsCost.toFixed(2)} ₽
                 <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  {marketplace === 'wb' && calculatorData.logistics_base !== undefined && calculatorData.logistics_liter !== undefined ? (
+                  {marketplace === 'wb' && resolvedCalculatorData.logistics_base !== undefined && resolvedCalculatorData.logistics_liter !== undefined ? (
                     (() => {
-                      // Используем volume_weight из calculatorData, если есть, иначе productVolume
-                      const volume = calculatorData.volume_weight !== undefined && calculatorData.volume_weight !== null 
-                        ? calculatorData.volume_weight 
-                        : productVolume;
+                      const volume = productVolume;
                       
                       if (!volume || volume <= 1) {
-                        return `= ${calculatorData.logistics_base.toFixed(2)} ₽ (базовый тариф за первый литр)`;
+                        return `= ${resolvedCalculatorData.logistics_base.toFixed(2)} ₽ (базовый тариф за первый литр)`;
                       } else {
                         // Округляем (volume - 1) вверх
                         const additionalLiters = Math.ceil(volume - 1);
-                        const additionalCost = calculatorData.logistics_liter * additionalLiters;
+                        const additionalCost = resolvedCalculatorData.logistics_liter * additionalLiters;
                         // Пересчитываем logisticsCost с учетом округления
-                        const recalculatedLogisticsCost = calculatorData.logistics_base + additionalCost;
-                        return `= ${calculatorData.logistics_base.toFixed(2)} ₽ + ${calculatorData.logistics_liter.toFixed(2)} ₽ × ${additionalLiters} л = ${calculatorData.logistics_base.toFixed(2)} + ${additionalCost.toFixed(2)} = ${recalculatedLogisticsCost.toFixed(2)} ₽`;
+                        const recalculatedLogisticsCost = resolvedCalculatorData.logistics_base + additionalCost;
+                        return `= ${resolvedCalculatorData.logistics_base.toFixed(2)} ₽ + ${resolvedCalculatorData.logistics_liter.toFixed(2)} ₽ × ${additionalLiters} л = ${resolvedCalculatorData.logistics_base.toFixed(2)} + ${additionalCost.toFixed(2)} = ${recalculatedLogisticsCost.toFixed(2)} ₽`;
                       }
                     })()
                   ) : marketplace === 'ozon' ? (
@@ -590,15 +589,15 @@ export function PriceDetailsModal({
               </span>
             </div>
             
-            {marketplace === 'ym' && (acquiringAmount > 0 || calculatorData.acquiring != null || (calculatorData.ymTariffs && (calculatorData.ymTariffs.AGENCY_COMMISSION || calculatorData.ymTariffs.PAYMENT_TRANSFER))) && (
+            {marketplace === 'ym' && (acquiringAmount > 0 || resolvedCalculatorData.acquiring != null || (resolvedCalculatorData.ymTariffs && (resolvedCalculatorData.ymTariffs.AGENCY_COMMISSION || resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER))) && (
               <>
                 <div className="price-breakdown-item">
                   <span className="price-breakdown-label">Приём платежа покупателя (AGENCY_COMMISSION):</span>
                   <span className="price-breakdown-value negative">
                     -{ymAgencyDisplay.toFixed(2)} ₽
                     <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                      {calculatorData.ymTariffs?.AGENCY_COMMISSION?.valueType === 'relative'
-                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(calculatorData.ymTariffs.AGENCY_COMMISSION?.value) || 0).toFixed(2)}% = ${ymAgencyDisplay.toFixed(2)} ₽ (тариф YM, % от цены)`
+                      {resolvedCalculatorData.ymTariffs?.AGENCY_COMMISSION?.valueType === 'relative'
+                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.AGENCY_COMMISSION?.value) || 0).toFixed(2)}% = ${ymAgencyDisplay.toFixed(2)} ₽ (тариф YM, % от цены)`
                         : `= ${ymAgencyDisplay.toFixed(2)} ₽ (тариф YM, фиксированная сумма)`}
                     </div>
                   </span>
@@ -608,15 +607,15 @@ export function PriceDetailsModal({
                   <span className="price-breakdown-value negative">
                     -{ymPaymentTransferDisplay.toFixed(2)} ₽
                     <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                      {calculatorData.ymTariffs?.PAYMENT_TRANSFER?.valueType === 'relative'
-                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(calculatorData.ymTariffs.PAYMENT_TRANSFER?.value) || 0).toFixed(2)}% = ${ymPaymentTransferDisplay.toFixed(2)} ₽ (тариф YM, % от цены)`
+                      {resolvedCalculatorData.ymTariffs?.PAYMENT_TRANSFER?.valueType === 'relative'
+                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.value) || 0).toFixed(2)}% = ${ymPaymentTransferDisplay.toFixed(2)} ₽ (тариф YM, % от цены)`
                         : `= ${ymPaymentTransferDisplay.toFixed(2)} ₽ (тариф YM, фиксированная сумма)`}
                     </div>
                   </span>
                 </div>
               </>
             )}
-            {marketplace !== 'ym' && (acquiringAmount > 0 || (marketplace === 'wb' && (acquiring > 0 || wbAcquiringPercent != null)) || (marketplace === 'ozon' && calculatorData.acquiring != null)) && (
+            {marketplace !== 'ym' && (acquiringAmount > 0 || (marketplace === 'wb' && (acquiring > 0 || wbAcquiringPercent != null)) || (marketplace === 'ozon' && resolvedCalculatorData.acquiring != null)) && (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">
                   Эквайринг ({acquiring != null ? Number(acquiring).toFixed(2) : 0}%):
@@ -653,7 +652,8 @@ export function PriceDetailsModal({
             {brandPromotionAmount > 0 && (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">
-                  Продвижение бренда ({(brandPromotionPercent * 100).toFixed(2)}%):
+                  Продвижение бренда ({(brandPromotionPercent * 100).toFixed(2)}%)
+                  {resolvedCalculatorData.brand_promotion_source === 'brand' ? ' — из настроек бренда' : ''}:
                 </span>
                 <span className="price-breakdown-value negative">
                   -{brandPromotionAmount.toFixed(2)} ₽
@@ -753,20 +753,20 @@ export function PriceDetailsModal({
           </div>
         </div>
 
-        {calculatorData.categoryCommission && (
+        {resolvedCalculatorData.categoryCommission && (
           <div className="price-details-section">
             <h3 className="price-details-subtitle">📋 Информация о категории</h3>
             <div className="price-details-grid">
               <div className="price-details-item">
                 <span className="price-details-label">Категория:</span>
                 <span className="price-details-value">
-                  {calculatorData.categoryCommission.subjectName || 'Не указана'}
+                  {resolvedCalculatorData.categoryCommission.subjectName || 'Не указана'}
                 </span>
               </div>
               <div className="price-details-item">
                 <span className="price-details-label">ID категории:</span>
                 <span className="price-details-value">
-                  {calculatorData.categoryCommission.subjectID || '—'}
+                  {resolvedCalculatorData.categoryCommission.subjectID || '—'}
                 </span>
               </div>
             </div>

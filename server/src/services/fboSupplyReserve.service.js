@@ -366,10 +366,12 @@ async function applyFboReserveDelta({
 }) {
   const d = Math.floor(Number(delta) || 0);
   if (d === 0) return;
+  const wid = normalizeWarehouseId(warehouseId);
   const meta = {
-    warehouse_id: warehouseId,
+    warehouse_id: wid ?? warehouseId,
     fbo_supply_id: String(supplyId),
     fbo_supply_item_id: String(supplyItemId),
+    ...(wid != null ? { strict_warehouse: true } : {}),
     ...extraMeta,
   };
   if (d > 0) {
@@ -495,10 +497,15 @@ function componentPoolsDecrement(componentPools, compId, qty) {
   componentPools.set(pid, Math.max(0, (componentPools.get(pid) || 0) - dec));
 }
 
+function logFboReserveFailure(context, err) {
+  const msg = err?.message || String(err);
+  console.warn(`[FBO reserve] ${context}: ${msg}`);
+}
+
 async function applyKitFboReserve(
   kitProductId,
   kitsWanted,
-  { supplyId, supplyItemId, stockWarehouseIds, deductionWarehouseId, label }
+  { supplyId, supplyItemId, stockWarehouseIds, deductionWarehouseId, label, applyMeta = {} }
 ) {
   const kitId = Number(kitProductId);
   const wanted = Math.max(0, parseInt(kitsWanted, 10) || 0);
@@ -540,6 +547,7 @@ async function applyKitFboReserve(
           kit_reserve_scope: 'whole',
           kit_reserve_from_whole: add,
           kit_reserve_from_components: 0,
+          ...applyMeta,
         },
       });
       needWhole -= add;
@@ -572,6 +580,7 @@ async function applyKitFboReserve(
               kit_reserve_from_whole: 0,
               kit_reserve_from_components: fromComp,
               kit_units: fromComp,
+              ...applyMeta,
             },
           });
           needQty -= add;
@@ -931,10 +940,15 @@ class FboSupplyReserveService {
   /**
    * Перераспределить резерв по всем активным строкам товара (FIFO по ready_at).
    */
-  async rebalanceReservesForProduct(productId, { profileId } = {}) {
+  async rebalanceReservesForProduct(productId, { profileId, skipMarketplaceSync = false } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return;
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
+
+    const applyMeta =
+      skipMarketplaceSync === true
+        ? { skip_marketplace_sync: true, fbo_bulk_rebalance: true }
+        : {};
 
     // Без runWithProductStockLock: applyChange уже берёт pg_advisory_xact_lock по product_id.
     // Сессионная advisory-блокировка здесь вешала бы applyChange на другом соединении.
@@ -958,7 +972,8 @@ class FboSupplyReserveService {
           supplyItemId: itemId,
           delta: -net,
           reason: `Пересчёт резерва FBO (${label})`,
-        }).catch(() => {});
+          extraMeta: applyMeta,
+        }).catch((err) => logFboReserveFailure(`unreserve item ${itemId}`, err));
       }
     }
 
@@ -988,7 +1003,8 @@ class FboSupplyReserveService {
           stockWarehouseIds,
           deductionWarehouseId: row.deduction_warehouse_id,
           label,
-        }).catch(() => {});
+          applyMeta,
+        }).catch((err) => logFboReserveFailure(`kit reserve item ${itemId}`, err));
       }
     } else {
       const poolByWh = new Map();
@@ -1020,11 +1036,12 @@ class FboSupplyReserveService {
               supplyItemId: itemId,
               delta: add,
               reason: `Резерв FBO (${label})`,
+              extraMeta: applyMeta,
             });
             poolByWh.set(warehouseId, pool - add);
             need -= add;
-          } catch {
-            /* недостаточно доступного остатка */
+          } catch (err) {
+            logFboReserveFailure(`product ${pid} item ${itemId} wh ${warehouseId}`, err);
           }
         }
       }
@@ -1050,7 +1067,8 @@ class FboSupplyReserveService {
           supplyItemId: or.item_id,
           delta: -net,
           reason: 'Снятие резерва FBO (строка неактивна)',
-        }).catch(() => {});
+          extraMeta: applyMeta,
+        }).catch((err) => logFboReserveFailure(`orphan item ${or.item_id}`, err));
       }
     }
   }
@@ -1068,47 +1086,57 @@ class FboSupplyReserveService {
   }
 
   /** Пересчёт резерва по всем товарам активных поставок аккаунта. */
-  async rebalanceReservesForProfile(profileId) {
+  async rebalanceReservesForProfile(profileId, { skipMarketplaceSync = true } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return { products: 0, movements: 0 };
     const pid = normalizeProfileId(profileId);
     if (pid == null) return { products: 0, movements: 0 };
 
-    const r = await query(
-      `SELECT DISTINCT si.product_id
-       FROM fbo_supply_items si
-       INNER JOIN fbo_supplies s ON s.id = si.fbo_supply_id
-       WHERE s.profile_id = $1
-         AND s.deduction_warehouse_id IS NOT NULL
-         AND COALESCE(s.deduct_stock, false) = true
-         AND s.status = ANY($2::text[])
-         AND si.product_id IS NOT NULL
-       ORDER BY si.product_id`,
-      [pid, FBO_RESERVE_ACTIVE_STATUSES]
-    );
-    const productIds = (r.rows || [])
-      .map((row) => Number(row.product_id))
-      .filter((id) => Number.isFinite(id) && id > 0);
-
-    const movBeforeR = await query(
-      `SELECT COUNT(*)::int AS cnt FROM stock_movements WHERE meta ? 'fbo_supply_item_id'`
-    );
-    const movBefore = Number(movBeforeR.rows[0]?.cnt) || 0;
-
-    let done = 0;
-    for (const productId of productIds) {
-      await this.rebalanceReservesForProduct(productId, { profileId: pid });
-      done += 1;
-      if (done % 25 === 0 || done === productIds.length) {
-        console.log(`[FBO rebalance] ${done}/${productIds.length} товаров`);
-      }
+    const lockR = await query(`SELECT pg_try_advisory_lock($1::bigint) AS ok`, [900_000_000 + pid]);
+    if (lockR.rows?.[0]?.ok !== true) {
+      console.warn(`[FBO rebalance] profile ${pid}: пересчёт уже выполняется, пропуск`);
+      return { products: 0, movements: 0, skipped: true };
     }
 
-    const movAfterR = await query(
-      `SELECT COUNT(*)::int AS cnt FROM stock_movements WHERE meta ? 'fbo_supply_item_id'`
-    );
-    const movAfter = Number(movAfterR.rows[0]?.cnt) || 0;
+    try {
+      const r = await query(
+        `SELECT DISTINCT si.product_id
+         FROM fbo_supply_items si
+         INNER JOIN fbo_supplies s ON s.id = si.fbo_supply_id
+         WHERE s.profile_id = $1
+           AND s.deduction_warehouse_id IS NOT NULL
+           AND COALESCE(s.deduct_stock, false) = true
+           AND s.status = ANY($2::text[])
+           AND si.product_id IS NOT NULL
+         ORDER BY si.product_id`,
+        [pid, FBO_RESERVE_ACTIVE_STATUSES]
+      );
+      const productIds = (r.rows || [])
+        .map((row) => Number(row.product_id))
+        .filter((id) => Number.isFinite(id) && id > 0);
 
-    return { products: productIds.length, movements: movAfter - movBefore };
+      const movBeforeR = await query(
+        `SELECT COUNT(*)::int AS cnt FROM stock_movements WHERE meta ? 'fbo_supply_item_id'`
+      );
+      const movBefore = Number(movBeforeR.rows[0]?.cnt) || 0;
+
+      let done = 0;
+      for (const productId of productIds) {
+        await this.rebalanceReservesForProduct(productId, { profileId: pid, skipMarketplaceSync });
+        done += 1;
+        if (done % 25 === 0 || done === productIds.length) {
+          console.log(`[FBO rebalance] ${done}/${productIds.length} товаров`);
+        }
+      }
+
+      const movAfterR = await query(
+        `SELECT COUNT(*)::int AS cnt FROM stock_movements WHERE meta ? 'fbo_supply_item_id'`
+      );
+      const movAfter = Number(movAfterR.rows[0]?.cnt) || 0;
+
+      return { products: productIds.length, movements: movAfter - movBefore };
+    } finally {
+      await query(`SELECT pg_advisory_unlock($1::bigint)`, [900_000_000 + pid]).catch(() => {});
+    }
   }
 
   async releaseReservesForSupply(supplyId, { profileId } = {}) {

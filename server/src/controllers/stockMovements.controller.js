@@ -145,7 +145,11 @@ class StockMovementsController {
       });
 
       const orphanQty = Math.floor(Number(summary.orphanJournalReserve) || 0);
-      if (orphanQty > 0) {
+      const ordersReservedQty = Math.floor(Number(summary.ordersReservedQty) || 0);
+      const fboReservedQty = Math.floor(Number(summary.fboReservedQty) || 0);
+      const hasAttributedOrders = rows.length > 0 || fboSupplies.length > 0;
+      // Не снимаем «лишний» резерв автоматически, если есть заказы/FBO — иначе ломается нетто в журнале.
+      if (orphanQty > 0 && !hasAttributedOrders) {
         try {
           await stockMovementsService.releaseUnattributedJournalReserve(id, {
             profileId: tid,

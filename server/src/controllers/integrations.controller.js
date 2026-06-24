@@ -396,7 +396,13 @@ class IntegrationsController {
    */
   async updateWildberriesCommissions(req, res, next) {
     try {
-      const result = await integrationsService.updateWildberriesCommissions();
+      const tid = tenantListProfileId(req);
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId = orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const scope = {};
+      if (tid !== TENANT_LIST_EMPTY && tid != null && tid !== '') scope.profileId = tid;
+      if (organizationId) scope.organizationId = organizationId;
+      const result = await integrationsService.updateWildberriesCommissions(scope);
       return res.status(200).json({ ok: true, data: result });
     } catch (error) {
       logger.error('[Integrations Controller] Error updating WB commissions:', error);

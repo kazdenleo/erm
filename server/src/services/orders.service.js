@@ -45,6 +45,7 @@ import {
   getReservableSupplyUnits
 } from './sellableQuantity.service.js';
 import { resolveProfileProcurementStatusEnabled } from '../utils/profileProcurementStatus.js';
+import logger from '../utils/logger.js';
 import {
   orderReserveMovementMatchOrderRowSql,
   orderReserveMovementMatchSql
@@ -127,7 +128,7 @@ export function onHandHeadroomBeforeReserve({ onHand = 0, reservedRaw = 0 } = {}
 }
 
 /**
- * Покрытие резерва по заказам одного товара: FIFO по дате заказа (как при дозарезервировании).
+ * Покрытие резерва по заказам одного товара: учитывает свободное наличие после резервов других заказов.
  * @returns {Map<string, 'on_hand'|'incoming'>} ключ `${orderDbId}:${productId}`
  */
 async function buildReserveCoverageFifoMap(productIds) {
@@ -167,22 +168,10 @@ async function buildReserveCoverageFifoMap(productIds) {
 
   for (const [pid, list] of byPid) {
     const sup = supplyMap.get(pid);
-    let onHandPool = sup ? Math.max(0, Math.floor(sup.onHand) || 0) : 0;
-    let incomingPool = sup ? Math.max(0, Math.floor(sup.incoming) || 0) : 0;
     for (const { oid, reserved } of list) {
-      const R = Math.max(0, Math.floor(reserved));
-      const fromOnHand = Math.min(R, onHandPool);
-      onHandPool -= fromOnHand;
-      const remaining = R - fromOnHand;
-      const fromIncoming = Math.min(remaining, incomingPool);
-      incomingPool -= fromIncoming;
-      const uncovered = remaining - fromIncoming;
-      let kind;
-      if (uncovered <= 0) {
-        kind = fromIncoming > 0 ? 'incoming' : 'on_hand';
-      } else {
-        kind = fromOnHand > 0 ? 'on_hand' : 'incoming';
-      }
+      const kind = sup
+        ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved })
+        : 'incoming';
       map.set(`${oid}:${pid}`, kind);
     }
   }
@@ -1226,6 +1215,60 @@ class OrdersService {
     await this._applyReserveForOrderIfAbsent(orderRow);
   }
 
+  /** Статусы, из которых авто-«На сборку» после полного резерва (настройка аккаунта). */
+  _orderStatusesEligibleForAutoAssembly(status) {
+    const st = String(status ?? '').trim().toLowerCase();
+    return st === 'new' || st === 'in_procurement';
+  }
+
+  /**
+   * Если включено profiles.auto_send_to_assembly_on_reserve — отправить заказ на сборку
+   * после полного резерва под количество заказа (фоном, как кнопка «На сборку»).
+   */
+  _scheduleAutoSendToAssemblyAfterReserve(orderRow) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
+    setImmediate(() => {
+      void this._runAutoSendToAssemblyAfterReserve(orderRow).catch((e) => {
+        logger.warn('[autoAssembly] failed', {
+          orderId: orderRow.orderId ?? orderRow.order_id,
+          message: e?.message || String(e)
+        });
+      });
+    });
+  }
+
+  async _runAutoSendToAssemblyAfterReserve(orderRow) {
+    if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return;
+    const orderIdStr = String(orderRow.orderId ?? orderRow.order_id ?? '').trim();
+    const mp = orderRow.marketplace;
+    if (!orderIdStr || mp == null || String(mp).trim() === '') return;
+
+    const profileId = normalizeProfileIdForOrders(orderRow.profile_id ?? orderRow.profileId);
+    if (profileId == null) return;
+
+    const profRepo = repositoryFactory.getProfilesRepository();
+    const prof = profRepo ? await profRepo.findById(profileId) : null;
+    if (prof?.auto_send_to_assembly_on_reserve !== true) return;
+
+    if (!this._orderStatusesEligibleForAutoAssembly(orderRow.status)) return;
+
+    const assemblyRef = { marketplace: mp, orderId: orderIdStr };
+    const check = await this.validateReservedStockForAssembly([assemblyRef], { profileId });
+    if (!Array.isArray(check?.ok) || check.ok.length === 0) return;
+
+    const result = await this.sendToAssembly([assemblyRef], profileId, { deferReserve: true });
+    if ((result?.updated ?? 0) <= 0) return;
+
+    const { processAssemblyShipmentsInBackground } = await import('./orderAssemblyBackground.service.js');
+    await processAssemblyShipmentsInBackground([assemblyRef], { profileId, organizationId: null });
+
+    logger.info('[autoAssembly] order sent to assembly after reserve', {
+      marketplace: mp,
+      orderId: orderIdStr,
+      profileId
+    });
+  }
+
   /**
    * Установить резерв по заказу: уменьшить доступный остаток и записать движение в историю.
    * Для комплекта: целые — резерв на SKU комплекта; из деталей — на комплектующие.
@@ -2257,6 +2300,7 @@ class OrdersService {
         if (e?.statusCode === 400) return;
         throw e;
       }
+      this._scheduleAutoSendToAssemblyAfterReserve(orderRow);
       return;
     }
 
@@ -2287,6 +2331,7 @@ class OrdersService {
       if (e?.statusCode === 400) return;
       throw e;
     }
+    this._scheduleAutoSendToAssemblyAfterReserve(orderRow);
   }
 
   /** Подпись позиции заказа для UI резерва (название · артикул). */

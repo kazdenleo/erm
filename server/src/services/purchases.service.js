@@ -13,7 +13,17 @@ import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsRepositoryPG from '../repositories/stock_movements.repository.pg.js';
 import ordersService from './orders.service.js';
-import { trySubmitPurchaseToSupplier } from './supplierOrderPlacement.service.js';
+import {
+  trySubmitPurchaseToSupplier,
+  supplierPreSubmitRequired,
+  buildSubmitLinesFromItems,
+  trySubmitLinesToSupplier,
+} from './supplierOrderPlacement.service.js';
+import {
+  enrichProcurementNote,
+  upgradeLegacyPurchaseArrivalNote,
+  resolveArrivalBucketForSupplier,
+} from '../utils/openPurchaseLookup.js';
 import logger from '../utils/logger.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
 import { enqueueProcurementReserveJob } from '../utils/procurementReserveQueue.js';
@@ -1633,11 +1643,7 @@ class PurchasesService {
   }
 
   /**
-   * Создать закупку с позициями: сразу incoming по добавленным количествам.
-   * items: [{ productId, quantity }]
-   */
-  /**
-   * Из заказов: статусы «В закупке» (bulk) + закупка (light incoming) — один HTTP-запрос.
+   * Из заказов: сначала API поставщика (если настроен) → закупка → резерв по заказам.
    */
   async procureFromOrders(
     {
@@ -1648,14 +1654,81 @@ class PurchasesService {
       warehouseId = null,
       items = [],
       note = null,
+      supplierWarehouseName = null,
     } = {},
-    { userId, profileId, submitToSupplier = true } = {}
+    { userId, profileId, submitToSupplier = true, syncReserveReapply = true } = {}
   ) {
     return runWithLockRetry(async () => {
-      // Сначала закупка — иначе при таймауте заказы уже «В закупке», а документа нет.
-      let purchaseId;
+      let itemsToProcess = Array.isArray(items) ? items : [];
       let resolvedSupplierId =
         supplierId != null && supplierId !== '' ? Number(supplierId) : null;
+      let warehouseNameForSubmit = supplierWarehouseName || null;
+      let supplierSubmit = null;
+
+      if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
+        const purId = parseInt(existingPurchaseId, 10);
+        const head = await query(
+          `SELECT supplier_id, supplier_warehouse_name FROM purchases WHERE id = $1 LIMIT 1`,
+          [purId]
+        );
+        const headRow = head.rows?.[0];
+        if (headRow) {
+          if (!Number.isFinite(resolvedSupplierId) || resolvedSupplierId < 1) {
+            resolvedSupplierId =
+              headRow.supplier_id != null ? Number(headRow.supplier_id) : null;
+          }
+          if (!warehouseNameForSubmit && headRow.supplier_warehouse_name) {
+            warehouseNameForSubmit = headRow.supplier_warehouse_name;
+          }
+        }
+      }
+
+      if (
+        submitToSupplier &&
+        itemsToProcess.length > 0 &&
+        Number.isFinite(resolvedSupplierId) &&
+        resolvedSupplierId > 0
+      ) {
+        const pre = await supplierPreSubmitRequired(resolvedSupplierId, profileId);
+        if (pre.required) {
+          const submitLines = await buildSubmitLinesFromItems(itemsToProcess);
+          supplierSubmit = await trySubmitLinesToSupplier({
+            supplierId: resolvedSupplierId,
+            profileId,
+            lines: submitLines,
+            purchaseMeta: {
+              supplier_warehouse_name: warehouseNameForSubmit,
+              note: note || null,
+            },
+          });
+          if (!supplierSubmit.submitted) {
+            const err = new Error(
+              supplierSubmit.message || 'Не удалось отправить заказ поставщику'
+            );
+            err.statusCode = 400;
+            err.supplierSubmit = supplierSubmit;
+            throw err;
+          }
+          if (supplierSubmit.partial && Array.isArray(supplierSubmit.lines)) {
+            const okIds = new Set(
+              supplierSubmit.lines
+                .map((l) => Number(l.productId))
+                .filter((id) => Number.isFinite(id) && id > 0)
+            );
+            itemsToProcess = itemsToProcess.filter((it) =>
+              okIds.has(Number(it.productId))
+            );
+            if (!itemsToProcess.length) {
+              const err = new Error('Ни одна позиция не принята поставщиком');
+              err.statusCode = 400;
+              err.supplierSubmit = supplierSubmit;
+              throw err;
+            }
+          }
+        }
+      }
+
+      let purchaseId;
       if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
         purchaseId = parseInt(existingPurchaseId, 10);
         const prof = normalizeProfileId(profileId);
@@ -1663,17 +1736,67 @@ class PurchasesService {
           await assertPurchaseInProfile(client, purchaseId, prof);
           await assertPurchaseNotArchivedInTx(client, purchaseId);
         });
-        await this.appendDraftItems(purchaseId, { items }, { profileId, lightIncoming: true });
+        await this.appendDraftItems(purchaseId, { items: itemsToProcess }, {
+          profileId,
+          lightIncoming: true,
+        });
+        const head = await query(
+          `SELECT supplier_id, warehouse_id FROM purchases WHERE id = $1 LIMIT 1`,
+          [purchaseId]
+        );
+        const headRow = head.rows?.[0];
+        const sidForNote =
+          Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0
+            ? resolvedSupplierId
+            : headRow?.supplier_id != null
+              ? Number(headRow.supplier_id)
+              : null;
+        const widForNote =
+          warehouseId != null && warehouseId !== ''
+            ? Number(warehouseId)
+            : headRow?.warehouse_id != null
+              ? Number(headRow.warehouse_id)
+              : null;
+        if (sidForNote) {
+          const bucket = await resolveArrivalBucketForSupplier({
+            supplierId: sidForNote,
+            warehouseId: widForNote,
+            profileId: prof,
+          });
+          if (bucket) {
+            await transaction(async (client) => {
+              await upgradeLegacyPurchaseArrivalNote(client, purchaseId, bucket);
+            });
+          }
+        }
       } else {
+        const prof = normalizeProfileId(profileId);
+        const sidForNote =
+          Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0
+            ? resolvedSupplierId
+            : supplierId != null && supplierId !== ''
+              ? Number(supplierId)
+              : null;
+        const enrichedNote = await enrichProcurementNote(note, {
+          supplierId: sidForNote,
+          warehouseId,
+          profileId: prof,
+        });
         const created = await this.create(
-          { supplierId, organizationId, warehouseId, items, note },
+          {
+            supplierId,
+            organizationId,
+            warehouseId,
+            items: itemsToProcess,
+            note: enrichedNote,
+          },
           { userId, profileId, lightIncoming: true }
         );
         purchaseId = created?.id;
       }
 
       let procurement = { updated: 0, skipped: 0 };
-      const refsFromItems = collectSourceOrdersFromPurchaseItems(items);
+      const refsFromItems = collectSourceOrdersFromPurchaseItems(itemsToProcess);
       const refsForProcurement =
         refsFromItems.length > 0
           ? refsFromItems
@@ -1692,18 +1815,38 @@ class PurchasesService {
         procurement = { updated: bulk.updated, skipped: bulk.skipped };
       }
 
-      const productIds = collectProductIdsFromPurchaseItems(items);
-      if (productIds.size > 0) {
-        scheduleProcurementReserveReapply(productIds, {
-          label: 'background reserve after procure-from-orders',
+      if (syncReserveReapply) {
+        const refs = refsFromItems.length > 0 ? refsFromItems : refsForProcurement;
+        if (refs.length > 0) {
+          const rows = await loadOrderRowsForSourceOrders(refs);
+          if (rows.length > 0) {
+            await ordersService._reapplyReserveForOrderRows(rows);
+          }
+        }
+        const productIds = collectProductIdsFromPurchaseItems(itemsToProcess);
+        for (const productId of productIds) {
+          await ordersService
+            .ensureReservesForProductIfSupplyAvailable(productId)
+            .catch((e) => {
+              logger.warn('[Purchases] reserve after procure-from-orders', {
+                productId,
+                message: e?.message || String(e),
+              });
+            });
+        }
+      } else {
+        const productIds = collectProductIdsFromPurchaseItems(itemsToProcess);
+        if (productIds.size > 0) {
+          scheduleProcurementReserveReapply(productIds, {
+            label: 'background reserve after procure-from-orders',
+          });
+        }
+        scheduleReapplyReserveForPurchaseSourceOrders(itemsToProcess, {
+          label: 'reapply reserve for linked orders after procure-from-orders',
         });
       }
-      scheduleReapplyReserveForPurchaseSourceOrders(items, {
-        label: 'reapply reserve for linked orders after procure-from-orders',
-      });
 
-      let supplierSubmit = null;
-      if (submitToSupplier && purchaseId) {
+      if (submitToSupplier && purchaseId && !supplierSubmit) {
         if (!Number.isFinite(resolvedSupplierId) || resolvedSupplierId < 1) {
           const head = await query(`SELECT supplier_id FROM purchases WHERE id = $1 LIMIT 1`, [
             purchaseId,

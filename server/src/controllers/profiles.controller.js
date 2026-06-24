@@ -38,6 +38,13 @@ function pickAccountOwnerProfilePayload(body) {
     out.require_reserved_stock_for_assembly = v === true || v === '1' || v === 'true';
   }
   if (
+    b.auto_send_to_assembly_on_reserve !== undefined ||
+    b.autoSendToAssemblyOnReserve !== undefined
+  ) {
+    const v = b.auto_send_to_assembly_on_reserve ?? b.autoSendToAssemblyOnReserve;
+    out.auto_send_to_assembly_on_reserve = v === true || v === '1' || v === 'true';
+  }
+  if (
     b.allow_manual_warehouse_stock_edit !== undefined ||
     b.allowManualWarehouseStockEdit !== undefined
   ) {

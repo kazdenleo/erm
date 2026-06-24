@@ -1909,6 +1909,24 @@ export function WarehouseOperations({
     };
   };
 
+  const appendInventoryRowDelta = async (product, factDelta = 1) => {
+    if (!product?.id) {
+      throw new Error('Товар не найден в каталоге (нет ID)');
+    }
+    const resolved = resolveProductForInventory(product);
+    const current = await warehouseQtyForProduct(resolved, inventorySessionWarehouseId);
+    const now = Date.now();
+    const delta = Math.max(1, Number(factDelta) || 1);
+    setInventoryNewRows((prev) => {
+      const idx = prev.findIndex((r) => r.product.id === resolved.id);
+      if (idx === -1) {
+        return sortInventoryNewRows([{ product: resolved, current, fact: delta, scannedAt: now }, ...prev]);
+      }
+      const row = { ...prev[idx], fact: prev[idx].fact + delta, current, scannedAt: now };
+      return sortInventoryNewRows([row, ...prev.filter((_, i) => i !== idx)]);
+    });
+  };
+
   const getInventoryUnitCostRub = (product) => {
     const c = product?.cost;
     if (c === null || c === undefined || c === '') return null;
@@ -2075,24 +2093,15 @@ export function WarehouseOperations({
     if (!product?.id) {
       throw new Error('Товар не найден в каталоге (нет ID)');
     }
-    product = resolveProductForInventory(product);
-    const current = await warehouseQtyForProduct(product, inventorySessionWarehouseId);
-    const now = Date.now();
-    setInventoryNewRows((prev) => {
-      const idx = prev.findIndex((r) => r.product.id === product.id);
-      if (idx === -1) {
-        return sortInventoryNewRows([{ product, current, fact: 1, scannedAt: now }, ...prev]);
-      }
-      const row = { ...prev[idx], fact: prev[idx].fact + 1, current, scannedAt: now };
-      return sortInventoryNewRows([row, ...prev.filter((_, i) => i !== idx)]);
-    });
+    await appendInventoryRowDelta(resolveProductForInventory(product), 1);
   };
 
   const scanInventoryLive = async (code) => {
     const sid = String(inventoryLiveSessionId || '').trim();
-    if (!sid) return;
+    if (!sid) return null;
     const res = await inventorySessionsApi.scanSession(sid, { code: String(code || '').trim() });
     applyInventoryLiveStateToRows(res);
+    return res?.data ?? res;
   };
 
   const lookupByBarcodeOrSkuThenInventoryNewOne = async (value) => {
@@ -2194,10 +2203,11 @@ export function WarehouseOperations({
     try {
       if (inventoryLiveEnabled && String(inventoryLiveSessionId || '').trim()) {
         await scanInventoryLive(String(product.id));
+        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       } else {
-    await addOneToInventoryNewRow(product);
+        await addOneToInventoryNewRow(product);
+        setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       }
-    setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       setInventoryNewPickedProduct(null);
       setInventoryNewSearch('');
       setLookupError(null);

@@ -8,11 +8,10 @@ import purchasesService from './purchases.service.js';
 import logger from '../utils/logger.js';
 import { autoOrderSettingsFromApiConfig } from '../utils/supplierAutoOrderSettings.js';
 import {
-  autoArrivalNoteMarker,
   autoArrivalNoteText,
-  parseArrivalBucketFromPurchaseNote,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
+import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
 
 function normalizeProfileId(v) {
@@ -76,26 +75,6 @@ async function orderAlreadyInOpenPurchase(client, profileId, marketplace, orderI
     [profileId, dbMp, oid]
   );
   return (r.rows?.length ?? 0) > 0;
-}
-
-async function findOpenAutoPurchaseId(client, { profileId, supplierId, arrivalBucket }) {
-  const marker = `${autoArrivalNoteMarker(arrivalBucket)}%`;
-  const r = await client.query(
-    `SELECT id, note
-     FROM purchases
-     WHERE profile_id = $1
-       AND supplier_id = $2
-       AND status = 'open'
-       AND note LIKE $3
-     ORDER BY created_at DESC, id DESC
-     LIMIT 1`,
-    [profileId, supplierId, marker]
-  );
-  const row = r.rows?.[0];
-  if (!row) return null;
-  const parsed = parseArrivalBucketFromPurchaseNote(row.note);
-  if (parsed && parsed !== arrivalBucket) return null;
-  return Number(row.id);
 }
 
 async function loadActiveSuppliers(profileId, { requireAutoOrdersEnabled = false } = {}) {

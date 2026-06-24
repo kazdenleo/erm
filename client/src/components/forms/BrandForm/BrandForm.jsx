@@ -8,6 +8,36 @@ import { Button } from '../../common/Button/Button';
 import { Modal } from '../../common/Modal/Modal';
 import { certificatesApi } from '../../../services/certificates.api';
 import { userCategoriesApi } from '../../../services/userCategories.api';
+import { brandsApi } from '../../../services/brands.api';
+import { COUNTRY_OPTIONS } from '../../../constants/countryOptions.js';
+
+const MP_MARKETPLACES = [
+  { key: 'ozon', label: 'Ozon' },
+  { key: 'wb', label: 'Wildberries' },
+  { key: 'ym', label: 'Яндекс Маркет' },
+];
+
+function emptyMpMappings() {
+  return {
+    ozon: { mp_brand_name: '', mp_brand_id: '' },
+    wb: { mp_brand_name: '', mp_brand_id: '' },
+    ym: { mp_brand_name: '', mp_brand_id: '' },
+  };
+}
+
+function mappingsFromBrand(brand) {
+  const base = emptyMpMappings();
+  const list = brand?.marketplace_mappings ?? brand?.marketplaceMappings ?? [];
+  for (const row of list) {
+    const mp = String(row.marketplace || '').toLowerCase();
+    if (!base[mp]) continue;
+    base[mp] = {
+      mp_brand_name: row.mp_brand_name ?? row.mpBrandName ?? '',
+      mp_brand_id: row.mp_brand_id ?? row.mpBrandId ?? '',
+    };
+  }
+  return base;
+}
 
 export function BrandForm({ brand, onSubmit, onCancel }) {
   const [formData, setFormData] = useState({
@@ -15,10 +45,16 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
     website: '',
     certificateNumber: '',
     certificateValidFrom: '',
-    certificateValidTo: ''
+    certificateValidTo: '',
+    ozonBrandPromotionPercent: '',
+    ozonBrandPromotionEnabled: false,
+    manufacturerCountry: '',
   });
   
   const [errors, setErrors] = useState({});
+  const [mpMappings, setMpMappings] = useState(emptyMpMappings);
+  const [mpSyncLoading, setMpSyncLoading] = useState(false);
+  const [mpCandidates, setMpCandidates] = useState(null);
   const [certs, setCerts] = useState([]);
   const [certsLoading, setCertsLoading] = useState(false);
   const [certsError, setCertsError] = useState('');
@@ -43,8 +79,20 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
         website: brand.website || '',
         certificateNumber: brand.certificateNumber || brand.certificate_number || '',
         certificateValidFrom: brand.certificateValidFrom || brand.certificate_valid_from || '',
-        certificateValidTo: brand.certificateValidTo || brand.certificate_valid_to || ''
+        certificateValidTo: brand.certificateValidTo || brand.certificate_valid_to || '',
+        ozonBrandPromotionPercent:
+          brand.ozonBrandPromotionPercent != null
+            ? String(brand.ozonBrandPromotionPercent)
+            : brand.ozon_brand_promotion_percent != null
+              ? String(brand.ozon_brand_promotion_percent)
+              : '',
+        ozonBrandPromotionEnabled:
+          brand.ozonBrandPromotionEnabled === true || brand.ozon_brand_promotion_enabled === true,
+        manufacturerCountry: brand.manufacturerCountry ?? brand.manufacturer_country ?? '',
       });
+      setMpMappings(mappingsFromBrand(brand));
+    } else {
+      setMpMappings(emptyMpMappings());
     }
   }, [brand]);
 
@@ -108,6 +156,14 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
     if (formData.website && formData.website.trim() && !isValidUrl(formData.website.trim())) {
       newErrors.website = 'Введите корректный URL';
     }
+
+    const promoRaw = String(formData.ozonBrandPromotionPercent ?? '').trim();
+    if (promoRaw !== '') {
+      const promoNum = Number(promoRaw.replace(',', '.'));
+      if (!Number.isFinite(promoNum) || promoNum < 0 || promoNum > 100) {
+        newErrors.ozonBrandPromotionPercent = 'Укажите процент от 0 до 100';
+      }
+    }
     
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -127,15 +183,72 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
       return;
     }
 
+    const promoRaw = String(formData.ozonBrandPromotionPercent ?? '').trim().replace(',', '.');
+    const promoNum = promoRaw === '' ? null : Number(promoRaw);
+
     const payload = {
       name: formData.name.trim(),
       website: formData.website.trim() || null,
       certificateNumber: formData.certificateNumber.trim() || null,
       certificateValidFrom: formData.certificateValidFrom || null,
-      certificateValidTo: formData.certificateValidTo || null
+      certificateValidTo: formData.certificateValidTo || null,
+      ozonBrandPromotionPercent: promoNum,
+      ozonBrandPromotionEnabled: formData.ozonBrandPromotionEnabled === true,
+      manufacturerCountry: String(formData.manufacturerCountry || '').trim() || null,
+      marketplace_mappings: MP_MARKETPLACES.map(({ key }) => ({
+        marketplace: key,
+        mp_brand_name: String(mpMappings[key]?.mp_brand_name || '').trim() || null,
+        mp_brand_id: String(mpMappings[key]?.mp_brand_id || '').trim() || null,
+      })),
     };
 
     onSubmit(payload);
+  };
+
+  const handleMpMappingChange = (marketplace, field, value) => {
+    setMpMappings((prev) => ({
+      ...prev,
+      [marketplace]: {
+        ...prev[marketplace],
+        [field]: value,
+      },
+    }));
+  };
+
+  const loadMpCandidates = async () => {
+    if (!brand?.id) return;
+    try {
+      const res = await brandsApi.getMpBrandCandidates(brand.id);
+      setMpCandidates(res?.data || null);
+    } catch (e) {
+      alert(e?.message || 'Не удалось загрузить кандидатов с маркетплейсов');
+    }
+  };
+
+  const applyMpSync = async () => {
+    if (!brand?.id) return;
+    setMpSyncLoading(true);
+    try {
+      const res = await brandsApi.syncMpBrands(brand.id, { apply: true });
+      const updated = res?.data?.brand;
+      if (updated) setMpMappings(mappingsFromBrand(updated));
+      setMpCandidates(res?.data?.suggestions || null);
+    } catch (e) {
+      alert(e?.message || 'Ошибка сопоставления брендов');
+    } finally {
+      setMpSyncLoading(false);
+    }
+  };
+
+  const applyCandidate = (marketplace, candidate) => {
+    if (!candidate?.name) return;
+    setMpMappings((prev) => ({
+      ...prev,
+      [marketplace]: {
+        mp_brand_name: candidate.name,
+        mp_brand_id: candidate.mp_brand_id != null ? String(candidate.mp_brand_id) : prev[marketplace]?.mp_brand_id || '',
+      },
+    }));
   };
 
   const toDateOnly = (v) => {
@@ -293,6 +406,136 @@ export function BrandForm({ brand, onSubmit, onCancel }) {
           onChange={(e) => handleChange('website', e.target.value)}
         />
         {errors.website && <div className="error">{errors.website}</div>}
+      </div>
+
+      <div className="col-md-6">
+        <label className="form-label" htmlFor="brandManufacturerCountry">Страна производителя</label>
+        <input
+          id="brandManufacturerCountry"
+          type="text"
+          className="form-control form-control-sm"
+          placeholder="Например: Китай"
+          value={formData.manufacturerCountry}
+          onChange={(e) => handleChange('manufacturerCountry', e.target.value)}
+          list="brand-country-list"
+        />
+        <datalist id="brand-country-list">
+          {COUNTRY_OPTIONS.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
+        <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>
+          Подставляется в карточку товара при выборе этого бренда.
+        </div>
+      </div>
+
+      <div className="col-12">
+        <label className="settings-account-toggle" style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', marginBottom: '8px' }}>
+          <input
+            type="checkbox"
+            checked={formData.ozonBrandPromotionEnabled === true}
+            onChange={(e) => handleChange('ozonBrandPromotionEnabled', e.target.checked)}
+            style={{ marginTop: '4px' }}
+          />
+          <span>
+            <strong>Учитывать «Продвижение бренда» на Ozon в расчёте цены</strong>
+            <span style={{ display: 'block', fontSize: '12px', color: 'var(--muted)', fontWeight: 'normal', marginTop: '4px' }}>
+              Если включено — процент ниже используется в калькуляторе минимальной цены Ozon, когда API не отдаёт комиссию.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div className="col-md-6">
+        <label className="form-label" htmlFor="brandOzonPromotion">
+          Продвижение бренда на Ozon (%)
+        </label>
+        <input
+          id="brandOzonPromotion"
+          type="number"
+          min="0"
+          max="100"
+          step="0.01"
+          className="form-control form-control-sm"
+          placeholder="Например: 1"
+          value={formData.ozonBrandPromotionPercent}
+          onChange={(e) => handleChange('ozonBrandPromotionPercent', e.target.value)}
+          disabled={!formData.ozonBrandPromotionEnabled}
+        />
+        <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px' }}>
+          Используется в расчёте минимальной цены Ozon, если API не отдаёт этот процент.
+        </div>
+        {errors.ozonBrandPromotionPercent && <div className="error">{errors.ozonBrandPromotionPercent}</div>}
+      </div>
+
+      <div className="col-12" style={{ marginTop: '8px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ fontWeight: 600, fontSize: '13px' }}>Бренды на маркетплейсах</div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <Button type="button" variant="secondary" onClick={loadMpCandidates} disabled={!brand?.id}>
+              Показать кандидатов
+            </Button>
+            <Button type="button" variant="primary" onClick={applyMpSync} disabled={!brand?.id || mpSyncLoading}>
+              {mpSyncLoading ? 'Загрузка…' : 'Загрузить и сопоставить'}
+            </Button>
+          </div>
+        </div>
+        <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
+          Названия бренда на МП подставляются в карточку товара при выборе бренда в ERP.
+          «Загрузить и сопоставить» берёт данные из ваших товаров и поиска Ozon.
+        </div>
+        {!brand?.id && (
+          <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '6px' }}>
+            Сначала сохраните бренд.
+          </div>
+        )}
+        <div className="row g-3" style={{ marginTop: '10px' }}>
+          {MP_MARKETPLACES.map(({ key, label }) => (
+            <div className="col-md-4" key={key}>
+              <div style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '10px' }}>
+                <div style={{ fontWeight: 600, fontSize: '12px', marginBottom: '8px' }}>{label}</div>
+                <label className="form-label" style={{ fontSize: '11px' }}>Название на МП</label>
+                <input
+                  className="form-control form-control-sm"
+                  value={mpMappings[key]?.mp_brand_name || ''}
+                  onChange={(e) => handleMpMappingChange(key, 'mp_brand_name', e.target.value)}
+                  placeholder="Как в кабинете МП"
+                />
+                {key === 'ozon' && (
+                  <>
+                    <label className="form-label" style={{ fontSize: '11px', marginTop: '8px' }}>ID в справочнике Ozon</label>
+                    <input
+                      className="form-control form-control-sm"
+                      value={mpMappings[key]?.mp_brand_id || ''}
+                      onChange={(e) => handleMpMappingChange(key, 'mp_brand_id', e.target.value)}
+                      placeholder="dictionary_value_id"
+                    />
+                  </>
+                )}
+                {mpCandidates?.[key]?.length > 0 && (
+                  <div style={{ marginTop: '8px' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '4px' }}>Кандидаты:</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {mpCandidates[key].slice(0, 5).map((c) => (
+                        <button
+                          key={`${key}-${c.name}-${c.source}`}
+                          type="button"
+                          className="btn btn-sm btn-outline-secondary"
+                          style={{ fontSize: '11px', textAlign: 'left' }}
+                          onClick={() => applyCandidate(key, c)}
+                        >
+                          {c.name}
+                          {c.count ? ` (${c.count})` : ''}
+                          {c.source === 'ozon_api' ? ' · Ozon' : ''}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="col-12" style={{ marginTop: '6px' }}>

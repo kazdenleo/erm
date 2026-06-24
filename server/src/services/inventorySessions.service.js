@@ -121,6 +121,18 @@ function parseLineQuantityAfter(raw) {
   return Number.isNaN(n) || n < 0 ? 0 : n;
 }
 
+/** Слияние дублей product_id: берём максимальный quantityAfter. */
+function mergeInventoryLinesInput(linesInput) {
+  const merged = new Map();
+  for (const raw of linesInput || []) {
+    const productId = parseLineProductId(raw);
+    const quantityAfter = parseLineQuantityAfter(raw);
+    if (!productId) continue;
+    merged.set(productId, Math.max(merged.get(productId) ?? -1, quantityAfter));
+  }
+  return [...merged.entries()].map(([productId, quantityAfter]) => ({ productId, quantityAfter }));
+}
+
 async function applyInventoryLine(client, {
   sessionId,
   productId,
@@ -133,13 +145,7 @@ async function applyInventoryLine(client, {
   await assertProductAllowedInProfile(client, productId, profileId);
 
   const { isKitProductId } = await import('./kitStock.service.js');
-  if (await isKitProductId(productId)) {
-    const err = new Error(
-      'Инвентаризация SKU комплекта запрещена — оприходуйте через приёмку комплекта или пересчитывайте комплектующие'
-    );
-    err.statusCode = 400;
-    throw err;
-  }
+  const isKit = await isKitProductId(productId);
 
   const before = await getPwsQuantity(client, productId, whId);
 
@@ -162,7 +168,11 @@ async function applyInventoryLine(client, {
     type: 'inventory',
     quantityChange: delta,
     reason,
-    meta: { inventory_session_id: sessionId, warehouse_id: whId },
+    meta: {
+      inventory_session_id: sessionId,
+      warehouse_id: whId,
+      ...(isKit ? { kit_inventory: true } : {}),
+    },
     warehouseId: whId,
     profileId: null,
     skipReservedQtySync: true,
@@ -179,11 +189,12 @@ async function runInventoryLines(client, {
   zeroUnlisted,
   reasonBase,
 }) {
+  const mergedLines = mergeInventoryLinesInput(linesInput);
   const listedIds = new Set();
   let applied = 0;
   const affectedProductIds = new Set();
 
-  const sortedLines = [...linesInput].sort((a, b) => {
+  const sortedLines = [...mergedLines].sort((a, b) => {
     const pa = parseLineProductId(a) ?? 0;
     const pb = parseLineProductId(b) ?? 0;
     return pa - pb;
@@ -235,7 +246,10 @@ async function runInventoryLines(client, {
     }
   }
 
-  return { applied, productIds: [...affectedProductIds] };
+  return {
+    applied,
+    productIds: [...affectedProductIds],
+  };
 }
 
 async function afterInventoryTouch(sessionId, productIds) {
@@ -253,10 +267,27 @@ async function syncProductsAfterInventory(sessionId, productIds) {
     await import('./productWarehouseQuantity.service.js');
   const { syncProductReservedQuantityFromJournal } =
     await import('./sellableQuantity.service.js');
+  const { scheduleWarehouseStockMarketplaceSync } = await import(
+    './marketplaceWarehouseStockSync.service.js'
+  );
+  let whId = null;
+  if (sessionId != null) {
+    try {
+      const pr = await query(`SELECT warehouse_id FROM inventory_sessions WHERE id = $1`, [sessionId]);
+      whId = pr.rows?.[0]?.warehouse_id ?? null;
+    } catch {
+      whId = null;
+    }
+  }
   const unique = [...new Set(productIds.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))];
   for (const pid of unique) {
     await syncProductQuantityFromWarehouseStock(pid);
     await syncProductReservedQuantityFromJournal(pid);
+    scheduleWarehouseStockMarketplaceSync(pid, {
+      source: 'inventory',
+      warehouseId: whId,
+      strictWarehouse: whId != null && String(whId).trim() !== '',
+    });
   }
 }
 
@@ -281,6 +312,27 @@ async function afterInventoryTouchBackground(sessionId, productIds) {
       await ordersService.ensureReservesForProductIfSupplyAvailable(pid);
       await fboSupplyReserveService.onSupplyStockEvent(pid, null, { profileId: profId });
       await recalculateKitsForComponent(pid, {});
+      try {
+        const { scheduleWarehouseStockMarketplaceSync } = await import(
+          './marketplaceWarehouseStockSync.service.js'
+        );
+        let whId = null;
+        try {
+          const pr = await query(`SELECT warehouse_id FROM inventory_sessions WHERE id = $1`, [
+            sessionId,
+          ]);
+          whId = pr.rows?.[0]?.warehouse_id ?? null;
+        } catch {
+          whId = null;
+        }
+        scheduleWarehouseStockMarketplaceSync(pid, {
+          source: 'inventory_background',
+          warehouseId: whId,
+          strictWarehouse: whId != null && String(whId).trim() !== '',
+        });
+      } catch {
+        /* ignore */
+      }
     }
     try {
       const parents = await query(

@@ -100,6 +100,13 @@ class ProfilesRepositoryPG {
       const v = updates.require_reserved_stock_for_assembly ?? updates.requireReservedStockForAssembly;
       set('require_reserved_stock_for_assembly', v === true || v === '1' || v === 'true');
     }
+    if (
+      updates.auto_send_to_assembly_on_reserve !== undefined ||
+      updates.autoSendToAssemblyOnReserve !== undefined
+    ) {
+      const v = updates.auto_send_to_assembly_on_reserve ?? updates.autoSendToAssemblyOnReserve;
+      set('auto_send_to_assembly_on_reserve', v === true || v === '1' || v === 'true');
+    }
     if (updates.supplier_sync_enabled !== undefined || updates.supplierSyncEnabled !== undefined) {
       const v = updates.supplier_sync_enabled ?? updates.supplierSyncEnabled;
       set('supplier_sync_enabled', v === true || v === '1' || v === 'true');

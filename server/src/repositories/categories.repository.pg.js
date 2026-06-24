@@ -28,11 +28,23 @@ class CategoriesRepositoryPG {
   }
   
   /**
-   * Получить категорию по ID
+   * Получить категорию по ID (внутренний id или marketplace_category_id).
    */
   async findById(id) {
-    const result = await query('SELECT * FROM categories WHERE id = $1', [id]);
-    return result.rows[0] || null;
+    const key = id != null ? String(id).trim() : '';
+    if (!key) return null;
+
+    const byPk = await query('SELECT * FROM categories WHERE id = $1', [key]);
+    if (byPk.rows[0]) return byPk.rows[0];
+
+    const byMp = await query(
+      `SELECT * FROM categories
+       WHERE marketplace_category_id = $1
+       ORDER BY updated_at DESC NULLS LAST
+       LIMIT 1`,
+      [key]
+    );
+    return byMp.rows[0] || null;
   }
   
   /**

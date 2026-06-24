@@ -4,6 +4,35 @@
   gap: 12px;
 }
 
+.categories-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.categories-page-header__main {
+  flex: 1;
+  min-width: 200px;
+}
+
+.categories-page-header__main .title {
+  margin-bottom: 4px;
+}
+
+.categories-page-header__main .subtitle {
+  margin: 0;
+}
+
+.categories-page-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-top: 4px;
+}
+
 .category-item {
   padding: 16px;
   background: rgba(255, 255, 255, 0.02);
@@ -15,6 +44,112 @@
 .category-item:hover {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.15);
+}
+
+.category-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.category-mp-link-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.category-item--clickable {
+  cursor: pointer;
+}
+
+.category-mp-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  border-radius: 8px;
+}
+
+.category-mp-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text);
+}
+
+.category-mp-mapping + .category-mp-mapping {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.category-mp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.category-mp-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.category-mp-commissions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.category-mp-commission-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.category-mp-commission-chip--price-calc {
+  border-color: rgba(34, 197, 94, 0.55);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.category-mp-commission-chip--price-calc .category-mp-commission-chip-label {
+  color: #86efac;
+}
+
+.category-mp-commission-chip--empty {
+  opacity: 0.65;
+}
+
+.category-mp-commission-chip-label {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.category-mp-commission-chip-value {
+  font-weight: 600;
+}
+
+.category-form-mp-row .category-mp-commissions {
+  margin-top: 6px;
+}
+
+.category-mp-commissions-note {
+  flex: 1 1 100%;
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.35;
+  margin-top: 2px;
 }
 
 /* Общие стили наследуются из pages.css и tables.css */

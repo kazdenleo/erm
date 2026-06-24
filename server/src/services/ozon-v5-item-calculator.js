@@ -5,6 +5,8 @@
 
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
+import { extractOzonBrandPromotionPercent } from '../utils/ozonBrandPromotion.js';
+import { resolveProductVolumeLiters } from '../utils/productVolume.js';
 
 /**
  * @param {object} item — элемент из data.items ответа v5
@@ -59,7 +61,7 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
     rawCommissions: rawCommissionsData,
     acquiring: acquiringPercent,
     vat: item.price?.vat || 0,
-    volume_weight: item.volume_weight || null
+    volume_weight: null
   };
 
   if (item.commissions) {
@@ -183,21 +185,24 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
     missingData.push('комиссия маркетплейса (sales_percent_fbs/fbo)');
   }
 
-  let productVolume = options.preloadVolume != null ? options.preloadVolume : calculatorData.volume_weight || null;
+  let productVolume = options.preloadVolume != null ? options.preloadVolume : null;
 
   if (productVolume == null && offer_id) {
     try {
       let productResult = await query(
-        `SELECT p.volume FROM products p
+        `SELECT p.volume, p.length, p.width, p.height FROM products p
          JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
          WHERE ps.sku = $1 LIMIT 1`,
         [offer_id]
       );
       if (!productResult.rows?.length) {
-        productResult = await query('SELECT volume FROM products WHERE sku = $1 LIMIT 1', [offer_id]);
+        productResult = await query(
+          'SELECT volume, length, width, height FROM products WHERE sku = $1 LIMIT 1',
+          [offer_id]
+        );
       }
-      if (productResult.rows?.length && productResult.rows[0].volume != null) {
-        productVolume = parseFloat(productResult.rows[0].volume);
+      if (productResult.rows?.length) {
+        productVolume = resolveProductVolumeLiters(productResult.rows[0]);
       }
     } catch (dbError) {
       logger.warn('[Ozon v5 calc] volume DB lookup failed:', dbError.message);
@@ -236,6 +241,12 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
   calculatorData.volume_weight = productVolume;
   calculatorData.processing_cost = processingCost;
   calculatorData.logistics_cost = logisticsCost;
+
+  const apiBrandPromotionPercent = extractOzonBrandPromotionPercent(item);
+  if (apiBrandPromotionPercent != null) {
+    calculatorData.brand_promotion_percent = apiBrandPromotionPercent;
+    calculatorData.brand_promotion_source = 'api';
+  }
 
   return {
     found: true,

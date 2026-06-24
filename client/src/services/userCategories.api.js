@@ -52,6 +52,23 @@ export const userCategoriesApi = {
   async delete(id) {
     const response = await api.delete(`/user-categories/${id}`);
     return response.data;
-  }
+  },
+
+  /**
+   * Комиссии Ozon/YM по id сопоставленных категорий (для списка категорий ERP).
+   * @param {{ ozon?: Array<string|{ id: string, userCategoryId?: number|string }>, ym?: string[], dbOnly?: boolean }} ids
+   */
+  async previewMarketplaceCommissions(ids = {}) {
+    const params = ids.dbOnly ? { db_only: '1' } : undefined;
+    const { dbOnly, ...body } = ids;
+    const response = await api.post('/user-categories/marketplace-commissions-preview', body, { params });
+    return response.data;
+  },
+
+  /** Обновить кэш комиссий Ozon/YM в БД (запросы к API маркетплейсов). */
+  async refreshMarketplaceCommissions() {
+    const response = await api.post('/user-categories/marketplace-commissions-refresh');
+    return response.data;
+  },
 };
 
