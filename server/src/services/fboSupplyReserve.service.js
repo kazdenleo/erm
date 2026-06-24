@@ -1047,14 +1047,32 @@ class FboSupplyReserveService {
       }
     }
 
-    const orphanR = await query(
-      `SELECT DISTINCT meta->>'fbo_supply_item_id' AS item_id,
-              meta->>'fbo_supply_id' AS supply_id
-       FROM stock_movements
-       WHERE type IN ('reserve', 'unreserve')
-         AND meta ? 'fbo_supply_item_id'
-         AND meta->>'fbo_supply_item_id' ~ '^[0-9]+$'`
-    );
+    // Снятие «осиротевшего» резерва только в рамках текущего товара.
+    // Резерв комплектующих (meta.kit_product_id) не трогаем при пересчёте одиночного SKU —
+    // иначе rebalanceReservesForProduct(компонент) снимает резерв активных строк комплекта.
+    const orphanR = isKit
+      ? await query(
+          `SELECT DISTINCT sm.meta->>'fbo_supply_item_id' AS item_id,
+                  sm.meta->>'fbo_supply_id' AS supply_id
+           FROM stock_movements sm
+           WHERE sm.meta->>'kit_product_id' = $1
+             AND sm.type IN ('reserve', 'unreserve')
+             AND sm.meta ? 'fbo_supply_item_id'
+             AND sm.meta->>'fbo_supply_item_id' ~ '^[0-9]+$'`,
+          [String(pid)]
+        )
+      : await query(
+          `SELECT DISTINCT sm.meta->>'fbo_supply_item_id' AS item_id,
+                  sm.meta->>'fbo_supply_id' AS supply_id
+           FROM stock_movements sm
+           INNER JOIN fbo_supply_items si ON si.id = (sm.meta->>'fbo_supply_item_id')::bigint
+           WHERE sm.product_id = $1
+             AND si.product_id = $1
+             AND sm.type IN ('reserve', 'unreserve')
+             AND sm.meta ? 'fbo_supply_item_id'
+             AND sm.meta->>'fbo_supply_item_id' ~ '^[0-9]+$'`,
+          [pid]
+        );
     for (const or of orphanR.rows || []) {
       if (allItemIds.has(String(or.item_id))) continue;
       const nets = await getFboItemReserveNetByProductWarehouse(or.item_id);
@@ -1172,8 +1190,19 @@ class FboSupplyReserveService {
   async onSupplyStockEvent(productId, warehouseId, { profileId } = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
-    await this.rebalanceReservesForProduct(pid, { profileId });
     const parentKitIds = await recalculateKitsForComponent(pid, { profileId });
+    const ownFboQueue = await findFboReserveQueueByProduct(pid, profileId);
+    const hasOwnFboLines = ownFboQueue.length > 0;
+
+    // Комплектующее без собственных строк FBO: резерв ведётся на SKU комплекта.
+    if (!hasOwnFboLines && parentKitIds.length > 0) {
+      for (const kitId of parentKitIds) {
+        await this.rebalanceReservesForProduct(kitId, { profileId });
+      }
+      return;
+    }
+
+    await this.rebalanceReservesForProduct(pid, { profileId });
     for (const kitId of parentKitIds) {
       await this.rebalanceReservesForProduct(kitId, { profileId });
     }
