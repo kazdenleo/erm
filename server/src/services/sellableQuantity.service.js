@@ -327,11 +327,15 @@ export async function computeAvailableQuantity(productId, opts = {}) {
 
   let incoming = 0;
   try {
-    const ir = await query(
-      `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity FROM products WHERE id = $1`,
-      [pid]
-    );
-    incoming = Number(ir.rows[0]?.incoming_quantity ?? 0) || 0;
+    if (warehouseId != null && Number.isFinite(warehouseId) && warehouseId > 0) {
+      incoming = await readWarehouseScopedIncomingWithClient(query, pid, warehouseId);
+    } else {
+      const ir = await query(
+        `SELECT COALESCE(incoming_quantity, 0)::int AS incoming_quantity FROM products WHERE id = $1`,
+        [pid]
+      );
+      incoming = Number(ir.rows[0]?.incoming_quantity ?? 0) || 0;
+    }
   } catch {
     incoming = 0;
   }
