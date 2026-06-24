@@ -1,3 +1,19 @@
+.fbo-supply-qty-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.fbo-supply-qty-main__reserved {
+  font-weight: 600;
+  min-width: 1.25em;
+  text-align: center;
+  padding: 0 2px;
+  cursor: default;
+  text-decoration: none;
+  background: transparent;
+}
+
 .fbo-supply-qty-with-reserve {
   display: flex;
   flex-direction: column;

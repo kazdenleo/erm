@@ -14,6 +14,8 @@ export function FboSupplyItemPackingCell({
   disabled = false,
   onSaved,
   onBreakdownClick,
+  rightTitle = null,
+  rightClickable = true,
 }) {
   const [editing, setEditing] = useState(false);
   const [plannedInput, setPlannedInput] = useState(String(planned));
@@ -25,7 +27,12 @@ export function FboSupplyItemPackingCell({
 
   const packedNum = Number(packed) || 0;
   const plannedNum = Number(planned) || 0;
-  const cls = packedCellClass(packedNum, plannedNum);
+  const rightNum = packedNum;
+  const cls = packedCellClass(rightNum, plannedNum);
+  const resolvedRightTitle =
+    rightTitle ||
+    (rightNum > 0 ? 'Упаковано в грузоместах' : 'Упаковано');
+  const canOpenBreakdown = rightClickable && rightNum > 0 && !editing;
 
   useEffect(() => {
     setPlannedInput(String(planned));
@@ -178,23 +185,23 @@ export function FboSupplyItemPackingCell({
       <span className="fbo-supply-qty-cell__sep"> / </span>
       <span
         className={`fbo-packed-cell fbo-packed-${cls} fbo-supply-qty-cell__packed-part`}
-        role={packedNum > 0 && !editing ? 'button' : undefined}
-        tabIndex={packedNum > 0 && !editing ? 0 : undefined}
+        role={canOpenBreakdown ? 'button' : undefined}
+        tabIndex={canOpenBreakdown ? 0 : undefined}
         onClick={(e) => {
           e.stopPropagation();
-          if (editing || packedNum <= 0) return;
+          if (!canOpenBreakdown) return;
           onBreakdownClick?.();
         }}
         onKeyDown={(e) => {
-          if (editing || packedNum <= 0) return;
+          if (!canOpenBreakdown) return;
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             onBreakdownClick?.();
           }
         }}
-        title={packedNum > 0 ? 'Упаковано в грузоместах' : 'Упаковано'}
+        title={resolvedRightTitle}
       >
-        {packedNum}
+        {rightNum}
       </span>
     </div>
   );

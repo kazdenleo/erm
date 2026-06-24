@@ -30,8 +30,8 @@ import {
 } from '../../constants/fboSupplyStatuses';
 import { FboSupplyPacking } from './FboSupplyPacking.jsx';
 import { FboSupplyPackedBreakdownModal } from './FboSupplyPackedBreakdownModal.jsx';
-import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
-import { FboSupplyItemPackingCell } from './FboSupplyItemPackingCell.jsx';
+import { FboSupplyItemGeneralQty } from './FboSupplyItemGeneralQty.jsx';
+import { getFboItemReserveParts } from './fboSupplyItemReserve.js';
 import { FboPurchaseReplaceModal } from './FboPurchaseReplaceModal.jsx';
 import {
   buildStatsMap,
@@ -251,14 +251,14 @@ export function FboSupplyDetail() {
     const items = supply?.items || [];
     return items.reduce(
       (acc, it) => {
-        acc.stock +=
-          Number(it.reservedFromStock ?? it.reserved_from_stock ?? it.reservedQuantity ?? it.reserved_quantity) ||
-          0;
-        acc.incoming += Number(it.reservedFromIncoming ?? it.reserved_from_incoming) || 0;
+        const { stock, incoming, total } = getFboItemReserveParts(it);
+        acc.stock += stock;
+        acc.incoming += incoming;
+        acc.reserved += total;
         acc.qty += Number(it.quantity) || 0;
         return acc;
       },
-      { stock: 0, incoming: 0, qty: 0 }
+      { stock: 0, incoming: 0, reserved: 0, qty: 0 }
     );
   }, [supply?.items]);
 
@@ -1331,7 +1331,7 @@ export function FboSupplyDetail() {
               <th>Артикул</th>
               <th>Штрихкод</th>
               {isOzonSupply ? <th>Размещение</th> : null}
-              <th title="Сколько покрыто с наличия на складе списания и из ожидаемых поступлений (в пути)">
+              <th title="План / зарезервировано. Ниже — с наличия и с пути">
                 Количество
               </th>
               <th style={{ width: 88 }}>Действия</th>
@@ -1399,32 +1399,13 @@ export function FboSupplyDetail() {
                     </td>
                   ) : null}
                   <td>
-                    <div className="fbo-supply-qty-with-reserve">
-                      <FboSupplyItemPackingCell
-                        supplyId={id}
-                        itemId={it.id}
-                        packed={stat?.packed ?? 0}
-                        planned={it.quantity ?? 0}
-                        disabled={!canEditSupplyComposition}
-                        onSaved={handleItemQuantitySaved}
-                        onBreakdownClick={() => setBreakdownItem(it)}
-                      />
-                      <FboSupplyReserveBreakdown
-                        showEmpty
-                        reserveDisabled={!supply.deductStock}
-                        reservedFromStock={
-                          it.reservedFromStock ??
-                          it.reserved_from_stock ??
-                          it.reservedQuantity ??
-                          it.reserved_quantity
-                        }
-                        reservedFromIncoming={
-                          it.reservedFromIncoming ?? it.reserved_from_incoming
-                        }
-                        sourceOnHand={it.sourceOnHand ?? it.source_on_hand}
-                        sourceIncoming={it.sourceIncoming ?? it.source_incoming}
-                      />
-                    </div>
+                    <FboSupplyItemGeneralQty
+                      item={it}
+                      supplyId={id}
+                      disabled={!canEditSupplyComposition}
+                      reserveDisabled={!supply.deductStock}
+                      onSaved={handleItemQuantitySaved}
+                    />
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     {canEditSupplyComposition && it.productId ? (

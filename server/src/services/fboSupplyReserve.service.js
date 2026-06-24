@@ -547,6 +547,7 @@ class FboSupplyReserveService {
           reservedQuantity: 0,
           reservedFromStock: 0,
           reservedFromIncoming: 0,
+          reservedTotal: 0,
           sourceOnHand,
           sourceIncoming,
         });
@@ -554,11 +555,13 @@ class FboSupplyReserveService {
       }
       const b = breakdown.get(String(it.id));
       if (b && reserveEnabled === true) {
+        const reservedTotal = (Number(b.reservedFromStock) || 0) + (Number(b.reservedFromIncoming) || 0);
         out.push({
           ...it,
           reservedQuantity: b.reservedFromStock,
           reservedFromStock: b.reservedFromStock,
           reservedFromIncoming: b.reservedFromIncoming,
+          reservedTotal,
           sourceOnHand,
           sourceIncoming,
         });
@@ -570,6 +573,7 @@ class FboSupplyReserveService {
           reservedQuantity: 0,
           reservedFromStock: 0,
           reservedFromIncoming: 0,
+          reservedTotal: 0,
           sourceOnHand,
           sourceIncoming,
         });
@@ -581,6 +585,7 @@ class FboSupplyReserveService {
         reservedQuantity: reservedFromStock,
         reservedFromStock,
         reservedFromIncoming: 0,
+        reservedTotal: reservedFromStock,
         sourceOnHand,
         sourceIncoming,
       });

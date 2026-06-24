@@ -106,6 +106,8 @@ function mapItemRow(row) {
       row.reserved_from_incoming != null
         ? Number(row.reserved_from_incoming)
         : row.reservedFromIncoming ?? undefined,
+    reservedTotal:
+      row.reserved_total != null ? Number(row.reserved_total) : row.reservedTotal ?? undefined,
     barcode: row.barcode,
     sku: row.sku,
     mpOfferId: row.mp_offer_id,
