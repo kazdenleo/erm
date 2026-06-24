@@ -1212,7 +1212,7 @@ export async function readKitComponentsNetReservedMap(kitProductId, opts = {}) {
       const compIds = (await getKitComponents(kitId)).map((c) => c.component_product_id);
       const journalMap = await warehouseScopedNetReservedMap(compIds, whId);
       const { batchOrderAttributedReservedMap, mergeJournalAndOrderAttributedReserved } =
-        await import('./sellableQuantity.service.js');
+        await import('./orderAttributedReserve.service.js');
       const orderMap = await batchOrderAttributedReservedMap(compIds, opts);
       const map = new Map();
       for (const pid of compIds) {
@@ -1244,7 +1244,7 @@ export async function readKitComponentsNetReservedMap(kitProductId, opts = {}) {
     }
     const compIds = [...journalMap.keys()];
     const { batchOrderAttributedReservedMap, mergeJournalAndOrderAttributedReserved } =
-      await import('./sellableQuantity.service.js');
+      await import('./orderAttributedReserve.service.js');
     const orderMap = await batchOrderAttributedReservedMap(compIds, opts);
     const map = new Map();
     for (const pid of compIds) {
@@ -2358,7 +2358,7 @@ async function batchNetReservedMap(productIds, opts = {}) {
     journalMap = new Map((r.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0]));
   }
   const { batchOrderAttributedReservedMap, mergeJournalAndOrderAttributedReserved } =
-    await import('./sellableQuantity.service.js');
+    await import('./orderAttributedReserve.service.js');
   const orderMap = await batchOrderAttributedReservedMap(ids, opts);
   const out = new Map();
   for (const id of ids) {
