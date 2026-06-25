@@ -2523,7 +2523,10 @@ class OrdersService {
           if (maxK <= 0) break;
         }
         try {
-          await this._applyReserveForOrderIfAbsent(o);
+          const st = String(o?.status ?? '').trim().toLowerCase();
+          await this._applyReserveForOrderIfAbsent(o, {
+            allowDespiteManualUnreserve: st === 'in_procurement'
+          });
         } catch (e) {
           if (e?.statusCode === 400) continue;
         }
@@ -3493,7 +3496,7 @@ class OrdersService {
   }
 
   /** Повторная попытка резерва (новый / закупка / после поступления остатка). */
-  async _reapplyReserveForOrderRows(rows) {
+  async _reapplyReserveForOrderRows(rows, { allowDespiteManualUnreserve = false } = {}) {
     const list = [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
       const qa = Math.max(1, parseInt(a?.quantity ?? a?.qty ?? 1, 10) || 1);
       const qb = Math.max(1, parseInt(b?.quantity ?? b?.qty ?? 1, 10) || 1);
@@ -3519,7 +3522,12 @@ class OrdersService {
             if (avail <= 0) continue;
           }
         }
-        await this._applyReserveForOrderIfAbsent(row);
+        const allowDespite =
+          allowDespiteManualUnreserve ||
+          String(row?.status ?? '').trim().toLowerCase() === 'in_procurement';
+        await this._applyReserveForOrderIfAbsent(row, {
+          allowDespiteManualUnreserve: allowDespite
+        });
       } catch (e) {
         if (e?.statusCode !== 400) {
           /* ignore */

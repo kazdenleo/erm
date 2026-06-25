@@ -121,6 +121,15 @@ async function applyIncomingDeltasAfterCommit(deltas, { purchaseId = null, profi
   scheduleProcurementReserveReapply(batchIds, {
     label: 'background reserve after incoming batch update',
   });
+  if (purchaseId != null) {
+    const items = await query(
+      'SELECT product_id, source_orders FROM purchase_items WHERE purchase_id = $1',
+      [purchaseId]
+    );
+    scheduleReapplyReserveForPurchaseSourceOrders(items.rows || [], {
+      label: 'reapply reserve for linked orders after incoming batch update',
+    });
+  }
 }
 
 // Anti-duplicate scans (in-memory): receiptId|barcode -> ts.
@@ -432,7 +441,12 @@ function scheduleReapplyReserveForPurchaseSourceOrders(items, { label = 'purchas
         delayMs: 2000,
       });
       if (!rows.length) return;
-      await runWithDbRetry(() => ordersService._reapplyReserveForOrderRows(rows), {
+      await runWithDbRetry(
+        () =>
+          ordersService._reapplyReserveForOrderRows(rows, {
+            allowDespiteManualUnreserve: true
+          }),
+        {
         label,
         attempts: 3,
         delayMs: 2000,
