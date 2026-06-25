@@ -1,7 +1,7 @@
 import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../../context/AuthContext.jsx';
-import { isNavFeatureEnabled, navSectionKeyForPath } from '../../utils/userNavSections.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { isNavFeatureEnabled, navSectionKeyForPath } from '../utils/userNavSections.js';
 
 /**
  * Блокирует прямой переход по URL в раздел, скрытый для пользователя.
