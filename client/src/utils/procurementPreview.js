@@ -110,6 +110,12 @@ export function buildProcurementEditableLines(mergedLines, sourceOrders, product
       productId: line.productId,
       name: line.name,
       article: line.article,
+      supplierId:
+        product?.supplierId != null
+          ? Number(product.supplierId)
+          : product?.supplier_id != null
+            ? Number(product.supplier_id)
+            : null,
       sourceOrders: line.sourceOrders ?? [],
       orderNeed,
       quantity,

@@ -44,6 +44,7 @@ export function Settings() {
     procurement_status_enabled: true,
     kits_enabled: true,
     production_enabled: true,
+    allow_product_supplier_binding: false,
   });
 
   const loadAccount = useCallback(async () => {
@@ -107,6 +108,7 @@ export function Settings() {
         procurement_status_enabled: form.procurement_status_enabled,
         kits_enabled: form.kits_enabled,
         production_enabled: form.production_enabled,
+        allow_product_supplier_binding: form.allow_product_supplier_binding,
       };
       const res = await profilesApi.updateMe(payload);
       if (!res?.ok) {
@@ -399,6 +401,22 @@ export function Settings() {
                   <strong>Производство</strong>
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
                     Если выключено — раздел «Производство» (сборка комплектов из комплектующих) скрыт в меню и недоступен по API.
+                  </span>
+                </span>
+              </label>
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
+                  checked={form.allow_product_supplier_binding === true}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, allow_product_supplier_binding: e.target.checked }))
+                  }
+                />
+                <span>
+                  <strong>Привязка товаров к поставщику</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Если включено — в карточке товара можно указать поставщика; в списках товаров и остатков появится
+                    фильтр по поставщику; при расчёте закупки учитывается привязка.
                   </span>
                 </span>
               </label>

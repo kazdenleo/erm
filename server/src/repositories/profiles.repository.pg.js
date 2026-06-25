@@ -141,6 +141,13 @@ class ProfilesRepositoryPG {
       set('production_enabled', v === true || v === '1' || v === 'true');
     }
     if (
+      updates.allow_product_supplier_binding !== undefined ||
+      updates.allowProductSupplierBinding !== undefined
+    ) {
+      const v = updates.allow_product_supplier_binding ?? updates.allowProductSupplierBinding;
+      set('allow_product_supplier_binding', v === true || v === '1' || v === 'true');
+    }
+    if (
       updates.manual_orders_warehouse_id !== undefined ||
       updates.manualOrdersWarehouseId !== undefined
     ) {

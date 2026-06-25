@@ -8,6 +8,7 @@ import ordersService from './orders.service.js';
 import purchasesService from './purchases.service.js';
 import logger from '../utils/logger.js';
 import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
+import { isProfileProductSupplierBindingEnabled } from '../utils/profileProductSupplierBinding.js';
 import { autoOrderSettingsFromApiConfig } from '../utils/supplierAutoOrderSettings.js';
 import {
   autoArrivalNoteText,
@@ -254,8 +255,27 @@ async function loadSupplierForProfile(supplierId, profileId) {
   return fallback.rows?.[0] || null;
 }
 
-async function rankSupplierCandidates(productId, suppliers, qty) {
-  const ids = suppliers.map((s) => s.id);
+async function loadProductBoundSupplierId(productId) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid < 1) return null;
+  const r = await query(`SELECT supplier_id FROM products WHERE id = $1 LIMIT 1`, [pid]);
+  const sid = r.rows?.[0]?.supplier_id;
+  if (sid == null) return null;
+  const n = Number(sid);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function suppliersForProductBinding(productId, suppliers, profileRow) {
+  if (!isProfileProductSupplierBindingEnabled(profileRow)) return suppliers;
+  const boundId = await loadProductBoundSupplierId(productId);
+  if (boundId == null) return suppliers;
+  const filtered = suppliers.filter((s) => Number(s.id) === boundId);
+  return filtered.length ? filtered : suppliers;
+}
+
+async function rankSupplierCandidates(productId, suppliers, qty, { profileRow } = {}) {
+  const scoped = await suppliersForProductBinding(productId, suppliers, profileRow);
+  const ids = scoped.map((s) => s.id);
   if (!ids.length) return [];
   const need = Math.max(1, Math.floor(Number(qty) || 1));
   const r = await query(
@@ -276,7 +296,7 @@ async function rankSupplierCandidates(productId, suppliers, qty) {
     [productId, ids]
   );
 
-  const supplierById = new Map(suppliers.map((s) => [s.id, s]));
+  const supplierById = new Map(scoped.map((s) => [s.id, s]));
   const out = [];
   for (const row of r.rows || []) {
     const sid = Number(row.supplier_id);
@@ -303,12 +323,12 @@ async function rankSupplierCandidates(productId, suppliers, qty) {
   return out;
 }
 
-async function supplierHasKitStock(suppliers, kitProductId, qty) {
-  const candidates = await rankSupplierCandidates(kitProductId, suppliers, qty);
+async function supplierHasKitStock(suppliers, kitProductId, qty, { profileRow } = {}) {
+  const candidates = await rankSupplierCandidates(kitProductId, suppliers, qty, { profileRow });
   return candidates.length > 0 ? candidates[0] : null;
 }
 
-async function expandOrderRowToDemandLines(row, suppliers) {
+async function expandOrderRowToDemandLines(row, suppliers, { profileRow } = {}) {
   const productId = Number(row.product_id);
   const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
   const orderDbId = Number(row.id);
@@ -319,7 +339,7 @@ async function expandOrderRowToDemandLines(row, suppliers) {
   const base = { orderDbId, marketplace, orderId, orderRow: row };
 
   if (await isKitProductId(productId)) {
-    const kitSupplier = await supplierHasKitStock(suppliers, productId, qty);
+    const kitSupplier = await supplierHasKitStock(suppliers, productId, qty, { profileRow });
     if (kitSupplier) {
       return [
         {
@@ -443,8 +463,8 @@ async function sumOpenPurchaseTotal(client, purchaseId, supplierId) {
   return Number(r.rows?.[0]?.total) || 0;
 }
 
-async function pickSupplierForDeficit(productId, suppliers, qty, { client, profileId, warehouseWeekendDays = null } = {}) {
-  const candidates = await rankSupplierCandidates(productId, suppliers, qty);
+async function pickSupplierForDeficit(productId, suppliers, qty, { client, profileId, profileRow, warehouseWeekendDays = null } = {}) {
+  const candidates = await rankSupplierCandidates(productId, suppliers, qty, { profileRow });
   for (const cand of candidates) {
     const price = cand.price != null && cand.price > 0 ? cand.price : 0;
     const lineTotal = price * qty;
@@ -588,7 +608,7 @@ class OrderProcurementPlannerService {
         unresolvedOrders.push(String(row.order_id || '').trim() || row.id);
         continue;
       }
-      const expanded = await expandOrderRowToDemandLines(resolvedRow, suppliers);
+      const expanded = await expandOrderRowToDemandLines(resolvedRow, suppliers, { profileRow });
       demandLines.push(...expanded);
       const procKey = `${row.marketplace}|${row.order_id}`;
       if (!seenProc.has(procKey)) {
@@ -659,6 +679,7 @@ class OrderProcurementPlannerService {
           return pickSupplierForDeficit(line.productId, suppliers, coverage.deficit, {
             client,
             profileId: pid,
+            profileRow,
             warehouseWeekendDays,
           });
         });
@@ -970,10 +991,17 @@ class OrderProcurementPlannerService {
     const orderWarehouseId =
       (await resolveOrderWarehouseId(orderRows, defaultWarehouseId)) || defaultWarehouseId;
 
+    const profilesRepo = repositoryFactory.getProfilesRepository?.();
+    const profileRow =
+      profilesRepo && typeof profilesRepo.findById === 'function'
+        ? await profilesRepo.findById(pid)
+        : null;
+
     const r = await query(
       `SELECT fl.*,
               p.name AS product_name,
               p.sku AS product_sku,
+              p.supplier_id AS product_supplier_id,
               pk.name AS kit_name,
               pk.sku AS kit_sku
        FROM order_fulfillment_lines fl
@@ -1003,8 +1031,12 @@ class OrderProcurementPlannerService {
       const suggestedSuppliers = await rankSupplierCandidates(
         productId,
         suppliers,
-        coverage.deficit || 1
+        coverage.deficit || 1,
+        { profileRow }
       );
+
+      const boundSupplierId =
+        row.product_supplier_id != null ? Number(row.product_supplier_id) : null;
 
       lines.push({
         lineKey: row.line_key,
@@ -1014,6 +1046,8 @@ class OrderProcurementPlannerService {
         productId,
         productName: row.product_name,
         productSku: row.product_sku,
+        boundSupplierId:
+          Number.isFinite(boundSupplierId) && boundSupplierId > 0 ? boundSupplierId : null,
         kitProductId: row.kit_product_id != null ? Number(row.kit_product_id) : null,
         kitName: row.kit_name,
         kitSku: row.kit_sku,

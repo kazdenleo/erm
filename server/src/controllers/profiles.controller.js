@@ -73,6 +73,13 @@ function pickAccountOwnerProfilePayload(body) {
     const v = b.production_enabled ?? b.productionEnabled;
     out.production_enabled = v === true || v === '1' || v === 'true';
   }
+  if (
+    b.allow_product_supplier_binding !== undefined ||
+    b.allowProductSupplierBinding !== undefined
+  ) {
+    const v = b.allow_product_supplier_binding ?? b.allowProductSupplierBinding;
+    out.allow_product_supplier_binding = v === true || v === '1' || v === 'true';
+  }
   if (b.manual_orders_warehouse_id !== undefined || b.manualOrdersWarehouseId !== undefined) {
     const raw = b.manual_orders_warehouse_id ?? b.manualOrdersWarehouseId;
     if (raw == null || raw === '') {

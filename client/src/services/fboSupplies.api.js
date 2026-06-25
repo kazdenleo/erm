@@ -58,8 +58,10 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
-  getPurchaseCalcSession: async (sessionId) => {
-    const response = await api.get(`/fbo-supplies/purchase-calculation/sessions/${sessionId}`);
+  getPurchaseCalcSession: async (sessionId, params = {}) => {
+    const response = await api.get(`/fbo-supplies/purchase-calculation/sessions/${sessionId}`, {
+      params: params.supplierId ? { supplierId: params.supplierId } : undefined,
+    });
     return response.data?.data ?? response.data;
   },
 

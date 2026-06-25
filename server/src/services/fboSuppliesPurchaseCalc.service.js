@@ -59,7 +59,7 @@ async function loadProductInfoById(productIds) {
   const map = new Map();
   if (!productIds.length) return map;
   const r = await query(
-    `SELECT id, name, sku, COALESCE(cost, 0)::numeric AS cost
+    `SELECT id, name, sku, COALESCE(cost, 0)::numeric AS cost, supplier_id
      FROM products
      WHERE id = ANY($1::bigint[])`,
     [productIds]
@@ -69,6 +69,7 @@ async function loadProductInfoById(productIds) {
       name: row.name,
       sku: row.sku,
       cost: Number(row.cost) || 0,
+      supplierId: row.supplier_id != null ? Number(row.supplier_id) : null,
     });
   }
   return map;
@@ -412,7 +413,7 @@ class FboSuppliesPurchaseCalcService {
     }
   }
 
-  async calculate(supplyIds, { profileId } = {}) {
+  async calculate(supplyIds, { profileId, supplierId = null } = {}) {
     const pid = normalizeProfileId(profileId);
     const ids = normalizeSupplyIds(supplyIds);
     if (!ids.length) {
@@ -591,7 +592,28 @@ class FboSuppliesPurchaseCalcService {
 
     const rows = buildPurchaseDisplayRows(kitHeaderMap, componentRowMap, plainRowMap);
 
-    const purchasableRows = rows.filter((r) => r.rowType !== 'kit' && !r.isKitHeader);
+    const filterSid =
+      supplierId != null && supplierId !== '' && !Number.isNaN(Number(supplierId))
+        ? Number(supplierId)
+        : null;
+    const rowsWithSupplier = rows.map((row) => {
+      const pid = row.productId != null ? Number(row.productId) : null;
+      const info = pid != null ? productInfoById.get(pid) : null;
+      return {
+        ...row,
+        supplierId: info?.supplierId ?? null,
+      };
+    });
+    const filteredRows =
+      filterSid != null
+        ? rowsWithSupplier.filter((row) => {
+            if (row.isKitHeader || row.rowType === 'kit') return true;
+            const sid = row.supplierId != null ? Number(row.supplierId) : null;
+            return sid == null || sid === filterSid;
+          })
+        : rowsWithSupplier;
+
+    const purchasableRows = filteredRows.filter((r) => r.rowType !== 'kit' && !r.isKitHeader);
     const totals = purchasableRows.reduce(
       (acc, r) => {
         acc.toPurchaseQty += r.toPurchase;
@@ -607,10 +629,11 @@ class FboSuppliesPurchaseCalcService {
     return {
       fboWarehouse: fboWh,
       supplies,
-      rows,
+      rows: filteredRows,
       totals,
       defaultOrganizationId,
       defaultWarehouseId: fboWh.id,
+      supplierFilterId: filterSid,
     };
   }
 }

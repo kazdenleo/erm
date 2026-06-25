@@ -26,7 +26,8 @@ import {
   formatKitAvailableDisplay,
   kitIncomingFromComponentsAmount
 } from '../../utils/kitStockMetrics';
-import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
+import { useSuppliers } from '../../hooks/useSuppliers';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
@@ -1069,6 +1070,8 @@ function ManualOnHandCell({ productId, currentOnHand, warehouseId, disabledReaso
 export function WarehouseStocks() {
   const { profile, isProfileAdmin, isAccountAdmin, accountRole, profileId } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
+  const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const { suppliers } = useSuppliers();
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const allowManualStockEdit = profile?.allow_manual_warehouse_stock_edit === true;
   const canManageAccountStockReset =
@@ -1165,6 +1168,7 @@ export function WarehouseStocks() {
     }
   });
   const [filterBrandId, setFilterBrandId] = useState('');
+  const [filterSupplierId, setFilterSupplierId] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
     try {
@@ -1290,6 +1294,7 @@ export function WarehouseStocks() {
       const search = (extra.search !== undefined ? extra.search : filterSearchDebounced).trim();
       const productType = extra.productType !== undefined ? extra.productType : filterProductType;
       const brandId = extra.brandId !== undefined ? extra.brandId : filterBrandId;
+      const supplierId = extra.supplierId !== undefined ? extra.supplierId : filterSupplierId;
       const {
         page: _page,
         silent: _silent,
@@ -1310,6 +1315,7 @@ export function WarehouseStocks() {
         ...(filterOrganizationId ? { organizationId: filterOrganizationId } : {}),
         ...(filterCategoryId ? { categoryId: filterCategoryId } : {}),
         ...(brandId ? { brandId } : {}),
+        ...(supplierBindingEnabled && supplierId ? { supplierId } : {}),
         ...(stockWarehouseId ? { warehouseId: stockWarehouseId } : {}),
         ...(productType ? { productType } : {}),
         ...(search ? { search } : {}),
@@ -1323,12 +1329,14 @@ export function WarehouseStocks() {
       filterOrganizationId,
       filterCategoryId,
       filterBrandId,
+      filterSupplierId,
       stockWarehouseId,
       filterProductType,
       filterSearchDebounced,
       filterInStockOnly,
       filterReservedOnly,
-      filterAvailableOnly
+      filterAvailableOnly,
+      supplierBindingEnabled,
     ]
   );
 
@@ -1428,6 +1436,7 @@ export function WarehouseStocks() {
       reservedOnly: filterReservedOnly,
       availableOnly: filterAvailableOnly,
       brandId: filterBrandId || undefined,
+      supplierId: supplierBindingEnabled ? filterSupplierId || undefined : undefined,
       silent: !isFirstLoad
     });
   }, [
@@ -1437,6 +1446,7 @@ export function WarehouseStocks() {
     filterReservedOnly,
     filterAvailableOnly,
     filterBrandId,
+    filterSupplierId,
     filterCategoryId,
     filterOrganizationId,
     stockWarehouseId
@@ -1545,6 +1555,10 @@ export function WarehouseStocks() {
     if (filterBrandId) {
       const brand = brands.find((b) => String(b.id) === String(filterBrandId));
       filterParts.push(`бренд: ${brand?.name || filterBrandId}`);
+    }
+    if (supplierBindingEnabled && filterSupplierId) {
+      const sup = (suppliers || []).find((s) => String(s.id) === String(filterSupplierId));
+      filterParts.push(`поставщик: ${sup?.name || filterSupplierId}`);
     }
     if (filterInStockOnly) filterParts.push('наличие');
     if (filterReservedOnly) filterParts.push('резерв');
@@ -1734,6 +1748,11 @@ export function WarehouseStocks() {
 
   const handleBrandFilterChange = (e) => {
     setFilterBrandId(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const handleSupplierFilterChange = (e) => {
+    setFilterSupplierId(e.target.value);
     setCurrentPage(1);
   };
 
@@ -2383,6 +2402,26 @@ export function WarehouseStocks() {
                   ))}
               </select>
             </label>
+            {supplierBindingEnabled ? (
+              <label className="stock-levels-filter-label">
+                <span>Поставщик:</span>
+                <select
+                  value={filterSupplierId}
+                  onChange={handleSupplierFilterChange}
+                  className="stock-levels-filter-select"
+                >
+                  <option value="">Все</option>
+                  {[...(suppliers || [])]
+                    .filter((s) => s && s.name)
+                    .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'))
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            ) : null}
             <label className="stock-levels-filter-label">
               <span>Категория:</span>
               <select

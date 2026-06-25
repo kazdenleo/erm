@@ -305,6 +305,7 @@ export function Purchases() {
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
   const [showArchived, setShowArchived] = useState(false);
+  const [filterSupplierId, setFilterSupplierId] = useState('');
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
@@ -503,12 +504,14 @@ export function Purchases() {
 
   const reload = async (opts = {}) => {
     const includeArchived = opts.includeArchived ?? showArchived;
+    const supplierId = opts.supplierId ?? filterSupplierId;
     setLoading(true);
     setErr(null);
     try {
       const data = await purchasesApi.list({
         limit: 200,
         ...(includeArchived ? { includeArchived: true } : {}),
+        ...(supplierId ? { supplierId } : {}),
       });
       setList(Array.isArray(data) ? data : []);
     } catch (e) {
@@ -519,9 +522,9 @@ export function Purchases() {
   };
 
   useEffect(() => {
-    reload({ includeArchived: showArchived });
+    reload({ includeArchived: showArchived, supplierId: filterSupplierId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArchived]);
+  }, [showArchived, filterSupplierId]);
 
   const productOptions = useMemo(() => {
     return (products || []).map((p) => ({
@@ -1269,6 +1272,21 @@ export function Purchases() {
         <Button variant="secondary" onClick={() => reload()} disabled={loading}>
           {loading ? '...' : 'Обновить'}
         </Button>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+          <span className="muted">Поставщик</span>
+          <select
+            className="warehouse-ops-select"
+            value={filterSupplierId}
+            onChange={(e) => setFilterSupplierId(e.target.value)}
+          >
+            <option value="">Все</option>
+            {(suppliers || []).map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name || `Поставщик #${s.id}`}
+              </option>
+            ))}
+          </select>
+        </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', margin: 0 }}>
           <input
             type="checkbox"

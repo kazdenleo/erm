@@ -52,7 +52,7 @@ import {
   productsMapFromStockList,
   warehouseOptionsForOrganization,
 } from '../../utils/procurementPreview.js';
-import { isProfileProcurementStatusEnabled } from '../../utils/profileFlags.js';
+import { isProfileProcurementStatusEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import './Orders.css';
 import './OrderDetail.css';
 
@@ -413,6 +413,7 @@ export function Orders() {
   const allowPrivateOrders = profile?.allow_private_orders === true;
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
   const procurementStatusEnabled = isProfileProcurementStatusEnabled(profile);
+  const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
   const { warehouses, loadWarehouses } = useWarehouses();
   const { organizations } = useOrganizations();
   const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
@@ -511,6 +512,8 @@ export function Orders() {
   const [procurementWarehouseId, setProcurementWarehouseId] = useState('');
   /** Сортировка таблицы позиций в модалке закупки по количеству */
   const [procurementPreviewQtySort, setProcurementPreviewQtySort] = useState(null);
+  /** Фильтр позиций закупки по привязанному поставщику (если включена настройка). */
+  const [procurementFilterSupplierId, setProcurementFilterSupplierId] = useState('');
   /** Редактируемые позиции закупки (кол-во, исключение, подсказка по складу) */
   const [procurementEditableLines, setProcurementEditableLines] = useState([]);
   const [procurementLinesReady, setProcurementLinesReady] = useState(false);
@@ -578,7 +581,16 @@ export function Orders() {
   ]);
 
   const procurementDisplayLines = useMemo(() => {
-    const lines = procurementEditableLines;
+    let lines = procurementEditableLines;
+    if (supplierBindingEnabled && String(procurementFilterSupplierId || '').trim()) {
+      const sid = Number(procurementFilterSupplierId);
+      if (Number.isFinite(sid) && sid > 0) {
+        lines = lines.filter((l) => {
+          const lsid = l.supplierId != null ? Number(l.supplierId) : null;
+          return lsid == null || lsid === sid;
+        });
+      }
+    }
     if (procurementPreviewQtySort == null) return lines;
     const dir = procurementPreviewQtySort === 'asc' ? 1 : -1;
     const q = (l) => {
@@ -591,7 +603,7 @@ export function Orders() {
       if (d !== 0) return d * dir;
       return String(a.article || '').localeCompare(String(b.article || ''), 'ru', { numeric: true });
     });
-  }, [procurementEditableLines, procurementPreviewQtySort]);
+  }, [procurementEditableLines, procurementPreviewQtySort, supplierBindingEnabled, procurementFilterSupplierId]);
 
   const procurementActiveLineCount = useMemo(
     () => procurementEditableLines.filter((l) => !l.excluded).length,
@@ -1123,6 +1135,7 @@ export function Orders() {
     setProcurementEditableLines([]);
     setProcurementLinesReady(false);
     setProcurementSubmitting(false);
+    setProcurementFilterSupplierId('');
     setProcurementOrganizationId('');
     setProcurementWarehouseId('');
   };
@@ -1167,6 +1180,20 @@ export function Orders() {
       if (!String(procurementSupplierId || '').trim()) {
         showProcurementModalError('Выберите поставщика');
         return;
+      }
+      if (supplierBindingEnabled) {
+        const sid = Number(procurementSupplierId);
+        const mismatch = activeLines.filter((l) => {
+          const lsid = l.supplierId != null ? Number(l.supplierId) : null;
+          return lsid != null && lsid !== sid;
+        });
+        if (mismatch.length > 0) {
+          const arts = mismatch.map((l) => l.article || l.name || '?').join(', ');
+          showProcurementModalError(
+            `У позиций (${arts}) указан другой поставщик в карточке товара. Смените поставщика закупки или отвяжите товар.`
+          );
+          return;
+        }
       }
       if (!String(procurementOrganizationId || '').trim()) {
         showProcurementModalError(
@@ -2483,6 +2510,23 @@ export function Orders() {
                         заказы) — по умолчанию не попадают в закупку. При необходимости верните строку и укажите
                         количество.
                       </p>
+                    ) : null}
+                    {supplierBindingEnabled ? (
+                      <div className="form-group" style={{ marginBottom: 12, maxWidth: 420 }}>
+                        <label className="label">Фильтр по поставщику (привязка в карточке)</label>
+                        <select
+                          className="form-control"
+                          value={procurementFilterSupplierId}
+                          onChange={(e) => setProcurementFilterSupplierId(e.target.value)}
+                        >
+                          <option value="">Все позиции</option>
+                          {procurementSuppliers.map((s) => (
+                            <option key={s.id} value={String(s.id)}>
+                              {s.name || `Поставщик №${s.id}`}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     ) : null}
                     <table className="table orders-procurement-lines-table" style={{ marginBottom: 16, fontSize: 14 }}>
                       <thead>

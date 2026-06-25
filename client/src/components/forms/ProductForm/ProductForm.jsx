@@ -40,7 +40,8 @@ import {
 } from '../../../utils/productBarcodes.js';
 import { MarketplaceToggle } from '../../common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { useAuth } from '../../../context/AuthContext.jsx';
-import { isProfileKitsEnabled } from '../../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../../utils/profileFlags.js';
+import { useSuppliers } from '../../../hooks/useSuppliers';
 import './ProductForm.css';
 
 const TYPE_LABELS = { text: 'Текст', checkbox: 'Флажок', number: 'Число', date: 'Дата', dictionary: 'Словарь' };
@@ -290,6 +291,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
     product_type: 'product',
     categoryId: '',
     organizationId: '',
+    supplierId: '',
     brand: '',
   country_of_origin: '',
     cost: '',
@@ -339,6 +341,8 @@ export function ProductForm({
 }) {
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
+  const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const { suppliers } = useSuppliers();
   const productFormDomId = useId();
   const [printHelperUrl, setPrintHelperUrl] = useState('');
   const { printProductLabel, printing: labelPrinting, error: labelPrintError } =
@@ -552,6 +556,12 @@ export function ProductForm({
         product_type: currentProduct.product_type === 'kit' ? 'kit' : 'product',
         categoryId: (currentProduct.categoryId ?? currentProduct.user_category_id ?? '').toString(),
         organizationId: currentProduct.organization_id != null ? String(currentProduct.organization_id) : (currentProduct.organizationId != null ? String(currentProduct.organizationId) : ''),
+        supplierId:
+          currentProduct.supplier_id != null
+            ? String(currentProduct.supplier_id)
+            : currentProduct.supplierId != null
+              ? String(currentProduct.supplierId)
+              : '',
         brand: currentProduct.brand || '',
         country_of_origin: currentProduct.country_of_origin || '',
         cost: currentProduct.cost || '',
@@ -2575,6 +2585,14 @@ export function ProductForm({
       product_type: formData.product_type || 'product',
       categoryId: formData.categoryId || null,
       organizationId: formData.organizationId && formData.organizationId.trim() !== '' ? formData.organizationId : null,
+      ...(supplierBindingEnabled
+        ? {
+            supplierId:
+              formData.supplierId && String(formData.supplierId).trim() !== ''
+                ? formData.supplierId
+                : null,
+          }
+        : {}),
       brand: formData.brand.trim() || null,
       country_of_origin: formData.country_of_origin.trim() || null,
       cost: formData.cost ? parseFloat(formData.cost) : null,
@@ -3261,6 +3279,28 @@ export function ProductForm({
             ))}
           </select>
         </div>
+
+        {supplierBindingEnabled ? (
+          <div className="col-md-6">
+            <label className="form-label" htmlFor="productSupplier">Поставщик</label>
+            <select
+              id="productSupplier"
+              className="form-select form-select-sm"
+              value={formData.supplierId}
+              onChange={(e) => handleChange('supplierId', e.target.value)}
+            >
+              <option value="">— Не привязан —</option>
+              {[...(suppliers || [])]
+                .filter((s) => s && (s.isActive !== false && s.active !== false))
+                .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
+                .map((s) => (
+                  <option key={s.id} value={String(s.id)}>
+                    {s.name || `Поставщик #${s.id}`}
+                  </option>
+                ))}
+            </select>
+          </div>
+        ) : null}
 
         <div className="col-md-6">
           <label className="form-label" htmlFor="brand">Бренд</label>

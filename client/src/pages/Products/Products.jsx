@@ -28,7 +28,8 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
+import { useSuppliers } from '../../hooks/useSuppliers';
 import './Products.css';
 
 /** Текст подсказки со составом комплекта (title / native tooltip) */
@@ -91,6 +92,8 @@ export function Products() {
   const navigate = useNavigate();
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
+  const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
+  const { suppliers } = useSuppliers();
   const [searchParams, setSearchParams] = useSearchParams();
   const {
     products,
@@ -128,6 +131,7 @@ export function Products() {
   const [exportExcludeMpAttributes, setExportExcludeMpAttributes] = useState(false);
   const [filterOrganizationId, setFilterOrganizationId] = useState('');
   const [filterBrandId, setFilterBrandId] = useState('');
+  const [filterSupplierId, setFilterSupplierId] = useState('');
   const [filterCategoryId, setFilterCategoryId] = useState('');
   /** '' | 'product' | 'kit' */
   const [filterProductType, setFilterProductType] = useState('');
@@ -261,6 +265,8 @@ export function Products() {
   const loadList = (partial = {}) => {
     const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
     const brand = partial.brandId !== undefined ? partial.brandId : filterBrandId;
+    const supplier =
+      partial.supplierId !== undefined ? partial.supplierId : filterSupplierId;
     const cat = partial.categoryId !== undefined ? partial.categoryId : filterCategoryId;
     const pt = partial.productType !== undefined ? partial.productType : filterProductType;
     const archiveMode =
@@ -274,6 +280,7 @@ export function Products() {
     return loadProducts({
       organizationId: org || undefined,
       brandId: brand || undefined,
+      supplierId: supplierBindingEnabled && supplier ? supplier : undefined,
       categoryId: cat || undefined,
       productType: ptTrim || undefined,
       search: search || undefined,
@@ -290,6 +297,7 @@ export function Products() {
   const activeFiltersCount =
     (filterOrganizationId ? 1 : 0) +
     (filterBrandId ? 1 : 0) +
+    (supplierBindingEnabled && filterSupplierId ? 1 : 0) +
     (filterCategoryId ? 1 : 0) +
     (filterProductType ? 1 : 0) +
     (filterArchiveMode ? 1 : 0);
@@ -300,10 +308,11 @@ export function Products() {
     setCurrentPage(1);
     setFilterOrganizationId('');
     setFilterBrandId('');
+    setFilterSupplierId('');
     setFilterCategoryId('');
     setFilterProductType('');
     setFilterArchiveMode('');
-    loadList({ organizationId: '', brandId: '', categoryId: '', productType: '', archiveMode: '', page: 1 });
+    loadList({ organizationId: '', brandId: '', supplierId: '', categoryId: '', productType: '', archiveMode: '', page: 1 });
   };
 
   const handleListSearchChange = (e) => {
@@ -384,6 +393,7 @@ export function Products() {
   }, [
     filterOrganizationId,
     filterBrandId,
+    filterSupplierId,
     filterCategoryId,
     filterProductType,
     filterArchiveMode
@@ -617,6 +627,12 @@ export function Products() {
     const v = e.target.value;
     setCurrentPage(1);
     setFilterBrandId(v);
+  };
+
+  const handleFilterSupplierChange = (e) => {
+    const v = e.target.value;
+    setCurrentPage(1);
+    setFilterSupplierId(v);
   };
 
   const openExportModal = () => {
@@ -998,6 +1014,29 @@ export function Products() {
                         ))}
                     </select>
                   </div>
+                  {supplierBindingEnabled ? (
+                    <div className="col-12 col-md-6 col-lg-3">
+                      <label className="text-muted small mb-1 d-block" htmlFor="products-filter-supplier">
+                        Поставщик
+                      </label>
+                      <select
+                        id="products-filter-supplier"
+                        className="form-select form-select-sm"
+                        value={filterSupplierId}
+                        onChange={handleFilterSupplierChange}
+                      >
+                        <option value="">Все поставщики</option>
+                        {[...(suppliers || [])]
+                          .filter((s) => s && s.name)
+                          .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'))
+                          .map((s) => (
+                            <option key={s.id} value={String(s.id)}>
+                              {s.name}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  ) : null}
                   <div className="col-12 col-md-6 col-lg-3">
                     <label className="text-muted small mb-1 d-block" htmlFor="products-filter-cat">
                       Категория

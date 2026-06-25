@@ -334,7 +334,8 @@ function buildFindAllFilters(options = {}) {
     includeArchived,
     archivedOnly,
     inStockOnly,
-    warehouseId
+    warehouseId,
+    supplierId,
   } = options;
   let whereSql = ' WHERE 1=1';
   const params = [];
@@ -353,6 +354,14 @@ function buildFindAllFilters(options = {}) {
 
   if (brandId) {
     ({ whereSql, paramIndex } = appendBrandIdFilter(whereSql, params, paramIndex, brandId));
+  }
+
+  if (supplierId != null && supplierId !== '') {
+    const sid = typeof supplierId === 'string' ? parseInt(supplierId, 10) : Number(supplierId);
+    if (Number.isFinite(sid) && sid > 0) {
+      whereSql += ` AND p.supplier_id = $${paramIndex++}`;
+      params.push(sid);
+    }
   }
 
   const categoryIdRaw = normalizeListCategoryId(categoryId);
@@ -1110,6 +1119,9 @@ class ProductsRepositoryPG {
         product.barcodes = barcodesByProduct[String(product.id)] || [];
         if (product.user_category_id) product.categoryId = product.user_category_id;
         if (product.brand_name) product.brand = product.brand_name;
+        if (product.supplier_id != null) {
+          product.supplierId = Number(product.supplier_id);
+        }
         // Гарантируем наличие поля cost из БД (на случай если колонка добавлена позже или пришла как строка)
         if (product.cost === undefined) product.cost = null;
         const costFromDb = product.cost != null && !isNaN(Number(product.cost)) ? Number(product.cost) : null;
@@ -1378,11 +1390,13 @@ class ProductsRepositoryPG {
         p.*,
         b.name as brand_name,
         uc.name as category_name,
-        o.name as organization_name
+        o.name as organization_name,
+        s.name as supplier_name
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
       LEFT JOIN user_categories uc ON p.user_category_id = uc.id
       LEFT JOIN organizations o ON p.organization_id = o.id
+      LEFT JOIN suppliers s ON p.supplier_id = s.id
       WHERE p.id = $1
     `, [numericId]);
     
@@ -1402,6 +1416,12 @@ class ProductsRepositoryPG {
     // Маппим user_category_id в categoryId для совместимости с фронтендом
     if (product.user_category_id) {
       product.categoryId = product.user_category_id;
+    }
+    if (product.supplier_id != null) {
+      product.supplierId = Number(product.supplier_id);
+    }
+    if (product.supplier_name) {
+      product.supplierName = product.supplier_name;
     }
     
     // Загружаем остатки и себестоимость из supplier_stocks
@@ -1934,6 +1954,11 @@ class ProductsRepositoryPG {
       const userCategoryId = productData.categoryId || productData.user_category_id || null;
       const productType = (productData.product_type === 'kit' ? 'kit' : 'product');
       const orgId = productData.organization_id != null && productData.organization_id !== '' ? productData.organization_id : null;
+      const supplierIdRaw = productData.supplier_id ?? productData.supplierId;
+      const supplierIdVal =
+        supplierIdRaw != null && supplierIdRaw !== '' && !Number.isNaN(Number(supplierIdRaw))
+          ? Number(supplierIdRaw)
+          : null;
       const addExpRaw = productData.additionalExpenses ?? productData.additional_expenses;
       const additionalExpensesVal =
         addExpRaw != null && addExpRaw !== '' && !isNaN(Number(addExpRaw)) ? Number(addExpRaw) : null;
@@ -1948,11 +1973,11 @@ class ProductsRepositoryPG {
         INSERT INTO products (
           profile_id,
           sku, name, brand_id, user_category_id, price, cost, additional_expenses, min_price, buyout_rate, buyout_rate_ozon, buyout_rate_wb, buyout_rate_ym,
-          weight, length, width, height, volume, quantity, unit, description, product_type, organization_id, country_of_origin,
+          weight, length, width, height, volume, quantity, unit, description, product_type, organization_id, supplier_id, country_of_origin,
           mp_ozon_name, mp_ozon_description, mp_ozon_brand,
           mp_wb_vendor_code, mp_wb_name, mp_wb_description, mp_wb_brand,
           mp_ym_name, mp_ym_description
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
         RETURNING *
       `, [
         profileIdRaw,
@@ -1983,6 +2008,7 @@ class ProductsRepositoryPG {
         productData.description || null,
         productType,
         orgId,
+        supplierIdVal,
         productData.country_of_origin || null,
         mpStr(productData.mp_ozon_name),
         mpStr(productData.mp_ozon_description),
@@ -2188,6 +2214,14 @@ class ProductsRepositoryPG {
       if (updates.hasOwnProperty('categoryId')) {
         updateFields.push(`user_category_id = $${paramIndex++}`);
         params.push(updates.categoryId || null);
+      }
+
+      if (updates.hasOwnProperty('supplierId') || updates.hasOwnProperty('supplier_id')) {
+        const raw = updates.hasOwnProperty('supplierId') ? updates.supplierId : updates.supplier_id;
+        const sid =
+          raw != null && raw !== '' && !Number.isNaN(Number(raw)) ? Number(raw) : null;
+        updateFields.push(`supplier_id = $${paramIndex++}`);
+        params.push(sid);
       }
       
       // Обрабатываем minPrice отдельно, маппим в min_price

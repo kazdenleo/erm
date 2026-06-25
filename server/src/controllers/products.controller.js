@@ -102,6 +102,13 @@ function parseProductListBrandId(queryVal) {
   return s;
 }
 
+/** Только числовой supplier_id для SQL bigint. */
+function parseProductListSupplierId(queryVal) {
+  const s = firstQueryParam(queryVal);
+  if (s == null || !/^\d+$/.test(s)) return undefined;
+  return s;
+}
+
 class ProductsController {
   constructor() {
     const __filename = fileURLToPath(import.meta.url);
@@ -121,6 +128,8 @@ class ProductsController {
       if (cat != null) filters.categoryId = cat;
       const brandParsed = parseProductListBrandId(req.query.brandId);
       if (brandParsed != null) filters.brandId = brandParsed;
+      const supplierParsed = parseProductListSupplierId(req.query.supplierId);
+      if (supplierParsed != null) filters.supplierId = supplierParsed;
       if (req.query.search != null && String(req.query.search).trim() !== '') {
         filters.search = String(req.query.search).trim();
       }
@@ -218,6 +227,8 @@ class ProductsController {
       }
       const brandParsed = parseProductListBrandId(req.query.brandId);
       if (brandParsed != null) options.brandId = brandParsed;
+      const supplierParsed = parseProductListSupplierId(req.query.supplierId);
+      if (supplierParsed != null) options.supplierId = supplierParsed;
       const catParsed = parseProductListCategoryId(req.query.categoryId);
       if (catParsed != null) options.categoryId = catParsed;
       if (req.query.search != null && req.query.search !== '') options.search = req.query.search;

@@ -22,7 +22,8 @@ import {
   sortPurchaseRowsWithProgress,
 } from './fboPurchaseCalcUtils';
 import { FboPurchaseReplaceModal } from './FboPurchaseReplaceModal';
-import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import './FboSupplies.css';
 
 function fmtMoney(n) {
@@ -48,6 +49,8 @@ function isRowSelectable(row) {
 export function FboPurchaseCalculation() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { profile } = useAuth();
+  const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
   const sessionIdFromUrl = useMemo(() => {
     const q = new URLSearchParams(location.search).get('session');
     const n = q != null ? parseInt(q, 10) : NaN;
@@ -87,6 +90,7 @@ export function FboPurchaseCalculation() {
   const [replaceCtx, setReplaceCtx] = useState(null);
   const [replaceSaving, setReplaceSaving] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  const [filterSupplierId, setFilterSupplierId] = useState('');
 
   const load = useCallback(async () => {
     if (!sessionIdFromUrl && !supplyIds.length) {
@@ -100,7 +104,9 @@ export function FboPurchaseCalculation() {
     try {
       let payload;
       if (sessionIdFromUrl) {
-        payload = await fboSuppliesApi.getPurchaseCalcSession(sessionIdFromUrl);
+        payload = await fboSuppliesApi.getPurchaseCalcSession(sessionIdFromUrl, {
+          supplierId: filterSupplierId || undefined,
+        });
       } else {
         payload = await fboSuppliesApi.openPurchaseCalcSession(supplyIds);
         if (payload?.session?.id || payload?.id) {
@@ -128,7 +134,7 @@ export function FboPurchaseCalculation() {
     } finally {
       setLoading(false);
     }
-  }, [sessionIdFromUrl, supplyIds, navigate]);
+  }, [sessionIdFromUrl, supplyIds, navigate, filterSupplierId]);
 
   useEffect(() => {
     load();
@@ -544,6 +550,24 @@ export function FboPurchaseCalculation() {
           уже оформлено. Отметьте галочками позиции и создайте закупку у нужного поставщика; можно
           несколько закупок на одну сессию. Комплекты показаны отдельной строкой; ниже — комплектующие к закупке.
         </p>
+      ) : null}
+
+      {supplierBindingEnabled ? (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <span className="muted" style={{ fontSize: 13 }}>Фильтр по поставщику</span>
+          <select
+            className="warehouse-ops-select"
+            value={filterSupplierId}
+            onChange={(e) => setFilterSupplierId(e.target.value)}
+          >
+            <option value="">Все товары</option>
+            {(suppliers || []).map((s) => (
+              <option key={s.id} value={String(s.id)}>
+                {s.name || `Поставщик #${s.id}`}
+              </option>
+            ))}
+          </select>
+        </div>
       ) : null}
 
       {purchaseLinks.length > 0 ? (

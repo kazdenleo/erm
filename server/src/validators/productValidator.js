@@ -61,6 +61,16 @@ export const createProductSchema = z.object({
     if (v === '' || v == null) return null;
     return typeof v === 'number' ? v : (String(v).trim() || null);
   }),
+  supplierId: z.union([z.string(), z.number()]).optional().nullable().transform(v => {
+    if (v === '' || v == null) return null;
+    const n = typeof v === 'number' ? v : parseInt(String(v).trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }),
+  supplier_id: z.union([z.string(), z.number()]).optional().nullable().transform(v => {
+    if (v === '' || v == null) return null;
+    const n = typeof v === 'number' ? v : parseInt(String(v).trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }),
   price: optionalNum(),
   cost: optionalNum(),
   additionalExpenses: optionalNum(),

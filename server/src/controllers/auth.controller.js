@@ -248,6 +248,7 @@ export const authController = {
                 procurement_status_enabled: profile.procurement_status_enabled !== false,
                 kits_enabled: profile.kits_enabled !== false,
                 production_enabled: profile.production_enabled !== false,
+                allow_product_supplier_binding: profile.allow_product_supplier_binding === true,
                 fbo_enabled: profile.fbo_enabled === true,
                 fbo_deduction_warehouse_id:
                   profile.fbo_deduction_warehouse_id != null

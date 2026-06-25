@@ -30,6 +30,9 @@ export function accountSettingsFromProfile(profile) {
     procurement_status_enabled: profile.procurement_status_enabled !== false,
     kits_enabled: profile.kits_enabled !== false,
     production_enabled: profile.production_enabled !== false,
+    allow_product_supplier_binding: isProfileBoolFlag(
+      profile.allow_product_supplier_binding ?? profile.allowProductSupplierBinding
+    ),
   };
 }
 
@@ -55,4 +58,12 @@ export function isProfileProductionEnabled(profile) {
 export function isProfileFboEnabled(profile) {
   if (profile == null) return false;
   return isProfileBoolFlag(profile.fbo_enabled ?? profile.fboEnabled);
+}
+
+/** Привязка товаров к поставщику включена (по умолчанию нет). */
+export function isProfileProductSupplierBindingEnabled(profile) {
+  if (profile == null) return false;
+  return isProfileBoolFlag(
+    profile.allow_product_supplier_binding ?? profile.allowProductSupplierBinding
+  );
 }

@@ -1093,6 +1093,11 @@ class ProductsService {
     if (productData.organizationId !== undefined) {
       productData.organization_id = productData.organizationId !== '' && productData.organizationId != null ? productData.organizationId : null;
     }
+    if (productData.supplierId !== undefined || productData.supplier_id !== undefined) {
+      const raw = productData.supplierId !== undefined ? productData.supplierId : productData.supplier_id;
+      productData.supplier_id =
+        raw != null && raw !== '' && !Number.isNaN(Number(raw)) ? Number(raw) : null;
+    }
     // barcodes: нормализуем объекты { barcode, marketplaces }
     if (productData.barcodes != null) {
       productData.barcodes = normalizeBarcodeRows(productData.barcodes);
@@ -1232,6 +1237,11 @@ class ProductsService {
     delete updates.quantity;
     if (updates.organizationId !== undefined) {
       updates.organization_id = updates.organizationId !== '' && updates.organizationId != null ? updates.organizationId : null;
+    }
+    if (updates.supplierId !== undefined || updates.supplier_id !== undefined) {
+      const raw = updates.supplierId !== undefined ? updates.supplierId : updates.supplier_id;
+      updates.supplier_id =
+        raw != null && raw !== '' && !Number.isNaN(Number(raw)) ? Number(raw) : null;
     }
     let existingForBrand = null;
     if (updates.brand && !updates.brand_id) {

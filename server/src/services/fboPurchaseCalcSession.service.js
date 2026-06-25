@@ -246,7 +246,7 @@ class FboPurchaseCalcSessionService {
   }
 
   /** Актуальный расчёт + прогресс закупок по сессии. */
-  async getSessionView(sessionId, { profileId } = {}) {
+  async getSessionView(sessionId, { profileId, supplierId = null } = {}) {
     const pid = normalizeProfileId(profileId);
     if (!pid) {
       const err = new Error('Профиль не определён');
@@ -274,7 +274,10 @@ class FboPurchaseCalcSessionService {
     }
 
     const supplyIds = normalizeSupplyIds(session.supply_ids);
-    const calc = await fboSuppliesPurchaseCalcService.calculate(supplyIds, { profileId: pid });
+    const calc = await fboSuppliesPurchaseCalcService.calculate(supplyIds, {
+      profileId: pid,
+      supplierId,
+    });
     const rowStateMaps = await loadRowStateMap(sid);
     const merged = applyRowState(calc, rowStateMaps);
 

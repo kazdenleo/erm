@@ -23,8 +23,12 @@ class PurchasesController {
         (req.query.includeArchived !== '1' &&
           req.query.includeArchived !== 'true' &&
           status == null);
+      const supplierId =
+        req.query.supplierId != null && String(req.query.supplierId).trim() !== ''
+          ? req.query.supplierId
+          : null;
       const profileId = tid;
-      const data = await purchasesService.list({ profileId, limit, status, activeOnly });
+      const data = await purchasesService.list({ profileId, limit, status, activeOnly, supplierId });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       next(e);
