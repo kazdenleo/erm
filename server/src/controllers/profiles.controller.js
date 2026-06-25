@@ -8,6 +8,13 @@ import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsService from '../services/stockMovements.service.js';
 import { jsonSafeRow } from '../utils/profileId.js';
 import { clearProfileFeatureFlagsCache } from '../utils/profileFeatureFlags.js';
+import {
+  CONFIGURABLE_ACCOUNT_ROLES,
+  formStateToNavSections,
+  normalizeAccountRoleKey,
+  parseRoleNavSections,
+  roleNavSectionsToFormState,
+} from '../utils/userNavSections.js';
 
 const repo = repositoryFactory.getProfilesRepository();
 const inquiriesRepo = repositoryFactory.getInquiriesRepository();
@@ -196,6 +203,69 @@ export const profilesController = {
         return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
       }
       res.json({ ok: true, data: jsonSafeRow(item) });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /** Настройки видимости разделов по ролям аккаунта */
+  async getRoleNavSections(req, res, next) {
+    try {
+      const id = req.user.profileId;
+      if (id == null || id === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const item = await repo.findById(id);
+      if (!item) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
+      const stored = parseRoleNavSections(item.role_nav_sections);
+      const roles = {};
+      for (const role of CONFIGURABLE_ACCOUNT_ROLES) {
+        roles[role] = {
+          configured: Object.prototype.hasOwnProperty.call(stored, role),
+          navSections: roleNavSectionsToFormState(item.role_nav_sections, role),
+        };
+      }
+      res.json({ ok: true, data: { roles } });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async updateRoleNavSection(req, res, next) {
+    try {
+      const id = req.user.profileId;
+      if (id == null || id === '') {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const role = normalizeAccountRoleKey(req.params.role);
+      if (!role || !CONFIGURABLE_ACCOUNT_ROLES.includes(role)) {
+        return res.status(400).json({ ok: false, message: 'Неизвестная роль' });
+      }
+      const current = await repo.findById(id);
+      if (!current) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
+      const all = parseRoleNavSections(current.role_nav_sections);
+      const { navSections, useDefaultPreset } = req.body || {};
+      if (useDefaultPreset) {
+        delete all[role];
+      } else {
+        all[role] = formStateToNavSections(navSections);
+      }
+      const item = await repo.update(id, { role_nav_sections: all });
+      if (!item) {
+        return res.status(404).json({ ok: false, message: 'Аккаунт не найден' });
+      }
+      res.json({
+        ok: true,
+        data: {
+          role,
+          configured: Object.prototype.hasOwnProperty.call(all, role),
+          navSections: roleNavSectionsToFormState(item.role_nav_sections, role),
+        },
+      });
     } catch (error) {
       next(error);
     }

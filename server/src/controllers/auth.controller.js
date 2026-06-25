@@ -13,6 +13,7 @@ import { resolveEffectiveProfileId } from '../utils/effectiveProfile.js';
 import { transaction } from '../config/database.js';
 import { sendNewAccountPassword } from '../services/mail.service.js';
 import { buildFullName, splitFullName } from '../utils/userName.js';
+import { buildUserNavFeatures, resolveNavSectionsForUser } from '../utils/userNavSections.js';
 
 const usersRepo = repositoryFactory.getUsersRepository();
 const profilesRepo = repositoryFactory.getProfilesRepository();
@@ -260,7 +261,7 @@ export const authController = {
                     : null,
               }
             : null,
-          features: {},
+          features: buildUserNavFeatures(resolveNavSectionsForUser(user, profile)),
           limits: {},
         },
       });

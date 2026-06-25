@@ -1,6 +1,28 @@
 .settings-users-page .subtitle { margin-bottom: 1rem; color: var(--muted); }
 
-.settings-users-list { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
+.settings-users-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 1.25rem;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.settings-users-tabs button {
+  padding: 10px 16px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--muted, #6b7280);
+  font-weight: 500;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.settings-users-tabs button.active {
+  color: var(--text, #111827);
+  border-bottom-color: var(--primary, #3b82f6);
+}
+
+.settings-users-list { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0; }
 .settings-users-item {
   display: flex;
   justify-content: space-between;
@@ -27,3 +49,74 @@
 .settings-users-form .login-input { width: 100%; margin-top: 4px; }
 .settings-users-form .admin-form-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
 .settings-users-loading, .settings-users-error { padding: 2rem; text-align: center; }
+
+.settings-users-nav-sections {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: var(--primary-50);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.settings-users-nav-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.settings-users-nav-title { font-weight: 600; font-size: 0.9rem; }
+.settings-users-nav-hint { margin: 0 0 0.75rem; line-height: 1.35; }
+.settings-users-nav-group { margin-top: 0.75rem; }
+.settings-users-nav-group-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+.settings-users-nav-toggles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.35rem 1rem;
+}
+.settings-users-nav-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  cursor: pointer;
+}
+.settings-users-nav-toggle .form-check-input { margin: 0; flex-shrink: 0; cursor: pointer; }
+.settings-users-nav-toggle .form-check-label { cursor: pointer; line-height: 1.3; }
+
+.settings-roles-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+.settings-roles-tab {
+  padding: 0.45rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--primary-50);
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.settings-roles-tab--active {
+  border-color: var(--primary);
+  background: var(--primary-100);
+}
+.settings-roles-tab-badge {
+  margin-left: 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.settings-roles-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }

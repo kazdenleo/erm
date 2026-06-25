@@ -66,6 +66,37 @@ function getSupplierStocksSyncCronExpression() {
   return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
 }
 
+/** Фоновая синхронизация статусов FBO с МП (кроме «Закрыт»/«Возврат»). Выкл: FBO_SUPPLY_STATUS_SYNC_ENABLED=0 */
+function isFboSupplyStatusSyncEnabled() {
+  const v = process.env.FBO_SUPPLY_STATUS_SYNC_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (Europe/Moscow). По умолчанию каждые 10 мин; переопределение: FBO_SUPPLY_STATUS_SYNC_CRON */
+function getFboSupplyStatusSyncCronExpression() {
+  const c = process.env.FBO_SUPPLY_STATUS_SYNC_CRON;
+  return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
+}
+
+async function runFboSupplyStatusSync() {
+  const { runFboShippedStatusSyncBlocking, getFboSupplyStatusSyncStatus } = await import(
+    './fboSupplyStatusSync.job.js'
+  );
+  if (getFboSupplyStatusSyncStatus().inProgress) {
+    logger.info('[Scheduler] FBO supply status sync: skip (previous run still in progress)');
+    return;
+  }
+  try {
+    const result = await runFboShippedStatusSyncBlocking();
+    if ((result?.updated ?? 0) > 0) {
+      logger.info('[Scheduler] FBO supply status sync done', result);
+    }
+  } catch (e) {
+    logger.warn('[Scheduler] FBO supply status sync failed:', e?.message || e);
+  }
+}
+
 async function runSupplierStocksSync() {
   const { runSupplierStocksSyncBlocking, getSupplierStocksSyncStatus } = await import(
     './supplierStocksRefresh.job.js'
@@ -528,6 +559,23 @@ class SchedulerService {
         logger.info('[Scheduler] Supplier stocks background sync disabled (SUPPLIER_STOCKS_SYNC_ENABLED)');
       }
 
+      let fboSupplyStatusSyncJob = null;
+      const fboSupplyStatusCron = getFboSupplyStatusSyncCronExpression();
+      if (isFboSupplyStatusSyncEnabled()) {
+        fboSupplyStatusSyncJob = cron.schedule(fboSupplyStatusCron, async () => {
+          if (isSchedulerDbJobRunning()) {
+            logger.info('[Scheduler] FBO supply status sync: пропуск — ночная задача БД');
+            return;
+          }
+          await runSchedulerDbJob('fbo-supply-status', () => runFboSupplyStatusSync());
+        }, {
+          scheduled: false,
+          timezone: 'Europe/Moscow'
+        });
+      } else {
+        logger.info('[Scheduler] FBO supply status sync disabled (FBO_SUPPLY_STATUS_SYNC_ENABLED)');
+      }
+
       this.jobs.push({
         name: 'wb-marketplace-update',
         job: wbUpdateJob,
@@ -637,6 +685,16 @@ class SchedulerService {
         });
       }
 
+      if (fboSupplyStatusSyncJob) {
+        this.jobs.push({
+          name: 'fbo-supply-status-sync',
+          job: fboSupplyStatusSyncJob,
+          schedule: fboSupplyStatusCron,
+          description:
+            'Статусы FBO с маркетплейсов (кроме «Закрыт»/«Возврат»). Интервал: FBO_SUPPLY_STATUS_SYNC_CRON, по умолчанию */10 * * * *'
+        });
+      }
+
       // Запускаем задачи
       wbUpdateJob.start();
       wbTariffsJob.start();
@@ -653,6 +711,9 @@ class SchedulerService {
       }
       if (supplierStocksSyncJob) {
         supplierStocksSyncJob.start();
+      }
+      if (fboSupplyStatusSyncJob) {
+        fboSupplyStatusSyncJob.start();
       }
       this.isRunning = true;
 
@@ -680,6 +741,19 @@ class SchedulerService {
             }
           })();
         }, 120 * 1000);
+      }
+
+      if (fboSupplyStatusSyncJob && isFboSupplyStatusSyncEnabled()) {
+        setTimeout(() => {
+          (async () => {
+            try {
+              logger.info('[Scheduler] Deferred FBO supply status sync (~150s after startup)...');
+              await runFboSupplyStatusSync();
+            } catch (e) {
+              logger.warn('[Scheduler] Deferred FBO supply status sync:', e?.message || e);
+            }
+          })();
+        }, 150 * 1000);
       }
 
       if (reviewsSyncJob && isReviewsSyncEnabled()) {
@@ -835,6 +909,19 @@ class SchedulerService {
       setTimeout(runSupplierStocks, 120 * 1000);
       logger.info(
         `[Scheduler] Supplier stocks sync: каждые ${ivMin} мин (fallback, SUPPLIER_STOCKS_SYNC_INTERVAL_MINUTES)`
+      );
+    }
+
+    if (isFboSupplyStatusSyncEnabled()) {
+      const ivMin = Math.max(10, Number(process.env.FBO_SUPPLY_STATUS_SYNC_INTERVAL_MINUTES || 10));
+      const runFboStatus = async () => {
+        logger.info('[Scheduler] FBO supply status sync (fallback interval)...');
+        await runFboSupplyStatusSync();
+      };
+      setInterval(runFboStatus, ivMin * 60 * 1000);
+      setTimeout(runFboStatus, 150 * 1000);
+      logger.info(
+        `[Scheduler] FBO supply status sync: каждые ${ivMin} мин (fallback, FBO_SUPPLY_STATUS_SYNC_INTERVAL_MINUTES)`
       );
     }
   }

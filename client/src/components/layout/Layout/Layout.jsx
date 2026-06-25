@@ -9,6 +9,7 @@ import { Sidebar } from '../Sidebar/Sidebar';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { useNewOrdersSound } from '../../../hooks/useNewOrdersSound';
 import { ProductCardModalProvider } from '../../../context/ProductCardModalContext.jsx';
+import { NavSectionGuard } from '../../NavSectionGuard.jsx';
 
 export function Layout({ children }) {
   const [isSidebarClosed, setIsSidebarClosed] = useState(false);
@@ -68,7 +69,7 @@ export function Layout({ children }) {
                   организацию в разделе «Настройки → Организации».
                 </div>
               )}
-              {children}
+              {children && <NavSectionGuard>{children}</NavSectionGuard>}
             </div>
           </div>
         </div>

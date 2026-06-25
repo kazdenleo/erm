@@ -268,6 +268,7 @@ export const usersController = {
         updates.account_role = normalizeAccountRole(updates.accountRole);
         delete updates.accountRole;
       }
+      delete updates.navSections;
       if (updates.password) {
         updates.password_hash = await bcrypt.hash(updates.password, SALT_ROUNDS);
         delete updates.password;

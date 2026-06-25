@@ -37,6 +37,13 @@ export function getFboSupplyStatusRank(status) {
   return idx >= 0 ? idx : -1;
 }
 
+/** Финальные статусы — фоновая синхронизация с МП больше не нужна. */
+export const FBO_SUPPLY_TERMINAL_STATUSES = ['closed', 'return'];
+
+export function isFboSupplyTerminalStatus(status) {
+  return FBO_SUPPLY_TERMINAL_STATUSES.includes(String(status || '').trim());
+}
+
 /** Статус после синхронизации с МП: только вперёд по цепочке или «Возврат». */
 export function pickStatusAfterMarketplaceSync(current, marketplaceStatus) {
   if (!marketplaceStatus || !FBO_SUPPLY_STATUSES.includes(marketplaceStatus)) return current;

@@ -22,6 +22,16 @@ export const profilesApi = {
     return response.data;
   },
 
+  async getRoleNavSections() {
+    const response = await api.get('/profiles/me/role-nav-sections');
+    return response.data;
+  },
+
+  async updateRoleNavSection(role, data) {
+    const response = await api.put(`/profiles/me/role-nav-sections/${encodeURIComponent(role)}`, data);
+    return response.data;
+  },
+
   async getAll() {
     const response = await api.get('/profiles');
     return response.data;

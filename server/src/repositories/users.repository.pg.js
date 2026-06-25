@@ -4,12 +4,15 @@
 
 import { query } from '../config/database.js';
 
+const USER_SELECT =
+  'id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at';
+
 class UsersRepositoryPG {
   async findAll(filters = {}) {
     const { profileId } = filters;
     if (profileId != null) {
       const result = await query(
-        `SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at FROM users
+        `SELECT ${USER_SELECT} FROM users
          WHERE profile_id = $1 AND role <> 'admin'
          ORDER BY email`,
         [profileId]
@@ -17,14 +20,14 @@ class UsersRepositoryPG {
       return result.rows;
     }
     const result = await query(
-      'SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at FROM users ORDER BY email'
+      `SELECT ${USER_SELECT} FROM users ORDER BY email`
     );
     return result.rows;
   }
 
   async findById(id) {
     const result = await query(
-      'SELECT id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at FROM users WHERE id = $1',
+      `SELECT ${USER_SELECT} FROM users WHERE id = $1`,
       [id]
     );
     return result.rows[0] || null;
@@ -58,7 +61,7 @@ class UsersRepositoryPG {
     const result = await query(
       `INSERT INTO users (email, password_hash, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       RETURNING id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at`,
+       RETURNING ${USER_SELECT}`,
       [email, passwordHash, fullName || null, lastName || null, firstName || null, middleName || null, phoneVal, role, profileId || null, isProfileAdmin, accountRole, !!mustChangePassword]
     );
     return result.rows[0];
@@ -123,7 +126,7 @@ class UsersRepositoryPG {
     fields.push('updated_at = CURRENT_TIMESTAMP');
     params.push(id);
     const result = await query(
-      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i} RETURNING id, email, full_name, last_name, first_name, middle_name, phone, role, profile_id, is_profile_admin, account_role, must_change_password, created_at, updated_at`,
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i} RETURNING ${USER_SELECT}`,
       params
     );
     return result.rows[0] || null;

@@ -3,6 +3,7 @@
  */
 
 import { query } from '../config/database.js';
+import { parseRoleNavSections } from '../utils/userNavSections.js';
 
 class ProfilesRepositoryPG {
   async findAll() {
@@ -174,6 +175,10 @@ class ProfilesRepositoryPG {
         const n = Number(raw);
         set('fbo_deduction_warehouse_id', Number.isFinite(n) && n > 0 ? n : null);
       }
+    }
+    if (updates.role_nav_sections !== undefined || updates.roleNavSections !== undefined) {
+      const raw = updates.role_nav_sections ?? updates.roleNavSections;
+      set('role_nav_sections', JSON.stringify(parseRoleNavSections(raw)));
     }
 
     if (fields.length === 0) return await this.findById(id);

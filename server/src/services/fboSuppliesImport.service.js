@@ -12,7 +12,7 @@ import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { parseOzonBundleRowMeta } from '../constants/ozonPlacementZones.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
-import { pickStatusAfterMarketplaceSync } from '../constants/fboSupplyStatuses.js';
+import { isFboSupplyTerminalStatus, pickStatusAfterMarketplaceSync } from '../constants/fboSupplyStatuses.js';
 
 const WB_SUPPLIES_API = 'https://supplies-api.wildberries.ru';
 const YM_API = 'https://api.partner.market.yandex.ru';
@@ -3021,10 +3021,68 @@ class FboSuppliesImportService {
   }
 
   /**
+   * Фоновый прогон: все поставки не в финальном статусе — подтянуть статус с МП.
+   * «Закрыт» и «Возврат» пропускаются.
+   */
+  async syncAllActiveStatusesFromMarketplace({ limit = 200 } = {}) {
+    const lim = Math.min(500, Math.max(1, parseInt(limit, 10) || 200));
+    const r = await query(
+      `SELECT id, profile_id
+       FROM fbo_supplies
+       WHERE status NOT IN ('closed', 'return')
+         AND (
+           NULLIF(TRIM(COALESCE(external_shipment_number, '')), '') IS NOT NULL
+           OR NULLIF(TRIM(COALESCE(external_supply_id::text, '')), '') IS NOT NULL
+         )
+       ORDER BY updated_at ASC NULLS FIRST, id ASC
+       LIMIT $1`,
+      [lim]
+    );
+    const rows = r.rows || [];
+    let updated = 0;
+    let errors = 0;
+    let skippedTerminal = 0;
+    for (const row of rows) {
+      const supplyId = Number(row.id);
+      const profileId = row.profile_id != null ? Number(row.profile_id) : null;
+      if (!Number.isFinite(supplyId) || supplyId < 1) continue;
+      try {
+        const result = await this.syncSupplyStatusFromMarketplace(supplyId, { profileId });
+        if (result?.skippedTerminal) skippedTerminal += 1;
+        else if (result?.updated) updated += 1;
+      } catch (e) {
+        errors += 1;
+        console.warn('[FboSupplyStatusSync] supply failed', {
+          supplyId,
+          profileId,
+          message: e?.message || String(e),
+        });
+      }
+    }
+    return { total: rows.length, updated, errors, skippedTerminal, skipped: false };
+  }
+
+  /** @deprecated используйте syncAllActiveStatusesFromMarketplace */
+  async syncAllShippedStatusesFromMarketplace(opts = {}) {
+    return this.syncAllActiveStatusesFromMarketplace(opts);
+  }
+
+  /**
    * Синхронизировать статус поставки с маркетплейсом (только продвижение вперёд или «Возврат»).
    */
   async syncSupplyStatusFromMarketplace(supplyId, { profileId } = {}) {
     const supply = await fboSuppliesService.getById(supplyId, { profileId });
+    if (isFboSupplyTerminalStatus(supply.status)) {
+      return {
+        updated: false,
+        skippedTerminal: true,
+        supply,
+        previousStatus: supply.status,
+        marketplaceStatus: null,
+        marketplaceState: null,
+        message: 'Поставка в финальном статусе — синхронизация не требуется',
+      };
+    }
     const mpInfo = await fetchMarketplaceStatusForSupply(supply, { profileId });
     const previousStatus = supply.status;
     const targetStatus = pickStatusAfterMarketplaceSync(previousStatus, mpInfo?.status);

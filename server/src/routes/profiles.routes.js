@@ -13,6 +13,8 @@ const router = express.Router();
 // optionalAuth уже выполнен в главном router/index.js для всех /api/*
 router.use(requireAuth);
 
+router.get('/me/role-nav-sections', requireProfile, requireProfileAdmin, wrapAsync(profilesController.getRoleNavSections));
+router.put('/me/role-nav-sections/:role', requireProfile, requireProfileAdmin, wrapAsync(profilesController.updateRoleNavSection));
 router.get('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.getMyProfile));
 router.put('/me', requireProfile, requireProfileAdmin, wrapAsync(profilesController.updateMyProfile));
 router.post(

@@ -270,6 +270,16 @@ export function AuthProvider({ children }) {
     return s || null;
   }, [user]);
 
+  /** Администратор аккаунта (не системы): управление пользователями и ролями */
+  const isTenantAccountAdmin = useMemo(() => {
+    if (!user || user.role === 'admin') return false;
+    if (profileId == null) return false;
+    return (
+      !!(user.isProfileAdmin ?? user.is_profile_admin) ||
+      accountRole === 'admin'
+    );
+  }, [user, profileId, accountRole]);
+
   const features = user?.features;
   const limits = user?.limits;
 
@@ -301,6 +311,8 @@ export function AuthProvider({ children }) {
         (user?.role === 'admin') ||
         !!(user?.isProfileAdmin ?? user?.is_profile_admin) ||
         accountRole === 'admin',
+      /** Администратор аккаунта клиента (не админ системы) */
+      isTenantAccountAdmin,
       profileId,
       /** То же, что profileId: аккаунт в БД — профиль (tenant) */
       accountId,
@@ -333,6 +345,7 @@ export function AuthProvider({ children }) {
       setSelectedOrganizationId,
       hasOrganizations,
       loadUser,
+      isTenantAccountAdmin,
     ]
   );
 

@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { accountSettingsFromProfile, isProfileBoolFlag } from '../../utils/profileFlags.js';
@@ -20,7 +21,7 @@ import {
 import './Settings.css';
 
 export function Settings() {
-  const { isProfileAdmin, profileId, refreshUser } = useAuth();
+  const { isProfileAdmin, isTenantAccountAdmin, profileId, refreshUser } = useAuth();
   const { warehouses, loadWarehouses } = useWarehouses();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -179,6 +180,23 @@ export function Settings() {
     <div className="settings-page card">
       <h1 className="title">Настройки</h1>
       <p className="subtitle">Общие настройки системы.</p>
+
+      {isTenantAccountAdmin && (
+        <section className="settings-account-section" style={{ marginBottom: 18 }}>
+          <h2 className="h5">Пользователи и роли</h2>
+          <p className="text-muted small mb-3">
+            Добавление пользователей аккаунта и настройка видимых разделов для ролей (сборщик, редактор и др.).
+          </p>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Link to="/settings/users" className="btn btn-primary">
+              Пользователи
+            </Link>
+            <Link to="/settings/users?tab=roles" className="btn btn-outline-secondary">
+              Настройка ролей
+            </Link>
+          </div>
+        </section>
+      )}
 
       <section className="settings-account-section" style={{ marginBottom: 18 }}>
         <h2 className="h5">Звуки</h2>

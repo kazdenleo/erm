@@ -11,6 +11,7 @@ import {
   isProfileKitsEnabled,
   isProfileProductionEnabled,
 } from '../../../utils/profileFlags.js';
+import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
 import { questionsApi } from '../../../services/questions.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
 
@@ -24,85 +25,100 @@ const stockWarehouseChildren = [
     label: '📦 Остатки',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'table',
+    sectionKey: 'warehouse_stock',
   },
-  { path: '/stock-levels/purchases', label: '🧾 Закупка', iconClass: 'pe-7s-cart' },
-  { path: '/production', label: '🔧 Производство', iconClass: 'pe-7s-tools', requiresProduction: true },
+  { path: '/stock-levels/purchases', label: '🧾 Закупка', iconClass: 'pe-7s-cart', sectionKey: 'warehouse_purchases' },
+  { path: '/production', label: '🔧 Производство', iconClass: 'pe-7s-tools', requiresProduction: true, sectionKey: 'warehouse_production' },
   {
     path: opsByKey.receipts_list?.to || '/stock-levels/warehouse?op=receipts_list',
     label: '📑 Приёмка',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'receipts_list',
+    sectionKey: 'warehouse_receipts',
   },
   {
     path: opsByKey.transfer?.to || '/stock-levels/warehouse?op=transfer',
     label: '↔️ Перемещение',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'transfer',
+    sectionKey: 'warehouse_transfer',
   },
   {
     path: opsByKey.return_supplier?.to || '/stock-levels/warehouse?op=return_supplier',
     label: '↩️ Возврат поставщику',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'return_supplier',
+    sectionKey: 'warehouse_return_supplier',
   },
   {
     path: opsByKey.return_customer?.to || '/stock-levels/warehouse?op=return_customer',
     label: '📥 Возврат от клиентов',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'return_customer',
+    sectionKey: 'warehouse_return_customer',
   },
   {
     path: opsByKey.inventory?.to || '/stock-levels/warehouse?op=inventory',
     label: '📋 Инвентаризация',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'inventory',
+    sectionKey: 'warehouse_inventory',
   },
   {
     path: opsByKey.writeoff?.to || '/stock-levels/warehouse?op=writeoff',
     label: '📤 Списание',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'writeoff',
+    sectionKey: 'warehouse_writeoff',
   },
 ];
 
 const menuItems = [
-  { path: '/', label: 'Аналитика', iconClass: 'pe-7s-graph2' },
-  { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2' },
-  { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2' },
-  { path: '/shipments', label: 'Отгрузки', iconClass: 'pe-7s-upload' },
-  { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true },
-  { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment' },
-  { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2' },
+  { path: '/', label: 'Аналитика', iconClass: 'pe-7s-graph2', sectionKey: 'analytics' },
+  { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products' },
+  { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders' },
+  { path: '/shipments', label: 'Отгрузки', iconClass: 'pe-7s-upload', sectionKey: 'shipments' },
+  { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },
+  { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment', sectionKey: 'questions' },
+  { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2', sectionKey: 'reviews' },
   {
     path: '/stock-levels/warehouse',
     label: 'Склад',
     iconClass: 'pe-7s-display2',
     children: stockWarehouseChildren,
   },
-  { path: '/prices', label: 'Цены', iconClass: 'pe-7s-cash' },
+  { path: '/prices', label: 'Цены', iconClass: 'pe-7s-cash', sectionKey: 'prices' },
   {
     path: '/settings',
     label: 'Настройки',
     iconClass: 'pe-7s-config',
     children: [
-      { path: '/settings', label: 'Общие', iconClass: 'pe-7s-note' },
-      { path: '/settings/attributes', label: 'Атрибуты', iconClass: 'pe-7s-ticket' },
-      { path: '/settings/labels', label: 'Этикетки', iconClass: 'pe-7s-news-paper' },
-      { path: '/settings/users', label: 'Пользователи', iconClass: 'pe-7s-users', adminOnly: true },
-      { path: '/organizations', label: 'Организации', iconClass: 'pe-7s-culture' },
-      { path: '/warehouses', label: 'Склады', iconClass: 'pe-7s-home' },
-      { path: '/suppliers', label: 'Поставщики', iconClass: 'pe-7s-truck' },
-      { path: '/categories', label: 'Категории', iconClass: 'pe-7s-folder' },
-      { path: '/brands', label: 'Бренды', iconClass: 'pe-7s-star' },
-      { path: '/integrations', label: 'Интеграции', iconClass: 'pe-7s-plug' }
+      { path: '/settings', label: 'Общие', iconClass: 'pe-7s-note', sectionKey: 'settings_general' },
+      { path: '/settings/attributes', label: 'Атрибуты', iconClass: 'pe-7s-ticket', sectionKey: 'settings_attributes' },
+      { path: '/settings/labels', label: 'Этикетки', iconClass: 'pe-7s-news-paper', sectionKey: 'settings_labels' },
+      { path: '/settings/users', label: 'Пользователи', iconClass: 'pe-7s-users', tenantAdminOnly: true, sectionKey: 'settings_users' },
+      { path: '/organizations', label: 'Организации', iconClass: 'pe-7s-culture', sectionKey: 'organizations' },
+      { path: '/warehouses', label: 'Склады', iconClass: 'pe-7s-home', sectionKey: 'warehouses' },
+      { path: '/suppliers', label: 'Поставщики', iconClass: 'pe-7s-truck', sectionKey: 'suppliers' },
+      { path: '/categories', label: 'Категории', iconClass: 'pe-7s-folder', sectionKey: 'categories' },
+      { path: '/brands', label: 'Бренды', iconClass: 'pe-7s-star', sectionKey: 'brands' },
+      { path: '/integrations', label: 'Интеграции', iconClass: 'pe-7s-plug', sectionKey: 'integrations' }
     ]
   }
 ];
 
 export function Sidebar() {
   const location = useLocation();
-  const { user, isAdmin, isProfileAdmin, isAccountAdmin, profile } = useAuth();
+  const { user, isAdmin, isProfileAdmin, isAccountAdmin, isTenantAccountAdmin, profile, features } = useAuth();
   const canManageUsers = isAccountAdmin;
+  const navAllowed = useCallback(
+    (sectionKey) => {
+      if (!sectionKey) return true;
+      if (isAccountAdmin || isAdmin) return true;
+      return isNavFeatureEnabled(features, sectionKey);
+    },
+    [features, isAccountAdmin, isAdmin]
+  );
   const productionMenuEnabled =
     isProfileProductionEnabled(profile) && isProfileKitsEnabled(profile);
   const fboMenuEnabled = isProfileFboEnabled(profile);
@@ -187,9 +203,11 @@ export function Sidebar() {
       if (!item.children) return item;
       const children = item.children.filter((sub) => {
         if (sub.profileAdminOnly && (!isProfileAdmin || isAdmin)) return false;
+        if (sub.tenantAdminOnly && !isTenantAccountAdmin) return false;
         if (sub.adminOnly && !canManageUsers) return false;
         if (sub.requiresProduction && !productionMenuEnabled) return false;
         if (sub.requiresFbo && !fboMenuEnabled) return false;
+        if (!navAllowed(sub.sectionKey)) return false;
         return true;
       });
       return { ...item, children };
@@ -198,9 +216,10 @@ export function Sidebar() {
       .filter((i) => !i.needsProfile || user?.profileId != null)
       .filter((i) => !i.requiresFbo || fboMenuEnabled)
       .filter((i) => !i.requiresProduction || productionMenuEnabled)
+      .filter((i) => !i.sectionKey || navAllowed(i.sectionKey) || Array.isArray(i.children))
       .map(filterChildren)
       .filter((i) => !i.children || i.children.length > 0);
-  }, [canManageUsers, isProfileAdmin, isAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled]);
+  }, [canManageUsers, isProfileAdmin, isAdmin, isTenantAccountAdmin, user?.profileId, productionMenuEnabled, fboMenuEnabled, navAllowed]);
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 
