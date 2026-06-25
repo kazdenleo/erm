@@ -22,6 +22,7 @@ import {
   sortPurchaseRowsWithProgress,
 } from './fboPurchaseCalcUtils';
 import { FboPurchaseReplaceModal } from './FboPurchaseReplaceModal';
+import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import './FboSupplies.css';
