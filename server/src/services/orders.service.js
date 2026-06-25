@@ -127,6 +127,12 @@ export function onHandHeadroomBeforeReserve({ onHand = 0, reservedRaw = 0 } = {}
   return Math.max(0, H - Math.min(R0, H));
 }
 
+/** Резерв с «в пути» (incoming) — только для заказов в закупке или на сборке. */
+export function orderStatusAllowsIncomingReserve(status) {
+  const st = String(status ?? '').trim().toLowerCase();
+  return st === 'in_procurement' || st === 'in_assembly' || st === 'wb_assembly';
+}
+
 /**
  * Покрытие резерва по заказам одного товара: учитывает свободное наличие после резервов других заказов.
  * @returns {Map<string, 'on_hand'|'incoming'>} ключ `${orderDbId}:${productId}`
@@ -1201,9 +1207,11 @@ class OrdersService {
     if (!Number.isFinite(pid) || pid < 1) return 0;
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
-    // Только PWS + «в пути» − резерв; остатки поставщиков не резервируются (как в _applyReserveForOrderComponentCore).
-    const units = await getReservableSupplyUnits(pid, { warehouseId: wh });
-    return Math.max(0, Math.floor(units));
+    const snap = await getProductSupplySnapshotWithClient(null, pid, { warehouseId: wh });
+    if (!orderStatusAllowsIncomingReserve(orderRow?.status)) {
+      return Math.max(0, Math.floor(onHandHeadroomBeforeReserve(snap)));
+    }
+    return Math.max(0, Math.floor(snap.available));
   }
 
   /**
@@ -1320,8 +1328,14 @@ class OrdersService {
         });
         if (Math.floor(gateAvail) <= 0) return;
       } else {
-        const snapGate = await getProductSupplySnapshotWithClient(null, productId, supplyOpts);
-        if (Math.floor(snapGate.available) <= 0) return;
+        const orderRow =
+          meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
+        const gateAvail = await this._availableUnitsForOrderReserve(
+          productId,
+          orderRow,
+          supplyOpts.warehouseId ?? null
+        );
+        if (Math.floor(gateAvail) <= 0) return;
       }
     }
 
@@ -1392,6 +1406,11 @@ class OrdersService {
       productId,
       reserveSnapshotOptsFromMeta(meta)
     );
+    const orderRowForIncoming =
+      meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
+    const allowIncoming = orderStatusAllowsIncomingReserve(
+      orderRowForIncoming?.status ?? meta?.order_status
+    );
     let reserveFromOnHand;
     let reserveFromIncoming;
     if (hasKitPrealloc) {
@@ -1409,10 +1428,17 @@ class OrdersService {
       reserveFromOnHand = qty;
       reserveFromIncoming = 0;
     } else {
-      qty = Math.min(qty, Math.floor(snapBeforeReserve.available));
+      const cap = allowIncoming
+        ? Math.floor(snapBeforeReserve.available)
+        : onHandHeadroomBeforeReserve(snapBeforeReserve);
+      qty = Math.min(qty, cap);
       if (qty <= 0) return;
       reserveFromOnHand = Math.min(qty, onHandHeadroomBeforeReserve(snapBeforeReserve));
-      reserveFromIncoming = Math.max(0, qty - reserveFromOnHand);
+      reserveFromIncoming = allowIncoming ? Math.max(0, qty - reserveFromOnHand) : 0;
+      if (!allowIncoming) {
+        qty = reserveFromOnHand;
+        if (qty <= 0) return;
+      }
     }
 
     await stockMovementsService.applyChange(productId, {
@@ -2323,6 +2349,7 @@ class OrdersService {
       await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
         order_id: id,
         orderId: orderIdStr,
+        order_row: orderRow,
         warehouse_id: warehouseId,
         strict_warehouse: strictWh,
         partial: reserveNow < need
@@ -3451,11 +3478,18 @@ class OrdersService {
       );
     }
 
-    return Math.floor(
+    const units = Math.floor(
       await getReservableSupplyUnits(pid, {
         warehouseId: warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null
       })
     );
+    if (!orderStatusAllowsIncomingReserve(orderRow?.status)) {
+      const wh =
+        warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
+      const snap = await getProductSupplySnapshotWithClient(null, pid, { warehouseId: wh });
+      return Math.min(units, Math.max(0, Math.floor(onHandHeadroomBeforeReserve(snap))));
+    }
+    return units;
   }
 
   /** Повторная попытка резерва (новый / закупка / после поступления остатка). */

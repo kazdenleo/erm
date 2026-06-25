@@ -1,5 +1,28 @@
 import { describe, expect, test } from '@jest/globals';
-import { classifyOrderReserveCoverage } from '../src/services/orders.service.js';
+import {
+  classifyOrderReserveCoverage,
+  onHandHeadroomBeforeReserve,
+  orderStatusAllowsIncomingReserve,
+} from '../src/services/orders.service.js';
+
+describe('orderStatusAllowsIncomingReserve', () => {
+  test('новый заказ — только со склада', () => {
+    expect(orderStatusAllowsIncomingReserve('new')).toBe(false);
+    expect(orderStatusAllowsIncomingReserve('unknown')).toBe(false);
+  });
+
+  test('в закупке и на сборке — можно с пути', () => {
+    expect(orderStatusAllowsIncomingReserve('in_procurement')).toBe(true);
+    expect(orderStatusAllowsIncomingReserve('in_assembly')).toBe(true);
+    expect(orderStatusAllowsIncomingReserve('wb_assembly')).toBe(true);
+  });
+});
+
+describe('onHandHeadroomBeforeReserve', () => {
+  test('headroom при частичном резерве', () => {
+    expect(onHandHeadroomBeforeReserve({ onHand: 5, reservedRaw: 3 })).toBe(2);
+  });
+});
 
 describe('classifyOrderReserveCoverage', () => {
   test('полностью со склада', () => {

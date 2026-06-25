@@ -1208,7 +1208,14 @@ class OrdersRepositoryPG {
        FROM orders o
        WHERE o.status IN ('new', 'in_procurement', 'in_assembly')
          AND ${byProductMatch}
-       ORDER BY o.created_at ASC NULLS LAST, o.id ASC
+       ORDER BY
+         CASE o.status
+           WHEN 'in_procurement' THEN 0
+           WHEN 'in_assembly' THEN 1
+           ELSE 2
+         END,
+         o.created_at ASC NULLS LAST,
+         o.id ASC
        LIMIT $2`,
       [pid, lim]
     );
