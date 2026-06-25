@@ -15,6 +15,7 @@ import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
 import fboSuppliesOzonCargoesService from '../services/fboSuppliesOzonCargoes.service.js';
 import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
+import { FBO_SUPPLY_STATUSES } from '../constants/fboSupplyStatuses.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FBO_TEMPLATE_XLSX = join(__dirname, '../../templates/fbo_import_artikul_kolichestvo.xlsx');
@@ -22,6 +23,31 @@ const FBO_TEMPLATE_XLSX = join(__dirname, '../../templates/fbo_import_artikul_ko
 function setAttachmentXlsx(res, filename) {
   const encoded = encodeURIComponent(filename).replace(/['()]/g, escape);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`);
+}
+
+/** Статусы списка FBO: ?statuses=new,packed или повтор status=. */
+function parseFboListStatuses(query = {}) {
+  const allowed = new Set(FBO_SUPPLY_STATUSES);
+  const raw = [];
+  const multi = query.statuses;
+  if (Array.isArray(multi)) {
+    for (const v of multi) raw.push(...String(v).split(','));
+  } else if (multi != null && String(multi).trim() !== '') {
+    raw.push(...String(multi).split(','));
+  }
+  const single = query.status;
+  if (Array.isArray(single)) {
+    for (const v of single) raw.push(...String(v).split(','));
+  } else if (single != null && String(single).trim() !== '') {
+    raw.push(...String(single).split(','));
+  }
+  const out = [];
+  for (const part of raw) {
+    const key = String(part || '').trim().toLowerCase();
+    if (!key || !allowed.has(key) || out.includes(key)) continue;
+    out.push(key);
+  }
+  return out.length > 0 ? out : null;
 }
 
 /** Профиль для сессий расчёта закупки — как у списка поставок + заголовок X-Account-Id. */
@@ -77,12 +103,12 @@ class FboSuppliesController {
         return res.status(200).json({ ok: true, data: [] });
       }
       const limit = req.query.limit ? parseInt(req.query.limit, 10) : 200;
-      const status = req.query.status?.trim() || null;
+      const statuses = parseFboListStatuses(req.query);
       const marketplace = req.query.marketplace?.trim() || null;
       const data = await fboSuppliesService.list({
         profileId: tid,
         limit,
-        status,
+        statuses,
         marketplace,
       });
       return res.status(200).json({ ok: true, data });
@@ -406,7 +432,11 @@ class FboSuppliesController {
       }
       const profileId = tid;
       const sessionId = req.params.sessionId;
-      const data = await fboPurchaseCalcSessionService.getSessionView(sessionId, { profileId });
+      const supplierId = req.query?.supplierId ?? null;
+      const data = await fboPurchaseCalcSessionService.getSessionView(sessionId, {
+        profileId,
+        supplierId,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404 || e.statusCode === 403) {

@@ -1,3 +1,14 @@
+.fbo-supplies-status-filter {
+  margin-bottom: 12px;
+}
+
+.fbo-supplies-status-filter__label {
+  font-size: 13px;
+  color: #64748b;
+  margin-right: 4px;
+  align-self: center;
+}
+
 .fbo-supply-qty-main {
   display: inline-flex;
   align-items: center;

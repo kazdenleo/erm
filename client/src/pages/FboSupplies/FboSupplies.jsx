@@ -2,16 +2,24 @@
  * Список поставок FBO
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
 import { FboSupplyImportModal } from './FboSupplyImportModal';
-import { getMarketplaceLabel } from '../../constants/fboSupplyStatuses';
+import {
+  FBO_SUPPLY_STATUS_ORDER,
+  getFboSupplyStatusLabel,
+  getMarketplaceLabel,
+} from '../../constants/fboSupplyStatuses';
 import { FboSupplyStatusBadge } from '../../components/fbo/FboSupplyStatusBadge';
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
+import '../../styles/erp-filter-bar.css';
 import './FboSupplies.css';
+
+const FBO_LIST_STATUS_FILTER_OPTIONS = FBO_SUPPLY_STATUS_ORDER.filter((s) => s !== 'return');
+const FBO_LIST_DEFAULT_STATUSES = ['new', 'packed'];
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -39,23 +47,48 @@ export function FboSupplies() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [calcLoading, setCalcLoading] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [statusFilter, setStatusFilter] = useState(() => new Set(FBO_LIST_DEFAULT_STATUSES));
+
+  const statusFilterList = useMemo(
+    () => FBO_LIST_STATUS_FILTER_OPTIONS.filter((s) => statusFilter.has(s)),
+    [statusFilter]
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
     try {
-      const data = await fboSuppliesApi.list();
+      const data = await fboSuppliesApi.list({
+        statuses: statusFilterList.length ? statusFilterList.join(',') : undefined,
+      });
       setList(Array.isArray(data) ? data : []);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить список');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [statusFilterList]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [statusFilterList.join(',')]);
+
+  const toggleStatusFilter = (status) => {
+    setStatusFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) {
+        if (next.size <= 1) return prev;
+        next.delete(status);
+      } else {
+        next.add(status);
+      }
+      return next;
+    });
+  };
 
   const handleDeleteSupply = async (supplyId, e) => {
     e?.stopPropagation?.();
@@ -151,6 +184,24 @@ export function FboSupplies() {
         >
           {calcLoading ? '…' : `Рассчитать закупку${selectedIds.size ? ` (${selectedIds.size})` : ''}`}
         </Button>
+      </div>
+
+      <div className="erp-filter-bar fbo-supplies-status-filter" role="group" aria-label="Фильтр по статусу">
+        <span className="fbo-supplies-status-filter__label">Статус:</span>
+        {FBO_LIST_STATUS_FILTER_OPTIONS.map((status) => {
+          const active = statusFilter.has(status);
+          return (
+            <button
+              key={status}
+              type="button"
+              className={`erp-filter-btn${active ? ' erp-filter-btn--active' : ''}`}
+              onClick={() => toggleStatusFilter(status)}
+              title={active && statusFilter.size <= 1 ? 'Должен быть выбран хотя бы один статус' : undefined}
+            >
+              <span className="erp-filter-btn__label">{getFboSupplyStatusLabel(status)}</span>
+            </button>
+          );
+        })}
       </div>
 
       {err && <div className="alert alert-danger">{err}</div>}

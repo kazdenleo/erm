@@ -340,13 +340,18 @@ class FboSuppliesService {
     return set;
   }
 
-  async list({ profileId, limit = 200, status = null, marketplace = null } = {}) {
+  async list({ profileId, limit = 200, status = null, statuses = null, marketplace = null } = {}) {
     const pid = normalizeProfileId(profileId);
     const params = [pid];
     let sql = `${SUPPLY_SELECT} WHERE ($1::bigint IS NULL OR s.profile_id = $1)`;
-    if (status) {
-      params.push(status);
-      sql += ` AND s.status = $${params.length}`;
+    const statusList = Array.isArray(statuses) && statuses.length > 0
+      ? statuses
+      : status
+        ? [status]
+        : [];
+    if (statusList.length > 0) {
+      params.push(statusList);
+      sql += ` AND s.status = ANY($${params.length}::text[])`;
     }
     if (marketplace) {
       params.push(normalizeMarketplace(marketplace));
