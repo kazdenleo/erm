@@ -144,7 +144,9 @@ export const ordersApi = {
   sendToProcurement: async (marketplace, orderId) => {
     const mp = encodeURIComponent(marketplace);
     const id = encodeURIComponent(orderId);
-    const response = await api.post(`/orders/${mp}/${id}/send-to-procurement`);
+    const response = await api.post(`/orders/${mp}/${id}/send-to-procurement`, null, {
+      timeout: 300000,
+    });
     return response.data?.data ?? response.data;
   },
 

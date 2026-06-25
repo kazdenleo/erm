@@ -1443,7 +1443,7 @@ class PurchasesService {
     });
   }
 
-  async list({ profileId, limit = 200, status = null, activeOnly = false } = {}) {
+  async list({ profileId, limit = 200, status = null, activeOnly = false, supplierId = null } = {}) {
     const lim = Math.min(Math.max(1, parseInt(limit, 10) || 200), 500);
     const pid = normalizeProfileId(profileId);
     if (pid == null) {
@@ -1460,6 +1460,13 @@ class PurchasesService {
       params.push(st);
       statusFilter = ` AND p.status = $${params.length}`;
     }
+    const sid =
+      supplierId != null && supplierId !== '' ? parseInt(supplierId, 10) : null;
+    let supplierFilter = '';
+    if (sid != null && !Number.isNaN(sid) && sid > 0) {
+      params.push(sid);
+      supplierFilter = ` AND p.supplier_id = $${params.length}`;
+    }
     params.push(lim);
     const limParam = `$${params.length}`;
     // Сначала LIMIT по закупкам профиля, затем агрегат позиций — иначе GROUP BY по всей purchase_items даёт 504.
@@ -1467,8 +1474,8 @@ class PurchasesService {
       `WITH page AS (
          SELECT p.id
          FROM purchases p
-         WHERE p.profile_id = $1${statusFilter}
-         ORDER BY p.created_at DESC, p.id DESC
+         WHERE p.profile_id = $1${statusFilter}${supplierFilter}
+         ORDER BY p.created_at ASC, p.id ASC
          LIMIT ${limParam}
        )
        SELECT p.id, p.created_at, p.updated_at, p.ordered_at, p.completed_at,
@@ -1493,7 +1500,7 @@ class PurchasesService {
        LEFT JOIN suppliers s ON s.id = p.supplier_id
        LEFT JOIN organizations o ON o.id = p.organization_id
        LEFT JOIN warehouses w ON w.id = p.warehouse_id
-       ORDER BY p.created_at DESC, p.id DESC`,
+       ORDER BY p.created_at ASC, p.id ASC`,
       params
     );
     const rows = r.rows || [];
@@ -1658,30 +1665,39 @@ class PurchasesService {
     } = {},
     { userId, profileId, submitToSupplier = true, syncReserveReapply = true } = {}
   ) {
-    return runWithLockRetry(async () => {
-      let itemsToProcess = Array.isArray(items) ? items : [];
-      let resolvedSupplierId =
-        supplierId != null && supplierId !== '' ? Number(supplierId) : null;
-      let warehouseNameForSubmit = supplierWarehouseName || null;
-      let supplierSubmit = null;
+    const initialItems = Array.isArray(items) ? items : [];
+    let resolvedSupplierId =
+      supplierId != null && supplierId !== '' ? Number(supplierId) : null;
+    let warehouseNameForSubmit = supplierWarehouseName || null;
 
-      if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
-        const purId = parseInt(existingPurchaseId, 10);
-        const head = await query(
-          `SELECT supplier_id, supplier_warehouse_name FROM purchases WHERE id = $1 LIMIT 1`,
-          [purId]
-        );
-        const headRow = head.rows?.[0];
-        if (headRow) {
-          if (!Number.isFinite(resolvedSupplierId) || resolvedSupplierId < 1) {
-            resolvedSupplierId =
-              headRow.supplier_id != null ? Number(headRow.supplier_id) : null;
-          }
-          if (!warehouseNameForSubmit && headRow.supplier_warehouse_name) {
-            warehouseNameForSubmit = headRow.supplier_warehouse_name;
-          }
+    if (existingPurchaseId != null && String(existingPurchaseId).trim() !== '') {
+      const purId = parseInt(existingPurchaseId, 10);
+      const head = await query(
+        `SELECT supplier_id, supplier_warehouse_name FROM purchases WHERE id = $1 LIMIT 1`,
+        [purId]
+      );
+      const headRow = head.rows?.[0];
+      if (headRow) {
+        if (!Number.isFinite(resolvedSupplierId) || resolvedSupplierId < 1) {
+          resolvedSupplierId =
+            headRow.supplier_id != null ? Number(headRow.supplier_id) : null;
+        }
+        if (!warehouseNameForSubmit && headRow.supplier_warehouse_name) {
+          warehouseNameForSubmit = headRow.supplier_warehouse_name;
         }
       }
+    }
+
+    // Успешная отправка поставщику не должна повторяться при retry БД (503 lock timeout).
+    let cachedSupplierPreSubmit = null;
+    let supplierPreSubmitCompleted = false;
+    let cachedItemsAfterPreSubmit = null;
+    let cachedPostSubmit = null;
+    let postSubmitCompleted = false;
+
+    return runWithLockRetry(async () => {
+      let itemsToProcess = cachedItemsAfterPreSubmit ?? initialItems;
+      let supplierSubmit = cachedSupplierPreSubmit;
 
       if (
         submitToSupplier &&
@@ -1691,39 +1707,47 @@ class PurchasesService {
       ) {
         const pre = await supplierPreSubmitRequired(resolvedSupplierId, profileId);
         if (pre.required) {
-          const submitLines = await buildSubmitLinesFromItems(itemsToProcess);
-          supplierSubmit = await trySubmitLinesToSupplier({
-            supplierId: resolvedSupplierId,
-            profileId,
-            lines: submitLines,
-            purchaseMeta: {
-              supplier_warehouse_name: warehouseNameForSubmit,
-              note: note || null,
-            },
-          });
-          if (!supplierSubmit.submitted) {
-            const err = new Error(
-              supplierSubmit.message || 'Не удалось отправить заказ поставщику'
-            );
-            err.statusCode = 400;
-            err.supplierSubmit = supplierSubmit;
-            throw err;
-          }
-          if (supplierSubmit.partial && Array.isArray(supplierSubmit.lines)) {
-            const okIds = new Set(
-              supplierSubmit.lines
-                .map((l) => Number(l.productId))
-                .filter((id) => Number.isFinite(id) && id > 0)
-            );
-            itemsToProcess = itemsToProcess.filter((it) =>
-              okIds.has(Number(it.productId))
-            );
-            if (!itemsToProcess.length) {
-              const err = new Error('Ни одна позиция не принята поставщиком');
+          if (!supplierPreSubmitCompleted) {
+            const submitLines = await buildSubmitLinesFromItems(itemsToProcess);
+            supplierSubmit = await trySubmitLinesToSupplier({
+              supplierId: resolvedSupplierId,
+              profileId,
+              lines: submitLines,
+              purchaseMeta: {
+                supplier_warehouse_name: warehouseNameForSubmit,
+                note: note || null,
+              },
+            });
+            if (!supplierSubmit.submitted) {
+              const err = new Error(
+                supplierSubmit.message || 'Не удалось отправить заказ поставщику'
+              );
               err.statusCode = 400;
               err.supplierSubmit = supplierSubmit;
               throw err;
             }
+            if (supplierSubmit.partial && Array.isArray(supplierSubmit.lines)) {
+              const okIds = new Set(
+                supplierSubmit.lines
+                  .map((l) => Number(l.productId))
+                  .filter((id) => Number.isFinite(id) && id > 0)
+              );
+              itemsToProcess = itemsToProcess.filter((it) =>
+                okIds.has(Number(it.productId))
+              );
+              if (!itemsToProcess.length) {
+                const err = new Error('Ни одна позиция не принята поставщиком');
+                err.statusCode = 400;
+                err.supplierSubmit = supplierSubmit;
+                throw err;
+              }
+            }
+            cachedSupplierPreSubmit = supplierSubmit;
+            cachedItemsAfterPreSubmit = itemsToProcess;
+            supplierPreSubmitCompleted = true;
+          } else {
+            supplierSubmit = cachedSupplierPreSubmit;
+            itemsToProcess = cachedItemsAfterPreSubmit ?? itemsToProcess;
           }
         }
       }
@@ -1855,15 +1879,23 @@ class PurchasesService {
             head.rows?.[0]?.supplier_id != null ? Number(head.rows[0].supplier_id) : null;
         }
         if (Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0) {
-          supplierSubmit = await trySubmitPurchaseToSupplier({
-            purchaseId,
-            supplierId: resolvedSupplierId,
-            profileId,
-          }).catch((e) => ({
-            submitted: false,
-            reason: 'submit_error',
-            message: e?.message || String(e),
-          }));
+          if (!postSubmitCompleted) {
+            supplierSubmit = await trySubmitPurchaseToSupplier({
+              purchaseId,
+              supplierId: resolvedSupplierId,
+              profileId,
+            }).catch((e) => ({
+              submitted: false,
+              reason: 'submit_error',
+              message: e?.message || String(e),
+            }));
+            if (supplierSubmit?.submitted) {
+              cachedPostSubmit = supplierSubmit;
+              postSubmitCompleted = true;
+            }
+          } else {
+            supplierSubmit = cachedPostSubmit;
+          }
         }
       }
 

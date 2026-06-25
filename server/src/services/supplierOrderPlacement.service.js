@@ -175,15 +175,27 @@ export async function supplierPreSubmitRequired(supplierId, profileId) {
   };
 }
 
+/** Схлопнуть дубли productId в одну строку (сумма quantity) перед отправкой поставщику. */
+export function mergeProcurementItemsByProductId(items) {
+  const byId = new Map();
+  for (const it of items || []) {
+    const pid = Number(it?.productId);
+    if (!Number.isFinite(pid) || pid < 1) continue;
+    const qty = Math.max(1, parseInt(it?.quantity ?? it?.qty, 10) || 1);
+    const existing = byId.get(pid);
+    if (existing) {
+      existing.quantity += qty;
+    } else {
+      byId.set(pid, { ...it, productId: pid, quantity: qty });
+    }
+  }
+  return [...byId.values()];
+}
+
 /** Позиции для адаптера API из productId + quantity. */
 export async function buildSubmitLinesFromItems(items) {
-  const pids = [
-    ...new Set(
-      (items || [])
-        .map((it) => Number(it.productId))
-        .filter((id) => Number.isFinite(id) && id > 0)
-    ),
-  ];
+  const merged = mergeProcurementItemsByProductId(items);
+  const pids = merged.map((it) => Number(it.productId)).filter((id) => Number.isFinite(id) && id > 0);
   if (!pids.length) return [];
 
   const r = await query(
@@ -195,7 +207,7 @@ export async function buildSubmitLinesFromItems(items) {
   );
   const byId = new Map((r.rows || []).map((p) => [Number(p.id), p]));
 
-  return (items || []).map((it) => {
+  return merged.map((it) => {
     const p = byId.get(Number(it.productId)) || {};
     return {
       product_id: it.productId,
@@ -385,4 +397,5 @@ export default {
   trySubmitLinesToSupplier,
   supplierPreSubmitRequired,
   buildSubmitLinesFromItems,
+  mergeProcurementItemsByProductId,
 };
