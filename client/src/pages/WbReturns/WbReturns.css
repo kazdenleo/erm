@@ -1,0 +1,125 @@
+.wb-returns-page .subtitle {
+  max-width: 52rem;
+  margin-top: 0.35rem;
+}
+
+.wb-returns-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.wb-returns-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.wb-returns-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.wb-returns-filter-label {
+  font-weight: 600;
+  min-width: 4.5rem;
+  color: var(--text, #1e293b);
+}
+
+.wb-returns-filter-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wb-returns-filter-btn {
+  border: 1px solid var(--border, #cbd5e1);
+  background: var(--surface, #fff);
+  color: var(--text, #334155);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.wb-returns-filter-btn.is-active {
+  border-color: var(--primary, #2563eb);
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--primary, #2563eb);
+  font-weight: 600;
+}
+
+.wb-returns-summary {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+.wb-returns-error {
+  margin-bottom: 12px;
+}
+
+.wb-returns-empty {
+  padding: 24px 0;
+  opacity: 0.85;
+}
+
+.wb-returns-table-wrap {
+  margin-top: 4px;
+}
+
+.wb-returns-table {
+  font-size: 13px;
+}
+
+.wb-returns-table th {
+  white-space: nowrap;
+}
+
+.wb-returns-sub {
+  font-size: 11px;
+  opacity: 0.75;
+  margin-top: 2px;
+}
+
+.wb-returns-status.is-waiting {
+  font-weight: 600;
+  color: #b45309;
+}
+
+.wb-returns-row-waiting {
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.wb-returns-row-expired {
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.wb-returns-row-soon {
+  background: rgba(234, 179, 8, 0.05);
+}
+
+.wb-returns-tag {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.wb-returns-tag.expired {
+  background: rgba(239, 68, 68, 0.15);
+  color: #b91c1c;
+}
+
+.wb-returns-tag.soon {
+  background: rgba(234, 179, 8, 0.2);
+  color: #a16207;
+}

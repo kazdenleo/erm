@@ -47,6 +47,7 @@ import platformMarketplaceNotificationsRoutes from './platformMarketplaceNotific
 import * as platformMarketplaceNotificationsController from '../controllers/platformMarketplaceNotifications.controller.js';
 import questionsRoutes from './questions.routes.js';
 import reviewsRoutes from './reviews.routes.js';
+import marketplaceReturnsRoutes from './marketplaceReturns.routes.js';
 import downloadsRoutes from './downloads.routes.js';
 import categoryLabelTemplatesRoutes from './categoryLabelTemplates.routes.js';
 import productLabelsController from '../controllers/productLabels.controller.js';
@@ -246,6 +247,8 @@ router.post(
 );
 router.use('/orders', ordersRoutes);
 router.use('/questions', questionsRoutes);
+router.use('/marketplace-returns', marketplaceReturnsRoutes);
+router.use('/wb-returns', marketplaceReturnsRoutes);
 router.use('/supplier-stocks', supplierStocksRoutes);
 
 // Integrations API (настройки маркетплейсов и поставщиков)

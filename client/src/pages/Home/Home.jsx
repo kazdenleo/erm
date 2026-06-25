@@ -12,7 +12,9 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { productsApi } from '../../services/products.api.js';
 import { ordersApi } from '../../services/orders.api';
 import { questionsApi } from '../../services/questions.api';
+import { marketplaceReturnsApi } from '../../services/marketplaceReturns.api';
 import { integrationsApi } from '../../services/integrations.api';
+import { MARKETPLACE_TABLE_BADGES } from '../../constants/marketplaceUi';
 import { MarketplaceInventorySummary } from '../../components/MarketplaceInventorySummary/MarketplaceInventorySummary.jsx';
 import './Home.css';
 
@@ -67,6 +69,11 @@ export function Home() {
   const [stockSummaryError, setStockSummaryError] = useState(null);
   const [stockDetailOpen, setStockDetailOpen] = useState(false);
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
+  const [returnsStats, setReturnsStats] = useState({
+    waitingCount: 0,
+    countsByMarketplace: { ozon: 0, wildberries: 0, yandex: 0 },
+  });
+  const [returnsLoading, setReturnsLoading] = useState(true);
   const [balanceData, setBalanceData] = useState(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [balanceError, setBalanceError] = useState(null);
@@ -120,6 +127,48 @@ export function Home() {
     return () => window.removeEventListener('questions-stats-refresh', onRefresh);
   }, [loadQuestionsStats]);
 
+  const loadReturnsStats = useCallback(async () => {
+    if (user?.profileId == null || user?.profileId === '') {
+      setReturnsStats({
+        waitingCount: 0,
+        countsByMarketplace: { ozon: 0, wildberries: 0, yandex: 0 },
+      });
+      setReturnsLoading(false);
+      return;
+    }
+    setReturnsLoading(true);
+    try {
+      const data = await marketplaceReturnsApi.getStats({ days: 31, marketplace: 'all' });
+      setReturnsStats({
+        waitingCount: data.waitingCount ?? 0,
+        countsByMarketplace: data.countsByMarketplace ?? { ozon: 0, wildberries: 0, yandex: 0 },
+      });
+    } catch {
+      setReturnsStats({
+        waitingCount: 0,
+        countsByMarketplace: { ozon: 0, wildberries: 0, yandex: 0 },
+      });
+    } finally {
+      setReturnsLoading(false);
+    }
+  }, [user?.profileId]);
+
+  useEffect(() => {
+    loadReturnsStats();
+    const t = setInterval(loadReturnsStats, 5 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [loadReturnsStats]);
+
+  useEffect(() => {
+    const onRefresh = () => loadReturnsStats();
+    window.addEventListener('marketplace-returns-stats-refresh', onRefresh);
+    window.addEventListener('wb-returns-stats-refresh', onRefresh);
+    return () => {
+      window.removeEventListener('marketplace-returns-stats-refresh', onRefresh);
+      window.removeEventListener('wb-returns-stats-refresh', onRefresh);
+    };
+  }, [loadReturnsStats]);
+
   const loadMarketplaceBalances = useCallback(async () => {
     if (profileId == null) {
       setBalanceData(null);
@@ -167,10 +216,9 @@ export function Home() {
     loadStockSummary();
   }, [profileId, loadStockSummary]);
 
-  /** col-12 — ниже md плашки в столбик; иначе без xs-класса третья колонка могла обрезаться/уезжать за край */
-  const widgetColClass = isAccountAdmin
-    ? 'col-12 col-md-6 col-xl-3'
-    : 'col-12 col-md-6 col-xl-4';
+  /** Верхний ряд: заказы, вопросы, возвраты; ниже — товары и остатки */
+  const opsWidgetColClass = 'col-12 col-md-4';
+  const stockWidgetColClass = 'col-12 col-md-6';
 
   const rows = stockSummary?.rows ?? [];
   const totalQty = Number(stockSummary?.totalQty) || 0;
@@ -179,6 +227,7 @@ export function Home() {
   const totalProductsCount = Number(stockSummary?.totalProducts) || 0;
   const stockLoading = stockSummaryLoading;
   const stockError = stockSummaryError;
+  const returnsByMp = returnsStats.countsByMarketplace || { ozon: 0, wildberries: 0, yandex: 0 };
 
   return (
     <div>
@@ -199,107 +248,154 @@ export function Home() {
         )}
       />
 
-      <div className="row g-3 home-dashboard-top-widgets">
-        <div className={widgetColClass}>
-          <div className="card mb-3 widget-content bg-midnight-bloom">
-            <div className="widget-content-wrapper text-white">
-              <div className="widget-content-left">
-                <div className="widget-heading">Товары</div>
-                <div className="widget-subheading">Всего в системе</div>
-              </div>
-              <div className="widget-content-right">
-                <div className="widget-numbers text-white">
-                  <span>{stockLoading ? '…' : formatQty(totalProductsCount)}</span>
+      <div className="home-dashboard-widgets">
+        <div className="row g-3 home-dashboard-top-widgets mb-3">
+          <div className={opsWidgetColClass}>
+            <Link
+              to="/orders"
+              className="text-decoration-none d-block home-orders-plate-link"
+              title="Открыть заказы"
+            >
+              <div className="card mb-3 widget-content bg-arielle-smile home-orders-plate-block">
+                <div className="widget-content-wrapper text-white">
+                  <div className="widget-content-left">
+                    <div className="widget-heading">Заказы</div>
+                    <div className="widget-subheading">Новые и на сборке</div>
+                  </div>
+                  <div className="widget-content-right">
+                    <div className="widget-numbers text-white">
+                      <span>
+                        {ordersLoading ? '…' : ordersError ? '—' : formatQty(needProcessOrderCount)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
+            </Link>
+          </div>
+          <div className={opsWidgetColClass}>
+            <Link
+              to="/questions"
+              className="text-decoration-none d-block home-questions-plate-link"
+              title="Открыть вопросы покупателей"
+            >
+              <div className="card mb-3 widget-content bg-malibu-beach home-questions-plate-block">
+                <div className="widget-content-wrapper text-white">
+                  <div className="widget-content-left">
+                    <div className="widget-heading">Обработать вопросов</div>
+                    <div className="widget-subheading">Без ответа продавца</div>
+                  </div>
+                  <div className="widget-content-right">
+                    <div className="widget-numbers text-white">
+                      <span>{formatQty(questionsNewCount)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Link>
+          </div>
+          <div className={opsWidgetColClass}>
+            <Link
+              to="/returns"
+              className="text-decoration-none d-block home-returns-plate-link"
+              title="Открыть возвраты, готовые к выдаче"
+            >
+              <div className="card mb-3 widget-content bg-sunny-morning home-returns-plate-block">
+                <div className="widget-content-wrapper text-white home-returns-combined-row">
+                  <div className="home-returns-combined-left">
+                    <div className="widget-heading">Возвраты</div>
+                    <div className="widget-subheading">Готовы к выдаче</div>
+                  </div>
+                  <div className="home-returns-combined-mp" role="list" aria-label="По маркетплейсам">
+                    {MARKETPLACE_TABLE_BADGES.map((mp) => (
+                      <div key={mp.code} className="home-returns-mp-cell" role="listitem">
+                        <div className="home-returns-mp-label">{mp.shortLabel}</div>
+                        <div className="widget-numbers text-white home-returns-mp-count">
+                          <span>
+                            {returnsLoading || user?.profileId == null ? '…' : formatQty(returnsByMp[mp.code] ?? 0)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Link>
           </div>
         </div>
-        <div className={widgetColClass}>
-          <div className="card mb-3 widget-content bg-arielle-smile">
-            <div className="widget-content-wrapper text-white">
-              <div className="widget-content-left">
-                <div className="widget-heading">Нужно обработать</div>
-                <div className="widget-subheading">Новые и на сборке</div>
-              </div>
-              <div className="widget-content-right">
-                <div className="widget-numbers text-white">
-                  <span>
-                    {ordersLoading ? '…' : ordersError ? '—' : formatQty(needProcessOrderCount)}
-                  </span>
+
+        <div className="row g-3 home-dashboard-stock-widgets mb-3">
+          <div className={isAccountAdmin ? stockWidgetColClass : 'col-12'}>
+            <Link
+              to="/products"
+              className="text-decoration-none d-block home-products-plate-link"
+              title="Открыть каталог товаров"
+            >
+              <div className="card mb-3 widget-content bg-midnight-bloom home-products-plate-block">
+                <div className="widget-content-wrapper text-white">
+                  <div className="widget-content-left">
+                    <div className="widget-heading">Товары</div>
+                    <div className="widget-subheading">Всего в системе</div>
+                  </div>
+                  <div className="widget-content-right">
+                    <div className="widget-numbers text-white">
+                      <span>{stockLoading ? '…' : formatQty(totalProductsCount)}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
+            </Link>
           </div>
-        </div>
-        <div className={widgetColClass}>
-          <Link
-            to="/questions"
-            className="text-decoration-none d-block home-questions-plate-link"
-            title="Открыть вопросы покупателей"
-          >
-            <div className="card mb-3 widget-content bg-malibu-beach home-questions-plate-block">
-              <div className="widget-content-wrapper text-white">
-                <div className="widget-content-left">
-                  <div className="widget-heading">Обработать вопросов</div>
-                  <div className="widget-subheading">Без ответа продавца</div>
-                </div>
-                <div className="widget-content-right">
-                  <div className="widget-numbers text-white">
-                    <span>{formatQty(questionsNewCount)}</span>
+          {isAccountAdmin && (
+            <div className={stockWidgetColClass}>
+              <div
+                role="button"
+                tabIndex={0}
+                className="card mb-3 widget-content bg-grow-early home-stock-plate-block"
+                onClick={() => setStockDetailOpen(true)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setStockDetailOpen(true);
+                  }
+                }}
+                aria-haspopup="dialog"
+                aria-expanded={stockDetailOpen}
+                title="Открыть остатки по категориям"
+              >
+                <div className="widget-content-wrapper text-white home-stock-plate-row">
+                  <div className="widget-content-left">
+                    <div className="widget-heading">Остатки</div>
+                    <div className="widget-subheading">На складе</div>
+                  </div>
+                  <div className="widget-numbers text-white home-stock-plate-col-center">
+                    {stockLoading ? '…' : stockError ? '—' : (
+                      <>
+                        <span className="home-stock-plate-num">{formatQty(totalQty)}</span>
+                        <span className="home-stock-plate-suffix"> шт</span>
+                      </>
+                    )}
+                  </div>
+                  <div className="widget-numbers text-white home-stock-plate-col-right">
+                    {stockLoading ? '…' : stockError ? '—' : (() => {
+                      const amt = formatRubAmountInt(totalCostSum);
+                      return amt == null ? '—' : (
+                        <>
+                          <span className="home-stock-plate-num">{amt}</span>
+                          <span className="home-stock-plate-suffix"> руб.</span>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
             </div>
-          </Link>
+          )}
         </div>
+
         {isAccountAdmin && (
-          <div className={widgetColClass}>
-            <div
-              role="button"
-              tabIndex={0}
-              className="card mb-3 widget-content bg-grow-early home-stock-plate-block"
-              onClick={() => setStockDetailOpen(true)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  setStockDetailOpen(true);
-                }
-              }}
-              aria-haspopup="dialog"
-              aria-expanded={stockDetailOpen}
-              title="Открыть остатки по категориям"
-            >
-              <div className="widget-content-wrapper text-white home-stock-plate-row">
-                <div className="widget-content-left">
-                  <div className="widget-heading">Остатки</div>
-                </div>
-                <div className="widget-numbers text-white home-stock-plate-col-center">
-                  {stockLoading ? '…' : stockError ? '—' : (
-                    <>
-                      <span className="home-stock-plate-num">{formatQty(totalQty)}</span>
-                      <span className="home-stock-plate-suffix"> шт</span>
-                    </>
-                  )}
-                </div>
-                <div className="widget-numbers text-white home-stock-plate-col-right">
-                  {stockLoading ? '…' : stockError ? '—' : (() => {
-                    const amt = formatRubAmountInt(totalCostSum);
-                    return amt == null ? '—' : (
-                      <>
-                        <span className="home-stock-plate-num">{amt}</span>
-                        <span className="home-stock-plate-suffix"> руб.</span>
-                      </>
-                    );
-                  })()}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        {isAccountAdmin && (
-          <div className="col-12">
-            <div className="mb-3">
+          <div className="row mb-3">
+            <div className="col-12">
               <MarketplaceInventorySummary visible />
             </div>
           </div>

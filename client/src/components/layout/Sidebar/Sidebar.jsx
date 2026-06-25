@@ -13,6 +13,7 @@ import {
 } from '../../../utils/profileFlags.js';
 import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
 import { questionsApi } from '../../../services/questions.api';
+import { marketplaceReturnsApi } from '../../../services/marketplaceReturns.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
 
 /** Подпункты «Склад»: операции склада (?op=) + закупка */
@@ -81,6 +82,7 @@ const menuItems = [
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },
   { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment', sectionKey: 'questions' },
   { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2', sectionKey: 'reviews' },
+  { path: '/returns', label: 'Возвраты', iconClass: 'pe-7s-back', sectionKey: 'wb_returns' },
   {
     path: '/stock-levels/warehouse',
     label: 'Склад',
@@ -124,6 +126,7 @@ export function Sidebar() {
   const fboMenuEnabled = isProfileFboEnabled(profile);
   const NONE = '__none__';
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
+  const [returnsWaitingCount, setReturnsWaitingCount] = useState(0);
 
   const onLeafClick = useCallback((item) => {
     if (!item?.path) return;
@@ -147,11 +150,46 @@ export function Sidebar() {
     }
   }, [user?.profileId]);
 
+  const loadReturnsStats = useCallback(async () => {
+    if (user?.profileId == null || user?.profileId === '') {
+      setReturnsWaitingCount(0);
+      return;
+    }
+    try {
+      const { waitingCount } = await marketplaceReturnsApi.getStats({ days: 31, marketplace: 'all' });
+      setReturnsWaitingCount(typeof waitingCount === 'number' && Number.isFinite(waitingCount) ? waitingCount : 0);
+    } catch {
+      setReturnsWaitingCount(0);
+    }
+  }, [user?.profileId]);
+
   useEffect(() => {
     loadQuestionsStats();
     const t = setInterval(loadQuestionsStats, 60000);
     return () => clearInterval(t);
   }, [loadQuestionsStats]);
+
+  useEffect(() => {
+    if (user?.profileId == null || user?.profileId === '') return undefined;
+    loadReturnsStats();
+    const interval = setInterval(loadReturnsStats, 5 * 60 * 1000);
+    const onRefresh = () => {
+      loadReturnsStats();
+    };
+    window.addEventListener('marketplace-returns-stats-refresh', onRefresh);
+    window.addEventListener('wb-returns-stats-refresh', onRefresh);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('marketplace-returns-stats-refresh', onRefresh);
+      window.removeEventListener('wb-returns-stats-refresh', onRefresh);
+    };
+  }, [loadReturnsStats, user?.profileId]);
+
+  useEffect(() => {
+    if (location.pathname === '/returns' || location.pathname === '/wb-returns') {
+      loadReturnsStats();
+    }
+  }, [location.pathname, loadReturnsStats]);
 
   useEffect(() => {
     const onRefresh = () => loadQuestionsStats();
@@ -243,7 +281,9 @@ export function Sidebar() {
 
               if (!hasChildren) {
                 const showQBadge = item.path === '/questions' && questionsNewCount > 0;
+                const showReturnsBadge = item.path === '/returns' && returnsWaitingCount > 0;
                 const badgeText = questionsNewCount > 99 ? '99+' : String(questionsNewCount);
+                const returnsBadgeText = returnsWaitingCount > 99 ? '99+' : String(returnsWaitingCount);
                 return (
                   <li key={item.path}>
                     <Link to={item.path} className={active ? 'mm-active' : ''} onClick={() => onLeafClick(item)}>
@@ -252,6 +292,11 @@ export function Sidebar() {
                       {showQBadge ? (
                         <span className="sidebar-menu-badge" title="Новых вопросов без ответа">
                           {badgeText}
+                        </span>
+                      ) : null}
+                      {showReturnsBadge ? (
+                        <span className="sidebar-menu-badge" title="Возвратов, ждущих забора">
+                          {returnsBadgeText}
                         </span>
                       ) : null}
                     </Link>
