@@ -1449,7 +1449,8 @@ export function WarehouseStocks() {
     filterSupplierId,
     filterCategoryId,
     filterOrganizationId,
-    stockWarehouseId
+    stockWarehouseId,
+    supplierBindingEnabled,
   ]);
 
   useEffect(() => {

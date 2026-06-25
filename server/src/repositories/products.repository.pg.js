@@ -829,14 +829,8 @@ class ProductsRepositoryPG {
     const sqlInStockOnly = isStockList ? false : inStockOnly;
 
     const { whereSql, params, paramIndex: startParamIndex } = buildFindAllFilters({
-      brandId,
-      categoryId,
-      organizationId,
-      search,
-      profileId,
-      productType,
+      ...options,
       inStockOnly: sqlInStockOnly,
-      warehouseId
     });
 
     const selectCols = isStockList

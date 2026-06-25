@@ -396,7 +396,8 @@ export function Products() {
     filterSupplierId,
     filterCategoryId,
     filterProductType,
-    filterArchiveMode
+    filterArchiveMode,
+    supplierBindingEnabled,
   ]);
 
   const openProductIdParam = searchParams.get('open');
