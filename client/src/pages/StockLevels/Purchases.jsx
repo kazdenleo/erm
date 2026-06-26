@@ -320,6 +320,7 @@ export function Purchases() {
   const [createItems, setCreateItems] = useState([{ productId: '', quantity: 1 }]);
   const [createProductSearch, setCreateProductSearch] = useState('');
   const [createSearchResults, setCreateSearchResults] = useState([]);
+  const [createSelectedProducts, setCreateSelectedProducts] = useState([]);
   const [createSearchLoading, setCreateSearchLoading] = useState(false);
   const [excelImportLoading, setExcelImportLoading] = useState(false);
   const excelInputRef = useRef(null);
@@ -550,6 +551,7 @@ export function Purchases() {
     setCreateOpen(false);
     setCreateProductSearch('');
     setCreateSearchResults([]);
+    setCreateSelectedProducts([]);
     setCreateSearchLoading(false);
     setExcelImportLoading(false);
     setExcelPreviewInfo(null);
@@ -586,16 +588,17 @@ export function Purchases() {
 
   const createProductLabelById = useMemo(() => {
     const m = new Map();
-    for (const p of createSearchResults) {
+    for (const p of mergeProductLists(products, createSelectedProducts, createSearchResults)) {
       if (p?.id != null) m.set(String(p.id), `${p.sku || '—'} — ${p.name || 'Без названия'}`);
     }
     return m;
-  }, [createSearchResults]);
+  }, [products, createSelectedProducts, createSearchResults]);
 
   const addProductToCreateItems = useCallback((product, addQty = 1) => {
     const id = product?.id;
     if (id == null || id === '') return;
     setCreateSearchResults((prev) => mergeProductLists(prev, [product]));
+    setCreateSelectedProducts((prev) => mergeProductLists(prev, [product]));
     const add = Math.max(1, parseInt(addQty, 10) || 1);
     const idStr = String(id);
     setCreateItems((prev) => {
@@ -866,6 +869,7 @@ export function Purchases() {
       setCreateOrganizationId('');
       setCreateWarehouseId('');
       setCreateItems([{ productId: '', quantity: 1 }]);
+      setCreateSelectedProducts([]);
       await reload();
       if (res?.id) openDetail(res.id);
     } catch (e) {
@@ -908,6 +912,7 @@ export function Purchases() {
         }));
       if (productsFromExcel.length > 0) {
         setCreateSearchResults((prev) => mergeProductLists(prev, productsFromExcel));
+        setCreateSelectedProducts((prev) => mergeProductLists(prev, productsFromExcel));
       }
       setCreateItems(
         tableItems.length > 0
