@@ -71,7 +71,7 @@ export function matchProductsLocal(products, query, { limit = 30 } = {}) {
   );
   if (exactBarcode.length) return exactBarcode.slice(0, limit);
 
-  const strictCode = !shouldUseBarcodeDigitFallback(q);
+  const strictBarcode = !shouldUseBarcodeDigitFallback(q);
   const scored = list
     .map((p) => {
       const sku = String(p?.sku || '').toLowerCase();
@@ -79,9 +79,9 @@ export function matchProductsLocal(products, query, { limit = 30 } = {}) {
       const barcodeList = barcodeStringsFromProduct(p.barcodes).map((b) =>
         String(b || '').toLowerCase()
       );
-      const hitSku = strictCode ? sku === q : sku.includes(q);
+      const hitSku = sku.includes(q);
       const hitName = name.includes(q);
-      const hitBarcode = strictCode
+      const hitBarcode = strictBarcode
         ? barcodeList.some((b) => b === q)
         : barcodeList.some((b) => b.includes(q));
       if (!hitSku && !hitName && !hitBarcode) return null;
@@ -125,16 +125,19 @@ export async function searchProductsCombined(query, { products = [], organizatio
   const q = normalizeProductSearchQuery(query);
   if (!q) return [];
 
-  try {
-    const byBarcode = await fetchProductByScanCode(q);
-    if (byBarcode?.id) return [byBarcode];
-  } catch {
-    /* не точный ШК — продолжаем поиск по артикулу и названию */
+  let barcodeHit = null;
+  if (isLikelyBarcodeScan(q)) {
+    try {
+      barcodeHit = await fetchProductByScanCode(q);
+    } catch {
+      /* не точный ШК — продолжаем поиск по артикулу и названию */
+    }
   }
 
   const local = matchProductsLocal(products, q, { limit });
   const remote = await searchProductsRemote(q, { organizationId, limit });
-  return mergeProductLists(local, remote).slice(0, limit);
+  const merged = mergeProductLists(barcodeHit ? [barcodeHit] : [], local, remote);
+  return merged.slice(0, limit);
 }
 
 /**

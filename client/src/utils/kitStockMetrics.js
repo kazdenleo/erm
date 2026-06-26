@@ -55,6 +55,8 @@ export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = [
   'manual',
   'transfer',
   'opening_balance',
+  'customer_return',
+  'return_to_supplier',
   'reserve',
   'unreserve',
   'incoming'

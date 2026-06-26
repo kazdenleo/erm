@@ -622,6 +622,26 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
       }
       return out;
     }
+    if (t === 'return_to_supplier' || t === 'customer_return') {
+      const dbBal = movementNum(m, 'balance_after');
+      if (dbBal != null) out.bal = dbBal;
+      else if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
+        out.bal = Number(prevLineBelow.bal) + (Number(m.quantity_change) || 0);
+      }
+      if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+        out.inc = Number(prevLineBelow.inc);
+      } else {
+        const dbInc = movementNum(m, 'incoming_after');
+        out.inc = dbInc != null ? dbInc : 0;
+      }
+      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        out.res = Number(prevLineBelow.res);
+      } else {
+        const dbRes = movementNum(m, 'reserved_after');
+        out.res = dbRes != null ? dbRes : 0;
+      }
+      return out;
+    }
     if (t === 'reserve' || t === 'unreserve') {
       const dbRes = movementNum(m, 'reserved_after');
       if (dbRes != null) out.res = dbRes;

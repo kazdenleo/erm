@@ -405,18 +405,19 @@ export function WarehouseOperations({
       if (!v) {
         throw new Error('Введите штрихкод / артикул / название');
       }
-      // 1) Точный поиск по штрихкоду (инвентаризация использует fetchProductByScanCode отдельно).
-      try {
-        const product = await fetchProductByScanCode(v);
-        if (product?.id) return product;
-      } catch (scanErr) {
-        if (!shouldUseBarcodeDigitFallback(v)) throw scanErr;
+      let barcodeProduct = null;
+      if (isLikelyBarcodeScan(v)) {
+        try {
+          barcodeProduct = await fetchProductByScanCode(v);
+        } catch (scanErr) {
+          if (!shouldUseBarcodeDigitFallback(v)) throw scanErr;
+        }
       }
 
-      // 2) Поиск по штрихкоду / артикулу / названию (локально + сервер) — только для EAN.
+      // 2) Поиск по штрихкоду / артикулу / названию (локально + сервер)
       let matches = findLocalMatches(v);
       const remote = await searchProductsRemote(v, { organizationId, limit: 40 });
-      matches = mergeProductLists(matches, remote);
+      matches = mergeProductLists(barcodeProduct ? [barcodeProduct] : [], matches, remote);
       if (matches.length === 0 && useServerSearch === false) {
         matches = remote;
       }
