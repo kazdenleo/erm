@@ -653,10 +653,17 @@ class StockMovementsService {
       for (const m of compRows || []) {
         const t = String(m?.type || '').toLowerCase();
         if (t === 'return_to_supplier') {
+          const rawMeta = m.meta && typeof m.meta === 'object' ? m.meta : {};
+          const kitPid = rawMeta.kit_product_id ?? rawMeta.kitProductId;
+          const kitLinked =
+            rawMeta.kit_component_return_to_supplier === true ||
+            rawMeta.kit_component_return_to_supplier === 'true' ||
+            (kitPid != null && String(kitPid) === String(idNum));
+          if (!kitLinked) continue;
           combined.push({
             ...m,
             meta: {
-              ...(m.meta && typeof m.meta === 'object' ? m.meta : {}),
+              ...rawMeta,
               kit_component_return_to_supplier: true,
               kit_product_id: idNum
             }
@@ -672,6 +679,29 @@ class StockMovementsService {
             kit_product_id: idNum
           }
         });
+      }
+    }
+
+    const kitResetMs = rows.reduce((max, m) => {
+      const raw = m?.meta;
+      const meta = raw && typeof raw === 'object' ? raw : {};
+      const flagged =
+        meta.stock_history_reset === true ||
+        meta.stock_history_reset === 'true' ||
+        meta.admin_set != null;
+      if (!flagged) return max;
+      const t = new Date(m.created_at ?? m.createdAt ?? 0).getTime();
+      return Number.isFinite(t) && t > max ? t : max;
+    }, 0);
+    if (kitResetMs > 0) {
+      for (let i = combined.length - 1; i >= 0; i--) {
+        const m = combined[i];
+        const mpid = m.product_id ?? m.productId;
+        if (mpid != null && String(mpid) === String(idNum)) continue;
+        const t = new Date(m.created_at ?? m.createdAt ?? 0).getTime();
+        if (Number.isFinite(t) && t < kitResetMs) {
+          combined.splice(i, 1);
+        }
       }
     }
 
@@ -2254,7 +2284,9 @@ class StockMovementsService {
     }
 
     const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
-    const isKit = pt === 'kit' || product.is_kit_catalog === true;
+    const { isKitProductId } = await import('./kitStock.service.js');
+    const isKit =
+      pt === 'kit' || product.is_kit_catalog === true || (await isKitProductId(pid));
 
     const whId = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
     if (!whId) {
@@ -2307,7 +2339,9 @@ class StockMovementsService {
     }
 
     const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
-    const isKit = pt === 'kit' || product.is_kit_catalog === true;
+    const { isKitProductId } = await import('./kitStock.service.js');
+    const isKit =
+      pt === 'kit' || product.is_kit_catalog === true || (await isKitProductId(pid));
 
     const pwsRes = await query(
       `SELECT warehouse_id, COALESCE(quantity, 0)::int AS quantity
@@ -2463,6 +2497,14 @@ class StockMovementsService {
                )`,
             [String(pid), compIds.length > 0 ? compIds : [0]]
           );
+          if (compIds.length > 0) {
+            await client.query(
+              `DELETE FROM stock_movements
+               WHERE product_id = ANY($1::bigint[])
+                 AND LOWER(TRIM(type::text)) = 'return_to_supplier'`,
+              [compIds]
+            );
+          }
         }
 
         await client.query('DELETE FROM stock_movements WHERE product_id = $1', [pid]);
