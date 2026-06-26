@@ -1975,7 +1975,7 @@ export function WarehouseStocks() {
   }, []);
 
   const openStockResetModal = useCallback((row) => {
-    if (!row?.product?.id || isKitProduct(row.product)) return;
+    if (!row?.product?.id) return;
     setStockResetProduct(row.product);
     setStockResetForm({
       incoming: Number(row.incoming) || 0,
@@ -1987,7 +1987,7 @@ export function WarehouseStocks() {
   }, []);
 
   const openStockResetFromHistory = useCallback(() => {
-    if (!historyProduct?.id || isKitProduct(historyProduct)) return;
+    if (!historyProduct?.id) return;
     const incoming =
       Number(historyProduct.incoming_quantity ?? historyProduct.incomingQuantity) || 0;
     const onHand = Number(historyProduct.quantity) || 0;
@@ -2623,18 +2623,14 @@ export function WarehouseStocks() {
                     </td>
                     {allowStockHistoryReset ? (
                       <td className="stock-history-reset-cell" onClick={(e) => e.stopPropagation()}>
-                        {isKitProduct(row.product) ? (
-                          <span className="text-muted" title="Для комплектов недоступно">—</span>
-                        ) : (
-                          <button
-                            type="button"
-                            className="stock-history-reset-btn"
-                            title="Очистить историю и задать текущие остатки"
-                            onClick={() => openStockResetModal(row)}
-                          >
-                            ⟲
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          className="stock-history-reset-btn"
+                          title="Очистить историю и задать текущие остатки"
+                          onClick={() => openStockResetModal(row)}
+                        >
+                          ⟲
+                        </button>
                       </td>
                     ) : null}
                   </tr>
@@ -2830,7 +2826,7 @@ export function WarehouseStocks() {
         }
         size="large"
       >
-        {allowStockHistoryReset && historyProduct && !isKitProduct(historyProduct) ? (
+        {allowStockHistoryReset && historyProduct ? (
           <div className="stock-history-reset-toolbar">
             <Button
               type="button"
@@ -2844,8 +2840,17 @@ export function WarehouseStocks() {
               <span className="text-muted small">
                 Для сброса выберите склад в фильтре над таблицей.
               </span>
+            ) : isKitProduct(historyProduct) ? (
+              <span className="text-muted small">
+                Для комплекта также снимается резерв комплектующих, привязанный к этому SKU.
+              </span>
             ) : null}
           </div>
+        ) : historyProduct && canManageAccountStockReset && !stockResetSettingOn ? (
+          <p className="text-muted small mb-2">
+            Сброс истории отключён. Включите «Сброс истории остатков по товару» в{' '}
+            <Link to="/settings">настройках аккаунта</Link> (нужны права администратора).
+          </p>
         ) : null}
         {historyLoading ? (
           <div className="loading">Загрузка истории…</div>

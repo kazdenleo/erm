@@ -2243,11 +2243,7 @@ class StockMovementsService {
     }
 
     const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
-    if (pt === 'kit' || product.is_kit_catalog === true) {
-      const error = new Error('Для комплектов сброс истории недоступен');
-      error.statusCode = 400;
-      throw error;
-    }
+    const isKit = pt === 'kit' || product.is_kit_catalog === true;
 
     const whId = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
     if (!whId) {
@@ -2268,6 +2264,7 @@ class StockMovementsService {
       reservedN,
       resetReason,
       warehouseStocks: [{ warehouseId: whId, quantity: onHandN }],
+      isKit,
     });
   }
 
@@ -2299,11 +2296,7 @@ class StockMovementsService {
     }
 
     const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
-    if (pt === 'kit' || product.is_kit_catalog === true) {
-      const error = new Error('Для комплектов сброс истории недоступен');
-      error.statusCode = 400;
-      throw error;
-    }
+    const isKit = pt === 'kit' || product.is_kit_catalog === true;
 
     const pwsRes = await query(
       `SELECT warehouse_id, COALESCE(quantity, 0)::int AS quantity
@@ -2356,10 +2349,11 @@ class StockMovementsService {
       reservedN,
       resetReason,
       warehouseStocks,
+      isKit,
     });
   }
 
-  /** Массовый сброс истории остатков по всем товарам аккаунта (кроме комплектов). */
+  /** Массовый сброс истории остатков по всем товарам аккаунта. */
   async resetAllStockHistoryForProfile(profileId) {
     await this.assertStockHistoryResetAllowed(profileId);
 
@@ -2379,7 +2373,6 @@ class StockMovementsService {
       `SELECT p.id
        FROM products p
        WHERE p.profile_id = $1::bigint
-         AND LOWER(TRIM(COALESCE(p.product_type::text, ''))) <> 'kit'
        ORDER BY p.id ASC`,
       [pid]
     );
@@ -2414,7 +2407,7 @@ class StockMovementsService {
 
   async _executeStockHistoryReset(
     pid,
-    { product, profileId: profId, incomingN, reservedN, resetReason, warehouseStocks = [] } = {}
+    { product, profileId: profId, incomingN, reservedN, resetReason, warehouseStocks = [], isKit = false } = {}
   ) {
     const stocks = Array.isArray(warehouseStocks) ? warehouseStocks : [];
     const onHandN = stocks.reduce((sum, row) => sum + Math.max(0, Math.floor(Number(row.quantity) || 0)), 0);
@@ -2440,6 +2433,15 @@ class StockMovementsService {
       try {
         await client.query('BEGIN');
         await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
+
+        if (isKit) {
+          await client.query(
+            `DELETE FROM stock_movements
+             WHERE type IN ('reserve', 'unreserve')
+               AND meta->>'kit_product_id' = $1`,
+            [String(pid)]
+          );
+        }
 
         await client.query('DELETE FROM stock_movements WHERE product_id = $1', [pid]);
         await client.query('DELETE FROM product_warehouse_stock WHERE product_id = $1', [pid]);
