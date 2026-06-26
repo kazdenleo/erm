@@ -11,6 +11,7 @@ import { stockMovementsApi } from '../../services/stockMovements.api';
 import { receiptsApi } from '../../services/receipts.api';
 import { inventorySessionsApi } from '../../services/inventorySessions.api';
 import { fetchProductByScanCode } from '../../utils/productSearch.js';
+import { clearScanField, readScanFieldValue } from '../../utils/scanInput.js';
 import { shouldUseBarcodeDigitFallback } from '../../utils/productBarcodes.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSuppliers } from '../../hooks/useSuppliers';
@@ -212,7 +213,6 @@ export function WarehouseOperations({
   const mode =
     typeof activeTab === 'string' && KNOWN_MODES.has(activeTab) ? activeTab : internalMode;
   const setMode = onTabChange || setInternalMode;
-  const [scanValue, setScanValue] = useState('');
   const [foundProduct, setFoundProduct] = useState(null);
   const [lookupError, setLookupError] = useState(null);
   const [qtyInput, setQtyInput] = useState(1);
@@ -222,7 +222,6 @@ export function WarehouseOperations({
   const [transferOrganizationId, setTransferOrganizationId] = useState('');
   const [transferFromWarehouseId, setTransferFromWarehouseId] = useState('');
   const [transferToWarehouseId, setTransferToWarehouseId] = useState('');
-  const [transferScanValue, setTransferScanValue] = useState('');
   const [transferManualSearch, setTransferManualSearch] = useState('');
   const transferScanInputRef = useRef(null);
   const transferScanDebounceRef = useRef(null);
@@ -269,7 +268,6 @@ export function WarehouseOperations({
   // Список для поступления: { productId, sku, name, quantity, cost }
   const [receiptList, setReceiptList] = useState([]);
   const scanDebounceRef = useRef(null);
-  const scanValueRef = useRef('');
   const manualSearchDebounceRef = useRef(null);
   const [receiptsList, setReceiptsList] = useState([]);
   const [receiptsLoading, setReceiptsLoading] = useState(false);
@@ -314,32 +312,27 @@ export function WarehouseOperations({
   const [returnSupplierId, setReturnSupplierId] = useState('');
   const [returnList, setReturnList] = useState([]);
   const [returnMode, setReturnMode] = useState('scan');
-  const [returnScanValue, setReturnScanValue] = useState('');
   const [returnSelectedProductId, setReturnSelectedProductId] = useState('');
   const [returnListSearch, setReturnListSearch] = useState('');
   const [returnPickedProduct, setReturnPickedProduct] = useState(null);
   const [returnListQty, setReturnListQty] = useState(1);
   const returnScanDebounceRef = useRef(null);
-  const returnScanValueRef = useRef('');
   const returnScanInputRef = useRef(null);
   const returnScanDedupRef = useRef({ key: '', at: 0 });
   // Возврат от клиентов на склад
   const [customerReturnOrganizationId, setCustomerReturnOrganizationId] = useState('');
   const [customerReturnList, setCustomerReturnList] = useState([]);
   const [customerReturnMode, setCustomerReturnMode] = useState('scan');
-  const [customerReturnScanValue, setCustomerReturnScanValue] = useState('');
   const [customerReturnSelectedProductId, setCustomerReturnSelectedProductId] = useState('');
   const [customerReturnListSearch, setCustomerReturnListSearch] = useState('');
   const [customerReturnPickedProduct, setCustomerReturnPickedProduct] = useState(null);
   const [customerReturnListQty, setCustomerReturnListQty] = useState(1);
   const customerReturnScanDebounceRef = useRef(null);
-  const customerReturnScanValueRef = useRef('');
   const customerReturnScanInputRef = useRef(null);
   const customerReturnScanDedupRef = useRef({ key: '', at: 0 });
   /** Пересчёт выборочно: скан / поиск + только отмеченные позиции */
   const [inventoryNewSession, setInventoryNewSession] = useState(false);
   const [inventoryNewRows, setInventoryNewRows] = useState([]);
-  const [inventoryNewScanValue, setInventoryNewScanValue] = useState('');
   const [inventoryNewPickedProduct, setInventoryNewPickedProduct] = useState(null);
   const [inventoryNewSearch, setInventoryNewSearch] = useState('');
   const [linkBarcodeModalOpen, setLinkBarcodeModalOpen] = useState(false);
@@ -470,7 +463,6 @@ export function WarehouseOperations({
     [onRefresh]
   );
   const inventoryNewScanDebounceRef = useRef(null);
-  const inventoryNewScanValueRef = useRef('');
   const inventoryNewScanInputRef = useRef(null);
   const inventoryScanBusyRef = useRef(false);
   /** Склад, по которому ведётся новая инвентаризация (обязателен до сохранения) */
@@ -694,7 +686,7 @@ export function WarehouseOperations({
     async (e) => {
       e?.preventDefault?.();
       if (opLoading) return;
-      const raw = String(transferScanValue || '').trim();
+      const raw = readScanFieldValue(transferScanInputRef.current).trim();
       if (!raw) return;
       try {
         if (!transferOrganizationId) {
@@ -708,7 +700,7 @@ export function WarehouseOperations({
           useServerSearch: true
         });
         addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
-        setTransferScanValue('');
+        clearScanField(transferScanInputRef.current);
         setOpMessage(null);
         if (transferQuickMode) setTransferQty(1);
         window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
@@ -720,7 +712,6 @@ export function WarehouseOperations({
     },
     [
       opLoading,
-      transferScanValue,
       transferOrganizationId,
       lookupProductByAny,
       addTransferItemFromProduct,
@@ -773,7 +764,7 @@ export function WarehouseOperations({
     if (mode !== MODE_INVENTORY) {
       setInventoryNewSession(false);
       setInventoryNewRows([]);
-      setInventoryNewScanValue('');
+      clearScanField(inventoryNewScanInputRef.current);
       setInventoryNewSearch('');
       setInventoryNewPickedProduct(null);
       setInventoryDetailView(null);
@@ -1190,7 +1181,7 @@ export function WarehouseOperations({
     if (mode === MODE_RECEIPT && receiptMode === 'scan') {
       return;
     }
-    lookupByBarcodeOrSku(scanValue);
+    lookupByBarcodeOrSku(readScanFieldValue(scanInputRef.current));
   };
 
   /** Добавить товар в список для поступления (объединяем по productId) */
@@ -1258,7 +1249,7 @@ export function WarehouseOperations({
       }
       setOpMessage(`В список: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
-      setScanValue('');
+      clearScanField(scanInputRef.current);
       scanInputRef.current?.focus();
     } catch (e) {
       const msg = e?.message || 'поиск не удался';
@@ -1406,11 +1397,7 @@ export function WarehouseOperations({
 
   /** Обработка ввода в поле скана: авто-добавление через короткую паузу (сканер вводит быстро, без Enter) */
   const handleReceiptScanChange = (e) => {
-    const rawValue = e.target.value;
-    // Некоторые сканеры вставляют \r/\n вместо Enter — нормализуем, чтобы обработка работала одинаково.
-    const value = String(rawValue || '').replace(/[\r\n]+/g, '');
-    scanValueRef.current = value;
-    setScanValue(value);
+    const value = readScanFieldValue(e.target);
     setLookupError(null);
 
     if (scanDebounceRef.current) {
@@ -1422,12 +1409,11 @@ export function WarehouseOperations({
     const SCAN_DELAY_MS = 160;
     scanDebounceRef.current = setTimeout(() => {
       scanDebounceRef.current = null;
-      const toProcess = scanValueRef.current.trim();
+      const toProcess = readScanFieldValue(scanInputRef.current).trim();
       if (!toProcess) return;
       setOpMessage('Поиск товара…');
       lookupByBarcodeOrSkuThenReceiptOne(toProcess);
-      setScanValue('');
-      scanValueRef.current = '';
+      clearScanField(scanInputRef.current);
       scanInputRef.current?.focus();
     }, SCAN_DELAY_MS);
   };
@@ -1588,7 +1574,7 @@ export function WarehouseOperations({
       addToReturnList(product, 1);
       setOpMessage(`В список возврата: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
-      setReturnScanValue('');
+      clearScanField(returnScanInputRef.current);
       returnScanInputRef.current?.focus();
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
@@ -1599,9 +1585,8 @@ export function WarehouseOperations({
   const submitReturnScan = (e) => {
     e?.preventDefault?.();
     clearWarehouseScanDebounce(returnScanDebounceRef);
-    const v = (returnScanValueRef.current || returnScanValue).trim();
-    setReturnScanValue('');
-    returnScanValueRef.current = '';
+    const v = readScanFieldValue(returnScanInputRef.current).trim();
+    clearScanField(returnScanInputRef.current);
     returnScanInputRef.current?.focus();
     if (v) lookupByBarcodeOrSkuThenReturnOne(v);
   };
@@ -1610,27 +1595,22 @@ export function WarehouseOperations({
     const rawValue = e.target.value;
     if (/[\r\n]/.test(rawValue)) {
       clearWarehouseScanDebounce(returnScanDebounceRef);
-      const cleaned = String(rawValue).replace(/[\r\n]+/g, '').trim();
-      setReturnScanValue('');
-      returnScanValueRef.current = '';
+      const cleaned = readScanFieldValue(e.target).trim();
+      clearScanField(returnScanInputRef.current);
       if (cleaned) lookupByBarcodeOrSkuThenReturnOne(cleaned);
       returnScanInputRef.current?.focus();
       return;
     }
-    const value = rawValue;
-    returnScanValueRef.current = value;
-    setReturnScanValue(value);
     setLookupError(null);
     clearWarehouseScanDebounce(returnScanDebounceRef);
-    if (!value.trim()) return;
+    if (!readScanFieldValue(e.target).trim()) return;
     const SCAN_DELAY_MS = 200;
     returnScanDebounceRef.current = setTimeout(() => {
       returnScanDebounceRef.current = null;
-      const toProcess = returnScanValueRef.current.trim();
+      const toProcess = readScanFieldValue(returnScanInputRef.current).trim();
       if (!toProcess) return;
       lookupByBarcodeOrSkuThenReturnOne(toProcess);
-      setReturnScanValue('');
-      returnScanValueRef.current = '';
+      clearScanField(returnScanInputRef.current);
       returnScanInputRef.current?.focus();
     }, SCAN_DELAY_MS);
   };
@@ -1772,7 +1752,7 @@ export function WarehouseOperations({
       addToCustomerReturnList(product, 1);
       setOpMessage(`В список возврата от клиента: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
-      setCustomerReturnScanValue('');
+      clearScanField(customerReturnScanInputRef.current);
       customerReturnScanInputRef.current?.focus();
     } catch (e) {
       setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
@@ -1783,9 +1763,8 @@ export function WarehouseOperations({
   const submitCustomerReturnScan = (e) => {
     e?.preventDefault?.();
     clearWarehouseScanDebounce(customerReturnScanDebounceRef);
-    const v = (customerReturnScanValueRef.current || customerReturnScanValue).trim();
-    setCustomerReturnScanValue('');
-    customerReturnScanValueRef.current = '';
+    const v = readScanFieldValue(customerReturnScanInputRef.current).trim();
+    clearScanField(customerReturnScanInputRef.current);
     customerReturnScanInputRef.current?.focus();
     if (v) lookupByBarcodeOrSkuThenCustomerReturnOne(v);
   };
@@ -1794,27 +1773,22 @@ export function WarehouseOperations({
     const rawValue = e.target.value;
     if (/[\r\n]/.test(rawValue)) {
       clearWarehouseScanDebounce(customerReturnScanDebounceRef);
-      const cleaned = String(rawValue).replace(/[\r\n]+/g, '').trim();
-      setCustomerReturnScanValue('');
-      customerReturnScanValueRef.current = '';
+      const cleaned = readScanFieldValue(e.target).trim();
+      clearScanField(customerReturnScanInputRef.current);
       if (cleaned) lookupByBarcodeOrSkuThenCustomerReturnOne(cleaned);
       customerReturnScanInputRef.current?.focus();
       return;
     }
-    const value = rawValue;
-    customerReturnScanValueRef.current = value;
-    setCustomerReturnScanValue(value);
     setLookupError(null);
     clearWarehouseScanDebounce(customerReturnScanDebounceRef);
-    if (!value.trim()) return;
+    if (!readScanFieldValue(e.target).trim()) return;
     const SCAN_DELAY_MS = 200;
     customerReturnScanDebounceRef.current = setTimeout(() => {
       customerReturnScanDebounceRef.current = null;
-      const toProcess = customerReturnScanValueRef.current.trim();
+      const toProcess = readScanFieldValue(customerReturnScanInputRef.current).trim();
       if (!toProcess) return;
       lookupByBarcodeOrSkuThenCustomerReturnOne(toProcess);
-      setCustomerReturnScanValue('');
-      customerReturnScanValueRef.current = '';
+      clearScanField(customerReturnScanInputRef.current);
       customerReturnScanInputRef.current?.focus();
     }, SCAN_DELAY_MS);
   };
@@ -2145,26 +2119,22 @@ export function WarehouseOperations({
       playEventSound(SOUND_EVENTS.scan_error);
     } finally {
       inventoryScanBusyRef.current = false;
-      setInventoryNewScanValue('');
-      inventoryNewScanValueRef.current = '';
+      clearScanField(inventoryNewScanInputRef.current);
       inventoryNewScanInputRef.current?.focus();
     }
   };
 
   const handleInventoryNewScanChange = (e) => {
-    const value = String(e.target.value || '').replace(/[\r\n]+/g, '');
-    inventoryNewScanValueRef.current = value;
-    setInventoryNewScanValue(value);
     setLookupError(null);
     if (inventoryNewScanDebounceRef.current) {
       clearTimeout(inventoryNewScanDebounceRef.current);
       inventoryNewScanDebounceRef.current = null;
     }
-    if (!value.trim()) return;
+    if (!readScanFieldValue(e.target).trim()) return;
     const SCAN_DELAY_MS = 160;
     inventoryNewScanDebounceRef.current = setTimeout(() => {
       inventoryNewScanDebounceRef.current = null;
-      const toProcess = inventoryNewScanValueRef.current.trim();
+      const toProcess = readScanFieldValue(inventoryNewScanInputRef.current).trim();
       if (!toProcess) return;
       lookupByBarcodeOrSkuThenInventoryNewOne(toProcess);
     }, SCAN_DELAY_MS);
@@ -2184,9 +2154,7 @@ export function WarehouseOperations({
       clearTimeout(inventoryNewScanDebounceRef.current);
       inventoryNewScanDebounceRef.current = null;
     }
-    const v = String(inventoryNewScanValueRef.current || '')
-      .replace(/[\r\n]+/g, '')
-      .trim();
+    const v = readScanFieldValue(inventoryNewScanInputRef.current).trim();
     if (!v) return;
     lookupByBarcodeOrSkuThenInventoryNewOne(v);
   };
@@ -2598,23 +2566,21 @@ export function WarehouseOperations({
                 type="text"
                 className="warehouse-ops-scan-input"
                 placeholder="Штрихкод / артикул / название — сканер или Enter"
-                value={scanValue}
                 onChange={(e) => {
                   const v = e.target.value;
                   if (/[\r\n]/.test(v)) {
                     const cleaned = normalizeQuery(v);
-                    setScanValue('');
+                    clearScanField(scanInputRef.current);
                     lookupByBarcodeOrSku(cleaned).catch(() => {});
                     return;
                   }
-                  setScanValue(v);
                   setLookupError(null);
                   if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
                   if (isLikelyBarcodeScan(v)) {
                     manualSearchDebounceRef.current = setTimeout(() => {
                       manualSearchDebounceRef.current = null;
                       lookupByBarcodeOrSku(v).catch(() => {});
-                      setScanValue('');
+                      clearScanField(scanInputRef.current);
                     }, 120);
                     return;
                   }
@@ -2624,7 +2590,7 @@ export function WarehouseOperations({
                   }
                   manualSearchDebounceRef.current = setTimeout(async () => {
                     manualSearchDebounceRef.current = null;
-                    const qq = String(v || '').trim();
+                    const qq = readScanFieldValue(scanInputRef.current).trim();
                     if (qq.length < 2) return;
                     let matches = findLocalMatches(qq);
                     const remote = await searchProductsRemote(qq, { limit: 40 });
@@ -2637,7 +2603,7 @@ export function WarehouseOperations({
                       if (!p) return;
                       setFoundProduct(p);
                       setQtyInput(1);
-                      setScanValue('');
+                      clearScanField(scanInputRef.current);
                       scanInputRef.current?.focus();
                     });
                   }, 250);
@@ -2814,7 +2780,6 @@ export function WarehouseOperations({
                   type="text"
                   className="warehouse-ops-scan-input"
                   placeholder="Наведите сканер сюда"
-                  value={returnScanValue}
                   onChange={handleReturnScanChange}
                   autoComplete="off"
                   disabled={!returnWarehouseId}
@@ -3015,7 +2980,6 @@ export function WarehouseOperations({
                   type="text"
                   className="warehouse-ops-scan-input"
                   placeholder="Наведите сканер сюда"
-                  value={customerReturnScanValue}
                   onChange={handleCustomerReturnScanChange}
                   autoComplete="off"
                   disabled={!customerReturnWarehouseId}
@@ -3160,7 +3124,7 @@ export function WarehouseOperations({
                     setInventoryNewRows([]);
                     setOpMessage(null);
                     setLookupError(null);
-                    setInventoryNewScanValue('');
+                    clearScanField(inventoryNewScanInputRef.current);
                     setInventoryNewSearch('');
                     setInventoryNewPickedProduct(null);
                     const initWh = inventoryWarehouseId || '';
@@ -3479,7 +3443,6 @@ export function WarehouseOperations({
                   type="text"
                   className="warehouse-ops-scan-input"
                   placeholder="Наведите сканер или введите штрихкод / артикул"
-                  value={inventoryNewScanValue}
                   onChange={handleInventoryNewScanChange}
                   onKeyDown={handleInventoryNewScanKeyDown}
                   autoComplete="off"
@@ -3755,22 +3718,20 @@ export function WarehouseOperations({
                 type="text"
                 className="warehouse-ops-scan-input"
                 placeholder="Скан: штрихкод / артикул / название"
-                value={transferScanValue}
                 disabled={!transferOrganizationId}
                 onChange={(e) => {
                   const v = e.target.value;
                   if (/[\r\n]/.test(v)) {
-                    setTransferScanValue('');
+                    clearScanField(transferScanInputRef.current);
                     submitTransferScan({ preventDefault: () => {} });
                     return;
                   }
-                  setTransferScanValue(v);
                   if (transferScanDebounceRef.current) clearTimeout(transferScanDebounceRef.current);
                   if (isLikelyBarcodeScan(v)) {
                     transferScanDebounceRef.current = setTimeout(() => {
                       transferScanDebounceRef.current = null;
                       submitTransferScan({ preventDefault: () => {} });
-                      setTransferScanValue('');
+                      clearScanField(transferScanInputRef.current);
                     }, 120);
                     return;
                   }
@@ -3780,7 +3741,7 @@ export function WarehouseOperations({
                   }
                   transferScanDebounceRef.current = setTimeout(async () => {
                     transferScanDebounceRef.current = null;
-                    const qq = String(v || '').trim();
+                    const qq = readScanFieldValue(transferScanInputRef.current).trim();
                     if (qq.length < 2) return;
                     const matches = await resolveTransferMatches(qq);
                     if (matches.length === 0) {
@@ -3790,7 +3751,7 @@ export function WarehouseOperations({
                     openSuggest('transfer_scan', 'Выберите товар', matches, (p) => {
                       if (!p) return;
                       addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
-                      setTransferScanValue('');
+                      clearScanField(transferScanInputRef.current);
                       window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
                     });
                   }, 250);
@@ -4493,7 +4454,6 @@ export function WarehouseOperations({
                   type="text"
                   className="warehouse-ops-scan-input"
                   placeholder="Наведите сканер сюда"
-                  value={scanValue}
                   onChange={handleReceiptScanChange}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') e.preventDefault();

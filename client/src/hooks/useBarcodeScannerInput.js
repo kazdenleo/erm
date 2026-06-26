@@ -1,12 +1,21 @@
 /**
  * Поле ввода под сканер штрихкодов: Enter и пауза после быстрого ввода (без кнопки).
+ * Uncontrolled input — символы отображаются сразу, без re-render родителя на каждую клавишу.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { isLikelyBarcodeScan, normalizeProductSearchQuery } from '../utils/productSearch';
 
 const DEFAULT_DEBOUNCE_MS = 120;
 const DEFAULT_MIN_LENGTH = 2;
+
+function readInputValue(input) {
+  return normalizeProductSearchQuery(input?.value ?? '');
+}
+
+function clearInputEl(input) {
+  if (input) input.value = '';
+}
 
 export function useBarcodeScannerInput({
   onScan,
@@ -16,14 +25,11 @@ export function useBarcodeScannerInput({
   enableGlobalCapture = false,
   autoFocus = true,
 } = {}) {
-  const [value, setValue] = useState('');
   const inputRef = useRef(null);
-  const valueRef = useRef('');
   const debounceRef = useRef(null);
   const onScanRef = useRef(onScan);
   const disabledRef = useRef(disabled);
   const globalBufferRef = useRef('');
-  const globalLastKeyAtRef = useRef(0);
 
   useEffect(() => {
     onScanRef.current = onScan;
@@ -33,10 +39,6 @@ export function useBarcodeScannerInput({
     disabledRef.current = disabled;
   }, [disabled]);
 
-  useEffect(() => {
-    valueRef.current = value;
-  }, [value]);
-
   const clearDebounce = useCallback(() => {
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
@@ -44,18 +46,23 @@ export function useBarcodeScannerInput({
     }
   }, []);
 
+  const clear = useCallback(() => {
+    clearDebounce();
+    clearInputEl(inputRef.current);
+    globalBufferRef.current = '';
+  }, [clearDebounce]);
+
   const fireScan = useCallback(
     (raw) => {
-      const fromInput = normalizeProductSearchQuery(inputRef.current?.value ?? '');
-      const trimmed =
-        fromInput.length >= minLength ? fromInput : normalizeProductSearchQuery(raw ?? valueRef.current);
+      const trimmed = normalizeProductSearchQuery(
+        raw ?? readInputValue(inputRef.current) ?? globalBufferRef.current
+      );
       if (trimmed.length < minLength || disabledRef.current) return;
       clearDebounce();
-      setValue('');
-      valueRef.current = '';
+      clear();
       onScanRef.current?.(trimmed);
     },
-    [clearDebounce, minLength]
+    [clear, clearDebounce, minLength]
   );
 
   const scheduleScan = useCallback(
@@ -71,13 +78,10 @@ export function useBarcodeScannerInput({
       const v = e.target.value;
       if (/[\r\n]/.test(v)) {
         const cleaned = normalizeProductSearchQuery(v);
-        setValue('');
-        valueRef.current = '';
+        clearInputEl(inputRef.current);
         scheduleScan(cleaned);
         return;
       }
-      setValue(v);
-      valueRef.current = v;
       if (!v.trim()) {
         clearDebounce();
         return;
@@ -115,8 +119,20 @@ export function useBarcodeScannerInput({
   useEffect(() => {
     if (!enableGlobalCapture || disabled) return undefined;
 
+    const appendToInput = (key) => {
+      const input = inputRef.current;
+      if (!input) {
+        globalBufferRef.current += key;
+        return;
+      }
+      input.focus();
+      input.value += key;
+      globalBufferRef.current = input.value;
+    };
+
     const onKeyDown = (e) => {
       if (disabledRef.current) return;
+      if (e.target === inputRef.current) return;
       const tag = (e.target?.tagName || '').toLowerCase();
       const isEditable =
         tag === 'input' ||
@@ -126,14 +142,12 @@ export function useBarcodeScannerInput({
       if (isEditable && e.target !== inputRef.current) return;
 
       if (e.key === 'Enter') {
-        const buf = normalizeProductSearchQuery(globalBufferRef.current);
-        globalBufferRef.current = '';
+        const buf = readInputValue(inputRef.current) || normalizeProductSearchQuery(globalBufferRef.current);
         if (buf.length >= minLength) {
           e.preventDefault();
           e.stopPropagation();
+          clear();
           onScanRef.current?.(buf);
-          setValue('');
-          valueRef.current = '';
         }
         return;
       }
@@ -141,35 +155,23 @@ export function useBarcodeScannerInput({
       if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
       if (isEditable && e.target !== inputRef.current) return;
 
-      globalBufferRef.current += e.key;
-      globalLastKeyAtRef.current = Date.now();
+      e.preventDefault();
+      e.stopPropagation();
+      appendToInput(e.key);
     };
 
-    const onKeyDownCapture = (e) => {
-      if (e.key === 'Enter' && globalBufferRef.current) {
-        onKeyDown(e);
-      }
-    };
-
-    document.addEventListener('keydown', onKeyDownCapture, true);
-    return () => document.removeEventListener('keydown', onKeyDownCapture, true);
-  }, [enableGlobalCapture, disabled, minLength]);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [enableGlobalCapture, disabled, minLength, clear]);
 
   useEffect(() => () => clearDebounce(), [clearDebounce]);
 
   return {
-    value,
-    setValue,
     inputRef,
-    clear: () => {
-      clearDebounce();
-      setValue('');
-      valueRef.current = '';
-    },
+    clear,
     focus: () => inputRef.current?.focus(),
     inputProps: {
       ref: inputRef,
-      value,
       onChange: handleChange,
       onKeyDown: handleKeyDown,
       disabled,

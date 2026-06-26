@@ -12,6 +12,7 @@ import {
   normalizeProductSearchQuery,
   searchProductsRemote,
 } from '../../utils/productSearch';
+import { clearScanField, readScanFieldValue } from '../../utils/scanInput';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { purchasesApi } from '../../services/purchases.api';
 import { productsApi } from '../../services/products.api';
@@ -325,7 +326,6 @@ export function Purchases() {
   const [detailLoading, setDetailLoading] = useState(false);
 
   const [receipt, setReceipt] = useState(null);
-  const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
   const scanDebounceRef = useRef(null);
   const [scannerId] = useState(() => getOrCreateScannerId());
@@ -1128,7 +1128,7 @@ export function Purchases() {
 
   const scan = async (valueOverride) => {
     const rid = receipt?.receipt?.id;
-    const v = normalizeScanInput(valueOverride ?? scanValue ?? '');
+    const v = normalizeScanInput(valueOverride ?? readScanFieldValue(scanRef.current) ?? '');
     if (!rid || !v) return;
     const effectiveScannerId = scannerId || null;
     if (!v) return;
@@ -1153,7 +1153,7 @@ export function Purchases() {
       setPendingScans(pendingScansRef.current);
       const scanRes = await purchasesApi.scanReceipt(rid, { barcode: v, scannerId: effectiveScannerId });
       if (scanRes?.ignoredDuplicate) {
-        setScanValue('');
+        clearScanField(scanRef.current);
         setScanMsg(null);
         scanRef.current?.focus();
         return;
@@ -1179,7 +1179,7 @@ export function Purchases() {
       }
       scheduleReceiptRefresh(rid);
       // UI списка закупок обновится при следующем reload; не дёргаем его на каждый скан.
-      setScanValue('');
+      clearScanField(scanRef.current);
       setScanMsg(null);
       playEventSound(SOUND_EVENTS.scan_ok);
 
@@ -1216,7 +1216,7 @@ export function Purchases() {
         setScanMsg(msg);
       }
       playEventSound(SOUND_EVENTS.scan_error);
-      setScanValue('');
+      clearScanField(scanRef.current);
       scanRef.current?.focus();
     } finally {
       pendingScansRef.current = Math.max(0, pendingScansRef.current - 1);
@@ -2124,10 +2124,8 @@ export function Purchases() {
               <input
                 ref={scanRef}
                 className="warehouse-ops-scan-input"
-                value={scanValue}
                 onChange={(e) => {
                   const v = e.target.value;
-                  setScanValue(v);
                   if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
 
                   // 1) Некоторые сканеры вставляют \r/\n вместо Enter

@@ -12,6 +12,7 @@ import { OrderLabelIcon } from '../../components/common/OrderLabelIcon/OrderLabe
 import { ordersApi, assemblyApi } from '../../services/orders.api';
 import api from '../../services/api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
+import { clearScanField, readScanFieldValue } from '../../utils/scanInput';
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
@@ -201,7 +202,6 @@ export function Assembly() {
   const [error, setError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [sortByName, setSortByName] = useState('asc'); // 'asc' | 'desc'
-  const [barcodeInput, setBarcodeInput] = useState('');
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState(null);
   const [currentOrderData, setCurrentOrderData] = useState(null); // { order, product, orderItems }
@@ -711,16 +711,16 @@ export function Assembly() {
           bumpLine(item, idx);
           return next;
         });
-        setBarcodeInput('');
+        clearScanField(barcodeInputRef.current);
       } else {
-        setBarcodeInput('');
+        clearScanField(barcodeInputRef.current);
         setScanError('Заказ с таким штрихкодом не найден на сборке');
         playEventSound(SOUND_EVENTS.scan_error);
       }
     } catch (err) {
       const msg = err.response?.data?.message || err.message || 'Ошибка поиска заказа';
       setScanError(msg);
-      setBarcodeInput('');
+      clearScanField(barcodeInputRef.current);
       playEventSound(SOUND_EVENTS.scan_error);
     } finally {
       setScanLoading(false);
@@ -728,10 +728,6 @@ export function Assembly() {
   };
 
   doSearchRef.current = doSearch;
-
-  useEffect(() => {
-    barcodeValueRef.current = barcodeInput;
-  }, [barcodeInput]);
 
   /**
    * Сканер (HID-клавиатура) часто посылает символы, пока фокус на body/ссылке, а не в input.
@@ -782,7 +778,7 @@ export function Assembly() {
           debounceRef.current = null;
         }
         input.focus();
-        const trimmed = String(barcodeValueRef.current || '').trim();
+        const trimmed = readScanFieldValue(input).trim();
         if (trimmed.length >= 2) doSearchRef.current(trimmed);
         return;
       }
@@ -794,12 +790,9 @@ export function Assembly() {
       e.preventDefault();
       e.stopPropagation();
       input.focus();
-      setBarcodeInput((prev) => {
-        const next = prev + key;
-        barcodeValueRef.current = next;
-        scheduleSearch(next);
-        return next;
-      });
+      input.value += key;
+      barcodeValueRef.current = input.value;
+      scheduleSearch(input.value);
     };
 
     document.addEventListener('keydown', onKeyDownCapture, true);
@@ -809,10 +802,9 @@ export function Assembly() {
   const handleBarcodeChange = (e) => {
     const value = e.target.value;
     barcodeValueRef.current = value;
-    setBarcodeInput(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      const trimmed = value.trim();
+      const trimmed = readScanFieldValue(barcodeInputRef.current).trim();
       if (trimmed.length >= 2) doSearchRef.current(trimmed);
     }, 400);
   };
@@ -832,8 +824,7 @@ export function Assembly() {
 
   const handleBarcodeSubmit = (e) => {
     e.preventDefault();
-    const fromInput = String(barcodeInputRef.current?.value ?? '').trim();
-    const trimmed = fromInput.length >= 2 ? fromInput : String(barcodeInput || '').trim();
+    const trimmed = readScanFieldValue(barcodeInputRef.current).trim();
     barcodeValueRef.current = trimmed;
     if (trimmed.length >= 2) doSearchRef.current(trimmed);
   };
@@ -953,7 +944,7 @@ export function Assembly() {
     markedCollectedKeyRef.current = '';
     autoFinishKeyRef.current = '';
     setScanError(null);
-    setBarcodeInput('');
+    clearScanField(barcodeInputRef.current);
     if (barcodeInputRef.current) barcodeInputRef.current.focus();
   };
 
@@ -1097,7 +1088,6 @@ export function Assembly() {
             type="text"
             className="assembly-scan-input"
             placeholder="Отсканируйте или введите штрихкод — поиск автоматически"
-            value={barcodeInput}
             onChange={handleBarcodeChange}
             onKeyDown={handleBarcodeKeyDown}
             disabled={scanLoading}
