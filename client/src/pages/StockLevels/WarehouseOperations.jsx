@@ -18,6 +18,7 @@ import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
+import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { onNavigationClick } from '../../utils/navigationClick.js';
@@ -683,10 +684,10 @@ export function WarehouseOperations({
   };
 
   const submitTransferScan = useCallback(
-    async (e) => {
+    async (e, codeOverride = null) => {
       e?.preventDefault?.();
       if (opLoading) return;
-      const raw = readScanFieldValue(transferScanInputRef.current).trim();
+      const raw = String(codeOverride ?? readScanFieldValue(transferScanInputRef.current)).trim();
       if (!raw) return;
       try {
         if (!transferOrganizationId) {
@@ -1395,28 +1396,46 @@ export function WarehouseOperations({
     }
   };
 
-  /** Обработка ввода в поле скана: авто-добавление через короткую паузу (сканер вводит быстро, без Enter) */
-  const handleReceiptScanChange = (e) => {
-    const value = readScanFieldValue(e.target);
-    setLookupError(null);
-
-    if (scanDebounceRef.current) {
-      clearTimeout(scanDebounceRef.current);
-      scanDebounceRef.current = null;
-    }
-    if (!value.trim()) return;
-
-    const SCAN_DELAY_MS = 160;
-    scanDebounceRef.current = setTimeout(() => {
-      scanDebounceRef.current = null;
-      const toProcess = readScanFieldValue(scanInputRef.current).trim();
-      if (!toProcess) return;
+  /** Скан поступления: только по завершённому вводу, без re-render на каждый символ */
+  const handleReceiptScan = useCallback(
+    (code) => {
+      setLookupError(null);
       setOpMessage('Поиск товара…');
-      lookupByBarcodeOrSkuThenReceiptOne(toProcess);
-      clearScanField(scanInputRef.current);
+      lookupByBarcodeOrSkuThenReceiptOne(code);
       scanInputRef.current?.focus();
-    }, SCAN_DELAY_MS);
-  };
+    },
+    [lookupByBarcodeOrSkuThenReceiptOne]
+  );
+
+  const handleWriteoffBarcodeScan = useCallback(
+    (code) => {
+      setLookupError(null);
+      lookupByBarcodeOrSku(code).catch(() => {});
+      clearScanField(scanInputRef.current);
+    },
+    [lookupByBarcodeOrSku]
+  );
+
+  const handleWriteoffManualQuery = useCallback(
+    async (qq) => {
+      if (qq.length < 2) return;
+      let matches = findLocalMatches(qq);
+      const remote = await searchProductsRemote(qq, { limit: 40 });
+      matches = mergeProductLists(matches, remote);
+      if (matches.length === 0) {
+        if (suggestContext === 'writeoff_scan') closeSuggest();
+        return;
+      }
+      openSuggest('writeoff_scan', 'Выберите товар', matches, (p) => {
+        if (!p) return;
+        setFoundProduct(p);
+        setQtyInput(1);
+        clearScanField(scanInputRef.current);
+        scanInputRef.current?.focus();
+      });
+    },
+    [findLocalMatches, suggestContext, closeSuggest, openSuggest]
+  );
 
   const applyWarehouseReceiptBoxQty = useCallback(
     async ({ product = null, code = null, qty } = {}) => {
@@ -1582,38 +1601,56 @@ export function WarehouseOperations({
     }
   };
 
-  const submitReturnScan = (e) => {
-    e?.preventDefault?.();
-    clearWarehouseScanDebounce(returnScanDebounceRef);
-    const v = readScanFieldValue(returnScanInputRef.current).trim();
-    clearScanField(returnScanInputRef.current);
-    returnScanInputRef.current?.focus();
-    if (v) lookupByBarcodeOrSkuThenReturnOne(v);
-  };
+  const handleReturnScan = useCallback(
+    (code) => {
+      setLookupError(null);
+      lookupByBarcodeOrSkuThenReturnOne(code);
+      returnScanInputRef.current?.focus();
+    },
+    [lookupByBarcodeOrSkuThenReturnOne]
+  );
 
-  const handleReturnScanChange = (e) => {
-    const rawValue = e.target.value;
-    if (/[\r\n]/.test(rawValue)) {
-      clearWarehouseScanDebounce(returnScanDebounceRef);
-      const cleaned = readScanFieldValue(e.target).trim();
-      clearScanField(returnScanInputRef.current);
-      if (cleaned) lookupByBarcodeOrSkuThenReturnOne(cleaned);
-      returnScanInputRef.current?.focus();
-      return;
-    }
-    setLookupError(null);
-    clearWarehouseScanDebounce(returnScanDebounceRef);
-    if (!readScanFieldValue(e.target).trim()) return;
-    const SCAN_DELAY_MS = 200;
-    returnScanDebounceRef.current = setTimeout(() => {
-      returnScanDebounceRef.current = null;
-      const toProcess = readScanFieldValue(returnScanInputRef.current).trim();
-      if (!toProcess) return;
-      lookupByBarcodeOrSkuThenReturnOne(toProcess);
-      clearScanField(returnScanInputRef.current);
-      returnScanInputRef.current?.focus();
-    }, SCAN_DELAY_MS);
-  };
+  const handleCustomerReturnScan = useCallback(
+    (code) => {
+      setLookupError(null);
+      lookupByBarcodeOrSkuThenCustomerReturnOne(code);
+      customerReturnScanInputRef.current?.focus();
+    },
+    [lookupByBarcodeOrSkuThenCustomerReturnOne]
+  );
+
+  const handleTransferScan = useCallback(
+    (code) => {
+      submitTransferScan({ preventDefault: () => {} }, code);
+    },
+    [submitTransferScan]
+  );
+
+  const handleTransferManualQuery = useCallback(
+    async (qq) => {
+      if (qq.length < 2) return;
+      const matches = await resolveTransferMatches(qq);
+      if (matches.length === 0) {
+        if (suggestContext === 'transfer_scan') closeSuggest();
+        return;
+      }
+      openSuggest('transfer_scan', 'Выберите товар', matches, (p) => {
+        if (!p) return;
+        addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
+        clearScanField(transferScanInputRef.current);
+        window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
+      });
+    },
+    [
+      resolveTransferMatches,
+      suggestContext,
+      closeSuggest,
+      openSuggest,
+      addTransferItemFromProduct,
+      transferQuickMode,
+      transferQty,
+    ]
+  );
 
   const handleReturnFromList = () => {
     if (!returnWarehouseId) {
@@ -1758,39 +1795,6 @@ export function WarehouseOperations({
       setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
       playEventSound(SOUND_EVENTS.scan_error);
     }
-  };
-
-  const submitCustomerReturnScan = (e) => {
-    e?.preventDefault?.();
-    clearWarehouseScanDebounce(customerReturnScanDebounceRef);
-    const v = readScanFieldValue(customerReturnScanInputRef.current).trim();
-    clearScanField(customerReturnScanInputRef.current);
-    customerReturnScanInputRef.current?.focus();
-    if (v) lookupByBarcodeOrSkuThenCustomerReturnOne(v);
-  };
-
-  const handleCustomerReturnScanChange = (e) => {
-    const rawValue = e.target.value;
-    if (/[\r\n]/.test(rawValue)) {
-      clearWarehouseScanDebounce(customerReturnScanDebounceRef);
-      const cleaned = readScanFieldValue(e.target).trim();
-      clearScanField(customerReturnScanInputRef.current);
-      if (cleaned) lookupByBarcodeOrSkuThenCustomerReturnOne(cleaned);
-      customerReturnScanInputRef.current?.focus();
-      return;
-    }
-    setLookupError(null);
-    clearWarehouseScanDebounce(customerReturnScanDebounceRef);
-    if (!readScanFieldValue(e.target).trim()) return;
-    const SCAN_DELAY_MS = 200;
-    customerReturnScanDebounceRef.current = setTimeout(() => {
-      customerReturnScanDebounceRef.current = null;
-      const toProcess = readScanFieldValue(customerReturnScanInputRef.current).trim();
-      if (!toProcess) return;
-      lookupByBarcodeOrSkuThenCustomerReturnOne(toProcess);
-      clearScanField(customerReturnScanInputRef.current);
-      customerReturnScanInputRef.current?.focus();
-    }, SCAN_DELAY_MS);
   };
 
   const handleCustomerReturnFromList = () => {
@@ -2124,40 +2128,19 @@ export function WarehouseOperations({
     }
   };
 
-  const handleInventoryNewScanChange = (e) => {
-    setLookupError(null);
-    if (inventoryNewScanDebounceRef.current) {
-      clearTimeout(inventoryNewScanDebounceRef.current);
-      inventoryNewScanDebounceRef.current = null;
-    }
-    if (!readScanFieldValue(e.target).trim()) return;
-    const SCAN_DELAY_MS = 160;
-    inventoryNewScanDebounceRef.current = setTimeout(() => {
-      inventoryNewScanDebounceRef.current = null;
-      const toProcess = readScanFieldValue(inventoryNewScanInputRef.current).trim();
-      if (!toProcess) return;
-      lookupByBarcodeOrSkuThenInventoryNewOne(toProcess);
-    }, SCAN_DELAY_MS);
-  };
-
-  /** Сканеры часто шлют Enter в конце: сбрасываем debounce и обрабатываем один раз. */
-  const handleInventoryNewScanKeyDown = (e) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    if (!inventorySessionWarehouseId) {
-      setLookupError('Сначала выберите склад инвентаризации');
-      setOpMessage(null);
-      playEventSound(SOUND_EVENTS.scan_error);
-      return;
-    }
-    if (inventoryNewScanDebounceRef.current) {
-      clearTimeout(inventoryNewScanDebounceRef.current);
-      inventoryNewScanDebounceRef.current = null;
-    }
-    const v = readScanFieldValue(inventoryNewScanInputRef.current).trim();
-    if (!v) return;
-    lookupByBarcodeOrSkuThenInventoryNewOne(v);
-  };
+  const handleInventoryScan = useCallback(
+    (code) => {
+      if (!inventorySessionWarehouseId) {
+        setLookupError('Сначала выберите склад инвентаризации');
+        setOpMessage(null);
+        playEventSound(SOUND_EVENTS.scan_error);
+        return;
+      }
+      setLookupError(null);
+      lookupByBarcodeOrSkuThenInventoryNewOne(code);
+    },
+    [inventorySessionWarehouseId, lookupByBarcodeOrSkuThenInventoryNewOne]
+  );
 
   const addInventoryProductFromPick = async (product) => {
     if (!inventorySessionWarehouseId) {
@@ -2561,66 +2544,18 @@ export function WarehouseOperations({
           </label>
           <form onSubmit={handleScanSubmit} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
             <div style={{ position: 'relative', flex: 1 }}>
-              <input
-                ref={scanInputRef}
-                type="text"
-                className="warehouse-ops-scan-input"
+              <FastScanInput
+                inputRef={scanInputRef}
+                onScan={handleWriteoffBarcodeScan}
+                onManualQuery={handleWriteoffManualQuery}
+                debounceMs={120}
+                manualDebounceMs={250}
                 placeholder="Штрихкод / артикул / название — сканер или Enter"
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (/[\r\n]/.test(v)) {
-                    const cleaned = normalizeQuery(v);
-                    clearScanField(scanInputRef.current);
-                    lookupByBarcodeOrSku(cleaned).catch(() => {});
-                    return;
-                  }
-                  setLookupError(null);
-                  if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
-                  if (isLikelyBarcodeScan(v)) {
-                    manualSearchDebounceRef.current = setTimeout(() => {
-                      manualSearchDebounceRef.current = null;
-                      lookupByBarcodeOrSku(v).catch(() => {});
-                      clearScanField(scanInputRef.current);
-                    }, 120);
-                    return;
-                  }
-                  if (!v.trim()) {
-                    if (suggestContext === 'writeoff_scan') closeSuggest();
-                    return;
-                  }
-                  manualSearchDebounceRef.current = setTimeout(async () => {
-                    manualSearchDebounceRef.current = null;
-                    const qq = readScanFieldValue(scanInputRef.current).trim();
-                    if (qq.length < 2) return;
-                    let matches = findLocalMatches(qq);
-                    const remote = await searchProductsRemote(qq, { limit: 40 });
-                    matches = mergeProductLists(matches, remote);
-                    if (matches.length === 0) {
-                      if (suggestContext === 'writeoff_scan') closeSuggest();
-                      return;
-                    }
-                    openSuggest('writeoff_scan', 'Выберите товар', matches, (p) => {
-                      if (!p) return;
-                      setFoundProduct(p);
-                      setQtyInput(1);
-                      clearScanField(scanInputRef.current);
-                      scanInputRef.current?.focus();
-                    });
-                  }, 250);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
-                    handleScanSubmit(e);
-                  }
-                }}
                 onBlur={() => {
                   setTimeout(() => {
                     if (suggestContext === 'writeoff_scan') closeSuggest();
                   }, 150);
                 }}
-                autoComplete="off"
               />
               {suggestOpen && suggestContext === 'writeoff_scan' && (
                 <div
@@ -2774,14 +2709,12 @@ export function WarehouseOperations({
           {returnMode === 'scan' && (
             <>
               <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список возврата (1 скан = 1 шт).</p>
-              <form onSubmit={submitReturnScan} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-                <input
-                  ref={returnScanInputRef}
-                  type="text"
-                  className="warehouse-ops-scan-input"
+              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+                <FastScanInput
+                  inputRef={returnScanInputRef}
+                  onScan={handleReturnScan}
+                  debounceMs={200}
                   placeholder="Наведите сканер сюда"
-                  onChange={handleReturnScanChange}
-                  autoComplete="off"
                   disabled={!returnWarehouseId}
                 />
               </form>
@@ -2974,14 +2907,12 @@ export function WarehouseOperations({
           {customerReturnMode === 'scan' && (
             <>
               <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список (1 скан = 1 шт).</p>
-              <form onSubmit={submitCustomerReturnScan} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-                <input
-                  ref={customerReturnScanInputRef}
-                  type="text"
-                  className="warehouse-ops-scan-input"
+              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+                <FastScanInput
+                  inputRef={customerReturnScanInputRef}
+                  onScan={handleCustomerReturnScan}
+                  debounceMs={200}
                   placeholder="Наведите сканер сюда"
-                  onChange={handleCustomerReturnScanChange}
-                  autoComplete="off"
                   disabled={!customerReturnWarehouseId}
                 />
               </form>
@@ -3431,21 +3362,12 @@ export function WarehouseOperations({
               </p>
 
               <p className="warehouse-ops-hint">Скан:</p>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleInventoryNewScanKeyDown({ key: 'Enter', preventDefault: () => {} });
-                }}
-                className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
-              >
-                <input
-                  ref={inventoryNewScanInputRef}
-                  type="text"
-                  className="warehouse-ops-scan-input"
+              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+                <FastScanInput
+                  inputRef={inventoryNewScanInputRef}
+                  onScan={handleInventoryScan}
+                  debounceMs={160}
                   placeholder="Наведите сканер или введите штрихкод / артикул"
-                  onChange={handleInventoryNewScanChange}
-                  onKeyDown={handleInventoryNewScanKeyDown}
-                  autoComplete="off"
                   disabled={!inventorySessionWarehouseId}
                 />
               </form>
@@ -3711,62 +3633,20 @@ export function WarehouseOperations({
             </div>
           )}
 
-          <form onSubmit={submitTransferScan} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn" style={{ marginTop: 10 }}>
+          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn" style={{ marginTop: 10 }}>
             <div style={{ position: 'relative', flex: 1 }}>
-              <input
-                ref={transferScanInputRef}
-                type="text"
-                className="warehouse-ops-scan-input"
+              <FastScanInput
+                inputRef={transferScanInputRef}
+                onScan={handleTransferScan}
+                onManualQuery={handleTransferManualQuery}
+                debounceMs={120}
+                manualDebounceMs={250}
                 placeholder="Скан: штрихкод / артикул / название"
                 disabled={!transferOrganizationId}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (/[\r\n]/.test(v)) {
-                    clearScanField(transferScanInputRef.current);
-                    submitTransferScan({ preventDefault: () => {} });
-                    return;
-                  }
-                  if (transferScanDebounceRef.current) clearTimeout(transferScanDebounceRef.current);
-                  if (isLikelyBarcodeScan(v)) {
-                    transferScanDebounceRef.current = setTimeout(() => {
-                      transferScanDebounceRef.current = null;
-                      submitTransferScan({ preventDefault: () => {} });
-                      clearScanField(transferScanInputRef.current);
-                    }, 120);
-                    return;
-                  }
-                  if (!v.trim()) {
-                    if (suggestContext === 'transfer_scan') closeSuggest();
-                    return;
-                  }
-                  transferScanDebounceRef.current = setTimeout(async () => {
-                    transferScanDebounceRef.current = null;
-                    const qq = readScanFieldValue(transferScanInputRef.current).trim();
-                    if (qq.length < 2) return;
-                    const matches = await resolveTransferMatches(qq);
-                    if (matches.length === 0) {
-                      if (suggestContext === 'transfer_scan') closeSuggest();
-                      return;
-                    }
-                    openSuggest('transfer_scan', 'Выберите товар', matches, (p) => {
-                      if (!p) return;
-                      addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
-                      clearScanField(transferScanInputRef.current);
-                      window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
-                    });
-                  }, 250);
-                }}
                 onBlur={() => {
                   setTimeout(() => {
                     if (suggestContext === 'transfer_scan') closeSuggest();
                   }, 120);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (transferScanDebounceRef.current) clearTimeout(transferScanDebounceRef.current);
-                    submitTransferScan(e);
-                  }
                 }}
               />
               {suggestOpen && suggestContext === 'transfer_scan' && (
@@ -4449,16 +4329,11 @@ export function WarehouseOperations({
             <>
               <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список (1 скан = 1 шт).</p>
               <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-                <input
-                  ref={scanInputRef}
-                  type="text"
-                  className="warehouse-ops-scan-input"
+                <FastScanInput
+                  inputRef={scanInputRef}
+                  onScan={handleReceiptScan}
+                  debounceMs={160}
                   placeholder="Наведите сканер сюда"
-                  onChange={handleReceiptScanChange}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') e.preventDefault();
-                  }}
-                  autoComplete="off"
                   disabled={!receiptWarehouseId}
                 />
               </form>

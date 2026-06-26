@@ -24,6 +24,7 @@ import { useWarehouses } from '../../hooks/useWarehouses';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { Button } from '../../components/common/Button/Button';
+import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
@@ -2121,29 +2122,12 @@ export function Purchases() {
               onSubmit={(e) => e.preventDefault()}
               className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
             >
-              <input
-                ref={scanRef}
-                className="warehouse-ops-scan-input"
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
-
-                  // 1) Некоторые сканеры вставляют \r/\n вместо Enter
-                  if (/[\r\n]/.test(v)) {
-                    scanDebounceRef.current = setTimeout(() => scan(v), 0);
-                    return;
-                  }
-
-                  // 2) Многие сканеры не отправляют Enter — быстрый ввод завершается паузой ~120мс
-                  if (String(v).trim().length >= 4) {
-                    scanDebounceRef.current = setTimeout(() => scan(v), 120);
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.preventDefault();
-                }}
+              <FastScanInput
+                inputRef={scanRef}
+                onScan={scan}
+                debounceMs={120}
+                minLength={4}
                 placeholder="Сканируйте штрихкод (1 скан = +1)"
-                autoComplete="off"
               />
             </form>
             ) : null}

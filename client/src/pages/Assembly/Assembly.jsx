@@ -12,7 +12,8 @@ import { OrderLabelIcon } from '../../components/common/OrderLabelIcon/OrderLabe
 import { ordersApi, assemblyApi } from '../../services/orders.api';
 import api from '../../services/api';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
-import { clearScanField, readScanFieldValue } from '../../utils/scanInput';
+import { clearScanField } from '../../utils/scanInput';
+import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
@@ -217,9 +218,6 @@ export function Assembly() {
   const [labelReadyByOrderId, setLabelReadyByOrderId] = useState(() => ({}));
   const [ordersAutoSyncPaused, setOrdersAutoSyncPaused] = useState(false);
   const barcodeInputRef = useRef(null);
-  /** Актуальная строка штрихкода для глобального перехвата скана (фокус не в поле). */
-  const barcodeValueRef = useRef('');
-  const debounceRef = useRef(null);
   const doSearchRef = useRef(async () => {});
   const orderKeyRef = useRef('');
   const markedCollectedKeyRef = useRef('');
@@ -298,12 +296,6 @@ export function Assembly() {
       window.removeEventListener('mousedown', onActivity, opts);
       window.removeEventListener('keydown', onActivity, opts);
       window.removeEventListener('touchstart', onActivity, opts);
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, []);
 
@@ -729,105 +721,9 @@ export function Assembly() {
 
   doSearchRef.current = doSearch;
 
-  /**
-   * Сканер (HID-клавиатура) часто посылает символы, пока фокус на body/ссылке, а не в input.
-   * Перехватываем печатные клавиши и Enter в capture — переносим в поле штрихкода.
-   */
-  useEffect(() => {
-    const BARCODE_INPUT_ID = 'assembly-barcode';
-
-    const isOtherTextField = (target) => {
-      if (!target || typeof target !== 'object') return false;
-      const tag = target.tagName;
-      if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
-      if (tag === 'INPUT') {
-        const type = String(target.type || '').toLowerCase();
-        if (target.id === BARCODE_INPUT_ID) return false;
-        if (type === 'button' || type === 'submit' || type === 'checkbox' || type === 'radio') return false;
-        return true;
-      }
-      if (target.isContentEditable) return true;
-      return false;
-    };
-
-    const scheduleSearch = (rawValue) => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => {
-        const trimmed = String(rawValue || '').trim();
-        if (trimmed.length >= 2) doSearchRef.current(trimmed);
-      }, 400);
-    };
-
-    const onKeyDownCapture = (e) => {
-      if (printingFlowRef.current || scanLoadingRef.current) return;
-      if (e.defaultPrevented) return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-
-      const input = barcodeInputRef.current;
-      if (!input || input.disabled) return;
-      if (e.target?.id === BARCODE_INPUT_ID) return;
-      if (isOtherTextField(e.target)) return;
-
-      const key = e.key;
-
-      if (key === 'Enter') {
-        e.preventDefault();
-        e.stopPropagation();
-        if (debounceRef.current) {
-          clearTimeout(debounceRef.current);
-          debounceRef.current = null;
-        }
-        input.focus();
-        const trimmed = readScanFieldValue(input).trim();
-        if (trimmed.length >= 2) doSearchRef.current(trimmed);
-        return;
-      }
-
-      if (key.length !== 1) return;
-      const c = key.charCodeAt(0);
-      if (c < 32 || c === 127) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-      input.focus();
-      input.value += key;
-      barcodeValueRef.current = input.value;
-      scheduleSearch(input.value);
-    };
-
-    document.addEventListener('keydown', onKeyDownCapture, true);
-    return () => document.removeEventListener('keydown', onKeyDownCapture, true);
+  const handleAssemblyScan = useCallback((code) => {
+    doSearchRef.current(code);
   }, []);
-
-  const handleBarcodeChange = (e) => {
-    const value = e.target.value;
-    barcodeValueRef.current = value;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      const trimmed = readScanFieldValue(barcodeInputRef.current).trim();
-      if (trimmed.length >= 2) doSearchRef.current(trimmed);
-    }, 400);
-  };
-
-  /** Enter в конце скана приходит до commit state — берём значение из input, не из barcodeInput. */
-  const handleBarcodeKeyDown = (e) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-      debounceRef.current = null;
-    }
-    const trimmed = String(e.currentTarget.value || '').trim();
-    barcodeValueRef.current = trimmed;
-    if (trimmed.length >= 2) doSearchRef.current(trimmed);
-  };
-
-  const handleBarcodeSubmit = (e) => {
-    e.preventDefault();
-    const trimmed = readScanFieldValue(barcodeInputRef.current).trim();
-    barcodeValueRef.current = trimmed;
-    if (trimmed.length >= 2) doSearchRef.current(trimmed);
-  };
 
   // Позиции, по которым ещё не добрано: нужное количество минус отсканировано
   const remainingItems = useMemo(() => {
@@ -1078,22 +974,21 @@ export function Assembly() {
       </p>
 
       <div className="assembly-scan-block">
-        <form onSubmit={handleBarcodeSubmit} className="assembly-scan-form">
+        <div className="assembly-scan-form">
           <label htmlFor="assembly-barcode" className="assembly-scan-label">
             Штрихкод товара
           </label>
-          <input
+          <FastScanInput
             id="assembly-barcode"
-            ref={barcodeInputRef}
-            type="text"
+            inputRef={barcodeInputRef}
             className="assembly-scan-input"
             placeholder="Отсканируйте или введите штрихкод — поиск автоматически"
-            onChange={handleBarcodeChange}
-            onKeyDown={handleBarcodeKeyDown}
+            onScan={handleAssemblyScan}
+            debounceMs={400}
+            enableGlobalCapture
             disabled={scanLoading}
-            autoComplete="off"
           />
-        </form>
+        </div>
         {scanError && <p className="assembly-scan-error">{scanError}</p>}
         {labelPrintError && <p className="assembly-scan-error assembly-label-error">{labelPrintError}</p>}
 

@@ -2,10 +2,11 @@
  * Поле сканирования: отправка по Enter и после паузы (сканер), без кнопки.
  */
 
-import React from 'react';
+import React, { memo } from 'react';
 import { useBarcodeScannerInput } from '../../../hooks/useBarcodeScannerInput';
+import { FastScanInput } from '../FastScanInput/FastScanInput';
 
-export function BarcodeScanField({
+function BarcodeScanFieldInner({
   onScan,
   disabled = false,
   loading = false,
@@ -21,7 +22,7 @@ export function BarcodeScanField({
   children,
 }) {
   const busy = disabled || loading;
-  const { inputProps, handleSubmit } = useBarcodeScannerInput({
+  const { scanInputProps, handleSubmit } = useBarcodeScannerInput({
     onScan,
     disabled: busy,
     enableGlobalCapture,
@@ -37,12 +38,11 @@ export function BarcodeScanField({
         </label>
       ) : null}
       <form onSubmit={handleSubmit} className={formClassName}>
-        <input
+        <FastScanInput
           id={id}
-          type="text"
           className={className}
           placeholder={placeholder}
-          {...inputProps}
+          {...scanInputProps}
         />
         {children}
       </form>
@@ -50,3 +50,5 @@ export function BarcodeScanField({
     </div>
   );
 }
+
+export const BarcodeScanField = memo(BarcodeScanFieldInner);
