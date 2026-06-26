@@ -1610,15 +1610,6 @@ export function WarehouseOperations({
     [lookupByBarcodeOrSkuThenReturnOne]
   );
 
-  const handleCustomerReturnScan = useCallback(
-    (code) => {
-      setLookupError(null);
-      lookupByBarcodeOrSkuThenCustomerReturnOne(code);
-      customerReturnScanInputRef.current?.focus();
-    },
-    [lookupByBarcodeOrSkuThenCustomerReturnOne]
-  );
-
   const handleTransferScan = useCallback(
     (code) => {
       submitTransferScan({ preventDefault: () => {} }, code);
@@ -1796,6 +1787,15 @@ export function WarehouseOperations({
       playEventSound(SOUND_EVENTS.scan_error);
     }
   };
+
+  const handleCustomerReturnScan = useCallback(
+    (code) => {
+      setLookupError(null);
+      lookupByBarcodeOrSkuThenCustomerReturnOne(code);
+      customerReturnScanInputRef.current?.focus();
+    },
+    [lookupByBarcodeOrSkuThenCustomerReturnOne]
+  );
 
   const handleCustomerReturnFromList = () => {
     if (!customerReturnWarehouseId) {
