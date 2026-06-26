@@ -701,6 +701,7 @@ function buildHistoryDisplaySnapshots(
       for (let i = 0; i < enriched.length; i++) {
         const row = enriched[i];
         if (!row) continue;
+        const onSkuRes = Math.max(0, Number(row.res) || 0);
         if (i === 0) {
           row.bal = whole;
           row.inc = displayInc;
@@ -708,12 +709,15 @@ function buildHistoryDisplaySnapshots(
           row._kitAvailableTotal = totalAvailCurrent;
           continue;
         }
-        const onSkuRes = Math.max(0, Number(row.res) || 0);
-        const wholeAvail = Math.max(0, whole + kitSkuInc - onSkuRes);
-        row.bal = whole;
-        row.inc = displayInc;
-        row._kitAvailableWhole = wholeAvail;
-        row._kitAvailableTotal = Math.max(0, whole + kitSkuInc + assemblable - displayReserved);
+        const rowBal =
+          row.bal != null && !Number.isNaN(Number(row.bal)) ? Number(row.bal) : whole;
+        const rowInc =
+          row.inc != null && !Number.isNaN(Number(row.inc)) ? Number(row.inc) : displayInc;
+        row._kitAvailableWhole = Math.max(0, rowBal + kitSkuInc - onSkuRes);
+        row._kitAvailableTotal = Math.max(
+          0,
+          rowBal + kitSkuInc + assemblable - displayReserved
+        );
       }
     }
   }
@@ -2027,12 +2031,33 @@ export function WarehouseStocks() {
         onHand: Math.max(0, Math.floor(Number(stockResetForm.onHand) || 0)),
         reserved: Math.max(0, Math.floor(Number(stockResetForm.reserved) || 0)),
       });
-      if (historyProduct?.id === stockResetProduct.id) {
-        setHistoryProduct(null);
-        setHistoryList([]);
-      }
       closeStockResetModal();
       loadListRef.current?.({ page: currentPage, silent: true });
+      if (historyProduct?.id === stockResetProduct.id) {
+        setHistoryLoading(true);
+        setHistoryError(null);
+        try {
+          const res = await stockMovementsApi.getHistory(stockResetProduct.id, {
+            limit: 100,
+            warehouseId: stockWarehouseId || undefined,
+          });
+          const list = res?.data ?? (Array.isArray(res) ? res : []);
+          setHistoryList(Array.isArray(list) ? list : []);
+          const net =
+            res?.netReserved != null
+              ? Number(res.netReserved)
+              : res?.net_reserved != null
+                ? Number(res.net_reserved)
+                : null;
+          setHistoryNetReserved(Number.isFinite(net) ? net : null);
+        } catch (err) {
+          setHistoryError(
+            err?.response?.data?.message || err?.message || 'Не удалось обновить историю'
+          );
+        } finally {
+          setHistoryLoading(false);
+        }
+      }
     } catch (err) {
       setStockResetError(err?.response?.data?.message || err?.message || 'Ошибка сброса');
     } finally {

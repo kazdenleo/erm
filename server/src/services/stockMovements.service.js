@@ -2435,11 +2435,22 @@ class StockMovementsService {
         await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
 
         if (isKit) {
+          const compRes = await client.query(
+            `SELECT component_product_id FROM kit_components WHERE kit_product_id = $1::bigint`,
+            [pid]
+          );
+          const compIds = (compRes.rows || [])
+            .map((row) => Number(row.component_product_id))
+            .filter((id) => Number.isFinite(id) && id > 0);
+
           await client.query(
             `DELETE FROM stock_movements
              WHERE type IN ('reserve', 'unreserve')
-               AND meta->>'kit_product_id' = $1`,
-            [String(pid)]
+               AND (
+                 meta->>'kit_product_id' = $1
+                 OR product_id = ANY($2::bigint[])
+               )`,
+            [String(pid), compIds.length > 0 ? compIds : [0]]
           );
         }
 
@@ -2536,6 +2547,18 @@ class StockMovementsService {
 
         const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
         const netReserved = await syncProductReservedQuantityFromJournal(pid);
+
+        if (isKit) {
+          const compRes = await query(
+            `SELECT component_product_id FROM kit_components WHERE kit_product_id = $1::bigint`,
+            [pid]
+          );
+          for (const row of compRes.rows || []) {
+            const cid = Number(row.component_product_id);
+            if (!Number.isFinite(cid) || cid < 1) continue;
+            await syncProductReservedQuantityFromJournal(cid).catch(() => {});
+          }
+        }
 
         scheduleStockMovementMarketplaceSync(pid, {
           source: 'stock_history_reset',
