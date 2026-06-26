@@ -652,6 +652,17 @@ class StockMovementsService {
       });
       for (const m of compRows || []) {
         const t = String(m?.type || '').toLowerCase();
+        if (t === 'return_to_supplier') {
+          combined.push({
+            ...m,
+            meta: {
+              ...(m.meta && typeof m.meta === 'object' ? m.meta : {}),
+              kit_component_return_to_supplier: true,
+              kit_product_id: idNum
+            }
+          });
+          continue;
+        }
         if (t !== 'reserve' && t !== 'unreserve') continue;
         combined.push({
           ...m,

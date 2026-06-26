@@ -70,6 +70,7 @@ export function isKitStockHistoryMovement(movement, product) {
   if (!isKitProduct(product)) return true;
   const t = movement?.type ?? movement?.movement_type ?? movement?.movementType;
   if (movement?.meta?.kit_component_reserve === true) return true;
+  if (movement?.meta?.kit_component_return_to_supplier === true) return true;
   return isKitStockHistoryMovementType(t);
 }
 

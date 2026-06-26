@@ -198,12 +198,22 @@ function formatAvailableHistoryCell(curSnap, prevSnap) {
       marketplace_available: curSnap._kitAvailableTotal,
       assemblable_from_components: 0
     });
-    if (prevSnap?._kitAvailableTotal == null || Number.isNaN(Number(prevSnap._kitAvailableTotal))) {
-      return after;
+    if (!prevSnap) return after;
+    const prevWhole =
+      prevSnap._kitAvailableWhole != null && !Number.isNaN(Number(prevSnap._kitAvailableWhole))
+        ? Number(prevSnap._kitAvailableWhole)
+        : null;
+    const dWhole = prevWhole != null ? curSnap._kitAvailableWhole - prevWhole : null;
+    if (dWhole != null && dWhole !== 0) {
+      return `${curSnap._kitAvailableWhole} (${curSnap._kitAvailableTotal}(${dWhole > 0 ? '+' : ''}${dWhole}))`;
     }
-    const d = curSnap._kitAvailableTotal - prevSnap._kitAvailableTotal;
-    if (d === 0) return after;
-    return `${curSnap._kitAvailableWhole} (${curSnap._kitAvailableTotal}(${d > 0 ? '+' : ''}${d}))`;
+    if (prevSnap._kitAvailableTotal != null && !Number.isNaN(Number(prevSnap._kitAvailableTotal))) {
+      const d = curSnap._kitAvailableTotal - Number(prevSnap._kitAvailableTotal);
+      if (d !== 0) {
+        return `${curSnap._kitAvailableWhole} (${curSnap._kitAvailableTotal}(${d > 0 ? '+' : ''}${d}))`;
+      }
+    }
+    return after;
   }
   const after = availableFromSnapshot(curSnap);
   const prev = availableFromSnapshot(prevSnap);
@@ -623,9 +633,19 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
       return out;
     }
     if (t === 'return_to_supplier' || t === 'customer_return') {
+      const meta = parseMovementMeta(m);
       const dbBal = movementNum(m, 'balance_after');
-      if (dbBal != null) out.bal = dbBal;
-      else if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
+      if (meta.kit_component_return_to_supplier === true) {
+        if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
+          out.bal = Number(prevLineBelow.bal);
+        } else if (dbBal != null) {
+          out.bal = dbBal;
+        }
+        const lost = Math.max(0, Number(meta.kit_assemblable_units_lost) || 0);
+        out._kitAssemblableUnitsLost = lost > 0 ? lost : Math.max(0, Math.abs(Number(m.quantity_change) || 0));
+      } else if (dbBal != null) {
+        out.bal = dbBal;
+      } else if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
         out.bal = Number(prevLineBelow.bal) + (Number(m.quantity_change) || 0);
       }
       if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
@@ -722,22 +742,32 @@ function buildHistoryDisplaySnapshots(
         const row = enriched[i];
         if (!row) continue;
         const onSkuRes = Math.max(0, Number(row.res) || 0);
+        const rowBalFromJournal =
+          row.bal != null && !Number.isNaN(Number(row.bal)) ? Number(row.bal) : null;
         if (i === 0) {
-          row.bal = whole;
+          // Не подменяем снимок журнала текущим whole_on_hand — иначе дельта «Наличие» завышена.
+          if (rowBalFromJournal == null) row.bal = whole;
           row.inc = displayInc;
           row._kitAvailableWhole = wholeAvailCurrent;
           row._kitAvailableTotal = totalAvailCurrent;
           continue;
         }
-        const rowBal =
-          row.bal != null && !Number.isNaN(Number(row.bal)) ? Number(row.bal) : whole;
-        const rowInc =
-          row.inc != null && !Number.isNaN(Number(row.inc)) ? Number(row.inc) : displayInc;
-        row._kitAvailableWhole = Math.max(0, rowBal + kitSkuInc - onSkuRes);
-        row._kitAvailableTotal = Math.max(
-          0,
-          rowBal + kitSkuInc + assemblable - displayReserved
-        );
+        if (rowBalFromJournal == null) continue;
+        row._kitAvailableWhole = Math.max(0, rowBalFromJournal + kitSkuInc - onSkuRes);
+        row._kitAvailableTotal = row._kitAvailableWhole;
+        const asmLost = Math.max(0, Number(row._kitAssemblableUnitsLost) || 0);
+        if (asmLost > 0 && i + 1 < enriched.length) {
+          const older = enriched[i + 1];
+          const baseTotal =
+            older?._kitAvailableTotal != null && !Number.isNaN(Number(older._kitAvailableTotal))
+              ? Number(older._kitAvailableTotal)
+              : older?._kitAvailableWhole != null && !Number.isNaN(Number(older._kitAvailableWhole))
+                ? Number(older._kitAvailableWhole)
+                : null;
+          if (baseTotal != null) {
+            row._kitAvailableTotal = Math.max(0, baseTotal - asmLost);
+          }
+        }
       }
     }
   }

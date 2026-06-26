@@ -315,17 +315,32 @@ class WarehouseReceiptsService {
         }
       }
 
+      const extraMeta = {
+        receipt_id: receipt.id,
+        receipt_number: receiptNumber,
+        supplier_id: supplierId,
+        warehouse_id: whId
+      };
+      if (isKit) {
+        extraMeta.kit_return_to_supplier = true;
+      } else {
+        const kc = await query(
+          `SELECT kit_product_id, quantity FROM kit_components WHERE component_product_id = $1 LIMIT 1`,
+          [productId]
+        );
+        if (kc.rows?.[0]?.kit_product_id != null) {
+          const perKit = Math.max(1, parseInt(kc.rows[0].quantity, 10) || 1);
+          extraMeta.kit_component_return_to_supplier = true;
+          extraMeta.kit_product_id = Number(kc.rows[0].kit_product_id);
+          extraMeta.kit_assemblable_units_lost = Math.max(1, Math.floor(quantity / perKit));
+        }
+      }
+
       await stockMovementsService.applyChange(productId, {
         delta: -quantity,
         type: 'return_to_supplier',
         reason,
-        meta: {
-          receipt_id: receipt.id,
-          receipt_number: receiptNumber,
-          supplier_id: supplierId,
-          warehouse_id: whId,
-          ...(isKit ? { kit_return_to_supplier: true } : {})
-        }
+        meta: extraMeta
       });
     }
 
