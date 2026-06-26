@@ -599,7 +599,6 @@ class ProductsRepositoryPG {
 
     let byPid = new Map();
     let strictByPid = new Map();
-    let nullByPid = new Map();
     try {
       const {
         NET_RESERVED_SUM_EXPR_SQL,
@@ -608,56 +607,28 @@ class ProductsRepositoryPG {
       const { batchOrderAttributedReservedMap } = await import(
         '../services/orderAttributedReserve.service.js'
       );
-      const { allocateWarehouseScopedReserved } = await import('../constants/netReservedStockSql.js');
       if (warehouseScoped) {
-        const [strictAgg, nullAgg] = await Promise.all([
-          query(
-            `SELECT product_id,
-              ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-             FROM stock_movements
-             WHERE product_id = ANY($1::bigint[])
-               AND type IN ('reserve', 'unreserve')
-               AND warehouse_id = $2
-             GROUP BY product_id`,
-            [numericIds, whId]
-          ),
-          query(
-            `SELECT product_id,
-              ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-             FROM stock_movements
-             WHERE product_id = ANY($1::bigint[])
-               AND type IN ('reserve', 'unreserve')
-               AND warehouse_id IS NULL
-             GROUP BY product_id`,
-            [numericIds]
-          )
-        ]);
+        const strictAgg = await query(
+          `SELECT product_id,
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+           FROM stock_movements
+           WHERE product_id = ANY($1::bigint[])
+             AND type IN ('reserve', 'unreserve')
+             AND warehouse_id = $2
+           GROUP BY product_id`,
+          [numericIds, whId]
+        );
         for (const r of strictAgg.rows || []) {
           const key = productIdMapKey(r.product_id);
           if (!key) continue;
           strictByPid.set(key, Number(r.rv) || 0);
-        }
-        for (const r of nullAgg.rows || []) {
-          const key = productIdMapKey(r.product_id);
-          if (!key) continue;
-          nullByPid.set(key, Number(r.rv) || 0);
         }
         const orderAttrMap = await batchOrderAttributedReservedMap(numericIds, { warehouseId: whId });
         for (const p of products) {
           const key = productIdMapKey(p.id);
           if (!key) continue;
           const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
-          const pwsTotal = Math.max(0, Number(p.quantity_pws_total) || 0);
-          const legacy = Math.max(0, Number(p.quantity_legacy) || 0);
-          const totalOnHand = pwsTotal > 0 ? pwsTotal : legacy;
-          const whOnHand = Math.max(0, Number(p.quantity) || 0);
-          const journalAllocated = allocateWarehouseScopedReserved({
-            strict: strictByPid.get(key) ?? 0,
-            nullReserve: nullByPid.get(key) ?? 0,
-            whOnHand,
-            totalOnHand,
-            legacyProductQty: legacy
-          });
+          const journalAllocated = strictByPid.get(key) ?? 0;
           byPid.set(
             key,
             mergeJournalAndOrderAttributedReserved(

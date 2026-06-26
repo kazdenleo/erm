@@ -9,7 +9,6 @@ import repositoryFactory from '../config/repository-factory.js';
 import {
   NET_RESERVED_SUM_EXPR_SQL,
   allocateWarehouseScopedIncoming,
-  allocateWarehouseScopedReserved,
   orderReserveMovementMatchSql,
   parseStockMovementWarehouseId,
   warehouseScopedOnHandForAllocation
@@ -1018,127 +1017,34 @@ async function warehouseScopedNetReservedForProduct(productId, whId) {
   const pid = Number(productId);
   const wh = Number(whId);
   if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(wh) || wh < 1) return 0;
-  const [strictR, nullR, onHandR, whOnHandR] = await Promise.all([
-    query(
-      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id = $2`,
-      [pid, wh]
-    ),
-    query(
-      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id IS NULL`,
-      [pid]
-    ),
-    query(
-      `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty,
-              (SELECT COALESCE(quantity, 0)::int FROM products WHERE id = $1) AS product_qty
-       FROM product_warehouse_stock
-       WHERE product_id = $1`,
-      [pid]
-    ),
-    query(
-      `SELECT COALESCE(quantity, 0)::int AS qty
-       FROM product_warehouse_stock
-       WHERE product_id = $1 AND warehouse_id = $2`,
-      [pid, wh]
-    )
-  ]);
-  const strict = Number(strictR.rows[0]?.rv ?? 0) || 0;
-  const nullReserve = Number(nullR.rows[0]?.rv ?? 0) || 0;
-  const totalOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
-  const legacyProductQty = Number(onHandR.rows[0]?.product_qty ?? 0) || 0;
-  const whOnHand = warehouseScopedOnHandForAllocation({
-    whOnHand: Number(whOnHandR.rows[0]?.qty ?? 0) || 0,
-    totalOnHand,
-    legacyProductQty
-  });
-  return allocateWarehouseScopedReserved({
-    strict,
-    nullReserve,
-    whOnHand,
-    totalOnHand,
-    legacyProductQty
-  });
+  const strictR = await query(
+    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+     FROM stock_movements
+     WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id = $2`,
+    [pid, wh]
+  );
+  return Number(strictR.rows[0]?.rv ?? 0) || 0;
 }
 
 async function warehouseScopedNetReservedMap(productIds, whId) {
   const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
   const wh = Number(whId);
   if (!ids.length || !Number.isFinite(wh) || wh < 1) return new Map();
-  const [strictR, nullR, onHandR, whOnHandR, legacyR] = await Promise.all([
-    query(
-      `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = ANY($1::bigint[])
-         AND type IN ('reserve', 'unreserve')
-         AND warehouse_id = $2
-       GROUP BY product_id`,
-      [ids, wh]
-    ),
-    query(
-      `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = ANY($1::bigint[])
-         AND type IN ('reserve', 'unreserve')
-         AND warehouse_id IS NULL
-       GROUP BY product_id`,
-      [ids]
-    ),
-    query(
-      `SELECT product_id, COALESCE(SUM(quantity), 0)::int AS pws_qty
-       FROM product_warehouse_stock
-       WHERE product_id = ANY($1::bigint[])
-       GROUP BY product_id`,
-      [ids]
-    ),
-    query(
-      `SELECT product_id, COALESCE(quantity, 0)::int AS qty
-       FROM product_warehouse_stock
-       WHERE product_id = ANY($1::bigint[]) AND warehouse_id = $2`,
-      [ids, wh]
-    ),
-    query(
-      `SELECT id, COALESCE(quantity, 0)::int AS product_qty
-       FROM products WHERE id = ANY($1::bigint[])`,
-      [ids]
-    )
-  ]);
-  const strictMap = new Map(
-    (strictR.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0])
-  );
-  const nullMap = new Map(
-    (nullR.rows || []).map((row) => [Number(row.product_id), Number(row.rv) || 0])
-  );
-  const totalOnHandMap = new Map(
-    (onHandR.rows || []).map((row) => [Number(row.product_id), Number(row.pws_qty) || 0])
-  );
-  const whOnHandMap = new Map(
-    (whOnHandR.rows || []).map((row) => [Number(row.product_id), Number(row.qty) || 0])
-  );
-  const legacyMap = new Map(
-    (legacyR.rows || []).map((row) => [Number(row.id), Number(row.product_qty) || 0])
+  const strictR = await query(
+    `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+     FROM stock_movements
+     WHERE product_id = ANY($1::bigint[])
+       AND type IN ('reserve', 'unreserve')
+       AND warehouse_id = $2
+     GROUP BY product_id`,
+    [ids, wh]
   );
   const map = new Map();
   for (const pid of ids) {
-    const totalOnHand = totalOnHandMap.get(pid) ?? 0;
-    const legacyProductQty = legacyMap.get(pid) ?? 0;
-    const whOnHand = warehouseScopedOnHandForAllocation({
-      whOnHand: whOnHandMap.get(pid) ?? 0,
-      totalOnHand,
-      legacyProductQty
-    });
-    map.set(
-      pid,
-      allocateWarehouseScopedReserved({
-        strict: strictMap.get(pid) ?? 0,
-        nullReserve: nullMap.get(pid) ?? 0,
-        whOnHand,
-        totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
-        legacyProductQty
-      })
-    );
+    map.set(pid, 0);
+  }
+  for (const row of strictR.rows || []) {
+    map.set(Number(row.product_id), Number(row.rv) || 0);
   }
   return map;
 }

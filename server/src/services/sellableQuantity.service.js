@@ -14,7 +14,6 @@ import {
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL,
-  allocateWarehouseScopedReserved,
   allocateWarehouseScopedIncoming,
   parseStockMovementWarehouseId,
   warehouseScopedOnHandForAllocation,
@@ -58,49 +57,13 @@ export async function syncProductReservedQuantityFromJournal(productId, opts = {
 
 async function queryWarehouseScopedReservedFromMovements(run, productId, whId) {
   const pid = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
-  const [strictR, nullR, onHandR, whOnHandR] = await Promise.all([
-    run(
-      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id = $2`,
-      [pid, whId]
-    ),
-    run(
-      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
-       FROM stock_movements
-       WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id IS NULL`,
-      [pid]
-    ),
-    run(
-      `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty,
-              (SELECT COALESCE(quantity, 0)::int FROM products WHERE id = $1) AS product_qty
-       FROM product_warehouse_stock
-       WHERE product_id = $1`,
-      [pid]
-    ),
-    run(
-      `SELECT COALESCE(quantity, 0)::int AS qty
-       FROM product_warehouse_stock
-       WHERE product_id = $1 AND warehouse_id = $2`,
-      [pid, whId]
-    )
-  ]);
-  const strict = Number(strictR.rows[0]?.rv ?? 0) || 0;
-  const nullReserve = Number(nullR.rows[0]?.rv ?? 0) || 0;
-  const totalOnHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
-  const legacyProductQty = Number(onHandR.rows[0]?.product_qty ?? 0) || 0;
-  const whOnHand = warehouseScopedOnHandForAllocation({
-    whOnHand: Number(whOnHandR.rows[0]?.qty ?? 0) || 0,
-    totalOnHand,
-    legacyProductQty
-  });
-  return allocateWarehouseScopedReserved({
-    strict,
-    nullReserve,
-    whOnHand,
-    totalOnHand,
-    legacyProductQty
-  });
+  const strictR = await run(
+    `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+     FROM stock_movements
+     WHERE product_id = $1 AND type IN ('reserve', 'unreserve') AND warehouse_id = $2`,
+    [pid, whId]
+  );
+  return Number(strictR.rows[0]?.rv ?? 0) || 0;
 }
 
 async function readWarehouseScopedIncomingWithClient(run, productId, whId) {

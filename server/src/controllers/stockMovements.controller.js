@@ -128,7 +128,8 @@ class StockMovementsController {
         _skipStaleCleanup: true
       });
       let fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
-        profileId: tid
+        profileId: tid,
+        warehouseId: whFilter
       });
       let summary = await stockMovementsService.getReserveSummaryForProduct(id, {
         profileId: tid,
@@ -155,7 +156,8 @@ class StockMovementsController {
             _skipStaleCleanup: true
           });
           fboSupplies = await stockMovementsService.listFboReservedSuppliesForProduct(id, {
-            profileId: tid
+            profileId: tid,
+            warehouseId: whFilter
           });
           summary = await stockMovementsService.getReserveSummaryForProduct(id, {
             profileId: tid,

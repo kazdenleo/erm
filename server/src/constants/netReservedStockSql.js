@@ -43,6 +43,13 @@ export function stockMovementWarehouseReserveSql(alias = '', whId, paramIndex) {
   return ` AND (${a}warehouse_id = $${paramIndex} OR ${a}warehouse_id IS NULL)`;
 }
 
+/** Только движения с явным warehouse_id — склады изолированы, без доли legacy NULL. */
+export function stockMovementWarehouseStrictSql(alias = '', whId, paramIndex) {
+  if (!Number.isFinite(whId) || whId < 1) return '';
+  const a = alias ? `${alias}` : '';
+  return ` AND ${a}warehouse_id = $${paramIndex}`;
+}
+
 /**
  * Резерв по складу: строго по warehouse_id + доля legacy (warehouse_id IS NULL) по наличию на складе.
  */

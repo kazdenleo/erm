@@ -49,7 +49,7 @@ function normalizeWarehouseId(v) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** Склады-источники для FBO: склад списания + склад ручных заказов. */
+/** Склады-источники для FBO: только склад списания FBO из настроек аккаунта. */
 async function getFboSourceWarehouseIds(profileId) {
   const pid = normalizeProfileId(profileId);
   if (pid == null) return [];
@@ -58,16 +58,12 @@ async function getFboSourceWarehouseIds(profileId) {
     return fboSourceWarehousesCache.get(cacheKey);
   }
   const r = await query(
-    `SELECT fbo_deduction_warehouse_id, manual_orders_warehouse_id
-     FROM profiles WHERE id = $1`,
+    `SELECT fbo_deduction_warehouse_id FROM profiles WHERE id = $1`,
     [pid]
   );
   const row = r.rows?.[0];
-  const ids = [];
-  for (const raw of [row?.fbo_deduction_warehouse_id, row?.manual_orders_warehouse_id]) {
-    const n = normalizeWarehouseId(raw);
-    if (n != null && !ids.includes(n)) ids.push(n);
-  }
+  const n = normalizeWarehouseId(row?.fbo_deduction_warehouse_id);
+  const ids = n != null ? [n] : [];
   fboSourceWarehousesCache.set(cacheKey, ids);
   return ids;
 }
@@ -515,15 +511,11 @@ async function applyKitFboReserve(
   const stockWhs = normalizeWarehouseIdList(stockWarehouseIds);
   const poolWhs = stockWhs.length > 0 ? stockWhs : whCandidates;
 
-  let breakdown =
+  const breakdown =
     poolWhs.length > 0
       ? await computeKitReservableBreakdownForWarehouseIds(kitId, poolWhs)
-      : await computeKitReservableBreakdown(kitId, { warehouseId: null });
-  let alloc = allocateKitReservePriority(wanted, breakdown);
-  if (alloc.kitsToReserve <= 0 && poolWhs.length > 0) {
-    breakdown = await computeKitReservableBreakdown(kitId, { warehouseId: null });
-    alloc = allocateKitReservePriority(wanted, breakdown);
-  }
+      : { wholeReserveAvail: 0, fromComponents: 0, physicalOnHand: 0 };
+  const alloc = allocateKitReservePriority(wanted, breakdown);
   if (alloc.kitsToReserve <= 0) return 0;
 
   const reason = `Резерв FBO (${label})`;

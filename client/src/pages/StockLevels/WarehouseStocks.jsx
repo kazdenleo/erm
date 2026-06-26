@@ -3137,7 +3137,9 @@ export function WarehouseStocks() {
             {reserveFboSupplies.length > 0 ? (
               <>
                 <p className="text-muted small mb-2 mt-1">
-                  Резерв под поставки FBO (колонка «Резерв» включает и заказы, и FBO):
+                  {stockWarehouseId
+                    ? `Резерв под поставки FBO на складе «${mainWarehouseName}» (только этот склад):`
+                    : 'Резерв под поставки FBO (колонка «Резерв» включает и заказы, и FBO):'}
                 </p>
                 <ul className="list-group mb-3">
                   {reserveFboSupplies.map((f) => (

@@ -13,7 +13,7 @@ import {
   orderReserveMovementMatchSql,
   parseStockMovementWarehouseId,
   stockMovementMetaOrderKeySql,
-  stockMovementWarehouseReserveSql
+  stockMovementWarehouseStrictSql
 } from '../constants/netReservedStockSql.js';
 import { syncProductQuantityFromWarehouseStock } from './productWarehouseQuantity.service.js';
 
@@ -686,7 +686,7 @@ class StockMovementsService {
     const whId = parseStockMovementWarehouseId(warehouseId);
     if (whId == null) return '';
     params.push(whId);
-    return stockMovementWarehouseReserveSql('', whId, params.length);
+    return stockMovementWarehouseStrictSql('', whId, params.length);
   }
 
   async listReservedOrdersForProduct(
@@ -733,6 +733,12 @@ class StockMovementsService {
       : `product_id = $1`;
 
     const params = [idNum];
+    const whFilterId = parseStockMovementWarehouseId(warehouseId);
+    let whSql = '';
+    if (whFilterId != null) {
+      params.push(whFilterId);
+      whSql = ` AND warehouse_id = $${params.length}`;
+    }
 
     const metaKeySql = stockMovementMetaOrderKeySql('');
     const orderLateralSql = `LEFT JOIN LATERAL (
@@ -756,7 +762,7 @@ class StockMovementsService {
              WHERE (${movementScopeSql})
                AND type IN ('reserve', 'unreserve')
                AND ${metaKeySql} IS NOT NULL
-               AND TRIM(${metaKeySql}) <> ''
+               AND TRIM(${metaKeySql}) <> ''${whSql}
            )
            SELECT o.id,
                   o.marketplace,
@@ -781,7 +787,7 @@ class StockMovementsService {
              WHERE (${movementScopeSql})
                AND type IN ('reserve', 'unreserve')
                AND ${metaKeySql} IS NOT NULL
-               AND TRIM(${metaKeySql}) <> ''
+               AND TRIM(${metaKeySql}) <> ''${whSql}
            ),
            sku_net AS (
              SELECT ${metaKeySql} AS meta_key,
@@ -790,7 +796,7 @@ class StockMovementsService {
              WHERE product_id = $1
                AND type IN ('reserve', 'unreserve')
                AND ${metaKeySql} IS NOT NULL
-               AND TRIM(${metaKeySql}) <> ''
+               AND TRIM(${metaKeySql}) <> ''${whSql}
              GROUP BY 1
              HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
            )
@@ -1000,7 +1006,7 @@ class StockMovementsService {
   /**
    * Резерв под поставки FBO (meta.fbo_supply_item_id) — в колонке «Резерв» учитывается, в заказах не показывается.
    */
-  async listFboReservedSuppliesForProduct(productId, { profileId = null } = {}) {
+  async listFboReservedSuppliesForProduct(productId, { profileId = null, warehouseId = null } = {}) {
     const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
     if (!idNum || Number.isNaN(idNum) || idNum < 1) return [];
 
@@ -1016,6 +1022,14 @@ class StockMovementsService {
       if (own != null && String(own) !== String(tid)) return [];
     }
 
+    const whId = parseStockMovementWarehouseId(warehouseId);
+    const params = [idNum, tid];
+    let whSql = '';
+    if (whId != null) {
+      params.push(whId);
+      whSql = ` AND warehouse_id = $${params.length}`;
+    }
+
     const res = await query(
       `WITH nets AS (
          SELECT meta->>'fbo_supply_item_id' AS item_id,
@@ -1025,7 +1039,7 @@ class StockMovementsService {
          WHERE product_id = $1
            AND type IN ('reserve', 'unreserve')
            AND meta->>'fbo_supply_item_id' IS NOT NULL
-           AND (meta->>'fbo_supply_item_id') ~ '^[0-9]+$'
+           AND (meta->>'fbo_supply_item_id') ~ '^[0-9]+$'${whSql}
          GROUP BY meta->>'fbo_supply_item_id', meta->>'fbo_supply_id'
          HAVING GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)) > 0
        )
@@ -1041,7 +1055,7 @@ class StockMovementsService {
        LEFT JOIN fbo_supply_items si ON si.id = (n.item_id)::bigint
        WHERE ($2::bigint IS NULL OR s.profile_id = $2 OR s.id IS NULL)
        ORDER BY s.ready_at ASC NULLS LAST, s.id DESC, n.item_id`,
-      [idNum, tid]
+      params
     );
 
     return (res.rows || []).map((r) => {
@@ -1093,7 +1107,7 @@ class StockMovementsService {
     const fboSupplies =
       fboSuppliesPreloaded != null
         ? fboSuppliesPreloaded
-        : await this.listFboReservedSuppliesForProduct(idNum, { profileId });
+        : await this.listFboReservedSuppliesForProduct(idNum, { profileId, warehouseId });
     const fboReservedQty = fboSupplies.reduce((s, row) => s + (Number(row.reservedQty) || 0), 0);
 
     const orders =
@@ -1128,7 +1142,7 @@ class StockMovementsService {
       for (const c of comps || []) {
         const cid = Number(c.component_product_id);
         if (!Number.isFinite(cid) || cid < 1) continue;
-        componentJournalReserve += await getReservedQuantityFromMovements(cid);
+        componentJournalReserve += await getReservedQuantityFromMovements(cid, movementOpts);
       }
     }
 
@@ -1698,9 +1712,13 @@ class StockMovementsService {
 
     const orders = await this.listReservedOrdersForProduct(idNum, {
       profileId,
+      warehouseId: whFilter,
       _skipStaleCleanup: true
     });
-    const fbo = await this.listFboReservedSuppliesForProduct(idNum, { profileId });
+    const fbo = await this.listFboReservedSuppliesForProduct(idNum, {
+      profileId,
+      warehouseId: whFilter
+    });
     if (orders.length > 0 || fbo.length > 0) {
       return { releasedProductLines: 0, skipped: true };
     }
