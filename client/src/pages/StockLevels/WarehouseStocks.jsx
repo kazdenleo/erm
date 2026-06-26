@@ -21,6 +21,7 @@ import {
   buildStockRowsWithKits,
   stockTableAvailable,
   isKitProduct,
+  manualWarehouseStockEditBlockedReason,
   isKitStockHistoryMovement,
   parseKitDisplayMetrics,
   formatKitAvailableDisplay,
@@ -1130,6 +1131,14 @@ export function WarehouseStocks() {
       return '';
     }
   });
+  const manualOnHandBlockedReason = useMemo(
+    () =>
+      manualWarehouseStockEditBlockedReason({
+        allowManualStockEdit,
+        warehouseId: stockWarehouseId || null,
+      }),
+    [allowManualStockEdit, stockWarehouseId]
+  );
   const { organizations = [] } = useOrganizations();
   const { categories = [] } = useCategories();
   const { brands = [] } = useBrands();
@@ -2554,26 +2563,20 @@ export function WarehouseStocks() {
                     </td>
                     <td className="main-warehouse-cell" onClick={(e) => e.stopPropagation()}>
                       {allowManualStockEdit ? (
-                        isKitProduct(row.product) ? (
-                          <span
-                            className="stock-manual-onhand-readonly"
-                            title="Целых комплектов (1 SKU) на складе. Резерв по комплектующим — в колонке «Резерв», доступность — в «Доступно»."
-                          >
-                            {row.onHand}
-                          </span>
-                        ) : (
-                          <ManualOnHandCell
-                            productId={row.product.id}
-                            currentOnHand={row.onHand}
-                            warehouseId={stockWarehouseId}
-                            disabledReason={
-                              !stockWarehouseId ? 'Выберите склад в фильтре над таблицей' : null
-                            }
-                            onSaved={() => loadListRef.current?.({ page: currentPage, silent: true })}
-                          />
-                        )
+                        <ManualOnHandCell
+                          productId={row.product.id}
+                          currentOnHand={row.onHand}
+                          warehouseId={stockWarehouseId}
+                          disabledReason={manualOnHandBlockedReason}
+                          onSaved={() => loadListRef.current?.({ page: currentPage, silent: true })}
+                        />
                       ) : (
-                        row.onHand
+                        <span
+                          className="stock-manual-onhand-readonly"
+                          title="Включите «Ручное изменение наличия на складе» в настройках аккаунта"
+                        >
+                          {row.onHand}
+                        </span>
                       )}
                     </td>
                     <td className="stock-levels-reserved-cell" onClick={(e) => e.stopPropagation()}>
@@ -2646,9 +2649,14 @@ export function WarehouseStocks() {
             {allowManualStockEdit ? (
               <>
                 {' '}
-                В колонке «Наличие» можно задать количество и нажать кнопку с галочкой (нужен выбранный склад в фильтре).
+                В колонке «Наличие» задайте количество и нажмите ✓ — нужен выбранный склад в фильтре и включённая настройка в аккаунте.
               </>
-            ) : null}
+            ) : (
+              <>
+                {' '}
+                Ручное изменение «Наличия» отключено — включите в настройках аккаунта.
+              </>
+            )}
             {allowStockHistoryReset ? (
               <>
                 {' '}

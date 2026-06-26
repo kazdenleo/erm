@@ -244,19 +244,6 @@ class StockMovementsService {
     }
 
     const typeNormEarly = String(type || '').trim().toLowerCase();
-    if (
-      typeNormEarly === 'manual' &&
-      metaObj.deleted !== true &&
-      metaObj.kit_component_restore !== true &&
-      metaObj.receipt_reversal !== true
-    ) {
-      const { isKitProductId } = await import('./kitStock.service.js');
-      if (await isKitProductId(idNum)) {
-        const error = new Error('Для комплектов ручное изменение остатка запрещено');
-        error.statusCode = 400;
-        throw error;
-      }
-    }
 
     const currentWh = await this.productsRepository.getWarehouseFreeStock(idNum, warehouseId);
     const newWhRaw = currentWh + safeDelta;
@@ -298,6 +285,17 @@ class StockMovementsService {
     metaOut.warehouse_balance_before = currentWh;
     metaOut.warehouse_balance_after = newWh;
 
+    if (typeNormEarly === 'manual') {
+      try {
+        const { isKitProductId } = await import('./kitStock.service.js');
+        if (await isKitProductId(idNum)) {
+          metaOut.kit_manual = true;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
     const movement = await this.repository.create({
       productId: idNum,
       type,
@@ -334,6 +332,14 @@ class StockMovementsService {
         });
       } catch {
         /* ignore */
+      }
+      if (typeNormEarly === 'manual') {
+        try {
+          const { recalculateKitsForComponent } = await import('./kitStock.service.js');
+          await recalculateKitsForComponent(idNum, { warehouseId, profileId: profId });
+        } catch {
+          /* ignore */
+        }
       }
     }
 

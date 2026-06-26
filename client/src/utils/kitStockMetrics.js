@@ -32,6 +32,20 @@ export function isKitComponentProduct(product) {
   return product.is_kit_component === true || product.isKitComponent === true;
 }
 
+/** Почему в таблице остатков нельзя править «Наличие» вручную (null — можно). */
+export function manualWarehouseStockEditBlockedReason({
+  allowManualStockEdit = false,
+  warehouseId = null,
+} = {}) {
+  if (!allowManualStockEdit) {
+    return 'Включите «Ручное изменение наличия на складе» в настройках аккаунта';
+  }
+  if (!warehouseId) {
+    return 'Выберите склад в фильтре «Склад (остаток)» над таблицей';
+  }
+  return null;
+}
+
 /** Типы движений в истории остатков комплекта (SKU + резерв / «в пути»). */
 export const KIT_STOCK_HISTORY_MOVEMENT_TYPES = [
   'receipt',

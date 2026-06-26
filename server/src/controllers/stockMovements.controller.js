@@ -50,13 +50,6 @@ class StockMovementsController {
             return res.status(403).json({ ok: false, message: 'Нет доступа к товару' });
           }
         }
-        const pt = String(product.product_type ?? product.productType ?? '').trim().toLowerCase();
-        if (pt === 'kit') {
-          return res.status(400).json({
-            ok: false,
-            message: 'Для комплектов наличие задаётся через комплектующие, не вручную'
-          });
-        }
       }
 
       const result = await stockMovementsService.applyChange(id, {
