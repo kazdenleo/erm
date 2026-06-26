@@ -8,7 +8,62 @@ import {
   fetchWithTimeout,
   pickWarehouseLine,
   warehouseNameMatches,
+  xmlTag,
 } from './shared.js';
+
+const MOSKV_ORDER_ID_KEYS = [
+  'order_id',
+  'orderId',
+  'orderid',
+  'id',
+  'zid',
+  'oid',
+  'zakaz_id',
+  'zakazId',
+  'order_num',
+  'orderNum',
+  'num',
+  'zak_num',
+];
+
+function pickOrderIdFromObject(obj) {
+  if (obj == null) return null;
+  if (typeof obj === 'string' || typeof obj === 'number') {
+    const s = String(obj).trim();
+    if (!s || s === 'true' || s === 'false') return null;
+    return s;
+  }
+  if (typeof obj !== 'object' || Array.isArray(obj)) return null;
+  for (const key of MOSKV_ORDER_ID_KEYS) {
+    const v = obj[key];
+    if (v != null && String(v).trim() !== '') {
+      return String(v).trim();
+    }
+  }
+  return null;
+}
+
+function looksLikeMoskvSuccess(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (obj.success === true || obj.ok === true) return true;
+  const status = obj.status;
+  if (status === 1 || status === '1' || status === 'ok' || status === 'success') return true;
+  const msg = String(obj.message || obj.msg || obj.info || '').toLowerCase();
+  return (
+    msg.includes('успеш') ||
+    msg.includes('принят') ||
+    msg.includes('оформлен') ||
+    msg.includes('добавлен')
+  );
+}
+
+function looksLikeMoskvFailure(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  if (obj.success === false || obj.ok === false) return true;
+  const status = obj.status;
+  if (status === 0 || status === '0' || status === 'error' || status === 'fail') return true;
+  return Boolean(obj.error || obj.err);
+}
 
 function apiKeyFromConfig(config) {
   return config?.apiKey || config?.password || '';
@@ -81,6 +136,117 @@ async function lookupMoskvorechieOffer({ sku, brand, config }) {
   return { ok: true, offers };
 }
 
+function parseMoskvorechieOrderResponseFromJson(data, raw) {
+  if (data?.error) {
+    return { ok: false, message: String(data.error) };
+  }
+  if (looksLikeMoskvFailure(data)) {
+    return {
+      ok: false,
+      message: String(data.message || data.error || data.err || 'Moskvorechie отклонил заказ'),
+    };
+  }
+
+  const topOrderId = pickOrderIdFromObject(data);
+  if (topOrderId) {
+    return { ok: true, orderId: topOrderId, message: 'Заказ отправлен Moskvorechie' };
+  }
+
+  if (data?.result != null) {
+    const result = data.result;
+    if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
+      if (looksLikeMoskvFailure(result)) {
+        return {
+          ok: false,
+          message: String(result.message || result.error || result.err || 'Moskvorechie отклонил заказ'),
+        };
+      }
+      const orderId = pickOrderIdFromObject(result);
+      if (orderId) {
+        return { ok: true, orderId, message: 'Заказ отправлен Moskvorechie' };
+      }
+      if (looksLikeMoskvSuccess(result)) {
+        return {
+          ok: true,
+          orderId: null,
+          message: 'Заказ отправлен Moskvorechie',
+          confirmedWithoutOrderId: true,
+        };
+      }
+    }
+    if (Array.isArray(result) && result.length > 0) {
+      const errors = result
+        .filter((item) => looksLikeMoskvFailure(item))
+        .map((item) => item?.error || item?.err || item?.message)
+        .filter(Boolean);
+      const orderIds = result.map((item) => pickOrderIdFromObject(item)).filter(Boolean);
+      if (orderIds.length) {
+        return {
+          ok: true,
+          orderId: orderIds[0],
+          message: 'Заказ отправлен Moskvorechie',
+        };
+      }
+      if (errors.length) {
+        return { ok: false, message: String(errors[0]) };
+      }
+      if (result.some((item) => looksLikeMoskvSuccess(item))) {
+        return {
+          ok: true,
+          orderId: null,
+          message: 'Заказ отправлен Moskvorechie',
+          confirmedWithoutOrderId: true,
+        };
+      }
+    }
+    const scalarOrderId = pickOrderIdFromObject(result);
+    if (scalarOrderId) {
+      return { ok: true, orderId: scalarOrderId, message: 'Заказ отправлен Moskvorechie' };
+    }
+  }
+
+  if (looksLikeMoskvSuccess(data)) {
+    return {
+      ok: true,
+      orderId: null,
+      message: 'Заказ отправлен Moskvorechie',
+      confirmedWithoutOrderId: true,
+    };
+  }
+
+  return {
+    ok: false,
+    message: 'Moskvorechie не подтвердил заказ (нет подтверждения в ответе)',
+    raw: raw.slice(0, 500),
+  };
+}
+
+function parseMoskvorechieOrderResponseFromXml(raw) {
+  const lower = raw.toLowerCase();
+  if (lower.includes('<error') || lower.includes('ошиб')) {
+    return {
+      ok: false,
+      message: xmlTag(raw, 'error') || xmlTag(raw, 'message') || raw.slice(0, 300),
+    };
+  }
+  for (const tag of MOSKV_ORDER_ID_KEYS) {
+    const value = xmlTag(raw, tag);
+    if (value) {
+      return { ok: true, orderId: value, message: 'Заказ отправлен Moskvorechie' };
+    }
+  }
+  const message = xmlTag(raw, 'message') || xmlTag(raw, 'info') || '';
+  if (looksLikeMoskvSuccess({ message })) {
+    return {
+      ok: true,
+      orderId: null,
+      message: message || 'Заказ отправлен Moskvorechie',
+      confirmedWithoutOrderId: true,
+    };
+  }
+  return null;
+}
+
 export function parseMoskvorechieOrderResponse(text) {
   const raw = String(text || '').trim();
   if (!raw) {
@@ -88,70 +254,11 @@ export function parseMoskvorechieOrderResponse(text) {
   }
 
   try {
-    const data = JSON.parse(raw);
-    if (data?.error) {
-      return { ok: false, message: String(data.error) };
-    }
-    if (data?.success === false || data?.ok === false) {
-      return {
-        ok: false,
-        message: String(data.message || data.error || 'Moskvorechie отклонил заказ'),
-      };
-    }
-
-    if (data?.result != null) {
-      const result = data.result;
-      if (typeof result === 'object' && result !== null && !Array.isArray(result)) {
-        if (result.error || result.err) {
-          return { ok: false, message: String(result.error || result.err) };
-        }
-        const orderId =
-          result.order_id ?? result.orderId ?? result.id ?? result.zid ?? null;
-        if (orderId) {
-          return { ok: true, orderId: String(orderId), message: 'Заказ отправлен Moskvorechie' };
-        }
-        if (result.success === false || result.ok === false) {
-          return {
-            ok: false,
-            message: String(result.message || result.error || 'Moskvorechie отклонил заказ'),
-          };
-        }
-      }
-      if (Array.isArray(result) && result.length > 0) {
-        const errors = result
-          .map((item) => item?.error || item?.err || item?.message)
-          .filter(Boolean);
-        const orderIds = result
-          .map((item) => item?.order_id ?? item?.orderId ?? item?.id ?? item?.zid ?? null)
-          .filter(Boolean);
-        if (orderIds.length) {
-          return {
-            ok: true,
-            orderId: String(orderIds[0]),
-            message: 'Заказ отправлен Moskvorechie',
-          };
-        }
-        if (errors.length) {
-          return { ok: false, message: String(errors[0]) };
-        }
-      }
-    }
-
-    if (data?.success === true || data?.ok === true) {
-      const orderId = data.order_id ?? data.orderId ?? data.id ?? data.zid ?? null;
-      return {
-        ok: true,
-        orderId: orderId != null ? String(orderId) : null,
-        message: 'Заказ отправлен Moskvorechie',
-      };
-    }
-
-    return {
-      ok: false,
-      message: 'Moskvorechie не подтвердил заказ (нет order_id в ответе)',
-      raw: raw.slice(0, 500),
-    };
+    return parseMoskvorechieOrderResponseFromJson(JSON.parse(raw), raw);
   } catch {
+    const xmlResult = parseMoskvorechieOrderResponseFromXml(raw);
+    if (xmlResult) return xmlResult;
+
     const lower = raw.toLowerCase();
     if (lower.includes('error') || lower.includes('ошиб')) {
       return { ok: false, message: raw.slice(0, 300) };
@@ -190,12 +297,16 @@ async function submitMoskvorechieOrder({ config, integrationConfig, orderLines, 
     throw new Error(`Moskvorechie ${act}: HTTP ${response.status}`);
   }
   const text = await response.text();
+  const parsed = parseMoskvorechieOrderResponse(text);
   logger.info('[MoskvorechieOrder] make_orders response', {
     act,
     lines: orderLines.length,
+    ok: parsed.ok,
+    orderId: parsed.orderId ?? null,
+    confirmedWithoutOrderId: parsed.confirmedWithoutOrderId === true,
     preview: text.slice(0, 500),
   });
-  return parseMoskvorechieOrderResponse(text);
+  return parsed;
 }
 
 /**

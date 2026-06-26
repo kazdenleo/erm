@@ -84,12 +84,18 @@ describe('moskvorechie.adapter parseMoskvorechieOrderResponse', () => {
     expect(r.ok).toBe(false);
   });
 
-  test('rejects response without order_id', () => {
+  test('accepts success without order_id when API confirms', () => {
     const r = parseMoskvorechieOrderResponse(JSON.stringify({ result: { success: true } }));
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(r.orderId).toBeNull();
   });
 
-  test('surfaces API error field', () => {
+  test('accepts top-level success without order_id', () => {
+    const r = parseMoskvorechieOrderResponse(JSON.stringify({ success: true, message: 'Заказ принят' }));
+    expect(r.ok).toBe(true);
+  });
+
+  test('rejects explicit API error', () => {
     const r = parseMoskvorechieOrderResponse(JSON.stringify({ error: 'Нет доступа' }));
     expect(r.ok).toBe(false);
     expect(r.message).toContain('Нет доступа');
