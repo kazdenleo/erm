@@ -254,6 +254,216 @@ function enrichForecastRow(row, lookup, vendorOverride = null) {
   };
 }
 
+const UNKNOWN_CLUSTER = '__unknown__';
+
+function clusterKeyFromRegion(regionName) {
+  const n = String(regionName || '').trim();
+  return n || UNKNOWN_CLUSTER;
+}
+
+function clusterLabelFromKey(key) {
+  return key === UNKNOWN_CLUSTER ? 'Без региона' : key;
+}
+
+function productRowKey(row) {
+  const nm = row.nmId != null ? String(row.nmId) : '';
+  const chrt = row.chrtId != null ? String(row.chrtId) : '';
+  if (nm && chrt) return `${nm}:${chrt}`;
+  if (row.externalSku) return String(row.externalSku);
+  return `id:${row.id}`;
+}
+
+export function calcClusterToSupply({ availability, orders, reserve, returnQty }) {
+  const onHand = toInt(availability) + toInt(returnQty);
+  return Math.max(0, toInt(orders) - onHand + toInt(reserve));
+}
+
+function buildWarehouseClusterMap(flatRows) {
+  const map = new Map();
+  for (const row of flatRows) {
+    const wh = row.warehouseId != null ? String(row.warehouseId) : '';
+    if (!wh) continue;
+    map.set(wh, clusterKeyFromRegion(row.regionName));
+  }
+  return map;
+}
+
+function resolveProductTotalOrders(row, { wbByNm, erm }) {
+  const nm = row.nmId != null ? String(row.nmId).trim() : '';
+  const vendor = normalizeWbLinkKey(row.wbVendorCode);
+  const productId = row.productId != null ? Number(row.productId) : NaN;
+
+  if (nm && wbByNm.has(nm)) return wbByNm.get(nm);
+  if (nm && erm.byNm.has(nm)) return erm.byNm.get(nm);
+  if (Number.isFinite(productId) && erm.byProduct.has(productId)) {
+    return erm.byProduct.get(productId);
+  }
+  if (vendor && erm.byOffer.has(vendor)) return erm.byOffer.get(vendor);
+  return 0;
+}
+
+function resolveClusterOrders(nm, clusterKey, clusterWeight, totalWeight, totalOrders, erm, whToCluster) {
+  let ermSum = 0;
+  if (nm) {
+    for (const [key, qty] of erm.byNmWh) {
+      const sep = key.indexOf(':');
+      if (sep < 0) continue;
+      const nmPart = key.slice(0, sep);
+      const wh = key.slice(sep + 1);
+      if (nmPart !== nm) continue;
+      if (whToCluster.get(wh) === clusterKey) ermSum += qty;
+    }
+  }
+  if (ermSum > 0) return ermSum;
+  if (totalOrders <= 0) return 0;
+  if (totalWeight > 0) return Math.round((totalOrders * clusterWeight) / totalWeight);
+  return 0;
+}
+
+export function pivotForecastByCluster(flatRows, { wbByNm, erm, clusterFilter = null } = {}) {
+  const whToCluster = buildWarehouseClusterMap(flatRows);
+  const clusterKeysSet = new Set();
+  const products = new Map();
+
+  for (const row of flatRows) {
+    const ck = clusterKeyFromRegion(row.regionName);
+    if (clusterFilter && ck !== clusterFilter) continue;
+    clusterKeysSet.add(ck);
+
+    const pk = productRowKey(row);
+    let prod = products.get(pk);
+    if (!prod) {
+      prod = {
+        id: pk,
+        nmId: row.nmId,
+        chrtId: row.chrtId,
+        externalSku: row.externalSku,
+        wbVendorCode: row.wbVendorCode,
+        productId: row.productId,
+        productName: row.productName,
+        productArticle: row.productArticle,
+        clusters: new Map(),
+      };
+      products.set(pk, prod);
+    }
+
+    let cm = prod.clusters.get(ck);
+    if (!cm) {
+      cm = { availability: 0, reserve: 0, returnQty: 0, weight: 0 };
+      prod.clusters.set(ck, cm);
+    }
+    cm.availability += row.quantity || 0;
+    cm.reserve += row.inWayToClient || 0;
+    cm.returnQty += row.inWayFromClient || 0;
+    cm.weight += (row.quantity || 0) + (row.inWayToClient || 0) + (row.inWayFromClient || 0);
+  }
+
+  const clusterKeys = [...clusterKeysSet].sort((a, b) =>
+    clusterLabelFromKey(a).localeCompare(clusterLabelFromKey(b), 'ru')
+  );
+
+  const pivotedRows = [];
+  for (const prod of products.values()) {
+    const nm = prod.nmId != null ? String(prod.nmId).trim() : '';
+    const totalOrders = resolveProductTotalOrders(prod, { wbByNm, erm });
+    let totalWeight = 0;
+    for (const cm of prod.clusters.values()) totalWeight += cm.weight;
+
+    const clusterMetrics = {};
+    let rowOrdersTotal = 0;
+    let rowQty = 0;
+    let rowRes = 0;
+    let rowRet = 0;
+    let rowSupply = 0;
+
+    for (const ck of clusterKeys) {
+      const cm = prod.clusters.get(ck) || {
+        availability: 0,
+        reserve: 0,
+        returnQty: 0,
+        weight: 0,
+      };
+      const orders = resolveClusterOrders(
+        nm,
+        ck,
+        cm.weight,
+        totalWeight,
+        totalOrders,
+        erm,
+        whToCluster
+      );
+      const toSupply = calcClusterToSupply({
+        availability: cm.availability,
+        orders,
+        reserve: cm.reserve,
+        returnQty: cm.returnQty,
+      });
+      clusterMetrics[ck] = {
+        availability: cm.availability,
+        orders,
+        reserve: cm.reserve,
+        return: cm.returnQty,
+        toSupply,
+      };
+      rowOrdersTotal += orders;
+      rowQty += cm.availability;
+      rowRes += cm.reserve;
+      rowRet += cm.returnQty;
+      rowSupply += toSupply;
+    }
+
+    pivotedRows.push({
+      id: prod.id,
+      nmId: prod.nmId,
+      chrtId: prod.chrtId,
+      externalSku: prod.externalSku,
+      wbVendorCode: prod.wbVendorCode,
+      productId: prod.productId,
+      productName: prod.productName,
+      productArticle: prod.productArticle,
+      clusterMetrics,
+      ordersCount: rowOrdersTotal,
+      quantity: rowQty,
+      inWayToClient: rowRes,
+      inWayFromClient: rowRet,
+      toSupply: rowSupply,
+    });
+  }
+
+  pivotedRows.sort((a, b) => {
+    const sa = a.wbVendorCode || a.externalSku || '';
+    const sb = b.wbVendorCode || b.externalSku || '';
+    return sa.localeCompare(sb, 'ru');
+  });
+
+  const clusters = clusterKeys.map((key) => ({
+    key,
+    name: clusterLabelFromKey(key),
+  }));
+
+  const totals = pivotedRows.reduce(
+    (acc, row) => {
+      acc.rowCount += 1;
+      acc.quantity += row.quantity;
+      acc.inWayToClient += row.inWayToClient;
+      acc.inWayFromClient += row.inWayFromClient;
+      acc.ordersCount += row.ordersCount;
+      acc.toSupply += row.toSupply;
+      return acc;
+    },
+    {
+      quantity: 0,
+      inWayToClient: 0,
+      inWayFromClient: 0,
+      ordersCount: 0,
+      toSupply: 0,
+      rowCount: 0,
+    }
+  );
+
+  return { rows: pivotedRows, clusters, totals };
+}
+
 function rowMatchesSearch(row, q) {
   if (!q) return true;
   const hay = [
@@ -261,7 +471,7 @@ function rowMatchesSearch(row, q) {
     row.externalSku,
     row.productName,
     row.productArticle,
-    row.warehouseName,
+    row.nmId,
   ]
     .map((v) => (v != null ? String(v).toLowerCase() : ''))
     .join(' ');
@@ -531,7 +741,7 @@ class FboSupplyForecastService {
   async getWbForecast({
     profileId,
     organizationId,
-    warehouseId = null,
+    cluster = null,
     search = null,
     unlinkedOnly = false,
     planDays = 30,
@@ -546,12 +756,13 @@ class FboSupplyForecastService {
         snapshotId: null,
         planDays: periodDays,
         rows: [],
-        warehouses: [],
+        clusters: [],
         totals: {
           quantity: 0,
           inWayToClient: 0,
           inWayFromClient: 0,
           ordersCount: 0,
+          toSupply: 0,
           rowCount: 0,
         },
         apiNote:
@@ -559,10 +770,8 @@ class FboSupplyForecastService {
       };
     }
 
-    const whFilter =
-      warehouseId != null && String(warehouseId).trim() !== ''
-        ? Number(warehouseId)
-        : null;
+    const clusterFilter =
+      cluster != null && String(cluster).trim() !== '' ? String(cluster).trim() : null;
     const q = search != null ? String(search).trim().toLowerCase() : '';
 
     const r = await query(
@@ -585,13 +794,13 @@ class FboSupplyForecastService {
       FROM wb_fbo_forecast_rows r
       LEFT JOIN products p ON p.id = r.product_id
       WHERE r.snapshot_id = $1
-        AND ($2::bigint IS NULL OR r.warehouse_id = $2)
       ORDER BY
         COALESCE(r.wb_vendor_code, r.external_sku),
+        r.region_name NULLS LAST,
         r.warehouse_name NULLS LAST,
         r.id
       `,
-      [snap.id, Number.isFinite(whFilter) ? whFilter : null]
+      [snap.id]
     );
 
     const lookup = await buildWbProductLookup(pid);
@@ -628,48 +837,48 @@ class FboSupplyForecastService {
       rows = rows.filter((row) => !row.productId);
     }
 
-    const [wbByNm, erm] = await Promise.all([
+    const [wbByNm, erm, clusterR] = await Promise.all([
       getWbOrdersCountMap({ profileId: pid, organizationId: orgId, planDays: periodDays }),
       buildErmWbOrderCounts(pid, periodDays),
+      query(
+        `
+        SELECT DISTINCT region_name
+        FROM wb_fbo_forecast_rows
+        WHERE snapshot_id = $1
+        ORDER BY region_name NULLS LAST
+        `,
+        [snap.id]
+      ),
     ]);
-    rows = rows.map((row) => ({
-      ...row,
-      ordersCount: resolveRowOrdersCount(row, { wbByNm, erm }),
-    }));
 
-    const whR = await query(
-      `
-      SELECT DISTINCT warehouse_id, warehouse_name
-      FROM wb_fbo_forecast_rows
-      WHERE snapshot_id = $1 AND warehouse_id IS NOT NULL
-      ORDER BY warehouse_name NULLS LAST, warehouse_id
-      `,
-      [snap.id]
-    );
+    const allClusters = (clusterR.rows || []).map((row) => {
+      const key = clusterKeyFromRegion(row.region_name);
+      return { key, name: clusterLabelFromKey(key) };
+    });
+    const clusterDedup = [];
+    const seenCluster = new Set();
+    for (const c of allClusters) {
+      if (seenCluster.has(c.key)) continue;
+      seenCluster.add(c.key);
+      clusterDedup.push(c);
+    }
 
-    const totals = rows.reduce(
-      (acc, row) => {
-        acc.quantity += row.quantity;
-        acc.inWayToClient += row.inWayToClient;
-        acc.inWayFromClient += row.inWayFromClient;
-        acc.ordersCount += row.ordersCount || 0;
-        return acc;
-      },
-      { quantity: 0, inWayToClient: 0, inWayFromClient: 0, ordersCount: 0, rowCount: rows.length }
-    );
+    const pivoted = pivotForecastByCluster(rows, {
+      wbByNm,
+      erm,
+      clusterFilter,
+    });
 
     return {
       syncedAt: snap.created_at,
       snapshotId: snap.id,
       planDays: periodDays,
-      rows,
-      warehouses: (whR.rows || []).map((w) => ({
-        id: w.warehouse_id,
-        name: w.warehouse_name,
-      })),
-      totals,
+      rows: pivoted.rows,
+      clusters: clusterDedup,
+      displayClusters: pivoted.clusters,
+      totals: pivoted.totals,
       apiNote:
-        `Данные WB обновляются примерно раз в 30 минут. «Резерв» = inWayToClient (в пути к клиенту). «Заказы» — за ${periodDays} дн. (аналитика WB и заказы в ERM).`,
+        `Данные WB обновляются примерно раз в 30 минут. Кластеры — регионы отгрузки WB (regionName). «Резерв» = в пути к клиенту, «Возврат» = в пути от клиента. «К поставке» = max(0, заказы − наличие − возврат + резерв). «Заказы» — за ${periodDays} дн.`,
     };
   }
 }

@@ -106,13 +106,20 @@ class FboSuppliesController {
           data: {
             syncedAt: null,
             rows: [],
-            warehouses: [],
-            totals: { quantity: 0, inWayToClient: 0, inWayFromClient: 0, rowCount: 0 },
+            clusters: [],
+            totals: {
+              quantity: 0,
+              inWayToClient: 0,
+              inWayFromClient: 0,
+              ordersCount: 0,
+              toSupply: 0,
+              rowCount: 0,
+            },
           },
         });
       }
       const organizationId = resolveOrganizationIdFromRequest(req) || req.query?.organizationId || null;
-      const warehouseId = req.query?.warehouseId ?? req.query?.warehouse_id ?? null;
+      const cluster = req.query?.cluster ?? req.query?.clusterKey ?? null;
       const search = req.query?.q ?? req.query?.search ?? null;
       const unlinkedOnly =
         req.query?.unlinkedOnly === '1' ||
@@ -124,7 +131,7 @@ class FboSuppliesController {
       const data = await fboSupplyForecastService.getWbForecast({
         profileId: tid,
         organizationId,
-        warehouseId,
+        cluster,
         search,
         unlinkedOnly,
         planDays,

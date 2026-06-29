@@ -1,5 +1,5 @@
 /**
- * Прогнозирование поставок FBO — остатки WB по складам
+ * Прогнозирование поставок FBO — остатки WB по кластерам (регионам отгрузки)
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -8,6 +8,14 @@ import { Button } from '../../components/common/Button/Button';
 import { FboSuppliesSubNav } from './FboSuppliesSubNav.jsx';
 import './FboSupplies.css';
 import './FboSuppliesSubNav.css';
+
+const CLUSTER_METRIC_COLS = [
+  { key: 'availability', label: 'Наличие', title: 'Остаток на складах кластера' },
+  { key: 'orders', label: 'Заказы', title: 'Заказано за выбранный период' },
+  { key: 'reserve', label: 'Резерв', title: 'В пути к клиенту' },
+  { key: 'return', label: 'Возврат', title: 'В пути от клиента' },
+  { key: 'toSupply', label: 'К поставке', title: 'Рекомендуемое количество к поставке в кластер' },
+];
 
 function fmtDt(iso) {
   if (!iso) return '—';
@@ -106,7 +114,7 @@ export function FboSupplyForecast() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [err, setErr] = useState(null);
-  const [warehouseId, setWarehouseId] = useState('');
+  const [clusterKey, setClusterKey] = useState('');
   const [search, setSearch] = useState('');
   const [searchDebounced, setSearchDebounced] = useState('');
   const [unlinkedOnly, setUnlinkedOnly] = useState(false);
@@ -129,7 +137,7 @@ export function FboSupplyForecast() {
     setErr(null);
     try {
       const payload = await fboSuppliesApi.getWbForecast({
-        warehouseId: warehouseId || undefined,
+        cluster: clusterKey || undefined,
         q: searchDebounced || undefined,
         unlinkedOnly: unlinkedOnly || undefined,
         planDays,
@@ -140,7 +148,7 @@ export function FboSupplyForecast() {
     } finally {
       setLoading(false);
     }
-  }, [warehouseId, searchDebounced, unlinkedOnly, planDays]);
+  }, [clusterKey, searchDebounced, unlinkedOnly, planDays]);
 
   useEffect(() => {
     load();
@@ -160,12 +168,19 @@ export function FboSupplyForecast() {
   };
 
   const rows = useMemo(() => (Array.isArray(data?.rows) ? data.rows : []), [data]);
-  const warehouses = useMemo(() => (Array.isArray(data?.warehouses) ? data.warehouses : []), [data]);
+  const allClusters = useMemo(() => (Array.isArray(data?.clusters) ? data.clusters : []), [data]);
+  const displayClusters = useMemo(() => {
+    if (Array.isArray(data?.displayClusters) && data.displayClusters.length > 0) {
+      return data.displayClusters;
+    }
+    return allClusters;
+  }, [data, allClusters]);
   const totals = data?.totals || {
     quantity: 0,
     inWayToClient: 0,
     inWayFromClient: 0,
     ordersCount: 0,
+    toSupply: 0,
     rowCount: 0,
   };
   const ordersPeriod = data?.planDays ?? planDays;
@@ -196,31 +211,34 @@ export function FboSupplyForecast() {
           Последнее обновление: <strong>{fmtDt(data?.syncedAt)}</strong>
         </span>
         <span>
-          Строк: <strong>{fmtQty(totals.rowCount)}</strong>
+          Товаров: <strong>{fmtQty(totals.rowCount)}</strong>
         </span>
         <span>
-          Остаток: <strong>{fmtQty(totals.quantity)}</strong>
+          Наличие: <strong>{fmtQty(totals.quantity)}</strong>
         </span>
         <span>
-          Резерв (к клиенту): <strong>{fmtQty(totals.inWayToClient)}</strong>
+          Резерв: <strong>{fmtQty(totals.inWayToClient)}</strong>
         </span>
         <span>
           Заказы ({ordersPeriod} дн.): <strong>{fmtQty(totals.ordersCount)}</strong>
+        </span>
+        <span>
+          К поставке: <strong>{fmtQty(totals.toSupply)}</strong>
         </span>
       </div>
 
       <div className="fbo-forecast-filters">
         <label>
-          Склад WB
+          Кластер
           <select
             className="form-select form-select-sm"
-            value={warehouseId}
-            onChange={(e) => setWarehouseId(e.target.value)}
+            value={clusterKey}
+            onChange={(e) => setClusterKey(e.target.value)}
           >
-            <option value="">Все склады</option>
-            {warehouses.map((w) => (
-              <option key={w.id} value={String(w.id)}>
-                {w.name || `Склад #${w.id}`}
+            <option value="">Все кластеры</option>
+            {allClusters.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.name}
               </option>
             ))}
           </select>
@@ -230,7 +248,7 @@ export function FboSupplyForecast() {
           <input
             className="form-control form-control-sm"
             type="search"
-            placeholder="Артикул, название, склад…"
+            placeholder="Артикул, название…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -256,18 +274,37 @@ export function FboSupplyForecast() {
         </p>
       ) : (
         <div className="fbo-forecast-table-wrap">
-          <table className="fbo-forecast-table">
+          <table className="fbo-forecast-table fbo-forecast-table--clusters">
             <thead>
               <tr>
-                <th>Артикул</th>
-                <th className="fbo-forecast-col-name">Название</th>
-                <th>Склад WB</th>
-                <th className="num" title={`Заказано за ${ordersPeriod} дн. (WB FBO + заказы в ERM)`}>
-                  Заказы
+                <th rowSpan={2} className="fbo-forecast-sticky fbo-forecast-sticky--sku">
+                  Артикул
                 </th>
-                <th className="num">Остаток</th>
-                <th className="num">Резерв</th>
-                <th className="num">Возврат</th>
+                <th rowSpan={2} className="fbo-forecast-sticky fbo-forecast-sticky--name fbo-forecast-col-name">
+                  Название
+                </th>
+                {displayClusters.map((c) => (
+                  <th
+                    key={c.key}
+                    colSpan={CLUSTER_METRIC_COLS.length}
+                    className="fbo-forecast-cluster-head"
+                  >
+                    {c.name}
+                  </th>
+                ))}
+              </tr>
+              <tr>
+                {displayClusters.map((c) =>
+                  CLUSTER_METRIC_COLS.map((col) => (
+                    <th
+                      key={`${c.key}-${col.key}`}
+                      className={`num fbo-forecast-metric-head${col.key === 'toSupply' ? ' fbo-forecast-metric-head--supply' : ''}`}
+                      title={col.title}
+                    >
+                      {col.label}
+                    </th>
+                  ))
+                )}
               </tr>
             </thead>
             <tbody>
@@ -276,22 +313,32 @@ export function FboSupplyForecast() {
                   ? row.productName || row.productArticle || `Товар #${row.productId}`
                   : null;
                 return (
-                <tr key={row.id}>
-                  <td>{displaySku(row)}</td>
-                  <td className="fbo-forecast-col-name" title={name || undefined}>
-                    {name ? (
-                      <span className="fbo-forecast-name">{name}</span>
-                    ) : (
-                      <span className="fbo-forecast-unlinked">не привязан</span>
-                    )}
-                  </td>
-                  <td>{row.warehouseName || (row.warehouseId ? `#${row.warehouseId}` : '—')}</td>
-                  <td className="num">{fmtQty(row.ordersCount)}</td>
-                  <td className="num">{fmtQty(row.quantity)}</td>
-                  <td className="num">{fmtQty(row.inWayToClient)}</td>
-                  <td className="num">{fmtQty(row.inWayFromClient)}</td>
-                </tr>
-              );
+                  <tr key={row.id}>
+                    <td className="fbo-forecast-sticky fbo-forecast-sticky--sku">{displaySku(row)}</td>
+                    <td
+                      className="fbo-forecast-sticky fbo-forecast-sticky--name fbo-forecast-col-name"
+                      title={name || undefined}
+                    >
+                      {name ? (
+                        <span className="fbo-forecast-name">{name}</span>
+                      ) : (
+                        <span className="fbo-forecast-unlinked">не привязан</span>
+                      )}
+                    </td>
+                    {displayClusters.map((c) => {
+                      const m = row.clusterMetrics?.[c.key] || {};
+                      return CLUSTER_METRIC_COLS.map((col) => (
+                        <td
+                          key={`${row.id}-${c.key}-${col.key}`}
+                          className={`num${col.key === 'toSupply' ? ' fbo-forecast-supply-cell' : ''}`}
+                          title={col.title}
+                        >
+                          {fmtQty(m[col.key])}
+                        </td>
+                      ));
+                    })}
+                  </tr>
+                );
               })}
             </tbody>
           </table>

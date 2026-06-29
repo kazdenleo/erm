@@ -108,9 +108,68 @@
   position: sticky;
   top: 0;
   background: #f8fafc;
-  z-index: 1;
+  z-index: 2;
   font-weight: 600;
   color: #334155;
+}
+
+.fbo-forecast-table--clusters thead tr:nth-child(2) th {
+  top: 37px;
+  z-index: 2;
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+  padding-top: 4px;
+  padding-bottom: 8px;
+}
+
+.fbo-forecast-cluster-head {
+  text-align: center !important;
+  background: #eef2ff !important;
+  color: #312e81 !important;
+  border-left: 1px solid #c7d2fe;
+  border-right: 1px solid #c7d2fe;
+}
+
+.fbo-forecast-metric-head {
+  min-width: 58px;
+  background: #f8fafc !important;
+}
+
+.fbo-forecast-metric-head--supply {
+  color: #0f766e;
+  font-weight: 600;
+}
+
+.fbo-forecast-supply-cell {
+  font-weight: 600;
+  color: #0f766e;
+}
+
+.fbo-forecast-sticky {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: #fff;
+  box-shadow: 1px 0 0 #e2e8f0;
+}
+
+.fbo-forecast-sticky--sku {
+  left: 0;
+  min-width: 100px;
+}
+
+.fbo-forecast-sticky--name {
+  left: 100px;
+}
+
+.fbo-forecast-table thead .fbo-forecast-sticky {
+  z-index: 4;
+  background: #f8fafc;
+}
+
+.fbo-forecast-table tr:hover td.fbo-forecast-sticky {
+  background: #fafbfc;
 }
 
 .fbo-forecast-table td.num {
