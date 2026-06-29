@@ -1319,19 +1319,97 @@ function wbSupplyGoodsApiId(row) {
   return null;
 }
 
-function resolveWbPlacementCluster(row) {
+function firstNonEmptyWbString(...values) {
+  for (const v of values) {
+    const s = v != null ? String(v).trim() : '';
+    if (s) return s;
+  }
+  return null;
+}
+
+/** Убираем префикс «СЦ » для колонки кластера — в UI WB часто «Абакан 2». */
+export function normalizeWbSupplyClusterLabel(name) {
+  const s = firstNonEmptyWbString(name);
+  if (!s) return null;
+  const trimmed = s.replace(/^СЦ\s+/i, '').trim();
+  return trimmed || s;
+}
+
+export function resolveWbPlacementCluster(row) {
   const candidates = [
-    row.clusterName,
-    row.cluster_name,
-    row.warehouseCluster,
-    row.warehouseClusterName,
-    row.destinationWarehouseName,
-    row.destination_warehouse_name,
+    row?.clusterName,
+    row?.cluster_name,
+    row?.warehouseCluster,
+    row?.warehouseClusterName,
+    row?.destinationWarehouseName,
+    row?.destination_warehouse_name,
+    row?.warehouseName,
+    row?.warehouse_name,
+    row?.actualWarehouseName,
+    row?.actual_warehouse_name,
+    row?.transitWarehouseName,
+    row?.transit_warehouse_name,
+    row?.virtualTypeName,
+    row?.virtual_type_name,
   ];
   for (const c of candidates) {
     if (c != null && String(c).trim() !== '') return String(c).trim();
   }
   return null;
+}
+
+/** Склад и кластер из строки списка + деталей GET /api/v1/supplies/{ID}. */
+export function resolveWbSupplyWarehouseFields(row, details = null) {
+  const merged =
+    details && typeof details === 'object' && !Array.isArray(details)
+      ? { ...row, ...details }
+      : row || {};
+
+  const marketplaceWarehouseName = firstNonEmptyWbString(
+    merged.actualWarehouseName,
+    merged.actual_warehouse_name,
+    merged.warehouseName,
+    merged.warehouse_name,
+    merged.warehouse,
+    merged.warehouseAddress,
+    merged.transitWarehouseName,
+    merged.transit_warehouse_name
+  );
+
+  const marketplaceWarehouseId = firstNonEmptyWbString(
+    merged.actualWarehouseID,
+    merged.actualWarehouseId,
+    merged.actual_warehouse_id,
+    merged.warehouseID,
+    merged.warehouseId,
+    merged.warehouse_id
+  );
+
+  const clusterRaw =
+    resolveWbPlacementCluster(merged) ||
+    firstNonEmptyWbString(merged.warehouseName, merged.warehouse_name) ||
+    marketplaceWarehouseName;
+
+  return {
+    marketplaceWarehouseName,
+    marketplaceWarehouseId,
+    shippingCluster: normalizeWbSupplyClusterLabel(clusterRaw) || clusterRaw,
+  };
+}
+
+async function fetchWbSupplyDetails(apiKey, supplyApiId) {
+  const id = supplyApiId != null ? String(supplyApiId).trim() : '';
+  if (!id) return null;
+  try {
+    const data = await wbFbwRequest(`/api/v1/supplies/${encodeURIComponent(id)}`, {
+      apiKey,
+      method: 'GET',
+      timeoutMs: 30000,
+    });
+    return data && typeof data === 'object' ? data : null;
+  } catch {
+    return null;
+  }
 }
 
 function resolveYmPlacementCluster(req, target) {
@@ -2530,11 +2608,16 @@ class FboSuppliesImportService {
       if (!externalNumber || !goodsApiId) return null;
 
       let items = [];
+      let details = null;
       try {
-        const goodsData = await wbFbwRequest(
-          `/api/v1/supplies/${encodeURIComponent(goodsApiId)}/goods`,
-          { apiKey, method: 'GET', timeoutMs: 30000 }
-        );
+        const [goodsData, detailsData] = await Promise.all([
+          wbFbwRequest(
+            `/api/v1/supplies/${encodeURIComponent(goodsApiId)}/goods`,
+            { apiKey, method: 'GET', timeoutMs: 30000 }
+          ),
+          fetchWbSupplyDetails(apiKey, goodsApiId),
+        ]);
+        details = detailsData;
         const list = parseWbGoodsResponse(goodsData);
         for (const g of list) {
           const qty = parseInt(
@@ -2563,15 +2646,12 @@ class FboSuppliesImportService {
         }
       } catch {
         items = [];
+        details = await fetchWbSupplyDetails(apiKey, goodsApiId).catch(() => null);
       }
 
+      const whFields = resolveWbSupplyWarehouseFields(row, details);
       const supplyId = row.supplyID ?? row.supplyId;
       const preorderId = row.preorderID ?? row.preorderId;
-      const whName =
-        row.warehouseName ??
-        row.warehouse ??
-        row.warehouseAddress ??
-        (row.warehouseID != null ? `Склад WB #${row.warehouseID}` : null);
 
       return {
         importKey: `wb:${externalNumber}`,
@@ -2580,14 +2660,9 @@ class FboSuppliesImportService {
         readyAt: parseDateOnly(
           row.supplyDate ?? row.factDate ?? row.createDate ?? row.updatedDate ?? row.date
         ),
-        marketplaceWarehouseName: whName,
-        marketplaceWarehouseId:
-          row.warehouseID != null
-            ? String(row.warehouseID)
-            : row.warehouseId != null
-              ? String(row.warehouseId)
-              : null,
-        shippingCluster: resolveWbPlacementCluster(row),
+        marketplaceWarehouseName: whFields.marketplaceWarehouseName,
+        marketplaceWarehouseId: whFields.marketplaceWarehouseId,
+        shippingCluster: whFields.shippingCluster,
         externalShipmentNumber: externalNumber,
         externalSupplyId: supplyId != null ? String(supplyId) : String(preorderId ?? goodsApiId),
         deductionWarehouseId: null,
