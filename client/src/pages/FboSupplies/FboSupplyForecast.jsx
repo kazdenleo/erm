@@ -4,6 +4,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
+import { applyForecastSettings, sumClusterSupplyTotals } from '../../utils/wbForecastMetrics';
 import { Button } from '../../components/common/Button/Button';
 import { FboSuppliesSubNav } from './FboSuppliesSubNav.jsx';
 import './FboSupplies.css';
@@ -20,8 +21,29 @@ const CLUSTER_METRIC_COLS = [
   },
   { key: 'reserve', label: 'Резерв', title: 'В пути к клиенту (текущий снимок WB)' },
   { key: 'return', label: 'Возврат', title: 'В пути от клиента (текущий снимок WB)' },
-  { key: 'toSupply', label: 'К поставке', title: 'Рекомендуемое количество к поставке в кластер' },
+  { key: 'toSupply', label: 'К поставке', title: 'Ср. заказов/день × период планирования − наличие' },
 ];
+
+const COLLAPSED_CLUSTERS_LS = 'fbo_forecast_collapsed_clusters';
+
+function readCollapsedClusters() {
+  if (typeof localStorage === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(COLLAPSED_CLUSTERS_LS);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function clusterMetricCols(collapsed) {
+  if (collapsed) {
+    return CLUSTER_METRIC_COLS.filter((c) => c.key === 'toSupply');
+  }
+  return CLUSTER_METRIC_COLS;
+}
 
 const PLAN_DAYS_OPTIONS = [30, 60, 90];
 const PLAN_DAYS_LS = 'fbo_forecast_plan_days';
@@ -198,7 +220,7 @@ function ForecastSettingsPopover({ planDays, zeroStockBoost, onPlanDaysChange, o
               ))}
             </select>
             <span className="fbo-forecast-settings__hint">
-              На этот срок рассчитывается «К поставке» (заказы масштабируются с периода загрузки).
+              Используется в формуле «К поставке»: ср. заказов/день × период планирования − наличие.
             </span>
           </label>
 
@@ -355,6 +377,7 @@ export function FboSupplyForecast() {
   const [searchDebounced, setSearchDebounced] = useState('');
   const [unlinkedOnly, setUnlinkedOnly] = useState(false);
   const [hideZeroSupply, setHideZeroSupply] = useState(true);
+  const [collapsedClusters, setCollapsedClusters] = useState(readCollapsedClusters);
   const [planDays, setPlanDays] = useState(readPlanDays);
   const [ordersPeriod, setOrdersPeriod] = useState(readOrdersPeriod);
   const [zeroStockBoost, setZeroStockBoost] = useState(readZeroStockBoost);
@@ -394,9 +417,7 @@ export function FboSupplyForecast() {
           cluster: clusterKey || undefined,
           q: searchDebounced || undefined,
           unlinkedOnly: unlinkedOnly || undefined,
-          planDays,
           ...apiPeriod,
-          zeroStockBoostPercent: zeroStockBoost,
         });
         setData(payload);
       } catch (e) {
@@ -405,7 +426,7 @@ export function FboSupplyForecast() {
         setLoading(false);
       }
     },
-    [clusterKey, searchDebounced, unlinkedOnly, planDays, ordersPeriod, zeroStockBoost]
+    [clusterKey, searchDebounced, unlinkedOnly, ordersPeriod]
   );
 
   useEffect(() => {
@@ -433,7 +454,18 @@ export function FboSupplyForecast() {
     }
   };
 
-  const rows = useMemo(() => (Array.isArray(data?.rows) ? data.rows : []), [data]);
+  const rawRows = useMemo(() => (Array.isArray(data?.rows) ? data.rows : []), [data]);
+  const ordersDaysForCalc = data?.ordersDays ?? null;
+
+  const rows = useMemo(() => {
+    if (!rawRows.length || ordersDaysForCalc == null) return rawRows;
+    return applyForecastSettings(rawRows, {
+      planDays,
+      ordersDays: ordersDaysForCalc,
+      zeroStockBoostPercent: zeroStockBoost,
+    });
+  }, [rawRows, planDays, ordersDaysForCalc, zeroStockBoost]);
+
   const visibleRows = useMemo(() => {
     if (!hideZeroSupply) return rows;
     return rows.filter((row) => rowHasSupplyInAnyCluster(row));
@@ -445,20 +477,52 @@ export function FboSupplyForecast() {
     }
     return allClusters;
   }, [data, allClusters]);
-  const totals = data?.totals || {
-    quantity: 0,
-    inWayToClient: 0,
-    inWayFromClient: 0,
-    ordersCount: 0,
-    toSupply: 0,
-    rowCount: 0,
-  };
+  const totals = useMemo(() => {
+    return rows.reduce(
+      (acc, row) => {
+        acc.rowCount += 1;
+        acc.quantity += Number(row.quantity) || 0;
+        acc.inWayToClient += Number(row.inWayToClient) || 0;
+        acc.inWayFromClient += Number(row.inWayFromClient) || 0;
+        acc.ordersCount += Number(row.ordersCount) || 0;
+        acc.toSupply += Number(row.toSupply) || 0;
+        return acc;
+      },
+      {
+        quantity: 0,
+        inWayToClient: 0,
+        inWayFromClient: 0,
+        ordersCount: 0,
+        toSupply: 0,
+        rowCount: 0,
+      }
+    );
+  }, [rows]);
   const ordersStart = data?.ordersStart ?? ordersPeriod.start;
   const ordersEnd = data?.ordersEnd ?? ordersPeriod.end;
   const ordersDaysCount = data?.ordersDays ?? null;
-  const planningPeriod = data?.planDays ?? planDays;
-  const boostPct = data?.zeroStockBoostPercent ?? zeroStockBoost;
+  const planningPeriod = planDays;
+  const boostPct = zeroStockBoost;
   const hiddenRowsCount = rows.length - visibleRows.length;
+
+  const clusterSupplyTotals = useMemo(
+    () => sumClusterSupplyTotals(rows, displayClusters.map((c) => c.key)),
+    [rows, displayClusters]
+  );
+
+  const toggleClusterCollapse = useCallback((clusterKey) => {
+    setCollapsedClusters((prev) => {
+      const next = new Set(prev);
+      if (next.has(clusterKey)) next.delete(clusterKey);
+      else next.add(clusterKey);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(COLLAPSED_CLUSTERS_LS, JSON.stringify([...next]));
+      }
+      return next;
+    });
+  }, []);
+
+  const hasExpandedCluster = displayClusters.some((c) => !collapsedClusters.has(c.key));
 
   return (
     <div className="fbo-supplies-page">
@@ -590,25 +654,54 @@ export function FboSupplyForecast() {
           <table className="fbo-forecast-table fbo-forecast-table--clusters">
             <thead>
               <tr>
-                <th rowSpan={2} className="fbo-forecast-sticky fbo-forecast-sticky--sku">
+                <th rowSpan={hasExpandedCluster ? 2 : 1} className="fbo-forecast-sticky fbo-forecast-sticky--sku">
                   Артикул
                 </th>
-                <th rowSpan={2} className="fbo-forecast-sticky fbo-forecast-sticky--name fbo-forecast-col-name">
+                <th
+                  rowSpan={hasExpandedCluster ? 2 : 1}
+                  className="fbo-forecast-sticky fbo-forecast-sticky--name fbo-forecast-col-name"
+                >
                   Название
                 </th>
-                {displayClusters.map((c) => (
-                  <th
-                    key={c.key}
-                    colSpan={CLUSTER_METRIC_COLS.length}
-                    className="fbo-forecast-cluster-head"
-                  >
-                    {c.name}
-                  </th>
-                ))}
+                {displayClusters.map((c) => {
+                  const collapsed = collapsedClusters.has(c.key);
+                  const cols = clusterMetricCols(collapsed);
+                  return (
+                    <th
+                      key={c.key}
+                      colSpan={cols.length}
+                      rowSpan={collapsed ? 2 : 1}
+                      className={`fbo-forecast-cluster-head fbo-forecast-cluster-head--toggle${
+                        collapsed ? ' is-collapsed' : ''
+                      }`}
+                      onClick={() => toggleClusterCollapse(c.key)}
+                      title={
+                        collapsed
+                          ? 'Развернуть все столбцы кластера'
+                          : 'Свернуть до столбца «К поставке»'
+                      }
+                    >
+                      <span className="fbo-forecast-cluster-head__stack">
+                        <span className="fbo-forecast-cluster-head__inner">
+                          <span className="fbo-forecast-cluster-head__chevron" aria-hidden>
+                            {collapsed ? '▸' : '▾'}
+                          </span>
+                          {c.name}
+                        </span>
+                        <span className="fbo-forecast-cluster-head__supply-total">
+                          <span className="fbo-forecast-cluster-head__supply-label">К поставке</span>
+                          {fmtQty(clusterSupplyTotals[c.key] || 0)}
+                        </span>
+                      </span>
+                    </th>
+                  );
+                })}
               </tr>
+              {hasExpandedCluster && (
               <tr>
-                {displayClusters.map((c) =>
-                  CLUSTER_METRIC_COLS.map((col) => (
+                {displayClusters.map((c) => {
+                  if (collapsedClusters.has(c.key)) return null;
+                  return CLUSTER_METRIC_COLS.map((col) => (
                     <th
                       key={`${c.key}-${col.key}`}
                       className={`num fbo-forecast-metric-head${
@@ -618,9 +711,10 @@ export function FboSupplyForecast() {
                     >
                       {col.label}
                     </th>
-                  ))
-                )}
+                  ));
+                })}
               </tr>
+              )}
             </thead>
             <tbody>
               {visibleRows.map((row) => {
@@ -641,8 +735,10 @@ export function FboSupplyForecast() {
                       )}
                     </td>
                     {displayClusters.map((c) => {
+                      const collapsed = collapsedClusters.has(c.key);
+                      const cols = clusterMetricCols(collapsed);
                       const m = row.clusterMetrics?.[c.key] || {};
-                      return CLUSTER_METRIC_COLS.map((col) => (
+                      return cols.map((col) => (
                         <td
                           key={`${row.id}-${c.key}-${col.key}`}
                           className={`num${

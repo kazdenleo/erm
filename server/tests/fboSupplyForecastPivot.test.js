@@ -9,13 +9,13 @@ import {
   resolveOrdersPeriod,
 } from '../src/services/fboSupplyForecast.service.js';
 
-test('calcClusterToSupply: need minus on-hand plus reserve', () => {
+test('calcClusterToSupply: avg per day * plan days minus availability', () => {
   assert.equal(
-    calcClusterToSupply({ availability: 10, orders: 20, reserve: 3, returnQty: 2 }),
-    11
+    calcClusterToSupply({ availability: 10, orders: 30, ordersDays: 30, planDays: 30 }),
+    20
   );
   assert.equal(
-    calcClusterToSupply({ availability: 50, orders: 10, reserve: 0, returnQty: 0 }),
+    calcClusterToSupply({ availability: 50, orders: 10, ordersDays: 30, planDays: 30 }),
     0
   );
 });
@@ -30,16 +30,16 @@ test('applyZeroStockBoost adds percent when availability is zero', () => {
   assert.equal(applyZeroStockBoost(10, 5, 20), 10);
 });
 
-test('calcClusterToSupply applies zero-stock boost', () => {
+test('calcClusterToSupply applies zero-stock boost when availability is zero', () => {
   assert.equal(
     calcClusterToSupply({
       availability: 0,
-      orders: 10,
-      reserve: 0,
-      returnQty: 0,
+      orders: 30,
+      ordersDays: 30,
+      planDays: 30,
       zeroStockBoostPercent: 50,
     }),
-    15
+    45
   );
 });
 
@@ -107,7 +107,7 @@ test('pivotForecastByCluster aggregates warehouses into regions', () => {
   const wbByNm = new Map([['100', 30]]);
   const erm = { byNm: new Map(), byNmWh: new Map(), byProduct: new Map(), byOffer: new Map() };
 
-  const { rows, clusters } = pivotForecastByCluster(flat, { wbByNm, erm });
+  const { rows, clusters } = pivotForecastByCluster(flat, { wbByNm, erm, ordersDays: 30, planDays: 30 });
   assert.equal(rows.length, 1);
   assert.deepEqual(clusters.map((c) => c.name), ['Центральный', 'Южный']);
 

@@ -353,16 +353,19 @@ export function applyZeroStockBoost(toSupply, availability, boostPercent) {
 export function calcClusterToSupply({
   availability,
   orders,
-  reserve,
-  returnQty,
   planDays = 30,
   ordersDays = 30,
   zeroStockBoostPercent = 0,
 }) {
-  const scaledOrders = scaleOrdersForPlan(orders, planDays, ordersDays);
-  const onHand = toInt(availability) + toInt(returnQty);
-  const base = Math.max(0, scaledOrders - onHand + toInt(reserve));
-  return applyZeroStockBoost(base, availability, zeroStockBoostPercent);
+  const avg = calcAvgOrdersPerDay(orders, ordersDays);
+  const forecastQty = avg * normalizePlanDays(planDays);
+  let toSupply = forecastQty - toInt(availability);
+  if (toInt(availability) === 0) {
+    toSupply = applyZeroStockBoost(Math.max(0, toSupply), 0, zeroStockBoostPercent);
+  } else {
+    toSupply = Math.max(0, Math.ceil(toSupply));
+  }
+  return toSupply;
 }
 
 function buildWarehouseClusterMap(flatRows) {
@@ -492,8 +495,6 @@ export function pivotForecastByCluster(
       const toSupply = calcClusterToSupply({
         availability: cm.availability,
         orders,
-        reserve: cm.reserve,
-        returnQty: cm.returnQty,
         planDays,
         ordersDays,
         zeroStockBoostPercent,
@@ -985,11 +986,7 @@ class FboSupplyForecastService {
     });
 
     const boostNote =
-      stockBoost > 0 ? ` При нулевом остатке к поставке добавляется +${stockBoost}%.` : '';
-    const planNote =
-      planningDays !== ordersPeriod.days
-        ? ` Заказы за ${ordersPeriod.days} дн. (${ordersPeriod.start} — ${ordersPeriod.end}) масштабированы на период планирования ${planningDays} дн.`
-        : '';
+      stockBoost > 0 ? ` При нулевом наличии к поставке добавляется +${stockBoost}%.` : '';
 
     return {
       syncedAt: snap.created_at,
@@ -1004,7 +1001,7 @@ class FboSupplyForecastService {
       displayClusters: pivoted.clusters,
       totals: pivoted.totals,
       apiNote:
-        `Остатки, резерв и возврат — на момент последней синхронизации с WB. Заказы — за период ${ordersPeriod.start} — ${ordersPeriod.end} (${ordersPeriod.days} дн., аналитика WB и заказы в ERM). Период планирования поставки — ${planningDays} дн.${planNote}${boostNote}`,
+        `Остатки, резерв и возврат — на момент последней синхронизации с WB. Заказы — за период ${ordersPeriod.start} — ${ordersPeriod.end} (${ordersPeriod.days} дн.). «К поставке» = ср. заказов/день × ${planningDays} дн. планирования − наличие.${boostNote}`,
     };
   }
 }

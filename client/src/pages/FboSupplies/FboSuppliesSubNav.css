@@ -131,6 +131,64 @@
   border-right: 1px solid #c7d2fe;
 }
 
+.fbo-forecast-cluster-head--toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
+.fbo-forecast-cluster-head--toggle:hover {
+  background: #e0e7ff !important;
+}
+
+.fbo-forecast-cluster-head.is-collapsed {
+  background: #f1f5f9 !important;
+  color: #334155 !important;
+  border-color: #e2e8f0;
+}
+
+.fbo-forecast-cluster-head__inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+}
+
+.fbo-forecast-cluster-head__chevron {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.fbo-forecast-cluster-head__stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.25;
+}
+
+.fbo-forecast-cluster-head__supply-total {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f766e;
+  font-variant-numeric: tabular-nums;
+}
+
+.fbo-forecast-cluster-head__supply-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.fbo-forecast-cluster-head.is-collapsed .fbo-forecast-cluster-head__supply-total {
+  font-size: 16px;
+}
+
 .fbo-forecast-metric-head {
   min-width: 58px;
   background: #f8fafc !important;
