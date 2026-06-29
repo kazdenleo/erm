@@ -113,3 +113,88 @@
   max-width: 720px;
   line-height: 1.45;
 }
+
+.fbo-forecast-period {
+  position: relative;
+}
+
+.fbo-forecast-period__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+.fbo-forecast-period__trigger:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.fbo-forecast-period__label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.fbo-forecast-period__value {
+  font-weight: 600;
+}
+
+.fbo-forecast-period__chevron {
+  color: #94a3b8;
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+.fbo-forecast-period__popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 240px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+}
+
+.fbo-forecast-period__popover-title {
+  padding: 4px 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  line-height: 1.35;
+}
+
+.fbo-forecast-period__option {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #0f172a;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fbo-forecast-period__option:hover {
+  background: #f1f5f9;
+}
+
+.fbo-forecast-period__option.is-active {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  font-weight: 600;
+}

@@ -2,7 +2,7 @@
  * Прогнозирование поставок FBO — остатки WB по складам
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
 import { Button } from '../../components/common/Button/Button';
 import { FboSuppliesSubNav } from './FboSuppliesSubNav.jsx';
@@ -30,6 +30,77 @@ function displaySku(row) {
   return row.productArticle || row.wbVendorCode || row.externalSku || '—';
 }
 
+const PLAN_DAYS_OPTIONS = [30, 60, 90];
+const PLAN_DAYS_LS = 'fbo_forecast_plan_days';
+
+function readPlanDays() {
+  const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(PLAN_DAYS_LS) : null;
+  const n = Number(raw);
+  return PLAN_DAYS_OPTIONS.includes(n) ? n : 30;
+}
+
+function ForecastPlanPeriodPopover({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const handleSelect = (days) => {
+    onChange(days);
+    setOpen(false);
+  };
+
+  return (
+    <div className="fbo-forecast-period" ref={rootRef}>
+      <button
+        type="button"
+        className="fbo-forecast-period__trigger"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        title="Период, на который планируем поставку"
+      >
+        <span className="fbo-forecast-period__label">Период планирования</span>
+        <span className="fbo-forecast-period__value">{value} дн.</span>
+        <span className="fbo-forecast-period__chevron" aria-hidden>
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="fbo-forecast-period__popover" role="listbox" aria-label="Период планирования поставки">
+          <div className="fbo-forecast-period__popover-title">На какой период планируем поставку?</div>
+          {PLAN_DAYS_OPTIONS.map((d) => (
+            <button
+              key={d}
+              type="button"
+              role="option"
+              aria-selected={d === value}
+              className={`fbo-forecast-period__option${d === value ? ' is-active' : ''}`}
+              onClick={() => handleSelect(d)}
+            >
+              {d} дней
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function FboSupplyForecast() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -39,6 +110,14 @@ export function FboSupplyForecast() {
   const [search, setSearch] = useState('');
   const [searchDebounced, setSearchDebounced] = useState('');
   const [unlinkedOnly, setUnlinkedOnly] = useState(false);
+  const [planDays, setPlanDays] = useState(readPlanDays);
+
+  const handlePlanDaysChange = useCallback((days) => {
+    setPlanDays(days);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(PLAN_DAYS_LS, String(days));
+    }
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => setSearchDebounced(search.trim()), 300);
@@ -89,6 +168,7 @@ export function FboSupplyForecast() {
 
       <div className="fbo-supplies-toolbar">
         <h2 style={{ margin: 0, flex: 1 }}>Прогнозирование поставок (WB)</h2>
+        <ForecastPlanPeriodPopover value={planDays} onChange={handlePlanDaysChange} />
         <Button variant="primary" disabled={syncing} onClick={handleSync}>
           {syncing ? 'Обновление…' : 'Обновить с WB'}
         </Button>
@@ -101,6 +181,9 @@ export function FboSupplyForecast() {
       )}
 
       <div className="fbo-forecast-meta">
+        <span>
+          Период планирования: <strong>{planDays} дн.</strong>
+        </span>
         <span>
           Последнее обновление: <strong>{fmtDt(data?.syncedAt)}</strong>
         </span>
