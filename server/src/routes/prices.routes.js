@@ -11,6 +11,11 @@ const router = express.Router();
 // Получить расчет цен для Ozon
 router.get('/ozon', (req, res, next) => pricesController.getOzonPrices(req, res, next));
 
+// Запретить авто-добавление товаров в акции Ozon (для текущей организации)
+router.post('/ozon/block-auto-promotions/enforce', (req, res, next) =>
+  pricesController.enforceOzonBlockAutoPromotions(req, res, next)
+);
+
 // Получить список акций Ozon
 router.get('/actions/ozon', (req, res, next) => pricesController.getOzonActions(req, res, next));
 // Товары по акции Ozon (из кэша, обновляется при ежедневном обновлении)

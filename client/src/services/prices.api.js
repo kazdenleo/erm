@@ -41,6 +41,12 @@ export const pricesApi = {
     return response.data;
   },
 
+  /** Применить запрет авто-добавления товаров в акции Ozon для текущей организации */
+  async enforceOzonBlockAutoPromotions() {
+    const response = await api.post('/product/prices/ozon/block-auto-promotions/enforce');
+    return response.data;
+  },
+
   /** Получить список акций Ozon */
   async getOzonActions() {
     const response = await api.get('/product/prices/actions/ozon');

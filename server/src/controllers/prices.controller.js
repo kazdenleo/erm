@@ -294,6 +294,24 @@ class PricesController {
       next(error);
     }
   }
+
+  /** POST /api/product/prices/ozon/block-auto-promotions/enforce */
+  async enforceOzonBlockAutoPromotions(req, res, next) {
+    try {
+      const integrationScope = {
+        profileId: req.user?.profileId ?? null,
+        organizationId: req.headers['x-organization-id'] ?? req.query.organizationId ?? null,
+      };
+      const result = await pricesService.enforceOzonAutoPromotionsForScope({ integrationScope });
+      if (!result?.ok && result?.error) {
+        return res.status(400).json({ ok: false, error: result.error, ...result });
+      }
+      return res.status(200).json({ ok: true, ...result });
+    } catch (error) {
+      logger.error('[Prices Controller] enforceOzonBlockAutoPromotions error:', error);
+      next(error);
+    }
+  }
 }
 
 export default new PricesController();

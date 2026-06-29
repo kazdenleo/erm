@@ -7,6 +7,7 @@
  */
 
 import integrationsService from './integrations.service.js';
+import { isOzonBlockAutoPromotionsEnabled } from '../utils/ozonAutoPromotions.js';
 import wbMarketplaceService from './wbMarketplace.service.js';
 import { query } from '../config/database.js';
 import { readData, writeData } from '../utils/storage.js';
@@ -244,9 +245,272 @@ class PricesService {
         actions: productsByAction
       };
       await writeData('ozonActionProductsCache', productsCache);
+
+      try {
+        await this.enforceOzonAutoPromotionsForAllEnabledConfigs();
+      } catch (enforceErr) {
+        logger.warn('[Prices Service] enforceOzonAutoPromotions after actions cache failed:', enforceErr?.message || enforceErr);
+      }
     } catch (error) {
       logger.error('[Prices Service] Error updating Ozon actions cache:', error);
     }
+  }
+
+  _ozonApiHeaders(client_id, api_key) {
+    return {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'Client-Id': String(client_id),
+      'Api-Key': String(api_key),
+    };
+  }
+
+  async _fetchOzonActionsFromApiWithCreds(client_id, api_key) {
+    if (!client_id || !api_key) {
+      return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
+    }
+    const response = await fetch('https://api-seller.ozon.ru/v1/actions', {
+      method: 'GET',
+      headers: this._ozonApiHeaders(client_id, api_key),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { ok: false, error: `Ошибка API Ozon: ${errorText.substring(0, 150)}` };
+    }
+    const data = await response.json();
+    const result = data.result || [];
+    return { ok: true, result: Array.isArray(result) ? result : [] };
+  }
+
+  async _fetchOzonActionProductsFromApiWithCreds(actionId, client_id, api_key, limit = 100, lastId = '') {
+    if (!client_id || !api_key) {
+      return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
+    }
+    const response = await fetch('https://api-seller.ozon.ru/v1/actions/products', {
+      method: 'POST',
+      headers: this._ozonApiHeaders(client_id, api_key),
+      body: JSON.stringify({
+        action_id: Number(actionId),
+        limit: Math.min(Number(limit) || 100, 100),
+        offset: 0,
+        last_id: lastId || '',
+      }),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { ok: false, error: `Ошибка API Ozon: ${errorText.substring(0, 150)}` };
+    }
+    const data = await response.json();
+    const result = data.result || {};
+    const products = Array.isArray(result.products) ? result.products : [];
+    return {
+      ok: true,
+      products,
+      total: result.total != null ? result.total : products.length,
+      last_id: result.last_id || '',
+    };
+  }
+
+  async _fetchAllOzonActionProductsWithCreds(actionId, client_id, api_key) {
+    const all = [];
+    let lastId = '';
+    const limit = 100;
+    for (;;) {
+      const page = await this._fetchOzonActionProductsFromApiWithCreds(actionId, client_id, api_key, limit, lastId);
+      if (!page.ok) return page;
+      if (page.products?.length) all.push(...page.products);
+      if (!page.last_id || !page.products?.length) {
+        return { ok: true, products: all, total: page.total ?? all.length };
+      }
+      lastId = page.last_id;
+    }
+  }
+
+  async _fetchAllOzonCatalogProductIds(client_id, api_key) {
+    const ids = [];
+    let cursor = '';
+    for (;;) {
+      const response = await fetch('https://api-seller.ozon.ru/v5/product/info/prices', {
+        method: 'POST',
+        headers: this._ozonApiHeaders(client_id, api_key),
+        body: JSON.stringify({
+          cursor,
+          filter: { visibility: 'ALL' },
+          limit: 100,
+        }),
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Ozon v5/product/info/prices ${response.status}: ${errorText.substring(0, 200)}`);
+      }
+      const data = await response.json();
+      const items = data.items || (data.result && data.result.items) || [];
+      for (const item of items) {
+        const pid = Number(item?.product_id);
+        if (Number.isFinite(pid) && pid > 0) ids.push(pid);
+      }
+      const nextCursor = data.cursor || data.result?.cursor || '';
+      if (!nextCursor || !items.length) break;
+      cursor = nextCursor;
+    }
+    return [...new Set(ids)];
+  }
+
+  async _deactivateOzonActionProducts(client_id, api_key, actionId, productIds) {
+    const unique = [...new Set(productIds.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))];
+    if (!unique.length) return { ok: true, deactivated: 0 };
+
+    let deactivated = 0;
+    const batchSize = 100;
+    for (let i = 0; i < unique.length; i += batchSize) {
+      const chunk = unique.slice(i, i + batchSize);
+      const response = await fetch('https://api-seller.ozon.ru/v1/actions/products/deactivate', {
+        method: 'POST',
+        headers: this._ozonApiHeaders(client_id, api_key),
+        body: JSON.stringify({
+          action_id: Number(actionId),
+          product_ids: chunk,
+        }),
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        return { ok: false, error: `deactivate ${response.status}: ${errorText.substring(0, 200)}`, deactivated };
+      }
+      deactivated += chunk.length;
+    }
+    return { ok: true, deactivated };
+  }
+
+  async _disableOzonAutoPromotionFlags(client_id, api_key, productIds) {
+    const unique = [...new Set(productIds.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0))];
+    if (!unique.length) return { ok: true, updated: 0 };
+
+    let updated = 0;
+    const batchSize = 1000;
+    for (let i = 0; i < unique.length; i += batchSize) {
+      const chunk = unique.slice(i, i + batchSize);
+      const prices = chunk.map((product_id) => ({
+        product_id,
+        auto_action_enabled: 'DISABLED',
+        auto_add_to_ozon_actions_list_enabled: 'DISABLED',
+      }));
+      const response = await fetch('https://api-seller.ozon.ru/v1/product/import/prices', {
+        method: 'POST',
+        headers: this._ozonApiHeaders(client_id, api_key),
+        body: JSON.stringify({ prices }),
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        return { ok: false, error: `import/prices ${response.status}: ${errorText.substring(0, 200)}`, updated };
+      }
+      updated += chunk.length;
+    }
+    return { ok: true, updated };
+  }
+
+  /**
+   * Запрет авто-добавления в акции для одного кабинета Ozon.
+   */
+  async enforceOzonAutoPromotionsBlock({ client_id, api_key } = {}) {
+    if (!client_id || !api_key) {
+      return { ok: false, error: 'Не настроены Client ID / API Key Ozon', deactivated: 0, flagsDisabled: 0, errors: [] };
+    }
+
+    const errors = [];
+    let deactivated = 0;
+    let flagsDisabled = 0;
+
+    const actionsResult = await this._fetchOzonActionsFromApiWithCreds(client_id, api_key);
+    if (!actionsResult.ok) {
+      return { ok: false, error: actionsResult.error, deactivated, flagsDisabled, errors };
+    }
+
+    for (const action of actionsResult.result || []) {
+      const actionId = action?.id;
+      if (actionId == null) continue;
+      try {
+        const productsResult = await this._fetchAllOzonActionProductsWithCreds(actionId, client_id, api_key);
+        if (!productsResult.ok) {
+          errors.push({ actionId, step: 'fetch_products', error: productsResult.error });
+          continue;
+        }
+        const autoIds = (productsResult.products || [])
+          .filter((p) => String(p?.add_mode || '').toUpperCase() === 'AUTO')
+          .map((p) => Number(p?.id))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        if (!autoIds.length) continue;
+
+        const deact = await this._deactivateOzonActionProducts(client_id, api_key, actionId, autoIds);
+        if (!deact.ok) {
+          errors.push({ actionId, step: 'deactivate', error: deact.error });
+        } else {
+          deactivated += deact.deactivated ?? autoIds.length;
+        }
+      } catch (e) {
+        errors.push({ actionId, step: 'action_loop', error: e?.message || String(e) });
+      }
+    }
+
+    try {
+      const productIds = await this._fetchAllOzonCatalogProductIds(client_id, api_key);
+      const disableResult = await this._disableOzonAutoPromotionFlags(client_id, api_key, productIds);
+      if (!disableResult.ok) {
+        errors.push({ step: 'disable_flags', error: disableResult.error });
+      } else {
+        flagsDisabled = disableResult.updated ?? 0;
+      }
+    } catch (e) {
+      errors.push({ step: 'disable_flags', error: e?.message || String(e) });
+    }
+
+    logger.info('[Prices Service] enforceOzonAutoPromotionsBlock done', {
+      deactivated,
+      flagsDisabled,
+      errors: errors.length,
+    });
+
+    return {
+      ok: errors.length === 0,
+      deactivated,
+      flagsDisabled,
+      errors,
+    };
+  }
+
+  async enforceOzonAutoPromotionsForAllEnabledConfigs() {
+    const scopes = await integrationsService.listOzonConfigsWithBlockAutoPromotions();
+    if (!scopes.length) {
+      return { ok: true, processed: 0, results: [] };
+    }
+
+    const results = [];
+    for (const scope of scopes) {
+      try {
+        const result = await this.enforceOzonAutoPromotionsBlock(scope);
+        results.push({ ...scope, ...result, client_id: undefined, api_key: undefined });
+      } catch (e) {
+        results.push({
+          organizationId: scope.organizationId ?? null,
+          ok: false,
+          error: e?.message || String(e),
+        });
+      }
+    }
+
+    return { ok: results.every((r) => r.ok !== false), processed: results.length, results };
+  }
+
+  async enforceOzonAutoPromotionsForScope(options = {}) {
+    const scope = this._integrationScopeFromOptions(options);
+    const cfg = await integrationsService.getMarketplaceConfig('ozon', scope);
+    if (!isOzonBlockAutoPromotionsEnabled(cfg)) {
+      return { ok: false, error: 'Запрет авто-акций не включён в настройках Ozon' };
+    }
+    const { client_id, api_key } = await this._getOzonApiCredentials(options);
+    if (!client_id || !api_key) {
+      return { ok: false, error: 'Ozon не настроен для выбранной организации' };
+    }
+    return this.enforceOzonAutoPromotionsBlock({ client_id, api_key });
   }
 
   /**

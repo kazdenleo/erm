@@ -14,8 +14,13 @@ import { findAll as findAllMarketplaceCabinets } from '../repositories/marketpla
 import { extractWbWarehouseList, hasWbTariffsWarehouseList } from '../utils/wbTariffs.js';
 import { normWbVendorCode, sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
 import { coerceBarcodeString } from '../utils/productBarcodes.js';
+import {
+  isOzonBlockAutoPromotionsEnabled,
+  pickOzonCredentials,
+} from '../utils/ozonAutoPromotions.js';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
+export { isOzonBlockAutoPromotionsEnabled };
 
 function normalizeIntegrationOfferBarcodes(raw) {
   if (!Array.isArray(raw)) return [];
@@ -3802,6 +3807,76 @@ class IntegrationsService {
       logger.warn('[Integrations Service] _findAnyMarketplaceConfig:', e?.message || e);
     }
     return null;
+  }
+
+  /**
+   * Кабинеты Ozon с включённым запретом авто-добавления в акции.
+   * @returns {Promise<Array<{ client_id: string, api_key: string, organizationId?: number|null, profileId?: number|null }>>}
+   */
+  async listOzonConfigsWithBlockAutoPromotions() {
+    if (!this.usePostgreSQL) return [];
+
+    const scopes = [];
+    const seen = new Set();
+
+    const pushScope = (cfg, meta = {}) => {
+      if (!isOzonBlockAutoPromotionsEnabled(cfg)) return;
+      const { client_id, api_key } = pickOzonCredentials(cfg);
+      if (!client_id || !api_key) return;
+      const dedupeKey = `${String(client_id).trim()}:${String(api_key).trim()}`;
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      scopes.push({
+        client_id: String(client_id).trim(),
+        api_key: String(api_key).trim(),
+        organizationId: meta.organizationId ?? null,
+        profileId: meta.profileId ?? null,
+      });
+    };
+
+    try {
+      const cabResult = await query(
+        `SELECT mc.organization_id, mc.config, o.profile_id
+         FROM marketplace_cabinets mc
+         LEFT JOIN organizations o ON o.id = mc.organization_id
+         WHERE mc.marketplace_type = 'ozon'
+           AND COALESCE(mc.is_active, true) = true
+         ORDER BY mc.id ASC`
+      );
+      for (const row of cabResult.rows || []) {
+        const parsed =
+          this._safeParseJsonMaybe(row.config) ??
+          (row.config && typeof row.config === 'object' ? row.config : null);
+        pushScope(parsed, {
+          organizationId: row.organization_id != null ? Number(row.organization_id) : null,
+          profileId: row.profile_id != null ? Number(row.profile_id) : null,
+        });
+      }
+    } catch (e) {
+      logger.warn('[Integrations Service] listOzonConfigsWithBlockAutoPromotions cabinets:', e?.message || e);
+    }
+
+    try {
+      const intResult = await query(
+        `SELECT profile_id, organization_id, config
+         FROM integrations
+         WHERE code = 'ozon' AND type = 'marketplace' AND is_active = true
+         ORDER BY updated_at DESC NULLS LAST, id DESC`
+      );
+      for (const row of intResult.rows || []) {
+        const parsed =
+          this._safeParseJsonMaybe(row.config) ??
+          (row.config && typeof row.config === 'object' ? row.config : null);
+        pushScope(parsed, {
+          organizationId: row.organization_id != null ? Number(row.organization_id) : null,
+          profileId: row.profile_id != null ? Number(row.profile_id) : null,
+        });
+      }
+    } catch (e) {
+      logger.warn('[Integrations Service] listOzonConfigsWithBlockAutoPromotions integrations:', e?.message || e);
+    }
+
+    return scopes;
   }
 
   /** Есть ли в объекте конфига учётные данные для запроса баланса / API. */

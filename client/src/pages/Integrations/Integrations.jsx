@@ -11,6 +11,8 @@ import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { useAuth } from '../../context/AuthContext';
 import { FboPackingLimitFields } from '../../components/integrations/FboPackingLimitFields.jsx';
+import { OzonAutoPromotionsFields } from '../../components/integrations/OzonAutoPromotionsFields.jsx';
+import { pricesApi } from '../../services/prices.api';
 import './Integrations.css';
 
 export function Integrations() {
@@ -259,6 +261,31 @@ function MarketplacesTab({
       try {
         if (onSaveForm) await onSaveForm(type, formData);
         else await onSave(type, formData);
+
+        const blockAutoPromotions =
+          type === 'ozon' &&
+          (formData.block_ozon_auto_promotions === true ||
+            formData.block_ozon_auto_promotions === 'true' ||
+            formData.block_ozon_auto_promotions === '1');
+        if (blockAutoPromotions) {
+          try {
+            const result = await pricesApi.enforceOzonBlockAutoPromotions();
+            if (result?.ok) {
+              alert(
+                `Настройка сохранена. Удалено из акций (авто): ${result.deactivated ?? 0}, отключено автоучастие: ${result.flagsDisabled ?? 0} товаров.`
+              );
+            } else {
+              alert(result?.error || 'Настройка сохранена, но применить запрет авто-акций не удалось.');
+            }
+          } catch (enforceErr) {
+            console.error('enforceOzonBlockAutoPromotions:', enforceErr);
+            alert(
+              enforceErr?.response?.data?.error ||
+                enforceErr?.message ||
+                'Настройка сохранена, но применить запрет авто-акций не удалось.'
+            );
+          }
+        }
       } finally {
         setSaving(false);
       }
@@ -469,6 +496,7 @@ function MarketplacesTab({
             </div>
           )}
           <FboPackingLimitFields formData={formData} onChange={handleChange} />
+          <OzonAutoPromotionsFields formData={formData} onChange={handleChange} />
           <div className="form-actions">
             <Button
               type="button"
