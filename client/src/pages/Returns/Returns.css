@@ -124,3 +124,26 @@
   background: rgba(234, 179, 8, 0.2);
   color: #a16207;
 }
+
+.mp-returns-page--embedded {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.mp-returns-embedded-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.mp-returns-embedded-head .warehouse-ops-panel-title {
+  margin-bottom: 4px;
+}
+
+.mp-returns-actions-cell {
+  white-space: nowrap;
+}

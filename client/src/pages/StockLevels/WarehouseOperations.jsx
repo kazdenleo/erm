@@ -32,6 +32,7 @@ import {
   formatProductOptionLabel,
   searchProductsCombined,
 } from '../../utils/productSearch';
+import { MarketplaceReturnsPanel } from '../../components/returns/MarketplaceReturnsPanel';
 import './WarehouseOperations.css';
 
 const MODE_TABLE = 'table';
@@ -194,6 +195,8 @@ export function WarehouseOperations({
   activeTab,
   onTabChange,
   openReceiptId,
+  /** Предзаполнение приёмки возврата из списка МП: { scanCode, marketplace, orderId } */
+  prefillCustomerReturn = null,
   /** Спрятать внутреннюю полосу вкладок (вкладки вынесены в StockLevelsLayout) */
   hideTabs = false
 }) {
@@ -331,6 +334,7 @@ export function WarehouseOperations({
   const customerReturnScanDebounceRef = useRef(null);
   const customerReturnScanInputRef = useRef(null);
   const customerReturnScanDedupRef = useRef({ key: '', at: 0 });
+  const customerReturnAcceptRef = useRef(null);
   /** Пересчёт выборочно: скан / поиск + только отмеченные позиции */
   const [inventoryNewSession, setInventoryNewSession] = useState(false);
   const [inventoryNewRows, setInventoryNewRows] = useState([]);
@@ -1798,6 +1802,48 @@ export function WarehouseOperations({
     [lookupByBarcodeOrSkuThenCustomerReturnOne]
   );
 
+  const scrollToCustomerReturnAccept = useCallback(() => {
+    customerReturnAcceptRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  const handleAcceptMarketplaceReturn = useCallback(
+    (row) => {
+      scrollToCustomerReturnAccept();
+      const scanCode = String(row?.barcode || row?.sku || '').trim();
+      if (!scanCode) {
+        setOpMessage('У возврата нет штрихкода или SKU для поиска товара');
+        return;
+      }
+      if (!customerReturnWarehouseId) {
+        setOpMessage('Сначала выберите склад приёмки возврата');
+        return;
+      }
+      lookupByBarcodeOrSkuThenCustomerReturnOne(scanCode);
+    },
+    [scrollToCustomerReturnAccept, customerReturnWarehouseId, lookupByBarcodeOrSkuThenCustomerReturnOne]
+  );
+
+  const customerReturnPrefillRef = useRef('');
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_CUSTOMER) return undefined;
+    const scanCode = String(prefillCustomerReturn?.scanCode || '').trim();
+    if (!scanCode) return undefined;
+    const key = `${scanCode}|${prefillCustomerReturn?.orderId || ''}|${prefillCustomerReturn?.marketplace || ''}`;
+    if (customerReturnPrefillRef.current === key) return undefined;
+    customerReturnPrefillRef.current = key;
+    scrollToCustomerReturnAccept();
+    const timer = setTimeout(() => {
+      lookupByBarcodeOrSkuThenCustomerReturnOne(scanCode);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [
+    mode,
+    prefillCustomerReturn,
+    scrollToCustomerReturnAccept,
+    lookupByBarcodeOrSkuThenCustomerReturnOne,
+  ]);
+
   const handleCustomerReturnFromList = () => {
     if (!customerReturnWarehouseId) {
       setOpMessage('Выберите склад приёмки возврата');
@@ -2507,7 +2553,7 @@ export function WarehouseOperations({
             className={`warehouse-ops-tab ${mode === MODE_RETURN_CUSTOMER ? 'active' : ''}`}
             onClick={() => setMode(MODE_RETURN_CUSTOMER)}
           >
-            📥 Возврат от клиентов
+            📥 Возвраты
           </button>
           <button
             type="button"
@@ -2847,10 +2893,16 @@ export function WarehouseOperations({
       )}
 
       {mode === MODE_RETURN_CUSTOMER && (
-        <div className="warehouse-ops-panel return-customer-panel">
-          <h3 className="warehouse-ops-panel-title">Возврат товара от клиентов на склад</h3>
+        <>
+          <MarketplaceReturnsPanel embedded onAcceptReturn={handleAcceptMarketplaceReturn} />
+          <div
+            ref={customerReturnAcceptRef}
+            id="warehouse-customer-return-accept"
+            className="warehouse-ops-panel return-customer-panel"
+          >
+          <h3 className="warehouse-ops-panel-title">Принять возврат на склад</h3>
           <p className="warehouse-ops-hint">
-            Принимайте возвращённый клиентом товар: укажите склад приёмки и организацию (при необходимости), добавьте товары по скану или из списка. Документы сохраняются в списке ниже.
+            Укажите склад приёмки и организацию (при необходимости), добавьте товары по скану или из списка. Документы сохраняются в списке ниже.
           </p>
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
@@ -3034,7 +3086,8 @@ export function WarehouseOperations({
             emptyText: 'Нет документов возврата от клиентов.',
             showSupplier: false
           })}
-        </div>
+          </div>
+        </>
       )}
 
       {mode === MODE_INVENTORY && (

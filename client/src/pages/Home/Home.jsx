@@ -296,7 +296,7 @@ export function Home() {
           </div>
           <div className={opsWidgetColClass}>
             <Link
-              to="/returns"
+              to="/stock-levels/warehouse?op=return_customer"
               className="text-decoration-none d-block home-returns-plate-link"
               title="Открыть возвраты, готовые к выдаче"
             >

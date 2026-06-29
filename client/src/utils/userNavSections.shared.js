@@ -43,14 +43,14 @@ export const NAV_SECTION_LABELS = {
   fbo: 'Поставки FBO',
   questions: 'Вопросы',
   reviews: 'Отзывы',
-  wb_returns: 'Возвраты',
+  wb_returns: 'Возвраты (устар.)',
   warehouse_stock: 'Склад — остатки',
   warehouse_purchases: 'Склад — закупка',
   warehouse_production: 'Склад — производство',
   warehouse_receipts: 'Склад — приёмка',
   warehouse_transfer: 'Склад — перемещение',
   warehouse_return_supplier: 'Склад — возврат поставщику',
-  warehouse_return_customer: 'Склад — возврат от клиентов',
+  warehouse_return_customer: 'Склад — возвраты',
   warehouse_inventory: 'Склад — инвентаризация',
   warehouse_writeoff: 'Склад — списание',
   prices: 'Цены',
@@ -74,7 +74,7 @@ export const NAV_SECTION_GROUPS = [
   },
   {
     title: 'Маркетплейс',
-    keys: ['fbo', 'questions', 'reviews', 'wb_returns'],
+    keys: ['fbo', 'questions', 'reviews'],
   },
   {
     title: 'Склад',
@@ -279,7 +279,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/stock-levels/fbo-supplies') || path.startsWith('/fbo-supplies')) return 'fbo';
   if (path.startsWith('/questions')) return 'questions';
   if (path.startsWith('/reviews')) return 'reviews';
-  if (path.startsWith('/returns') || path.startsWith('/wb-returns')) return 'wb_returns';
+  if (path.startsWith('/returns') || path.startsWith('/wb-returns')) return 'warehouse_return_customer';
   if (path.startsWith('/prices')) return 'prices';
   if (path.startsWith('/production')) return 'warehouse_production';
   if (path.startsWith('/stock-levels/purchases')) return 'warehouse_purchases';

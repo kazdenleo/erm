@@ -20,7 +20,6 @@ import { Suppliers } from './pages/Suppliers/Suppliers';
 import { Orders } from './pages/Orders/Orders';
 import { Questions } from './pages/Questions/Questions';
 import { Reviews } from './pages/Reviews/Reviews';
-import { Returns } from './pages/Returns/Returns';
 import { OrderDetail } from './pages/Orders/OrderDetail';
 import { Shipments } from './pages/Shipments/Shipments';
 import { Assembly } from './pages/Assembly/Assembly';
@@ -129,8 +128,8 @@ function App() {
           <Route path="/orders" element={<ProtectedRoute><Layout><Orders /></Layout></ProtectedRoute>} />
           <Route path="/questions" element={<ProtectedRoute><Layout><Questions /></Layout></ProtectedRoute>} />
           <Route path="/reviews" element={<ProtectedRoute><Layout><Reviews /></Layout></ProtectedRoute>} />
-          <Route path="/returns" element={<ProtectedRoute><Layout><Returns /></Layout></ProtectedRoute>} />
-          <Route path="/wb-returns" element={<Navigate to="/returns" replace />} />
+          <Route path="/returns" element={<Navigate to="/stock-levels/warehouse?op=return_customer" replace />} />
+          <Route path="/wb-returns" element={<Navigate to="/stock-levels/warehouse?op=return_customer" replace />} />
           <Route path="/orders/:marketplace/:orderId" element={<ProtectedRoute><Layout><OrderDetail /></Layout></ProtectedRoute>} />
           <Route path="/shipments" element={<ProtectedRoute><Layout><Shipments /></Layout></ProtectedRoute>} />
           <Route path="/fbo-supplies/*" element={<ProtectedRoute><RedirectFboLegacy /></ProtectedRoute>} />

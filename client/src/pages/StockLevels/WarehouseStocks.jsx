@@ -23,13 +23,12 @@ import {
   isKitProduct,
   manualWarehouseStockEditBlockedReason,
   isKitStockHistoryMovement,
-  parseKitDisplayMetrics,
-  formatKitAvailableDisplay,
-  kitIncomingFromComponentsAmount
+  kitIncomingUnitsFromPurchaseMovements,
 } from '../../utils/kitStockMetrics';
 import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { onNavigationClick } from '../../utils/navigationClick.js';
+import { formatReserveSourceLabel } from '../../utils/orderReserveSourceLabel.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { profilesApi } from '../../services/profiles.api.js';
 import { authApi } from '../../services/auth.api.js';
@@ -181,45 +180,6 @@ function formatAfterDeltaSmart(after, prev, m, column) {
   return formatAfterDelta(after, eff);
 }
 
-/** Доступно к продаже после операции: наличие + в пути − резерв (как в таблице остатков). */
-function availableFromSnapshot(snap) {
-  if (!snap) return null;
-  const bal = snap.bal != null && !Number.isNaN(Number(snap.bal)) ? Number(snap.bal) : null;
-  const inc = snap.inc != null && !Number.isNaN(Number(snap.inc)) ? Number(snap.inc) : null;
-  const res = snap.res != null && !Number.isNaN(Number(snap.res)) ? Number(snap.res) : null;
-  if (bal == null && inc == null && res == null) return null;
-  return (bal ?? 0) + (inc ?? 0) - (res ?? 0);
-}
-
-function formatAvailableHistoryCell(curSnap, prevSnap) {
-  if (curSnap?._kitAvailableWhole != null && curSnap?._kitAvailableTotal != null) {
-    const after = formatKitAvailableDisplay({
-      whole_available: curSnap._kitAvailableWhole,
-      marketplace_available: curSnap._kitAvailableTotal,
-      assemblable_from_components: 0
-    });
-    if (!prevSnap) return after;
-    const prevWhole =
-      prevSnap._kitAvailableWhole != null && !Number.isNaN(Number(prevSnap._kitAvailableWhole))
-        ? Number(prevSnap._kitAvailableWhole)
-        : null;
-    const dWhole = prevWhole != null ? curSnap._kitAvailableWhole - prevWhole : null;
-    if (dWhole != null && dWhole !== 0) {
-      return `${curSnap._kitAvailableWhole} (${curSnap._kitAvailableTotal}(${dWhole > 0 ? '+' : ''}${dWhole}))`;
-    }
-    if (prevSnap._kitAvailableTotal != null && !Number.isNaN(Number(prevSnap._kitAvailableTotal))) {
-      const d = curSnap._kitAvailableTotal - Number(prevSnap._kitAvailableTotal);
-      if (d !== 0) {
-        return `${curSnap._kitAvailableWhole} (${curSnap._kitAvailableTotal}(${d > 0 ? '+' : ''}${d}))`;
-      }
-    }
-    return after;
-  }
-  const after = availableFromSnapshot(curSnap);
-  const prev = availableFromSnapshot(prevSnap);
-  return formatAfterDelta(after, prev);
-}
-
 const HISTORY_REASON_MAX_LEN = 96;
 
 /** Ключ «одно время» как в колонке истории (ru-RU, без секунд) — иначе два резерва в одну минуту не схлопываются. */
@@ -243,6 +203,16 @@ function movementTypeLower(m) {
 
 function movementCreatedAt(m) {
   return m?.created_at ?? m?.createdAt ?? null;
+}
+
+/** Метрики для верхней строки истории (совпадают с колонками таблицы). */
+function historyStockMetricsFromRow(row) {
+  if (!row) return null;
+  return {
+    incoming: Number(row.incoming) || 0,
+    onHand: Number(row.onHand) || 0,
+    reserved: Number(row.reserved) || 0,
+  };
 }
 
 /** Не показывать в истории остатков: техническое incoming после приёмки (уменьшение «в пути» уже видно в строке приёмки). */
@@ -341,6 +311,96 @@ function truncateOutboundOrdersLine(orderIds) {
   return `${prefix}${shortened}…${hidden > 0 ? ` ещё ${hidden}` : ''}`;
 }
 
+/** Возврат поставщику комплекта: движение по SKU комплекта или комплектующей с meta.kit_product_id. */
+function isKitSupplierReturnMovement(m, kitProductId) {
+  if (movementTypeLower(m) !== 'return_to_supplier') return false;
+  const kid = kitProductId != null ? String(kitProductId) : '';
+  if (!kid) return false;
+  const meta = parseMovementMeta(m);
+  const pid = String(m.product_id ?? m.productId ?? '');
+  if (pid === kid) return true;
+  if (
+    meta.kit_component_return_to_supplier === true ||
+    meta.kit_component_return_to_supplier === 'true'
+  ) {
+    return String(meta.kit_product_id ?? meta.kitProductId ?? '') === kid;
+  }
+  return false;
+}
+
+function kitSupplierReturnReceiptKey(m) {
+  const meta = parseMovementMeta(m);
+  const rid = meta.receipt_id ?? meta.receiptId;
+  if (rid != null && String(rid).trim() !== '') return `kit_return:${rid}`;
+  const ts = movementCreatedAt(m);
+  return ts ? `kit_return_ts:${reserveTimeGroupKey(ts)}` : `kit_return_id:${m.id}`;
+}
+
+function pickKitSupplierReturnHeadMovement(movements, kitProductId) {
+  const kid = kitProductId != null ? String(kitProductId) : '';
+  if (kid) {
+    const kitLine = movements.find((m) => String(m.product_id ?? m.productId) === kid);
+    if (kitLine) return kitLine;
+  }
+  return movements[0];
+}
+
+function kitAssemblableUnitsLostFromReturnMovements(movements) {
+  let total = 0;
+  for (const m of movements) {
+    const meta = parseMovementMeta(m);
+    if (
+      meta.kit_component_return_to_supplier !== true &&
+      meta.kit_component_return_to_supplier !== 'true'
+    ) {
+      continue;
+    }
+    const lost = Number(meta.kit_assemblable_units_lost);
+    if (Number.isFinite(lost) && lost > 0) {
+      total += lost;
+      continue;
+    }
+    total += Math.max(0, Math.abs(Number(m.quantity_change) || 0));
+  }
+  return total;
+}
+
+function purchaseIdFromMovement(m) {
+  const meta = parseMovementMeta(m);
+  let pid = meta.purchase_id ?? meta.purchaseId;
+  if (pid != null && String(pid).trim() !== '') return String(pid).trim();
+  const mReason = String(m.reason || '').match(/закупк[аи]?\s*№\s*(\d+)/i);
+  return mReason?.[1] ? String(mReason[1]).trim() : '';
+}
+
+function isKitPurchaseIncomingMovement(m, kitProduct = null) {
+  if (movementTypeLower(m) !== 'incoming') return false;
+  const reason = String(m.reason || '');
+  if (!/закупк/i.test(reason) || !/ожидан/i.test(reason)) return false;
+  const meta = parseMovementMeta(m);
+  if (meta.kit_component_incoming === true || meta.kit_component_incoming === 'true') return true;
+  if (!kitProduct) return false;
+  const pid = String(m.product_id ?? m.productId ?? '');
+  const kitId = String(kitProduct.id ?? '');
+  if (pid && kitId && pid === kitId) return true;
+  const comps = kitProduct.kit_components ?? kitProduct.kitComponents;
+  return (
+    Array.isArray(comps) &&
+    comps.some((c) => String(c.productId ?? c.component_product_id) === pid)
+  );
+}
+
+function kitPurchaseIncomingKey(m) {
+  const pid = purchaseIdFromMovement(m);
+  if (pid) return `kit_purchase_inc:${pid}`;
+  const ts = movementCreatedAt(m);
+  return ts ? `kit_purch_inc_ts:${reserveTimeGroupKey(ts)}` : `kit_purch_inc_id:${m.id}`;
+}
+
+function pickKitPurchaseIncomingHeadMovement(movements) {
+  return movements.find((m) => /закупк/i.test(String(m.reason || ''))) || movements[0];
+}
+
 /** Уникальные номера заказов в порядке появления в пачке (список уже id DESC). */
 function orderIdsFromOutboundMovements(movements) {
   const seen = new Set();
@@ -377,10 +437,10 @@ function renderStockHistoryQtyCell(smartStr) {
 }
 
 /**
- * Резервы и отгрузка (unreserve+shipment из «Отгрузка: …») с одной минутой в колонке «Дата и время»
+ * Резервы, отгрузка и возврат поставщику комплекта с одной минутой / накладной
  * схлопываем в одну строку; в группе movements отсортированы по id DESC.
  */
-function buildHistoryDisplayRows(list) {
+function buildHistoryDisplayRows(list, kitProduct = null) {
   if (!Array.isArray(list) || list.length === 0) return [];
   const sortBlock = (arr) => {
     arr.sort((a, b) => {
@@ -390,6 +450,28 @@ function buildHistoryDisplayRows(list) {
       return 0;
     });
   };
+
+  const kitId =
+    kitProduct?.id != null && isKitProduct(kitProduct) ? String(kitProduct.id) : null;
+  const kitReturnByReceipt = new Map();
+  const kitPurchaseIncomingByKey = new Map();
+  if (kitId) {
+    for (const m of list) {
+      if (!isKitSupplierReturnMovement(m, kitId)) continue;
+      const rKey = kitSupplierReturnReceiptKey(m);
+      if (!kitReturnByReceipt.has(rKey)) kitReturnByReceipt.set(rKey, []);
+      kitReturnByReceipt.get(rKey).push(m);
+    }
+    for (const arr of kitReturnByReceipt.values()) sortBlock(arr);
+
+    for (const m of list) {
+      if (!isKitPurchaseIncomingMovement(m, kitProduct)) continue;
+      const pKey = kitPurchaseIncomingKey(m);
+      if (!kitPurchaseIncomingByKey.has(pKey)) kitPurchaseIncomingByKey.set(pKey, []);
+      kitPurchaseIncomingByKey.get(pKey).push(m);
+    }
+    for (const arr of kitPurchaseIncomingByKey.values()) sortBlock(arr);
+  }
 
   const reserveByKey = new Map();
   const unreserveByKey = new Map();
@@ -415,8 +497,30 @@ function buildHistoryDisplayRows(list) {
   const emittedReserve = new Set();
   const emittedUnreserve = new Set();
   const emittedOutbound = new Set();
+  const emittedKitReturn = new Set();
+  const emittedKitPurchaseIncoming = new Set();
   const out = [];
   for (const m of list) {
+    if (kitId && isKitPurchaseIncomingMovement(m, kitProduct)) {
+      const pKey = kitPurchaseIncomingKey(m);
+      if (emittedKitPurchaseIncoming.has(pKey)) continue;
+      emittedKitPurchaseIncoming.add(pKey);
+      const block = kitPurchaseIncomingByKey.get(pKey) || [m];
+      out.push({
+        kind: 'kitPurchaseIncomingGroup',
+        movements: block,
+        kitUnits: kitIncomingUnitsFromPurchaseMovements(block, kitProduct)
+      });
+      continue;
+    }
+    if (kitId && isKitSupplierReturnMovement(m, kitId)) {
+      const rKey = kitSupplierReturnReceiptKey(m);
+      if (emittedKitReturn.has(rKey)) continue;
+      emittedKitReturn.add(rKey);
+      const block = kitReturnByReceipt.get(rKey) || [m];
+      out.push({ kind: 'kitReturnGroup', movements: block });
+      continue;
+    }
     const key = reserveTimeGroupKey(movementCreatedAt(m));
     if (movementTypeLower(m) === 'reserve') {
       if (!key || emittedReserve.has(key)) continue;
@@ -449,6 +553,9 @@ function buildHistoryDisplayRows(list) {
       }
       continue;
     }
+    if (kitId && isKitPurchaseIncomingMovement(m, kitProduct)) {
+      continue;
+    }
     out.push({ kind: 'single', m });
   }
   return out;
@@ -459,7 +566,9 @@ function snapshotAfterDisplayItem(item, warehouseFilterId = null) {
   if (
     item.kind === 'reserveGroup' ||
     item.kind === 'unreserveGroup' ||
-    item.kind === 'outboundGroup'
+    item.kind === 'outboundGroup' ||
+    item.kind === 'kitReturnGroup' ||
+    item.kind === 'kitPurchaseIncomingGroup'
   ) {
     return snapshotFromMovement(item.movements[0], warehouseFilterId);
   }
@@ -579,11 +688,90 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
     return out;
   }
 
+  if (item.kind === 'kitReturnGroup') {
+    const ms = item.movements;
+    const kitLine =
+      kitProduct?.id != null
+        ? ms.find((m) => String(m.product_id ?? m.productId) === String(kitProduct.id))
+        : null;
+    const head = kitLine || ms[0];
+    const dbBal = kitLine ? movementNum(kitLine, 'balance_after') : movementNum(head, 'balance_after');
+    if (dbBal != null) out.bal = dbBal;
+    else if (prevLineBelow?.bal != null && kitLine) {
+      out.bal = Number(prevLineBelow.bal) + (Number(kitLine.quantity_change) || 0);
+    } else if (prevLineBelow?.bal != null) {
+      out.bal = Number(prevLineBelow.bal);
+    }
+    if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+      out.inc = Number(prevLineBelow.inc);
+    } else {
+      const dbInc = movementNum(head, 'incoming_after');
+      out.inc = dbInc != null ? dbInc : 0;
+    }
+    if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+      out.res = Number(prevLineBelow.res);
+    } else {
+      const dbRes = movementNum(head, 'reserved_after');
+      out.res = dbRes != null ? dbRes : 0;
+    }
+    const asmLost = kitAssemblableUnitsLostFromReturnMovements(ms);
+    if (asmLost > 0) out._kitAssemblableUnitsLost = asmLost;
+    if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
+    if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
+    if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
+    return out;
+  }
+
+  if (item.kind === 'kitPurchaseIncomingGroup') {
+    const ms = item.movements;
+    const kitUnits = kitIncomingUnitsFromPurchaseMovements(ms, kitProduct);
+    if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
+      out.bal = Number(prevLineBelow.bal);
+    } else if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
+    if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+      out.res = Number(prevLineBelow.res);
+    } else if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
+    if (kitUnits > 0) {
+      out._kitIncomingFromComponentsDelta = kitUnits;
+      const prevInc =
+        prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))
+          ? Number(prevLineBelow.inc)
+          : 0;
+      out.inc = prevInc + kitUnits;
+    } else if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+      out.inc = Number(prevLineBelow.inc);
+    } else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
+    return out;
+  }
+
   if (item.kind === 'single') {
     const m = item.m;
     const t = movementTypeLower(m);
     const reason = String(m.reason || '');
     if (t === 'incoming' && /закупк/i.test(reason) && /ожидан/i.test(reason)) {
+      const meta = parseMovementMeta(m);
+      if (
+        isKitPurchaseIncomingMovement(m, kitProduct) ||
+        meta.kit_component_incoming === true ||
+        meta.kit_component_incoming === 'true'
+      ) {
+        const kitUnits = kitIncomingUnitsFromPurchaseMovements([m], kitProduct);
+        if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
+          out.bal = Number(prevLineBelow.bal);
+        } else if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
+        if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+          out.res = Number(prevLineBelow.res);
+        } else if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
+        if (kitUnits > 0) {
+          out._kitIncomingFromComponentsDelta = kitUnits;
+          const prevInc =
+            prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))
+              ? Number(prevLineBelow.inc)
+              : 0;
+          out.inc = prevInc + kitUnits;
+        }
+        return out;
+      }
       if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
       if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
     }
@@ -592,10 +780,10 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
       const dbInc = movementNum(m, 'incoming_after');
       const dbRes = movementNum(m, 'reserved_after');
       const dbBal = movementNum(m, 'balance_after');
-      if (dbInc != null) out.inc = dbInc;
-      else if (prevLineBelow?.inc != null && moveQty > 0) {
+      if (prevLineBelow?.inc != null && moveQty > 0) {
         out.inc = Math.max(0, Number(prevLineBelow.inc) - moveQty);
-      } else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
+      } else if (dbInc != null) out.inc = dbInc;
+      else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
       const prevRes =
         prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))
           ? Number(prevLineBelow.res)
@@ -682,7 +870,8 @@ function buildHistoryDisplaySnapshots(
   displayRows,
   currentNetReserved = null,
   warehouseFilterId = null,
-  kitProduct = null
+  kitProduct = null,
+  currentStockState = null
 ) {
   if (!Array.isArray(displayRows) || displayRows.length === 0) return [];
   const n = displayRows.length;
@@ -707,68 +896,15 @@ function buildHistoryDisplaySnapshots(
     }
   }
 
-  // Комплект: «Доступно» и снимок наличия/в пути — как в таблице остатков (kit_display), не сырой журнал SKU.
-  if (kitProduct && isKitProduct(kitProduct) && warehouseFilterId) {
-    const metrics = parseKitDisplayMetrics(kitProduct);
-    if (metrics) {
-      const kitSkuInc = Math.max(
-        0,
-        Number(kitProduct.incoming_quantity ?? kitProduct.incomingQuantity) || 0
-      );
-      const incFromComponents = kitIncomingFromComponentsAmount(metrics, kitProduct);
-      const displayInc = kitSkuInc + incFromComponents;
-      const whole = Math.max(0, Number(metrics.whole_on_hand) || 0);
-      const assemblable = Math.max(0, Number(metrics.assemblable_from_components) || 0);
-      const onSkuReserved = Math.max(0, Number(metrics.reserved_on_sku) || 0);
-      const displayReserved = Math.max(
-        0,
-        Number(
-          kitProduct.net_reserved_quantity ??
-            kitProduct.netReservedQuantity ??
-            kitProduct.reserved_quantity ??
-            kitProduct.reservedQuantity
-        ) || 0
-      );
-      const wholeAvailCurrent =
-        metrics.whole_available != null && !Number.isNaN(Number(metrics.whole_available))
-          ? Math.max(0, Number(metrics.whole_available))
-          : Math.max(0, whole + kitSkuInc - onSkuReserved);
-      const totalAvailCurrent =
-        metrics.marketplace_available != null &&
-        !Number.isNaN(Number(metrics.marketplace_available))
-          ? Math.max(0, Number(metrics.marketplace_available))
-          : Math.max(0, whole + kitSkuInc + assemblable - displayReserved);
-      for (let i = 0; i < enriched.length; i++) {
-        const row = enriched[i];
-        if (!row) continue;
-        const onSkuRes = Math.max(0, Number(row.res) || 0);
-        const rowBalFromJournal =
-          row.bal != null && !Number.isNaN(Number(row.bal)) ? Number(row.bal) : null;
-        if (i === 0) {
-          // Не подменяем снимок журнала текущим whole_on_hand — иначе дельта «Наличие» завышена.
-          if (rowBalFromJournal == null) row.bal = whole;
-          row.inc = displayInc;
-          row._kitAvailableWhole = wholeAvailCurrent;
-          row._kitAvailableTotal = totalAvailCurrent;
-          continue;
-        }
-        if (rowBalFromJournal == null) continue;
-        row._kitAvailableWhole = Math.max(0, rowBalFromJournal + kitSkuInc - onSkuRes);
-        row._kitAvailableTotal = row._kitAvailableWhole;
-        const asmLost = Math.max(0, Number(row._kitAssemblableUnitsLost) || 0);
-        if (asmLost > 0 && i + 1 < enriched.length) {
-          const older = enriched[i + 1];
-          const baseTotal =
-            older?._kitAvailableTotal != null && !Number.isNaN(Number(older._kitAvailableTotal))
-              ? Number(older._kitAvailableTotal)
-              : older?._kitAvailableWhole != null && !Number.isNaN(Number(older._kitAvailableWhole))
-                ? Number(older._kitAvailableWhole)
-                : null;
-          if (baseTotal != null) {
-            row._kitAvailableTotal = Math.max(0, baseTotal - asmLost);
-          }
-        }
-      }
+  // Верхняя строка = текущие остатки как в таблице (для комплектов «в пути» включает ожидание комплектующих).
+  if (currentStockState && enriched[0]) {
+    const topItem = displayRows[0];
+    const topType =
+      topItem?.kind === 'single' && topItem.m ? movementTypeLower(topItem.m) : null;
+    enriched[0].inc = Math.max(0, Number(currentStockState.incoming) || 0);
+    enriched[0].bal = Math.max(0, Number(currentStockState.onHand) || 0);
+    if (topType !== 'inventory') {
+      enriched[0].res = Math.max(0, Number(currentStockState.reserved) || 0);
     }
   }
 
@@ -810,6 +946,32 @@ function movementForDeltaInference(item, column) {
       return { ...head, type: 'shipment', quantity_change: sumQc };
     }
     return ms[0];
+  }
+  if (item.kind === 'kitReturnGroup') {
+    const ms = item.movements;
+    if (!ms.length) return null;
+    const kitLine = ms.find((m) => {
+      const meta = parseMovementMeta(m);
+      return (
+        meta.kit_component_return_to_supplier !== true &&
+        meta.kit_component_return_to_supplier !== 'true'
+      );
+    });
+    if (column === 'bal') {
+      if (kitLine) return kitLine;
+      return { ...ms[0], type: 'return_to_supplier', quantity_change: 0 };
+    }
+    return kitLine || ms[0];
+  }
+  if (item.kind === 'kitPurchaseIncomingGroup') {
+    const ms = item.movements;
+    if (!ms.length) return null;
+    const head = pickKitPurchaseIncomingHeadMovement(ms);
+    if (column === 'inc') {
+      const kitUnits = Math.max(0, Number(item.kitUnits) || 0);
+      return { ...head, type: 'incoming', quantity_change: kitUnits > 0 ? kitUnits : head.quantity_change };
+    }
+    return head;
   }
   return item.m;
 }
@@ -871,6 +1033,16 @@ function getMovementLink(m) {
     const pathMp = marketplacePathFromMeta(meta);
     if (!pathMp) return null;
     return { to: `/orders/${pathMp}/${encodeURIComponent(orderId)}`, state: null, label: reasonText };
+  }
+  if (t === 'incoming' && /закупк/i.test(reasonText)) {
+    const purchaseId = meta.purchase_id ?? meta.purchaseId;
+    if (purchaseId != null && String(purchaseId).trim() !== '') {
+      return {
+        to: { pathname: '/stock-levels/purchases', search: `?purchase=${encodeURIComponent(String(purchaseId).trim())}` },
+        state: null,
+        label: reasonText
+      };
+    }
   }
   return null;
 }
@@ -1245,6 +1417,8 @@ export function WarehouseStocks() {
   const loadListRef = useRef(() => {});
   const listBootstrappedRef = useRef(false);
   const [historyProduct, setHistoryProduct] = useState(null);
+  /** Метрики строки таблицы на момент открытия истории (fallback, если товар ушёл с текущей страницы). */
+  const [historyStockSnapshot, setHistoryStockSnapshot] = useState(null);
   const [historyList, setHistoryList] = useState([]);
   const [historyNetReserved, setHistoryNetReserved] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1997,19 +2171,8 @@ export function WarehouseStocks() {
         !isHiddenStockHistoryMovement(m) &&
         isKitStockHistoryMovement(m, historyProduct)
     );
-    return buildHistoryDisplayRows(visible);
+    return buildHistoryDisplayRows(visible, historyProduct);
   }, [historyList, historyProduct]);
-
-  const historyDisplaySnapshots = useMemo(
-    () =>
-      buildHistoryDisplaySnapshots(
-        displayHistoryRows,
-        historyNetReserved,
-        stockWarehouseId,
-        historyProduct
-      ),
-    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyProduct]
-  );
 
   const openReserveModalForProduct = useCallback((product, { pinnedList = null } = {}) => {
     if (!product?.id) return;
@@ -2039,25 +2202,6 @@ export function WarehouseStocks() {
     setStockResetError('');
     setStockResetOpen(true);
   }, []);
-
-  const openStockResetFromHistory = useCallback(() => {
-    if (!historyProduct?.id) return;
-    const incoming =
-      Number(historyProduct.incoming_quantity ?? historyProduct.incomingQuantity) || 0;
-    const onHand = Number(historyProduct.quantity) || 0;
-    const reserved =
-      historyNetReserved != null
-        ? Number(historyNetReserved) || 0
-        : Number(
-            historyProduct.net_reserved_quantity ??
-              historyProduct.reserved_quantity ??
-              historyProduct.reservedQuantity
-          ) || 0;
-    setStockResetProduct(historyProduct);
-    setStockResetForm({ incoming, onHand, reserved });
-    setStockResetError('');
-    setStockResetOpen(true);
-  }, [historyProduct, historyNetReserved]);
 
   const closeStockResetModal = useCallback(() => {
     setStockResetOpen(false);
@@ -2236,17 +2380,34 @@ export function WarehouseStocks() {
     [reloadReserveOrdersList, currentPage, historyProduct?.id, reserveModalProduct?.id, stockWarehouseId]
   );
 
+  const reserveModalOrdersAttributedQty = useMemo(
+    () => reserveOrders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0),
+    [reserveOrders]
+  );
+
   const reserveModalTotalQty = useMemo(() => {
     if (reserveListOverride != null) {
       return reserveListOverride.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
     }
-    return reserveOrders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
-  }, [reserveListOverride, reserveOrders]);
+    if (reserveOrders.length > 0) {
+      return reserveModalOrdersAttributedQty;
+    }
+    if (reserveSummary != null) {
+      return Math.max(0, Number(reserveSummary.ordersReservedQty) || 0);
+    }
+    return reserveModalOrdersAttributedQty;
+  }, [
+    reserveListOverride,
+    reserveSummary,
+    reserveOrders.length,
+    reserveModalOrdersAttributedQty
+  ]);
 
   const reserveJournalQty = useMemo(
     () => Math.max(0, Number(reserveSummary?.displayReservedQty) || 0),
     [reserveSummary?.displayReservedQty]
   );
+  const reserveModalIsKit = reserveSummary?.isKit === true;
   const reserveOrphanQty = useMemo(
     () => Math.max(0, Number(reserveSummary?.orphanJournalReserve) || 0),
     [reserveSummary?.orphanJournalReserve]
@@ -2350,6 +2511,57 @@ export function WarehouseStocks() {
     // Все фильтры (категория, поиск, тип, «только в наличии») — на сервере по всему каталогу, не по строкам страницы.
     return built;
   }, [products, supplierBreakdownByProductId, warehouses, stockWarehouseId, supplierSyncEnabled]);
+
+  const historyRowMetrics = useMemo(() => {
+    if (!historyProduct?.id) return null;
+    const live = rows.find((r) => String(r.product.id) === String(historyProduct.id));
+    if (live) return historyStockMetricsFromRow(live);
+    return historyStockSnapshot;
+  }, [historyProduct?.id, rows, historyStockSnapshot]);
+
+  const historyDisplaySnapshots = useMemo(
+    () =>
+      buildHistoryDisplaySnapshots(
+        displayHistoryRows,
+        historyNetReserved,
+        stockWarehouseId,
+        historyProduct,
+        historyRowMetrics
+      ),
+    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyProduct, historyRowMetrics]
+  );
+
+  const openHistoryForRow = useCallback((row) => {
+    if (!row?.product) return;
+    setHistoryProduct(row.product);
+    setHistoryStockSnapshot(historyStockMetricsFromRow(row));
+  }, []);
+
+  const closeHistoryModal = useCallback(() => {
+    setHistoryProduct(null);
+    setHistoryStockSnapshot(null);
+  }, []);
+
+  const openStockResetFromHistory = useCallback(() => {
+    if (!historyProduct?.id) return;
+    const incoming =
+      historyRowMetrics?.incoming ??
+      (Number(historyProduct.incoming_quantity ?? historyProduct.incomingQuantity) || 0);
+    const onHand = historyRowMetrics?.onHand ?? (Number(historyProduct.quantity) || 0);
+    const reserved =
+      historyRowMetrics?.reserved ??
+      (historyNetReserved != null
+        ? Number(historyNetReserved) || 0
+        : Number(
+            historyProduct.net_reserved_quantity ??
+              historyProduct.reserved_quantity ??
+              historyProduct.reservedQuantity
+          ) || 0);
+    setStockResetProduct(historyProduct);
+    setStockResetForm({ incoming, onHand, reserved });
+    setStockResetError('');
+    setStockResetOpen(true);
+  }, [historyProduct, historyNetReserved, historyRowMetrics]);
 
   const renderStockListPager = (placement) => {
     const idSuffix = placement === 'top' ? 'top' : 'bottom';
@@ -2614,13 +2826,13 @@ export function WarehouseStocks() {
                   <tr
                     key={row.product.sku || row.product.id}
                     className="stock-levels-row-clickable"
-                    onClick={onNavigationClick(() => setHistoryProduct(row.product), {
+                    onClick={onNavigationClick(() => openHistoryForRow(row), {
                       ignoreClosest:
                         'input, textarea, select, label, button, .supplier-stock-cell, .stock-levels-reserved-btn, .stock-manual-onhand-edit, .stock-history-reset-btn, [data-no-nav-click]',
                     })}
                     role="button"
                     tabIndex={0}
-                    onKeyDown={(e) => e.key === 'Enter' && setHistoryProduct(row.product)}
+                    onKeyDown={(e) => e.key === 'Enter' && openHistoryForRow(row)}
                   >
                     <td className="sku-cell">{row.product.sku || '—'}</td>
                     <td className="name-cell">{row.product.name || 'Без названия'}</td>
@@ -2628,7 +2840,7 @@ export function WarehouseStocks() {
                       {row.incomingFromComponents > 0 ? (
                         <span
                           className="stock-main-value"
-                          title={`В т.ч. ${row.incomingFromComponents} компл. из ожидания комплектующих на этом складе`}
+                          title={`Дополнительно из «в пути» комплектующих можно собрать ещё ${row.incomingFromComponents} компл. (не включено в колонку)`}
                         >
                           {row.incoming}
                         </span>
@@ -2883,13 +3095,14 @@ export function WarehouseStocks() {
         activeTab={activeTab}
         onTabChange={handleWarehouseTabChange}
         openReceiptId={location.state?.openReceiptId}
+        prefillCustomerReturn={location.state?.prefillCustomerReturn}
         hideTabs
       />
 
       <Modal
         isOpen={!!historyProduct}
         onClose={() => {
-          setHistoryProduct(null);
+          closeHistoryModal();
           closeReserveModal();
         }}
         title={
@@ -2915,10 +3128,6 @@ export function WarehouseStocks() {
               <span className="text-muted small">
                 Для сброса выберите склад в фильтре над таблицей.
               </span>
-            ) : isKitProduct(historyProduct) ? (
-              <span className="text-muted small">
-                Для комплекта также снимается резерв комплектующих, привязанный к этому SKU.
-              </span>
             ) : null}
           </div>
         ) : historyProduct && canManageAccountStockReset && !stockResetSettingOn ? (
@@ -2939,30 +3148,27 @@ export function WarehouseStocks() {
           <>
             {stockWarehouseId ? (
               <p className="text-muted small mb-2" role="status">
-                {isKitProduct(historyProduct) ? (
-                  <>
-                    Колонка «В пути» — целые комплекты в ожидании + комплекты, собираемые из ожидания
-                    комплектующих. «Доступно» — как в таблице остатков (без двойного учёта).
-                  </>
-                ) : (
-                  <>Колонка «Наличие» — по выбранному складу в фильтре таблицы (не сумма по всем складам).</>
-                )}
+                История — только движения по выбранному SKU на складе из фильтра таблицы.
+                {isKitProduct(historyProduct)
+                  ? ' Для комплектующих откройте историю из строки соответствующего товара.'
+                  : null}
+                {isKitProduct(historyProduct)
+                  ? ' Колонка «В пути» — только по SKU комплекта; дополнительная собираемость из комплектующих — в «Доступно» (в скобках).'
+                  : null}
+                {historyRowMetrics && !isKitProduct(historyProduct)
+                  ? ' Верхняя строка — текущие остатки как в таблице.'
+                  : null}
+              </p>
+            ) : historyRowMetrics && !isKitProduct(historyProduct) ? (
+              <p className="text-muted small mb-2" role="status">
+                Верхняя строка — текущие остатки как в таблице.
               </p>
             ) : null}
-            {historyNetReserved != null && (
-              <p className="stock-levels-history-net-reserved text-muted small" style={{ marginBottom: 8 }}>
-                Сейчас в резерве по журналу: <strong>{historyNetReserved}</strong>
-                {historyNetReserved !== (Number(historyProduct?.reserved_quantity ?? historyProduct?.reservedQuantity) || 0)
-                  ? ' (таблица остатков обновлена)'
-                  : ''}
-              </p>
-            )}
           <div className="stock-levels-history-table-wrap">
             <table className="stock-levels-table table stock-levels-history-table">
               <colgroup>
                 <col className="stock-levels-history-col-date" />
                 <col className="stock-levels-history-col-reason" />
-                <col className="stock-levels-history-col-qty" />
                 <col className="stock-levels-history-col-qty" />
                 <col className="stock-levels-history-col-qty" />
                 <col className="stock-levels-history-col-qty" />
@@ -2974,7 +3180,6 @@ export function WarehouseStocks() {
                   <th>В пути</th>
                   <th className="stock-levels-history-col-onhand">Наличие</th>
                   <th>Резерв</th>
-                  <th>Доступно</th>
                 </tr>
               </thead>
               <tbody>
@@ -2987,7 +3192,6 @@ export function WarehouseStocks() {
                   const incCell = formatAfterDeltaSmart(cur.inc, prev?.inc, mInferInc, 'inc');
                   const resCell = formatAfterDeltaSmart(cur.res, prev?.res, mInferRes, 'res');
                   const balCell = formatAfterDeltaSmart(cur.bal, prev?.bal, mInferBal, 'bal');
-                  const availCell = formatAvailableHistoryCell(cur, prev);
 
                   if (item.kind === 'outboundGroup') {
                     const oids = orderIdsFromOutboundMovements(item.movements);
@@ -3014,7 +3218,6 @@ export function WarehouseStocks() {
                             {renderStockHistoryQtyCell(resCell)}
                           </button>
                         </td>
-                        <td>{renderStockHistoryQtyCell(availCell)}</td>
                       </tr>
                     );
                   }
@@ -3067,7 +3270,66 @@ export function WarehouseStocks() {
                             {renderStockHistoryQtyCell(resCell)}
                           </button>
                         </td>
-                        <td>{renderStockHistoryQtyCell(availCell)}</td>
+                      </tr>
+                    );
+                  }
+
+                  if (item.kind === 'kitReturnGroup') {
+                    const head = pickKitSupplierReturnHeadMovement(item.movements, historyProduct?.id);
+                    const link = getMovementLink(head);
+                    const reasonText = link ? link.label : formatMovementReason(head);
+                    const createdAt = movementCreatedAt(head);
+                    const rowKey = item.movements.map((x) => x.id).join('-');
+                    return (
+                      <tr key={rowKey} className="stock-levels-history-row-kit-return-group">
+                        <td>{formatDateTime(createdAt)}</td>
+                        <td>
+                          {link ? (
+                            <Link
+                              to={link.to}
+                              state={link.state}
+                              className="stock-levels-history-reason-link"
+                              onClick={onNavigationClick()}
+                            >
+                              {reasonText}
+                            </Link>
+                          ) : (
+                            reasonText
+                          )}
+                        </td>
+                        <td>{renderStockHistoryQtyCell(incCell)}</td>
+                        <td>{renderStockHistoryQtyCell(balCell)}</td>
+                        <td>{renderStockHistoryQtyCell(resCell)}</td>
+                      </tr>
+                    );
+                  }
+
+                  if (item.kind === 'kitPurchaseIncomingGroup') {
+                    const head = pickKitPurchaseIncomingHeadMovement(item.movements);
+                    const link = getMovementLink(head);
+                    const reasonText = link ? link.label : formatMovementReason(head);
+                    const createdAt = movementCreatedAt(head);
+                    const rowKey = item.movements.map((x) => x.id).join('-');
+                    return (
+                      <tr key={rowKey} className="stock-levels-history-row-kit-purchase-incoming-group">
+                        <td>{formatDateTime(createdAt)}</td>
+                        <td>
+                          {link ? (
+                            <Link
+                              to={link.to}
+                              state={link.state}
+                              className="stock-levels-history-reason-link"
+                              onClick={onNavigationClick()}
+                            >
+                              {reasonText}
+                            </Link>
+                          ) : (
+                            reasonText
+                          )}
+                        </td>
+                        <td>{renderStockHistoryQtyCell(incCell)}</td>
+                        <td>{renderStockHistoryQtyCell(balCell)}</td>
+                        <td>{renderStockHistoryQtyCell(resCell)}</td>
                       </tr>
                     );
                   }
@@ -3084,7 +3346,7 @@ export function WarehouseStocks() {
                             to={link.to}
                             state={link.state}
                             className="stock-levels-history-link"
-                            onClick={() => setHistoryProduct(null)}
+                            onClick={closeHistoryModal}
                           >
                             {reasonText}
                           </Link>
@@ -3108,7 +3370,6 @@ export function WarehouseStocks() {
                             {renderStockHistoryQtyCell(resCell)}
                           </button>
                         </td>
-                        <td>{renderStockHistoryQtyCell(availCell)}</td>
                     </tr>
                   );
                 })}
@@ -3151,7 +3412,7 @@ export function WarehouseStocks() {
                       className="stock-levels-history-link"
                       onClick={() => {
                         closeReserveModal();
-                        setHistoryProduct(null);
+                        closeHistoryModal();
                       }}
                     >
                       {o.marketplace} · {o.orderId}
@@ -3199,8 +3460,8 @@ export function WarehouseStocks() {
               ) : reserveSummary?.isKit && Number(reserveSummary?.componentJournalReserve) > 0 ? (
                 <p className="text-muted mb-2">
                   Резерв по комплектующим: <strong>{reserveSummary.componentJournalReserve}</strong> шт.
-                  в журнале (на SKU комплекта — 0). Откройте комплектующие в таблице остатков, чтобы
-                  увидеть заказы с резервом.
+                  в журнале (на SKU комплекта — {reserveJournalQty}). Заказы с резервом из комплектующих
+                  перечислены ниже; колонка «Резерв» в таблице — только целые комплекты на SKU.
                 </p>
               ) : (
                 <p className="text-muted mb-2">Нет активного резерва по заказам и поставкам FBO.</p>
@@ -3271,8 +3532,14 @@ export function WarehouseStocks() {
             {reserveOrders.length > 0 ? (
           <>
             <p className="text-muted small mb-2">
-              Резерв по заказам маркетплейса: <strong>{reserveModalTotalQty}</strong> шт.,{' '}
-              {reserveOrders.length} зак.
+              В колонке «Резерв» (SKU): <strong>{reserveJournalQty}</strong> шт.
+              {reserveOrders.length > 0 ? (
+                <>
+                  {' '}
+                  · по заказам: <strong>{reserveModalTotalQty}</strong> компл. ({reserveOrders.length}{' '}
+                  зак.)
+                </>
+              ) : null}
             </p>
             {reserveOrders.some((o) => o.staleReserve) && (
               <p className="text-warning small mb-2" role="status">
@@ -3295,12 +3562,13 @@ export function WarehouseStocks() {
               >
                 {reserveBulkReleasing
                   ? 'Снимаем резерв…'
-                  : `Снять весь резерв (${reserveModalTotalQty} шт.)`}
+                  : `Снять весь резерв (${reserveModalTotalQty}${reserveModalIsKit ? ' компл.' : ' шт.'})`}
               </Button>
             </div>
             <ul className="list-group stock-levels-reserve-orders-list">
               {reserveOrders.map((o) => {
                 const rowKey = `${o.orderDbId}-${o.orderId}`;
+                const reserveSourceLabel = formatReserveSourceLabel(o);
                 const busy = o.deletedOrderReserve
                   ? reserveUnreserveKey === `deleted-${o.orderDbId}`
                   : reserveUnreserveKey === `${o.marketplace}|${o.orderId}`;
@@ -3327,9 +3595,12 @@ export function WarehouseStocks() {
                           {o.staleReserve ? ' · залипший резерв' : ''}
                         </span>
                       ) : null}
+                      {reserveSourceLabel ? (
+                        <span className="small text-muted">{reserveSourceLabel}</span>
+                      ) : null}
                     </div>
                     <div className="d-flex align-items-center gap-2 flex-shrink-0">
-                      <span className="badge bg-secondary rounded-pill">{o.reservedQty} шт.</span>
+                      <span className="badge bg-secondary rounded-pill">{o.reservedQty} компл.</span>
                       <Button
                         type="button"
                         variant="secondary"

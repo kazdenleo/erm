@@ -53,7 +53,7 @@ const stockWarehouseChildren = [
   },
   {
     path: opsByKey.return_customer?.to || '/stock-levels/warehouse?op=return_customer',
-    label: '📥 Возврат от клиентов',
+    label: '📥 Возвраты',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'return_customer',
     sectionKey: 'warehouse_return_customer',
@@ -82,7 +82,6 @@ const menuItems = [
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },
   { path: '/questions', label: 'Вопросы', iconClass: 'pe-7s-comment', sectionKey: 'questions' },
   { path: '/reviews', label: 'Отзывы', iconClass: 'pe-7s-like2', sectionKey: 'reviews' },
-  { path: '/returns', label: 'Возвраты', iconClass: 'pe-7s-back', sectionKey: 'wb_returns' },
   {
     path: '/stock-levels/warehouse',
     label: 'Склад',
@@ -186,10 +185,13 @@ export function Sidebar() {
   }, [loadReturnsStats, user?.profileId]);
 
   useEffect(() => {
-    if (location.pathname === '/returns' || location.pathname === '/wb-returns') {
+    const sp = new URLSearchParams(location.search || '');
+    const onReturnsTab =
+      location.pathname === '/stock-levels/warehouse' && warehouseOpFromSearch(sp) === 'return_customer';
+    if (onReturnsTab || location.pathname === '/returns' || location.pathname === '/wb-returns') {
       loadReturnsStats();
     }
-  }, [location.pathname, loadReturnsStats]);
+  }, [location.pathname, location.search, loadReturnsStats]);
 
   useEffect(() => {
     const onRefresh = () => loadQuestionsStats();
@@ -281,9 +283,7 @@ export function Sidebar() {
 
               if (!hasChildren) {
                 const showQBadge = item.path === '/questions' && questionsNewCount > 0;
-                const showReturnsBadge = item.path === '/returns' && returnsWaitingCount > 0;
                 const badgeText = questionsNewCount > 99 ? '99+' : String(questionsNewCount);
-                const returnsBadgeText = returnsWaitingCount > 99 ? '99+' : String(returnsWaitingCount);
                 return (
                   <li key={item.path}>
                     <Link to={item.path} className={active ? 'mm-active' : ''} onClick={() => onLeafClick(item)}>
@@ -292,11 +292,6 @@ export function Sidebar() {
                       {showQBadge ? (
                         <span className="sidebar-menu-badge" title="Новых вопросов без ответа">
                           {badgeText}
-                        </span>
-                      ) : null}
-                      {showReturnsBadge ? (
-                        <span className="sidebar-menu-badge" title="Возвратов, ждущих забора">
-                          {returnsBadgeText}
                         </span>
                       ) : null}
                     </Link>
@@ -323,11 +318,20 @@ export function Sidebar() {
                   <ul className={isOpen ? 'mm-show' : ''}>
                     {item.children.map((sub) => {
                       const subActive = childMatchesLocation(sub, location);
+                      const showReturnsBadge =
+                        sub.warehouseOp === 'return_customer' && returnsWaitingCount > 0;
+                      const returnsBadgeText =
+                        returnsWaitingCount > 99 ? '99+' : String(returnsWaitingCount);
                       return (
                         <li key={sub.warehouseOp ?? sub.path}>
                           <Link to={sub.path} className={subActive ? 'mm-active' : ''}>
                             <i className={`metismenu-icon ${sub.iconClass || ''}`} />
                             {sub.label}
+                            {showReturnsBadge ? (
+                              <span className="sidebar-menu-badge" title="Возвратов, ждущих забора">
+                                {returnsBadgeText}
+                              </span>
+                            ) : null}
                           </Link>
                         </li>
                       );

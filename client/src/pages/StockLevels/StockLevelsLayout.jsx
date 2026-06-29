@@ -10,9 +10,6 @@ import './StockLevelsLayout.css';
 export function StockLevelsLayout() {
   return (
     <div className="card stock-levels-layout">
-      <h1 className="title">📦 Склад</h1>
-      <p className="subtitle">Остатки на собственном складе, закупки, поставки FBO и приёмки</p>
-
       <div className="stock-levels-content">
         <Outlet />
       </div>

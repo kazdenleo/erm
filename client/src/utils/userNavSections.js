@@ -26,5 +26,9 @@ export function isNavFeatureEnabled(features, key) {
   const f = features;
   if (f == null || typeof f !== 'object') return true;
   if (Object.keys(f).length === 0) return true;
+  if (key === 'warehouse_return_customer' || key === 'wb_returns') {
+    if (f.nav_warehouse_return_customer === false || f.nav_wb_returns === false) return false;
+    return true;
+  }
   return f[`nav_${key}`] !== false;
 }
