@@ -11,6 +11,14 @@ import {
   normalizeWbWarehouseInventoryItem,
 } from './wbAnalytics.service.js';
 
+/** Поставки WB в ERM, ещё не принятые на складе маркетплейса. */
+export const FBO_FORECAST_PENDING_SUPPLY_STATUSES = [
+  'new',
+  'packed',
+  'ready_for_supply',
+  'shipped',
+];
+
 const SYNC_COOLDOWN_MS = 20_000;
 const INSERT_CHUNK = 400;
 const ORDERS_COUNT_CACHE_MS = 10 * 60 * 1000;
@@ -417,16 +425,84 @@ export function calcClusterToSupply({
   planDays = 30,
   ordersDays = 30,
   zeroStockBoostPercent = 0,
+  pendingSupply = 0,
+  includePendingSupply = true,
 }) {
   const avg = calcAvgOrdersPerDay(orders, ordersDays);
   const forecastQty = avg * normalizePlanDays(planDays);
-  let toSupply = forecastQty - toInt(availability);
+  const pending = includePendingSupply ? toInt(pendingSupply) : 0;
+  let toSupply = forecastQty - toInt(availability) - pending;
   if (toInt(availability) === 0) {
     toSupply = applyZeroStockBoost(Math.max(0, toSupply), 0, zeroStockBoostPercent);
   } else {
     toSupply = Math.max(0, Math.ceil(toSupply));
   }
   return toSupply;
+}
+
+function resolvePlacementClusterKey(placementName, knownClusterKeys = null) {
+  const raw = clusterKeyFromRegion(placementName);
+  if (!knownClusterKeys || knownClusterKeys.size === 0) return raw;
+  if (knownClusterKeys.has(raw)) return raw;
+  const rawLower = raw.toLowerCase();
+  for (const key of knownClusterKeys) {
+    if (key.toLowerCase() === rawLower) return key;
+    if (clusterLabelFromKey(key).toLowerCase() === rawLower) return key;
+  }
+  return raw;
+}
+
+async function buildPendingFboSupplyByProductCluster(
+  profileId,
+  organizationId,
+  knownClusterKeys = null
+) {
+  const pid = normalizeProfileId(profileId);
+  const orgId = normalizeOrgId(organizationId);
+  const keysSet =
+    knownClusterKeys instanceof Set ? new Set(knownClusterKeys) : new Set(knownClusterKeys || []);
+
+  const r = await query(
+    `
+    SELECT
+      i.product_id,
+      s.placement_cluster,
+      SUM(i.quantity)::int AS qty
+    FROM fbo_supply_items i
+    INNER JOIN fbo_supplies s ON s.id = i.fbo_supply_id
+    WHERE s.marketplace = 'wb'
+      AND s.status = ANY($3::text[])
+      AND i.product_id IS NOT NULL
+      AND (
+        ($1::bigint IS NULL AND $2::bigint IS NULL)
+        OR ($1::bigint IS NOT NULL AND s.profile_id = $1)
+        OR ($2::bigint IS NOT NULL AND s.organization_id = $2)
+      )
+    GROUP BY i.product_id, s.placement_cluster
+    `,
+    [pid, orgId, FBO_FORECAST_PENDING_SUPPLY_STATUSES]
+  );
+
+  const byProductCluster = new Map();
+  for (const row of r.rows || []) {
+    const productId = Number(row.product_id);
+    if (!Number.isFinite(productId)) continue;
+    const qty = toInt(row.qty);
+    if (qty <= 0) continue;
+    const ck = resolvePlacementClusterKey(row.placement_cluster, keysSet);
+    keysSet.add(ck);
+    const mapKey = `${productId}:${ck}`;
+    byProductCluster.set(mapKey, (byProductCluster.get(mapKey) || 0) + qty);
+  }
+
+  return { byProductCluster, clusterKeys: [...keysSet] };
+}
+
+function pendingSupplyForProductCluster(pendingByProductCluster, productId, clusterKey) {
+  if (!pendingByProductCluster || productId == null) return 0;
+  const pid = Number(productId);
+  if (!Number.isFinite(pid)) return 0;
+  return toInt(pendingByProductCluster.get(`${pid}:${clusterKey}`));
 }
 
 function buildWarehouseClusterMap(flatRows) {
@@ -480,10 +556,16 @@ export function pivotForecastByCluster(
     planDays = 30,
     ordersDays = 30,
     zeroStockBoostPercent = 0,
+    pendingByProductCluster = null,
+    extraClusterKeys = null,
+    includePendingSupply = true,
   } = {}
 ) {
   const whToCluster = buildWarehouseClusterMap(flatRows);
   const clusterKeysSet = new Set();
+  for (const ck of extraClusterKeys || []) {
+    if (!clusterFilter || ck === clusterFilter) clusterKeysSet.add(ck);
+  }
   const products = new Map();
 
   for (const row of flatRows) {
@@ -557,12 +639,19 @@ export function pivotForecastByCluster(
         erm,
         whToCluster
       );
+      const pendingSupply = pendingSupplyForProductCluster(
+        pendingByProductCluster,
+        prod.productId,
+        ck
+      );
       const toSupply = calcClusterToSupply({
         availability: cm.availability,
         orders,
         planDays,
         ordersDays,
         zeroStockBoostPercent,
+        pendingSupply,
+        includePendingSupply,
       });
       clusterMetrics[ck] = {
         availability: cm.availability,
@@ -570,6 +659,7 @@ export function pivotForecastByCluster(
         avgOrdersPerDay: calcAvgOrdersPerDay(orders, ordersDays),
         reserve: cm.reserve,
         return: cm.returnQty,
+        pendingSupply,
         toSupply,
       };
       rowOrdersTotal += orders;
@@ -1042,6 +1132,18 @@ class FboSupplyForecastService {
       clusterDedup.push(c);
     }
 
+    const pending = await buildPendingFboSupplyByProductCluster(
+      pid,
+      orgId,
+      new Set(clusterDedup.map((c) => c.key))
+    );
+    for (const ck of pending.clusterKeys) {
+      if (clusterFilter && ck !== clusterFilter) continue;
+      if (seenCluster.has(ck)) continue;
+      seenCluster.add(ck);
+      clusterDedup.push({ key: ck, name: clusterLabelFromKey(ck) });
+    }
+
     const pivoted = pivotForecastByCluster(rows, {
       wbByNm,
       erm,
@@ -1049,10 +1151,14 @@ class FboSupplyForecastService {
       planDays: planningDays,
       ordersDays: ordersPeriod.days,
       zeroStockBoostPercent: stockBoost,
+      pendingByProductCluster: pending.byProductCluster,
+      extraClusterKeys: pending.clusterKeys,
+      includePendingSupply: true,
     });
 
     const boostNote =
       stockBoost > 0 ? ` При нулевом наличии к поставке добавляется +${stockBoost}%.` : '';
+    const pendingNote = ` Непринятые поставки FBO (WB) в ERM вычитаются из «К поставке».`;
 
     return {
       syncedAt: snap.created_at,
@@ -1062,12 +1168,13 @@ class FboSupplyForecastService {
       ordersStart: ordersPeriod.start,
       ordersEnd: ordersPeriod.end,
       zeroStockBoostPercent: stockBoost,
+      includePendingSupply: true,
       rows: pivoted.rows,
       clusters: clusterDedup,
       displayClusters: pivoted.clusters,
       totals: pivoted.totals,
       apiNote:
-        `Остатки, резерв и возврат — на момент последней синхронизации с WB. Заказы — за период ${ordersPeriod.start} — ${ordersPeriod.end} (${ordersPeriod.days} дн.). «К поставке» = ср. заказов/день × ${planningDays} дн. планирования − наличие.${boostNote}`,
+        `Остатки, резерв и возврат — на момент последней синхронизации с WB. Заказы — за период ${ordersPeriod.start} — ${ordersPeriod.end} (${ordersPeriod.days} дн.). «К поставке» = ср. заказов/день × ${planningDays} дн. планирования − наличие − непринятые поставки.${pendingNote}${boostNote}`,
     };
   }
 }

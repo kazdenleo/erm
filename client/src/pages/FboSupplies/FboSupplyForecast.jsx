@@ -4,7 +4,11 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fboSuppliesApi } from '../../services/fboSupplies.api';
-import { applyForecastSettings, sumClusterSupplyTotals } from '../../utils/wbForecastMetrics';
+import {
+  applyForecastSettings,
+  resolveWbBarcode,
+  sumClusterSupplyTotals,
+} from '../../utils/wbForecastMetrics';
 import { Button } from '../../components/common/Button/Button';
 import { FboSuppliesSubNav } from './FboSuppliesSubNav.jsx';
 import './FboSupplies.css';
@@ -21,20 +25,29 @@ const CLUSTER_METRIC_COLS = [
   },
   { key: 'reserve', label: 'Резерв', title: 'В пути к клиенту (текущий снимок WB)' },
   { key: 'return', label: 'Возврат', title: 'В пути от клиента (текущий снимок WB)' },
-  { key: 'toSupply', label: 'К поставке', title: 'Ср. заказов/день × период планирования − наличие' },
+  {
+    key: 'pendingSupply',
+    label: 'В поставке',
+    title: 'Непринятые поставки FBO (WB) в ERM по этому кластеру',
+  },
+  {
+    key: 'toSupply',
+    label: 'К поставке',
+    title: 'Ср. заказов/день × период планирования − наличие − в поставке',
+  },
 ];
 
 const COLLAPSED_CLUSTERS_LS = 'fbo_forecast_collapsed_clusters';
 
 function readCollapsedClusters() {
-  if (typeof localStorage === 'undefined') return new Set();
+  if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(COLLAPSED_CLUSTERS_LS);
-    if (!raw) return new Set();
+    if (raw === null) return null;
     const arr = JSON.parse(raw);
     return new Set(Array.isArray(arr) ? arr : []);
   } catch {
-    return new Set();
+    return null;
   }
 }
 
@@ -49,6 +62,7 @@ const PLAN_DAYS_OPTIONS = [30, 60, 90];
 const PLAN_DAYS_LS = 'fbo_forecast_plan_days';
 const ORDERS_PERIOD_LS = 'fbo_forecast_orders_period';
 const ZERO_STOCK_BOOST_LS = 'fbo_forecast_zero_stock_boost';
+const INCLUDE_PENDING_SUPPLY_LS = 'fbo_forecast_include_pending_supply';
 
 const ORDERS_PRESETS = [
   { id: 'week', label: '1 неделя', days: 7 },
@@ -113,6 +127,13 @@ function readZeroStockBoost() {
   return Math.min(200, Math.max(0, Math.round(n)));
 }
 
+function readIncludePendingSupply() {
+  if (typeof localStorage === 'undefined') return true;
+  const raw = localStorage.getItem(INCLUDE_PENDING_SUPPLY_LS);
+  if (raw === null) return true;
+  return raw !== '0' && raw !== 'false';
+}
+
 function fmtDt(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleString('ru-RU', {
@@ -156,33 +177,31 @@ function rowHasSupplyInAnyCluster(row) {
   return Object.values(metrics).some((m) => Number(m?.toSupply) > 0);
 }
 
-function usePopoverDismiss(open, setOpen, rootRef) {
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDoc = (e) => {
-      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
-    };
-    const onKey = (e) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open, setOpen, rootRef]);
+function downloadXlsxBuffer(buffer, filename) {
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-function ForecastSettingsPopover({ planDays, zeroStockBoost, onPlanDaysChange, onZeroStockBoostChange }) {
-  const [open, setOpen] = useState(false);
+function ForecastSettingsBar({
+  planDays,
+  zeroStockBoost,
+  includePendingSupply,
+  onPlanDaysChange,
+  onZeroStockBoostChange,
+  onIncludePendingSupplyChange,
+}) {
   const [boostDraft, setBoostDraft] = useState(String(zeroStockBoost));
-  const rootRef = useRef(null);
-  usePopoverDismiss(open, setOpen, rootRef);
 
   useEffect(() => {
-    if (!open) setBoostDraft(String(zeroStockBoost));
-  }, [open, zeroStockBoost]);
+    setBoostDraft(String(zeroStockBoost));
+  }, [zeroStockBoost]);
 
   const commitBoost = () => {
     const n = Number(String(boostDraft).replace(',', '.'));
@@ -192,59 +211,49 @@ function ForecastSettingsPopover({ planDays, zeroStockBoost, onPlanDaysChange, o
   };
 
   return (
-    <div className="fbo-forecast-settings" ref={rootRef}>
-      <button
-        type="button"
-        className="fbo-forecast-settings__trigger"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        title="Настройки прогноза"
-      >
-        Настройки
-      </button>
-      {open && (
-        <div className="fbo-forecast-settings__popover" role="dialog" aria-label="Настройки прогноза">
-          <div className="fbo-forecast-settings__title">Настройки прогноза</div>
-
-          <label className="fbo-forecast-settings__field">
-            <span className="fbo-forecast-settings__label">Период планирования</span>
-            <select
-              className="form-select form-select-sm"
-              value={planDays}
-              onChange={(e) => onPlanDaysChange(Number(e.target.value))}
-            >
-              {PLAN_DAYS_OPTIONS.map((d) => (
-                <option key={d} value={d}>
-                  {d} дней
-                </option>
-              ))}
-            </select>
-            <span className="fbo-forecast-settings__hint">
-              Используется в формуле «К поставке»: ср. заказов/день × период планирования − наличие.
-            </span>
-          </label>
-
-          <label className="fbo-forecast-settings__field">
-            <span className="fbo-forecast-settings__label">Увеличение поставки при нулевом остатке, %</span>
-            <input
-              className="form-control form-control-sm"
-              type="number"
-              min={0}
-              max={200}
-              step={1}
-              value={boostDraft}
-              onChange={(e) => setBoostDraft(e.target.value)}
-              onBlur={commitBoost}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitBoost();
-              }}
-            />
-            <span className="fbo-forecast-settings__hint">
-              Если в кластере наличие = 0, к рекомендации «К поставке» добавляется указанный процент.
-            </span>
-          </label>
-        </div>
-      )}
+    <div className="fbo-forecast-settings-bar">
+      <label className="fbo-forecast-settings-bar__field">
+        <span className="fbo-forecast-settings-bar__label">Период планирования</span>
+        <select
+          className="form-select form-select-sm"
+          value={planDays}
+          onChange={(e) => onPlanDaysChange(Number(e.target.value))}
+        >
+          {PLAN_DAYS_OPTIONS.map((d) => (
+            <option key={d} value={d}>
+              {d} дней
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="fbo-forecast-settings-bar__field">
+        <span className="fbo-forecast-settings-bar__label">+ к поставке при нулевом остатке, %</span>
+        <input
+          className="form-control form-control-sm fbo-forecast-settings-bar__boost"
+          type="number"
+          min={0}
+          max={200}
+          step={1}
+          value={boostDraft}
+          onChange={(e) => setBoostDraft(e.target.value)}
+          onBlur={commitBoost}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitBoost();
+          }}
+        />
+      </label>
+      <label className="fbo-forecast-settings-bar__field fbo-forecast-settings-bar__field--toggle">
+        <span className="fbo-forecast-toggle__track">
+          <input
+            type="checkbox"
+            className="fbo-forecast-toggle__input"
+            checked={includePendingSupply}
+            onChange={(e) => onIncludePendingSupplyChange(e.target.checked)}
+          />
+          <span className="fbo-forecast-toggle__thumb" aria-hidden />
+        </span>
+        <span className="fbo-forecast-settings-bar__label">Учитывать непринятые поставки FBO</span>
+      </label>
     </div>
   );
 }
@@ -369,20 +378,22 @@ function ForecastLoadReportModal({
 
 export function FboSupplyForecast() {
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [err, setErr] = useState(null);
   const [clusterKey, setClusterKey] = useState('');
   const [search, setSearch] = useState('');
   const [searchDebounced, setSearchDebounced] = useState('');
-  const [unlinkedOnly, setUnlinkedOnly] = useState(false);
   const [hideZeroSupply, setHideZeroSupply] = useState(true);
   const [collapsedClusters, setCollapsedClusters] = useState(readCollapsedClusters);
   const [planDays, setPlanDays] = useState(readPlanDays);
   const [ordersPeriod, setOrdersPeriod] = useState(readOrdersPeriod);
   const [zeroStockBoost, setZeroStockBoost] = useState(readZeroStockBoost);
+  const [includePendingSupply, setIncludePendingSupply] = useState(readIncludePendingSupply);
   const [loadModalOpen, setLoadModalOpen] = useState(false);
   const [loadModalPeriod, setLoadModalPeriod] = useState(readOrdersPeriod);
+  const [exportingCluster, setExportingCluster] = useState(null);
+  const reportLoadedRef = useRef(false);
 
   const persistPlanDays = useCallback((days) => {
     setPlanDays(days);
@@ -401,6 +412,13 @@ export function FboSupplyForecast() {
     if (typeof localStorage !== 'undefined') localStorage.setItem(ZERO_STOCK_BOOST_LS, String(pct));
   }, []);
 
+  const persistIncludePendingSupply = useCallback((value) => {
+    setIncludePendingSupply(value);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(INCLUDE_PENDING_SUPPLY_LS, value ? '1' : '0');
+    }
+  }, []);
+
   useEffect(() => {
     const t = setTimeout(() => setSearchDebounced(search.trim()), 300);
     return () => clearTimeout(t);
@@ -416,22 +434,23 @@ export function FboSupplyForecast() {
         const payload = await fboSuppliesApi.getWbForecast({
           cluster: clusterKey || undefined,
           q: searchDebounced || undefined,
-          unlinkedOnly: unlinkedOnly || undefined,
           ...apiPeriod,
         });
         setData(payload);
+        reportLoadedRef.current = true;
       } catch (e) {
         setErr(e.response?.data?.message || e.message || 'Не удалось загрузить данные');
       } finally {
         setLoading(false);
       }
     },
-    [clusterKey, searchDebounced, unlinkedOnly, ordersPeriod]
+    [clusterKey, searchDebounced, ordersPeriod]
   );
 
   useEffect(() => {
+    if (!reportLoadedRef.current) return;
     load();
-  }, [load]);
+  }, [clusterKey, searchDebounced, load]);
 
   const openLoadModal = () => {
     setLoadModalPeriod(ordersPeriod);
@@ -463,8 +482,9 @@ export function FboSupplyForecast() {
       planDays,
       ordersDays: ordersDaysForCalc,
       zeroStockBoostPercent: zeroStockBoost,
+      includePendingSupply,
     });
-  }, [rawRows, planDays, ordersDaysForCalc, zeroStockBoost]);
+  }, [rawRows, planDays, ordersDaysForCalc, zeroStockBoost, includePendingSupply]);
 
   const visibleRows = useMemo(() => {
     if (!hideZeroSupply) return rows;
@@ -477,6 +497,11 @@ export function FboSupplyForecast() {
     }
     return allClusters;
   }, [data, allClusters]);
+
+  const effectiveCollapsed = useMemo(() => {
+    if (collapsedClusters !== null) return collapsedClusters;
+    return new Set(displayClusters.map((c) => c.key));
+  }, [collapsedClusters, displayClusters]);
   const totals = useMemo(() => {
     return rows.reduce(
       (acc, row) => {
@@ -510,19 +535,51 @@ export function FboSupplyForecast() {
     [rows, displayClusters]
   );
 
-  const toggleClusterCollapse = useCallback((clusterKey) => {
-    setCollapsedClusters((prev) => {
-      const next = new Set(prev);
-      if (next.has(clusterKey)) next.delete(clusterKey);
-      else next.add(clusterKey);
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(COLLAPSED_CLUSTERS_LS, JSON.stringify([...next]));
-      }
-      return next;
-    });
-  }, []);
+  const toggleClusterCollapse = useCallback(
+    (key) => {
+      setCollapsedClusters((prev) => {
+        const base = prev ?? new Set(displayClusters.map((c) => c.key));
+        const next = new Set(base);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(COLLAPSED_CLUSTERS_LS, JSON.stringify([...next]));
+        }
+        return next;
+      });
+    },
+    [displayClusters]
+  );
 
-  const hasExpandedCluster = displayClusters.some((c) => !collapsedClusters.has(c.key));
+  const hasExpandedCluster = displayClusters.some((c) => !effectiveCollapsed.has(c.key));
+
+  const handleExportCluster = async (cluster) => {
+    const exportRows = [];
+    for (const row of rows) {
+      const qty = Number(row.clusterMetrics?.[cluster.key]?.toSupply) || 0;
+      if (qty <= 0) continue;
+      const barcode = resolveWbBarcode(row);
+      if (!barcode) continue;
+      exportRows.push({ barcode, quantity: qty });
+    }
+    if (!exportRows.length) {
+      setErr('Нет позиций с баркодом и количеством к поставке для этого кластера');
+      return;
+    }
+    setExportingCluster(cluster.key);
+    setErr(null);
+    try {
+      const { buffer, filename } = await fboSuppliesApi.exportWbForecastClusterExcel({
+        clusterName: cluster.name,
+        rows: exportRows,
+      });
+      downloadXlsxBuffer(buffer, filename);
+    } catch (e) {
+      setErr(e.message || 'Не удалось выгрузить Excel');
+    } finally {
+      setExportingCluster(null);
+    }
+  };
 
   return (
     <div className="fbo-supplies-page">
@@ -585,6 +642,14 @@ export function FboSupplyForecast() {
       </div>
 
       <div className="fbo-forecast-filters">
+        <ForecastSettingsBar
+          planDays={planDays}
+          zeroStockBoost={zeroStockBoost}
+          includePendingSupply={includePendingSupply}
+          onPlanDaysChange={persistPlanDays}
+          onZeroStockBoostChange={persistZeroStockBoost}
+          onIncludePendingSupplyChange={persistIncludePendingSupply}
+        />
         <label>
           Кластер
           <select
@@ -622,21 +687,6 @@ export function FboSupplyForecast() {
           </span>
           <span className="fbo-forecast-toggle__label">Скрыть без поставки</span>
         </label>
-        <label style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 18 }}>
-          <input
-            type="checkbox"
-            className="form-check-input"
-            checked={unlinkedOnly}
-            onChange={(e) => setUnlinkedOnly(e.target.checked)}
-          />
-          Только без привязки к товару ERM
-        </label>
-        <ForecastSettingsPopover
-          planDays={planDays}
-          zeroStockBoost={zeroStockBoost}
-          onPlanDaysChange={persistPlanDays}
-          onZeroStockBoostChange={persistZeroStockBoost}
-        />
       </div>
 
       {loading && !data ? (
@@ -664,7 +714,7 @@ export function FboSupplyForecast() {
                   Название
                 </th>
                 {displayClusters.map((c) => {
-                  const collapsed = collapsedClusters.has(c.key);
+                  const collapsed = effectiveCollapsed.has(c.key);
                   const cols = clusterMetricCols(collapsed);
                   return (
                     <th
@@ -689,9 +739,20 @@ export function FboSupplyForecast() {
                           {c.name}
                         </span>
                         <span className="fbo-forecast-cluster-head__supply-total">
-                          <span className="fbo-forecast-cluster-head__supply-label">К поставке</span>
                           {fmtQty(clusterSupplyTotals[c.key] || 0)}
                         </span>
+                        <button
+                          type="button"
+                          className="fbo-forecast-cluster-export"
+                          title="Выгрузить кластер в Excel"
+                          disabled={!data?.syncedAt || exportingCluster === c.key}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleExportCluster(c);
+                          }}
+                        >
+                          {exportingCluster === c.key ? '…' : 'Excel'}
+                        </button>
                       </span>
                     </th>
                   );
@@ -700,13 +761,15 @@ export function FboSupplyForecast() {
               {hasExpandedCluster && (
               <tr>
                 {displayClusters.map((c) => {
-                  if (collapsedClusters.has(c.key)) return null;
+                  if (effectiveCollapsed.has(c.key)) return null;
                   return CLUSTER_METRIC_COLS.map((col) => (
                     <th
                       key={`${c.key}-${col.key}`}
                       className={`num fbo-forecast-metric-head${
                         col.key === 'toSupply' ? ' fbo-forecast-metric-head--supply' : ''
-                      }${col.key === 'avgOrdersPerDay' ? ' fbo-forecast-metric-head--avg' : ''}`}
+                      }${col.key === 'avgOrdersPerDay' ? ' fbo-forecast-metric-head--avg' : ''}${
+                        col.key === 'pendingSupply' ? ' fbo-forecast-metric-head--pending' : ''
+                      }`}
                       title={col.title}
                     >
                       {col.label}
@@ -735,7 +798,7 @@ export function FboSupplyForecast() {
                       )}
                     </td>
                     {displayClusters.map((c) => {
-                      const collapsed = collapsedClusters.has(c.key);
+                      const collapsed = effectiveCollapsed.has(c.key);
                       const cols = clusterMetricCols(collapsed);
                       const m = row.clusterMetrics?.[c.key] || {};
                       return cols.map((col) => (
@@ -743,7 +806,9 @@ export function FboSupplyForecast() {
                           key={`${row.id}-${c.key}-${col.key}`}
                           className={`num${
                             col.key === 'toSupply' ? ' fbo-forecast-supply-cell' : ''
-                          }${col.key === 'avgOrdersPerDay' ? ' fbo-forecast-avg-cell' : ''}`}
+                          }${col.key === 'avgOrdersPerDay' ? ' fbo-forecast-avg-cell' : ''}${
+                            col.key === 'pendingSupply' ? ' fbo-forecast-pending-cell' : ''
+                          }`}
                           title={col.title}
                         >
                           {fmtCellValue(col, m[col.key])}

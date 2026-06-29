@@ -106,6 +106,25 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  exportWbForecastClusterExcel: async ({ clusterName, rows }) => {
+    try {
+      const response = await api.post(
+        '/fbo-supplies/forecast/wb/export/excel',
+        { clusterName, rows },
+        { responseType: 'arraybuffer' }
+      );
+      const date = new Date().toISOString().slice(0, 10);
+      const safeCluster = String(clusterName || 'cluster')
+        .trim()
+        .replace(/[^\w\u0400-\u04FF\-]+/g, '_')
+        .slice(0, 40);
+      const filename = parseXlsxFilename(response, `wb_postavka_${safeCluster}_${date}.xlsx`);
+      return { buffer: response.data, filename };
+    } catch (e) {
+      throw new Error(parseApiErrorPayload(e, 'Не удалось выгрузить Excel'));
+    }
+  },
+
   /** Склады для поля «Склад списания остатков» */
   getDeductionWarehouses: async (params = {}) => {
     const response = await api.get('/fbo-supplies/deduction-warehouses', { params });

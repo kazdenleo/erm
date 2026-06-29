@@ -51,6 +51,31 @@ test('resolveWbBarcode prefers chrtId and externalSku tail', () => {
   assert.equal(resolveWbBarcode({ wbBarcode: '4600000000001' }), '4600000000001');
 });
 
+test('calcClusterToSupply subtracts pending FBO supply when enabled', () => {
+  assert.equal(
+    calcClusterToSupply({
+      availability: 10,
+      orders: 30,
+      ordersDays: 30,
+      planDays: 30,
+      pendingSupply: 5,
+      includePendingSupply: true,
+    }),
+    15
+  );
+  assert.equal(
+    calcClusterToSupply({
+      availability: 10,
+      orders: 30,
+      ordersDays: 30,
+      planDays: 30,
+      pendingSupply: 5,
+      includePendingSupply: false,
+    }),
+    20
+  );
+});
+
 test('calcClusterToSupply: avg per day * plan days minus availability', () => {
   assert.equal(
     calcClusterToSupply({ availability: 10, orders: 30, ordersDays: 30, planDays: 30 }),
