@@ -1396,6 +1396,7 @@ class PurchasesService {
 
     return transaction(async (client) => {
       await assertPurchaseInProfile(client, id, pid);
+      await assertPurchaseNotArchivedInTx(client, id);
       await client.query(
         `UPDATE purchases
          SET supplier_id = $2,
@@ -1434,6 +1435,7 @@ class PurchasesService {
 
     return transaction(async (client) => {
       await assertPurchaseInProfile(client, purId, pid);
+      await assertPurchaseNotArchivedInTx(client, purId);
       const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
       if (!hasPrice) {
         const err = new Error('В базе не найдено поле закупочной цены. Примените миграцию 078_add_purchase_price_to_purchase_items.sql');
@@ -1713,7 +1715,12 @@ class PurchasesService {
       let itemsToProcess = cachedItemsAfterPreSubmit ?? initialItems;
       let supplierSubmit = cachedSupplierPreSubmit;
 
+      // Сначала закупка в ERP, затем отправка поставщику (post-submit).
+      // Pre-submit до создания закупки давал заказы в Moskvorechie без записи в ERM.
+      const usePreSubmitBeforePurchase = false;
+
       if (
+        usePreSubmitBeforePurchase &&
         submitToSupplier &&
         itemsToProcess.length > 0 &&
         Number.isFinite(resolvedSupplierId) &&
@@ -2041,6 +2048,7 @@ class PurchasesService {
         err.statusCode = 404;
         throw err;
       }
+      await assertPurchaseNotArchivedInTx(client, id);
 
       const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
       incomingDeltas = await applyPurchaseLineItemsInTx(client, id, normalized, pid, {
@@ -2108,6 +2116,7 @@ class PurchasesService {
         err.statusCode = 404;
         throw err;
       }
+      await assertPurchaseNotArchivedInTx(client, purId);
 
       const line = await client.query(
         `SELECT id, product_id, source_orders, expected_quantity, received_quantity FROM purchase_items WHERE id = $1 AND purchase_id = $2 FOR UPDATE`,

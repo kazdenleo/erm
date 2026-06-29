@@ -438,8 +438,7 @@ class StockMovementsService {
         metaOut.strict_warehouse === true ||
         metaOut.strictWarehouse === true ||
         metaOut.fbs_strict_warehouse === true;
-      const snapshotOpts =
-        strictWh && warehouseId != null ? { warehouseId } : {};
+      const snapshotOpts = warehouseId != null ? { warehouseId } : {};
 
       if (type === 'reserve' && safeDelta < 0) {
         const reserveAdd = Math.floor(Math.abs(safeDelta));
@@ -449,25 +448,27 @@ class StockMovementsService {
           throw err;
         }
         const supply = await getProductSupplySnapshotWithClient(client, idNum, snapshotOpts);
+        const warehouseScopedReserve = snapshotOpts.warehouseId != null;
+        const reservedBefore = warehouseScopedReserve ? supply.reserved : supply.reservedRaw;
         const journalBeforeRaw = supply.reservedRaw;
         if (!journalReconcile) {
           const availableForReserve = Math.max(0, Math.floor(supply.available));
           if (availableForReserve <= 0) {
             const whHint =
-              strictWh && warehouseId != null ? ` (склад #${warehouseId})` : '';
+              warehouseId != null ? ` (склад #${warehouseId})` : '';
             const err = new Error(
               `Недостаточно остатка для резерва${whHint}: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
-                `уже зарезервировано ${journalBeforeRaw} (доступно без поставщиков: 0)`
+                `уже зарезервировано ${reservedBefore} (доступно без поставщиков: 0)`
             );
             err.statusCode = 400;
             throw err;
           }
           if (reserveAdd > availableForReserve) {
             const whHint =
-              strictWh && warehouseId != null ? ` (склад #${warehouseId})` : '';
+              warehouseId != null ? ` (склад #${warehouseId})` : '';
             const err = new Error(
               `Недостаточно остатка для резерва${whHint}: на складе ${supply.onHand}, в пути ${supply.incoming}, ` +
-                `уже зарезервировано ${journalBeforeRaw}, запрошено ${reserveAdd} ` +
+                `уже зарезервировано ${reservedBefore}, запрошено ${reserveAdd} ` +
                 `(доступно без поставщиков: ${availableForReserve})`
             );
             err.statusCode = 400;
@@ -545,9 +546,13 @@ class StockMovementsService {
 
       if (type === 'reserve' && !journalReconcile) {
         const snapAfter = await getProductSupplySnapshotWithClient(client, idNum, snapshotOpts);
-        if (snapAfter.reservedRaw > snapAfter.supplyCap) {
+        const warehouseScopedReserve =
+          snapshotOpts.warehouseId != null &&
+          String(snapshotOpts.warehouseId).trim() !== '';
+        const reservedCheck = warehouseScopedReserve ? snapAfter.reserved : snapAfter.reservedRaw;
+        if (reservedCheck > snapAfter.supplyCap) {
           const err = new Error(
-            `Резерв превышает наличие и «в пути»: зарезервировано ${snapAfter.reservedRaw}, ` +
+            `Резерв превышает наличие и «в пути»: зарезервировано ${reservedCheck}, ` +
               `доступно к резерву ${snapAfter.supplyCap} (на складе ${snapAfter.onHand}, в пути ${snapAfter.incoming})`
           );
           err.statusCode = 400;
@@ -619,17 +624,12 @@ class StockMovementsService {
       warehouseId: whFilter
     });
 
-    const { isKitProductId, isKitStockHistoryMovementType, getKitComponents, readKitDisplayReservedQuantity } =
-      await import('./kitStock.service.js');
+    const { isKitProductId, isKitStockHistoryMovementType } = await import('./kitStock.service.js');
     const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
     const isKit = await isKitProductId(idNum);
 
     let netReserved;
-    if (isKit) {
-      netReserved = await readKitDisplayReservedQuantity(idNum, {
-        warehouseId: whFilter ?? null
-      });
-    } else if (whFilter != null) {
+    if (whFilter != null) {
       netReserved = await getReservedQuantityFromMovements(idNum, { warehouseId: whFilter });
     } else {
       netReserved = await getReservedQuantityFromMovements(idNum);
@@ -639,84 +639,14 @@ class StockMovementsService {
       return { movements: rows, netReserved };
     }
 
-    const combined = rows.filter((m) => isKitStockHistoryMovementType(m?.type));
-
-    const comps = await getKitComponents(idNum);
-    for (const c of comps || []) {
-      const cid = Number(c.component_product_id);
-      if (!Number.isFinite(cid) || cid < 1) continue;
-      const compRows = await this.repository.findByProduct(cid, {
-        limit: Math.min(cap, 80),
-        profileId,
-        warehouseId: whFilter
-      });
-      for (const m of compRows || []) {
-        const t = String(m?.type || '').toLowerCase();
-        if (t === 'return_to_supplier') {
-          const rawMeta = m.meta && typeof m.meta === 'object' ? m.meta : {};
-          const kitPid = rawMeta.kit_product_id ?? rawMeta.kitProductId;
-          const kitLinked =
-            rawMeta.kit_component_return_to_supplier === true ||
-            rawMeta.kit_component_return_to_supplier === 'true' ||
-            (kitPid != null && String(kitPid) === String(idNum));
-          if (!kitLinked) continue;
-          combined.push({
-            ...m,
-            meta: {
-              ...rawMeta,
-              kit_component_return_to_supplier: true,
-              kit_product_id: idNum
-            }
-          });
-          continue;
-        }
-        if (t !== 'reserve' && t !== 'unreserve') continue;
-        combined.push({
-          ...m,
-          meta: {
-            ...(m.meta && typeof m.meta === 'object' ? m.meta : {}),
-            kit_component_reserve: true,
-            kit_product_id: idNum
-          }
-        });
-      }
-    }
-
-    const kitResetMs = rows.reduce((max, m) => {
-      const raw = m?.meta;
-      const meta = raw && typeof raw === 'object' ? raw : {};
-      const flagged =
-        meta.stock_history_reset === true ||
-        meta.stock_history_reset === 'true' ||
-        meta.admin_set != null;
-      if (!flagged) return max;
-      const t = new Date(m.created_at ?? m.createdAt ?? 0).getTime();
-      return Number.isFinite(t) && t > max ? t : max;
-    }, 0);
-    if (kitResetMs > 0) {
-      for (let i = combined.length - 1; i >= 0; i--) {
-        const m = combined[i];
-        const mpid = m.product_id ?? m.productId;
-        if (mpid != null && String(mpid) === String(idNum)) continue;
-        const t = new Date(m.created_at ?? m.createdAt ?? 0).getTime();
-        if (Number.isFinite(t) && t < kitResetMs) {
-          combined.splice(i, 1);
-        }
-      }
-    }
-
-    combined.sort((a, b) => {
-      const ta = new Date(a.created_at || a.createdAt || 0).getTime();
-      const tb = new Date(b.created_at || b.createdAt || 0).getTime();
-      return tb - ta;
-    });
-    return { movements: combined.slice(0, cap), netReserved };
+    const movements = rows.filter((m) => isKitStockHistoryMovementType(m?.type));
+    return { movements: movements.slice(0, cap), netReserved };
   }
 
   /**
    * Заказы, под которые сейчас числится ненулевой резерв товара (по журналу reserve/unreserve).
    * Формула нетто-резерва совпадает с products.repository / kitStock (unreserve уменьшает резерв).
-   * Для комплектов reservedQty — целые комплекты под заказ (SKU + комплектующие), не «сырой» журнал SKU.
+   * Для комплектов reservedQty — комплектов под заказ (validation: SKU + комплектующие без двойного счёта).
    */
   async resolveWarehouseFilter(warehouseId) {
     if (warehouseId == null || String(warehouseId).trim() === '') return null;
@@ -728,6 +658,128 @@ class StockMovementsService {
     if (whId == null) return '';
     params.push(whId);
     return stockMovementWarehouseStrictSql('', whId, params.length);
+  }
+
+  /**
+   * Снятия резерва без order_id уменьшают нетто в журнале, но не движения заказов.
+   * Для модалки выравниваем qty по заказам с journalNet (сначала более новые заказы в списке).
+   */
+  async _reconcileOrderReserveListWithJournal(out, productId, { warehouseId = null, isKit = false } = {}) {
+    if (!Array.isArray(out) || out.length === 0) return out;
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) return out;
+
+    const whFilterId = parseStockMovementWarehouseId(warehouseId);
+    const movementOpts = whFilterId != null ? { warehouseId: whFilterId } : {};
+    const { readKitSkuNetReserved } = await import('./kitStock.service.js');
+    const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
+    const journalNet = isKit
+      ? await readKitSkuNetReserved(idNum, movementOpts)
+      : await getReservedQuantityFromMovements(idNum, movementOpts);
+
+    let excess = out.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0) - journalNet;
+    if (excess <= 0) return out;
+
+    for (let i = 0; i < out.length && excess > 0; i++) {
+      const cur = Math.max(0, Number(out[i].reservedQty) || 0);
+      if (cur <= 0) continue;
+      const drop = Math.min(cur, excess);
+      out[i].reservedQty = cur - drop;
+      excess -= drop;
+    }
+    return out.filter((o) => (Number(o.reservedQty) || 0) > 0);
+  }
+
+  /**
+   * Источник резерва по meta движений (с наличия / в пути / смешанный).
+   */
+  async _enrichReservedOrdersWithSource(out, productId, { warehouseId = null, isKit = false } = {}) {
+    if (!Array.isArray(out) || out.length === 0) return out;
+
+    const idNum = typeof productId === 'string' ? parseInt(productId, 10) : Number(productId);
+    if (!idNum || Number.isNaN(idNum) || idNum < 1) return out;
+
+    const { queryOrderProductReserveMetaMap, scaleReserveMetaToDisplayQty } = await import(
+      './orders.service.js'
+    );
+
+    const manualGroupIdsByDisplayOrder = new Map();
+    const manualDisplayIds = out
+      .filter((o) => o.marketplace === 'manual' && Number(o.orderDbId) > 0)
+      .map((o) => Number(o.orderDbId));
+
+    if (isKit && manualDisplayIds.length) {
+      const gr = await query(
+        `SELECT o1.id AS display_id, o2.id AS sibling_id
+         FROM orders o1
+         JOIN orders o2 ON o2.marketplace = 'manual'
+           AND o2.order_group_id IS NOT NULL
+           AND TRIM(o2.order_group_id) <> ''
+           AND o2.order_group_id = o1.order_group_id
+           AND o2.product_id = $1
+         WHERE o1.id = ANY($2::bigint[])`,
+        [idNum, manualDisplayIds]
+      );
+      for (const row of gr.rows || []) {
+        const displayId = Number(row.display_id);
+        const siblingId = Number(row.sibling_id);
+        if (!Number.isFinite(displayId) || displayId < 1 || !Number.isFinite(siblingId) || siblingId < 1) {
+          continue;
+        }
+        if (!manualGroupIdsByDisplayOrder.has(displayId)) {
+          manualGroupIdsByDisplayOrder.set(displayId, new Set());
+        }
+        manualGroupIdsByDisplayOrder.get(displayId).add(siblingId);
+      }
+    }
+
+    const allOrderDbIds = new Set();
+    for (const o of out) {
+      const oid = Number(o.orderDbId);
+      if (!Number.isFinite(oid) || oid < 1) continue;
+      const groupSet = manualGroupIdsByDisplayOrder.get(oid);
+      if (groupSet?.size) {
+        for (const id of groupSet) allOrderDbIds.add(id);
+      } else {
+        allOrderDbIds.add(oid);
+      }
+    }
+
+    const metaMap = await queryOrderProductReserveMetaMap(idNum, [...allOrderDbIds], { warehouseId });
+
+    return out.map((o) => {
+      const qty = Math.max(0, Number(o.reservedQty) || 0);
+      const oid = Number(o.orderDbId);
+      let fromOnHand = 0;
+      let fromIncoming = 0;
+
+      if (Number.isFinite(oid) && oid > 0) {
+        const groupSet = manualGroupIdsByDisplayOrder.get(oid);
+        if (groupSet?.size) {
+          for (const id of groupSet) {
+            const m = metaMap.get(id);
+            if (m) {
+              fromOnHand += m.fromOnHand;
+              fromIncoming += m.fromIncoming;
+            }
+          }
+        } else {
+          const m = metaMap.get(oid);
+          if (m) {
+            fromOnHand = m.fromOnHand;
+            fromIncoming = m.fromIncoming;
+          }
+        }
+      }
+
+      const scaled = scaleReserveMetaToDisplayQty({ fromOnHand, fromIncoming }, qty);
+      return {
+        ...o,
+        reserveFromOnHand: scaled.fromOnHand,
+        reserveFromIncoming: scaled.fromIncoming,
+        reserveSource: scaled.reserveSource
+      };
+    });
   }
 
   async listReservedOrdersForProduct(
@@ -762,9 +814,19 @@ class StockMovementsService {
       isKitProductId,
       getKitComponents,
       getReservedKitUnitsForManualOrderGroup,
-      getReservedKitUnitsForOrderValidation
+      getReservedKitUnitsForOrderValidation,
+      reconcileExcessKitWholeReserveForOrder
     } = await import('./kitStock.service.js');
     const isKit = await isKitProductId(idNum);
+
+    const whFilterId = parseStockMovementWarehouseId(warehouseId);
+    const kitUnreserveFn = (pid, net, oid, m) =>
+      this.applyChange(pid, {
+        delta: net,
+        type: 'unreserve',
+        reason: `Снятие лишнего резерва целых комплектов на SKU (заказ ${oid})`.trim(),
+        meta: m
+      });
 
     const movementScopeSql = isKit
       ? `product_id = $1
@@ -774,7 +836,6 @@ class StockMovementsService {
       : `product_id = $1`;
 
     const params = [idNum];
-    const whFilterId = parseStockMovementWarehouseId(warehouseId);
     let whSql = '';
     if (whFilterId != null) {
       params.push(whFilterId);
@@ -804,18 +865,30 @@ class StockMovementsService {
                AND type IN ('reserve', 'unreserve')
                AND ${metaKeySql} IS NOT NULL
                AND TRIM(${metaKeySql}) <> ''${whSql}
+           ),
+           sku_net AS (
+             SELECT ${metaKeySql} AS meta_key,
+               ${NET_RESERVED_SUM_EXPR_SQL}::int AS sku_net_qty
+             FROM stock_movements
+             WHERE product_id = $1
+               AND type IN ('reserve', 'unreserve')
+               AND ${metaKeySql} IS NOT NULL
+               AND TRIM(${metaKeySql}) <> ''${whSql}
+             GROUP BY 1
+             HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
            )
            SELECT o.id,
                   o.marketplace,
                   o.order_id,
                   o.status,
-                  0 AS sku_net_qty,
+                  COALESCE(sku_net.sku_net_qty, 0) AS sku_net_qty,
                   (o.id IS NULL) AS order_missing,
                   CASE
                     WHEN order_keys.meta_key ~ '^[0-9]+$' THEN order_keys.meta_key::bigint
                     ELSE NULL
                   END AS movement_order_db_id
            FROM order_keys
+           LEFT JOIN sku_net ON sku_net.meta_key = order_keys.meta_key
            ${orderLateralSql}
            ORDER BY o.created_at DESC NULLS LAST, order_keys.meta_key DESC
            LIMIT 200`,
@@ -897,6 +970,31 @@ class StockMovementsService {
     const { isOrderTerminalNoReserve } = await import('./orders.service.js');
     const { getOrderStatusLabel } = await import('../constants/orderStatuses.js');
 
+    if (isKit && whFilterId != null) {
+      const seenReconcile = new Set();
+      for (const r of res.rows || []) {
+        if (r.order_missing === true) continue;
+        const orderDbId = Number(r.id);
+        if (!Number.isFinite(orderDbId) || orderDbId < 1 || seenReconcile.has(orderDbId)) continue;
+        seenReconcile.add(orderDbId);
+        try {
+          await reconcileExcessKitWholeReserveForOrder(
+            idNum,
+            orderDbId,
+            r.order_id != null ? String(r.order_id).trim() : String(orderDbId),
+            {
+              warehouse_id: whFilterId,
+              order_id: orderDbId,
+              orderId: r.order_id
+            },
+            kitUnreserveFn
+          );
+        } catch (_) {
+          /* не блокируем список */
+        }
+      }
+    }
+
     const out = [];
     const seenManualKitGroups = new Set();
     const seenKitOrderDbIds = new Set();
@@ -908,7 +1006,9 @@ class StockMovementsService {
       if (orderMissing) {
         let reservedQty = Number(r.sku_net_qty) || 0;
         if (isKit && Number.isFinite(movementOrderDbId) && movementOrderDbId > 0) {
-          const kitUnits = await getReservedKitUnitsForOrderValidation(idNum, movementOrderDbId);
+          const kitUnits = await getReservedKitUnitsForOrderValidation(idNum, movementOrderDbId, {
+            warehouseId: whFilterId
+          });
           if (kitUnits > 0) reservedQty = kitUnits;
         }
         if (reservedQty <= 0) continue;
@@ -957,8 +1057,8 @@ class StockMovementsService {
           if (seenManualKitGroups.has(rowGroupId)) continue;
           seenManualKitGroups.add(rowGroupId);
           reservedQty = await getReservedKitUnitsForManualOrderGroup(idNum, rowGroupId, {
-            warehouseId,
-            profileId: tid
+            profileId: tid,
+            warehouseId: whFilterId
           });
           const kitLine = await query(
             `SELECT order_id FROM orders
@@ -970,7 +1070,9 @@ class StockMovementsService {
             displayOrderId = kitLine.rows[0].order_id;
           }
         } else {
-          reservedQty = await getReservedKitUnitsForOrderValidation(idNum, orderDbId);
+          reservedQty = await getReservedKitUnitsForOrderValidation(idNum, orderDbId, {
+            warehouseId: whFilterId
+          });
         }
       }
       if (reservedQty <= 0) continue;
@@ -1023,8 +1125,8 @@ class StockMovementsService {
         const gid = String(gr.order_group_id || '').trim();
         if (!gid || seenManualKitGroups.has(gid)) continue;
         const reservedQty = await getReservedKitUnitsForManualOrderGroup(idNum, gid, {
-          warehouseId,
-          profileId: tid
+          profileId: tid,
+          warehouseId: whFilterId
         });
         if (reservedQty <= 0) continue;
         seenManualKitGroups.add(gid);
@@ -1041,7 +1143,16 @@ class StockMovementsService {
       }
     }
 
-    return out;
+    const reconciled = isKit
+      ? out
+      : await this._reconcileOrderReserveListWithJournal(out, idNum, {
+          warehouseId: whFilterId,
+          isKit
+        });
+    return this._enrichReservedOrdersWithSource(reconciled, idNum, {
+      warehouseId: whFilterId,
+      isKit
+    });
   }
 
   /**
@@ -1162,7 +1273,7 @@ class StockMovementsService {
           });
     const ordersReservedQty = orders.reduce((s, o) => s + (Number(o.reservedQty) || 0), 0);
 
-    const { isKitProductId, readKitDisplayReservedQuantityForStockSummary, getKitComponents } =
+    const { isKitProductId, readKitSkuNetReserved, getKitComponents } =
       await import('./kitStock.service.js');
     const { getReservedQuantityFromMovements } = await import('./sellableQuantity.service.js');
 
@@ -1174,7 +1285,7 @@ class StockMovementsService {
       ...(profileId != null && profileId !== '' ? { profileId } : {})
     };
     const displayReservedQty = isKit
-      ? await readKitDisplayReservedQuantityForStockSummary(idNum, movementOpts)
+      ? await readKitSkuNetReserved(idNum, movementOpts)
       : await getReservedQuantityFromMovements(idNum, movementOpts);
 
     let componentJournalReserve = 0;
@@ -1507,10 +1618,10 @@ class StockMovementsService {
     }
 
     const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
-    const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
+    const { isKitProductId, readKitSkuNetReserved } = await import('./kitStock.service.js');
     try {
       if (await isKitProductId(idNum)) {
-        const net = await readKitDisplayReservedQuantity(idNum);
+        const net = await readKitSkuNetReserved(idNum);
         await syncProductReservedQuantityFromJournal(idNum, { reserved: net });
       } else {
         await syncProductReservedQuantityFromJournal(idNum);
@@ -1560,7 +1671,6 @@ class StockMovementsService {
       isKitProductId,
       getKitComponents,
       readKitSkuNetReserved,
-      readKitDisplayReservedQuantity,
       buildKitComponentQtyMap
     } = await import('./kitStock.service.js');
 
@@ -1582,7 +1692,7 @@ class StockMovementsService {
       const kitUnitsTarget =
         maxQty != null && Number.isFinite(Number(maxQty)) && Number(maxQty) > 0
           ? Math.floor(Number(maxQty))
-          : await readKitDisplayReservedQuantity(idNum, movementOpts);
+          : await readKitSkuNetReserved(idNum, movementOpts);
       if (kitUnitsTarget >= 1) {
         const onSku = await readKitSkuNetReserved(idNum, movementOpts);
         if (onSku > 0) {
@@ -1649,7 +1759,7 @@ class StockMovementsService {
     const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
     try {
       if (isKit) {
-        const net = await readKitDisplayReservedQuantity(idNum, movementOpts);
+        const net = await readKitSkuNetReserved(idNum, movementOpts);
         await syncProductReservedQuantityFromJournal(idNum, { reserved: net });
       } else {
         await syncProductReservedQuantityFromJournal(idNum);

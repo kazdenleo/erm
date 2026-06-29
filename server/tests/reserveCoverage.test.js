@@ -1,8 +1,12 @@
 import { describe, expect, test } from '@jest/globals';
 import {
   classifyOrderReserveCoverage,
+  coverageKindFromReserveMeta,
+  resolveReserveSourceKind,
+  scaleReserveMetaToDisplayQty,
   onHandHeadroomBeforeReserve,
   orderStatusAllowsIncomingReserve,
+  orderRowAllowsIncomingReserve,
 } from '../src/services/orders.service.js';
 
 describe('orderStatusAllowsIncomingReserve', () => {
@@ -18,9 +22,81 @@ describe('orderStatusAllowsIncomingReserve', () => {
   });
 });
 
+describe('orderRowAllowsIncomingReserve', () => {
+  test('ручной заказ в статусе new — можно с пути', () => {
+    expect(orderRowAllowsIncomingReserve({ marketplace: 'manual', status: 'new' })).toBe(true);
+  });
+
+  test('ozon new — только со склада', () => {
+    expect(orderRowAllowsIncomingReserve({ marketplace: 'ozon', status: 'new' })).toBe(false);
+  });
+});
+
 describe('onHandHeadroomBeforeReserve', () => {
   test('headroom при частичном резерве', () => {
     expect(onHandHeadroomBeforeReserve({ onHand: 5, reservedRaw: 3 })).toBe(2);
+  });
+});
+
+describe('coverageKindFromReserveMeta', () => {
+  test('только со склада', () => {
+    expect(coverageKindFromReserveMeta(2, 0)).toBe('on_hand');
+  });
+
+  test('только в пути', () => {
+    expect(coverageKindFromReserveMeta(0, 2)).toBe('incoming');
+  });
+
+  test('смешанное — в пути', () => {
+    expect(coverageKindFromReserveMeta(1, 1)).toBe('incoming');
+  });
+
+  test('нет meta — null', () => {
+    expect(coverageKindFromReserveMeta(0, 0)).toBeNull();
+  });
+});
+
+describe('resolveReserveSourceKind', () => {
+  test('только с наличия', () => {
+    expect(resolveReserveSourceKind(3, 0)).toBe('on_hand');
+  });
+
+  test('только в пути', () => {
+    expect(resolveReserveSourceKind(0, 2)).toBe('incoming');
+  });
+
+  test('смешанный', () => {
+    expect(resolveReserveSourceKind(1, 2)).toBe('mixed');
+  });
+
+  test('нет meta — null', () => {
+    expect(resolveReserveSourceKind(0, 0)).toBeNull();
+  });
+});
+
+describe('scaleReserveMetaToDisplayQty', () => {
+  test('без урезания', () => {
+    expect(scaleReserveMetaToDisplayQty({ fromOnHand: 2, fromIncoming: 1 }, 3)).toEqual({
+      fromOnHand: 2,
+      fromIncoming: 1,
+      reserveSource: 'mixed',
+    });
+  });
+
+  test('урезание сначала с в пути', () => {
+    expect(scaleReserveMetaToDisplayQty({ fromOnHand: 2, fromIncoming: 3 }, 4)).toEqual({
+      fromOnHand: 2,
+      fromIncoming: 2,
+      reserveSource: 'mixed',
+    });
+  });
+
+  test('урезание до наличия', () => {
+    expect(scaleReserveMetaToDisplayQty({ fromOnHand: 3, fromIncoming: 2 }, 2)).toEqual({
+      fromOnHand: 2,
+      fromIncoming: 0,
+      reserveSource: 'on_hand',
+    });
   });
 });
 

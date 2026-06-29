@@ -11,9 +11,18 @@ test('allocateKitReservePriority: whole first, then components', () => {
   const alloc = allocateKitReservePriority(5, {
     wholeReserveAvail: 2,
     fromComponents: 4,
+    fromComponentsOnHand: 4,
     physicalOnHand: 2,
   });
-  assert.deepEqual(alloc, { kitsToReserve: 5, fromWhole: 2, fromComponents: 3 });
+  assert.deepEqual(alloc, {
+    kitsToReserve: 5,
+    fromWhole: 2,
+    fromComponents: 3,
+    fromWholeOnHand: 2,
+    fromComponentsOnHand: 3,
+    fromWholeIncoming: 0,
+    fromComponentsIncoming: 0,
+  });
 });
 
 test('computeAssemblableFromComponentPoolMap: min by composition', () => {

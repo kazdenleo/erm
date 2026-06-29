@@ -5,6 +5,7 @@
 
 import fetch from 'node-fetch';
 import { query } from '../config/database.js';
+import { ORDER_PRODUCT_LATERAL_SUBQUERY_SQL } from '../constants/orderProductMatchSql.js';
 import repositoryFactory from '../config/repository-factory.js';
 import stockMovementsService, { runWithProductStockLock } from './stockMovements.service.js';
 import {
@@ -15,6 +16,7 @@ import {
   allocateKitReservePriority,
   reconcileMisplacedKitWholeReserve,
   reconcileMixedKitOrderReservePaths,
+  reconcileExcessKitWholeReserveForOrder,
   getReservedKitUnitsForOrder,
   getReservedKitUnitsForOrderValidation,
   releaseAllReservesForOrder,
@@ -48,7 +50,8 @@ import { resolveProfileProcurementStatusEnabled } from '../utils/profileProcurem
 import logger from '../utils/logger.js';
 import {
   orderReserveMovementMatchOrderRowSql,
-  orderReserveMovementMatchSql
+  orderReserveMovementMatchSql,
+  parseStockMovementWarehouseId
 } from '../constants/netReservedStockSql.js';
 import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
 import { buildAssemblyCompositionLinesForOrder } from './assemblyOrderItems.service.js';
@@ -120,17 +123,188 @@ export function classifyOrderReserveCoverage({
   return fromOnHand > 0 ? 'on_hand' : 'incoming';
 }
 
+/** Покрытие по meta движений reserve (reserve_from_on_hand / reserve_from_incoming). */
+export function coverageKindFromReserveMeta(fromOnHand, fromIncoming) {
+  const kind = resolveReserveSourceKind(fromOnHand, fromIncoming);
+  if (kind === 'mixed') return 'incoming';
+  return kind;
+}
+
+/** Источник резерва для отображения: со склада, в пути или смешанный. */
+export function resolveReserveSourceKind(fromOnHand, fromIncoming) {
+  const oh = Math.max(0, Math.floor(Number(fromOnHand) || 0));
+  const inc = Math.max(0, Math.floor(Number(fromIncoming) || 0));
+  if (oh + inc <= 0) return null;
+  if (oh > 0 && inc > 0) return 'mixed';
+  if (inc > 0) return 'incoming';
+  return 'on_hand';
+}
+
+/** Подгоняет meta под отображаемое qty (после выравнивания с журналом). */
+export function scaleReserveMetaToDisplayQty({ fromOnHand = 0, fromIncoming = 0 } = {}, displayQty) {
+  let oh = Math.max(0, Math.floor(Number(fromOnHand) || 0));
+  let inc = Math.max(0, Math.floor(Number(fromIncoming) || 0));
+  const qty = Math.max(0, Math.floor(Number(displayQty) || 0));
+  const total = oh + inc;
+  if (total <= 0 || qty >= total) {
+    return { fromOnHand: oh, fromIncoming: inc, reserveSource: resolveReserveSourceKind(oh, inc) };
+  }
+  let excess = total - qty;
+  const dropInc = Math.min(inc, excess);
+  inc -= dropInc;
+  excess -= dropInc;
+  oh = Math.max(0, oh - excess);
+  return { fromOnHand: oh, fromIncoming: inc, reserveSource: resolveReserveSourceKind(oh, inc) };
+}
+
+/**
+ * Meta резерва по заказам для одного product_id (SKU).
+ * @returns {Map<number, { fromOnHand: number, fromIncoming: number }>}
+ */
+export async function queryOrderProductReserveMetaMap(productId, orderDbIds, { warehouseId = null } = {}) {
+  const map = new Map();
+  const pid = Number(productId);
+  const ids = [...new Set((orderDbIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  if (!Number.isFinite(pid) || pid < 1 || !ids.length || !repositoryFactory.isUsingPostgreSQL()) {
+    return map;
+  }
+
+  const whId = parseStockMovementWarehouseId(warehouseId);
+  const params = [ids, pid];
+  let whSql = '';
+  if (whId != null) {
+    params.push(whId);
+    whSql = ` AND sm.warehouse_id = $${params.length}`;
+  }
+
+  const r = await query(
+    `SELECT o.id AS order_db_id,
+            GREATEST(0, ${RESERVE_META_ON_HAND_SUM_SQL})::int AS meta_on_hand,
+            GREATEST(0, ${RESERVE_META_INCOMING_SUM_SQL})::int AS meta_incoming
+     FROM orders o
+     JOIN stock_movements sm ON sm.type IN ('reserve', 'unreserve')
+       AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+       AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+     WHERE o.id = ANY($1::bigint[])
+       AND sm.product_id = $2${whSql}
+     GROUP BY o.id`,
+    params
+  );
+
+  for (const row of r.rows || []) {
+    const oid = Number(row.order_db_id);
+    if (!Number.isFinite(oid) || oid < 1) continue;
+    map.set(oid, {
+      fromOnHand: Number(row.meta_on_hand) || 0,
+      fromIncoming: Number(row.meta_incoming) || 0
+    });
+  }
+  return map;
+}
+
+const RESERVE_META_ON_HAND_SUM_SQL = `
+  SUM(CASE
+    WHEN sm.type = 'reserve' THEN COALESCE(NULLIF(TRIM(sm.meta->>'reserve_from_on_hand'), '')::int, 0)
+    WHEN sm.type = 'unreserve' THEN -COALESCE(NULLIF(TRIM(sm.meta->>'reserve_from_on_hand'), '')::int, 0)
+    ELSE 0
+  END)`;
+
+const RESERVE_META_INCOMING_SUM_SQL = `
+  SUM(CASE
+    WHEN sm.type = 'reserve' THEN COALESCE(NULLIF(TRIM(sm.meta->>'reserve_from_incoming'), '')::int, 0)
+    WHEN sm.type = 'unreserve' THEN -COALESCE(NULLIF(TRIM(sm.meta->>'reserve_from_incoming'), '')::int, 0)
+    ELSE 0
+  END)`;
+
+/**
+ * Покрытие резерва по фактическим meta движений (приоритет над FIFO-снимком остатков).
+ * @returns {Map<string, 'on_hand'|'incoming'>} ключ `${orderDbId}:${productId}`
+ */
+async function buildReserveCoverageMetaMap({ orderDbIds = null, productIds = null } = {}) {
+  const map = new Map();
+  if (!repositoryFactory.isUsingPostgreSQL()) return map;
+
+  const clauses = [];
+  const params = [];
+  if (orderDbIds?.length) {
+    params.push([...new Set(orderDbIds.map((id) => Number(id)).filter((id) => id > 0))]);
+    if (!params[params.length - 1].length) return map;
+    clauses.push(`o.id = ANY($${params.length}::bigint[])`);
+  }
+  if (productIds?.length) {
+    params.push([...new Set(productIds.map((id) => Number(id)).filter((id) => id > 0))]);
+    if (!params[params.length - 1].length && !orderDbIds?.length) return map;
+    clauses.push(`sm.product_id = ANY($${params.length}::int[])`);
+  }
+  if (!clauses.length) return map;
+
+  const r = await query(
+    `SELECT o.id AS order_db_id,
+            sm.product_id,
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS reserved_qty,
+            ${RESERVE_META_ON_HAND_SUM_SQL}::int AS meta_on_hand,
+            ${RESERVE_META_INCOMING_SUM_SQL}::int AS meta_incoming
+     FROM orders o
+     JOIN stock_movements sm ON sm.type IN ('reserve', 'unreserve')
+       AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+       AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+     WHERE ${clauses.join(' AND ')}
+     GROUP BY o.id, sm.product_id
+     HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
+    params
+  );
+
+  for (const row of r.rows || []) {
+    const oid = Number(row.order_db_id);
+    const pid = Number(row.product_id);
+    if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) continue;
+    const kind = coverageKindFromReserveMeta(row.meta_on_hand, row.meta_incoming);
+    if (kind) map.set(`${oid}:${pid}`, kind);
+  }
+  return map;
+}
+
+function resolveReserveCoverageKind(fifoKey, { metaMap, fifoMap, supplyMap, pid, reserved }) {
+  if (fifoKey && metaMap?.has(fifoKey)) return metaMap.get(fifoKey);
+  if (fifoKey && fifoMap?.has(fifoKey)) return fifoMap.get(fifoKey);
+  const sup = supplyMap?.get(pid);
+  return sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
+}
+
 /** Сколько ещё можно покрыть резервом с фактического остатка (FIFO: сначала занят on_hand). */
-export function onHandHeadroomBeforeReserve({ onHand = 0, reservedRaw = 0 } = {}) {
+export function onHandHeadroomBeforeReserve({ onHand = 0, reservedRaw = 0, reserved = null } = {}) {
   const H = Math.max(0, Math.floor(Number(onHand) || 0));
-  const R0 = Math.max(0, Math.floor(Number(reservedRaw) || 0));
+  const R0 = Math.max(0, Math.floor(Number(reserved != null ? reserved : reservedRaw) || 0));
   return Math.max(0, H - Math.min(R0, H));
+}
+
+/** Снимок supply: остаток и резерв только в разрезе склада (warehouseId обязателен для операций). */
+export function onHandHeadroomFromSnapshot(snap, opts = {}) {
+  const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  if (whRaw != null && String(whRaw).trim() !== '') {
+    return onHandHeadroomBeforeReserve({ onHand: snap.onHand, reserved: snap.reserved });
+  }
+  return onHandHeadroomBeforeReserve(snap);
 }
 
 /** Резерв с «в пути» (incoming) — только для заказов в закупке или на сборке. */
 export function orderStatusAllowsIncomingReserve(status) {
   const st = String(status ?? '').trim().toLowerCase();
   return st === 'in_procurement' || st === 'in_assembly' || st === 'wb_assembly';
+}
+
+/** Ручные заказы: резерв с «в пути» сразу после создания (как в UI «Доступно»). */
+export function orderRowAllowsIncomingReserve(orderRow) {
+  if (!orderRow || typeof orderRow !== 'object') return false;
+  const mp = String(orderRow.marketplace ?? orderRow.marketplace_code ?? '').trim().toLowerCase();
+  if (mp === 'manual') return true;
+  return orderStatusAllowsIncomingReserve(orderRow.status ?? orderRow.order_status);
+}
+
+function kitReserveIncomingAllowed(meta = {}) {
+  if (meta?.allow_incoming_reserve === true || meta?.allowIncomingReserve === true) return true;
+  const row = meta?.order_row;
+  return orderRowAllowsIncomingReserve(row);
 }
 
 /**
@@ -143,6 +317,7 @@ async function buildReserveCoverageFifoMap(productIds) {
   if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
 
   const supplyMap = await batchProductReserveSupplyMap(ids);
+  const metaMap = await buildReserveCoverageMetaMap({ productIds: ids });
   const r = await query(
     `SELECT o.id AS order_db_id,
             o.product_id,
@@ -173,12 +348,12 @@ async function buildReserveCoverageFifoMap(productIds) {
   }
 
   for (const [pid, list] of byPid) {
-    const sup = supplyMap.get(pid);
     for (const { oid, reserved } of list) {
-      const kind = sup
-        ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved })
-        : 'incoming';
-      map.set(`${oid}:${pid}`, kind);
+      const fifoKey = `${oid}:${pid}`;
+      map.set(
+        fifoKey,
+        resolveReserveCoverageKind(fifoKey, { metaMap, supplyMap, pid, reserved })
+      );
     }
   }
   return map;
@@ -221,6 +396,7 @@ async function buildReserveCoverageByOrderIds(orderDbIds) {
   if (!byOrder.size) return map;
 
   const supplyMap = await batchProductReserveSupplyMap(movementPids);
+  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
   const fifoMap = await buildReserveCoverageFifoMap(movementPids);
 
   for (const [oid, lines] of byOrder) {
@@ -228,12 +404,13 @@ async function buildReserveCoverageByOrderIds(orderDbIds) {
     let anyOnHand = false;
     for (const { pid, reserved } of lines) {
       const fifoKey = `${oid}:${pid}`;
-      const kind = fifoMap.has(fifoKey)
-        ? fifoMap.get(fifoKey)
-        : (() => {
-            const sup = supplyMap.get(pid);
-            return sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
-          })();
+      const kind = resolveReserveCoverageKind(fifoKey, {
+        metaMap,
+        fifoMap,
+        supplyMap,
+        pid,
+        reserved
+      });
       if (kind === 'on_hand') anyOnHand = true;
       if (kind === 'incoming') anyIncoming = true;
     }
@@ -298,7 +475,7 @@ async function batchProductReserveSupplyMap(productIds) {
   return map;
 }
 
-function enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap = null) {
+function enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap = null, metaMap = null) {
   if (!Array.isArray(lines)) return;
   for (const line of lines) {
     const r = Math.max(0, Number(line.reservedQty) || 0);
@@ -309,14 +486,13 @@ function enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap = null) {
     }
     const oid = Number(line.orderRowDbId);
     const fifoKey = Number.isFinite(oid) && oid > 0 ? `${oid}:${pid}` : null;
-    if (fifoKey && coverageFifoMap?.has(fifoKey)) {
-      line.reserveCoverage = coverageFifoMap.get(fifoKey);
-      continue;
-    }
-    const sup = supplyMap.get(pid);
-    line.reserveCoverage = sup
-      ? classifyOrderReserveCoverage({ ...sup, orderReserved: r })
-      : 'incoming';
+    line.reserveCoverage = resolveReserveCoverageKind(fifoKey, {
+      metaMap,
+      fifoMap: coverageFifoMap,
+      supplyMap,
+      pid,
+      reserved: r
+    });
   }
 }
 
@@ -337,9 +513,11 @@ async function enrichReserveSummaryCoverage(summary, { light = false } = {}) {
   if (!summary || typeof summary !== 'object') return summary;
   const lines = Array.isArray(summary.lines) ? summary.lines : [];
   const pids = lines.map((l) => Number(l.productId)).filter((id) => id > 0);
+  const orderDbIds = lines.map((l) => Number(l.orderRowDbId)).filter((id) => id > 0);
   const supplyMap = await batchProductReserveSupplyMap(pids);
+  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds, productIds: pids });
   const coverageFifoMap = light ? null : await buildReserveCoverageFifoMap(pids);
-  enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap);
+  enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap, metaMap);
   summary.reserveCoverage = reserveCoverageFromLines(lines);
   return summary;
 }
@@ -605,21 +783,7 @@ class OrdersService {
           ON o.marketplace = r.marketplace
          AND o.order_id = r.order_id
         LEFT JOIN LATERAL (
-          SELECT p2.id AS matched_product_id
-          FROM product_skus ps
-          JOIN products p2 ON p2.id = ps.product_id
-          WHERE ps.marketplace = o.marketplace
-            AND (
-              (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-              OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-              OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                  AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-              OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL
-                  AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-              OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL
-                  AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-            )
-          LIMIT 1
+          ${ORDER_PRODUCT_LATERAL_SUBQUERY_SQL}
         ) pm ON true
         ${profileFilterSql}
       ),
@@ -1208,8 +1372,8 @@ class OrdersService {
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
     const snap = await getProductSupplySnapshotWithClient(null, pid, { warehouseId: wh });
-    if (!orderStatusAllowsIncomingReserve(orderRow?.status)) {
-      return Math.max(0, Math.floor(onHandHeadroomBeforeReserve(snap)));
+    if (!orderRowAllowsIncomingReserve(orderRow)) {
+      return Math.max(0, Math.floor(onHandHeadroomFromSnapshot(snap, { warehouseId: wh })));
     }
     return Math.max(0, Math.floor(snap.available));
   }
@@ -1349,9 +1513,12 @@ class OrdersService {
         qty = Math.min(qtyWanted, Math.floor(Number(pre)));
       } else {
         const breakdown = await computeKitReservableBreakdown(productId, {
-          warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+          warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
+          allowIncomingReserve: kitReserveIncomingAllowed(meta),
         });
-        const alloc = allocateKitReservePriority(qtyWanted, breakdown);
+        const alloc = allocateKitReservePriority(qtyWanted, breakdown, {
+          allowIncoming: kitReserveIncomingAllowed(meta),
+        });
         qty = alloc.kitsToReserve;
       }
     } else {
@@ -1406,34 +1573,37 @@ class OrdersService {
       productId,
       reserveSnapshotOptsFromMeta(meta)
     );
+    const snapOpts = reserveSnapshotOptsFromMeta(meta);
+    const headroomFromSnap = (snap) => onHandHeadroomFromSnapshot(snap, snapOpts);
     const orderRowForIncoming =
       meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
-    const allowIncoming = orderStatusAllowsIncomingReserve(
-      orderRowForIncoming?.status ?? meta?.order_status
-    );
+    const allowIncoming = kitReserveIncomingAllowed(meta);
     let reserveFromOnHand;
     let reserveFromIncoming;
     if (hasKitPrealloc) {
       const breakdown = await computeKitReservableBreakdown(productId, {
-        warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null
+        warehouseId: meta?.warehouse_id ?? meta?.warehouseId ?? null,
+        allowIncomingReserve: allowIncoming,
       });
-      const wholePool = Math.max(
-        0,
-        breakdown.wholeReserveAvail != null
-          ? Number(breakdown.wholeReserveAvail) || 0
-          : Number(breakdown.physicalOnHand) || 0
-      );
+      const wholePool = allowIncoming
+        ? Math.max(0, Number(breakdown.wholeAvail) || 0)
+        : Math.max(
+            0,
+            breakdown.wholeReserveAvail != null
+              ? Number(breakdown.wholeReserveAvail) || 0
+              : Number(breakdown.physicalOnHand) || 0
+          );
       qty = Math.min(qty, wholePool);
       if (qty <= 0) return;
-      reserveFromOnHand = qty;
-      reserveFromIncoming = 0;
+      reserveFromOnHand = Math.min(qty, headroomFromSnap(snapBeforeReserve));
+      reserveFromIncoming = allowIncoming ? Math.max(0, qty - reserveFromOnHand) : 0;
     } else {
       const cap = allowIncoming
         ? Math.floor(snapBeforeReserve.available)
-        : onHandHeadroomBeforeReserve(snapBeforeReserve);
+        : headroomFromSnap(snapBeforeReserve);
       qty = Math.min(qty, cap);
       if (qty <= 0) return;
-      reserveFromOnHand = Math.min(qty, onHandHeadroomBeforeReserve(snapBeforeReserve));
+      reserveFromOnHand = Math.min(qty, headroomFromSnap(snapBeforeReserve));
       reserveFromIncoming = allowIncoming ? Math.max(0, qty - reserveFromOnHand) : 0;
       if (!allowIncoming) {
         qty = reserveFromOnHand;
@@ -2236,7 +2406,7 @@ class OrdersService {
 
     const warehouseId = await this._resolveWarehouseIdForOrderReserve(orderRow, productId);
     const strictWh = isStrictWarehouseOrderRow(orderRow);
-    if (strictWh && (warehouseId == null || String(warehouseId).trim() === '')) return;
+    if (warehouseId == null || String(warehouseId).trim() === '') return;
 
     const { getProductSupplySnapshotWithClient } = await import('./sellableQuantity.service.js');
     if (!(await isKitProductId(productId))) {
@@ -2289,6 +2459,24 @@ class OrdersService {
                 delta: net,
                 type: 'unreserve',
                 reason: `Снятие дублирующего резерва комплекта (заказ ${oid})`.trim(),
+                meta: m
+              })
+          );
+        } catch (e) {
+          if (e?.statusCode !== 400) throw e;
+        }
+
+        try {
+          await reconcileExcessKitWholeReserveForOrder(
+            productId,
+            id,
+            orderIdStr || String(id),
+            { warehouse_id: warehouseId, order_id: id, orderId: orderIdStr, strict_warehouse: strictWh },
+            (pid, net, oid, m) =>
+              stockMovementsService.applyChange(pid, {
+                delta: net,
+                type: 'unreserve',
+                reason: `Снятие лишнего резерва целых комплектов на SKU (заказ ${oid})`.trim(),
                 meta: m
               })
           );
@@ -3411,37 +3599,28 @@ class OrdersService {
     return productId;
   }
 
-  /** Сколько комплектов можно зарезервировать на складе заказа; для FBS — без fallback на другие склады. */
+  /** Сколько комплектов можно зарезервировать на складе заказа (только этот склад, без суммирования). */
   async _computeMaxKitUnitsReservableForOrder(kitProductId, warehouseId, opts = {}) {
     const kitId = Number(kitProductId);
     if (!Number.isFinite(kitId) || kitId < 1) return 0;
-    const strict =
-      opts.strictWarehouse === true ||
-      (opts.orderRow != null && isStrictWarehouseOrderRow(opts.orderRow));
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
-    if (wh != null) {
-      const scoped = await computeMaxKitUnitsReservable(kitId, { warehouseId: wh });
-      if (scoped > 0 || strict) return scoped;
-    }
-    if (strict) return 0;
-    return computeMaxKitUnitsReservable(kitId, { warehouseId: null });
+    if (wh == null) return 0;
+    const allowIncoming = orderRowAllowsIncomingReserve(opts.orderRow);
+    return computeMaxKitUnitsReservable(kitId, {
+      warehouseId: wh,
+      allowIncomingReserve: allowIncoming
+    });
   }
 
-  /** Сколько комплектов можно зарезервировать: только из комплектующих, если целых SKU нет. */
+  /** Сколько комплектов можно зарезервировать по строке заказа (целые SKU + сборка, с учётом «в пути»). */
   async _kitReservableUnitsForOrderLine(kitId, warehouseId, orderRow, { remainingKits = null } = {}) {
     const kid = Number(kitId);
     if (!Number.isFinite(kid) || kid < 1) return 0;
     const wh =
       warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
-    const breakdown = await computeKitReservableBreakdown(kid, { warehouseId: wh });
-    const wholeReserveAvail = Math.max(0, Number(breakdown.wholeReserveAvail) || 0);
     const headroom =
       remainingKits != null ? Math.max(0, Number(remainingKits) || 0) : null;
-    if (wholeReserveAvail <= 0) {
-      const asm = Math.floor(await computeAssemblableFromComponents(kid, { warehouseId: wh }));
-      return headroom != null ? Math.min(headroom, asm) : asm;
-    }
     const maxKits = await this._computeMaxKitUnitsReservableForOrder(kid, wh, { orderRow });
     return headroom != null ? Math.min(headroom, maxKits) : maxKits;
   }
@@ -3486,11 +3665,11 @@ class OrdersService {
         warehouseId: warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null
       })
     );
-    if (!orderStatusAllowsIncomingReserve(orderRow?.status)) {
+    if (!orderRowAllowsIncomingReserve(orderRow)) {
       const wh =
         warehouseId != null && String(warehouseId).trim() !== '' ? warehouseId : null;
       const snap = await getProductSupplySnapshotWithClient(null, pid, { warehouseId: wh });
-      return Math.min(units, Math.max(0, Math.floor(onHandHeadroomBeforeReserve(snap))));
+      return Math.min(units, Math.max(0, Math.floor(onHandHeadroomFromSnapshot(snap, { warehouseId: wh }))));
     }
     return units;
   }
@@ -3600,6 +3779,19 @@ class OrdersService {
         if (r.rows[0]?.product_id != null) return r.rows[0].product_id;
       } catch {
         /* нет marketplace_product_id или другой тип */
+      }
+    }
+    if (mp === 'wb' && offer) {
+      try {
+        const r = await query(
+          `SELECT id FROM products
+           WHERE LOWER(TRIM(COALESCE(mp_wb_vendor_code, ''))) = LOWER(TRIM($1))
+           LIMIT 1`,
+          [offer]
+        );
+        if (r.rows[0]?.id != null) return r.rows[0].id;
+      } catch {
+        /* ignore */
       }
     }
     if (mp === 'wb' && offer) {
@@ -5093,15 +5285,42 @@ class OrdersService {
       const orderLineLabel = await this._orderLineDisplayLabel(row);
 
       if (id && Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
-        reserved = await getReservedKitUnitsForOrderValidation(pid, id);
+        const preferredWh = await this._resolveWarehouseIdForOrderReserve(row, pid);
+        try {
+          await reconcileExcessKitWholeReserveForOrder(
+            pid,
+            id,
+            String(row.orderId ?? row.order_id ?? id),
+            {
+              warehouse_id: preferredWh,
+              order_id: id,
+              orderId: row.orderId ?? row.order_id
+            },
+            (productId, net, oid, m) =>
+              stockMovementsService.applyChange(productId, {
+                delta: net,
+                type: 'unreserve',
+                reason: `Снятие лишнего резерва целых комплектов на SKU (заказ ${oid})`.trim(),
+                meta: m
+              })
+          );
+        } catch {
+          /* не блокируем карточку заказа */
+        }
+        reserved = await getReservedKitUnitsForOrderValidation(pid, id, {
+          warehouseId: preferredWh,
+          marketplaceOrderId: row.orderId ?? row.order_id
+        });
         totalNeed += qty;
         totalReserved += reserved;
-        const preferredWh = await this._resolveWarehouseIdForOrderReserve(row, pid);
         const warehouseId = preferredWh;
         const maxKitsAvail = await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId, {
           orderRow: row
         });
-        const breakdown = await computeKitReservableBreakdown(pid, { warehouseId });
+        const breakdown = await computeKitReservableBreakdown(pid, {
+          warehouseId,
+          allowIncomingReserve: orderRowAllowsIncomingReserve(row),
+        });
         const onKitRes = await this._getReservedQtyForOrderProduct(id, pid);
         const wholeAvail = Math.max(0, Number(breakdown.wholeReserveAvail) || 0);
         const reserveOnWholeSku = onKitRes > 0;
@@ -5171,12 +5390,9 @@ class OrdersService {
           });
         } else if (componentCandidates.length > 0) {
           const remainingKitsAgg = Math.max(0, qty - reserved);
-          let availableQty = await this._kitReservableUnitsForOrderLine(pid, warehouseId, row, {
+          const availableQty = await this._kitReservableUnitsForOrderLine(pid, warehouseId, row, {
             remainingKits: remainingKitsAgg
           });
-          if (kitReservableQty > 0 && wholeReserveAvail > 0) {
-            availableQty = Math.min(availableQty, kitReservableQty);
-          }
 
           // Одна строка комплекта с полным составом (все комплектующие), не только с ненулевым резервом.
           lineEntries.push({

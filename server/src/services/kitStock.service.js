@@ -2040,10 +2040,19 @@ export async function getComponentAssemblableUnits(componentProductId, opts = {}
 }
 
 /** Свободное наличие до резерва (резерв сначала «съедает» on_hand). */
-function onHandHeadroomBeforeReserve({ onHand = 0, reservedRaw = 0 } = {}) {
+function onHandHeadroomBeforeReserve({ onHand = 0, reservedRaw = 0, reserved = null } = {}) {
   const H = Math.max(0, Math.floor(Number(onHand) || 0));
-  const R0 = Math.max(0, Math.floor(Number(reservedRaw) || 0));
+  const R0 = Math.max(0, Math.floor(Number(reserved != null ? reserved : reservedRaw) || 0));
   return Math.max(0, H - Math.min(R0, H));
+}
+
+export function componentOnHandHeadroomForReserve(snap, opts = {}) {
+  const whRaw = opts.warehouseId ?? opts.warehouse_id ?? null;
+  const warehouseScoped = whRaw != null && String(whRaw).trim() !== '';
+  if (warehouseScoped) {
+    return onHandHeadroomBeforeReserve({ onHand: snap.onHand, reserved: snap.reserved });
+  }
+  return onHandHeadroomBeforeReserve(snap);
 }
 
 /** Сколько полных комплектов можно собрать из комплектующих (склад + в пути − резерв). */
@@ -2069,7 +2078,7 @@ async function computeAssemblableFromComponentsInternal(kitProductId, opts = {},
       kitsFromComponent = Math.floor((wholeUnits + fromSubParts) / perKit);
     } else if (onHandOnly) {
       const snap = await getProductSupplySnapshotWithClient(null, cid, opts);
-      const onHandAvail = onHandHeadroomBeforeReserve(snap);
+      const onHandAvail = componentOnHandHeadroomForReserve(snap, opts);
       kitsFromComponent = Math.floor(onHandAvail / perKit);
     } else {
       const available = await getComponentAssemblableUnits(cid, opts);
@@ -2287,21 +2296,6 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
     };
   }
   let alloc = allocateKitReservePriority(wanted, breakdown, { allowIncoming: allowIncomingReserve });
-  if (alloc.kitsToReserve <= 0 && reserveOpts.warehouseId != null && !strictWarehouse) {
-    breakdown = await computeKitReservableBreakdown(kitId, {
-      warehouseId: null,
-      allowIncomingReserve,
-    });
-    if (manualComponentsOnly) {
-      breakdown = {
-        ...breakdown,
-        wholeReserveAvail: 0,
-        wholeIncomingAvail: 0,
-        wholeAvail: 0
-      };
-    }
-    alloc = allocateKitReservePriority(wanted, breakdown, { allowIncoming: allowIncomingReserve });
-  }
   if (alloc.kitsToReserve <= 0) return 0;
 
   if (alloc.fromWhole > 0) {

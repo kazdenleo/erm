@@ -36,9 +36,9 @@ export async function syncProductReservedQuantityFromJournal(productId, opts = {
       : null;
 
   if (rv == null) {
-    const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
+    const { isKitProductId, readKitSkuNetReserved } = await import('./kitStock.service.js');
     if (await isKitProductId(pid)) {
-      rv = await readKitDisplayReservedQuantity(pid, opts);
+      rv = await readKitSkuNetReserved(pid, opts);
     } else {
       rv = await getReservedQuantityFromMovements(pid);
     }
@@ -352,8 +352,8 @@ export async function getRawReservedQuantityFromMovementsWithClient(client, prod
 }
 
 /**
- * Снимок поставки товара: наличие (сумма по всем складам или один склад), «в пути», резерв, доступно, потолок резерва.
- * При warehouseId «в пути» — по журналу incoming с warehouse_id (и доля legacy без склада).
+ * Снимок поставки товара: наличие и резерв по одному складу (warehouseId) или сумма по складам для legacy-экранов без фильтра.
+ * Операции (резерв, отгрузка, приёмка) всегда передают warehouseId — расчёт только по этому складу.
  * @param {{ warehouseId?: number|string|null, reservedMap?: Map }} [opts]
  */
 export async function getProductSupplySnapshotWithClient(client, productId, opts = {}) {
