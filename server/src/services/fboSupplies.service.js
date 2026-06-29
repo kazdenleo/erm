@@ -921,7 +921,15 @@ class FboSuppliesService {
 
   async delete(id, { profileId } = {}) {
     const pid = normalizeProfileId(profileId);
-    await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+    const itemsR = await query(
+      `SELECT si.id
+       FROM fbo_supply_items si
+       INNER JOIN fbo_supplies s ON s.id = si.fbo_supply_id
+       WHERE si.fbo_supply_id = $1 AND ($2::bigint IS NULL OR s.profile_id = $2)`,
+      [id, pid]
+    );
+    const itemIds = (itemsR.rows || []).map((row) => String(row.id));
+
     const r = await query(
       `DELETE FROM fbo_supplies WHERE id = $1 AND ($2::bigint IS NULL OR profile_id = $2) RETURNING id`,
       [id, pid]
@@ -931,6 +939,24 @@ class FboSuppliesService {
       err.statusCode = 404;
       throw err;
     }
+
+    if (itemIds.length) {
+      const supplyId = Number(id);
+      setImmediate(() => {
+        fboSupplyReserveService
+          .releaseReservesForSupplyItemIds(supplyId, itemIds, {
+            profileId: pid,
+            skipMarketplaceSync: true,
+          })
+          .catch((err) => {
+            console.warn(
+              `[FBO delete] reserve release failed for supply ${supplyId}:`,
+              err?.message || err
+            );
+          });
+      });
+    }
+
     return { id: r.rows[0].id };
   }
 }

@@ -179,7 +179,7 @@ export const fboSuppliesApi = {
   },
 
   delete: async (id) => {
-    const response = await api.delete(`/fbo-supplies/${id}`);
+    const response = await api.delete(`/fbo-supplies/${id}`, { timeout: 120000 });
     return response.data?.data ?? response.data;
   },
 

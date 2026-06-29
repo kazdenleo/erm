@@ -1177,11 +1177,67 @@ class FboSupplyReserveService {
     }
   }
 
-  async releaseReservesForSupply(supplyId, { profileId } = {}) {
+  async releaseReservesForSupplyItemIds(
+    supplyId,
+    itemIds,
+    { profileId, skipMarketplaceSync = false } = {}
+  ) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return;
+    const ids = [...new Set((itemIds || []).map((id) => String(id)).filter(Boolean))];
+    if (!ids.length) return;
+
+    const netsR = await query(
+      `SELECT meta->>'fbo_supply_item_id' AS supply_item_id,
+              product_id,
+              warehouse_id,
+              GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
+       FROM stock_movements
+       WHERE meta->>'fbo_supply_item_id' = ANY($1::text[])
+         AND type IN ('reserve', 'unreserve')
+       GROUP BY meta->>'fbo_supply_item_id', product_id, warehouse_id
+       HAVING GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)) > 0`,
+      [ids]
+    );
+
+    const label = `Снятие резерва FBO (поставка №${supplyId})`;
+    const extraMeta = skipMarketplaceSync
+      ? { skip_marketplace_sync: true, fbo_bulk_rebalance: true }
+      : {};
+    const affectedProducts = new Set();
+
+    for (const row of netsR.rows || []) {
+      const net = parseInt(row.net ?? 0, 10) || 0;
+      if (net <= 0) continue;
+      const productId = Number(row.product_id);
+      if (Number.isFinite(productId) && productId > 0) affectedProducts.add(productId);
+      await applyFboReserveDelta({
+        productId: row.product_id,
+        warehouseId: row.warehouse_id,
+        supplyId,
+        supplyItemId: row.supply_item_id,
+        delta: -net,
+        reason: label,
+        extraMeta,
+      }).catch(() => {});
+    }
+
+    if (skipMarketplaceSync && affectedProducts.size > 0) {
+      try {
+        const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
+        for (const productId of affectedProducts) {
+          await syncProductReservedQuantityFromJournal(productId).catch(() => {});
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  async releaseReservesForSupply(supplyId, { profileId, skipMarketplaceSync = false } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return;
     const pid = normalizeProfileId(profileId);
     const itemsR = await query(
-      `SELECT si.id, si.product_id, s.deduction_warehouse_id
+      `SELECT si.id
        FROM fbo_supply_items si
        INNER JOIN fbo_supplies s ON s.id = si.fbo_supply_id
        WHERE si.fbo_supply_id = $1
@@ -1189,22 +1245,11 @@ class FboSupplyReserveService {
          AND si.product_id IS NOT NULL`,
       [supplyId, pid]
     );
-    for (const row of itemsR.rows || []) {
-      const itemId = row.id;
-      const label = `Снятие резерва FBO (поставка №${supplyId})`;
-      const nets = await getFboItemReserveNetByProductWarehouse(itemId);
-      for (const { productId, warehouseId, net } of nets) {
-        if (net <= 0 || warehouseId == null) continue;
-        await applyFboReserveDelta({
-          productId,
-          warehouseId,
-          supplyId,
-          supplyItemId: itemId,
-          delta: -net,
-          reason: label,
-        }).catch(() => {});
-      }
-    }
+    const itemIds = (itemsR.rows || []).map((row) => String(row.id));
+    await this.releaseReservesForSupplyItemIds(supplyId, itemIds, {
+      profileId,
+      skipMarketplaceSync,
+    });
   }
 
   async onSupplyStockEvent(productId, warehouseId, { profileId } = {}) {
