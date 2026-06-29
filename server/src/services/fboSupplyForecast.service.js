@@ -13,6 +13,18 @@ import {
 const SYNC_COOLDOWN_MS = 20_000;
 const INSERT_CHUNK = 400;
 
+function normalizeWbLinkKey(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/;+$/g, '')
+    .toLowerCase();
+}
+
+function trailingDigits(value) {
+  const m = String(value ?? '').match(/([0-9]{5,})$/);
+  return m ? m[1] : null;
+}
+
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
   const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
@@ -55,12 +67,13 @@ async function buildWbProductLookup(profileId) {
   const pid = normalizeProfileId(profileId);
   const r = await query(
     `
-    SELECT
-      ps.product_id,
-      ps.sku,
+    SELECT DISTINCT ON (p.id)
+      p.id AS product_id,
+      COALESCE(ps.sku, '') AS sku,
       ps.mp_extra,
       p.name,
       p.sku AS article,
+      p.mp_wb_vendor_code,
       TRIM(
         COALESCE(
           p.wb_draft::jsonb->>'nmId',
@@ -69,10 +82,25 @@ async function buildWbProductLookup(profileId) {
           ''
         )
       ) AS wb_nm_id
-    FROM product_skus ps
-    JOIN products p ON p.id = ps.product_id
-    WHERE ps.marketplace = 'wb'
-      AND ($1::bigint IS NULL OR p.profile_id = $1)
+    FROM products p
+    LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'wb'
+    WHERE ($1::bigint IS NULL OR p.profile_id = $1)
+      AND (
+        ps.id IS NOT NULL
+        OR NULLIF(TRIM(p.mp_wb_vendor_code), '') IS NOT NULL
+        OR NULLIF(
+          TRIM(
+            COALESCE(
+              p.wb_draft::jsonb->>'nmId',
+              p.wb_draft::jsonb->>'nmID',
+              p.wb_draft::jsonb->>'nm_id',
+              ''
+            )
+          ),
+          ''
+        ) IS NOT NULL
+      )
+    ORDER BY p.id, ps.id NULLS LAST
     `,
     [pid]
   );
@@ -89,6 +117,11 @@ async function buildWbProductLookup(profileId) {
     map.set(k, info);
   };
 
+  const putVendor = (raw, info) => {
+    const key = normalizeWbLinkKey(raw);
+    if (key) put(byVendor, key, info);
+  };
+
   for (const row of r.rows || []) {
     const info = {
       productId: Number(row.product_id),
@@ -96,8 +129,15 @@ async function buildWbProductLookup(profileId) {
       article: row.article || null,
       sku: row.sku || null,
     };
-    const sku = String(row.sku || '').trim();
-    const article = String(row.article || '').trim();
+    const sku = String(row.sku || '')
+      .trim()
+      .replace(/;+$/g, '');
+    const article = String(row.article || '')
+      .trim()
+      .replace(/;+$/g, '');
+    const mpVendor = String(row.mp_wb_vendor_code || '')
+      .trim()
+      .replace(/;+$/g, '');
     const extra = row.mp_extra && typeof row.mp_extra === 'object' ? row.mp_extra : {};
     const chrtExtra = extra.chrtId ?? extra.chrtID ?? extra.chrt_id;
     const wbNmId = String(row.wb_nm_id || '').trim();
@@ -110,15 +150,19 @@ async function buildWbProductLookup(profileId) {
       put(byNm, sku, info);
       put(byChrt, sku, info);
     } else if (sku) {
-      put(byVendor, sku.toLowerCase(), info);
-      const tail = sku.match(/([0-9]{5,})$/);
-      if (tail) put(byNm, tail[1], info);
+      putVendor(sku, info);
+      const tail = trailingDigits(sku);
+      if (tail) put(byNm, tail, info);
+    }
+
+    if (mpVendor) {
+      putVendor(mpVendor, info);
     }
 
     if (article) {
-      put(byArticle, article.toLowerCase(), info);
-      const tail = article.match(/([0-9]{5,})$/);
-      if (tail) put(byNm, tail[1], info);
+      put(byArticle, normalizeWbLinkKey(article), info);
+      const tail = trailingDigits(article);
+      if (tail) put(byNm, tail, info);
     }
 
     if (chrtExtra != null && String(chrtExtra).trim() !== '') {
@@ -135,7 +179,7 @@ async function buildWbProductLookup(profileId) {
 function resolveProduct(lookup, { nmId, chrtId, vendorCode, externalSku }) {
   const nm = nmId != null ? String(nmId).trim() : '';
   const chrt = chrtId != null ? String(chrtId).trim() : '';
-  const vc = vendorCode != null ? String(vendorCode).trim().toLowerCase() : '';
+  const vc = normalizeWbLinkKey(vendorCode);
   const ext = externalSku != null ? String(externalSku).trim() : '';
   const extNm = ext.includes(':') ? ext.split(':')[0].trim() : ext;
   const extChrt = ext.includes(':') ? ext.split(':').slice(1).join(':').trim() : '';
@@ -154,28 +198,52 @@ function resolveProduct(lookup, { nmId, chrtId, vendorCode, externalSku }) {
   return null;
 }
 
-function enrichForecastRow(row, lookup) {
+async function resolveMissingWbVendorCodes(rows, { profileId, organizationId } = {}) {
+  const missing = [
+    ...new Set(
+      rows
+        .filter((row) => !row.productId && !row.wbVendorCode && row.nmId != null)
+        .map((row) => String(row.nmId).trim())
+        .filter((nm) => nm !== '' && /^\d+$/.test(nm))
+    ),
+  ];
+  if (missing.length === 0) return new Map();
+  try {
+    return await integrationsService.getWildberriesVendorCodeMapByNmIds(missing, {
+      profileId: normalizeProfileId(profileId),
+      organizationId: normalizeOrgId(organizationId),
+    });
+  } catch {
+    return new Map();
+  }
+}
+
+function enrichForecastRow(row, lookup, vendorOverride = null) {
+  const wbVendorCode =
+    vendorOverride != null && String(vendorOverride).trim() !== ''
+      ? String(vendorOverride).trim()
+      : row.wb_vendor_code ?? row.wbVendorCode ?? null;
   const product = resolveProduct(lookup, {
-    nmId: row.nm_id,
-    chrtId: row.chrt_id,
-    vendorCode: row.wb_vendor_code,
-    externalSku: row.external_sku,
+    nmId: row.nm_id ?? row.nmId,
+    chrtId: row.chrt_id ?? row.chrtId,
+    vendorCode: wbVendorCode,
+    externalSku: row.external_sku ?? row.externalSku,
   });
   const productId = product?.productId ?? (row.product_id != null ? Number(row.product_id) : null);
   const productName = product?.name ?? row.product_name ?? null;
   const productArticle = product?.article ?? row.product_article ?? null;
   return {
     id: row.id,
-    nmId: row.nm_id,
-    chrtId: row.chrt_id,
-    warehouseId: row.warehouse_id,
-    warehouseName: row.warehouse_name,
-    regionName: row.region_name,
+    nmId: row.nm_id ?? row.nmId,
+    chrtId: row.chrt_id ?? row.chrtId,
+    warehouseId: row.warehouse_id ?? row.warehouseId,
+    warehouseName: row.warehouse_name ?? row.warehouseName,
+    regionName: row.region_name ?? row.regionName,
     quantity: Number(row.quantity) || 0,
-    inWayToClient: Number(row.in_way_to_client) || 0,
-    inWayFromClient: Number(row.in_way_from_client) || 0,
-    externalSku: row.external_sku,
-    wbVendorCode: row.wb_vendor_code,
+    inWayToClient: Number(row.in_way_to_client ?? row.inWayToClient) || 0,
+    inWayFromClient: Number(row.in_way_from_client ?? row.inWayFromClient) || 0,
+    externalSku: row.external_sku ?? row.externalSku,
+    wbVendorCode,
     productId: Number.isFinite(productId) ? productId : null,
     productName,
     productArticle,
@@ -290,7 +358,10 @@ class FboSupplyForecastService {
     let vendorByNm = new Map();
     if (nmIds.length > 0) {
       try {
-        vendorByNm = await integrationsService.getWildberriesVendorCodeMapByNmIds(nmIds, pid);
+        vendorByNm = await integrationsService.getWildberriesVendorCodeMapByNmIds(nmIds, {
+          profileId: pid,
+          organizationId: orgId,
+        });
       } catch {
         vendorByNm = new Map();
       }
@@ -407,6 +478,31 @@ class FboSupplyForecastService {
 
     const lookup = await buildWbProductLookup(pid);
     let rows = (r.rows || []).map((row) => enrichForecastRow(row, lookup));
+    const vendorByNm = await resolveMissingWbVendorCodes(rows, {
+      profileId: pid,
+      organizationId: orgId,
+    });
+    if (vendorByNm.size > 0) {
+      rows = rows.map((row) => {
+        if (row.productId || row.wbVendorCode || row.nmId == null) return row;
+        const vendor = vendorByNm.get(String(row.nmId).trim());
+        if (!vendor) return row;
+        return enrichForecastRow(
+          {
+            ...row,
+            nm_id: row.nmId,
+            chrt_id: row.chrtId,
+            external_sku: row.externalSku,
+            wb_vendor_code: vendor,
+            product_id: null,
+            product_name: null,
+            product_article: null,
+          },
+          lookup,
+          vendor
+        );
+      });
+    }
     if (q) {
       rows = rows.filter((row) => rowMatchesSearch(row, q));
     }

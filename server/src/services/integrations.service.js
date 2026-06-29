@@ -1794,46 +1794,74 @@ class IntegrationsService {
   }
 
   /**
-   * Артикулы продавца (vendorCode) по списку nmId — Content API, один запрос до 100 номенклатур.
-   * Нужен для вопросов WB: в ответе «Вопросов» иногда нет supplierArticle, только nmId.
+   * Артикулы продавца (vendorCode) по списку nmId — обход каталога Content API.
+   * Фильтр nmID в list API часто отдаёт чужие карточки, поэтому ищем по пагинации и textSearch.
    * @param {(number|string)[]} nmIds
-   * @param {number|string|null} profileId
+   * @param {number|string|null|{ profileId?: number|string|null, organizationId?: number|string|null }} profileIdOrScope
+   * @param {number|string|null} [organizationId]
    * @returns {Promise<Map<string, string>>} ключ — nmId строкой, значение — vendorCode
    */
-  async getWildberriesVendorCodeMapByNmIds(nmIds, profileId) {
+  async getWildberriesVendorCodeMapByNmIds(nmIds, profileIdOrScope = null, organizationId = null) {
     const map = new Map();
-    const unique = [
-      ...new Set(
-        (nmIds || [])
-          .map((x) => (x != null ? String(x).trim() : ''))
-          .filter((s) => s !== '' && /^\d+$/.test(s))
-      )
-    ];
-    const nums = unique.map((s) => Number(s)).filter((n) => Number.isFinite(n) && n > 0);
-    const CHUNK = 100;
-    for (let i = 0; i < nums.length; i += CHUNK) {
-      const chunk = nums.slice(i, i + CHUNK);
-      if (chunk.length === 0) continue;
+    const scope =
+      profileIdOrScope != null && typeof profileIdOrScope === 'object'
+        ? {
+            profileId: profileIdOrScope.profileId ?? profileIdOrScope.profile_id ?? null,
+            organizationId: profileIdOrScope.organizationId ?? profileIdOrScope.organization_id ?? null,
+          }
+        : { profileId: profileIdOrScope, organizationId };
+    const needed = new Set(
+      (nmIds || [])
+        .map((x) => (x != null ? String(x).trim() : ''))
+        .filter((s) => s !== '' && /^\d+$/.test(s))
+    );
+    if (needed.size === 0) return map;
+
+    const putVendor = (nmRaw, card) => {
+      const nm = nmRaw != null ? String(nmRaw).trim() : '';
+      if (!nm || !needed.has(nm) || map.has(nm)) return;
+      const codes = this._wbCardVendorCodes(card);
+      const vc = codes[0] ?? card?.vendorCode ?? card?.vendor_code ?? null;
+      if (vc != null && String(vc).trim() !== '') {
+        map.set(nm, String(vc).trim());
+      }
+    };
+
+    let cursor = { limit: 100 };
+    for (let page = 0; page < 40 && map.size < needed.size; page += 1) {
       const body = {
         settings: {
-          cursor: { limit: 100 },
-          filter: { withPhoto: -1, nmID: chunk }
-        }
+          sort: { ascending: true },
+          cursor,
+          filter: { withPhoto: -1 },
+        },
       };
       try {
-        const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, { profileId });
+        const data = await this._wbContentApiPost('/content/v2/get/cards/list', body, scope);
         const cards = data?.cards ?? data?.data?.cards ?? data?.result?.cards ?? [];
-        for (const c of cards || []) {
-          const nm = c?.nmID ?? c?.nmId;
-          const vc = c?.vendorCode ?? c?.vendor_code ?? null;
-          if (nm != null && vc != null && String(vc).trim() !== '') {
-            map.set(String(nm), String(vc).trim());
-          }
+        if (!Array.isArray(cards) || cards.length === 0) break;
+        for (const c of cards) {
+          putVendor(c?.nmID ?? c?.nmId, c);
         }
+        const next = data?.cursor;
+        if (!next?.updatedAt || next?.nmID == null || cards.length < cursor.limit) break;
+        cursor = { limit: cursor.limit, updatedAt: next.updatedAt, nmID: next.nmID };
       } catch (e) {
-        logger.warn('[Integrations Service] WB vendorCode batch by nmId failed:', e?.message || e);
+        logger.warn('[Integrations Service] WB vendorCode catalog scan failed:', e?.message || e);
+        break;
       }
     }
+
+    const stillMissing = [...needed].filter((n) => !map.has(n));
+    for (const nm of stillMissing.slice(0, 40)) {
+      try {
+        const card = await this._wbFindListCardByNmId(nm, scope);
+        if (card) putVendor(nm, card);
+      } catch (e) {
+        logger.warn(`[Integrations Service] WB vendorCode by nmId ${nm}:`, e?.message || e);
+      }
+    }
+
     return map;
   }
 

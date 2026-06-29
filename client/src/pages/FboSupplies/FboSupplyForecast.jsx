@@ -263,7 +263,9 @@ export function FboSupplyForecast() {
                 <tr key={row.id}>
                   <td>{displaySku(row)}</td>
                   <td>
-                    {row.productName || (
+                    {row.productId ? (
+                      row.productName || row.productArticle || `Товар #${row.productId}`
+                    ) : (
                       <span className="fbo-forecast-unlinked">не привязан</span>
                     )}
                   </td>
