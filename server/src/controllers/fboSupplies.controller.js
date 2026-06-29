@@ -126,8 +126,19 @@ class FboSuppliesController {
         req.query?.unlinkedOnly === 'true' ||
         req.query?.unlinked === '1';
       const planDaysRaw = req.query?.planDays ?? req.query?.plan_days ?? req.query?.periodDays ?? null;
+      const ordersDaysRaw =
+        req.query?.ordersDays ?? req.query?.orders_days ?? req.query?.ordersPeriodDays ?? null;
+      const boostRaw =
+        req.query?.zeroStockBoostPercent ??
+        req.query?.zero_stock_boost_percent ??
+        req.query?.zeroStockBoost ??
+        null;
       const planDays =
         planDaysRaw != null && String(planDaysRaw).trim() !== '' ? Number(planDaysRaw) : 30;
+      const ordersDays =
+        ordersDaysRaw != null && String(ordersDaysRaw).trim() !== '' ? Number(ordersDaysRaw) : null;
+      const zeroStockBoostPercent =
+        boostRaw != null && String(boostRaw).trim() !== '' ? Number(boostRaw) : 0;
       const data = await fboSupplyForecastService.getWbForecast({
         profileId: tid,
         organizationId,
@@ -135,6 +146,8 @@ class FboSuppliesController {
         search,
         unlinkedOnly,
         planDays,
+        ordersDays,
+        zeroStockBoostPercent,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {

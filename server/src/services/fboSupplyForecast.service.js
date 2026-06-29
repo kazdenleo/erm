@@ -273,9 +273,42 @@ function productRowKey(row) {
   return `id:${row.id}`;
 }
 
-export function calcClusterToSupply({ availability, orders, reserve, returnQty }) {
+export function normalizeZeroStockBoostPercent(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(200, Math.max(0, Math.round(n)));
+}
+
+export function scaleOrdersForPlan(orders, planDays, ordersDays) {
+  const o = toInt(orders);
+  if (o <= 0) return 0;
+  const plan = normalizePlanDays(planDays);
+  const ord = normalizePlanDays(ordersDays);
+  if (plan === ord) return o;
+  return Math.max(0, Math.round((o * plan) / ord));
+}
+
+export function applyZeroStockBoost(toSupply, availability, boostPercent) {
+  const boost = normalizeZeroStockBoostPercent(boostPercent);
+  if (boost <= 0 || toInt(availability) !== 0) return toInt(toSupply);
+  const base = toInt(toSupply);
+  if (base <= 0) return 0;
+  return Math.ceil(base * (1 + boost / 100));
+}
+
+export function calcClusterToSupply({
+  availability,
+  orders,
+  reserve,
+  returnQty,
+  planDays = 30,
+  ordersDays = 30,
+  zeroStockBoostPercent = 0,
+}) {
+  const scaledOrders = scaleOrdersForPlan(orders, planDays, ordersDays);
   const onHand = toInt(availability) + toInt(returnQty);
-  return Math.max(0, toInt(orders) - onHand + toInt(reserve));
+  const base = Math.max(0, scaledOrders - onHand + toInt(reserve));
+  return applyZeroStockBoost(base, availability, zeroStockBoostPercent);
 }
 
 function buildWarehouseClusterMap(flatRows) {
@@ -320,7 +353,17 @@ function resolveClusterOrders(nm, clusterKey, clusterWeight, totalWeight, totalO
   return 0;
 }
 
-export function pivotForecastByCluster(flatRows, { wbByNm, erm, clusterFilter = null } = {}) {
+export function pivotForecastByCluster(
+  flatRows,
+  {
+    wbByNm,
+    erm,
+    clusterFilter = null,
+    planDays = 30,
+    ordersDays = 30,
+    zeroStockBoostPercent = 0,
+  } = {}
+) {
   const whToCluster = buildWarehouseClusterMap(flatRows);
   const clusterKeysSet = new Set();
   const products = new Map();
@@ -397,6 +440,9 @@ export function pivotForecastByCluster(flatRows, { wbByNm, erm, clusterFilter = 
         orders,
         reserve: cm.reserve,
         returnQty: cm.returnQty,
+        planDays,
+        ordersDays,
+        zeroStockBoostPercent,
       });
       clusterMetrics[ck] = {
         availability: cm.availability,
@@ -745,16 +791,22 @@ class FboSupplyForecastService {
     search = null,
     unlinkedOnly = false,
     planDays = 30,
+    ordersDays = null,
+    zeroStockBoostPercent = 0,
   } = {}) {
     const pid = normalizeProfileId(profileId);
     const orgId = normalizeOrgId(organizationId);
-    const periodDays = normalizePlanDays(planDays);
+    const planningDays = normalizePlanDays(planDays);
+    const ordersPeriodDays = normalizePlanDays(ordersDays ?? planDays);
+    const stockBoost = normalizeZeroStockBoostPercent(zeroStockBoostPercent);
     const snap = await getLatestSnapshot({ profileId: pid, organizationId: orgId });
     if (!snap) {
       return {
         syncedAt: null,
         snapshotId: null,
-        planDays: periodDays,
+        planDays: planningDays,
+        ordersDays: ordersPeriodDays,
+        zeroStockBoostPercent: stockBoost,
         rows: [],
         clusters: [],
         totals: {
@@ -766,7 +818,7 @@ class FboSupplyForecastService {
           rowCount: 0,
         },
         apiNote:
-          'Нажмите «Обновить с WB», чтобы загрузить остатки по складам FBO. Нужен токен WB с категорией «Аналитика».',
+          'Нажмите «Загрузить отчёт», чтобы обновить остатки с WB и выбрать период заказов. Нужен токен WB с категорией «Аналитика».',
       };
     }
 
@@ -838,8 +890,8 @@ class FboSupplyForecastService {
     }
 
     const [wbByNm, erm, clusterR] = await Promise.all([
-      getWbOrdersCountMap({ profileId: pid, organizationId: orgId, planDays: periodDays }),
-      buildErmWbOrderCounts(pid, periodDays),
+      getWbOrdersCountMap({ profileId: pid, organizationId: orgId, planDays: ordersPeriodDays }),
+      buildErmWbOrderCounts(pid, ordersPeriodDays),
       query(
         `
         SELECT DISTINCT region_name
@@ -867,18 +919,30 @@ class FboSupplyForecastService {
       wbByNm,
       erm,
       clusterFilter,
+      planDays: planningDays,
+      ordersDays: ordersPeriodDays,
+      zeroStockBoostPercent: stockBoost,
     });
+
+    const boostNote =
+      stockBoost > 0 ? ` При нулевом остатке к поставке добавляется +${stockBoost}%.` : '';
+    const planNote =
+      planningDays !== ordersPeriodDays
+        ? ` Заказы за ${ordersPeriodDays} дн. масштабированы на период планирования ${planningDays} дн.`
+        : '';
 
     return {
       syncedAt: snap.created_at,
       snapshotId: snap.id,
-      planDays: periodDays,
+      planDays: planningDays,
+      ordersDays: ordersPeriodDays,
+      zeroStockBoostPercent: stockBoost,
       rows: pivoted.rows,
       clusters: clusterDedup,
       displayClusters: pivoted.clusters,
       totals: pivoted.totals,
       apiNote:
-        `Данные WB обновляются примерно раз в 30 минут. Кластеры — регионы отгрузки WB (regionName). «Резерв» = в пути к клиенту, «Возврат» = в пути от клиента. «К поставке» = max(0, заказы − наличие − возврат + резерв). «Заказы» — за ${periodDays} дн.`,
+        `Остатки, резерв и возврат — на момент последней синхронизации с WB. Заказы — за ${ordersPeriodDays} дн. (аналитика WB и заказы в ERM). Период планирования поставки — ${planningDays} дн.${planNote}${boostNote}`,
     };
   }
 }

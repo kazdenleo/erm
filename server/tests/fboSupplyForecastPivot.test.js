@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   pivotForecastByCluster,
   calcClusterToSupply,
+  scaleOrdersForPlan,
+  applyZeroStockBoost,
 } from '../src/services/fboSupplyForecast.service.js';
 
 test('calcClusterToSupply: need minus on-hand plus reserve', () => {
@@ -13,6 +15,29 @@ test('calcClusterToSupply: need minus on-hand plus reserve', () => {
   assert.equal(
     calcClusterToSupply({ availability: 50, orders: 10, reserve: 0, returnQty: 0 }),
     0
+  );
+});
+
+test('scaleOrdersForPlan extrapolates to planning period', () => {
+  assert.equal(scaleOrdersForPlan(30, 60, 30), 60);
+  assert.equal(scaleOrdersForPlan(10, 30, 30), 10);
+});
+
+test('applyZeroStockBoost adds percent when availability is zero', () => {
+  assert.equal(applyZeroStockBoost(10, 0, 20), 12);
+  assert.equal(applyZeroStockBoost(10, 5, 20), 10);
+});
+
+test('calcClusterToSupply applies zero-stock boost', () => {
+  assert.equal(
+    calcClusterToSupply({
+      availability: 0,
+      orders: 10,
+      reserve: 0,
+      returnQty: 0,
+      zeroStockBoostPercent: 50,
+    }),
+    15
   );
 });
 
