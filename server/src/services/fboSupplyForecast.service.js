@@ -7,11 +7,14 @@ import integrationsService from './integrations.service.js';
 import { findAll as findAllMarketplaceCabinets } from '../repositories/marketplace_cabinets.repository.pg.js';
 import {
   fetchWbWarehousesInventory,
+  fetchWbProductsOrdersCountMap,
   normalizeWbWarehouseInventoryItem,
 } from './wbAnalytics.service.js';
 
 const SYNC_COOLDOWN_MS = 20_000;
 const INSERT_CHUNK = 400;
+const ORDERS_COUNT_CACHE_MS = 10 * 60 * 1000;
+const ordersCountCache = new Map();
 
 function normalizeWbLinkKey(value) {
   return String(value ?? '')
@@ -265,6 +268,112 @@ function rowMatchesSearch(row, q) {
   return hay.includes(q);
 }
 
+function normalizePlanDays(v) {
+  const n = toInt(v);
+  if (n === 60 || n === 90) return n;
+  return 30;
+}
+
+function toInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+async function buildErmWbOrderCounts(profileId, planDays) {
+  const pid = normalizeProfileId(profileId);
+  const days = normalizePlanDays(planDays);
+  const r = await query(
+    `
+    SELECT
+      NULLIF(TRIM(CAST(o.marketplace_sku AS TEXT)), '') AS nm_id,
+      o.product_id,
+      LOWER(TRIM(COALESCE(o.offer_id, ''))) AS offer_id,
+      CASE
+        WHEN TRIM(COALESCE(o.delivery_address, '')) ~ '^[0-9]+'
+          THEN (regexp_match(TRIM(o.delivery_address), '^([0-9]+)'))[1]
+        ELSE NULL
+      END AS warehouse_id,
+      SUM(o.quantity)::int AS order_qty
+    FROM orders o
+    WHERE o.marketplace = 'wb'
+      AND ($1::bigint IS NULL OR o.profile_id = $1)
+      AND o.created_at >= NOW() - ($2::int || ' days')::interval
+      AND COALESCE(LOWER(TRIM(o.status)), '') NOT IN ('cancelled', 'canceled', 'cancel')
+    GROUP BY 1, 2, 3, 4
+    `,
+    [pid, days]
+  );
+
+  const byNm = new Map();
+  const byNmWh = new Map();
+  const byProduct = new Map();
+  const byOffer = new Map();
+
+  for (const row of r.rows || []) {
+    const qty = toInt(row.order_qty);
+    if (qty <= 0) continue;
+    const nm = row.nm_id != null ? String(row.nm_id).trim() : '';
+    const wh = row.warehouse_id != null ? String(row.warehouse_id).trim() : '';
+    const pidNum = row.product_id != null ? Number(row.product_id) : NaN;
+    const offer = row.offer_id != null ? String(row.offer_id).trim() : '';
+
+    if (nm) {
+      byNm.set(nm, (byNm.get(nm) || 0) + qty);
+      if (wh) {
+        const k = `${nm}:${wh}`;
+        byNmWh.set(k, (byNmWh.get(k) || 0) + qty);
+      }
+    }
+    if (Number.isFinite(pidNum)) {
+      byProduct.set(pidNum, (byProduct.get(pidNum) || 0) + qty);
+    }
+    if (offer) {
+      byOffer.set(offer, (byOffer.get(offer) || 0) + qty);
+    }
+  }
+
+  return { byNm, byNmWh, byProduct, byOffer };
+}
+
+async function getWbOrdersCountMap({ profileId, organizationId, planDays }) {
+  const pid = normalizeProfileId(profileId);
+  const orgId = normalizeOrgId(organizationId);
+  const days = normalizePlanDays(planDays);
+  const cacheKey = `${pid ?? 'all'}:${orgId ?? ''}:${days}`;
+  const cached = ordersCountCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < ORDERS_COUNT_CACHE_MS) {
+    return cached.map;
+  }
+
+  let map = new Map();
+  try {
+    const apiKey = await resolveWbApiKey({ profileId: pid, organizationId: orgId });
+    map = await fetchWbProductsOrdersCountMap(apiKey, days);
+  } catch {
+    map = new Map();
+  }
+  ordersCountCache.set(cacheKey, { at: Date.now(), map });
+  return map;
+}
+
+function resolveRowOrdersCount(row, { wbByNm, erm }) {
+  const nm = row.nmId != null ? String(row.nmId).trim() : '';
+  const wh = row.warehouseId != null ? String(row.warehouseId).trim() : '';
+  const vendor = normalizeWbLinkKey(row.wbVendorCode);
+  const productId = row.productId != null ? Number(row.productId) : NaN;
+
+  if (nm && wh && erm.byNmWh.has(`${nm}:${wh}`)) {
+    return erm.byNmWh.get(`${nm}:${wh}`);
+  }
+  if (nm && wbByNm.has(nm)) return wbByNm.get(nm);
+  if (nm && erm.byNm.has(nm)) return erm.byNm.get(nm);
+  if (Number.isFinite(productId) && erm.byProduct.has(productId)) {
+    return erm.byProduct.get(productId);
+  }
+  if (vendor && erm.byOffer.has(vendor)) return erm.byOffer.get(vendor);
+  return 0;
+}
+
 async function getLatestSnapshot({ profileId, organizationId }) {
   const pid = normalizeProfileId(profileId);
   const orgId = normalizeOrgId(organizationId);
@@ -425,17 +534,26 @@ class FboSupplyForecastService {
     warehouseId = null,
     search = null,
     unlinkedOnly = false,
+    planDays = 30,
   } = {}) {
     const pid = normalizeProfileId(profileId);
     const orgId = normalizeOrgId(organizationId);
+    const periodDays = normalizePlanDays(planDays);
     const snap = await getLatestSnapshot({ profileId: pid, organizationId: orgId });
     if (!snap) {
       return {
         syncedAt: null,
         snapshotId: null,
+        planDays: periodDays,
         rows: [],
         warehouses: [],
-        totals: { quantity: 0, inWayToClient: 0, inWayFromClient: 0, rowCount: 0 },
+        totals: {
+          quantity: 0,
+          inWayToClient: 0,
+          inWayFromClient: 0,
+          ordersCount: 0,
+          rowCount: 0,
+        },
         apiNote:
           'Нажмите «Обновить с WB», чтобы загрузить остатки по складам FBO. Нужен токен WB с категорией «Аналитика».',
       };
@@ -510,6 +628,15 @@ class FboSupplyForecastService {
       rows = rows.filter((row) => !row.productId);
     }
 
+    const [wbByNm, erm] = await Promise.all([
+      getWbOrdersCountMap({ profileId: pid, organizationId: orgId, planDays: periodDays }),
+      buildErmWbOrderCounts(pid, periodDays),
+    ]);
+    rows = rows.map((row) => ({
+      ...row,
+      ordersCount: resolveRowOrdersCount(row, { wbByNm, erm }),
+    }));
+
     const whR = await query(
       `
       SELECT DISTINCT warehouse_id, warehouse_name
@@ -525,14 +652,16 @@ class FboSupplyForecastService {
         acc.quantity += row.quantity;
         acc.inWayToClient += row.inWayToClient;
         acc.inWayFromClient += row.inWayFromClient;
+        acc.ordersCount += row.ordersCount || 0;
         return acc;
       },
-      { quantity: 0, inWayToClient: 0, inWayFromClient: 0, rowCount: rows.length }
+      { quantity: 0, inWayToClient: 0, inWayFromClient: 0, ordersCount: 0, rowCount: rows.length }
     );
 
     return {
       syncedAt: snap.created_at,
       snapshotId: snap.id,
+      planDays: periodDays,
       rows,
       warehouses: (whR.rows || []).map((w) => ({
         id: w.warehouse_id,
@@ -540,7 +669,7 @@ class FboSupplyForecastService {
       })),
       totals,
       apiNote:
-        'Данные WB обновляются примерно раз в 30 минут. «Резерв» = inWayToClient (в пути к клиенту).',
+        `Данные WB обновляются примерно раз в 30 минут. «Резерв» = inWayToClient (в пути к клиенту). «Заказы» — за ${periodDays} дн. (аналитика WB и заказы в ERM).`,
     };
   }
 }

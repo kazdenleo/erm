@@ -132,6 +132,7 @@ export function FboSupplyForecast() {
         warehouseId: warehouseId || undefined,
         q: searchDebounced || undefined,
         unlinkedOnly: unlinkedOnly || undefined,
+        planDays,
       });
       setData(payload);
     } catch (e) {
@@ -139,7 +140,7 @@ export function FboSupplyForecast() {
     } finally {
       setLoading(false);
     }
-  }, [warehouseId, searchDebounced, unlinkedOnly]);
+  }, [warehouseId, searchDebounced, unlinkedOnly, planDays]);
 
   useEffect(() => {
     load();
@@ -160,7 +161,14 @@ export function FboSupplyForecast() {
 
   const rows = useMemo(() => (Array.isArray(data?.rows) ? data.rows : []), [data]);
   const warehouses = useMemo(() => (Array.isArray(data?.warehouses) ? data.warehouses : []), [data]);
-  const totals = data?.totals || { quantity: 0, inWayToClient: 0, inWayFromClient: 0, rowCount: 0 };
+  const totals = data?.totals || {
+    quantity: 0,
+    inWayToClient: 0,
+    inWayFromClient: 0,
+    ordersCount: 0,
+    rowCount: 0,
+  };
+  const ordersPeriod = data?.planDays ?? planDays;
 
   return (
     <div className="fbo-supplies-page">
@@ -195,6 +203,9 @@ export function FboSupplyForecast() {
         </span>
         <span>
           Резерв (к клиенту): <strong>{fmtQty(totals.inWayToClient)}</strong>
+        </span>
+        <span>
+          Заказы ({ordersPeriod} дн.): <strong>{fmtQty(totals.ordersCount)}</strong>
         </span>
       </div>
 
@@ -249,34 +260,39 @@ export function FboSupplyForecast() {
             <thead>
               <tr>
                 <th>Артикул</th>
-                <th>Название</th>
+                <th className="fbo-forecast-col-name">Название</th>
                 <th>Склад WB</th>
-                <th>Регион</th>
+                <th className="num" title={`Заказано за ${ordersPeriod} дн. (WB FBO + заказы в ERM)`}>
+                  Заказы
+                </th>
                 <th className="num">Остаток</th>
                 <th className="num">Резерв</th>
                 <th className="num">Возврат</th>
-                <th>WB SKU</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {rows.map((row) => {
+                const name = row.productId
+                  ? row.productName || row.productArticle || `Товар #${row.productId}`
+                  : null;
+                return (
                 <tr key={row.id}>
                   <td>{displaySku(row)}</td>
-                  <td>
-                    {row.productId ? (
-                      row.productName || row.productArticle || `Товар #${row.productId}`
+                  <td className="fbo-forecast-col-name" title={name || undefined}>
+                    {name ? (
+                      <span className="fbo-forecast-name">{name}</span>
                     ) : (
                       <span className="fbo-forecast-unlinked">не привязан</span>
                     )}
                   </td>
                   <td>{row.warehouseName || (row.warehouseId ? `#${row.warehouseId}` : '—')}</td>
-                  <td>{row.regionName || '—'}</td>
+                  <td className="num">{fmtQty(row.ordersCount)}</td>
                   <td className="num">{fmtQty(row.quantity)}</td>
                   <td className="num">{fmtQty(row.inWayToClient)}</td>
                   <td className="num">{fmtQty(row.inWayFromClient)}</td>
-                  <td>{row.externalSku}</td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
         </div>

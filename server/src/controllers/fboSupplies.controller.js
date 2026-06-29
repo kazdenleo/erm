@@ -118,12 +118,16 @@ class FboSuppliesController {
         req.query?.unlinkedOnly === '1' ||
         req.query?.unlinkedOnly === 'true' ||
         req.query?.unlinked === '1';
+      const planDaysRaw = req.query?.planDays ?? req.query?.plan_days ?? req.query?.periodDays ?? null;
+      const planDays =
+        planDaysRaw != null && String(planDaysRaw).trim() !== '' ? Number(planDaysRaw) : 30;
       const data = await fboSupplyForecastService.getWbForecast({
         profileId: tid,
         organizationId,
         warehouseId,
         search,
         unlinkedOnly,
+        planDays,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
