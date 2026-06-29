@@ -17,25 +17,62 @@ function toInt(v) {
   return Math.trunc(n);
 }
 
-function buildAnalyticsPeriod(planDays) {
-  const days = Math.min(90, Math.max(1, toInt(planDays) || 30));
+function parseIsoDate(value) {
+  const m = String(value ?? '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatIsoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function countInclusiveDays(startIso, endIso) {
+  const start = parseIsoDate(startIso);
+  const end = parseIsoDate(endIso);
+  if (!start || !end || start > end) return 1;
+  const ms = end.getTime() - start.getTime();
+  return Math.max(1, Math.floor(ms / 86400000) + 1);
+}
+
+export function buildAnalyticsPeriod(planDays) {
+  const days = Math.min(366, Math.max(1, toInt(planDays) || 30));
   const end = new Date();
   const start = new Date(end);
   start.setDate(start.getDate() - (days - 1));
-  const fmt = (d) => d.toISOString().slice(0, 10);
-  return { start: fmt(start), end: fmt(end), days };
+  return { start: formatIsoDate(start), end: formatIsoDate(end), days };
+}
+
+export function buildAnalyticsPeriodFromRange({ start, end, days } = {}) {
+  const startIso = String(start || '').trim().slice(0, 10);
+  const endIso = String(end || '').trim().slice(0, 10);
+  if (parseIsoDate(startIso) && parseIsoDate(endIso)) {
+    const span = countInclusiveDays(startIso, endIso);
+    return {
+      start: startIso,
+      end: endIso,
+      days: Math.min(366, Math.max(1, toInt(days) || span)),
+    };
+  }
+  return buildAnalyticsPeriod(days || 30);
 }
 
 /**
  * POST /api/v2/stocks-report/products/products — заказы по номенклатурам за период (склады WB).
+ * @param {string} apiKey
+ * @param {number|{start?: string, end?: string, days?: number}} periodInput
  * @returns {Promise<Map<string, number>>} nmId → ordersCount
  */
-export async function fetchWbProductsOrdersCountMap(apiKey, planDays = 30) {
+export async function fetchWbProductsOrdersCountMap(apiKey, periodInput = 30) {
   const token = String(apiKey || '').trim();
   const map = new Map();
   if (!token) return map;
 
-  const period = buildAnalyticsPeriod(planDays);
+  const period =
+    periodInput != null && typeof periodInput === 'object'
+      ? buildAnalyticsPeriodFromRange(periodInput)
+      : buildAnalyticsPeriod(periodInput);
   const availabilityFilters = [
     'deficient',
     'actual',

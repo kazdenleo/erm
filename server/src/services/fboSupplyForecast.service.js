@@ -279,11 +279,65 @@ export function normalizeZeroStockBoostPercent(v) {
   return Math.min(200, Math.max(0, Math.round(n)));
 }
 
+export function normalizeOrdersDays(v) {
+  const n = toInt(v);
+  if (n >= 1 && n <= 366) return n;
+  return 30;
+}
+
+export function resolveOrdersPeriod({ ordersDays = null, ordersStart = null, ordersEnd = null } = {}) {
+  const startIso = String(ordersStart ?? '').trim().slice(0, 10);
+  const endIso = String(ordersEnd ?? '').trim().slice(0, 10);
+  const startDate = parseIsoDate(startIso);
+  const endDate = parseIsoDate(endIso);
+
+  if (startDate && endDate && startDate <= endDate) {
+    const days = Math.min(366, countInclusiveDays(startIso, endIso));
+    return { start: startIso, end: endIso, days };
+  }
+
+  const days = normalizeOrdersDays(ordersDays ?? 30);
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - (days - 1));
+  return {
+    start: formatIsoDate(start),
+    end: formatIsoDate(end),
+    days,
+  };
+}
+
+function parseIsoDate(value) {
+  const m = String(value ?? '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatIsoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function countInclusiveDays(startIso, endIso) {
+  const start = parseIsoDate(startIso);
+  const end = parseIsoDate(endIso);
+  if (!start || !end || start > end) return 1;
+  const ms = end.getTime() - start.getTime();
+  return Math.max(1, Math.floor(ms / 86400000) + 1);
+}
+
+export function calcAvgOrdersPerDay(orders, ordersDays) {
+  const d = Math.max(1, normalizeOrdersDays(ordersDays));
+  const o = toInt(orders);
+  if (o <= 0) return 0;
+  return Math.round((o / d) * 100) / 100;
+}
+
 export function scaleOrdersForPlan(orders, planDays, ordersDays) {
   const o = toInt(orders);
   if (o <= 0) return 0;
   const plan = normalizePlanDays(planDays);
-  const ord = normalizePlanDays(ordersDays);
+  const ord = normalizeOrdersDays(ordersDays);
   if (plan === ord) return o;
   return Math.max(0, Math.round((o * plan) / ord));
 }
@@ -447,6 +501,7 @@ export function pivotForecastByCluster(
       clusterMetrics[ck] = {
         availability: cm.availability,
         orders,
+        avgOrdersPerDay: calcAvgOrdersPerDay(orders, ordersDays),
         reserve: cm.reserve,
         return: cm.returnQty,
         toSupply,
@@ -535,9 +590,9 @@ function toInt(v) {
   return Number.isFinite(n) ? Math.trunc(n) : 0;
 }
 
-async function buildErmWbOrderCounts(profileId, planDays) {
+async function buildErmWbOrderCounts(profileId, ordersPeriod) {
   const pid = normalizeProfileId(profileId);
-  const days = normalizePlanDays(planDays);
+  const period = resolveOrdersPeriod(ordersPeriod);
   const r = await query(
     `
     SELECT
@@ -553,11 +608,12 @@ async function buildErmWbOrderCounts(profileId, planDays) {
     FROM orders o
     WHERE o.marketplace = 'wb'
       AND ($1::bigint IS NULL OR o.profile_id = $1)
-      AND o.created_at >= NOW() - ($2::int || ' days')::interval
+      AND o.created_at >= $2::date
+      AND o.created_at < ($3::date + interval '1 day')
       AND COALESCE(LOWER(TRIM(o.status)), '') NOT IN ('cancelled', 'canceled', 'cancel')
     GROUP BY 1, 2, 3, 4
     `,
-    [pid, days]
+    [pid, period.start, period.end]
   );
 
   const byNm = new Map();
@@ -591,11 +647,11 @@ async function buildErmWbOrderCounts(profileId, planDays) {
   return { byNm, byNmWh, byProduct, byOffer };
 }
 
-async function getWbOrdersCountMap({ profileId, organizationId, planDays }) {
+async function getWbOrdersCountMap({ profileId, organizationId, ordersPeriod }) {
   const pid = normalizeProfileId(profileId);
   const orgId = normalizeOrgId(organizationId);
-  const days = normalizePlanDays(planDays);
-  const cacheKey = `${pid ?? 'all'}:${orgId ?? ''}:${days}`;
+  const period = resolveOrdersPeriod(ordersPeriod);
+  const cacheKey = `${pid ?? 'all'}:${orgId ?? ''}:${period.start}:${period.end}`;
   const cached = ordersCountCache.get(cacheKey);
   if (cached && Date.now() - cached.at < ORDERS_COUNT_CACHE_MS) {
     return cached.map;
@@ -604,7 +660,7 @@ async function getWbOrdersCountMap({ profileId, organizationId, planDays }) {
   let map = new Map();
   try {
     const apiKey = await resolveWbApiKey({ profileId: pid, organizationId: orgId });
-    map = await fetchWbProductsOrdersCountMap(apiKey, days);
+    map = await fetchWbProductsOrdersCountMap(apiKey, period);
   } catch {
     map = new Map();
   }
@@ -792,12 +848,14 @@ class FboSupplyForecastService {
     unlinkedOnly = false,
     planDays = 30,
     ordersDays = null,
+    ordersStart = null,
+    ordersEnd = null,
     zeroStockBoostPercent = 0,
   } = {}) {
     const pid = normalizeProfileId(profileId);
     const orgId = normalizeOrgId(organizationId);
     const planningDays = normalizePlanDays(planDays);
-    const ordersPeriodDays = normalizePlanDays(ordersDays ?? planDays);
+    const ordersPeriod = resolveOrdersPeriod({ ordersDays, ordersStart, ordersEnd });
     const stockBoost = normalizeZeroStockBoostPercent(zeroStockBoostPercent);
     const snap = await getLatestSnapshot({ profileId: pid, organizationId: orgId });
     if (!snap) {
@@ -805,7 +863,9 @@ class FboSupplyForecastService {
         syncedAt: null,
         snapshotId: null,
         planDays: planningDays,
-        ordersDays: ordersPeriodDays,
+        ordersDays: ordersPeriod.days,
+        ordersStart: ordersPeriod.start,
+        ordersEnd: ordersPeriod.end,
         zeroStockBoostPercent: stockBoost,
         rows: [],
         clusters: [],
@@ -890,8 +950,8 @@ class FboSupplyForecastService {
     }
 
     const [wbByNm, erm, clusterR] = await Promise.all([
-      getWbOrdersCountMap({ profileId: pid, organizationId: orgId, planDays: ordersPeriodDays }),
-      buildErmWbOrderCounts(pid, ordersPeriodDays),
+      getWbOrdersCountMap({ profileId: pid, organizationId: orgId, ordersPeriod }),
+      buildErmWbOrderCounts(pid, ordersPeriod),
       query(
         `
         SELECT DISTINCT region_name
@@ -920,29 +980,31 @@ class FboSupplyForecastService {
       erm,
       clusterFilter,
       planDays: planningDays,
-      ordersDays: ordersPeriodDays,
+      ordersDays: ordersPeriod.days,
       zeroStockBoostPercent: stockBoost,
     });
 
     const boostNote =
       stockBoost > 0 ? ` При нулевом остатке к поставке добавляется +${stockBoost}%.` : '';
     const planNote =
-      planningDays !== ordersPeriodDays
-        ? ` Заказы за ${ordersPeriodDays} дн. масштабированы на период планирования ${planningDays} дн.`
+      planningDays !== ordersPeriod.days
+        ? ` Заказы за ${ordersPeriod.days} дн. (${ordersPeriod.start} — ${ordersPeriod.end}) масштабированы на период планирования ${planningDays} дн.`
         : '';
 
     return {
       syncedAt: snap.created_at,
       snapshotId: snap.id,
       planDays: planningDays,
-      ordersDays: ordersPeriodDays,
+      ordersDays: ordersPeriod.days,
+      ordersStart: ordersPeriod.start,
+      ordersEnd: ordersPeriod.end,
       zeroStockBoostPercent: stockBoost,
       rows: pivoted.rows,
       clusters: clusterDedup,
       displayClusters: pivoted.clusters,
       totals: pivoted.totals,
       apiNote:
-        `Остатки, резерв и возврат — на момент последней синхронизации с WB. Заказы — за ${ordersPeriodDays} дн. (аналитика WB и заказы в ERM). Период планирования поставки — ${planningDays} дн.${planNote}${boostNote}`,
+        `Остатки, резерв и возврат — на момент последней синхронизации с WB. Заказы — за период ${ordersPeriod.start} — ${ordersPeriod.end} (${ordersPeriod.days} дн., аналитика WB и заказы в ERM). Период планирования поставки — ${planningDays} дн.${planNote}${boostNote}`,
     };
   }
 }

@@ -128,6 +128,8 @@ class FboSuppliesController {
       const planDaysRaw = req.query?.planDays ?? req.query?.plan_days ?? req.query?.periodDays ?? null;
       const ordersDaysRaw =
         req.query?.ordersDays ?? req.query?.orders_days ?? req.query?.ordersPeriodDays ?? null;
+      const ordersStart = req.query?.ordersStart ?? req.query?.orders_start ?? null;
+      const ordersEnd = req.query?.ordersEnd ?? req.query?.orders_end ?? null;
       const boostRaw =
         req.query?.zeroStockBoostPercent ??
         req.query?.zero_stock_boost_percent ??
@@ -147,6 +149,8 @@ class FboSuppliesController {
         unlinkedOnly,
         planDays,
         ordersDays,
+        ordersStart,
+        ordersEnd,
         zeroStockBoostPercent,
       });
       return res.status(200).json({ ok: true, data });

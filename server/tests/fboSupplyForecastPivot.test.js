@@ -5,6 +5,8 @@ import {
   calcClusterToSupply,
   scaleOrdersForPlan,
   applyZeroStockBoost,
+  calcAvgOrdersPerDay,
+  resolveOrdersPeriod,
 } from '../src/services/fboSupplyForecast.service.js';
 
 test('calcClusterToSupply: need minus on-hand plus reserve', () => {
@@ -39,6 +41,18 @@ test('calcClusterToSupply applies zero-stock boost', () => {
     }),
     15
   );
+});
+
+test('calcAvgOrdersPerDay divides orders by period days', () => {
+  assert.equal(calcAvgOrdersPerDay(30, 30), 1);
+  assert.equal(calcAvgOrdersPerDay(10, 7), 1.43);
+});
+
+test('resolveOrdersPeriod accepts custom date range', () => {
+  const p = resolveOrdersPeriod({ ordersStart: '2026-06-01', ordersEnd: '2026-06-07' });
+  assert.equal(p.start, '2026-06-01');
+  assert.equal(p.end, '2026-06-07');
+  assert.equal(p.days, 7);
 });
 
 test('pivotForecastByCluster aggregates warehouses into regions', () => {
@@ -105,6 +119,7 @@ test('pivotForecastByCluster aggregates warehouses into regions', () => {
   assert.equal(m['Южный'].return, 2);
   assert.ok(m['Центральный'].orders > 0);
   assert.ok(m['Южный'].orders > 0);
+  assert.equal(m['Центральный'].avgOrdersPerDay, calcAvgOrdersPerDay(m['Центральный'].orders, 30));
 });
 
 test('pivotForecastByCluster filters by cluster', () => {

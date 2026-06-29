@@ -12,28 +12,76 @@ import './FboSuppliesSubNav.css';
 const CLUSTER_METRIC_COLS = [
   { key: 'availability', label: 'Наличие', title: 'Остаток на складах кластера (текущий снимок WB)' },
   { key: 'orders', label: 'Заказы', title: 'Заказано за выбранный период загрузки' },
+  {
+    key: 'avgOrdersPerDay',
+    label: 'В ср./день',
+    title: 'В среднем заказов в день за период загрузки',
+    format: 'avg',
+  },
   { key: 'reserve', label: 'Резерв', title: 'В пути к клиенту (текущий снимок WB)' },
   { key: 'return', label: 'Возврат', title: 'В пути от клиента (текущий снимок WB)' },
   { key: 'toSupply', label: 'К поставке', title: 'Рекомендуемое количество к поставке в кластер' },
 ];
 
-const PERIOD_OPTIONS = [30, 60, 90];
+const PLAN_DAYS_OPTIONS = [30, 60, 90];
 const PLAN_DAYS_LS = 'fbo_forecast_plan_days';
-const ORDERS_DAYS_LS = 'fbo_forecast_orders_days';
+const ORDERS_PERIOD_LS = 'fbo_forecast_orders_period';
 const ZERO_STOCK_BOOST_LS = 'fbo_forecast_zero_stock_boost';
 
-function readLsNumber(key, options, fallback) {
-  const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
-  const n = Number(raw);
-  return options.includes(n) ? n : fallback;
+const ORDERS_PRESETS = [
+  { id: 'week', label: '1 неделя', days: 7 },
+  { id: 'month', label: '1 месяц', days: 30 },
+  { id: 'quarter', label: '1 квартал', days: 90 },
+  { id: 'custom', label: 'Свои даты', days: null },
+];
+
+function toIsoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function presetRange(mode) {
+  const end = new Date();
+  const start = new Date(end);
+  const preset = ORDERS_PRESETS.find((p) => p.id === mode);
+  const span = preset?.days ?? 30;
+  start.setDate(start.getDate() - (span - 1));
+  return { start: toIsoDate(start), end: toIsoDate(end) };
+}
+
+function readOrdersPeriod() {
+  const fallback = { mode: 'month', start: presetRange('month').start, end: presetRange('month').end };
+  if (typeof localStorage === 'undefined') return fallback;
+  try {
+    const raw = localStorage.getItem(ORDERS_PERIOD_LS);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    const mode = ORDERS_PRESETS.some((p) => p.id === parsed?.mode) ? parsed.mode : 'month';
+    if (mode === 'custom' && parsed?.start && parsed?.end) {
+      return { mode, start: parsed.start, end: parsed.end };
+    }
+    const range = presetRange(mode);
+    return { mode, start: range.start, end: range.end };
+  } catch {
+    return fallback;
+  }
+}
+
+function ordersPeriodToApi(period) {
+  if (!period) return {};
+  if (period.mode === 'custom' && period.start && period.end) {
+    return { ordersStart: period.start, ordersEnd: period.end };
+  }
+  const range = presetRange(period.mode || 'month');
+  return { ordersStart: range.start, ordersEnd: range.end };
 }
 
 function readPlanDays() {
-  return readLsNumber(PLAN_DAYS_LS, PERIOD_OPTIONS, 30);
-}
-
-function readOrdersDays() {
-  return readLsNumber(ORDERS_DAYS_LS, PERIOD_OPTIONS, 30);
+  const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(PLAN_DAYS_LS) : null;
+  const n = Number(raw);
+  return PLAN_DAYS_OPTIONS.includes(n) ? n : 30;
 }
 
 function readZeroStockBoost() {
@@ -54,14 +102,36 @@ function fmtDt(iso) {
   });
 }
 
+function fmtIsoRu(iso) {
+  if (!iso) return '—';
+  const [y, m, d] = String(iso).split('-');
+  if (!y || !m || !d) return iso;
+  return `${d}.${m}.${y}`;
+}
+
 function fmtQty(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return '0';
   return v.toLocaleString('ru-RU');
 }
 
+function fmtCellValue(col, value) {
+  if (col.format === 'avg') {
+    const v = Number(value);
+    if (!Number.isFinite(v)) return '0';
+    return v.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  }
+  return fmtQty(value);
+}
+
 function displaySku(row) {
   return row.productArticle || row.wbVendorCode || row.externalSku || '—';
+}
+
+function rowHasSupplyInAnyCluster(row) {
+  const metrics = row?.clusterMetrics;
+  if (!metrics || typeof metrics !== 'object') return false;
+  return Object.values(metrics).some((m) => Number(m?.toSupply) > 0);
 }
 
 function usePopoverDismiss(open, setOpen, rootRef) {
@@ -121,7 +191,7 @@ function ForecastSettingsPopover({ planDays, zeroStockBoost, onPlanDaysChange, o
               value={planDays}
               onChange={(e) => onPlanDaysChange(Number(e.target.value))}
             >
-              {PERIOD_OPTIONS.map((d) => (
+              {PLAN_DAYS_OPTIONS.map((d) => (
                 <option key={d} value={d}>
                   {d} дней
                 </option>
@@ -157,8 +227,34 @@ function ForecastSettingsPopover({ planDays, zeroStockBoost, onPlanDaysChange, o
   );
 }
 
-function ForecastLoadReportModal({ open, ordersDays, syncing, onOrdersDaysChange, onClose, onConfirm }) {
+function ForecastLoadReportModal({
+  open,
+  ordersPeriod,
+  syncing,
+  onOrdersPeriodChange,
+  onClose,
+  onConfirm,
+}) {
   if (!open) return null;
+
+  const setMode = (mode) => {
+    if (mode === 'custom') {
+      onOrdersPeriodChange({
+        mode: 'custom',
+        start: ordersPeriod.start || presetRange('month').start,
+        end: ordersPeriod.end || presetRange('month').end,
+      });
+      return;
+    }
+    const range = presetRange(mode);
+    onOrdersPeriodChange({ mode, start: range.start, end: range.end });
+  };
+
+  const customInvalid =
+    ordersPeriod.mode === 'custom' &&
+    ordersPeriod.start &&
+    ordersPeriod.end &&
+    ordersPeriod.start > ordersPeriod.end;
 
   return (
     <div className="fbo-forecast-modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -174,28 +270,73 @@ function ForecastLoadReportModal({ open, ordersDays, syncing, onOrdersDaysChange
         </h3>
         <p className="fbo-forecast-modal__text">
           С WB загружаются <strong>текущие</strong> остатки, резерв и возвраты. Заказы подтягиваются за
-          выбранный период — укажите его ниже.
+          выбранный период.
         </p>
-        <label className="fbo-forecast-settings__field">
-          <span className="fbo-forecast-settings__label">Период заказов для отчёта</span>
-          <select
-            className="form-select"
-            value={ordersDays}
-            onChange={(e) => onOrdersDaysChange(Number(e.target.value))}
-            disabled={syncing}
-          >
-            {PERIOD_OPTIONS.map((d) => (
-              <option key={d} value={d}>
-                {d} дней
-              </option>
+
+        <div className="fbo-forecast-settings__field">
+          <span className="fbo-forecast-settings__label">Период заказов</span>
+          <div className="fbo-forecast-period-chips">
+            {ORDERS_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`fbo-forecast-period-chip${ordersPeriod.mode === p.id ? ' is-active' : ''}`}
+                disabled={syncing}
+                onClick={() => setMode(p.id)}
+              >
+                {p.label}
+              </button>
             ))}
-          </select>
-        </label>
+          </div>
+        </div>
+
+        {ordersPeriod.mode === 'custom' && (
+          <div className="fbo-forecast-custom-dates">
+            <label className="fbo-forecast-settings__field">
+              <span className="fbo-forecast-settings__label">С</span>
+              <input
+                className="form-control"
+                type="date"
+                value={ordersPeriod.start || ''}
+                max={ordersPeriod.end || undefined}
+                disabled={syncing}
+                onChange={(e) =>
+                  onOrdersPeriodChange({ ...ordersPeriod, mode: 'custom', start: e.target.value })
+                }
+              />
+            </label>
+            <label className="fbo-forecast-settings__field">
+              <span className="fbo-forecast-settings__label">По</span>
+              <input
+                className="form-control"
+                type="date"
+                value={ordersPeriod.end || ''}
+                min={ordersPeriod.start || undefined}
+                max={toIsoDate(new Date())}
+                disabled={syncing}
+                onChange={(e) =>
+                  onOrdersPeriodChange({ ...ordersPeriod, mode: 'custom', end: e.target.value })
+                }
+              />
+            </label>
+          </div>
+        )}
+
+        {ordersPeriod.mode !== 'custom' && ordersPeriod.start && ordersPeriod.end && (
+          <p className="fbo-forecast-modal__range">
+            {fmtIsoRu(ordersPeriod.start)} — {fmtIsoRu(ordersPeriod.end)}
+          </p>
+        )}
+
+        {customInvalid && (
+          <p className="fbo-forecast-modal__error">Дата начала не может быть позже даты окончания.</p>
+        )}
+
         <div className="fbo-forecast-modal__actions">
           <Button variant="secondary" disabled={syncing} onClick={onClose}>
             Отмена
           </Button>
-          <Button variant="primary" disabled={syncing} onClick={onConfirm}>
+          <Button variant="primary" disabled={syncing || customInvalid} onClick={onConfirm}>
             {syncing ? 'Загрузка…' : 'Загрузить'}
           </Button>
         </div>
@@ -213,20 +354,23 @@ export function FboSupplyForecast() {
   const [search, setSearch] = useState('');
   const [searchDebounced, setSearchDebounced] = useState('');
   const [unlinkedOnly, setUnlinkedOnly] = useState(false);
+  const [hideZeroSupply, setHideZeroSupply] = useState(true);
   const [planDays, setPlanDays] = useState(readPlanDays);
-  const [ordersDays, setOrdersDays] = useState(readOrdersDays);
+  const [ordersPeriod, setOrdersPeriod] = useState(readOrdersPeriod);
   const [zeroStockBoost, setZeroStockBoost] = useState(readZeroStockBoost);
   const [loadModalOpen, setLoadModalOpen] = useState(false);
-  const [loadModalOrdersDays, setLoadModalOrdersDays] = useState(readOrdersDays);
+  const [loadModalPeriod, setLoadModalPeriod] = useState(readOrdersPeriod);
 
   const persistPlanDays = useCallback((days) => {
     setPlanDays(days);
     if (typeof localStorage !== 'undefined') localStorage.setItem(PLAN_DAYS_LS, String(days));
   }, []);
 
-  const persistOrdersDays = useCallback((days) => {
-    setOrdersDays(days);
-    if (typeof localStorage !== 'undefined') localStorage.setItem(ORDERS_DAYS_LS, String(days));
+  const persistOrdersPeriod = useCallback((period) => {
+    setOrdersPeriod(period);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(ORDERS_PERIOD_LS, JSON.stringify(period));
+    }
   }, []);
 
   const persistZeroStockBoost = useCallback((pct) => {
@@ -243,14 +387,15 @@ export function FboSupplyForecast() {
     async (overrides = {}) => {
       setLoading(true);
       setErr(null);
-      const effectiveOrdersDays = overrides.ordersDays ?? ordersDays;
+      const period = overrides.ordersPeriod ?? ordersPeriod;
+      const apiPeriod = ordersPeriodToApi(period);
       try {
         const payload = await fboSuppliesApi.getWbForecast({
           cluster: clusterKey || undefined,
           q: searchDebounced || undefined,
           unlinkedOnly: unlinkedOnly || undefined,
           planDays,
-          ordersDays: effectiveOrdersDays,
+          ...apiPeriod,
           zeroStockBoostPercent: zeroStockBoost,
         });
         setData(payload);
@@ -260,7 +405,7 @@ export function FboSupplyForecast() {
         setLoading(false);
       }
     },
-    [clusterKey, searchDebounced, unlinkedOnly, planDays, ordersDays, zeroStockBoost]
+    [clusterKey, searchDebounced, unlinkedOnly, planDays, ordersPeriod, zeroStockBoost]
   );
 
   useEffect(() => {
@@ -268,19 +413,19 @@ export function FboSupplyForecast() {
   }, [load]);
 
   const openLoadModal = () => {
-    setLoadModalOrdersDays(ordersDays);
+    setLoadModalPeriod(ordersPeriod);
     setLoadModalOpen(true);
   };
 
   const handleLoadReport = async () => {
     setSyncing(true);
     setErr(null);
-    const selectedOrdersDays = loadModalOrdersDays;
+    const selectedPeriod = loadModalPeriod;
     try {
-      persistOrdersDays(selectedOrdersDays);
+      persistOrdersPeriod(selectedPeriod);
       await fboSuppliesApi.syncWbForecast();
       setLoadModalOpen(false);
-      await load({ ordersDays: selectedOrdersDays });
+      await load({ ordersPeriod: selectedPeriod });
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить отчёт с WB');
     } finally {
@@ -289,6 +434,10 @@ export function FboSupplyForecast() {
   };
 
   const rows = useMemo(() => (Array.isArray(data?.rows) ? data.rows : []), [data]);
+  const visibleRows = useMemo(() => {
+    if (!hideZeroSupply) return rows;
+    return rows.filter((row) => rowHasSupplyInAnyCluster(row));
+  }, [rows, hideZeroSupply]);
   const allClusters = useMemo(() => (Array.isArray(data?.clusters) ? data.clusters : []), [data]);
   const displayClusters = useMemo(() => {
     if (Array.isArray(data?.displayClusters) && data.displayClusters.length > 0) {
@@ -304,9 +453,12 @@ export function FboSupplyForecast() {
     toSupply: 0,
     rowCount: 0,
   };
-  const ordersPeriod = data?.ordersDays ?? ordersDays;
+  const ordersStart = data?.ordersStart ?? ordersPeriod.start;
+  const ordersEnd = data?.ordersEnd ?? ordersPeriod.end;
+  const ordersDaysCount = data?.ordersDays ?? null;
   const planningPeriod = data?.planDays ?? planDays;
   const boostPct = data?.zeroStockBoostPercent ?? zeroStockBoost;
+  const hiddenRowsCount = rows.length - visibleRows.length;
 
   return (
     <div className="fbo-supplies-page">
@@ -321,9 +473,9 @@ export function FboSupplyForecast() {
 
       <ForecastLoadReportModal
         open={loadModalOpen}
-        ordersDays={loadModalOrdersDays}
+        ordersPeriod={loadModalPeriod}
         syncing={syncing}
-        onOrdersDaysChange={setLoadModalOrdersDays}
+        onOrdersPeriodChange={setLoadModalPeriod}
         onClose={() => {
           if (!syncing) setLoadModalOpen(false);
         }}
@@ -341,7 +493,13 @@ export function FboSupplyForecast() {
           Остатки на: <strong>{fmtDt(data?.syncedAt)}</strong>
         </span>
         <span>
-          Заказы за: <strong>{ordersPeriod} дн.</strong>
+          Заказы: <strong>{fmtIsoRu(ordersStart)} — {fmtIsoRu(ordersEnd)}</strong>
+          {ordersDaysCount != null && (
+            <>
+              {' '}
+              (<strong>{ordersDaysCount}</strong> дн.)
+            </>
+          )}
         </span>
         <span>
           Планирование: <strong>{planningPeriod} дн.</strong>
@@ -352,7 +510,10 @@ export function FboSupplyForecast() {
           </span>
         )}
         <span>
-          Товаров: <strong>{fmtQty(totals.rowCount)}</strong>
+          Товаров: <strong>{fmtQty(visibleRows.length)}</strong>
+          {hideZeroSupply && hiddenRowsCount > 0 && (
+            <span className="fbo-forecast-meta__muted"> (скрыто {hiddenRowsCount})</span>
+          )}
         </span>
         <span>
           К поставке: <strong>{fmtQty(totals.toSupply)}</strong>
@@ -385,6 +546,18 @@ export function FboSupplyForecast() {
             onChange={(e) => setSearch(e.target.value)}
           />
         </label>
+        <label className="fbo-forecast-toggle">
+          <span className="fbo-forecast-toggle__track">
+            <input
+              type="checkbox"
+              className="fbo-forecast-toggle__input"
+              checked={hideZeroSupply}
+              onChange={(e) => setHideZeroSupply(e.target.checked)}
+            />
+            <span className="fbo-forecast-toggle__thumb" aria-hidden />
+          </span>
+          <span className="fbo-forecast-toggle__label">Скрыть без поставки</span>
+        </label>
         <label style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 18 }}>
           <input
             type="checkbox"
@@ -404,10 +577,12 @@ export function FboSupplyForecast() {
 
       {loading && !data ? (
         <p className="text-muted">Загрузка…</p>
-      ) : rows.length === 0 ? (
+      ) : visibleRows.length === 0 ? (
         <p className="text-muted">
           {data?.syncedAt
-            ? 'Нет строк по выбранным фильтрам.'
+            ? hideZeroSupply && rows.length > 0
+              ? 'Все строки скрыты фильтром «Скрыть без поставки».'
+              : 'Нет строк по выбранным фильтрам.'
             : 'Данных ещё нет. Нажмите «Загрузить отчёт».'}
         </p>
       ) : (
@@ -436,7 +611,9 @@ export function FboSupplyForecast() {
                   CLUSTER_METRIC_COLS.map((col) => (
                     <th
                       key={`${c.key}-${col.key}`}
-                      className={`num fbo-forecast-metric-head${col.key === 'toSupply' ? ' fbo-forecast-metric-head--supply' : ''}`}
+                      className={`num fbo-forecast-metric-head${
+                        col.key === 'toSupply' ? ' fbo-forecast-metric-head--supply' : ''
+                      }${col.key === 'avgOrdersPerDay' ? ' fbo-forecast-metric-head--avg' : ''}`}
                       title={col.title}
                     >
                       {col.label}
@@ -446,7 +623,7 @@ export function FboSupplyForecast() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => {
+              {visibleRows.map((row) => {
                 const name = row.productId
                   ? row.productName || row.productArticle || `Товар #${row.productId}`
                   : null;
@@ -468,10 +645,12 @@ export function FboSupplyForecast() {
                       return CLUSTER_METRIC_COLS.map((col) => (
                         <td
                           key={`${row.id}-${c.key}-${col.key}`}
-                          className={`num${col.key === 'toSupply' ? ' fbo-forecast-supply-cell' : ''}`}
+                          className={`num${
+                            col.key === 'toSupply' ? ' fbo-forecast-supply-cell' : ''
+                          }${col.key === 'avgOrdersPerDay' ? ' fbo-forecast-avg-cell' : ''}`}
                           title={col.title}
                         >
-                          {fmtQty(m[col.key])}
+                          {fmtCellValue(col, m[col.key])}
                         </td>
                       ));
                     })}
