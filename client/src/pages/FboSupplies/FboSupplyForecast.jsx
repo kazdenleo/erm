@@ -27,13 +27,14 @@ const CLUSTER_METRIC_COLS = [
   { key: 'return', label: 'Возврат', title: 'В пути от клиента (текущий снимок WB)' },
   {
     key: 'pendingSupply',
-    label: 'В поставке',
-    title: 'Непринятые поставки FBO (WB) в ERM по этому кластеру',
+    label: 'В пути',
+    title: 'Непринятые поставки WB в ERM по этому кластеру (наведите для деталей)',
+    format: 'inTransit',
   },
   {
     key: 'toSupply',
     label: 'К поставке',
-    title: 'Ср. заказов/день × период планирования − наличие − в поставке',
+    title: 'Ср. заказов/день × период планирования − наличие − в пути',
   },
 ];
 
@@ -158,11 +159,36 @@ function fmtQty(n) {
   return v.toLocaleString('ru-RU');
 }
 
-function fmtCellValue(col, value) {
+function fmtInTransitTitle(items) {
+  if (!Array.isArray(items) || items.length === 0) return '';
+  return items.map((it) => `${it.label}: ${fmtQty(it.qty)}`).join('\n');
+}
+
+function fmtCellValue(col, value, metrics) {
   if (col.format === 'avg') {
     const v = Number(value);
     if (!Number.isFinite(v)) return '0';
     return v.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  }
+  if (col.format === 'inTransit') {
+    const qty = Number(value);
+    if (!Number.isFinite(qty) || qty <= 0) return '0';
+    const items = metrics?.inTransitItems;
+    if (!Array.isArray(items) || items.length === 0) return fmtQty(qty);
+    if (items.length === 1) {
+      return (
+        <span className="fbo-forecast-in-transit">
+          <span className="fbo-forecast-in-transit__qty">{fmtQty(qty)}</span>
+          <span className="fbo-forecast-in-transit__hint">{items[0].label}</span>
+        </span>
+      );
+    }
+    return (
+      <span className="fbo-forecast-in-transit">
+        <span className="fbo-forecast-in-transit__qty">{fmtQty(qty)}</span>
+        <span className="fbo-forecast-in-transit__hint">{items.length} поз.</span>
+      </span>
+    );
   }
   return fmtQty(value);
 }
@@ -586,7 +612,7 @@ export function FboSupplyForecast() {
       <FboSuppliesSubNav />
 
       <div className="fbo-supplies-toolbar">
-        <h2 style={{ margin: 0, flex: 1 }}>Прогнозирование поставок (WB)</h2>
+        <div className="fbo-supplies-toolbar__spacer" />
         <Button variant="primary" disabled={syncing || loading} onClick={openLoadModal}>
           {syncing ? 'Загрузка…' : 'Загрузить отчёт'}
         </Button>
@@ -809,9 +835,13 @@ export function FboSupplyForecast() {
                           }${col.key === 'avgOrdersPerDay' ? ' fbo-forecast-avg-cell' : ''}${
                             col.key === 'pendingSupply' ? ' fbo-forecast-pending-cell' : ''
                           }`}
-                          title={col.title}
+                          title={
+                            col.key === 'pendingSupply'
+                              ? fmtInTransitTitle(m.inTransitItems) || col.title
+                              : col.title
+                          }
                         >
-                          {fmtCellValue(col, m[col.key])}
+                          {fmtCellValue(col, m[col.key], m)}
                         </td>
                       ));
                     })}

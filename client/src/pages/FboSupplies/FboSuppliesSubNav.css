@@ -383,6 +383,28 @@
   color: #7c3aed;
 }
 
+.fbo-forecast-in-transit {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  line-height: 1.2;
+}
+
+.fbo-forecast-in-transit__qty {
+  font-weight: 600;
+}
+
+.fbo-forecast-in-transit__hint {
+  font-size: 10px;
+  font-weight: 400;
+  color: #6d28d9;
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fbo-forecast-settings {
   position: relative;
   padding-top: 18px;

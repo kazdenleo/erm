@@ -36,6 +36,22 @@ function trailingDigits(value) {
   return m ? m[1] : null;
 }
 
+/** Нормализация названия склада/кластера для сопоставления («Абакан-2» ≈ «Абакан 2»). */
+export function normalizeClusterToken(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-_.,]+/g, '');
+}
+
+/** Артикул BS-1788 → vendor WB DTBS1788 (как в карточках без явного mp_wb_vendor_code). */
+export function derivedWbVendorFromArticle(article) {
+  const a = String(article ?? '').trim();
+  if (!a || !a.includes('-')) return null;
+  const derived = `DT${a.replace(/-/g, '').toUpperCase()}`;
+  return derived.length > 3 ? derived : null;
+}
+
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
   const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
@@ -210,6 +226,8 @@ async function buildWbProductLookup(profileId, organizationId = null) {
       put(byArticle, normalizeWbLinkKey(article), info);
       const tail = trailingDigits(article);
       if (tail) put(byNm, tail, info);
+      const derivedVendor = derivedWbVendorFromArticle(article);
+      if (derivedVendor) putVendor(derivedVendor, info);
     }
 
     if (chrtExtra != null && String(chrtExtra).trim() !== '') {
@@ -440,22 +458,65 @@ export function calcClusterToSupply({
   return toSupply;
 }
 
-function resolvePlacementClusterKey(placementName, knownClusterKeys = null) {
+export function resolvePlacementClusterKey(placementName, knownClusterKeys = null, warehouseToMacro = null) {
   const raw = clusterKeyFromRegion(placementName);
-  if (!knownClusterKeys || knownClusterKeys.size === 0) return raw;
-  if (knownClusterKeys.has(raw)) return raw;
-  const rawLower = raw.toLowerCase();
-  for (const key of knownClusterKeys) {
-    if (key.toLowerCase() === rawLower) return key;
-    if (clusterLabelFromKey(key).toLowerCase() === rawLower) return key;
+  const keysSet =
+    knownClusterKeys instanceof Set ? knownClusterKeys : knownClusterKeys ? new Set(knownClusterKeys) : null;
+
+  if (keysSet && keysSet.size > 0) {
+    if (keysSet.has(raw)) return raw;
+    const rawLower = raw.toLowerCase();
+    for (const key of keysSet) {
+      if (key.toLowerCase() === rawLower) return key;
+      if (clusterLabelFromKey(key).toLowerCase() === rawLower) return key;
+    }
   }
+
+  const placementToken = normalizeClusterToken(placementName);
+  if (placementToken && warehouseToMacro instanceof Map && warehouseToMacro.size > 0) {
+    if (warehouseToMacro.has(placementToken)) {
+      return warehouseToMacro.get(placementToken);
+    }
+    for (const [whToken, macroKey] of warehouseToMacro) {
+      if (!whToken || whToken.length < 3) continue;
+      if (placementToken.includes(whToken) || whToken.includes(placementToken)) {
+        return macroKey;
+      }
+    }
+  }
+
   return raw;
+}
+
+async function buildWbWarehouseToMacroMap(snapshotId) {
+  const sid = Number(snapshotId);
+  if (!Number.isFinite(sid) || sid < 1) return new Map();
+  const r = await query(
+    `
+    SELECT DISTINCT warehouse_name, region_name
+    FROM wb_fbo_forecast_rows
+    WHERE snapshot_id = $1
+      AND warehouse_name IS NOT NULL
+      AND TRIM(warehouse_name) <> ''
+    `,
+    [sid]
+  );
+  const map = new Map();
+  for (const row of r.rows || []) {
+    const token = normalizeClusterToken(row.warehouse_name);
+    const macroKey = clusterKeyFromRegion(row.region_name);
+    if (token && macroKey !== UNKNOWN_CLUSTER) {
+      map.set(token, macroKey);
+    }
+  }
+  return map;
 }
 
 async function buildPendingFboSupplyByProductCluster(
   profileId,
   organizationId,
-  knownClusterKeys = null
+  knownClusterKeys = null,
+  warehouseToMacro = null
 ) {
   const pid = normalizeProfileId(profileId);
   const orgId = normalizeOrgId(organizationId);
@@ -466,43 +527,91 @@ async function buildPendingFboSupplyByProductCluster(
     `
     SELECT
       i.product_id,
+      i.quantity,
+      i.barcode,
+      i.sku,
+      i.mp_offer_id,
+      i.mp_product_id,
+      i.name AS item_name,
       s.placement_cluster,
-      SUM(i.quantity)::int AS qty
+      p.sku AS article,
+      p.name AS product_name
     FROM fbo_supply_items i
     INNER JOIN fbo_supplies s ON s.id = i.fbo_supply_id
+    LEFT JOIN products p ON p.id = i.product_id
     WHERE s.marketplace = 'wb'
       AND s.status = ANY($3::text[])
-      AND i.product_id IS NOT NULL
       AND (
         ($1::bigint IS NULL AND $2::bigint IS NULL)
         OR ($1::bigint IS NOT NULL AND s.profile_id = $1)
         OR ($2::bigint IS NOT NULL AND s.organization_id = $2)
       )
-    GROUP BY i.product_id, s.placement_cluster
     `,
     [pid, orgId, FBO_FORECAST_PENDING_SUPPLY_STATUSES]
   );
 
-  const byProductCluster = new Map();
+  /** @type {Map<string, Array<{productId:number|null, qty:number, label:string, nmId:string, chrtId:string, vendorCode:string}>>} */
+  const pendingByCluster = new Map();
+
   for (const row of r.rows || []) {
-    const productId = Number(row.product_id);
-    if (!Number.isFinite(productId)) continue;
-    const qty = toInt(row.qty);
+    const qty = toInt(row.quantity);
     if (qty <= 0) continue;
-    const ck = resolvePlacementClusterKey(row.placement_cluster, keysSet);
+    const ck = resolvePlacementClusterKey(row.placement_cluster, keysSet, warehouseToMacro);
     keysSet.add(ck);
-    const mapKey = `${productId}:${ck}`;
-    byProductCluster.set(mapKey, (byProductCluster.get(mapKey) || 0) + qty);
+
+    const productId =
+      row.product_id != null && Number.isFinite(Number(row.product_id))
+        ? Number(row.product_id)
+        : null;
+    const nmId = row.mp_product_id != null ? String(row.mp_product_id).trim() : '';
+    const barcode = row.barcode != null ? String(row.barcode).trim() : '';
+    const sku = row.sku != null ? String(row.sku).trim() : '';
+    const vendorCode = normalizeWbLinkKey(row.mp_offer_id || sku);
+    const chrtId = /^\d+$/.test(barcode) ? barcode : /^\d+$/.test(sku) ? sku : '';
+    const label =
+      row.article ||
+      row.product_name ||
+      row.item_name ||
+      sku ||
+      vendorCode ||
+      (productId != null ? `Товар #${productId}` : nmId ? `nm ${nmId}` : 'Позиция');
+
+    const list = pendingByCluster.get(ck) || [];
+    list.push({ productId, qty, label, nmId, chrtId, vendorCode });
+    pendingByCluster.set(ck, list);
   }
 
-  return { byProductCluster, clusterKeys: [...keysSet] };
+  return { pendingByCluster, clusterKeys: [...keysSet] };
 }
 
-function pendingSupplyForProductCluster(pendingByProductCluster, productId, clusterKey) {
-  if (!pendingByProductCluster || productId == null) return 0;
-  const pid = Number(productId);
-  if (!Number.isFinite(pid)) return 0;
-  return toInt(pendingByProductCluster.get(`${pid}:${clusterKey}`));
+function matchPendingSupplyToProduct(prod, clusterKey, pendingByCluster) {
+  const entries = pendingByCluster?.get(clusterKey);
+  if (!entries?.length) return { pendingSupply: 0, inTransitItems: [] };
+
+  const pid = prod.productId != null ? Number(prod.productId) : null;
+  const nm = prod.nmId != null ? String(prod.nmId).trim() : '';
+  const chrt = prod.chrtId != null ? String(prod.chrtId).trim() : '';
+  const fk = nm && chrt ? `${nm}:${chrt}` : '';
+  const vc = normalizeWbLinkKey(prod.wbVendorCode);
+
+  let pendingSupply = 0;
+  const itemMap = new Map();
+
+  for (const e of entries) {
+    let match = false;
+    if (pid != null && e.productId != null && pid === e.productId) match = true;
+    else if (fk && e.nmId && e.chrtId && `${e.nmId}:${e.chrtId}` === fk) match = true;
+    else if (vc && e.vendorCode && e.vendorCode === vc) match = true;
+    else if (fk && e.nmId && !e.chrtId && e.nmId === nm) match = true;
+    if (!match) continue;
+
+    pendingSupply += e.qty;
+    const key = e.label || String(e.productId ?? e.nmId ?? 'item');
+    itemMap.set(key, (itemMap.get(key) || 0) + e.qty);
+  }
+
+  const inTransitItems = [...itemMap.entries()].map(([label, qty]) => ({ label, qty }));
+  return { pendingSupply, inTransitItems };
 }
 
 function buildWarehouseClusterMap(flatRows) {
@@ -556,7 +665,7 @@ export function pivotForecastByCluster(
     planDays = 30,
     ordersDays = 30,
     zeroStockBoostPercent = 0,
-    pendingByProductCluster = null,
+    pendingByCluster = null,
     extraClusterKeys = null,
     includePendingSupply = true,
   } = {}
@@ -639,11 +748,9 @@ export function pivotForecastByCluster(
         erm,
         whToCluster
       );
-      const pendingSupply = pendingSupplyForProductCluster(
-        pendingByProductCluster,
-        prod.productId,
-        ck
-      );
+      const pendingMatch = matchPendingSupplyToProduct(prod, ck, pendingByCluster);
+      const pendingSupply = pendingMatch.pendingSupply;
+      const inTransitItems = pendingMatch.inTransitItems;
       const toSupply = calcClusterToSupply({
         availability: cm.availability,
         orders,
@@ -660,6 +767,7 @@ export function pivotForecastByCluster(
         reserve: cm.reserve,
         return: cm.returnQty,
         pendingSupply,
+        inTransitItems,
         toSupply,
       };
       rowOrdersTotal += orders;
@@ -1078,27 +1186,27 @@ class FboSupplyForecastService {
       profileId: pid,
       organizationId: orgId,
     });
-    if (vendorByNm.size > 0) {
-      rows = rows.map((row) => {
-        if (row.productId || row.nmId == null) return row;
-        const vendor = vendorByNm.get(String(row.nmId).trim());
-        if (!vendor) return row;
-        return enrichForecastRow(
-          {
-            ...row,
-            nm_id: row.nmId,
-            chrt_id: row.chrtId,
-            external_sku: row.externalSku,
-            wb_vendor_code: vendor,
-            product_id: null,
-            product_name: null,
-            product_article: null,
-          },
-          lookup,
-          vendor
-        );
-      });
-    }
+    rows = rows.map((row) => {
+      if (row.productId) return row;
+      const vendorFromApi =
+        row.nmId != null ? vendorByNm.get(String(row.nmId).trim()) : null;
+      const vendor = vendorFromApi ?? row.wbVendorCode ?? null;
+      if (!vendor && row.nmId == null) return row;
+      return enrichForecastRow(
+        {
+          ...row,
+          nm_id: row.nmId,
+          chrt_id: row.chrtId,
+          external_sku: row.externalSku,
+          wb_vendor_code: vendor,
+          product_id: null,
+          product_name: null,
+          product_article: null,
+        },
+        lookup,
+        vendor
+      );
+    });
     if (q) {
       rows = rows.filter((row) => rowMatchesSearch(row, q));
     }
@@ -1132,10 +1240,13 @@ class FboSupplyForecastService {
       clusterDedup.push(c);
     }
 
+    const warehouseToMacro = await buildWbWarehouseToMacroMap(snap.id);
+
     const pending = await buildPendingFboSupplyByProductCluster(
       pid,
       orgId,
-      new Set(clusterDedup.map((c) => c.key))
+      new Set(clusterDedup.map((c) => c.key)),
+      warehouseToMacro
     );
     for (const ck of pending.clusterKeys) {
       if (clusterFilter && ck !== clusterFilter) continue;
@@ -1151,14 +1262,14 @@ class FboSupplyForecastService {
       planDays: planningDays,
       ordersDays: ordersPeriod.days,
       zeroStockBoostPercent: stockBoost,
-      pendingByProductCluster: pending.byProductCluster,
+      pendingByCluster: pending.pendingByCluster,
       extraClusterKeys: pending.clusterKeys,
       includePendingSupply: true,
     });
 
     const boostNote =
       stockBoost > 0 ? ` При нулевом наличии к поставке добавляется +${stockBoost}%.` : '';
-    const pendingNote = ` Непринятые поставки FBO (WB) в ERM вычитаются из «К поставке».`;
+    const pendingNote = ` Непринятые поставки WB в ERM («В пути») вычитаются из «К поставке».`;
 
     return {
       syncedAt: snap.created_at,

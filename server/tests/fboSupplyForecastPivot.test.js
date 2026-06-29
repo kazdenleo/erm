@@ -9,6 +9,9 @@ import {
   resolveOrdersPeriod,
   resolveWbBarcode,
   resolveProduct,
+  derivedWbVendorFromArticle,
+  normalizeClusterToken,
+  resolvePlacementClusterKey,
 } from '../src/services/fboSupplyForecast.service.js';
 
 function makeLookup(entries = {}) {
@@ -20,6 +23,86 @@ function makeLookup(entries = {}) {
     byNmChrt: new Map(entries.byNmChrt || []),
   };
 }
+
+test('resolveProduct matches DTBS vendor from BS article', () => {
+  const info = { productId: 1229, name: 'Товар', article: 'BS-1788' };
+  const lookup = makeLookup({
+    byVendor: [[normalizeVendorKey('DTBS1788'), info]],
+  });
+  assert.equal(
+    resolveProduct(lookup, { vendorCode: 'DTBS1788', externalSku: '227444522:359867653' })?.productId,
+    1229
+  );
+});
+
+function normalizeVendorKey(v) {
+  return String(v ?? '').trim().toLowerCase();
+}
+
+test('derivedWbVendorFromArticle maps BS-1788 to DTBS1788', () => {
+  assert.equal(derivedWbVendorFromArticle('BS-1788'), 'DTBS1788');
+  assert.equal(derivedWbVendorFromArticle('TE-1046'), 'DTTE1046');
+});
+
+test('resolvePlacementClusterKey maps Абакан-2 to macro region via warehouse map', () => {
+  const macro = 'Дальневосточный и Сибирский';
+  const known = new Set([macro]);
+  const warehouseToMacro = new Map([[normalizeClusterToken('Абакан 2'), macro]]);
+  assert.equal(
+    resolvePlacementClusterKey('Абакан-2', known, warehouseToMacro),
+    macro
+  );
+});
+
+test('pivotForecastByCluster subtracts pending in-transit supply', () => {
+  const flat = [
+    {
+      id: 1,
+      nmId: 227444522,
+      chrtId: 359867653,
+      externalSku: '227444522:359867653',
+      warehouseId: 10,
+      regionName: 'Дальневосточный и Сибирский',
+      quantity: 0,
+      inWayToClient: 0,
+      inWayFromClient: 0,
+      wbVendorCode: 'DTBS1788',
+      productId: 1229,
+      productName: 'Товар',
+      productArticle: 'BS-1788',
+    },
+  ];
+  const wbByNm = new Map();
+  const erm = { byNm: new Map(), byNmWh: new Map(), byProduct: new Map(), byOffer: new Map() };
+  const pendingByCluster = new Map([
+    [
+      'Дальневосточный и Сибирский',
+      [
+        {
+          productId: 1229,
+          qty: 5,
+          label: 'BS-1788',
+          nmId: '227444522',
+          chrtId: '359867653',
+          vendorCode: 'dtbs1788',
+        },
+      ],
+    ],
+  ]);
+
+  const { rows } = pivotForecastByCluster(flat, {
+    wbByNm,
+    erm,
+    ordersDays: 30,
+    planDays: 30,
+    pendingByCluster,
+    includePendingSupply: true,
+  });
+  const m = rows[0].clusterMetrics['Дальневосточный и Сибирский'];
+  assert.equal(m.pendingSupply, 5);
+  assert.equal(m.inTransitItems.length, 1);
+  assert.equal(m.inTransitItems[0].label, 'BS-1788');
+});
 
 test('resolveProduct matches nmId and nmId:chrtId composite', () => {
   const info = { productId: 42, name: 'Товар', article: 'ART-1' };
