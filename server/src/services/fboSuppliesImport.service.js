@@ -1541,25 +1541,64 @@ function parseDateOnly(v) {
   return null;
 }
 
-function buildOzonOrderIdCandidates(ermSupply) {
-  const candidates = new Set();
-  const extNum =
-    ermSupply.externalShipmentNumber != null ? String(ermSupply.externalShipmentNumber).trim() : '';
-  const extSupply =
-    ermSupply.externalSupplyId != null ? String(ermSupply.externalSupplyId).trim() : '';
+/** ID заявок для /v3/supply-order/get (внутренний order_id, не номер отгрузки из ЛК). */
+function buildOzonApiOrderIds(ermSupply) {
+  const ids = new Set();
+  const extOrderId =
+    ermSupply?.externalOrderId != null ? String(ermSupply.externalOrderId).trim() : '';
+  if (extOrderId) ids.add(extOrderId);
+  return [...ids];
+}
 
-  if (extNum) {
-    candidates.add(extNum);
-    const dash = extNum.lastIndexOf('-');
-    if (dash > 0) {
-      const left = extNum.slice(0, dash).trim();
-      const right = extNum.slice(dash + 1).trim();
-      if (left) candidates.add(left);
-      if (right) candidates.add(right);
+function mergeOzonOrderLists(existing, incoming) {
+  const byId = new Map();
+  for (const order of [...(existing || []), ...(incoming || [])]) {
+    const id = ozonSupplyOrderId(order);
+    if (id != null) byId.set(String(id), order);
+  }
+  return [...byId.values()];
+}
+
+async function fetchOzonOrdersViaImportList(ozonApiOpts, { daysBack = 90 } = {}) {
+  const orderIds = await fetchOzonSupplyOrderIdsForImport(daysBack, ozonApiOpts, {
+    states: OZON_SUPPLY_IMPORT_STATES,
+  });
+  let orders = [];
+  const warehousesById = new Map();
+  for (let i = 0; i < orderIds.length; i += 50) {
+    const chunk = orderIds.slice(i, i + 50);
+    try {
+      const fetched = await fetchOzonSupplyOrdersByIds(chunk, ozonApiOpts);
+      orders = mergeOzonOrderLists(orders, fetched.orders);
+      for (const [k, v] of fetched.warehousesById) warehousesById.set(k, v);
+    } catch (e) {
+      console.warn('[FboImport] Ozon get import list chunk:', e?.message || e);
     }
   }
-  if (extSupply) candidates.add(extSupply);
-  return [...candidates];
+  return { orders, warehousesById };
+}
+
+async function resolveOzonOrderSupplyForErmSupply(ermSupply, ozonApiOpts) {
+  const apiOrderIds = buildOzonApiOrderIds(ermSupply);
+  if (apiOrderIds.length) {
+    try {
+      const { orders } = await fetchOzonSupplyOrdersByIds(apiOrderIds, ozonApiOpts);
+      const match = findOzonOrderSupplyMatch(orders, ermSupply);
+      if (match) return match;
+    } catch {
+      /* поиск по списку ниже */
+    }
+  }
+
+  const { orders } = await fetchOzonOrdersViaImportList(ozonApiOpts, { daysBack: 180 });
+  const match = findOzonOrderSupplyMatch(orders, ermSupply);
+  if (match) return match;
+
+  const err = new Error(
+    'Не удалось найти поставку в Ozon по сохранённому номеру отгрузки. Проверьте номер в карточке и настройки интеграции.'
+  );
+  err.statusCode = 400;
+  throw err;
 }
 
 function ermOzonExternalNumber(order, supply) {
@@ -1603,37 +1642,6 @@ function findOzonOrderSupplyMatch(orders, ermSupply) {
     }
   }
   return null;
-}
-
-async function resolveOzonOrderSupplyForErmSupply(ermSupply, ozonApiOpts) {
-  const candidates = buildOzonOrderIdCandidates(ermSupply);
-  if (candidates.length) {
-    try {
-      const { orders } = await fetchOzonSupplyOrdersByIds(candidates, ozonApiOpts);
-      const match = findOzonOrderSupplyMatch(orders, ermSupply);
-      if (match) return match;
-    } catch {
-      /* попробуем поиск по списку */
-    }
-  }
-
-  const daysBack = 180;
-  const orderIds = await fetchOzonSupplyOrderIds(daysBack, ozonApiOpts, {
-    states: OZON_SUPPLY_LIST_STATES,
-    useTimeslotFilter: false,
-  });
-  for (let i = 0; i < orderIds.length; i += 50) {
-    const chunk = orderIds.slice(i, i + 50);
-    const { orders } = await fetchOzonSupplyOrdersByIds(chunk, ozonApiOpts);
-    const match = findOzonOrderSupplyMatch(orders, ermSupply);
-    if (match) return match;
-  }
-
-  const err = new Error(
-    'Не удалось найти поставку в Ozon по сохранённому номеру отгрузки. Проверьте номер в карточке и настройки интеграции.'
-  );
-  err.statusCode = 400;
-  throw err;
 }
 
 function buildOzonItemZoneLookup(ozonItems) {
@@ -2435,19 +2443,36 @@ async function buildOzonConfirmContexts(supplies, profileId) {
     const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
     const idSet = new Set();
     for (const r of rows) {
-      const extOrderId = r.externalOrderId != null ? String(r.externalOrderId).trim() : '';
-      if (extOrderId) idSet.add(extOrderId);
-      for (const c of buildOzonOrderIdCandidates(r)) idSet.add(c);
+      for (const oid of buildOzonApiOrderIds(r)) idSet.add(oid);
     }
-    const fetched = await fetchOzonSupplyOrdersByIds([...idSet], ozonApiOpts);
+
+    let orders = [];
+    let warehousesById = new Map();
+    if (idSet.size) {
+      try {
+        const fetched = await fetchOzonSupplyOrdersByIds([...idSet], ozonApiOpts);
+        orders = fetched.orders;
+        warehousesById = fetched.warehousesById;
+      } catch (e) {
+        console.warn('[FboImport] Ozon confirm get by order_ids:', e?.message || e);
+      }
+    }
+
+    const unmatched = rows.filter((r) => !findOzonOrderSupplyMatch(orders, r));
+    if (unmatched.length) {
+      const fromList = await fetchOzonOrdersViaImportList(ozonApiOpts, { daysBack: 90 });
+      orders = mergeOzonOrderLists(orders, fromList.orders);
+      for (const [k, v] of fromList.warehousesById) warehousesById.set(k, v);
+    }
+
     const clusterMaps = await fetchOzonClusterMaps(ozonApiOpts).catch(() => ({
       warehouseById: new Map(),
       macrolocalById: new Map(),
     }));
     contexts.set(orgKey, {
       ozonApiOpts,
-      orders: fetched.orders,
-      warehousesById: fetched.warehousesById,
+      orders,
+      warehousesById,
       clusterMaps,
       detailsCache: new Map(),
     });
