@@ -96,6 +96,16 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
+  getWbForecast: async (params = {}) => {
+    const response = await api.get('/fbo-supplies/forecast/wb', { params });
+    return response.data?.data ?? response.data;
+  },
+
+  syncWbForecast: async () => {
+    const response = await api.post('/fbo-supplies/forecast/wb/sync', {}, { timeout: 120000 });
+    return response.data?.data ?? response.data;
+  },
+
   /** Склады для поля «Склад списания остатков» */
   getDeductionWarehouses: async (params = {}) => {
     const response = await api.get('/fbo-supplies/deduction-warehouses', { params });

@@ -45,6 +45,15 @@ router.post(
 );
 
 router.get(
+  '/forecast/wb',
+  wrapAsync(fboSuppliesController.getWbForecast.bind(fboSuppliesController))
+);
+router.post(
+  '/forecast/wb/sync',
+  wrapAsync(fboSuppliesController.syncWbForecast.bind(fboSuppliesController))
+);
+
+router.get(
   '/import/template/excel',
   wrapAsync(fboSuppliesController.downloadImportTemplateExcel.bind(fboSuppliesController))
 );

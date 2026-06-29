@@ -15,6 +15,7 @@ import {
 import { FboSupplyStatusBadge } from '../../components/fbo/FboSupplyStatusBadge';
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
+import { FboSuppliesSubNav } from './FboSuppliesSubNav.jsx';
 import '../../styles/erp-filter-bar.css';
 import './FboSupplies.css';
 
@@ -112,6 +113,7 @@ export function FboSupplies() {
 
   return (
     <div className="fbo-supplies-page">
+      <FboSuppliesSubNav />
       <FboOpenCalcSessionsBanner />
 
       <div className="fbo-supplies-toolbar">

@@ -14,6 +14,7 @@ import fboPurchaseCalcSessionService from '../services/fboPurchaseCalcSession.se
 import fboSuppliesSubmitService from '../services/fboSuppliesSubmit.service.js';
 import fboSuppliesOzonCargoesService from '../services/fboSuppliesOzonCargoes.service.js';
 import fboSuppliesMarketplaceContentService from '../services/fboSuppliesMarketplaceContent.service.js';
+import fboSupplyForecastService from '../services/fboSupplyForecast.service.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import { FBO_SUPPLY_STATUSES } from '../constants/fboSupplyStatuses.js';
 
@@ -92,6 +93,70 @@ class FboSuppliesController {
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
+      next(e);
+    }
+  }
+
+  async getWbForecast(req, res, next) {
+    try {
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({
+          ok: true,
+          data: {
+            syncedAt: null,
+            rows: [],
+            warehouses: [],
+            totals: { quantity: 0, inWayToClient: 0, inWayFromClient: 0, rowCount: 0 },
+          },
+        });
+      }
+      const organizationId = resolveOrganizationIdFromRequest(req) || req.query?.organizationId || null;
+      const warehouseId = req.query?.warehouseId ?? req.query?.warehouse_id ?? null;
+      const search = req.query?.q ?? req.query?.search ?? null;
+      const unlinkedOnly =
+        req.query?.unlinkedOnly === '1' ||
+        req.query?.unlinkedOnly === 'true' ||
+        req.query?.unlinked === '1';
+      const data = await fboSupplyForecastService.getWbForecast({
+        profileId: tid,
+        organizationId,
+        warehouseId,
+        search,
+        unlinkedOnly,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      next(e);
+    }
+  }
+
+  async syncWbForecast(req, res, next) {
+    try {
+      const tid = resolveFboProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(400).json({ ok: false, message: 'Не выбран профиль' });
+      }
+      const organizationId = resolveOrganizationIdFromRequest(req);
+      const data = await fboSupplyForecastService.syncWb({
+        profileId: tid,
+        organizationId,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 429) {
+        return res.status(429).json({
+          ok: false,
+          message: e.message,
+          retryAfterSec: e.retryAfterSec ?? null,
+        });
+      }
+      if (e.statusCode === 400) {
+        return res.status(400).json({ ok: false, message: e.message });
+      }
+      if (e.statusCode === 502) {
+        return res.status(502).json({ ok: false, message: e.message });
+      }
       next(e);
     }
   }

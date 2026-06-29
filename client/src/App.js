@@ -33,6 +33,7 @@ import { WarehouseStocks } from './pages/StockLevels/WarehouseStocks';
 import { Purchases } from './pages/StockLevels/Purchases';
 import { FboSupplies } from './pages/FboSupplies/FboSupplies';
 import { FboSupplyDetail } from './pages/FboSupplies/FboSupplyDetail';
+import { FboSupplyForecast } from './pages/FboSupplies/FboSupplyForecast';
 import { FboPurchaseCalculation } from './pages/FboSupplies/FboPurchaseCalculation';
 import { Integrations } from './pages/Integrations/Integrations';
 import { Notifications } from './pages/Notifications/Notifications';
@@ -118,6 +119,7 @@ function App() {
             <Route path="warehouse" element={<WarehouseStocks />} />
             <Route path="purchases" element={<Purchases />} />
             <Route path="fbo-supplies/purchase-calc" element={<FboPurchaseCalculation />} />
+            <Route path="fbo-supplies/forecasting" element={<FboSupplyForecast />} />
             <Route path="fbo-supplies/:id" element={<FboSupplyDetail />} />
             <Route path="fbo-supplies" element={<FboSupplies />} />
             <Route path="problems" element={<Navigate to="/stock-levels/warehouse" replace />} />
