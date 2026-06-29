@@ -12,6 +12,7 @@ import { getFetchProxyAgent } from '../utils/fetchAgent.js';
 import { getYandexHttpsAgent, formatYandexNetworkError } from '../utils/yandex-https-agent.js';
 import { parseOzonBundleRowMeta } from '../constants/ozonPlacementZones.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
+import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
 import { isFboSupplyTerminalStatus, pickStatusAfterMarketplaceSync } from '../constants/fboSupplyStatuses.js';
 
 const WB_SUPPLIES_API = 'https://supplies-api.wildberries.ru';
