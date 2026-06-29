@@ -7,7 +7,49 @@ import {
   applyZeroStockBoost,
   calcAvgOrdersPerDay,
   resolveOrdersPeriod,
+  resolveWbBarcode,
+  resolveProduct,
 } from '../src/services/fboSupplyForecast.service.js';
+
+function makeLookup(entries = {}) {
+  return {
+    byNm: new Map(entries.byNm || []),
+    byChrt: new Map(entries.byChrt || []),
+    byVendor: new Map(entries.byVendor || []),
+    byArticle: new Map(entries.byArticle || []),
+    byNmChrt: new Map(entries.byNmChrt || []),
+  };
+}
+
+test('resolveProduct matches nmId and nmId:chrtId composite', () => {
+  const info = { productId: 42, name: 'Товар', article: 'ART-1' };
+  const lookup = makeLookup({
+    byNm: [['295329693', info]],
+    byNmChrt: [['295329693:449828499', info]],
+    byChrt: [['449828499', info]],
+  });
+  assert.equal(
+    resolveProduct(lookup, {
+      nmId: 295329693,
+      chrtId: 449828499,
+      externalSku: '295329693:449828499',
+    })?.productId,
+    42
+  );
+  assert.equal(
+    resolveProduct(lookup, {
+      externalSku: '295329693:449828499',
+    })?.productId,
+    42
+  );
+  assert.equal(resolveProduct(lookup, { chrtId: 449828499 })?.productId, 42);
+});
+
+test('resolveWbBarcode prefers chrtId and externalSku tail', () => {
+  assert.equal(resolveWbBarcode({ chrtId: 4608123456789 }), '4608123456789');
+  assert.equal(resolveWbBarcode({ externalSku: '123456:4608123456789' }), '4608123456789');
+  assert.equal(resolveWbBarcode({ wbBarcode: '4600000000001' }), '4600000000001');
+});
 
 test('calcClusterToSupply: avg per day * plan days minus availability', () => {
   assert.equal(

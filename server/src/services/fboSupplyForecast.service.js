@@ -66,14 +66,16 @@ async function resolveWbApiKey({ profileId, organizationId }) {
   return String(key).trim();
 }
 
-async function buildWbProductLookup(profileId) {
+async function buildWbProductLookup(profileId, organizationId = null) {
   const pid = normalizeProfileId(profileId);
+  const orgId = normalizeOrgId(organizationId);
   const r = await query(
     `
     SELECT DISTINCT ON (p.id)
       p.id AS product_id,
       COALESCE(ps.sku, '') AS sku,
       ps.mp_extra,
+      ps.marketplace_product_id,
       p.name,
       p.sku AS article,
       p.mp_wb_vendor_code,
@@ -87,8 +89,7 @@ async function buildWbProductLookup(profileId) {
       ) AS wb_nm_id
     FROM products p
     LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'wb'
-    WHERE ($1::bigint IS NULL OR p.profile_id = $1)
-      AND (
+    WHERE (
         ps.id IS NOT NULL
         OR NULLIF(TRIM(p.mp_wb_vendor_code), '') IS NOT NULL
         OR NULLIF(
@@ -103,9 +104,14 @@ async function buildWbProductLookup(profileId) {
           ''
         ) IS NOT NULL
       )
+      AND (
+        ($1::bigint IS NULL AND $2::bigint IS NULL)
+        OR ($1::bigint IS NOT NULL AND p.profile_id = $1)
+        OR ($2::bigint IS NOT NULL AND p.organization_id = $2)
+      )
     ORDER BY p.id, ps.id NULLS LAST
     `,
-    [pid]
+    [pid, orgId]
   );
 
   const byNm = new Map();
@@ -126,11 +132,21 @@ async function buildWbProductLookup(profileId) {
   };
 
   for (const row of r.rows || []) {
+    const extra = row.mp_extra && typeof row.mp_extra === 'object' ? row.mp_extra : {};
+    const skuStr = String(row.sku || '').trim();
+    const extraBarcode = extra.barcode ?? extra.wb_barcode;
+    let wbBarcode = null;
+    if (extraBarcode && String(extraBarcode).trim()) {
+      wbBarcode = String(extraBarcode).trim();
+    } else if (/^\d{5,}$/.test(skuStr)) {
+      wbBarcode = skuStr;
+    }
     const info = {
       productId: Number(row.product_id),
       name: row.name || null,
       article: row.article || null,
       sku: row.sku || null,
+      wbBarcode,
     };
     const sku = String(row.sku || '')
       .trim()
@@ -141,21 +157,41 @@ async function buildWbProductLookup(profileId) {
     const mpVendor = String(row.mp_wb_vendor_code || '')
       .trim()
       .replace(/;+$/g, '');
-    const extra = row.mp_extra && typeof row.mp_extra === 'object' ? row.mp_extra : {};
     const chrtExtra = extra.chrtId ?? extra.chrtID ?? extra.chrt_id;
     const wbNmId = String(row.wb_nm_id || '').trim();
+    const mpProductId =
+      row.marketplace_product_id != null ? String(row.marketplace_product_id).trim() : '';
 
     if (wbNmId && /^\d+$/.test(wbNmId)) {
       put(byNm, wbNmId, info);
     }
 
+    if (mpProductId && /^\d+$/.test(mpProductId)) {
+      put(byNm, mpProductId, info);
+    }
+
     if (/^\d+$/.test(sku)) {
-      put(byNm, sku, info);
       put(byChrt, sku, info);
+      if (wbNmId) {
+        put(byNmChrt, `${wbNmId}:${sku}`, info);
+      }
+      if (mpProductId && mpProductId !== wbNmId) {
+        put(byNmChrt, `${mpProductId}:${sku}`, info);
+      }
     } else if (sku) {
       putVendor(sku, info);
       const tail = trailingDigits(sku);
       if (tail) put(byNm, tail, info);
+      if (sku.includes(':')) {
+        const composite = sku.replace(/;+$/g, '').trim();
+        put(byNmChrt, composite, info);
+        const [compositeNm, ...compositeChrtParts] = composite.split(':');
+        const compositeChrt = compositeChrtParts.join(':').trim();
+        if (/^\d+$/.test(compositeNm) && compositeChrt) {
+          put(byNm, compositeNm, info);
+          put(byChrt, compositeChrt, info);
+        }
+      }
     }
 
     if (mpVendor) {
@@ -169,9 +205,11 @@ async function buildWbProductLookup(profileId) {
     }
 
     if (chrtExtra != null && String(chrtExtra).trim() !== '') {
-      put(byChrt, String(chrtExtra).trim(), info);
-      if (wbNmId) {
-        put(byNmChrt, `${wbNmId}:${String(chrtExtra).trim()}`, info);
+      const chrtKey = String(chrtExtra).trim();
+      put(byChrt, chrtKey, info);
+      const nmForComposite = wbNmId || (/^\d+$/.test(mpProductId) ? mpProductId : '');
+      if (nmForComposite) {
+        put(byNmChrt, `${nmForComposite}:${chrtKey}`, info);
       }
     }
   }
@@ -179,13 +217,17 @@ async function buildWbProductLookup(profileId) {
   return { byNm, byChrt, byVendor, byArticle, byNmChrt };
 }
 
-function resolveProduct(lookup, { nmId, chrtId, vendorCode, externalSku }) {
+export function resolveProduct(lookup, { nmId, chrtId, vendorCode, externalSku }) {
   const nm = nmId != null ? String(nmId).trim() : '';
   const chrt = chrtId != null ? String(chrtId).trim() : '';
   const vc = normalizeWbLinkKey(vendorCode);
   const ext = externalSku != null ? String(externalSku).trim() : '';
   const extNm = ext.includes(':') ? ext.split(':')[0].trim() : ext;
   const extChrt = ext.includes(':') ? ext.split(':').slice(1).join(':').trim() : '';
+
+  if (ext && ext.includes(':') && lookup.byNmChrt.has(ext)) {
+    return lookup.byNmChrt.get(ext);
+  }
 
   const nmKey = nm || (/^\d+$/.test(extNm) ? extNm : '');
   const chrtKey = chrt || (/^\d+$/.test(extChrt) ? extChrt : '');
@@ -221,6 +263,19 @@ async function resolveMissingWbVendorCodes(rows, { profileId, organizationId } =
   }
 }
 
+export function resolveWbBarcode(row) {
+  const chrt = row.chrtId != null ? String(row.chrtId).trim() : '';
+  if (chrt && /^\d{5,}$/.test(chrt)) return chrt;
+  const ext = String(row.externalSku || '');
+  if (ext.includes(':')) {
+    const part = ext.split(':').slice(1).join(':').trim();
+    if (part && /^\d+$/.test(part)) return part;
+  }
+  const linked = row.wbBarcode != null ? String(row.wbBarcode).trim() : '';
+  if (linked) return linked;
+  return '';
+}
+
 function enrichForecastRow(row, lookup, vendorOverride = null) {
   const wbVendorCode =
     vendorOverride != null && String(vendorOverride).trim() !== ''
@@ -235,10 +290,16 @@ function enrichForecastRow(row, lookup, vendorOverride = null) {
   const productId = product?.productId ?? (row.product_id != null ? Number(row.product_id) : null);
   const productName = product?.name ?? row.product_name ?? null;
   const productArticle = product?.article ?? row.product_article ?? null;
+  const wbBarcode = resolveWbBarcode({
+    chrtId: row.chrt_id ?? row.chrtId,
+    externalSku: row.external_sku ?? row.externalSku,
+    wbBarcode: product?.wbBarcode ?? null,
+  });
   return {
     id: row.id,
     nmId: row.nm_id ?? row.nmId,
     chrtId: row.chrt_id ?? row.chrtId,
+    wbBarcode,
     warehouseId: row.warehouse_id ?? row.warehouseId,
     warehouseName: row.warehouse_name ?? row.warehouseName,
     regionName: row.region_name ?? row.regionName,
@@ -442,9 +503,13 @@ export function pivotForecastByCluster(
         productId: row.productId,
         productName: row.productName,
         productArticle: row.productArticle,
+        wbBarcode: row.wbBarcode,
         clusters: new Map(),
       };
       products.set(pk, prod);
+    }
+    if (!prod.wbBarcode && row.wbBarcode) {
+      prod.wbBarcode = row.wbBarcode;
     }
 
     let cm = prod.clusters.get(ck);
@@ -519,6 +584,7 @@ export function pivotForecastByCluster(
       nmId: prod.nmId,
       chrtId: prod.chrtId,
       externalSku: prod.externalSku,
+      wbBarcode: resolveWbBarcode(prod),
       wbVendorCode: prod.wbVendorCode,
       productId: prod.productId,
       productName: prod.productName,
@@ -789,7 +855,7 @@ class FboSupplyForecastService {
       }
     }
 
-    const lookup = await buildWbProductLookup(pid);
+    const lookup = await buildWbProductLookup(pid, orgId);
     const rows = [];
     for (const it of list) {
       const norm = normalizeWbWarehouseInventoryItem(it);
@@ -916,7 +982,7 @@ class FboSupplyForecastService {
       [snap.id]
     );
 
-    const lookup = await buildWbProductLookup(pid);
+    const lookup = await buildWbProductLookup(pid, orgId);
     let rows = (r.rows || []).map((row) => enrichForecastRow(row, lookup));
     const vendorByNm = await resolveMissingWbVendorCodes(rows, {
       profileId: pid,
@@ -924,7 +990,7 @@ class FboSupplyForecastService {
     });
     if (vendorByNm.size > 0) {
       rows = rows.map((row) => {
-        if (row.productId || row.wbVendorCode || row.nmId == null) return row;
+        if (row.productId || row.nmId == null) return row;
         const vendor = vendorByNm.get(String(row.nmId).trim());
         if (!vendor) return row;
         return enrichForecastRow(
