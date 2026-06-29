@@ -82,35 +82,73 @@ function findKeyRow(worksheet) {
 }
 
 async function resolveProductId({ sku, barcode, profileId }) {
+  const maps = await batchResolveProductIds([{ sku, barcode }], profileId);
+  return resolveProductIdFromMaps({ sku, barcode }, maps);
+}
+
+/** Пакетное сопоставление артикулов/штрихкодов с товарами ERM (1–2 запроса вместо N). */
+async function batchResolveProductIds(entries, profileId) {
   const pid = profileId != null ? Number(profileId) : null;
+  const skus = [
+    ...new Set(
+      (entries || [])
+        .map((e) => (e?.sku != null ? String(e.sku).trim() : ''))
+        .filter(Boolean)
+    ),
+  ];
+  const barcodes = [
+    ...new Set(
+      (entries || [])
+        .map((e) => (e?.barcode != null ? String(e.barcode).trim() : ''))
+        .filter(Boolean)
+    ),
+  ];
+  const bySku = new Map();
+  const byBarcode = new Map();
+
+  if (skus.length) {
+    const r = await query(
+      `SELECT p.id,
+              TRIM(p.sku) AS product_sku,
+              TRIM(ps.sku) AS alias_sku
+       FROM products p
+       LEFT JOIN product_skus ps ON ps.product_id = p.id AND TRIM(ps.sku) = ANY($2::text[])
+       WHERE ($1::bigint IS NULL OR p.profile_id = $1)
+         AND (TRIM(p.sku) = ANY($2::text[]) OR ps.id IS NOT NULL)`,
+      [pid, skus]
+    );
+    for (const row of r.rows || []) {
+      const id = row.id;
+      const productSku = row.product_sku ? String(row.product_sku).trim() : '';
+      const aliasSku = row.alias_sku ? String(row.alias_sku).trim() : '';
+      if (productSku) bySku.set(productSku, id);
+      if (aliasSku) bySku.set(aliasSku, id);
+    }
+  }
+
+  if (barcodes.length) {
+    const r = await query(
+      `SELECT DISTINCT p.id, TRIM(bc.barcode) AS barcode
+       FROM products p
+       INNER JOIN barcodes bc ON bc.product_id = p.id
+       WHERE ($1::bigint IS NULL OR p.profile_id = $1)
+         AND TRIM(bc.barcode) = ANY($2::text[])`,
+      [pid, barcodes]
+    );
+    for (const row of r.rows || []) {
+      const bc = row.barcode ? String(row.barcode).trim() : '';
+      if (bc) byBarcode.set(bc, row.id);
+    }
+  }
+
+  return { bySku, byBarcode };
+}
+
+function resolveProductIdFromMaps({ sku, barcode }, maps) {
   const b = barcode != null ? String(barcode).trim() : '';
   const s = sku != null ? String(sku).trim() : '';
-  if (b) {
-    const r = await query(
-      `SELECT p.id
-       FROM products p
-       WHERE ($1::bigint IS NULL OR p.profile_id = $1)
-         AND EXISTS (
-           SELECT 1 FROM barcodes bc
-           WHERE bc.product_id = p.id AND TRIM(bc.barcode) = $2
-         )
-       LIMIT 1`,
-      [pid, b]
-    );
-    if (r.rows?.[0]?.id) return r.rows[0].id;
-  }
-  if (s) {
-    const r = await query(
-      `SELECT p.id
-       FROM products p
-       LEFT JOIN product_skus ps ON ps.product_id = p.id AND TRIM(ps.sku) = $2
-       WHERE ($1::bigint IS NULL OR p.profile_id = $1)
-         AND (TRIM(p.sku) = $2 OR ps.id IS NOT NULL)
-       LIMIT 1`,
-      [pid, s]
-    );
-    if (r.rows?.[0]?.id) return r.rows[0].id;
-  }
+  if (b && maps?.byBarcode?.has(b)) return maps.byBarcode.get(b);
+  if (s && maps?.bySku?.has(s)) return maps.bySku.get(s);
   return null;
 }
 
@@ -707,75 +745,101 @@ function resolveOzonPreviewItemCount({ items, totalCount, order, supply, orderDe
   return 0;
 }
 
-async function fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags = false } = {}) {
-  let items = [];
-  let reportedLineCount = 0;
-  let reportedQtySum = 0;
+async function fetchOzonBundleItems(
+  bundleId,
+  ozonApiOpts,
+  profileId,
+  { withTags = false, summaryOnly = false } = {}
+) {
   const clusterQty = new Map();
+  const addClusterQty = (localClusterQty) => {
+    for (const [name, qty] of localClusterQty.entries()) {
+      clusterQty.set(name, (clusterQty.get(name) || 0) + qty);
+    }
+  };
 
-  const loadPages = async () => {
-    const batch = [];
-    let lastId = '';
-    let lineCount = 0;
-    let qtySum = 0;
-    const localClusterQty = new Map();
-
-    for (let page = 0; page < 20; page++) {
-      const body = { bundle_ids: [String(bundleId)], limit: 100 };
-      // item_tags_calculation: true — Ozon API 400 (proto unexpected token true); теги не запрашиваем.
-      if (lastId) body.last_id = lastId;
-      const bundleData = await ozonApiPostWithRetry('/v1/supply-order/bundle', body, ozonApiOpts);
+  if (summaryOnly) {
+    try {
+      const bundleData = await ozonApiPostWithRetry(
+        '/v1/supply-order/bundle',
+        { bundle_ids: [String(bundleId)], limit: 100 },
+        ozonApiOpts
+      );
       const parsed = parseOzonBundleResponse(bundleData);
-      if (parsed.totalCount > lineCount) lineCount = parsed.totalCount;
-      for (const row of parsed.rows) {
-        qtySum += parseOzonBundleRowQuantity(row);
-      }
-
+      let qtySum = 0;
+      const localClusterQty = new Map();
       for (const row of parsed.rows) {
         const qty = parseOzonBundleRowQuantity(row);
+        qtySum += qty;
         const rowCluster = ozonClusterFromBundleRow(row);
         if (rowCluster && qty > 0) {
           localClusterQty.set(rowCluster, (localClusterQty.get(rowCluster) || 0) + qty);
         }
-        if (!qty || qty <= 0) continue;
-        const offerId = parseOzonBundleRowOfferId(row);
-        const barcode = row.barcode ?? row.bar_code ?? null;
-        const productId = await resolveProductId({
-          sku: offerId,
-          barcode,
-          profileId,
-        });
-        const { placementZone, ozonTags } = parseOzonBundleRowMeta(row);
-        batch.push({
-          productId,
-          quantity: qty,
-          sku: offerId,
-          barcode,
-          mpOfferId: offerId,
-          mpProductId: row.product_id != null ? String(row.product_id) : null,
-          name: row.name ?? row.product_name ?? null,
-          placementZone,
-          ozonTags: withTags ? ozonTags : [],
-          unresolved: productId == null,
-        });
       }
+      addClusterQty(localClusterQty);
+      return {
+        items: [],
+        totalCount: Math.max(parsed.totalCount, qtySum),
+        shippingCluster: pickDominantOzonCluster(clusterQty),
+      };
+    } catch {
+      return { items: [], totalCount: 0, shippingCluster: null };
+    }
+  }
 
+  let items = [];
+  let reportedLineCount = 0;
+  let reportedQtySum = 0;
+  const rawRows = [];
+
+  try {
+    let lastId = '';
+    for (let page = 0; page < 20; page++) {
+      const body = { bundle_ids: [String(bundleId)], limit: 100 };
+      if (lastId) body.last_id = lastId;
+      const bundleData = await ozonApiPostWithRetry('/v1/supply-order/bundle', body, ozonApiOpts);
+      const parsed = parseOzonBundleResponse(bundleData);
+      if (parsed.totalCount > reportedLineCount) reportedLineCount = parsed.totalCount;
+      for (const row of parsed.rows) {
+        reportedQtySum += parseOzonBundleRowQuantity(row);
+        if (parseOzonBundleRowQuantity(row) > 0) rawRows.push(row);
+        const rowCluster = ozonClusterFromBundleRow(row);
+        const qty = parseOzonBundleRowQuantity(row);
+        if (rowCluster && qty > 0) {
+          clusterQty.set(rowCluster, (clusterQty.get(rowCluster) || 0) + qty);
+        }
+      }
       if (!parsed.hasNext) break;
       if (!parsed.lastId || parsed.lastId === lastId) break;
       lastId = parsed.lastId;
     }
 
-    return { batch, lineCount, qtySum, localClusterQty };
-  };
-
-  try {
-    const loaded = await loadPages();
-    items = loaded.batch;
-    reportedLineCount = loaded.lineCount;
-    reportedQtySum = loaded.qtySum;
-    for (const [name, qty] of loaded.localClusterQty) {
-      clusterQty.set(name, (clusterQty.get(name) || 0) + qty);
+    const lookupEntries = rawRows.map((row) => ({
+      sku: parseOzonBundleRowOfferId(row),
+      barcode: row.barcode ?? row.bar_code ?? null,
+    }));
+    const productMaps = await batchResolveProductIds(lookupEntries, profileId);
+    const batch = [];
+    for (const row of rawRows) {
+      const qty = parseOzonBundleRowQuantity(row);
+      const offerId = parseOzonBundleRowOfferId(row);
+      const barcode = row.barcode ?? row.bar_code ?? null;
+      const productId = resolveProductIdFromMaps({ sku: offerId, barcode }, productMaps);
+      const { placementZone, ozonTags } = parseOzonBundleRowMeta(row);
+      batch.push({
+        productId,
+        quantity: qty,
+        sku: offerId,
+        barcode,
+        mpOfferId: offerId,
+        mpProductId: row.product_id != null ? String(row.product_id) : null,
+        name: row.name ?? row.product_name ?? null,
+        placementZone,
+        ozonTags: withTags ? ozonTags : [],
+        unresolved: productId == null,
+      });
     }
+    items = batch;
   } catch {
     /* bundle failed */
   }
@@ -794,7 +858,12 @@ async function fetchOzonSupplyItems(
   ozonApiOpts,
   profileId,
   orderDetails = null,
-  { warehousesById = null, clusterByWarehouseId = null, macrolocalById = null } = {}
+  {
+    warehousesById = null,
+    clusterByWarehouseId = null,
+    macrolocalById = null,
+    summaryOnly = false,
+  } = {}
 ) {
   const supplyOrderId = ozonSupplyOrderId(order);
   const details =
@@ -837,8 +906,11 @@ async function fetchOzonSupplyItems(
 
   for (const bundleId of bundleIds) {
     try {
-      const fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, { withTags: false });
-      if (fetched.items.length > items.length) items = fetched.items;
+      const fetched = await fetchOzonBundleItems(bundleId, ozonApiOpts, profileId, {
+        withTags: false,
+        summaryOnly,
+      });
+      if (!summaryOnly && fetched.items.length > items.length) items = fetched.items;
       const bundleQty = fetched.totalCount || sumSupplyItemsQuantity(fetched.items);
       if (bundleQty > totalCount) totalCount = bundleQty;
       if (fetched.shippingCluster) addCluster(fetched.shippingCluster, fetched.totalCount || 1);
@@ -2314,6 +2386,84 @@ function assertSupplyHasExternalRef(supply, mp) {
   }
 }
 
+async function hydrateOzonImportRow(row, { profileId } = {}) {
+  const mp = String(row?.marketplace || 'ozon').trim().toLowerCase();
+  if (mp !== 'ozon') return row;
+  const hasItems = (row.items || []).some((it) => (Number(it?.quantity) || 0) > 0);
+  if (hasItems && row.ozonPreviewOnly !== true) return row;
+
+  const organizationId = row.organizationId ?? null;
+  const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
+    profileId,
+    organizationId,
+  });
+  const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
+  const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
+  if (!clientId || !apiKey) {
+    const err = new Error(
+      'Не настроены Client ID и API Key Ozon. Укажите их в «Интеграции» для организации поставки.'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+  let order = null;
+  let supply = null;
+  const externalOrderId = row.externalOrderId != null ? String(row.externalOrderId).trim() : '';
+  if (externalOrderId) {
+    try {
+      const { orders } = await fetchOzonSupplyOrdersByIds([externalOrderId], ozonApiOpts);
+      const match = findOzonOrderSupplyMatch(orders, row);
+      if (match) {
+        order = match.order;
+        supply = match.supply;
+      }
+    } catch {
+      /* fallback below */
+    }
+  }
+  if (!order) {
+    const resolved = await resolveOzonOrderSupplyForErmSupply(row, ozonApiOpts);
+    order = resolved.order;
+    supply = resolved.supply;
+  }
+
+  const supplyOrderId = ozonSupplyOrderId(order);
+  const orderDetails = await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts);
+  const clusterMaps = await fetchOzonClusterMaps(ozonApiOpts).catch(() => ({
+    warehouseById: new Map(),
+    macrolocalById: new Map(),
+  }));
+  const fetched = await fetchOzonSupplyItems(
+    order,
+    supply,
+    ozonApiOpts,
+    profileId,
+    orderDetails,
+    {
+      warehousesById: new Map(),
+      clusterByWarehouseId: clusterMaps.warehouseById,
+      macrolocalById: clusterMaps.macrolocalById,
+      summaryOnly: false,
+    }
+  );
+  if (!fetched.items?.length) {
+    const err = new Error(
+      `Ozon не вернул состав поставки ${String(row.externalShipmentNumber || '').trim()}`.trim()
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  return {
+    ...row,
+    items: fetched.items,
+    itemCount: sumSupplyItemsQuantity(fetched.items),
+    shippingCluster: row.shippingCluster || fetched.shippingCluster || row.placementCluster,
+    ozonPreviewOnly: false,
+  };
+}
+
 class FboSuppliesImportService {
   /**
    * Excel: только артикул и количество → одна новая поставка (черновик).
@@ -2461,17 +2611,18 @@ class FboSuppliesImportService {
           order,
           supply,
           ozonApiOpts,
-              profileId,
+          profileId,
           orderDetails,
           {
             warehousesById: ozonWarehousesById,
             clusterByWarehouseId: ozonClusterByWarehouseId,
             macrolocalById: ozonMacrolocalById,
+            summaryOnly: true,
           }
         );
-        items = fetchedItems.items;
+        items = [];
         itemCount = resolveOzonPreviewItemCount({
-          items,
+          items: [],
           totalCount: fetchedItems.totalCount,
           order,
           supply,
@@ -2548,6 +2699,8 @@ class FboSuppliesImportService {
         externalShipmentNumber: externalNumber,
         externalSupplyId:
           supplyId != null ? String(supplyId) : supplyOrderId != null ? String(supplyOrderId) : null,
+        externalOrderId: supplyOrderId != null ? String(supplyOrderId) : null,
+        ozonPreviewOnly: true,
         deductionWarehouseId: null,
         organizationId: organizationId != null ? Number(organizationId) : null,
         deductStock: true,
@@ -2830,22 +2983,26 @@ class FboSuppliesImportService {
             continue;
           }
           try {
+            const importRow =
+              String(row.marketplace || '').trim().toLowerCase() === 'ozon'
+                ? await hydrateOzonImportRow(row, { profileId })
+                : row;
             const doc = await fboSuppliesService.create(
               {
-                marketplace: row.marketplace,
-                name: row.name,
-                readyAt: row.readyAt,
-                marketplaceWarehouseName: row.marketplaceWarehouseName,
-                marketplaceWarehouseId: row.marketplaceWarehouseId,
-                placementCluster: row.shippingCluster ?? row.placementCluster ?? null,
-                externalShipmentNumber: row.externalShipmentNumber,
-                externalSupplyId: row.externalSupplyId,
-                deductionWarehouseId: row.deductionWarehouseId,
-                organizationId: row.organizationId,
-                deductStock: row.deductStock !== false,
-                status: row.status || 'new',
-                source: row.source || 'api',
-                items: (row.items || []).map((it) => ({
+                marketplace: importRow.marketplace,
+                name: importRow.name,
+                readyAt: importRow.readyAt,
+                marketplaceWarehouseName: importRow.marketplaceWarehouseName,
+                marketplaceWarehouseId: importRow.marketplaceWarehouseId,
+                placementCluster: importRow.shippingCluster ?? importRow.placementCluster ?? null,
+                externalShipmentNumber: importRow.externalShipmentNumber,
+                externalSupplyId: importRow.externalSupplyId,
+                deductionWarehouseId: importRow.deductionWarehouseId,
+                organizationId: importRow.organizationId,
+                deductStock: importRow.deductStock !== false,
+                status: importRow.status || 'new',
+                source: importRow.source || 'api',
+                items: (importRow.items || []).map((it) => ({
                   productId: it.productId,
                   quantity: it.quantity,
                   barcode: it.barcode,
@@ -2860,7 +3017,7 @@ class FboSuppliesImportService {
               { profileId, userId, skipReserveRebalance: true, lightReturn: true }
             );
             created.push(doc);
-            for (const it of row.items || []) {
+            for (const it of importRow.items || []) {
               const pid = it.productId != null ? Number(it.productId) : NaN;
               if (Number.isFinite(pid) && pid > 0) productIdsToRebalance.add(pid);
             }

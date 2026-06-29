@@ -220,6 +220,8 @@ export const fboSuppliesApi = {
       placementCluster: row.placementCluster,
       externalShipmentNumber: row.externalShipmentNumber,
       externalSupplyId: row.externalSupplyId,
+      externalOrderId: row.externalOrderId,
+      ozonPreviewOnly: row.ozonPreviewOnly,
       deductionWarehouseId: row.deductionWarehouseId,
       organizationId: row.organizationId,
       deductStock: row.deductStock,
