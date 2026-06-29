@@ -1111,7 +1111,7 @@ class FboSupplyReserveService {
     }
   }
 
-  async rebalanceReservesForSupply(supplyId, { profileId } = {}) {
+  async rebalanceReservesForSupply(supplyId, { profileId, skipMarketplaceSync = false } = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) return;
     const r = await query(
       `SELECT DISTINCT product_id FROM fbo_supply_items
@@ -1119,7 +1119,7 @@ class FboSupplyReserveService {
       [supplyId]
     );
     for (const row of r.rows || []) {
-      await this.rebalanceReservesForProduct(row.product_id, { profileId });
+      await this.rebalanceReservesForProduct(row.product_id, { profileId, skipMarketplaceSync });
     }
   }
 

@@ -12,7 +12,7 @@ import {
   getFboSupplyStatusLabel,
   getMarketplaceLabel,
 } from '../../constants/fboSupplyStatuses';
-import { FboSupplyStatusBadge } from '../../components/fbo/FboSupplyStatusBadge';
+import { FboSupplyStatusSelect } from '../../components/fbo/FboSupplyStatusSelect';
 import { FboSupplyReserveBreakdown } from './FboSupplyReserveBreakdown.jsx';
 import { FboOpenCalcSessionsBanner } from './FboOpenCalcSessionsBanner.jsx';
 import { FboSuppliesSubNav } from './FboSuppliesSubNav.jsx';
@@ -48,6 +48,7 @@ export function FboSupplies() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [calcLoading, setCalcLoading] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [statusUpdatingId, setStatusUpdatingId] = useState(null);
   const [statusFilter, setStatusFilter] = useState(() => new Set(FBO_LIST_DEFAULT_STATUSES));
 
   const statusFilterList = useMemo(
@@ -89,6 +90,23 @@ export function FboSupplies() {
       }
       return next;
     });
+  };
+
+  const handleStatusChange = async (row, newStatus) => {
+    if (!row?.id || newStatus === row.status) return;
+    setStatusUpdatingId(row.id);
+    setErr(null);
+    try {
+      const updated = await fboSuppliesApi.update(row.id, { status: newStatus });
+      const nextStatus = updated?.status ?? newStatus;
+      setList((prev) =>
+        prev.map((r) => (r.id === row.id ? { ...r, status: nextStatus } : r))
+      );
+    } catch (ex) {
+      setErr(ex.response?.data?.message || ex.message || 'Не удалось сменить статус');
+    } finally {
+      setStatusUpdatingId(null);
+    }
   };
 
   const handleDeleteSupply = async (supplyId, e) => {
@@ -303,8 +321,12 @@ export function FboSupplies() {
                       />
                     </div>
                   </td>
-                  <td>
-                    <FboSupplyStatusBadge status={row.status} />
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <FboSupplyStatusSelect
+                      status={row.status}
+                      disabled={statusUpdatingId === row.id}
+                      onChange={(next) => handleStatusChange(row, next)}
+                    />
                   </td>
                   <td>{fmtDt(row.createdAt)}</td>
                   <td onClick={(e) => e.stopPropagation()}>

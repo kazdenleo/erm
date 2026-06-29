@@ -21,6 +21,12 @@ import { FBO_SUPPLY_STATUSES } from '../constants/fboSupplyStatuses.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FBO_TEMPLATE_XLSX = join(__dirname, '../../templates/fbo_import_artikul_kolichestvo.xlsx');
 
+function isStatusOnlyUpdate(payload) {
+  if (!payload || payload.status === undefined) return false;
+  const keys = Object.keys(payload).filter((k) => payload[k] !== undefined);
+  return keys.length === 1 && keys[0] === 'status';
+}
+
 function setAttachmentXlsx(res, filename) {
   const encoded = encodeURIComponent(filename).replace(/['()]/g, escape);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encoded}`);
@@ -278,7 +284,14 @@ class FboSuppliesController {
     try {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
-      const data = await fboSuppliesService.update(id, req.body || {}, { profileId });
+      const body = req.body || {};
+      const statusOnly = isStatusOnlyUpdate(body);
+      const data = await fboSuppliesService.update(id, body, {
+        profileId,
+        deferReserveRebalance: statusOnly,
+        skipMarketplaceSync: statusOnly,
+        lightReturn: statusOnly,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 404) {
@@ -648,19 +661,27 @@ class FboSuppliesController {
     try {
       const { id } = req.params;
       const profileId = req.user?.profileId ?? null;
+      const includeOzonMeta =
+        req.query.includeOzonMeta !== '0' && req.query.includeOzonMeta !== 'false';
       const data = await fboSuppliesPackingService.getPackingState(id, { profileId });
-      const supply = await fboSuppliesService.getById(id, { profileId });
-      const mp = String(supply?.marketplace || 'ozon').toLowerCase();
-      const isOzon = mp !== 'wb' && mp !== 'ym' && mp !== 'yandex';
-      if (isOzon && (supply?.externalSupplyId || supply?.externalShipmentNumber)) {
-        try {
-          data.ozonMeta = await fboSuppliesOzonCargoesService.getPackingOzonMeta(id, { profileId });
-        } catch (ozonErr) {
-          data.ozonMeta = {
-            error: ozonErr.message,
-            canSubmitCompositionViaApi: false,
-            filledCargoWarning: null,
-          };
+      if (includeOzonMeta) {
+        const supply = await fboSuppliesService.getById(id, {
+          profileId,
+          skipReserveEnrichment: true,
+          skipPackingEval: true,
+        });
+        const mp = String(supply?.marketplace || 'ozon').toLowerCase();
+        const isOzon = mp !== 'wb' && mp !== 'ym' && mp !== 'yandex';
+        if (isOzon && (supply?.externalSupplyId || supply?.externalShipmentNumber)) {
+          try {
+            data.ozonMeta = await fboSuppliesOzonCargoesService.getPackingOzonMeta(id, { profileId });
+          } catch (ozonErr) {
+            data.ozonMeta = {
+              error: ozonErr.message,
+              canSubmitCompositionViaApi: false,
+              filledCargoWarning: null,
+            };
+          }
         }
       }
       return res.status(200).json({ ok: true, data });

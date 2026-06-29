@@ -278,8 +278,10 @@ export const fboSuppliesApi = {
     return response.data?.data ?? response.data;
   },
 
-  getPacking: async (id) => {
-    const response = await api.get(`/fbo-supplies/${id}/packing`);
+  getPacking: async (id, { includeOzonMeta = true } = {}) => {
+    const params =
+      includeOzonMeta === false ? { includeOzonMeta: '0' } : undefined;
+    const response = await api.get(`/fbo-supplies/${id}/packing`, { params });
     return response.data?.data ?? response.data;
   },
 

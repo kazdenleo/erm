@@ -129,6 +129,60 @@
   color: #b91c1c;
 }
 
+.fbo-status-select {
+  display: inline-block;
+  padding: 0.35em 1.6em 0.35em 0.55em;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  cursor: pointer;
+  max-width: 100%;
+  appearance: auto;
+}
+
+.fbo-status-select:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.fbo-status-select--new {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.fbo-status-select--packed {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.fbo-status-select--ready_for_supply {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.fbo-status-select--shipped {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.fbo-status-select--closed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.fbo-status-select--return {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.fbo-status-select--unknown {
+  background: #f1f5f9;
+  color: #475569;
+}
+
 .fbo-status-step {
   padding: 6px 12px;
   border-radius: 6px;

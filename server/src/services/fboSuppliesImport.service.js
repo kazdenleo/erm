@@ -3418,7 +3418,7 @@ class FboSuppliesImportService {
     const updated = await fboSuppliesService.update(
       supplyId,
       { status: targetStatus },
-      { profileId }
+      { profileId, deferReserveRebalance: true, skipMarketplaceSync: true, lightReturn: true }
     );
     return {
       updated: true,

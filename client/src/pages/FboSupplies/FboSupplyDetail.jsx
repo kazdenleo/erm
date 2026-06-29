@@ -167,7 +167,10 @@ export function FboSupplyDetail() {
     try {
       const [data, packingData] = await Promise.all([
         fboSuppliesApi.getById(id, { skipReserve: true }),
-        fboSuppliesApi.getPacking(id).catch(() => ({ cargoUnits: [], itemStats: [] })),
+        fboSuppliesApi.getPacking(id, { includeOzonMeta: false }).catch(() => ({
+          cargoUnits: [],
+          itemStats: [],
+        })),
       ]);
       setSupply(data);
       setPacking(packingData);
@@ -182,14 +185,37 @@ export function FboSupplyDetail() {
     }
   }, [id, loadDeductionWarehouses]);
 
-  const loadPacking = useCallback(async () => {
+  const loadPacking = useCallback(async ({ includeOzonMeta = false } = {}) => {
     try {
-      const data = await fboSuppliesApi.getPacking(id);
-      setPacking(data);
+      const data = await fboSuppliesApi.getPacking(id, { includeOzonMeta });
+      setPacking((prev) => ({ ...prev, ...data }));
     } catch {
-      setPacking({ cargoUnits: [], itemStats: [] });
+      setPacking((prev) => prev ?? { cargoUnits: [], itemStats: [] });
     }
   }, [id]);
+
+  useEffect(() => {
+    if (activeTab !== 'packing' || !id || !supply) return undefined;
+    const mp = String(supply.marketplace || 'ozon').toLowerCase();
+    const isOzon = mp !== 'wb' && mp !== 'ym' && mp !== 'yandex';
+    if (!isOzon || packing?.ozonMeta !== undefined) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fboSuppliesApi.getPacking(id, { includeOzonMeta: true });
+        if (!cancelled) {
+          setPacking((prev) => ({ ...prev, ...data, ozonMeta: data.ozonMeta }));
+        }
+      } catch {
+        if (!cancelled) {
+          setPacking((prev) => ({ ...prev, ozonMeta: null }));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, id, supply, packing?.ozonMeta]);
 
   useEffect(() => {
     load();

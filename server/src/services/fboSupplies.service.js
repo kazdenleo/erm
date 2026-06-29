@@ -21,6 +21,12 @@ import {
 
 const FBO_RESERVE_TERMINAL_STATUSES = new Set(['shipped', 'closed', 'return']);
 
+function isStatusOnlyUpdate(payload) {
+  if (!payload || payload.status === undefined) return false;
+  const keys = Object.keys(payload).filter((k) => payload[k] !== undefined);
+  return keys.length === 1 && keys[0] === 'status';
+}
+
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
   const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
@@ -364,7 +370,7 @@ class FboSuppliesService {
     return fboSupplyReserveService.enrichSuppliesListWithReserveTotals(rows, { profileId: pid });
   }
 
-  async getById(id, { profileId, skipReserveEnrichment = false } = {}) {
+  async getById(id, { profileId, skipReserveEnrichment = false, skipPackingEval = false } = {}) {
     const pid = normalizeProfileId(profileId);
     const r = await query(
       `${SUPPLY_SELECT} WHERE s.id = $1 AND ($2::bigint IS NULL OR s.profile_id = $2)`,
@@ -396,10 +402,12 @@ class FboSuppliesService {
             profileId: pid,
             reserveEnabled: supply.deductStock === true,
           });
-    const packingEval = await evaluateSupplyPacking(id);
-    supply.packingAllMatch = packingEval.allMatch;
-    supply.hasPackingDiscrepancy = packingEval.hasItems && !packingEval.allMatch;
-    supply.packingDiscrepancies = packingEval.discrepancies;
+    const packingEval = skipPackingEval ? null : await evaluateSupplyPacking(id);
+    if (packingEval) {
+      supply.packingAllMatch = packingEval.allMatch;
+      supply.hasPackingDiscrepancy = packingEval.hasItems && !packingEval.allMatch;
+      supply.packingDiscrepancies = packingEval.discrepancies;
+    }
     supply.statusRevertedByPacking = false;
     supply.statusPromotedByPacking = false;
     return supply;
@@ -545,9 +553,21 @@ class FboSuppliesService {
     return created;
   }
 
-  async update(id, payload, { profileId } = {}) {
+  async update(id, payload, {
+    profileId,
+    deferReserveRebalance = false,
+    skipMarketplaceSync = false,
+    skipReserveEnrichment = false,
+    lightReturn = false,
+  } = {}) {
     const pid = normalizeProfileId(profileId);
-    const existing = await this.getById(id, { profileId: pid });
+    const statusOnly = isStatusOnlyUpdate(payload);
+    const fastPath = statusOnly || lightReturn;
+    const existing = await this.getById(id, {
+      profileId: pid,
+      skipReserveEnrichment: fastPath || skipReserveEnrichment,
+      skipPackingEval: statusOnly,
+    });
     const prevStatus = existing.status;
     const fields = [];
     const params = [id, pid];
@@ -625,7 +645,16 @@ class FboSuppliesService {
       params
     );
 
-    let result = await this.getById(id, { profileId: pid });
+    let result;
+    const canLightReturn = (statusOnly || lightReturn) && !willDeduct;
+    if (canLightReturn) {
+      result = { ...existing, status: newStatus };
+    } else {
+      result = await this.getById(id, {
+        profileId: pid,
+        skipReserveEnrichment: statusOnly,
+      });
+    }
     if (willDeduct) {
       try {
         const stockResult = await this.applyStockDeductionIfNeeded(id, { profileId: pid });
@@ -640,17 +669,27 @@ class FboSuppliesService {
       }
     } else if (FBO_RESERVE_TERMINAL_STATUSES.has(result.status)) {
       await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
-    } else {
-      if (!result.deductStock) {
-        await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
+    } else if (result.deductStock) {
+      const runRebalance = () =>
+        fboSupplyReserveService
+          .rebalanceReservesForSupply(id, { profileId: pid, skipMarketplaceSync: true })
+          .catch((e) => {
+            console.warn('[FboSupplies] reserve after update:', e?.message || e);
+          });
+      if (statusOnly || deferReserveRebalance) {
+        setImmediate(runRebalance);
       } else {
-        await fboSupplyReserveService.rebalanceReservesForSupply(id, { profileId: pid }).catch((e) => {
-          console.warn('[FboSupplies] reserve after update:', e?.message || e);
-        });
+        await runRebalance();
       }
+    } else {
+      await fboSupplyReserveService.releaseReservesForSupply(id, { profileId: pid }).catch(() => {});
     }
 
-    if (['ready_for_supply', 'shipped'].includes(result.status)) {
+    if (
+      !skipMarketplaceSync &&
+      !statusOnly &&
+      ['ready_for_supply', 'shipped'].includes(result.status)
+    ) {
       try {
         const { default: fboSuppliesImportService } = await import('./fboSuppliesImport.service.js');
         const sync = await fboSuppliesImportService.syncSupplyStatusFromMarketplace(id, { profileId: pid });
@@ -678,7 +717,11 @@ class FboSuppliesService {
       if (next === 'packed') assertCanSetPackedStatus(packingEval);
       else assertCanSetReadyForSupply(packingEval);
     }
-    return this.update(id, { status: next }, { profileId });
+    return this.update(id, { status: next }, {
+      profileId,
+      deferReserveRebalance: true,
+      skipMarketplaceSync: true,
+    });
   }
 
   /** После изменения сборки: при расхождениях — статус «Новая». */
