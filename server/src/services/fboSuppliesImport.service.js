@@ -2386,34 +2386,114 @@ function assertSupplyHasExternalRef(supply, mp) {
   }
 }
 
-async function hydrateOzonImportRow(row, { profileId } = {}) {
-  const mp = String(row?.marketplace || 'ozon').trim().toLowerCase();
-  if (mp !== 'ozon') return row;
-  const hasItems = (row.items || []).some((it) => (Number(it?.quantity) || 0) > 0);
-  if (hasItems && row.ozonPreviewOnly !== true) return row;
+function ozonImportOrgKey(organizationId) {
+  return organizationId != null ? String(organizationId) : '__null__';
+}
 
-  const organizationId = row.organizationId ?? null;
-  const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
-    profileId,
-    organizationId,
-  });
-  const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
-  const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
-  if (!clientId || !apiKey) {
-    const err = new Error(
-      'Не настроены Client ID и API Key Ozon. Укажите их в «Интеграции» для организации поставки.'
-    );
-    err.statusCode = 400;
-    throw err;
+function needsOzonHydrate(row) {
+  const mp = String(row?.marketplace || '').trim().toLowerCase();
+  if (mp !== 'ozon') return false;
+  const hasItems = (row.items || []).some((it) => (Number(it?.quantity) || 0) > 0);
+  return row.ozonPreviewOnly === true || !hasItems;
+}
+
+async function getOzonOrderDetailsCached(supplyOrderId, ozonApiOpts, cache) {
+  const key = String(supplyOrderId);
+  if (!cache.has(key)) {
+    cache.set(key, await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts));
+  }
+  return cache.get(key);
+}
+
+/** Пакетная подготовка контекста Ozon для confirm (один get orders + cluster maps на организацию). */
+async function buildOzonConfirmContexts(supplies, profileId) {
+  const rowsByOrg = new Map();
+  for (const row of supplies || []) {
+    if (!needsOzonHydrate(row)) continue;
+    const orgKey = ozonImportOrgKey(row.organizationId);
+    if (!rowsByOrg.has(orgKey)) rowsByOrg.set(orgKey, []);
+    rowsByOrg.get(orgKey).push(row);
   }
 
-  const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+  const contexts = new Map();
+  for (const [orgKey, rows] of rowsByOrg) {
+    const organizationId = orgKey === '__null__' ? null : Number(orgKey);
+    const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
+      profileId,
+      organizationId,
+    });
+    const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
+    const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
+    if (!clientId || !apiKey) {
+      const err = new Error(
+        'Не настроены Client ID и API Key Ozon. Укажите их в «Интеграции» для организации поставки.'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+    const idSet = new Set();
+    for (const r of rows) {
+      const extOrderId = r.externalOrderId != null ? String(r.externalOrderId).trim() : '';
+      if (extOrderId) idSet.add(extOrderId);
+      for (const c of buildOzonOrderIdCandidates(r)) idSet.add(c);
+    }
+    const fetched = await fetchOzonSupplyOrdersByIds([...idSet], ozonApiOpts);
+    const clusterMaps = await fetchOzonClusterMaps(ozonApiOpts).catch(() => ({
+      warehouseById: new Map(),
+      macrolocalById: new Map(),
+    }));
+    contexts.set(orgKey, {
+      ozonApiOpts,
+      orders: fetched.orders,
+      warehousesById: fetched.warehousesById,
+      clusterMaps,
+      detailsCache: new Map(),
+    });
+  }
+  return contexts;
+}
+
+async function hydrateOzonImportRow(row, { profileId, ozonCtx = null } = {}) {
+  const mp = String(row?.marketplace || 'ozon').trim().toLowerCase();
+  if (mp !== 'ozon') return row;
+  if (!needsOzonHydrate(row)) return row;
+
+  const organizationId = row.organizationId ?? null;
+  let ozonApiOpts = ozonCtx?.ozonApiOpts ?? null;
+  if (!ozonApiOpts) {
+    const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', {
+      profileId,
+      organizationId,
+    });
+    const clientId = ozonCfg?.client_id ?? ozonCfg?.clientId;
+    const apiKey = ozonCfg?.api_key ?? ozonCfg?.apiKey;
+    if (!clientId || !apiKey) {
+      const err = new Error(
+        'Не настроены Client ID и API Key Ozon. Укажите их в «Интеграции» для организации поставки.'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+    ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
+  }
+
   let order = null;
   let supply = null;
+  if (ozonCtx?.orders?.length) {
+    const match = findOzonOrderSupplyMatch(ozonCtx.orders, row);
+    if (match) {
+      order = match.order;
+      supply = match.supply;
+    }
+  }
   const externalOrderId = row.externalOrderId != null ? String(row.externalOrderId).trim() : '';
-  if (externalOrderId) {
+  if (!order && externalOrderId) {
     try {
-      const { orders } = await fetchOzonSupplyOrdersByIds([externalOrderId], ozonApiOpts);
+      const { orders } = ozonCtx?.orders?.length
+        ? { orders: ozonCtx.orders }
+        : await fetchOzonSupplyOrdersByIds([externalOrderId], ozonApiOpts);
       const match = findOzonOrderSupplyMatch(orders, row);
       if (match) {
         order = match.order;
@@ -2430,11 +2510,12 @@ async function hydrateOzonImportRow(row, { profileId } = {}) {
   }
 
   const supplyOrderId = ozonSupplyOrderId(order);
-  const orderDetails = await fetchOzonSupplyOrderDetails(supplyOrderId, ozonApiOpts);
-  const clusterMaps = await fetchOzonClusterMaps(ozonApiOpts).catch(() => ({
+  const detailsCache = ozonCtx?.detailsCache ?? new Map();
+  const orderDetails = await getOzonOrderDetailsCached(supplyOrderId, ozonApiOpts, detailsCache);
+  const clusterMaps = ozonCtx?.clusterMaps ?? (await fetchOzonClusterMaps(ozonApiOpts).catch(() => ({
     warehouseById: new Map(),
     macrolocalById: new Map(),
-  }));
+  })));
   const fetched = await fetchOzonSupplyItems(
     order,
     supply,
@@ -2442,7 +2523,7 @@ async function hydrateOzonImportRow(row, { profileId } = {}) {
     profileId,
     orderDetails,
     {
-      warehousesById: new Map(),
+      warehousesById: ozonCtx?.warehousesById ?? new Map(),
       clusterByWarehouseId: clusterMaps.warehouseById,
       macrolocalById: clusterMaps.macrolocalById,
       summaryOnly: false,
@@ -2971,6 +3052,7 @@ class FboSuppliesImportService {
     }
 
     const productIdsToRebalance = new Set();
+    const ozonContexts = await buildOzonConfirmContexts(supplies, profileId);
 
     const result = await runWithDbRetry(
       async () => {
@@ -2983,9 +3065,11 @@ class FboSuppliesImportService {
             continue;
           }
           try {
+            const mp = String(row.marketplace || '').trim().toLowerCase();
+            const ozonCtx = mp === 'ozon' ? ozonContexts.get(ozonImportOrgKey(row.organizationId)) ?? null : null;
             const importRow =
-              String(row.marketplace || '').trim().toLowerCase() === 'ozon'
-                ? await hydrateOzonImportRow(row, { profileId })
+              mp === 'ozon' && needsOzonHydrate(row)
+                ? await hydrateOzonImportRow(row, { profileId, ozonCtx })
                 : row;
             const doc = await fboSuppliesService.create(
               {
@@ -3045,7 +3129,7 @@ class FboSuppliesImportService {
         (async () => {
           for (const productId of uniqueProductIds) {
             await fboSupplyReserveService
-              .rebalanceReservesForProduct(productId, { profileId: pid })
+              .rebalanceReservesForProduct(productId, { profileId: pid, skipMarketplaceSync: true })
               .catch((e) => {
                 console.warn('[FboImport] background reserve rebalance:', e?.message || e);
               });

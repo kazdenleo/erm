@@ -133,7 +133,12 @@ export function FboSupplyImportModal({ open, onClose, mode, organizationId: orga
       onImported?.(result);
       handleClose();
     } catch (e) {
-      setErr(e.response?.data?.message || e.message || 'Не удалось загрузить поставки');
+      const status = e.response?.status;
+      const msg =
+        status === 502
+          ? 'Сервер временно недоступен (перезапуск). Подождите 10–20 секунд и повторите загрузку.'
+          : e.response?.data?.message || e.message || 'Не удалось загрузить поставки';
+      setErr(msg);
     } finally {
       setConfirming(false);
     }
