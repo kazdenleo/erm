@@ -173,13 +173,7 @@ export function MarketplaceReturnsPanel({ embedded = false, onAcceptReturn }) {
           </Button>
         </header>
       ) : (
-        <div className="mp-returns-embedded-head">
-          <div>
-            <h3 className="warehouse-ops-panel-title">Возвраты с маркетплейсов</h3>
-            <p className="warehouse-ops-hint">
-              Товары, готовые к выдаче с ПВЗ. Нажмите «Принять возврат», чтобы оформить поступление на склад ниже.
-            </p>
-          </div>
+        <div className="mp-returns-embedded-toolbar">
           <Button type="button" variant="secondary" size="small" onClick={onRefresh} disabled={loading}>
             {loading ? 'Загрузка…' : 'Обновить'}
           </Button>

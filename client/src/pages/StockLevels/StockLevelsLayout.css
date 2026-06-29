@@ -4,15 +4,15 @@
   padding: 24px 24px 22px;
 }
 
-.stock-levels-layout .title {
-  margin-bottom: 10px;
+/* Заголовок — глобальные .title / .subtitle из pages.css, без своих рамок */
+.stock-levels-layout .stock-section-header .title {
+  margin: 0 0 16px;
 }
 
-.stock-levels-layout .subtitle {
-  margin: 0;
-  padding-bottom: 20px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
-  line-height: 1.55;
+.stock-levels-layout .stock-section-header .subtitle {
+  margin: 0 0 20px;
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
 .stock-levels-layout .stock-levels-subnav {
@@ -50,5 +50,5 @@
 }
 
 .stock-levels-content {
-  margin-top: 22px;
+  margin-top: 0;
 }

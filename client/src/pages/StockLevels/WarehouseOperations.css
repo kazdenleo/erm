@@ -70,6 +70,13 @@
   line-height: 1.35;
 }
 
+.warehouse-ops-subsection-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
 .warehouse-ops-hint {
   font-size: 13px;
   color: var(--muted);

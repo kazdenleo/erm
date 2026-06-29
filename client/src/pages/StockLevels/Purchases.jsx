@@ -180,6 +180,12 @@ function qtyCell(raw) {
   return Number.isFinite(n) ? n : '—';
 }
 
+function normalizePurchasePrice(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function formatPurchaseApiError(e, fallback) {
   return getApiErrorMessage(e, fallback);
 }
@@ -322,6 +328,19 @@ export function Purchases() {
   const [createSearchResults, setCreateSearchResults] = useState([]);
   const [createSelectedProducts, setCreateSelectedProducts] = useState([]);
   const [createSearchLoading, setCreateSearchLoading] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editSourcePurchaseId, setEditSourcePurchaseId] = useState(null);
+  const [editSupplierId, setEditSupplierId] = useState('');
+  const [editOrganizationId, setEditOrganizationId] = useState('');
+  const [editWarehouseId, setEditWarehouseId] = useState('');
+  const [editNote, setEditNote] = useState('');
+  const [editItems, setEditItems] = useState([]);
+  const [editOriginal, setEditOriginal] = useState(null);
+  const [editProductSearch, setEditProductSearch] = useState('');
+  const [editSearchResults, setEditSearchResults] = useState([]);
+  const [editSelectedProducts, setEditSelectedProducts] = useState([]);
+  const [editSearchLoading, setEditSearchLoading] = useState(false);
+  const [editSaveBusy, setEditSaveBusy] = useState(false);
   const [excelImportLoading, setExcelImportLoading] = useState(false);
   const excelInputRef = useRef(null);
   const [detail, setDetail] = useState(null);
@@ -557,6 +576,17 @@ export function Purchases() {
     setExcelPreviewInfo(null);
   }, []);
 
+  const closeEditModal = useCallback(() => {
+    setEditOpen(false);
+    setEditSourcePurchaseId(null);
+    setEditOriginal(null);
+    setEditProductSearch('');
+    setEditSearchResults([]);
+    setEditSelectedProducts([]);
+    setEditSearchLoading(false);
+    setEditSaveBusy(false);
+  }, []);
+
   const requestCloseReceipt = useCallback(() => {
     if (String(receipt?.receipt?.status) === 'scanning') {
       setReceiptCloseConfirm(true);
@@ -594,6 +624,14 @@ export function Purchases() {
     return m;
   }, [products, createSelectedProducts, createSearchResults]);
 
+  const editProductLabelById = useMemo(() => {
+    const m = new Map();
+    for (const p of mergeProductLists(products, editSelectedProducts, editSearchResults)) {
+      if (p?.id != null) m.set(String(p.id), `${p.sku || '—'} — ${p.name || 'Без названия'}`);
+    }
+    return m;
+  }, [products, editSelectedProducts, editSearchResults]);
+
   const addProductToCreateItems = useCallback((product, addQty = 1) => {
     const id = product?.id;
     if (id == null || id === '') return;
@@ -612,6 +650,29 @@ export function Purchases() {
         return prev.map((x, i) => (i === emptyIdx ? { ...x, productId: idStr, quantity: add } : x));
       }
       return [...prev, { productId: idStr, quantity: add }];
+    });
+  }, []);
+
+  const addProductToEditItems = useCallback((product, addQty = 1) => {
+    const id = product?.id;
+    if (id == null || id === '') return;
+    setEditSearchResults((prev) => mergeProductLists(prev, [product]));
+    setEditSelectedProducts((prev) => mergeProductLists(prev, [product]));
+    const add = Math.max(1, parseInt(addQty, 10) || 1);
+    const idStr = String(id);
+    setEditItems((prev) => {
+      const idx = prev.findIndex((x) => String(x.productId) === idStr);
+      if (idx >= 0) {
+        const cur = Number(prev[idx].quantity) || 0;
+        return prev.map((x, i) => (i === idx ? { ...x, productId: idStr, quantity: cur + add } : x));
+      }
+      const emptyIdx = prev.findIndex((x) => !x.productId);
+      if (emptyIdx >= 0) {
+        return prev.map((x, i) =>
+          i === emptyIdx ? { ...x, itemId: null, productId: idStr, quantity: add, receivedQuantity: 0 } : x
+        );
+      }
+      return [...prev, { itemId: null, productId: idStr, quantity: add, purchasePrice: '', receivedQuantity: 0 }];
     });
   }, []);
 
@@ -697,6 +758,207 @@ export function Purchases() {
       addProductToCreateItems
     ]
   );
+
+  useEffect(() => {
+    if (!editOpen) return undefined;
+    const q = normalizeProductSearchQuery(editProductSearch);
+    if (!q) {
+      setEditSearchResults([]);
+      setEditSearchLoading(false);
+      return undefined;
+    }
+    const local = matchProductsLocal(products, q);
+    if (local.length) setEditSearchResults(local);
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setEditSearchLoading(true);
+      try {
+        const res = await productsApi.getAll({ search: q, limit: 40 });
+        const remote = Array.isArray(res?.data) ? res.data : [];
+        if (!cancelled) setEditSearchResults(mergeProductLists(local, remote));
+      } catch {
+        if (!cancelled) setEditSearchResults(local);
+      } finally {
+        if (!cancelled) setEditSearchLoading(false);
+      }
+    }, 320);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [editOpen, editProductSearch, products]);
+
+  const openEditModal = useCallback(() => {
+    if (!detail?.purchase || String(detail.purchase.status || '') === 'archived') return;
+    const p = detail.purchase;
+    const items = (detail.items || []).map((it) => ({
+      itemId: it.id,
+      productId: String(it.product_id),
+      quantity: Math.max(0, Math.floor(Number(it.expected_quantity) || 0)),
+      purchasePrice: it.purchase_price ?? it.product_cost ?? '',
+      receivedQuantity: Math.max(0, Math.floor(Number(it.received_quantity) || 0)),
+    }));
+    setEditSourcePurchaseId(p.id);
+    setEditSupplierId(p.supplier_id != null ? String(p.supplier_id) : '');
+    setEditOrganizationId(p.organization_id != null ? String(p.organization_id) : '');
+    setEditWarehouseId(p.warehouse_id != null ? String(p.warehouse_id) : '');
+    setEditNote(p.note ?? '');
+    setEditItems(
+      items.length
+        ? items
+        : [{ itemId: null, productId: '', quantity: 1, purchasePrice: '', receivedQuantity: 0 }]
+    );
+    setEditOriginal({
+      supplierId: p.supplier_id != null ? String(p.supplier_id) : '',
+      organizationId: p.organization_id != null ? String(p.organization_id) : '',
+      warehouseId: p.warehouse_id != null ? String(p.warehouse_id) : '',
+      note: p.note ?? '',
+      items: items.map((it) => ({ ...it })),
+    });
+    setEditSelectedProducts(
+      (detail.items || []).map((it) => ({
+        id: it.product_id,
+        sku: it.product_sku,
+        name: it.product_name,
+      }))
+    );
+    setEditProductSearch('');
+    setEditSearchResults([]);
+    setEditOpen(true);
+    setErr(null);
+  }, [detail]);
+
+  const saveEditPurchase = async () => {
+    const purchaseId = editSourcePurchaseId;
+    const orig = editOriginal;
+    if (!purchaseId || !orig) return;
+
+    const normalizedItems = editItems
+      .map((it) => ({
+        itemId: it.itemId ?? null,
+        productId: it.productId ? String(it.productId) : '',
+        quantity: Math.max(0, Math.floor(Number(it.quantity) || 0)),
+        purchasePrice: it.purchasePrice,
+        receivedQuantity: Math.max(0, Math.floor(Number(it.receivedQuantity) || 0)),
+      }))
+      .filter((it) => it.productId && it.quantity > 0);
+
+    if (normalizedItems.length === 0) {
+      setErr('Добавьте хотя бы одну позицию');
+      return;
+    }
+    if (!String(editSupplierId || '').trim()) {
+      setErr('Выберите поставщика');
+      return;
+    }
+    if (!String(editOrganizationId || '').trim()) {
+      setErr('Выберите организацию');
+      return;
+    }
+    if (!String(editWarehouseId || '').trim()) {
+      setErr('Выберите склад назначения');
+      return;
+    }
+    for (const it of normalizedItems) {
+      if (it.quantity < it.receivedQuantity) {
+        setErr(
+          `По товару #${it.productId} нельзя указать «ожидалось» меньше принятого (${it.receivedQuantity} шт.)`
+        );
+        return;
+      }
+    }
+
+    setEditSaveBusy(true);
+    setErr(null);
+    try {
+      const headerPayload = {};
+      if (editSupplierId !== orig.supplierId) {
+        headerPayload.supplierId = Number(editSupplierId);
+      }
+      if (editOrganizationId !== orig.organizationId) {
+        headerPayload.organizationId = Number(editOrganizationId);
+      }
+      if (editWarehouseId !== orig.warehouseId) {
+        headerPayload.warehouseId = Number(editWarehouseId);
+      }
+      if (editNote !== orig.note) {
+        headerPayload.note = editNote;
+      }
+      if (Object.keys(headerPayload).length > 0) {
+        await purchasesApi.updatePurchase(purchaseId, headerPayload);
+      }
+
+      const origByItemId = new Map(
+        orig.items.filter((i) => i.itemId != null).map((i) => [Number(i.itemId), i])
+      );
+      const editByItemId = new Map(
+        normalizedItems.filter((i) => i.itemId != null).map((i) => [Number(i.itemId), i])
+      );
+
+      for (const origItem of orig.items) {
+        if (origItem.itemId == null) continue;
+        if (editByItemId.has(Number(origItem.itemId))) continue;
+        if (origItem.receivedQuantity > 0) {
+          const err = new Error('Нельзя удалить строку с уже принятым товаром');
+          err.response = { data: { message: err.message } };
+          throw err;
+        }
+        await purchasesApi.removeDraftLineItem(purchaseId, origItem.itemId);
+      }
+
+      for (const editItem of normalizedItems) {
+        if (editItem.itemId == null) continue;
+        const origItem = origByItemId.get(Number(editItem.itemId));
+        if (!origItem) continue;
+
+        const origPrice = normalizePurchasePrice(origItem.purchasePrice);
+        const newPrice = normalizePurchasePrice(editItem.purchasePrice);
+        if (origPrice !== newPrice) {
+          await purchasesApi.updatePurchaseItem(purchaseId, editItem.itemId, {
+            purchasePrice: newPrice,
+          });
+        }
+
+        const origQty = Math.max(0, Math.floor(Number(origItem.quantity) || 0));
+        const newQty = editItem.quantity;
+        if (newQty > origQty) {
+          const payload = {
+            productId: Number(editItem.productId),
+            quantity: newQty - origQty,
+          };
+          if (newPrice != null) payload.purchasePrice = newPrice;
+          await purchasesApi.appendDraftItems(purchaseId, { items: [payload] });
+        } else if (newQty < origQty) {
+          await purchasesApi.removeDraftLineItem(purchaseId, editItem.itemId, {
+            reduceBy: origQty - newQty,
+          });
+        }
+      }
+
+      const newLines = normalizedItems.filter((i) => i.itemId == null);
+      if (newLines.length > 0) {
+        await purchasesApi.appendDraftItems(purchaseId, {
+          items: newLines.map((it) => {
+            const row = {
+              productId: Number(it.productId),
+              quantity: it.quantity,
+            };
+            const pp = normalizePurchasePrice(it.purchasePrice);
+            if (pp != null) row.purchasePrice = pp;
+            return row;
+          }),
+        });
+      }
+
+      closeEditModal();
+      await reload();
+      await openDetail(purchaseId);
+    } catch (e) {
+      setErr(formatPurchaseApiError(e, 'Не удалось сохранить изменения закупки'));
+    } finally {
+      setEditSaveBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (err && detail && detailErrRef.current) {
@@ -1258,10 +1520,7 @@ export function Purchases() {
   );
 
   return (
-    <div className="card">
-      <h2 className="title">🧾 Закупка</h2>
-      <p className="subtitle">Ожидание поставки (incoming) и приёмки по закупкам</p>
-
+    <>
       {err && <p className="error">{err}</p>}
       {importOk && (
         <p className="muted" style={{ color: 'var(--success, #198754)', marginBottom: 12 }}>
@@ -1523,6 +1782,242 @@ export function Purchases() {
       </Modal>
 
       <Modal
+        isOpen={editOpen}
+        onClose={closeEditModal}
+        title={editSourcePurchaseId ? `Редактирование закупки №${editSourcePurchaseId}` : 'Редактирование закупки'}
+        size="xl"
+      >
+        <p className="muted">
+          Измените шапку и позиции закупки. «Принято» только для справки — уменьшить «ожидалось» ниже принятого нельзя.
+        </p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <span className="muted" style={{ fontSize: 13 }}>
+            Поставщик
+          </span>
+          <select
+            className="warehouse-ops-select"
+            value={editSupplierId}
+            onChange={(e) => setEditSupplierId(e.target.value)}
+            disabled={editSaveBusy}
+          >
+            <option value="">— Выберите поставщика —</option>
+            {(suppliers || []).map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name || `Поставщик #${s.id}`}
+              </option>
+            ))}
+          </select>
+
+          <span className="muted" style={{ fontSize: 13 }}>
+            Получатель
+          </span>
+          <select
+            className="warehouse-ops-select"
+            value={editOrganizationId}
+            onChange={(e) => setEditOrganizationId(e.target.value)}
+            disabled={editSaveBusy}
+          >
+            <option value="">— Выберите организацию —</option>
+            {(organizations || []).map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.name || `Организация #${o.id}`}
+              </option>
+            ))}
+          </select>
+
+          <span className="muted" style={{ fontSize: 13 }}>
+            Склад
+          </span>
+          <select
+            className="warehouse-ops-select"
+            value={editWarehouseId}
+            onChange={(e) => setEditWarehouseId(e.target.value)}
+            disabled={editSaveBusy}
+          >
+            <option value="">— Выберите склад —</option>
+            {(warehouses || [])
+              .filter((w) => w?.type === 'warehouse' && !w?.supplier_id)
+              .map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name || w.address || w.city || `Склад #${w.id}`}
+                </option>
+              ))}
+          </select>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label htmlFor="purchase-edit-note" className="muted" style={{ fontSize: 13, display: 'block', marginBottom: 4 }}>
+            Комментарий
+          </label>
+          <textarea
+            id="purchase-edit-note"
+            className="warehouse-ops-select"
+            style={{ width: '100%', minHeight: 64, resize: 'vertical' }}
+            value={editNote}
+            onChange={(e) => setEditNote(e.target.value)}
+            disabled={editSaveBusy}
+            placeholder="Необязательно"
+          />
+        </div>
+        <div
+          className="warehouse-ops-list-form"
+          style={{ marginBottom: 14, borderTop: '1px solid var(--border, #e8e8e8)', paddingTop: 12 }}
+        >
+          <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
+            Поиск товара по артикулу, названию или штрихкоду
+          </p>
+          <div style={{ marginBottom: 8 }}>
+            <label htmlFor="purchase-edit-product-search">Поиск (сканер или ввод)</label>
+            <ProductSearchInput
+              id="purchase-edit-product-search"
+              value={editProductSearch}
+              onChange={setEditProductSearch}
+              products={products}
+              organizationId={editOrganizationId}
+              placeholder="Штрихкод, артикул, название"
+              disabled={editSaveBusy}
+              onSelect={(p) => {
+                addProductToEditItems(p, 1);
+                setEditProductSearch('');
+                setEditSearchResults([]);
+                setErr(null);
+              }}
+            />
+          </div>
+          {editSearchLoading && (
+            <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
+              Поиск…
+            </p>
+          )}
+          {!editSearchLoading &&
+            normalizeProductSearchQuery(editProductSearch) &&
+            editSearchResults.length > 1 && (
+              <div
+                style={{
+                  marginBottom: 8,
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  border: '1px solid var(--border, #e8e8e8)',
+                  borderRadius: 6,
+                }}
+              >
+                <div
+                  className="muted"
+                  style={{ fontSize: 12, padding: '6px 10px', borderBottom: '1px solid var(--border, #eee)' }}
+                >
+                  Выберите товар
+                </div>
+                {editSearchResults.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      border: 'none',
+                      borderBottom: '1px solid var(--border, #f0f0f0)',
+                      background: 'transparent',
+                      cursor: editSaveBusy ? 'default' : 'pointer',
+                    }}
+                    disabled={editSaveBusy}
+                    onClick={() => {
+                      addProductToEditItems(p, 1);
+                      setEditProductSearch('');
+                      setEditSearchResults([]);
+                      setErr(null);
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.sku || '—'}</div>
+                    <div style={{ fontSize: 12, opacity: 0.85 }}>{p.name || 'Без названия'}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+        </div>
+        {editItems.map((it, idx) => {
+          const received = Math.max(0, Math.floor(Number(it.receivedQuantity) || 0));
+          const minQty = received > 0 ? received : 1;
+          const canRemove = received <= 0;
+          return (
+            <div
+              key={it.itemId != null ? `line-${it.itemId}` : `new-${idx}-${it.productId || 'empty'}`}
+              style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}
+            >
+              <span className="muted" style={{ minWidth: 200, fontSize: 13 }}>
+                {it.productId
+                  ? editProductLabelById.get(String(it.productId)) || `Товар #${it.productId}`
+                  : '— добавьте через поиск выше —'}
+              </span>
+              <span className="muted" style={{ fontSize: 12 }}>
+                Принято: {received}
+              </span>
+              <span className="muted" style={{ fontSize: 12 }}>
+                Ожид.
+              </span>
+              <input
+                className="warehouse-ops-qty-input"
+                type="number"
+                min={minQty}
+                value={it.quantity}
+                disabled={editSaveBusy || !it.productId}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setEditItems((prev) => prev.map((x, i) => (i === idx ? { ...x, quantity: v } : x)));
+                }}
+              />
+              <span className="muted" style={{ fontSize: 12 }}>
+                Цена
+              </span>
+              <input
+                className="warehouse-ops-qty-input"
+                type="number"
+                min={0}
+                step="0.01"
+                style={{ width: 100 }}
+                value={it.purchasePrice ?? ''}
+                disabled={editSaveBusy || !it.productId}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setEditItems((prev) =>
+                    prev.map((x, i) => (i === idx ? { ...x, purchasePrice: v } : x))
+                  );
+                }}
+              />
+              <Button
+                variant="secondary"
+                disabled={editSaveBusy || !canRemove}
+                title={canRemove ? 'Удалить строку' : 'Нельзя удалить — уже есть принятое количество'}
+                onClick={() => setEditItems((prev) => prev.filter((_, i) => i !== idx))}
+              >
+                Удалить
+              </Button>
+            </div>
+          );
+        })}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <Button
+            variant="secondary"
+            disabled={editSaveBusy}
+            onClick={() =>
+              setEditItems((prev) => [
+                ...prev,
+                { itemId: null, productId: '', quantity: 1, purchasePrice: '', receivedQuantity: 0 },
+              ])
+            }
+          >
+            + Позиция
+          </Button>
+          <Button disabled={editSaveBusy} onClick={saveEditPurchase}>
+            {editSaveBusy ? 'Сохраняю…' : 'Сохранить'}
+          </Button>
+          <Button variant="secondary" disabled={editSaveBusy} onClick={closeEditModal}>
+            Отмена
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
         isOpen={!!detail && !receipt?.receipt?.id}
         onClose={() => setDetail(null)}
         title={detail?.purchase?.id ? `Закупка №${detail.purchase.id}` : 'Закупка'}
@@ -1637,6 +2132,13 @@ export function Purchases() {
               </select>
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+              <Button
+                variant="secondary"
+                onClick={openEditModal}
+                disabled={String(detail?.purchase?.status || '') === 'archived'}
+              >
+                Редактировать
+              </Button>
               <Button
                 variant="secondary"
                 onClick={() => setExpectedDraftOpen(true)}
@@ -2635,7 +3137,7 @@ export function Purchases() {
         products={products}
         onLinked={handlePurchaseBarcodeLinked}
       />
-    </div>
+    </>
   );
 }
 

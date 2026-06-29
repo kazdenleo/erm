@@ -2644,9 +2644,6 @@ export function WarehouseStocks() {
     <>
       {activeTab === 'table' && (
         <>
-          <p className="stock-levels-description">
-            Складской учёт: остатки, приёмка, перемещение между складами организации, списание и инвентаризация. Поиск товара — по штрихкоду, артикулу или названию.
-          </p>
           {productsError && products.length > 0 ? (
             <div className="error" style={{ marginBottom: 12 }} role="alert">
               Не удалось обновить остатки: {productsError}

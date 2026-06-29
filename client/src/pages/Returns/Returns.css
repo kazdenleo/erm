@@ -131,17 +131,10 @@
   border-bottom: 1px solid var(--border, #e2e8f0);
 }
 
-.mp-returns-embedded-head {
+.mp-returns-embedded-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.mp-returns-embedded-head .warehouse-ops-panel-title {
-  margin-bottom: 4px;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }
 
 .mp-returns-actions-cell {

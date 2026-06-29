@@ -2567,7 +2567,6 @@ export function WarehouseOperations({
 
       {mode === MODE_WRITEOFF && (
         <div className="warehouse-ops-panel writeoff-panel">
-          <h3 className="warehouse-ops-panel-title">Списание товара</h3>
           <p className="warehouse-ops-hint">Отсканируйте штрихкод или введите артикул, затем укажите количество к списанию.</p>
           <label className="warehouse-ops-field-label" style={{ display: 'block', marginBottom: 12 }}>
             Склад списания <span className="warehouse-ops-required-star">*</span>
@@ -2685,7 +2684,6 @@ export function WarehouseOperations({
 
       {mode === MODE_RETURN_SUPPLIER && (
         <div className="warehouse-ops-panel return-supplier-panel">
-          <h3 className="warehouse-ops-panel-title">Возврат товара поставщику</h3>
           <p className="warehouse-ops-hint">Укажите организацию (от имени которой возврат), поставщика и склад списания; добавьте товары по скану или из списка. Документы сохраняются в списке ниже.</p>
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
@@ -2900,7 +2898,7 @@ export function WarehouseOperations({
             id="warehouse-customer-return-accept"
             className="warehouse-ops-panel return-customer-panel"
           >
-          <h3 className="warehouse-ops-panel-title">Принять возврат на склад</h3>
+          <h4 className="warehouse-ops-subsection-title">Принять возврат на склад</h4>
           <p className="warehouse-ops-hint">
             Укажите склад приёмки и организацию (при необходимости), добавьте товары по скану или из списка. Документы сохраняются в списке ниже.
           </p>
@@ -3096,7 +3094,6 @@ export function WarehouseOperations({
             <>
               <div className="warehouse-ops-inventory-header-row">
                 <div>
-                  <h3 className="warehouse-ops-panel-title">Инвентаризация</h3>
                   <p className="warehouse-ops-hint">
                     Список завершённых пересчётов. Чтобы заново пересчитать остатки — нажмите «Новая инвентаризация»,
                     отсканируйте товары и сохраните документ.
@@ -3591,7 +3588,6 @@ export function WarehouseOperations({
 
       {mode === MODE_TRANSFER && (
         <div className="warehouse-ops-panel transfer-panel">
-          <h3 className="warehouse-ops-panel-title">Перемещение между складами</h3>
           <p className="warehouse-ops-hint">
             Перенос свободного остатка между складами одной организации. Поиск товара: штрихкод, артикул или название.
             В журнале движений — две записи (списание со склада-источника и поступление на склад-получатель).
@@ -3862,9 +3858,8 @@ export function WarehouseOperations({
         <div className="warehouse-ops-panel receipts-list-panel">
           <div className="warehouse-ops-receipts-list-header">
             <div>
-              <h3 className="warehouse-ops-panel-title">Список приёмок</h3>
               <p className="warehouse-ops-hint">
-                Поступления на склад (ПТ). Возвраты — в разделах «Возврат поставщику» и «Возврат от клиентов».
+                Поступления на склад (ПТ). Возвраты — в разделе «Возвраты».
                 «Кол-во, шт» — сумма единиц по строкам; «Сумма, ₽» — по строкам с указанной себестоимостью.
               </p>
             </div>

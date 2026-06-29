@@ -72,9 +72,14 @@
 .fbo-supplies-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
   align-items: center;
+  gap: 10px;
   margin-bottom: 16px;
+}
+
+.fbo-supplies-toolbar__spacer {
+  flex: 1;
+  min-width: 8px;
 }
 
 .fbo-status-stepper {

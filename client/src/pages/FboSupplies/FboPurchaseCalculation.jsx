@@ -499,7 +499,7 @@ export function FboPurchaseCalculation() {
         <Button variant="secondary" size="small" onClick={() => navigate('/stock-levels/fbo-supplies')}>
           ← К поставкам
         </Button>
-        <h2 style={{ margin: 0, flex: 1 }}>Расчёт закупки FBO</h2>
+        <div className="fbo-supplies-toolbar__spacer" />
         <Button
           variant="secondary"
           size="small"

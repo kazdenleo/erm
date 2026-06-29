@@ -117,7 +117,7 @@ export function FboSupplies() {
       <FboOpenCalcSessionsBanner />
 
       <div className="fbo-supplies-toolbar">
-        <h2 style={{ margin: 0, flex: 1 }}>Поставки FBO</h2>
+        <div className="fbo-supplies-toolbar__spacer" />
         <Button
           variant="secondary"
           disabled={templateLoading}
