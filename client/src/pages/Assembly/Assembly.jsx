@@ -18,6 +18,11 @@ import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
+import {
+  isKitSkuScanForOrder,
+  assemblyLinesToCompleteOnKitScan,
+  orderItemMatchesScannedProduct,
+} from '../../utils/assemblyKitScan.js';
 import './Assembly.css';
 
 function resolveApiBaseUrl() {
@@ -159,40 +164,6 @@ function scannedQtyForAssemblyLine(item, idx, scannedQuantities, itemsLength = 1
     }
   }
   return 0;
-}
-
-/** Скан штрихкода SKU комплекта (не отдельной комплектующей). */
-function isKitSkuScanForOrder(product, orderItems) {
-  if (!product?.id || !orderItems?.length) return false;
-  const scanId = String(product.id);
-  const kitLine = orderItems.find((item) => {
-    const kitPid = item.kitProductId ?? item.kit_product_id;
-    return kitPid != null && String(kitPid) === scanId;
-  });
-  if (!kitLine) return false;
-  const linePid = kitLine.productId ?? kitLine.product_id;
-  if (
-    orderItems.length === 1 &&
-    linePid != null &&
-    String(linePid) === scanId &&
-    !kitLine.isKitComponent
-  ) {
-    return false;
-  }
-  return true;
-}
-
-/** Совпадение скана с одной строкой состава (только product_id строки — комплектующая). */
-function orderItemMatchesScannedProduct(item, product) {
-  if (!product?.id) return false;
-  const target = Number(product.id);
-  const raw = item.productId ?? item.product_id;
-  if (raw != null && raw !== '') {
-    const linePid = Number(raw);
-    if (!Number.isNaN(target) && !Number.isNaN(linePid) && linePid === target) return true;
-    if (String(raw) === String(product.id)) return true;
-  }
-  return false;
 }
 
 export function Assembly() {
@@ -657,7 +628,8 @@ export function Assembly() {
           }
 
           if (isKitSkuScanForOrder(product, items)) {
-            for (let idx = 0; idx < items.length; idx++) {
+            const lineIdxs = assemblyLinesToCompleteOnKitScan(product, items);
+            for (const idx of lineIdxs) {
               const item = items[idx];
               const need = item.quantity ?? 1;
               next[assemblyLineScanKey(item, idx)] = need;
@@ -675,18 +647,13 @@ export function Assembly() {
           };
 
           if (candidates.length === 0) {
-            for (let idx = 0; idx < items.length; idx++) {
-              const item = items[idx];
-              const need = item.quantity ?? 1;
-              const key = assemblyLineScanKey(item, idx);
-              const got = next[key] ?? 0;
-              if (got < need) {
-                bumpLine(item, idx);
-                return next;
-              }
+            // Без совпадения product_id не засчитываем скан (важно для комплектов:
+            // строка «целый комплект» vs штрихкод комплектующей).
+            const legacySingleLine =
+              items.length === 1 && assemblyLineProductId(items[0]) == null;
+            if (legacySingleLine) {
+              bumpLine(items[0], 0);
             }
-            const last = items.length - 1;
-            bumpLine(items[last], last);
             return next;
           }
 
@@ -762,7 +729,10 @@ export function Assembly() {
   const isKitAssembly = useMemo(() => {
     const items = currentOrderData?.orderItems || [];
     if (items.length > 1) return true;
-    if (items.some((i) => i.isKitComponent || i.kitProductId)) return true;
+    if (items.some((i) => i.isKitComponent || i.isSubKitWhole || i.kitProductId || i.subKitProductId))
+      return true;
+    const needTotal = items.reduce((s, i) => s + (i.quantity ?? 1), 0);
+    if (items.length === 1 && needTotal > 1) return true;
     const lineIds = items
       .map((i) => (i.orderLineId != null ? String(i.orderLineId).trim() : ''))
       .filter(Boolean);

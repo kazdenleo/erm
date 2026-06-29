@@ -1,5 +1,5 @@
 /**
- * Позиции заказа для UI сборки: для комплектов — строки по комплектующим.
+ * Позиции заказа для UI сборки: для комплектов — строки по комплектующим (рекурсивно).
  */
 
 import { query } from '../config/database.js';
@@ -8,7 +8,11 @@ import {
   isKitProductId,
   findKitProductIdForMarketplaceOrder,
   getNetReservedForOrderProduct,
-  readKitPhysicalOnHandFromDb
+  getReservedKitUnitsFromComponentsForOrder,
+  readKitPhysicalOnHandFromDb,
+  aggregateKitComponents,
+  kitBomNeedsMultipleAssemblyScans,
+  flattenKitBomToLeaves,
 } from './kitStock.service.js';
 
 async function loadProductBriefMap(productIds) {
@@ -37,63 +41,135 @@ function orderRowToAssemblyItem(order, productId, productName, quantity, extra =
   };
 }
 
-/**
- * Развернуть заказ на комплект в строки по kit_components (для сканирования штрихкодов деталей).
- */
-export async function expandKitOrderToAssemblyItems(order, kitProductId) {
-  const kitId = Number(kitProductId);
-  if (!Number.isFinite(kitId) || kitId < 1) return [];
-  const components = await getKitComponents(kitId);
-  if (!components.length) return [];
+/** Можно ли собрать этот уровень комплекта одним сканом SKU (целый комплект на полке). */
+async function canUseWholeKitAssemblyLine(kitId, kitsNeeded, order, opts = {}) {
+  const aggregated = aggregateKitComponents(await getKitComponents(kitId));
+  if (kitBomNeedsMultipleAssemblyScans(aggregated)) return false;
 
-  const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
-  const nameMap = await loadProductBriefMap(components.map((c) => c.component_product_id));
+  const scannedId = opts.scannedProductId != null ? Number(opts.scannedProductId) : NaN;
+  if (Number.isFinite(scannedId) && scannedId > 0) {
+    if (aggregated.some((c) => Number(c.component_product_id) === scannedId)) return false;
+  }
 
-  return components.map((c) => {
-    const compPid = Number(c.component_product_id);
-    const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
-    const brief = nameMap.get(compPid);
-    return orderRowToAssemblyItem(order, compPid, brief?.name, orderQty * perKit, {
-      offerId: brief?.sku ?? null,
-      kitProductId: kitId,
-      isKitComponent: true
-    });
-  });
+  const oid = Number(order?.id ?? order?.db_id);
+  const mpLabel = order?.orderId ?? order?.order_id;
+  let onKit = 0;
+  let fromComp = 0;
+  if (Number.isFinite(oid) && oid > 0) {
+    onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
+    fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
+  }
+  if (fromComp > 0) return false;
+
+  const physical = await readKitPhysicalOnHandFromDb(kitId, null, {});
+  const need = Math.max(1, parseInt(kitsNeeded, 10) || 1);
+  return onKit >= need && physical >= need;
 }
 
 /**
- * Строки сборки для заказа на комплект: целый SKU (1 скан) или разворот в комплектующие.
- * Решение по фактическому наличию целых комплектов на складе, а не по пути резерва:
- * резерв на SKU комплекта при нулевом physical on-hand всё равно требует сборки из деталей.
+ * Строки для скан-сборки: рекурсия по вложенным комплектам.
+ * На каждом уровне — либо целый SKU (если на складе), либо разворот в состав.
  */
-async function resolveKitAssemblyItems(order, kitProductId) {
+async function resolveKitAssemblyScanLines(kitId, kitsNeeded, order, opts = {}, rootKitId = null) {
+  const root = rootKitId ?? kitId;
+  const qty = Math.max(1, parseInt(kitsNeeded, 10) || 1);
+
+  if (await canUseWholeKitAssemblyLine(kitId, qty, order, opts)) {
+    const brief = await loadProductBriefMap([kitId]);
+    const b = brief.get(kitId);
+    const isRoot = kitId === root;
+    return [
+      orderRowToAssemblyItem(order, kitId, b?.name ?? '—', qty, {
+        offerId: b?.sku ?? null,
+        kitProductId: root,
+        isKitWhole: isRoot,
+        isSubKitWhole: !isRoot,
+        subKitProductId: isRoot ? null : kitId,
+      }),
+    ];
+  }
+
+  const aggregated = aggregateKitComponents(await getKitComponents(kitId));
+  if (!aggregated.length) return [];
+
+  const nameMap = await loadProductBriefMap(aggregated.map((c) => c.component_product_id));
+  const lines = [];
+
+  for (const { component_product_id, quantity: perKit } of aggregated) {
+    const lineQty = qty * Math.max(1, parseInt(perKit, 10) || 1);
+    const compPid = Number(component_product_id);
+    if (!Number.isFinite(compPid) || compPid < 1) continue;
+
+    if (await isKitProductId(compPid)) {
+      const subAggregated = aggregateKitComponents(await getKitComponents(compPid));
+      const subWhole =
+        (await canUseWholeKitAssemblyLine(compPid, lineQty, order, opts)) &&
+        !kitBomNeedsMultipleAssemblyScans(subAggregated);
+
+      if (subWhole) {
+        const brief = nameMap.get(compPid) ?? (await loadProductBriefMap([compPid])).get(compPid);
+        lines.push(
+          orderRowToAssemblyItem(order, compPid, brief?.name ?? '—', lineQty, {
+            offerId: brief?.sku ?? null,
+            kitProductId: root,
+            isSubKitWhole: true,
+            subKitProductId: compPid,
+          })
+        );
+      } else {
+        const subLines = await resolveKitAssemblyScanLines(compPid, lineQty, order, opts, root);
+        for (const sl of subLines) {
+          lines.push({
+            ...sl,
+            subKitProductId: sl.subKitProductId ?? compPid,
+          });
+        }
+      }
+    } else {
+      const brief = nameMap.get(compPid);
+      lines.push(
+        orderRowToAssemblyItem(order, compPid, brief?.name ?? '—', lineQty, {
+          offerId: brief?.sku ?? null,
+          kitProductId: root,
+          isKitComponent: true,
+          subKitProductId: null,
+        })
+      );
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * Развернуть заказ на комплект в строки для сканирования (рекурсивно).
+ */
+export async function expandKitOrderToAssemblyItems(order, kitProductId, opts = {}) {
+  const kitId = Number(kitProductId);
+  if (!Number.isFinite(kitId) || kitId < 1) return [];
+  const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
+  return resolveKitAssemblyScanLines(kitId, orderQty, order, opts);
+}
+
+/**
+ * Строки сборки для заказа на комплект: целый SKU или разворот в комплектующие (рекурсивно).
+ */
+async function resolveKitAssemblyItems(order, kitProductId, opts = {}) {
   const kitId = Number(kitProductId);
   if (!Number.isFinite(kitId) || kitId < 1) return [];
 
   const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
-  const physical = await readKitPhysicalOnHandFromDb(kitId, null, {});
-
-  if (physical < orderQty) {
-    const expanded = await expandKitOrderToAssemblyItems(order, kitId);
-    if (expanded.length) return expanded;
-  }
-
-  const oid = Number(order.id ?? order.db_id);
-  const mpLabel = order.orderId ?? order.order_id;
-  let onKit = 0;
-  if (Number.isFinite(oid) && oid > 0) {
-    onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
-  }
+  const lines = await resolveKitAssemblyScanLines(kitId, orderQty, order, opts);
+  if (lines.length) return lines;
 
   const brief = await loadProductBriefMap([kitId]);
   const b = brief.get(kitId);
-  const qty = onKit > 0 ? Math.min(orderQty, onKit) : orderQty;
   return [
-    orderRowToAssemblyItem(order, kitId, b?.name ?? order.productName ?? order.product_name, qty, {
+    orderRowToAssemblyItem(order, kitId, b?.name ?? order.productName ?? order.product_name, orderQty, {
       offerId: b?.sku ?? order.offerId ?? order.offer_id ?? null,
       kitProductId: kitId,
-      isKitWhole: true
-    })
+      isKitWhole: true,
+    }),
   ];
 }
 
@@ -145,22 +221,27 @@ function articleFromOrderOrProduct(order, productBrief) {
 }
 
 /**
- * Состав для колонки «Состав» на сборке: всегда BOM комплекта (артикул × кол-во), не путь резерва.
+ * Состав для колонки «Состав»: листовой BOM (вложенные комплекты разворачиваются).
  */
 export async function buildAssemblyCompositionLinesForOrder(order, ordersService) {
   if (!order) return [];
 
   const kitId = await resolveKitProductIdForOrder(order, ordersService);
   if (kitId != null) {
-    const expanded = await expandKitOrderToAssemblyItems(order, kitId);
-    if (expanded.length) {
-      return expanded.map((item) => ({
-        article: articleFromOrderOrProduct(
-          { offerId: item.offerId },
-          { sku: item.offerId, name: item.productName }
-        ),
-        quantity: Math.max(1, Number(item.quantity) || 1)
-      }));
+    const orderQty = Math.max(1, parseInt(order.quantity, 10) || 1);
+    const leaves = await flattenKitBomToLeaves(kitId, orderQty);
+    if (leaves.length) {
+      const nameMap = await loadProductBriefMap(leaves.map((l) => l.component_product_id));
+      return leaves.map((item) => {
+        const brief = nameMap.get(Number(item.component_product_id));
+        return {
+          article: articleFromOrderOrProduct(
+            { offerId: brief?.sku ?? null },
+            { sku: brief?.sku, name: brief?.name }
+          ),
+          quantity: Math.max(1, Number(item.quantity) || 1),
+        };
+      });
     }
   }
 
@@ -175,8 +256,8 @@ export async function buildAssemblyCompositionLinesForOrder(order, ordersService
   return [
     {
       article: articleFromOrderOrProduct(order, brief),
-      quantity: Math.max(1, parseInt(order.quantity, 10) || 1)
-    }
+      quantity: Math.max(1, parseInt(order.quantity, 10) || 1),
+    },
   ];
 }
 
@@ -189,7 +270,7 @@ export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
   const kitId = await resolveKitProductIdForOrder(order, ordersService, opts);
 
   if (kitId != null) {
-    const kitItems = await resolveKitAssemblyItems(order, kitId);
+    const kitItems = await resolveKitAssemblyItems(order, kitId, opts);
     if (kitItems.length) return kitItems;
   }
 
@@ -205,13 +286,10 @@ export async function buildAssemblyOrderItems(order, ordersService, opts = {}) {
       Number.isNaN(n) ? resolvedPid : n,
       order.productName || order.product_name,
       order.quantity ?? 1
-    )
+    ),
   ];
 }
 
-/**
- * Несколько строк одной группы заказа (WB/Ozon) → плоский список для сборки.
- */
 /**
  * Если все строки группы — один комплект (несколько артикулов WB в одной поставке), развернуть в комплектующие.
  */
@@ -245,7 +323,7 @@ async function tryExpandGroupAsSingleKit(groupOrders, ordersService, opts = {}) 
     const bq = Math.max(1, parseInt(best?.quantity, 10) || 1);
     return q >= bq ? o : best;
   }, rows[0]);
-  const kitItems = await resolveKitAssemblyItems(primary, sharedKitId);
+  const kitItems = await resolveKitAssemblyItems(primary, sharedKitId, opts);
   return kitItems.length ? kitItems : null;
 }
 
