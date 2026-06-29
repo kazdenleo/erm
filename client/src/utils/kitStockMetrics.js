@@ -1,8 +1,7 @@
 /**
  * Комплекты в таблице «Остатки на складе»:
  *
- * - Движения (резерв, отгрузка, поступление) — только по SKU комплекта, как у обычного товара.
- * - Наличие / в пути / поставщики — по карточке комплекта (1 SKU); резерв — на SKU или сумма по комплектующим.
+ * - Наличие / в пути / резерв — только по SKU строки (комплект или комплектующее).
  * - Доступно: слева — целые комплекты к продаже (наличие + в пути − резерв на SKU комплекта);
  *   в скобках — всего к продаже с учётом резерва (целые + собираемость − резерв комплекта).
  *   Пример: 1 (8) — 1 целый; после резерва 3 комплектов из деталей: 1 (5).
@@ -71,6 +70,12 @@ export function isKitStockHistoryMovement(movement, product) {
   const t = movement?.type ?? movement?.movement_type ?? movement?.movementType;
   if (movement?.meta?.kit_component_reserve === true) return true;
   if (movement?.meta?.kit_component_return_to_supplier === true) return true;
+  if (
+    movement?.meta?.kit_component_incoming === true ||
+    movement?.meta?.kit_component_incoming === 'true'
+  ) {
+    return true;
+  }
   return isKitStockHistoryMovementType(t);
 }
 
@@ -219,6 +224,49 @@ export function computeKitIncomingFromLoadedProducts(kitProduct, allProducts) {
   return Number.isFinite(minKits) ? Math.max(0, minKits) : 0;
 }
 
+/** Количество комплектующей на 1 комплект (из состава kit_components). */
+export function kitComponentPerKitQty(kitProduct, componentProductId) {
+  const cid = String(componentProductId ?? '');
+  const comps = kitProduct?.kit_components ?? kitProduct?.kitComponents;
+  if (!Array.isArray(comps)) return 1;
+  const row = comps.find((c) => String(c.productId ?? c.component_product_id) === cid);
+  return Math.max(1, parseInt(row?.quantity, 10) || 1);
+}
+
+/**
+ * Сколько комплектов «в пути» по одной закупке в истории:
+ * целые SKU комплекта + min(⌊qty/perKit⌋) по комплектующим (сумма путей, не min по всем строкам).
+ */
+export function kitIncomingUnitsFromPurchaseMovements(movements, kitProduct) {
+  if (!Array.isArray(movements) || movements.length === 0) return 0;
+  const kitId = kitProduct?.id != null ? String(kitProduct.id) : null;
+  let wholeKits = 0;
+  const compQty = new Map();
+
+  for (const m of movements) {
+    const qtyAdded = Math.max(0, Number(m.quantity_change ?? m.quantityChange) || 0);
+    if (qtyAdded <= 0) continue;
+    const pid = String(m.product_id ?? m.productId ?? '');
+    if (kitId && pid === kitId) {
+      wholeKits += qtyAdded;
+      continue;
+    }
+    if (pid) compQty.set(pid, (compQty.get(pid) || 0) + qtyAdded);
+  }
+
+  let minFromComponents = Infinity;
+  for (const [pid, totalQty] of compQty) {
+    const perKit = kitComponentPerKitQty(kitProduct, pid);
+    minFromComponents = Math.min(minFromComponents, Math.floor(totalQty / perKit));
+  }
+  const fromComponents =
+    Number.isFinite(minFromComponents) && minFromComponents !== Infinity
+      ? Math.max(0, minFromComponents)
+      : 0;
+
+  return wholeKits + fromComponents;
+}
+
 /** Собираемость из комплектующих по строкам того же списка (если с API не пришёл kit_display). */
 export function computeAssemblableFromLoadedProducts(kitProduct, allProducts) {
   const comps = kitProduct?.kit_components;
@@ -314,7 +362,6 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
       const availableTotal = marketplaceAvailable;
       const suppliersDisplay = formatKitSupplierDisplay(product, base.suppliers);
       const incomingFromComponents = kitIncomingFromComponentsAmount(display, product, products);
-      const totalIncoming = kitTotalIncomingForDisplay(display, product, products, base.incoming);
       const kitMetrics = {
         ...display,
         whole_available: wholeAvailable,
@@ -324,7 +371,7 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
       return {
         product,
         onHand: display.whole_on_hand,
-        incoming: totalIncoming,
+        incoming: Math.max(0, Number(base.incoming) || 0),
         incomingFromComponents,
         reserved: base.reserved,
         suppliers: suppliersDisplay ? 0 : base.suppliers,
@@ -341,4 +388,33 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
       availableDisplay: String(base.available ?? 0)
     };
   });
+}
+
+/** Подпись «Доступно» для выбора товара (ручной заказ и т.п.) на выбранном складе. */
+export function manualOrderAvailabilityLabel(product, products = [], { warehouseId = null } = {}) {
+  if (!product?.id || warehouseId == null || String(warehouseId).trim() === '') return null;
+  const list = Array.isArray(products) ? products : [];
+  const catalog = list.some((p) => String(p.id) === String(product.id)) ? list : [...list, product];
+  const rows = buildStockRowsWithKits(catalog, (p) => {
+    const onHand = Number(p.quantity ?? 0) || 0;
+    const incoming = Number(p.incoming_quantity ?? p.incomingQuantity ?? 0) || 0;
+    const reserved = Math.max(
+      0,
+      Number(
+        p.net_reserved_quantity ??
+          p.netReservedQuantity ??
+          p.reserved_quantity ??
+          p.reservedQuantity ??
+          0
+      ) || 0
+    );
+    const available = stockTableAvailable({ onHand, incoming, reserved, suppliers: 0 });
+    return { onHand, incoming, reserved, suppliers: 0, available };
+  });
+  const row = rows.find((r) => String(r.product.id) === String(product.id));
+  if (!row) return '—';
+  if (isKitProduct(product)) {
+    return row.availableDisplay ?? String(Math.max(0, Number(row.available) || 0));
+  }
+  return String(Math.max(0, Number(row.available) || 0));
 }
