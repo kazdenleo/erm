@@ -5,6 +5,10 @@
 
 import { query } from '../config/database.js';
 import { orderReservedQtyCorrelatedSubquerySql } from '../constants/netReservedStockSql.js';
+import {
+  ORDER_PRODUCT_LATERAL_SUBQUERY_SQL,
+  orderLineMatchesCatalogProductIdSql,
+} from '../constants/orderProductMatchSql.js';
 
 const ORDER_RESERVED_QTY_SQL = orderReservedQtyCorrelatedSubquerySql('sm', 'o');
 
@@ -167,17 +171,7 @@ class OrdersRepositoryPG {
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
       LEFT JOIN LATERAL (
-        SELECT p2.name AS matched_product_name, p2.sku AS matched_product_sku, p2.id AS matched_product_id
-        FROM product_skus ps
-        JOIN products p2 ON p2.id = ps.product_id
-        WHERE ps.marketplace = o.marketplace
-          AND ( (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                    AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1'))) )
-        LIMIT 1
+        ${ORDER_PRODUCT_LATERAL_SUBQUERY_SQL}
       ) pm ON true
       ${whereSql} ${limitOffsetSql}
     `;
@@ -350,16 +344,7 @@ class OrdersRepositoryPG {
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
       LEFT JOIN LATERAL (
-        SELECT p2.name AS matched_product_name, p2.sku AS matched_product_sku, p2.id AS matched_product_id
-        FROM product_skus ps JOIN products p2 ON p2.id = ps.product_id
-        WHERE ps.marketplace = o.marketplace
-          AND ( (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                    AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1'))) )
-        LIMIT 1
+        ${ORDER_PRODUCT_LATERAL_SUBQUERY_SQL}
       ) pm ON true
       WHERE o.id = $1
     `, [id]);
@@ -434,16 +419,7 @@ class OrdersRepositoryPG {
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
       LEFT JOIN LATERAL (
-        SELECT p2.name AS matched_product_name, p2.sku AS matched_product_sku, p2.id AS matched_product_id
-        FROM product_skus ps JOIN products p2 ON p2.id = ps.product_id
-        WHERE ps.marketplace = o.marketplace
-          AND ( (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                    AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1'))) )
-        LIMIT 1
+        ${ORDER_PRODUCT_LATERAL_SUBQUERY_SQL}
       ) pm ON true
       WHERE o.marketplace = $1 AND o.order_id = $2${pid ? ' AND o.profile_id = $3' : ''}`;
 
@@ -1119,87 +1095,7 @@ class OrdersRepositoryPG {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return [];
     const lim = Math.min(Math.max(1, parseInt(limit, 10) || 500), 500);
-    const byProductMatch = `
-        (
-          o.product_id = $1
-          OR EXISTS (
-            SELECT 1 FROM product_skus ps
-            WHERE ps.product_id = $1
-              AND ps.marketplace = o.marketplace
-              AND (
-                (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                    AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-              )
-          )
-          OR EXISTS (
-            SELECT 1 FROM products pmain
-            WHERE pmain.id = $1
-              AND (
-                (o.offer_id IS NOT NULL AND TRIM(o.offer_id) = TRIM(COALESCE(pmain.sku, '')))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(CAST(o.marketplace_sku AS TEXT)) = TRIM(COALESCE(pmain.sku, '')))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1 FROM product_skus x
-                    WHERE x.product_id = pmain.id AND x.marketplace = 'ozon'
-                      AND x.marketplace_product_id IS NOT NULL
-                      AND x.marketplace_product_id = o.marketplace_sku::bigint
-                  ))
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL
-                  AND TRIM(COALESCE(pmain.sku, '')) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL
-                  AND TRIM(COALESCE(pmain.sku, '')) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-              )
-          )
-          OR EXISTS (
-            SELECT 1 FROM product_skus psku
-            WHERE psku.product_id = $1
-              AND (
-                (o.offer_id IS NOT NULL AND TRIM(o.offer_id) = TRIM(psku.sku))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(CAST(o.marketplace_sku AS TEXT)) = TRIM(psku.sku))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL
-                  AND psku.marketplace = 'ozon'
-                  AND psku.marketplace_product_id IS NOT NULL
-                  AND psku.marketplace_product_id = o.marketplace_sku::bigint)
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND psku.marketplace = 'wb'
-                  AND TRIM(psku.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND psku.marketplace = 'wb'
-                  AND TRIM(psku.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-              )
-          )
-          OR EXISTS (
-            SELECT 1 FROM kit_components kc
-            WHERE kc.component_product_id = $1
-              AND (
-                (o.product_id IS NOT NULL AND kc.kit_product_id = o.product_id)
-                OR o.product_id = kc.component_product_id
-                OR EXISTS (
-                  SELECT 1 FROM product_skus ps
-                  WHERE ps.product_id = kc.kit_product_id
-                    AND ps.marketplace = o.marketplace
-                    AND (
-                      (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-                      OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-                      OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                          AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-                      OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                      OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-                    )
-                )
-                OR (
-                  o.offer_id IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1 FROM products pk
-                    WHERE pk.id = kc.kit_product_id
-                      AND TRIM(COALESCE(pk.sku, '')) = TRIM(o.offer_id)
-                  )
-                )
-              )
-          )
-        )`;
+    const byProductMatch = orderLineMatchesCatalogProductIdSql();
     const result = await query(
       `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
@@ -1245,99 +1141,10 @@ class OrdersRepositoryPG {
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
       LEFT JOIN LATERAL (
-        SELECT p2.name AS matched_product_name, p2.sku AS matched_product_sku, p2.id AS matched_product_id
-        FROM product_skus ps
-        JOIN products p2 ON p2.id = ps.product_id
-        WHERE ps.marketplace = o.marketplace
-          AND ( (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                    AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1'))) )
-        LIMIT 1
+        ${ORDER_PRODUCT_LATERAL_SUBQUERY_SQL}
       ) pm ON true
       WHERE (o.status = 'in_assembly' OR (o.marketplace = 'wb' AND o.status = 'wb_assembly'))
-        AND (
-          o.product_id = $1
-          OR EXISTS (
-            SELECT 1 FROM product_skus ps
-            WHERE ps.product_id = $1
-              AND ps.marketplace = o.marketplace
-              AND (
-                (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                    AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-              )
-          )
-          OR EXISTS (
-            SELECT 1 FROM products pmain
-            WHERE pmain.id = $1
-              AND (
-                (o.offer_id IS NOT NULL AND TRIM(o.offer_id) = TRIM(COALESCE(pmain.sku, '')))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(CAST(o.marketplace_sku AS TEXT)) = TRIM(COALESCE(pmain.sku, '')))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1 FROM product_skus x
-                    WHERE x.product_id = pmain.id AND x.marketplace = 'ozon'
-                      AND x.marketplace_product_id IS NOT NULL
-                      AND x.marketplace_product_id = o.marketplace_sku::bigint
-                  ))
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL
-                  AND TRIM(COALESCE(pmain.sku, '')) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL
-                  AND TRIM(COALESCE(pmain.sku, '')) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-              )
-          )
-          OR EXISTS (
-            SELECT 1 FROM product_skus psku
-            WHERE psku.product_id = $1
-              AND (
-                (o.offer_id IS NOT NULL AND TRIM(o.offer_id) = TRIM(psku.sku))
-                OR (o.marketplace_sku IS NOT NULL AND TRIM(CAST(o.marketplace_sku AS TEXT)) = TRIM(psku.sku))
-                OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL
-                  AND psku.marketplace = 'ozon'
-                  AND psku.marketplace_product_id IS NOT NULL
-                  AND psku.marketplace_product_id = o.marketplace_sku::bigint)
-                OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND psku.marketplace = 'wb'
-                  AND TRIM(psku.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND psku.marketplace = 'wb'
-                  AND TRIM(psku.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-              )
-          )
-          OR EXISTS (
-            SELECT 1 FROM kit_components kc
-            WHERE kc.component_product_id = $1
-              AND (
-                (o.product_id IS NOT NULL AND kc.kit_product_id = o.product_id)
-                OR o.product_id = kc.component_product_id
-                OR EXISTS (
-                  SELECT 1 FROM product_skus ps
-                  WHERE ps.product_id = kc.kit_product_id
-                    AND ps.marketplace = o.marketplace
-                    AND (
-                      (o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(o.offer_id))
-                      OR (o.marketplace_sku IS NOT NULL AND TRIM(ps.sku) = TRIM(CAST(o.marketplace_sku AS TEXT)))
-                      OR (o.marketplace = 'ozon' AND o.marketplace_sku IS NOT NULL AND ps.marketplace_product_id IS NOT NULL
-                          AND ps.marketplace_product_id = o.marketplace_sku::bigint)
-                      OR (o.marketplace = 'wb' AND o.offer_id IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.offer_id::text, '^.*?([0-9]+)$', '\\1')))
-                      OR (o.marketplace = 'wb' AND o.product_name IS NOT NULL AND TRIM(ps.sku) = TRIM(REGEXP_REPLACE(o.product_name::text, '^.*?([0-9]+)$', '\\1')))
-                    )
-                )
-                OR (
-                  o.offer_id IS NOT NULL
-                  AND EXISTS (
-                    SELECT 1 FROM products pk
-                    WHERE pk.id = kc.kit_product_id
-                      AND TRIM(COALESCE(pk.sku, '')) = TRIM(o.offer_id)
-                  )
-                )
-              )
-          )
-        )
+        AND ${orderLineMatchesCatalogProductIdSql()}
       ORDER BY o.created_at DESC, o.in_process_at DESC
       LIMIT 1
     `;
