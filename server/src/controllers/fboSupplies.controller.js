@@ -124,7 +124,14 @@ class FboSuppliesController {
       if (tid === TENANT_LIST_EMPTY) {
         return res.status(404).json({ ok: false, message: 'Поставка FBO не найдена' });
       }
-      const data = await fboSuppliesService.getById(id, { profileId: tid });
+      const skipReserveEnrichment =
+        req.query.skipReserve === '1' ||
+        req.query.skipReserve === 'true' ||
+        req.query.light === '1';
+      const data = await fboSuppliesService.getById(id, {
+        profileId: tid,
+        skipReserveEnrichment,
+      });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 404) {

@@ -249,7 +249,7 @@ class FboSuppliesPackingService {
               i.product_id, i.sku, i.barcode AS item_barcode, i.quantity AS planned_qty,
               TRIM(COALESCE(
                 i.barcode,
-                (SELECT b.barcode FROM barcodes b WHERE b.product_id = p.id ORDER BY b.id LIMIT 1),
+                fb.barcode,
                 ''
               )) AS product_barcode,
               i.placement_zone AS item_placement_zone, i.ozon_tags AS item_ozon_tags,
@@ -263,6 +263,13 @@ class FboSuppliesPackingService {
        JOIN fbo_supply_cargo_units cu ON cu.id = cc.cargo_unit_id
        JOIN fbo_supply_items i ON i.id = cc.fbo_supply_item_id
        LEFT JOIN products p ON p.id = i.product_id
+       LEFT JOIN LATERAL (
+         SELECT b.barcode
+         FROM barcodes b
+         WHERE b.product_id = p.id
+         ORDER BY b.id
+         LIMIT 1
+       ) fb ON p.id IS NOT NULL
        WHERE cu.fbo_supply_id = $1
        ORDER BY cc.cargo_unit_id, cc.id`,
       [supplyId]

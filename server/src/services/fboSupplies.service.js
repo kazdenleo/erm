@@ -364,7 +364,7 @@ class FboSuppliesService {
     return fboSupplyReserveService.enrichSuppliesListWithReserveTotals(rows, { profileId: pid });
   }
 
-  async getById(id, { profileId } = {}) {
+  async getById(id, { profileId, skipReserveEnrichment = false } = {}) {
     const pid = normalizeProfileId(profileId);
     const r = await query(
       `${SUPPLY_SELECT} WHERE s.id = $1 AND ($2::bigint IS NULL OR s.profile_id = $2)`,
@@ -388,17 +388,20 @@ class FboSuppliesService {
        ORDER BY i.id ASC`,
       [id]
     );
-    supply.items = await fboSupplyReserveService.enrichItemsWithReserved(
-      (itemsR.rows || []).map(mapItemRow),
-      { profileId: pid, reserveEnabled: supply.deductStock === true }
-    );
-    const sync = await syncSupplyStatusForPacking(id);
-    supply.status = sync.status;
-    supply.packingAllMatch = sync.allMatch;
-    supply.hasPackingDiscrepancy = sync.hasItems && !sync.allMatch;
-    supply.packingDiscrepancies = sync.discrepancies;
-    supply.statusRevertedByPacking = sync.reverted;
-    supply.statusPromotedByPacking = sync.promoted === true;
+    const rawItems = (itemsR.rows || []).map(mapItemRow);
+    supply.items =
+      skipReserveEnrichment === true
+        ? rawItems
+        : await fboSupplyReserveService.enrichItemsWithReserved(rawItems, {
+            profileId: pid,
+            reserveEnabled: supply.deductStock === true,
+          });
+    const packingEval = await evaluateSupplyPacking(id);
+    supply.packingAllMatch = packingEval.allMatch;
+    supply.hasPackingDiscrepancy = packingEval.hasItems && !packingEval.allMatch;
+    supply.packingDiscrepancies = packingEval.discrepancies;
+    supply.statusRevertedByPacking = false;
+    supply.statusPromotedByPacking = false;
     return supply;
   }
 

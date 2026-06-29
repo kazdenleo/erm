@@ -165,8 +165,12 @@ export function FboSupplyDetail() {
     setWarehousesError(null);
     setErr(null);
     try {
-      const data = await fboSuppliesApi.getById(id);
+      const [data, packingData] = await Promise.all([
+        fboSuppliesApi.getById(id, { skipReserve: true }),
+        fboSuppliesApi.getPacking(id).catch(() => ({ cargoUnits: [], itemStats: [] })),
+      ]);
       setSupply(data);
+      setPacking(packingData);
       setSelectedItemIds(new Set());
       await loadDeductionWarehouses(data?.organizationId);
     } catch (e) {
@@ -192,8 +196,22 @@ export function FboSupplyDetail() {
   }, [load]);
 
   useEffect(() => {
-    if (supply?.id) loadPacking();
-  }, [supply?.id, loadPacking]);
+    if (!supply?.id) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const full = await fboSuppliesApi.getById(id);
+        if (!cancelled) {
+          setSupply((prev) => (prev?.id === full?.id ? full : prev));
+        }
+      } catch {
+        /* резерв подгрузится при следующем обновлении */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, supply?.id]);
 
   useEffect(() => {
     let cancelled = false;

@@ -16,6 +16,8 @@ import {
   computeKitReservableBreakdown,
   getKitComponents,
   getReservedKitUnitsForFboItem,
+  batchGetReservedKitUnitsForFboItems,
+  batchIsKitProductIds,
   isKitProductId,
   recalculateKitsForComponent,
 } from './kitStock.service.js';
@@ -696,12 +698,20 @@ class FboSupplyReserveService {
       batchGetNetReservedOnWarehouses(uniquePids, allWhIds),
     ]);
 
-    const kitFlags = new Map();
-    await Promise.all(
-      uniquePids.map(async (pid) => {
-        kitFlags.set(pid, await isKitProductId(pid));
-      })
-    );
+    const kitFlags = await batchIsKitProductIds(uniquePids);
+
+    const kitQueueEntries = [];
+    for (const productId of uniquePids) {
+      if (kitFlags.get(productId) !== true) continue;
+      for (const row of queuesByProduct.get(productId) || []) {
+        kitQueueEntries.push({
+          kitProductId: productId,
+          fboSupplyItemId: row.supply_item_id,
+          lineQty: row.quantity,
+        });
+      }
+    }
+    const kitReservedByItem = await batchGetReservedKitUnitsForFboItems(kitQueueEntries);
 
     for (const productId of uniquePids) {
       const queue = queuesByProduct.get(productId) || [];
@@ -730,7 +740,7 @@ class FboSupplyReserveService {
 
         let reservedFromStock = 0;
         if (isKit) {
-          reservedFromStock = await getReservedKitUnitsForFboItem(productId, itemId, qty);
+          reservedFromStock = kitReservedByItem.get(itemId) || 0;
           if (reservedFromStock <= 0 && kitSim) {
             reservedFromStock = simulateKitReserveFromPools(kitSim, qty);
           }
@@ -780,22 +790,40 @@ class FboSupplyReserveService {
     ]);
     const sourceOnHandByProduct = new Map();
     const sourceIncomingByProduct = incomingByProduct;
-    for (const productId of productIds) {
-      if (await isKitProductId(productId)) {
-        const breakdownKit =
-          sourceWarehouseIds.length > 0
-            ? await computeKitReservableBreakdownForWarehouseIds(productId, sourceWarehouseIds)
-            : await computeKitReservableBreakdown(productId, { warehouseId: null });
-        sourceOnHandByProduct.set(productId, Number(breakdownKit.total) || 0);
-        continue;
+    const kitFlags = await batchIsKitProductIds(productIds);
+    await Promise.all(
+      productIds.map(async (productId) => {
+        if (kitFlags.get(productId) === true) {
+          const breakdownKit =
+            sourceWarehouseIds.length > 0
+              ? await computeKitReservableBreakdownForWarehouseIds(productId, sourceWarehouseIds)
+              : await computeKitReservableBreakdown(productId, { warehouseId: null });
+          sourceOnHandByProduct.set(productId, Number(breakdownKit.total) || 0);
+          return;
+        }
+        const byWh = onHandByProductWh.get(productId) || new Map();
+        let total = 0;
+        for (const wid of sourceWarehouseIds) {
+          total += byWh.get(wid) || 0;
+        }
+        sourceOnHandByProduct.set(productId, total);
+      })
+    );
+
+    const kitFallbackEntries = [];
+    for (const it of items) {
+      const pid = Number(it.productId ?? it.product_id);
+      if (!Number.isFinite(pid) || pid <= 0 || !it.id) continue;
+      if (breakdown.has(String(it.id)) || reserveEnabled !== true) continue;
+      if (kitFlags.get(pid) === true) {
+        kitFallbackEntries.push({
+          kitProductId: pid,
+          fboSupplyItemId: it.id,
+          lineQty: it.quantity,
+        });
       }
-      const byWh = onHandByProductWh.get(productId) || new Map();
-      let total = 0;
-      for (const wid of sourceWarehouseIds) {
-        total += byWh.get(wid) || 0;
-      }
-      sourceOnHandByProduct.set(productId, total);
     }
+    const kitFallbackReserved = await batchGetReservedKitUnitsForFboItems(kitFallbackEntries);
 
     const out = [];
     for (const it of items) {
@@ -843,8 +871,8 @@ class FboSupplyReserveService {
         });
         continue;
       }
-      const reservedFromStock = await isKitProductId(pid)
-        ? await getReservedKitUnitsForFboItem(pid, it.id, it.quantity)
+      const reservedFromStock = kitFlags.get(pidNum) === true
+        ? (kitFallbackReserved.get(String(it.id)) ?? 0)
         : await getNetReservedForFboItem(it.id, pid);
       out.push({
         ...it,

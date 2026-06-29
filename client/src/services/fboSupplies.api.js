@@ -105,8 +105,9 @@ export const fboSuppliesApi = {
     return [];
   },
 
-  getById: async (id) => {
-    const response = await api.get(`/fbo-supplies/${id}`);
+  getById: async (id, { skipReserve = false } = {}) => {
+    const params = skipReserve ? { skipReserve: '1' } : undefined;
+    const response = await api.get(`/fbo-supplies/${id}`, { params });
     return response.data?.data ?? response.data;
   },
 
