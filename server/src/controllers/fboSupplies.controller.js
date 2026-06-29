@@ -189,6 +189,32 @@ class FboSuppliesController {
     }
   }
 
+  async exportWbForecastClusterExcel(req, res, next) {
+    try {
+      const rows = req.body?.rows;
+      const clusterName = req.body?.clusterName ?? req.body?.cluster ?? 'cluster';
+      const buffer = await fboSuppliesExportService.buildWbForecastClusterExportBuffer(rows, {
+        clusterName,
+      });
+      const date = new Date().toISOString().slice(0, 10);
+      const safeCluster = String(clusterName)
+        .trim()
+        .replace(/[^\p{L}\p{N}\-_]+/gu, '_')
+        .slice(0, 40) || 'cluster';
+      const filename = `wb_postavka_${safeCluster}_${date}.xlsx`;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      setAttachmentXlsx(res, filename);
+      res.send(buffer);
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
   async list(req, res, next) {
     try {
       const tid = tenantListProfileId(req);

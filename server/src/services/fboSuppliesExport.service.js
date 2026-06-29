@@ -244,6 +244,37 @@ class FboSuppliesExportService {
     const buffer = await wb.xlsx.writeBuffer();
     return Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
   }
+
+  async buildWbForecastClusterExportBuffer(rows, { clusterName } = {}) {
+    const items = (Array.isArray(rows) ? rows : [])
+      .map((row) => ({
+        barcode: String(row?.barcode ?? row?.wbBarcode ?? '').trim(),
+        quantity: Math.max(0, Math.trunc(Number(row?.quantity ?? row?.toSupply) || 0)),
+      }))
+      .filter((row) => row.barcode && row.quantity > 0);
+
+    if (!items.length) {
+      const err = new Error('Нет позиций с баркодом и количеством к поставке');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'ERM';
+    const sheetTitle = String(clusterName || 'К поставке').slice(0, 31) || 'К поставке';
+    const ws = wb.addWorksheet(sheetTitle);
+
+    writeRow(ws, 1, ['Баркод', 'Количество'], { bold: true });
+    items.forEach((row, i) => {
+      writeRow(ws, i + 2, [row.barcode, row.quantity]);
+    });
+
+    ws.getColumn(1).width = 22;
+    ws.getColumn(2).width = 14;
+
+    const buffer = await wb.xlsx.writeBuffer();
+    return Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  }
 }
 
 export default new FboSuppliesExportService();

@@ -52,6 +52,10 @@ router.post(
   '/forecast/wb/sync',
   wrapAsync(fboSuppliesController.syncWbForecast.bind(fboSuppliesController))
 );
+router.post(
+  '/forecast/wb/export/excel',
+  wrapAsync(fboSuppliesController.exportWbForecastClusterExcel.bind(fboSuppliesController))
+);
 
 router.get(
   '/import/template/excel',
