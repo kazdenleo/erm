@@ -20,6 +20,12 @@ import {
   computeProcurementDeficit,
   fulfillmentLineStatusFromQuantities,
 } from '../utils/orderProcurementCoverage.js';
+import {
+  buildOrderSupplierSubmitScope,
+  marketplaceVariantsForLookup,
+  orderIdsForPurchaseLookup,
+  orderMarketplaceToDb,
+} from '../utils/orderPurchaseLookup.js';
 import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { isKitProductId, getKitComponents } from './kitStock.service.js';
 import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
@@ -37,14 +43,6 @@ function normalizeProfileId(v) {
   if (v == null || v === '') return null;
   const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
   return Number.isNaN(n) ? null : n;
-}
-
-function orderMarketplaceToDb(marketplace) {
-  const m = String(marketplace || '').toLowerCase();
-  if (m === 'wildberries' || m === 'wb') return 'wb';
-  if (m === 'yandex' || m === 'ym' || m === 'yandexmarket') return 'ym';
-  if (m === 'manual') return 'manual';
-  return m === 'ozon' ? 'ozon' : 'ozon';
 }
 
 function parseApiConfig(raw) {
@@ -471,38 +469,11 @@ async function upsertFulfillmentLine(
   );
 }
 
-async function orderIdsForPurchaseLookup(profileId, marketplace, orderId) {
-  const rows = await loadOrderRows(profileId, marketplace, orderId);
-  const ids = new Set();
-  const addId = (raw) => {
-    const s = String(raw ?? '').trim();
-    if (!s) return;
-    ids.add(s.toLowerCase());
-  };
-  addId(orderId);
-  for (const row of rows) {
-    addId(row.order_id);
-    const gid = row.order_group_id != null ? String(row.order_group_id).trim() : '';
-    if (gid) {
-      addId(gid);
-      const tilde = gid.indexOf('~');
-      if (tilde > 0) addId(gid.slice(0, tilde));
-    }
-  }
-  return [...ids];
-}
-
 async function findOpenPurchasesForOrder(profileId, marketplace, orderId) {
   const oid = String(orderId ?? '').trim();
   if (!oid) return [];
   const lookupIds = await orderIdsForPurchaseLookup(profileId, marketplace, orderId);
-  const mpVariants = [
-    ...new Set(
-      [marketplace, orderMarketplaceToDb(marketplace), String(marketplace || '').toLowerCase()]
-        .filter(Boolean)
-        .map((m) => String(m).toLowerCase())
-    ),
-  ];
+  const mpVariants = marketplaceVariantsForLookup(marketplace);
   const orderRows = await loadOrderRows(profileId, marketplace, orderId);
   const orderDbIds = orderRows.map((r) => Number(r.id)).filter((id) => id > 0);
 
@@ -574,6 +545,7 @@ async function retrySupplierSubmitForOpenOrderPurchases(profileId, marketplace, 
       purchaseId,
       supplierId,
       profileId: pid,
+      orderScope: await buildOrderSupplierSubmitScope(pid, marketplace, oid),
     }).catch((e) => ({
       submitted: false,
       reason: 'submit_error',
@@ -1718,6 +1690,7 @@ class OrderProcurementPlannerService {
         supplierId,
         profileId: pid,
         force: Boolean(force),
+        orderScope: await buildOrderSupplierSubmitScope(pid, marketplace, oid),
       }).catch((e) => ({
         submitted: false,
         reason: 'submit_error',
@@ -1761,7 +1734,7 @@ class OrderProcurementPlannerService {
         error: 'nothing_submitted',
         message:
           reason ||
-          'Закупка не отправлена: уже была у поставщика или API не настроен',
+          'Заказ не отправлен поставщику: уже был отправлен или API не настроен',
         purchases,
       };
     }
@@ -1769,9 +1742,9 @@ class OrderProcurementPlannerService {
     const ids = purchases.map((p) => p.purchaseId).filter(Boolean);
     let message;
     if (anySubmitted) {
-      message = `Заказ отправлен поставщику (закупка №${ids.join(', №')})`;
+      message = `Заказ ${oid} отправлен поставщику (локальная закупка №${ids.join(', №')})`;
     } else {
-      message = `Закупка уже была отправлена поставщику (№${ids.join(', №')})`;
+      message = `Заказ ${oid} уже был отправлен поставщику (локальная закупка №${ids.join(', №')})`;
     }
     if (autoProcure?.purchases?.length) {
       const createdIds = autoProcure.purchases.map((p) => p.purchaseId).filter(Boolean);

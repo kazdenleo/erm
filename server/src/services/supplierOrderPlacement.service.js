@@ -10,6 +10,10 @@ import {
   resolveSupplierOrderAdapter,
   supportedSupplierOrderApiCodes,
 } from './supplierOrderAdapters/index.js';
+import {
+  markOrderSourceOrdersSubmitted,
+  selectLinesForOrderSupplierSubmit,
+} from '../utils/orderSupplierSubmitScope.js';
 
 function parseApiConfig(raw) {
   if (!raw) return {};
@@ -110,7 +114,7 @@ export function filterPendingSupplierSubmitLines(purchase, lines) {
 
 async function claimPurchaseForSupplierSubmit(
   purchaseId,
-  { force = false, appendOnly = false } = {}
+  { force = false, appendOnly = false, orderScoped = false } = {}
 ) {
   const pid = Number(purchaseId);
   if (!Number.isFinite(pid) || pid < 1) return { claimed: false, reason: 'invalid_args' };
@@ -120,6 +124,9 @@ async function claimPurchaseForSupplierSubmit(
       SUPPLIER_SUBMIT_LOCK_NS,
       pid % 2147483647,
     ]);
+    if (orderScoped) {
+      return { claimed: true, orderScoped: true };
+    }
     const head = await client.query(
       `SELECT supplier_submitted_at, supplier_order_ref
        FROM purchases WHERE id = $1 FOR UPDATE`,
@@ -244,6 +251,7 @@ async function loadPurchaseSubmitContext(purchaseId, supplierId, profileId) {
 
   const items = await query(
     `SELECT pi.id AS purchase_item_id, pi.product_id, pi.expected_quantity, pi.created_at,
+            pi.source_orders,
             p.sku, p.name, b.name AS brand
      FROM purchase_items pi
      INNER JOIN products p ON p.id = pi.product_id
@@ -464,6 +472,7 @@ export async function trySubmitPurchaseToSupplier({
   supplierId,
   profileId,
   force = false,
+  orderScope = null,
 } = {}) {
   const pid = purchaseId != null ? Number(purchaseId) : null;
   const sid = supplierId != null ? Number(supplierId) : null;
@@ -483,42 +492,64 @@ export async function trySubmitPurchaseToSupplier({
     return { submitted: false, reason: 'no_lines', message: 'В закупке нет позиций для отправки' };
   }
 
-  const linesToSubmit = force
-    ? ctx.lines
-    : filterPendingSupplierSubmitLines(ctx.purchase, ctx.lines);
-  if (!linesToSubmit.length) {
-    if (shouldSkipSupplierSubmit(ctx.purchase, { force })) {
-      logger.info('[SupplierOrderPlacement] skip duplicate submit — all lines already sent', {
-        purchaseId: pid,
-        supplierId: sid,
-        submittedAt: ctx.purchase.supplier_submitted_at,
-      });
+  const orderScoped = Boolean(orderScope?.orderId);
+  let linesToSubmit;
+  if (orderScoped) {
+    linesToSubmit = selectLinesForOrderSupplierSubmit(ctx.lines, orderScope, { force });
+    if (!linesToSubmit.length) {
+      const oid = String(orderScope.orderId ?? '').trim();
       return {
         submitted: false,
         skipped: true,
         reason: 'already_submitted',
-        message: `Закупка №${pid} уже отправлена поставщику${
-          ctx.purchase.supplier_order_ref
-            ? ` (№${ctx.purchase.supplier_order_ref})`
-            : ctx.purchase.supplier_submitted_at
-              ? ` (${new Date(ctx.purchase.supplier_submitted_at).toLocaleString('ru-RU')})`
-              : ''
-        }. Новых позиций для отправки нет. Повтор всей закупки — кнопкой «Повторить отправку».`,
+        message: oid
+          ? `Заказ ${oid} уже отправлен поставщику`
+          : 'Заказ уже отправлен поставщику',
         supplierName: ctx.supplier.name,
         supplierCode: ctx.supplier.code,
         purchaseId: pid,
-        supplierSubmittedAt: ctx.purchase.supplier_submitted_at,
-        supplierOrderRef: ctx.purchase.supplier_order_ref,
+        orderScope,
       };
     }
-    return { submitted: false, reason: 'no_lines', message: 'Нет позиций для отправки поставщику' };
+  } else {
+    linesToSubmit = force
+      ? ctx.lines
+      : filterPendingSupplierSubmitLines(ctx.purchase, ctx.lines);
+    if (!linesToSubmit.length) {
+      if (shouldSkipSupplierSubmit(ctx.purchase, { force })) {
+        logger.info('[SupplierOrderPlacement] skip duplicate submit — all lines already sent', {
+          purchaseId: pid,
+          supplierId: sid,
+          submittedAt: ctx.purchase.supplier_submitted_at,
+        });
+        return {
+          submitted: false,
+          skipped: true,
+          reason: 'already_submitted',
+          message: `Закупка №${pid} уже отправлена поставщику${
+            ctx.purchase.supplier_order_ref
+              ? ` (№${ctx.purchase.supplier_order_ref})`
+              : ctx.purchase.supplier_submitted_at
+                ? ` (${new Date(ctx.purchase.supplier_submitted_at).toLocaleString('ru-RU')})`
+                : ''
+          }. Новых позиций для отправки нет. Повтор всей закупки — кнопкой «Повторить отправку».`,
+          supplierName: ctx.supplier.name,
+          supplierCode: ctx.supplier.code,
+          purchaseId: pid,
+          supplierSubmittedAt: ctx.purchase.supplier_submitted_at,
+          supplierOrderRef: ctx.purchase.supplier_order_ref,
+        };
+      }
+      return { submitted: false, reason: 'no_lines', message: 'Нет позиций для отправки поставщику' };
+    }
   }
 
-  const appendOnly = Boolean(ctx.purchase.supplier_submitted_at) && !force;
+  const appendOnly = !orderScoped && Boolean(ctx.purchase.supplier_submitted_at) && !force;
 
   const claim = await claimPurchaseForSupplierSubmit(pid, {
     force: Boolean(force),
     appendOnly,
+    orderScoped,
   });
   if (!claim.claimed) {
     if (claim.reason === 'already_submitted') {
@@ -531,18 +562,21 @@ export async function trySubmitPurchaseToSupplier({
         submitted: false,
         skipped: true,
         reason: 'already_submitted',
-        message: `Закупка №${pid} уже отправлена поставщику${
-          claim.supplierOrderRef ?? ctx.purchase.supplier_order_ref
-            ? ` (№${claim.supplierOrderRef ?? ctx.purchase.supplier_order_ref})`
-            : claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at
-              ? ` (${new Date(claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at).toLocaleString('ru-RU')})`
-              : ''
-        }. Повтор — только кнопкой «Повторить отправку».`,
+        message: orderScoped
+          ? `Заказ ${orderScope.orderId} уже отправлен поставщику`
+          : `Закупка №${pid} уже отправлена поставщику${
+              claim.supplierOrderRef ?? ctx.purchase.supplier_order_ref
+                ? ` (№${claim.supplierOrderRef ?? ctx.purchase.supplier_order_ref})`
+                : claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at
+                  ? ` (${new Date(claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at).toLocaleString('ru-RU')})`
+                  : ''
+            }. Повтор — только кнопкой «Повторить отправку».`,
         supplierName: ctx.supplier.name,
         supplierCode: ctx.supplier.code,
         purchaseId: pid,
         supplierSubmittedAt: claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at,
         supplierOrderRef: claim.supplierOrderRef ?? ctx.purchase.supplier_order_ref,
+        orderScope: orderScoped ? orderScope : undefined,
       };
     }
     return {
@@ -588,10 +622,12 @@ export async function trySubmitPurchaseToSupplier({
     lines: linesToSubmit.length,
     totalLines: ctx.lines.length,
     appendOnly,
+    orderScoped,
+    orderId: orderScope?.orderId ?? null,
     profileId: ctx.purchase.profile_id ?? profileId,
   });
 
-  let claimedWithoutForce = claim.claimed && !claim.force && !claim.appendOnly;
+  let claimedWithoutForce = claim.claimed && !claim.force && !claim.appendOnly && !claim.orderScoped;
   try {
     const result = await adapter({
       purchase: ctx.purchase,
@@ -601,31 +637,42 @@ export async function trySubmitPurchaseToSupplier({
       supplier: ctx.supplier,
     });
     if (shouldMarkPurchaseSupplierSubmitted(result)) {
-      const orderRef =
-        result.supplierOrderId ??
-        result.supplierOrderIds?.[0] ??
-        (Array.isArray(result.supplierOrderIds) && result.supplierOrderIds.length
-          ? result.supplierOrderIds.join(',')
-          : null);
-      await markPurchaseSupplierSubmitted(pid, {
-        supplierOrderRef: orderRef,
-        force: Boolean(force),
-        append: appendOnly,
-      });
+      if (orderScoped) {
+        await markOrderSourceOrdersSubmitted(pid, orderScope, result.lines);
+      } else {
+        const orderRef =
+          result.supplierOrderId ??
+          result.supplierOrderIds?.[0] ??
+          (Array.isArray(result.supplierOrderIds) && result.supplierOrderIds.length
+            ? result.supplierOrderIds.join(',')
+            : null);
+        await markPurchaseSupplierSubmitted(pid, {
+          supplierOrderRef: orderRef,
+          force: Boolean(force),
+          append: appendOnly,
+        });
+      }
       claimedWithoutForce = false;
     } else if (claimedWithoutForce) {
       await releasePurchaseSupplierSubmitClaim(pid);
       claimedWithoutForce = false;
     }
-    const msg =
-      appendOnly && shouldMarkPurchaseSupplierSubmitted(result)
-        ? `Дополнительно отправлено поставщику: ${linesToSubmit.length} поз. (закупка №${pid})`
-        : result?.message;
+    const oid = orderScope?.orderId ? String(orderScope.orderId) : null;
+    let msg = result?.message;
+    if (orderScoped && shouldMarkPurchaseSupplierSubmitted(result)) {
+      msg = oid
+        ? `Заказ ${oid} отправлен поставщику (${linesToSubmit.length} поз.)`
+        : `Отправлено поставщику: ${linesToSubmit.length} поз.`;
+    } else if (appendOnly && shouldMarkPurchaseSupplierSubmitted(result)) {
+      msg = `Дополнительно отправлено поставщику: ${linesToSubmit.length} поз. (закупка №${pid})`;
+    }
     return {
       ...result,
       message: msg,
       submitted: shouldMarkPurchaseSupplierSubmitted(result),
       appendOnly,
+      orderScoped,
+      orderId: oid,
       supplierName: ctx.supplier.name,
       supplierCode: apiCode,
       lineCount: linesToSubmit.length,

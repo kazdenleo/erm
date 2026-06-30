@@ -3643,7 +3643,7 @@ export function Orders() {
                               procurementLoadingKey === row.key ||
                               releaseReserveLoadingKey === row.key
                             }
-                            title="Отправить закупку поставщику (API Moskvorechie / Mikado)"
+                            title="Отправить заказ поставщику (API Moskvorechie / Mikado, только позиции этого заказа)"
                             aria-label="Отправить поставщику"
                           >
                             {supplierSubmitLoadingKey === row.key ? (
