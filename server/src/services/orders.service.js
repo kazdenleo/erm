@@ -2585,6 +2585,59 @@ class OrdersService {
   }
 
   /**
+   * Снять резерв по конкретной строке заказа (orders.id), включая комплектующие.
+   */
+  async releaseReserveForOrderDbId(
+    orderDbId,
+    { reasonSuffix = null, reallocate = true, orderRow = null } = {}
+  ) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { releasedProductLines: 0, affected: [] };
+    }
+    const oid = Number(orderDbId);
+    if (!Number.isFinite(oid) || oid < 1) {
+      return { releasedProductLines: 0, affected: [] };
+    }
+    if (!(await this._hasDbReserveForOrder(oid))) {
+      return { releasedProductLines: 0, affected: [] };
+    }
+
+    const order =
+      orderRow && orderRowDbId(orderRow) === oid
+        ? orderRow
+        : await this.repository.findById(oid);
+    if (!order) return { releasedProductLines: 0, affected: [] };
+
+    const label = String(order.orderId ?? order.order_id ?? oid);
+    const reasonBase = reasonSuffix ? `Снятие резерва: ${reasonSuffix}` : 'Снятие резерва';
+    const affected = await releaseAllReservesForOrder(oid, label, async (pid, net, orderIdLabel, meta) => {
+      await stockMovementsService.applyChange(pid, {
+        delta: net,
+        type: 'unreserve',
+        reason: `${reasonBase} (заказ ${orderIdLabel})`.trim(),
+        meta: { ...meta, terminal_status_cleanup: true }
+      });
+    });
+
+    const productIds = new Set(
+      (affected || []).map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0)
+    );
+    let kitId = order.productId ?? order.product_id;
+    if (!kitId) kitId = await this.resolveProductIdForAssemblyLine(order);
+    if (kitId) productIds.add(Number(kitId));
+
+    if (reallocate && productIds.size > 0) {
+      for (const pid of productIds) {
+        await this.ensureReservesForProductIfSupplyAvailable(pid, {
+          excludeOrderDbIds: [oid]
+        }).catch(() => {});
+      }
+    }
+
+    return { releasedProductLines: affected?.length ?? 0, affected: affected || [] };
+  }
+
+  /**
    * Снять резерв по всем заказам в терминальных статусах (отменён / отгружен / …), где в журнале ещё есть нетто-резерв.
    */
   async releaseReservesForTerminalStatusOrders({ profileId = null } = {}) {
@@ -2592,7 +2645,7 @@ class OrdersService {
     const statuses = [...ORDER_TERMINAL_NO_RESERVE_STATUSES];
     const params = [statuses];
     let sql = `
-      SELECT o.id, o.marketplace, o.order_id
+      SELECT o.id, o.marketplace, o.order_id, o.status
       FROM orders o
       WHERE LOWER(TRIM(COALESCE(o.status, ''))) = ANY($1::text[])`;
     if (profileId != null && profileId !== '') {
@@ -2607,10 +2660,11 @@ class OrdersService {
     for (const row of r.rows || []) {
       const orderDbId = typeof row.id === 'bigint' ? Number(row.id) : Number(row.id);
       if (!Number.isFinite(orderDbId) || orderDbId < 1) continue;
-      if ((await this._getReservedQtyForOrder(orderDbId)) <= 0) continue;
-      const clientMp = marketplaceFromOrdersDb(row.marketplace);
-      await this.releaseReserveIfExistsForOrder(clientMp, row.order_id);
-      released += 1;
+      const { releasedProductLines } = await this.releaseReserveForOrderDbId(orderDbId, {
+        reasonSuffix: 'терминальный статус заказа',
+        orderRow: row
+      });
+      if (releasedProductLines > 0) released += 1;
     }
     return { released };
   }
@@ -2618,56 +2672,18 @@ class OrdersService {
   /**
    * Снять резерв по заказу, если он был оформлен с привязкой meta.order_id (например после «В закупку»).
    */
-  async releaseReserveIfExistsForOrder(marketplace, orderId) {
+  async releaseReserveIfExistsForOrder(marketplace, orderId, profileId = null) {
     if (!marketplace || orderId == null || !repositoryFactory.isUsingPostgreSQL()) return;
-    const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId));
-    if (!order) return;
-    const id = order.id;
-    if (!id || !(await this._hasDbReserveForOrder(id))) return;
-    let productId = order.productId ?? order.product_id;
-    if (!productId) {
-      const mv = await query(
-        `SELECT product_id FROM stock_movements
-         WHERE type = 'reserve' AND quantity_change < 0
-           AND (meta->>'order_id')::bigint = $1::bigint
-         ORDER BY id DESC LIMIT 1`,
-        [id]
-      );
-      productId = mv.rows?.[0]?.product_id;
-    }
-    if (!productId) {
-      productId = await this.resolveProductIdForAssemblyLine(order);
-    }
-    const oid = String(order.orderId ?? order.order_id ?? orderId);
-    const orderRowDbId = typeof id === 'bigint' ? Number(id) : Number(id);
-    const metaOrderId = Number.isFinite(orderRowDbId) ? orderRowDbId : id;
-
-    const affected = await releaseAllReservesForOrder(
-      metaOrderId,
-      oid,
-      async (pid, net, orderIdLabel, meta) => {
-        await stockMovementsService.applyChange(pid, {
-          delta: net,
-          type: 'unreserve',
-          reason: `Снятие резерва: возврат заказа ${orderIdLabel} из закупки`,
-          meta
-        });
-      }
+    const order = await this.repository.findByMarketplaceAndOrderId(
+      marketplace,
+      String(orderId),
+      profileId
     );
-
-    const productIds = new Set(
-      (affected || []).map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0)
-    );
-    let kitId = order.productId ?? order.product_id;
-    if (!kitId) kitId = await this.resolveProductIdForAssemblyLine(order);
-    if (kitId) productIds.add(Number(kitId));
-
-    const excludeIds = metaOrderId != null ? [metaOrderId] : [];
-    for (const pid of productIds) {
-      await this.ensureReservesForProductIfSupplyAvailable(pid, {
-        excludeOrderDbIds: excludeIds
-      }).catch(() => {});
-    }
+    if (!order?.id) return;
+    await this.releaseReserveForOrderDbId(order.id, {
+      reasonSuffix: 'возврат заказа из закупки',
+      orderRow: order
+    });
   }
 
   /**

@@ -2092,21 +2092,17 @@ class StockMovementsService {
     };
   }
 
-  /** Снять резерв по одному заказу (со страницы остатков; без проверки статуса заказа). */
+  /** Снять резерв по одному заказу (устаревший / терминальный статус). */
   async releaseAllStaleReserveForOrder(orderDbId, orderIdLabel, { profileId = null } = {}) {
     const oid = Number(orderDbId);
     if (!Number.isFinite(oid) || oid < 1) return { releasedProductLines: 0 };
 
-    const { releaseAllReservesForOrder } = await import('./kitStock.service.js');
-    const affected = await releaseAllReservesForOrder(oid, orderIdLabel, async (pid, net, label, meta) => {
-      await this.applyChange(pid, {
-        delta: net,
-        type: 'unreserve',
-        reason: `Авто-снятие устаревшего резерва (заказ ${label})`.trim(),
-        meta: { ...meta, stale_reserve_cleanup: true, manual_unreserve: true }
-      });
+    const { default: ordersService } = await import('./orders.service.js');
+    const { releasedProductLines } = await ordersService.releaseReserveForOrderDbId(oid, {
+      reasonSuffix: 'устаревший резерв',
+      reallocate: true
     });
-    return { releasedProductLines: affected?.length ?? 0, orderDbId: oid };
+    return { releasedProductLines, orderDbId: oid };
   }
 
   async releaseOrderReserveForProduct(productId, orderDbId, { profileId = null } = {}) {
