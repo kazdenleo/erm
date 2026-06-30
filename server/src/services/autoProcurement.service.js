@@ -105,9 +105,10 @@ async function loadAutoSuppliers(profileId) {
   return loadActiveSuppliers(profileId, { requireAutoOrdersEnabled: true });
 }
 
-async function pickSupplierForProduct(productId, autoSuppliers) {
+async function pickSupplierForProduct(productId, autoSuppliers, qty = 1) {
   const ids = autoSuppliers.map((s) => s.id);
   if (!ids.length) return null;
+  const need = Math.max(1, Math.floor(Number(qty) || 1));
   const r = await query(
     `SELECT ss.supplier_id, ss.price, ss.stock,
             COALESCE((s.api_config->>'isPriority')::boolean, (s.api_config->>'is_priority')::boolean, false) AS is_priority
@@ -115,13 +116,15 @@ async function pickSupplierForProduct(productId, autoSuppliers) {
      INNER JOIN suppliers s ON s.id = ss.supplier_id
      WHERE ss.product_id = $1
        AND ss.supplier_id = ANY($2::bigint[])
+       AND ss.stock IS NOT NULL
+       AND ss.stock >= $3
      ORDER BY
        CASE WHEN COALESCE((s.api_config->>'isPriority')::boolean, (s.api_config->>'is_priority')::boolean, false)
          THEN 0 ELSE 1 END,
        ss.price ASC NULLS LAST,
        ss.stock DESC NULLS LAST
      LIMIT 1`,
-    [productId, ids]
+    [productId, ids, need]
   );
   const row = r.rows?.[0];
   if (!row) return null;
@@ -316,7 +319,7 @@ class AutoProcurementService {
           continue;
         }
 
-        const supplier = await pickSupplierForProduct(productId, autoSuppliers);
+        const supplier = await pickSupplierForProduct(productId, autoSuppliers, qty);
         if (!supplier) {
           skipped += 1;
           continue;
@@ -535,7 +538,9 @@ class AutoProcurementService {
           continue;
         }
 
-        const picked = await pickSupplierForProduct(productId, suppliers);
+        const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
+
+        const picked = await pickSupplierForProduct(productId, suppliers, qty);
         if (!picked) {
           skippedNoSupplierStock += 1;
           continue;
@@ -548,7 +553,6 @@ class AutoProcurementService {
           continue;
         }
 
-        const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
         const procKey = `${mp}|${oid}`;
         if (!seenProc.has(procKey)) {
           seenProc.add(procKey);

@@ -10,6 +10,8 @@ export default {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   testMatch: ['**/tests/**/*.test.js', '**/__tests__/**/*.js'],
+  // node:test + импорт из client/src (ESM вне server)
+  testPathIgnorePatterns: ['/node_modules/', 'kitIncomingPurchase\\.test\\.js'],
   collectCoverageFrom: [
     'src/**/*.js',
     '!src/**/*.test.js',

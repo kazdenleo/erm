@@ -288,7 +288,7 @@ async function rankSupplierCandidates(
   productId,
   suppliers,
   qty,
-  { profileRow, allowZeroStockForApiSuppliers = false } = {}
+  { profileRow } = {}
 ) {
   const scoped = await suppliersForProductBinding(productId, suppliers, profileRow);
   const ids = scoped.map((s) => s.id);
@@ -319,8 +319,8 @@ async function rankSupplierCandidates(
     const stock = row.stock != null ? Number(row.stock) : null;
     const base = supplierById.get(sid);
     if (!base) continue;
-    if (stock != null && Number.isFinite(stock) && stock < need) {
-      if (!(allowZeroStockForApiSuppliers && supplierSupportsApiOrder(base))) continue;
+    if (stock == null || !Number.isFinite(stock) || stock < need) {
+      continue;
     }
     out.push({
       ...base,
@@ -331,22 +331,14 @@ async function rankSupplierCandidates(
     });
   }
   out.sort((a, b) => {
-    if (allowZeroStockForApiSuppliers) {
-      const pref = (s) => {
-        const code = canonicalSupplierApiCode(s.code);
-        if (code === 'moskvorechie') return 0;
-        if (code === 'mikado') return 1;
-        return 2;
-      };
-      const pa = pref(a);
-      const pb = pref(b);
-      if (pa !== pb) return pa - pb;
-    }
+    if (a.isPriority !== b.isPriority) return a.isPriority ? -1 : 1;
     const pa = a.price != null ? a.price : Infinity;
     const pb = b.price != null ? b.price : Infinity;
     if (pa !== pb) return pa - pb;
     if (a.deliveryDays !== b.deliveryDays) return a.deliveryDays - b.deliveryDays;
-    if (a.isPriority !== b.isPriority) return a.isPriority ? -1 : 1;
+    const sa = a.stock ?? 0;
+    const sb = b.stock ?? 0;
+    if (sa !== sb) return sb - sa;
     return (a.warehousePriority || 999) - (b.warehousePriority || 999);
   });
   return out;
@@ -682,14 +674,12 @@ async function pickSupplierForDeficit(
     profileId,
     profileRow,
     warehouseWeekendDays = null,
-    allowZeroStockForApiSuppliers = false,
     ignoreMinOrderForApiSuppliers = false,
     now = new Date(),
   } = {}
 ) {
   const candidates = await rankSupplierCandidates(productId, suppliers, qty, {
     profileRow,
-    allowZeroStockForApiSuppliers,
   });
   for (const cand of candidates) {
     const price = cand.price != null && cand.price > 0 ? cand.price : 0;
@@ -725,10 +715,6 @@ async function pickSupplierForDeficit(
       if (projected < minOrder && openPurchaseId) {
         // Накопление в открытой закупке — допустимо
       }
-    }
-
-    if (cand.stock != null && cand.stock < qty) {
-      if (!(allowZeroStockForApiSuppliers && supplierSupportsApiOrder(cand))) continue;
     }
 
     return { supplier: cand, openPurchaseId, lineTotal, price };
@@ -921,7 +907,6 @@ class OrderProcurementPlannerService {
             profileId: pid,
             profileRow,
             warehouseWeekendDays,
-            allowZeroStockForApiSuppliers: true,
             ignoreMinOrderForApiSuppliers: true,
             now,
           });

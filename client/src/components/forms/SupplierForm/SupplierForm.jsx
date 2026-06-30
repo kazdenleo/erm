@@ -239,9 +239,29 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
       </div>
 
       <div className="col-12">
+        <h6 className="mb-2 mt-1">Закупка</h6>
+        <div className="form-check mb-3">
+          <input
+            type="checkbox"
+            id="supplierPriority"
+            checked={formData.isPriority}
+            onChange={(e) => handleChange('isPriority', e.target.checked)}
+            className="form-check-input"
+          />
+          <label className="form-check-label" htmlFor="supplierPriority">
+            Приоритетный поставщик
+          </label>
+        </div>
+        <p className="text-muted small mb-0">
+          При выборе поставщика для заказа и автозакупки приоритетный идёт раньше остальных (при прочих равных — по цене и остатку).
+          Не зависит от автоматической отправки заказов в API.
+        </p>
+      </div>
+
+      <div className="col-12">
         <h6 className="mb-2 mt-1">Автоматические заказы</h6>
         <p className="text-muted small mb-2">
-          Параметры для будущей автоматической отправки заказов поставщику (по расписанию или при накоплении позиций).
+          Параметры для автоматической отправки заказов поставщику (по расписанию или при накоплении позиций).
         </p>
         <div className="form-check mb-3">
           <input
@@ -273,21 +293,6 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
             />
             {errors.minOrderAmount && <div className="error">{errors.minOrderAmount}</div>}
             <div className="form-text">Заказ уйдёт поставщику, когда сумма позиций достигнет этого порога.</div>
-          </div>
-          <div className="col-md-6 d-flex align-items-end pb-1">
-            <div className="form-check">
-              <input
-                type="checkbox"
-                id="supplierPriority"
-                checked={formData.isPriority}
-                onChange={(e) => handleChange('isPriority', e.target.checked)}
-                className="form-check-input"
-                disabled={!formData.autoOrdersEnabled}
-              />
-              <label className="form-check-label" htmlFor="supplierPriority">
-                Приоритетный поставщик
-              </label>
-            </div>
           </div>
         </div>
       </div>

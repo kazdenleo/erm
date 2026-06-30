@@ -103,8 +103,8 @@ export function Suppliers() {
                   <td>{s.id}</td>
                   <td>
                     {s.name}
-                    {auto.isPriority && auto.autoOrdersEnabled ? (
-                      <span className="badge bg-primary ms-1" title="Приоритетный">★</span>
+                    {auto.isPriority ? (
+                      <span className="badge bg-primary ms-1" title="Приоритетный поставщик">★</span>
                     ) : null}
                   </td>
                   <td>
