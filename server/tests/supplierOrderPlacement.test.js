@@ -6,6 +6,7 @@ import {
   mergeProcurementItemsByProductId,
   shouldSkipSupplierSubmit,
   shouldMarkPurchaseSupplierSubmitted,
+  filterPendingSupplierSubmitLines,
 } from '../src/services/supplierOrderPlacement.service.js';
 
 describe('shouldSkipSupplierSubmit', () => {
@@ -34,6 +35,24 @@ describe('shouldMarkPurchaseSupplierSubmitted', () => {
     ).toBe(true);
     expect(shouldMarkPurchaseSupplierSubmitted({ submitted: false })).toBe(false);
     expect(shouldMarkPurchaseSupplierSubmitted(null)).toBe(false);
+  });
+});
+
+describe('filterPendingSupplierSubmitLines', () => {
+  test('без отправки — все строки', () => {
+    const lines = [{ product_id: 1, created_at: '2026-06-30T10:00:00Z' }];
+    expect(filterPendingSupplierSubmitLines({}, lines)).toHaveLength(1);
+  });
+
+  test('после отправки — только строки, добавленные позже', () => {
+    const purchase = { supplier_submitted_at: '2026-06-30T15:25:44.789Z' };
+    const lines = [
+      { product_id: 1, created_at: '2026-06-30T15:25:43.643Z' },
+      { product_id: 2, created_at: '2026-06-30T15:57:54.100Z' },
+    ];
+    const pending = filterPendingSupplierSubmitLines(purchase, lines);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].product_id).toBe(2);
   });
 });
 

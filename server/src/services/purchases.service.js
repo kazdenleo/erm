@@ -1961,6 +1961,36 @@ class PurchasesService {
             supplierSubmit = cachedPostSubmit;
           }
         }
+      } else if (
+        purchaseId &&
+        existingPurchaseId != null &&
+        String(existingPurchaseId).trim() !== '' &&
+        !supplierSubmit
+      ) {
+        const head = await query(
+          `SELECT supplier_id, supplier_submitted_at FROM purchases WHERE id = $1 LIMIT 1`,
+          [purchaseId]
+        );
+        const headRow = head.rows?.[0];
+        if (headRow?.supplier_submitted_at) {
+          const sid =
+            Number.isFinite(resolvedSupplierId) && resolvedSupplierId > 0
+              ? resolvedSupplierId
+              : headRow.supplier_id != null
+                ? Number(headRow.supplier_id)
+                : null;
+          if (Number.isFinite(sid) && sid > 0) {
+            supplierSubmit = await trySubmitPurchaseToSupplier({
+              purchaseId,
+              supplierId: sid,
+              profileId,
+            }).catch((e) => ({
+              submitted: false,
+              reason: 'submit_error',
+              message: e?.message || String(e),
+            }));
+          }
+        }
       }
 
       return { purchaseId, procurement, supplierSubmit };
