@@ -1578,7 +1578,19 @@ async function fetchOzonOrdersViaImportList(ozonApiOpts, { daysBack = 90 } = {})
   return { orders, warehousesById };
 }
 
-async function resolveOzonOrderSupplyForErmSupply(ermSupply, ozonApiOpts) {
+function ozonImportOrdersCacheKey(ozonApiOpts) {
+  return `${ozonApiOpts?.profileId ?? 'null'}:${ozonApiOpts?.organizationId ?? 'null'}`;
+}
+
+async function getOzonImportOrdersCached(ozonApiOpts, cache, { daysBack = 90 } = {}) {
+  const key = ozonImportOrdersCacheKey(ozonApiOpts);
+  if (!cache.has(key)) {
+    cache.set(key, await fetchOzonOrdersViaImportList(ozonApiOpts, { daysBack }));
+  }
+  return cache.get(key);
+}
+
+async function resolveOzonOrderSupplyForErmSupply(ermSupply, ozonApiOpts, { ozonOrdersCache = null } = {}) {
   const apiOrderIds = buildOzonApiOrderIds(ermSupply);
   if (apiOrderIds.length) {
     try {
@@ -1590,7 +1602,10 @@ async function resolveOzonOrderSupplyForErmSupply(ermSupply, ozonApiOpts) {
     }
   }
 
-  const { orders } = await fetchOzonOrdersViaImportList(ozonApiOpts, { daysBack: 180 });
+  const { orders } =
+    ozonOrdersCache != null
+      ? await getOzonImportOrdersCached(ozonApiOpts, ozonOrdersCache, { daysBack: 90 })
+      : await fetchOzonOrdersViaImportList(ozonApiOpts, { daysBack: 90 });
   const match = findOzonOrderSupplyMatch(orders, ermSupply);
   if (match) return match;
 
@@ -2065,7 +2080,7 @@ async function resolveYmSupplyRequestForErmSupply(supply, { profileId } = {}) {
   return null;
 }
 
-async function fetchMarketplaceStatusForSupply(supply, { profileId } = {}) {
+async function fetchMarketplaceStatusForSupply(supply, { profileId, ozonOrdersCache = null } = {}) {
   const mp = String(supply.marketplace || 'ozon').trim().toLowerCase();
   const organizationId = supply.organizationId ?? null;
 
@@ -2079,7 +2094,9 @@ async function fetchMarketplaceStatusForSupply(supply, { profileId } = {}) {
       throw err;
     }
     const ozonApiOpts = { profileId, organizationId, ozonOverride: ozonCfg };
-    const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts);
+    const { order, supply: ozonSupply } = await resolveOzonOrderSupplyForErmSupply(supply, ozonApiOpts, {
+      ozonOrdersCache,
+    });
     const rawState = ozonSupply?.state ?? order?.state ?? order?.status ?? null;
     return { status: mapOzonStateToStatus(rawState), rawState: rawState != null ? String(rawState) : null };
   }
@@ -3366,12 +3383,12 @@ class FboSuppliesImportService {
    * Фоновый прогон: все поставки не в финальном статусе — подтянуть статус с МП.
    * «Закрыт» и «Возврат» пропускаются.
    */
-  async syncAllActiveStatusesFromMarketplace({ limit = 200 } = {}) {
-    const lim = Math.min(500, Math.max(1, parseInt(limit, 10) || 200));
+  async syncAllActiveStatusesFromMarketplace({ limit = 50 } = {}) {
+    const lim = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
     const r = await query(
       `SELECT id, profile_id
        FROM fbo_supplies
-       WHERE status NOT IN ('closed', 'return')
+       WHERE status IN ('ready_for_supply', 'shipped')
          AND (
            NULLIF(TRIM(COALESCE(external_shipment_number, '')), '') IS NOT NULL
            OR NULLIF(TRIM(COALESCE(external_supply_id::text, '')), '') IS NOT NULL
@@ -3384,12 +3401,16 @@ class FboSuppliesImportService {
     let updated = 0;
     let errors = 0;
     let skippedTerminal = 0;
+    const ozonOrdersCache = new Map();
     for (const row of rows) {
       const supplyId = Number(row.id);
       const profileId = row.profile_id != null ? Number(row.profile_id) : null;
       if (!Number.isFinite(supplyId) || supplyId < 1) continue;
       try {
-        const result = await this.syncSupplyStatusFromMarketplace(supplyId, { profileId });
+        const result = await this.syncSupplyStatusFromMarketplace(supplyId, {
+          profileId,
+          ozonOrdersCache,
+        });
         if (result?.skippedTerminal) skippedTerminal += 1;
         else if (result?.updated) updated += 1;
       } catch (e) {
@@ -3412,8 +3433,12 @@ class FboSuppliesImportService {
   /**
    * Синхронизировать статус поставки с маркетплейсом (только продвижение вперёд или «Возврат»).
    */
-  async syncSupplyStatusFromMarketplace(supplyId, { profileId } = {}) {
-    const supply = await fboSuppliesService.getById(supplyId, { profileId });
+  async syncSupplyStatusFromMarketplace(supplyId, { profileId, ozonOrdersCache = null } = {}) {
+    const supply = await fboSuppliesService.getById(supplyId, {
+      profileId,
+      skipReserveEnrichment: true,
+      skipPackingEval: true,
+    });
     if (isFboSupplyTerminalStatus(supply.status)) {
       return {
         updated: false,
@@ -3425,7 +3450,7 @@ class FboSuppliesImportService {
         message: 'Поставка в финальном статусе — синхронизация не требуется',
       };
     }
-    const mpInfo = await fetchMarketplaceStatusForSupply(supply, { profileId });
+    const mpInfo = await fetchMarketplaceStatusForSupply(supply, { profileId, ozonOrdersCache });
     const previousStatus = supply.status;
     const targetStatus = pickStatusAfterMarketplaceSync(previousStatus, mpInfo?.status);
 

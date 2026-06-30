@@ -92,7 +92,9 @@ export const fboSuppliesApi = {
   },
 
   list: async (params = {}) => {
-    const response = await api.get('/fbo-supplies', { params });
+    const response = await api.get('/fbo-supplies', {
+      params: { ...params, skipReserve: '1' },
+    });
     return response.data?.data ?? response.data;
   },
 

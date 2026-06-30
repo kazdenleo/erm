@@ -346,7 +346,7 @@ class FboSuppliesService {
     return set;
   }
 
-  async list({ profileId, limit = 200, status = null, statuses = null, marketplace = null } = {}) {
+  async list({ profileId, limit = 200, status = null, statuses = null, marketplace = null, skipReserveTotals = false } = {}) {
     const pid = normalizeProfileId(profileId);
     const params = [pid];
     let sql = `${SUPPLY_SELECT} WHERE ($1::bigint IS NULL OR s.profile_id = $1)`;
@@ -367,6 +367,13 @@ class FboSuppliesService {
     sql += ` ORDER BY s.created_at DESC LIMIT $${params.length}`;
     const r = await query(sql, params);
     const rows = (r.rows || []).map(mapSupplyRow);
+    if (skipReserveTotals) {
+      return rows.map((s) => ({
+        ...s,
+        reservedFromStockTotal: 0,
+        reservedFromIncomingTotal: 0,
+      }));
+    }
     return fboSupplyReserveService.enrichSuppliesListWithReserveTotals(rows, { profileId: pid });
   }
 

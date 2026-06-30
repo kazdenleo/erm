@@ -230,11 +230,16 @@ class FboSuppliesController {
       const limit = req.query.limit ? parseInt(req.query.limit, 10) : 200;
       const statuses = parseFboListStatuses(req.query);
       const marketplace = req.query.marketplace?.trim() || null;
+      const skipReserveTotals =
+        req.query.skipReserve === '1' ||
+        req.query.skipReserve === 'true' ||
+        req.query.light === '1';
       const data = await fboSuppliesService.list({
         profileId: tid,
         limit,
         statuses,
         marketplace,
+        skipReserveTotals,
       });
       return res.status(200).json({ ok: true, data });
     } catch (e) {

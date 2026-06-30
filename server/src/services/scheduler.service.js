@@ -76,7 +76,7 @@ function isFboSupplyStatusSyncEnabled() {
 /** Cron (Europe/Moscow). По умолчанию каждые 10 мин; переопределение: FBO_SUPPLY_STATUS_SYNC_CRON */
 function getFboSupplyStatusSyncCronExpression() {
   const c = process.env.FBO_SUPPLY_STATUS_SYNC_CRON;
-  return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
+  return c && String(c).trim() ? String(c).trim() : '*/30 * * * *';
 }
 
 async function runFboSupplyStatusSync() {
@@ -913,7 +913,7 @@ class SchedulerService {
     }
 
     if (isFboSupplyStatusSyncEnabled()) {
-      const ivMin = Math.max(10, Number(process.env.FBO_SUPPLY_STATUS_SYNC_INTERVAL_MINUTES || 10));
+      const ivMin = Math.max(30, Number(process.env.FBO_SUPPLY_STATUS_SYNC_INTERVAL_MINUTES || 30));
       const runFboStatus = async () => {
         logger.info('[Scheduler] FBO supply status sync (fallback interval)...');
         await runFboSupplyStatusSync();
