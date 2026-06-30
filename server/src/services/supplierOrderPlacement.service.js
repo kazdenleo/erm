@@ -116,9 +116,9 @@ async function claimPurchaseForSupplierSubmit(
   if (!Number.isFinite(pid) || pid < 1) return { claimed: false, reason: 'invalid_args' };
 
   return transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock($1::bigint, $2::bigint)', [
+    await client.query('SELECT pg_advisory_xact_lock($1::integer, $2::integer)', [
       SUPPLIER_SUBMIT_LOCK_NS,
-      pid,
+      pid % 2147483647,
     ]);
     const head = await client.query(
       `SELECT supplier_submitted_at, supplier_order_ref
