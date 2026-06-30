@@ -11,7 +11,6 @@ import {
   getReservedKitUnitsFromComponentsForOrder,
   readKitPhysicalOnHandFromDb,
   aggregateKitComponents,
-  kitBomNeedsMultipleAssemblyScans,
   flattenKitBomToLeaves,
 } from './kitStock.service.js';
 
@@ -44,7 +43,6 @@ function orderRowToAssemblyItem(order, productId, productName, quantity, extra =
 /** Можно ли собрать этот уровень комплекта одним сканом SKU (целый комплект на полке). */
 async function canUseWholeKitAssemblyLine(kitId, kitsNeeded, order, opts = {}) {
   const aggregated = aggregateKitComponents(await getKitComponents(kitId));
-  if (kitBomNeedsMultipleAssemblyScans(aggregated)) return false;
 
   const scannedId = opts.scannedProductId != null ? Number(opts.scannedProductId) : NaN;
   if (Number.isFinite(scannedId) && scannedId > 0) {
@@ -59,11 +57,16 @@ async function canUseWholeKitAssemblyLine(kitId, kitsNeeded, order, opts = {}) {
     onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel);
     fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid);
   }
+  // Резерв на комплектующих — собираем по составу, не целым SKU.
   if (fromComp > 0) return false;
 
   const physical = await readKitPhysicalOnHandFromDb(kitId, null, {});
   const need = Math.max(1, parseInt(kitsNeeded, 10) || 1);
-  return onKit >= need && physical >= need;
+  if (physical < need) return false;
+
+  // Целые комплекты на полке: один скан SKU комплекта (в т.ч. «x2» с qty>1 в BOM).
+  if (onKit >= need) return true;
+  return fromComp <= 0;
 }
 
 /**
@@ -101,10 +104,7 @@ async function resolveKitAssemblyScanLines(kitId, kitsNeeded, order, opts = {}, 
     if (!Number.isFinite(compPid) || compPid < 1) continue;
 
     if (await isKitProductId(compPid)) {
-      const subAggregated = aggregateKitComponents(await getKitComponents(compPid));
-      const subWhole =
-        (await canUseWholeKitAssemblyLine(compPid, lineQty, order, opts)) &&
-        !kitBomNeedsMultipleAssemblyScans(subAggregated);
+      const subWhole = await canUseWholeKitAssemblyLine(compPid, lineQty, order, opts);
 
       if (subWhole) {
         const brief = nameMap.get(compPid) ?? (await loadProductBriefMap([compPid])).get(compPid);

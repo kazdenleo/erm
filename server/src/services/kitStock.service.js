@@ -10,6 +10,7 @@ import {
   NET_RESERVED_SUM_EXPR_SQL,
   allocateWarehouseScopedIncoming,
   orderReserveMovementMatchSql,
+  orderReserveMovementMatchOrderRowSql,
   parseStockMovementWarehouseId,
   warehouseScopedOnHandForAllocation
 } from '../constants/netReservedStockSql.js';
@@ -1908,6 +1909,98 @@ export async function getReservedKitUnitsFromComponentsForFboItem(kitProductId, 
   return minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0);
 }
 
+/**
+ * Нетто-резерв по (orders.id, product_id) для пакета заказов.
+ * @returns {Promise<Map<string, number>>} ключ `${orderDbId}:${productId}`
+ */
+export async function batchOrderNetReservedByProductMap(orderDbIds) {
+  const ids = [...new Set((orderDbIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const map = new Map();
+  if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
+
+  const r = await query(
+    `SELECT o.id AS order_db_id,
+            sm.product_id,
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS reserved_qty
+     FROM orders o
+     JOIN stock_movements sm ON sm.type IN ('reserve', 'unreserve')
+       AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+       AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+     WHERE o.id = ANY($1::bigint[])
+     GROUP BY o.id, sm.product_id
+     HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
+    [ids]
+  );
+  for (const row of r.rows || []) {
+    const oid = Number(row.order_db_id);
+    const pid = Number(row.product_id);
+    if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) continue;
+    map.set(`${oid}:${pid}`, Number(row.reserved_qty) || 0);
+  }
+  return map;
+}
+
+/**
+ * Пакетный расчёт зарезервированных комплектов под заказы (список заказов, без N+1).
+ * @param {Array<{ orderDbId: number, kitProductId: number, orderQty?: number|null }>} entries
+ * @returns {Promise<Map<number, number>>} orderDbId → зарезервировано комплектов
+ */
+export async function batchGetReservedKitUnitsForOrders(entries) {
+  const result = new Map();
+  const normalized = (entries || [])
+    .map((e) => ({
+      orderDbId: Number(e.orderDbId),
+      kitProductId: Number(e.kitProductId),
+      orderQty:
+        e.orderQty != null && !Number.isNaN(Number(e.orderQty))
+          ? Math.max(1, parseInt(e.orderQty, 10) || 1)
+          : null,
+    }))
+    .filter(
+      (e) =>
+        Number.isFinite(e.orderDbId) &&
+        e.orderDbId > 0 &&
+        Number.isFinite(e.kitProductId) &&
+        e.kitProductId > 0
+    );
+  if (!normalized.length) return result;
+
+  const orderDbIds = [...new Set(normalized.map((e) => e.orderDbId))];
+  const netByOrderProduct = await batchOrderNetReservedByProductMap(orderDbIds);
+
+  const kitIds = [...new Set(normalized.map((e) => e.kitProductId))];
+  const compR = await query(
+    `SELECT kit_product_id, component_product_id, quantity
+     FROM kit_components
+     WHERE kit_product_id = ANY($1::int[])
+     ORDER BY id`,
+    [kitIds]
+  );
+  const componentsByKit = new Map();
+  for (const row of compR.rows || []) {
+    const kid = Number(row.kit_product_id);
+    if (!componentsByKit.has(kid)) componentsByKit.set(kid, []);
+    componentsByKit.get(kid).push({
+      component_product_id: Number(row.component_product_id),
+      quantity: Math.max(1, parseInt(row.quantity, 10) || 1),
+    });
+  }
+
+  for (const e of normalized) {
+    const onKit = netByOrderProduct.get(`${e.orderDbId}:${e.kitProductId}`) || 0;
+    const components = componentsByKit.get(e.kitProductId) || [];
+    const fromComp =
+      components.length > 0
+        ? minKitUnitsFromComponentReserves(
+            components,
+            (pid) => netByOrderProduct.get(`${e.orderDbId}:${pid}`) ?? 0
+          )
+        : 0;
+    result.set(e.orderDbId, resolveComplementaryKitReserveUnits(onKit, fromComp, e.orderQty));
+  }
+  return result;
+}
+
 /** Сколько комплектов зарезервировано под строку FBO (целые SKU + из комплектующих). */
 export async function getReservedKitUnitsForFboItem(kitProductId, fboSupplyItemId, lineQty = null) {
   const kitId = Number(kitProductId);
@@ -3223,6 +3316,8 @@ export default {
   getReservedKitUnitsFromComponentsForFboItem,
   getReservedKitUnitsForFboItem,
   batchGetReservedKitUnitsForFboItems,
+  batchOrderNetReservedByProductMap,
+  batchGetReservedKitUnitsForOrders,
   computeAssemblableFromComponentPoolMap,
   computeKitMarketplaceStock,
   readKitStockFromDb,

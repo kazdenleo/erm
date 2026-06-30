@@ -470,6 +470,7 @@ export function Orders() {
   const [releaseReserveLoadingKey, setReleaseReserveLoadingKey] = useState(null);
   const [procurementLoadingKey, setProcurementLoadingKey] = useState(null);
   const [supplierOrderLoadingKey, setSupplierOrderLoadingKey] = useState(null);
+  const [supplierSubmitLoadingKey, setSupplierSubmitLoadingKey] = useState(null);
   const [supplierOrderMessage, setSupplierOrderMessage] = useState(null);
   const supplierOrderMessageRef = useRef(null);
   const [manualProcurementTarget, setManualProcurementTarget] = useState(null);
@@ -1401,25 +1402,13 @@ export function Orders() {
       let msg = result?.message || 'Заказ отправлен в закупку';
       if (result?.purchases?.length) {
         const ids = result.purchases.map((p) => p.purchaseId).filter(Boolean);
-        const sent = result.purchases.some((p) => p.supplierSubmit?.submitted);
         if (ids.length) msg += `. Закупки: №${ids.join(', №')}`;
-        if (sent) msg += '. Заказ отправлен поставщику Moskvorechie';
-        else if (result.purchases.some((p) => p.supplierSubmit?.message)) {
-          msg += `. ${result.purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message}`;
-        } else if (!sent && !msg.includes('не отправлен')) {
-          msg += '. Заказ создан в ERM, но не отправлен поставщику — проверьте API Key Moskvorechie';
-        }
       } else if (result?.reserveOnly) {
         msg =
           result.message ||
           (result.totalPurchased > 0
-            ? 'Позиция уже отмечена как закупленная — новая отправка в Moskvorechie не выполнена'
-            : 'Товар уже на складе — закупка и отправка в Moskvorechie не требуются');
-      }
-      if (result?.purchases?.some((p) => p.supplierSubmit?.submitted)) {
-        const submitMsg = result.purchases.find((p) => p.supplierSubmit?.submitted)?.supplierSubmit
-          ?.message;
-        if (submitMsg && !msg.includes(submitMsg)) msg = `${msg}. ${submitMsg}`;
+            ? 'Позиция уже отмечена как закупленная'
+            : 'Товар уже на складе — закупка не требуется');
       }
       if (result?.manualLines?.length) {
         const reason = result.manualLines.find((l) => l.manualReason)?.manualReason;
@@ -1443,6 +1432,33 @@ export function Orders() {
       }
     } finally {
       setSupplierOrderLoadingKey(null);
+    }
+  };
+
+  const handleSubmitToSupplier = async (row) => {
+    const toSend = row.orders || [row.first];
+    const first = toSend[0];
+    const marketplace = first?.marketplace;
+    const orderId = marketplaceOrderIdForApi(toSend, marketplace);
+    if (!marketplace || !orderId) {
+      const msg = 'Не удалось определить маркетплейс или номер заказа';
+      showSupplierOrderMessage(msg);
+      setRefreshError(msg);
+      return;
+    }
+    try {
+      setSupplierSubmitLoadingKey(row.key);
+      setSupplierOrderMessage(null);
+      setRefreshError(null);
+      const result = await ordersApi.submitToSupplier(marketplace, orderId);
+      showSupplierOrderMessage(result?.message || 'Заказ отправлен поставщику');
+      await reloadOrders({ silent: true });
+    } catch (e) {
+      const msg = getApiErrorMessage(e, 'Не удалось отправить заказ поставщику');
+      showSupplierOrderMessage(msg);
+      setRefreshError(msg);
+    } finally {
+      setSupplierSubmitLoadingKey(null);
     }
   };
 
@@ -3567,13 +3583,34 @@ export function Orders() {
                             onClick={() => handleSendToProcurement(row)}
                             disabled={
                               supplierOrderLoadingKey === row.key ||
+                              supplierSubmitLoadingKey === row.key ||
                               procurementLoadingKey === row.key ||
                               releaseReserveLoadingKey === row.key
                             }
-                            title="Отправить в закупку (резерв + закупка дефицита)"
+                            title="Отправить в закупку (резерв + закупка дефицита, без API поставщика)"
                             aria-label="Отправить в закупку"
                           >
                             {supplierOrderLoadingKey === row.key ? (
+                              <span className="orders-action-icon__busy" aria-hidden>…</span>
+                            ) : (
+                              <i className="pe-7s-cart" aria-hidden />
+                            )}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="small"
+                            className="orders-action-icon orders-action-icon--supplier-submit"
+                            onClick={() => handleSubmitToSupplier(row)}
+                            disabled={
+                              supplierOrderLoadingKey === row.key ||
+                              supplierSubmitLoadingKey === row.key ||
+                              procurementLoadingKey === row.key ||
+                              releaseReserveLoadingKey === row.key
+                            }
+                            title="Отправить закупку поставщику (API Moskvorechie / Mikado)"
+                            aria-label="Отправить поставщику"
+                          >
+                            {supplierSubmitLoadingKey === row.key ? (
                               <span className="orders-action-icon__busy" aria-hidden>…</span>
                             ) : (
                               <i className="pe-7s-upload" aria-hidden />
@@ -3591,6 +3628,7 @@ export function Orders() {
                             }
                             disabled={
                               supplierOrderLoadingKey === row.key ||
+                              supplierSubmitLoadingKey === row.key ||
                               procurementLoadingKey === row.key
                             }
                             title="Выбрать поставщика вручную"

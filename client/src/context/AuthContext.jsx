@@ -166,11 +166,17 @@ export function AuthProvider({ children }) {
       res = await authApi.login(String(email || '').trim(), password);
     } catch (err) {
       const status = err?.response?.status;
-      const msg =
-        err?.response?.data?.message ||
-        err?.response?.data?.error ||
-        err?.message ||
-        'Ошибка входа';
+      const serverMsg = err?.response?.data?.message;
+      let msg = serverMsg || err?.message || 'Ошибка входа';
+      if (
+        !serverMsg &&
+        (err?.code === 'ERR_NETWORK' ||
+          err?.code === 'ECONNREFUSED' ||
+          (status === 500 && String(err?.message || '').includes('status code 500')))
+      ) {
+        msg =
+          'Сервер API недоступен. Убедитесь, что backend запущен (cd server && npm run dev) или повторите попытку через минуту.';
+      }
       if (status === 429) {
         throw new Error(
           'Слишком много запросов к серверу. Подождите 1–2 минуты, перезапустите API (server/server.js) и попробуйте снова.'

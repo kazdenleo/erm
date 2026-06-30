@@ -130,7 +130,7 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
   console.log(`[calculateMinPrice] calculator.commissions.FBS:`, calculator.commissions?.FBS);
   console.log(`[calculateMinPrice] calculator.commissions.FBS?.first_mile_amount:`, calculator.commissions?.FBS?.first_mile_amount);
   
-  // Обработка заказа: Ozon — fbs_first_mile_max_amount; YM — SORTING; WB — нет
+  // Обработка заказа: Ozon — fbs_first_mile_min_amount; YM — SORTING; WB — нет
   let processingCost = 0;
   if (marketplace === 'ozon') {
     processingCost = calculator.processing_cost !== undefined && calculator.processing_cost !== null

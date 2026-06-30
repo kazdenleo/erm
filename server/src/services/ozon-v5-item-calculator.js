@@ -8,6 +8,13 @@ import logger from '../utils/logger.js';
 import { extractOzonBrandPromotionPercent } from '../utils/ozonBrandPromotion.js';
 import { resolveProductVolumeLiters } from '../utils/productVolume.js';
 
+/** Минимальный тариф Ozon; при отсутствии — fallback на max (старые ответы API). */
+function pickOzonMinTariff(minVal, maxVal) {
+  if (minVal !== null && minVal !== undefined && minVal !== '') return parseFloat(minVal);
+  if (maxVal !== null && maxVal !== undefined && maxVal !== '') return parseFloat(maxVal);
+  return null;
+}
+
 /**
  * @param {object} item — элемент из data.items ответа v5
  * @param {string} offer_id — идентификатор оффера (для логов и fallback volume в БД)
@@ -78,23 +85,19 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
     if (
       fbsPercent !== null ||
       commissions.fbs_deliv_to_customer_amount !== undefined ||
+      commissions.fbs_first_mile_min_amount !== undefined ||
       commissions.fbs_first_mile_max_amount !== undefined ||
+      commissions.fbs_direct_flow_trans_min_amount !== undefined ||
       commissions.fbs_direct_flow_trans_max_amount !== undefined
     ) {
-      const rawDirectFlow = commissions.fbs_direct_flow_trans_max_amount;
-      const rawFirstMile = commissions.fbs_first_mile_max_amount;
-      const directFlowTransAmount =
-        rawDirectFlow !== null && rawDirectFlow !== undefined && rawDirectFlow !== ''
-          ? parseFloat(rawDirectFlow)
-          : rawDirectFlow === null || rawDirectFlow === undefined
-            ? null
-            : 0;
-      const firstMileAmount =
-        rawFirstMile !== null && rawFirstMile !== undefined && rawFirstMile !== ''
-          ? parseFloat(rawFirstMile)
-          : rawFirstMile === null || rawFirstMile === undefined
-            ? null
-            : 0;
+      const directFlowTransAmount = pickOzonMinTariff(
+        commissions.fbs_direct_flow_trans_min_amount,
+        commissions.fbs_direct_flow_trans_max_amount
+      );
+      const firstMileAmount = pickOzonMinTariff(
+        commissions.fbs_first_mile_min_amount,
+        commissions.fbs_first_mile_max_amount
+      );
 
       calculatorData.commissions.FBS = {
         percent: fbsPercent !== null ? parseFloat(fbsPercent) : 0,
@@ -126,8 +129,16 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
             value: 0,
             delivery_amount: parseFloat(commissions.fbs_deliv_to_customer_amount || commissions.deliv_to_customer_amount || 0),
             return_amount: 0,
-            first_mile_amount: parseFloat(commissions.fbs_first_mile_max_amount || 0),
-            direct_flow_trans_amount: parseFloat(commissions.fbs_direct_flow_trans_max_amount || 0)
+            first_mile_amount:
+              pickOzonMinTariff(
+                commissions.fbs_first_mile_min_amount,
+                commissions.fbs_first_mile_max_amount
+              ) || 0,
+            direct_flow_trans_amount:
+              pickOzonMinTariff(
+                commissions.fbs_direct_flow_trans_min_amount,
+                commissions.fbs_direct_flow_trans_max_amount
+              ) || 0
           };
           break;
         }
@@ -222,7 +233,7 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
         logisticsCost = baseLogisticsRate + (productVolume - 1) * additionalLiterRate;
       }
     } else {
-      missingData.push('итоговая стоимость логистики (fbs_direct_flow_trans_max_amount) и объем товара');
+      missingData.push('итоговая стоимость логистики (fbs_direct_flow_trans_min_amount) и объем товара');
     }
   }
 

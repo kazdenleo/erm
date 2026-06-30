@@ -80,7 +80,8 @@ class StockMovementsController {
       if (!whId) {
         return res.status(400).json({ ok: false, message: 'Склад не найден' });
       }
-      const quantity = await stockMovementsService.productsRepository.getWarehouseFreeStock(id, whId);
+      const { readProductWarehouseOnHand } = await import('../services/productWarehouseQuantity.service.js');
+      const quantity = await readProductWarehouseOnHand(id, whId);
       return res.status(200).json({ ok: true, data: { warehouseId: whId, quantity } });
     } catch (error) {
       next(error);

@@ -26,6 +26,8 @@ import {
   getKitComponents,
   batchPiecesPerKitUnitMap,
   batchKitIdByComponentMap,
+  batchGetReservedKitUnitsForOrders,
+  batchOrderNetReservedByProductMap,
   getNetReservedForOrderProduct,
   sumKitComponentQtyPerKit,
   buildKitComponentQtyMap,
@@ -363,7 +365,7 @@ async function buildReserveCoverageFifoMap(productIds) {
  * Покрытие резерва по заказам: все product_id в движениях (в т.ч. комплектующие комплекта).
  * @returns {Map<number, 'on_hand'|'incoming'>}
  */
-async function buildReserveCoverageByOrderIds(orderDbIds) {
+async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
   const ids = [...new Set((orderDbIds || []).map((id) => Number(id)).filter((id) => id > 0))];
   const map = new Map();
   if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
@@ -397,7 +399,7 @@ async function buildReserveCoverageByOrderIds(orderDbIds) {
 
   const supplyMap = await batchProductReserveSupplyMap(movementPids);
   const metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
-  const fifoMap = await buildReserveCoverageFifoMap(movementPids);
+  const fifoMap = opts.skipFifo === true ? null : await buildReserveCoverageFifoMap(movementPids);
 
   for (const [oid, lines] of byOrder) {
     let anyIncoming = false;
@@ -2817,7 +2819,7 @@ class OrdersService {
       if (Number.isFinite(pid) && pid > 0 && reserved > 0) supplyPids.push(pid);
     }
     const supplyMap = await batchProductReserveSupplyMap(supplyPids);
-    const coverageFifoMap = await buildReserveCoverageFifoMap(supplyPids);
+    const coverageFifoMap = light ? null : await buildReserveCoverageFifoMap(supplyPids);
 
     if (light) {
       const pids = orders
@@ -2842,6 +2844,7 @@ class OrdersService {
         return piecesPerKit > 0 ? qty * piecesPerKit : qty;
       };
       const kitIdByOrderDbId = new Map();
+      const needKitSkuSearch = [];
       for (const row of orders) {
         const oid = orderRowDbId(row);
         if (!oid) continue;
@@ -2853,15 +2856,40 @@ class OrdersService {
             kitIdByOrderDbId.set(oid, pid);
             continue;
           }
-          // Комплектующая в каталоге ≠ заказ на комплект: резерв считаем по product_id строки.
+          if (componentKitMap.has(pid) && reserved > 0) {
+            kitIdByOrderDbId.set(oid, componentKitMap.get(pid));
+            continue;
+          }
         }
 
-        // Дорогой поиск по SKU заказа — только при резерве или без product_id (часто WB).
         if (reserved <= 0 && Number.isFinite(pid) && pid > 0) continue;
-
-        const kitId = await findKitProductIdForMarketplaceOrder(pid, row);
-        if (kitId != null) kitIdByOrderDbId.set(oid, Number(kitId));
+        needKitSkuSearch.push({ oid, pid, row });
       }
+      if (needKitSkuSearch.length) {
+        await Promise.all(
+          needKitSkuSearch.map(async ({ oid, pid, row }) => {
+            const kitId = await findKitProductIdForMarketplaceOrder(pid, row);
+            if (kitId != null) kitIdByOrderDbId.set(oid, Number(kitId));
+          })
+        );
+      }
+
+      const kitBatchEntries = [];
+      for (const o of orders) {
+        const oid = orderRowDbId(o);
+        if (!oid) continue;
+        const kitId = kitIdByOrderDbId.get(oid);
+        if (!kitId) continue;
+        const pid = Number(o.productId ?? o.product_id);
+        if (Number.isFinite(pid) && pid > 0 && kitPiecesMap.has(pid)) {
+          kitBatchEntries.push({ orderDbId: oid, kitProductId: kitId, orderQty: o.quantity });
+        } else if (!Number.isFinite(pid) || pid < 1) {
+          kitBatchEntries.push({ orderDbId: oid, kitProductId: kitId, orderQty: o.quantity });
+        }
+      }
+      const kitReservedMap = await batchGetReservedKitUnitsForOrders(kitBatchEntries);
+      const orderDbIds = orders.map((o) => orderRowDbId(o)).filter((id) => id > 0);
+      const netByOrderProduct = await batchOrderNetReservedByProductMap(orderDbIds);
 
       const correctedRows = [];
       for (const o of orders) {
@@ -2872,10 +2900,10 @@ class OrdersService {
         const pid = Number(o.productId ?? o.product_id);
         const sqlReserved = reserved;
         if (oid && kitId && Number.isFinite(pid) && pid > 0 && kitPiecesMap.has(pid)) {
-          reserved = await getReservedKitUnitsForOrderValidation(kitId, oid);
+          reserved = kitReservedMap.get(oid) ?? reserved;
           need = Math.max(1, parseInt(o.quantity, 10) || 1);
         } else if (oid && kitId && (!Number.isFinite(pid) || pid < 1)) {
-          reserved = await getReservedKitUnitsForOrderValidation(kitId, oid);
+          reserved = kitReservedMap.get(oid) ?? reserved;
           need = Math.max(1, parseInt(o.quantity, 10) || 1);
         } else if (
           oid &&
@@ -2883,15 +2911,15 @@ class OrdersService {
           pid > 0 &&
           (componentKitMap.has(pid) || (kitId && !kitPiecesMap.has(pid)))
         ) {
-          const productReserved = await this._getReservedQtyForOrderProduct(oid, pid);
+          const productReserved = netByOrderProduct.get(`${oid}:${pid}`) || 0;
           reserved = Math.max(sqlReserved, productReserved);
           if (componentKitMap.has(pid)) {
             need = Math.max(1, parseInt(o.quantity, 10) || 1);
           } else if (reserved > need) {
-            need = await this._resolveOrderReserveNeedQtyForLight(o, kitPiecesMap, componentKitMap);
+            need = orderReserveNeedQty(o);
           }
         } else if (reserved > need) {
-          need = await this._resolveOrderReserveNeedQtyForLight(o, kitPiecesMap, componentKitMap);
+          need = orderReserveNeedQty(o);
         }
         correctedRows.push({ o, reserved, need, oid });
       }
@@ -2899,7 +2927,9 @@ class OrdersService {
       const orderIdsWithReserve = correctedRows
         .filter((x) => x.reserved > 0 && x.oid)
         .map((x) => x.oid);
-      const coverageByOrderId = await buildReserveCoverageByOrderIds(orderIdsWithReserve);
+      const coverageByOrderId = await buildReserveCoverageByOrderIds(orderIdsWithReserve, {
+        skipFifo: true,
+      });
 
       for (const { o, reserved, need, oid } of correctedRows) {
         o.reservedQty = reserved;

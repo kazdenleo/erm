@@ -1,5 +1,5 @@
 /**
- * Планировщик закупок по заказу: резерв со склада → API поставщика → закупка → резерв под заказ.
+ * Планировщик закупок по заказу: резерв со склада → закупка в ERM → резерв под заказ.
  */
 
 import { query, transaction } from '../config/database.js';
@@ -22,6 +22,17 @@ import {
 } from '../utils/orderProcurementCoverage.js';
 import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { isKitProductId, getKitComponents } from './kitStock.service.js';
+import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
+import { resolveSupplierOrderAdapter } from './supplierOrderAdapters/index.js';
+import {
+  supplierPreSubmitRequired,
+  trySubmitPurchaseToSupplier,
+} from './supplierOrderPlacement.service.js';
+
+function supplierSupportsApiOrder(supplier) {
+  const code = canonicalSupplierApiCode(supplier?.code);
+  return Boolean(resolveSupplierOrderAdapter(code));
+}
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
   const n = typeof v === 'string' ? parseInt(v, 10) : Number(v);
@@ -273,7 +284,12 @@ async function suppliersForProductBinding(productId, suppliers, profileRow) {
   return filtered.length ? filtered : suppliers;
 }
 
-async function rankSupplierCandidates(productId, suppliers, qty, { profileRow } = {}) {
+async function rankSupplierCandidates(
+  productId,
+  suppliers,
+  qty,
+  { profileRow, allowZeroStockForApiSuppliers = false } = {}
+) {
   const scoped = await suppliersForProductBinding(productId, suppliers, profileRow);
   const ids = scoped.map((s) => s.id);
   if (!ids.length) return [];
@@ -301,9 +317,11 @@ async function rankSupplierCandidates(productId, suppliers, qty, { profileRow } 
   for (const row of r.rows || []) {
     const sid = Number(row.supplier_id);
     const stock = row.stock != null ? Number(row.stock) : null;
-    if (stock != null && Number.isFinite(stock) && stock < need) continue;
     const base = supplierById.get(sid);
     if (!base) continue;
+    if (stock != null && Number.isFinite(stock) && stock < need) {
+      if (!(allowZeroStockForApiSuppliers && supplierSupportsApiOrder(base))) continue;
+    }
     out.push({
       ...base,
       price: row.price != null ? Number(row.price) : null,
@@ -313,6 +331,17 @@ async function rankSupplierCandidates(productId, suppliers, qty, { profileRow } 
     });
   }
   out.sort((a, b) => {
+    if (allowZeroStockForApiSuppliers) {
+      const pref = (s) => {
+        const code = canonicalSupplierApiCode(s.code);
+        if (code === 'moskvorechie') return 0;
+        if (code === 'mikado') return 1;
+        return 2;
+      };
+      const pa = pref(a);
+      const pb = pref(b);
+      if (pa !== pb) return pa - pb;
+    }
     const pa = a.price != null ? a.price : Infinity;
     const pb = b.price != null ? b.price : Infinity;
     if (pa !== pb) return pa - pb;
@@ -450,6 +479,187 @@ async function upsertFulfillmentLine(
   );
 }
 
+async function findOpenPurchasesForOrder(profileId, marketplace, orderId) {
+  const dbMp = orderMarketplaceToDb(marketplace);
+  const oid = String(orderId ?? '').trim();
+  if (!oid) return [];
+  const mpVariants = [
+    ...new Set(
+      [marketplace, dbMp, String(marketplace || '').toLowerCase()]
+        .filter(Boolean)
+        .map((m) => String(m).toLowerCase())
+    ),
+  ];
+  const r = await query(
+    `SELECT DISTINCT p.id AS purchase_id, p.supplier_id, s.name AS supplier_name, s.code AS supplier_code
+     FROM purchases p
+     INNER JOIN purchase_items pi ON pi.purchase_id = p.id
+     LEFT JOIN suppliers s ON s.id = p.supplier_id
+     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+     WHERE p.profile_id = $1
+       AND p.status = 'open'
+       AND p.supplier_id IS NOT NULL
+       AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM($2))
+       AND LOWER(TRIM(elem->>'marketplace')) = ANY($3::text[])`,
+    [profileId, oid, mpVariants]
+  );
+  return r.rows || [];
+}
+
+/** Повторная отправка в API поставщика, если закупка уже есть, но заказ не ушёл (дефицит = 0). */
+async function retrySupplierSubmitForOpenOrderPurchases(profileId, marketplace, orderId) {
+  const pid = normalizeProfileId(profileId);
+  const oid = String(orderId ?? '').trim();
+  if (pid == null || !oid) return [];
+
+  const openPurchases = await findOpenPurchasesForOrder(pid, marketplace, oid);
+  const touched = [];
+
+  for (const row of openPurchases) {
+    const purchaseId = Number(row.purchase_id);
+    const supplierId = Number(row.supplier_id);
+    if (!Number.isFinite(purchaseId) || !Number.isFinite(supplierId)) continue;
+    if (!supplierSupportsApiOrder({ code: row.supplier_code })) continue;
+
+    const pre = await supplierPreSubmitRequired(supplierId, pid);
+    if (!pre.required) continue;
+
+    logger.info('[OrderProcurement] retry supplier submit for open purchase', {
+      orderId: oid,
+      purchaseId,
+      supplierId,
+    });
+
+    const supplierSubmit = await trySubmitPurchaseToSupplier({
+      purchaseId,
+      supplierId,
+      profileId: pid,
+    }).catch((e) => ({
+      submitted: false,
+      reason: 'submit_error',
+      message: e?.message || String(e),
+    }));
+
+    if (supplierSubmit?.skipped) {
+      logger.info('[OrderProcurement] skip retry — already submitted to supplier', {
+        orderId: oid,
+        purchaseId,
+      });
+      continue;
+    }
+
+    if (supplierSubmit?.submitted) {
+      await ensureOrdersMarkedInProcurement(pid, marketplace, oid, []);
+    }
+
+    touched.push({
+      purchaseId,
+      supplierId,
+      supplierName: row.supplier_name,
+      appended: true,
+      supplierSubmit,
+    });
+  }
+
+  return touched;
+}
+
+/** Сверка quantity_purchased с реальными открытыми закупками; сброс устаревших записей. */
+async function effectivePurchasedQty(
+  profileId,
+  orderDbId,
+  productId,
+  recordedPurchased,
+  { resetStale = false, lineKey = null } = {}
+) {
+  const recorded = Math.max(0, Math.floor(Number(recordedPurchased) || 0));
+  if (!recorded) return 0;
+
+  const r = await query(
+    `SELECT COALESCE(SUM(GREATEST(0, pi.expected_quantity - pi.received_quantity)), 0)::int AS qty
+     FROM purchase_items pi
+     INNER JOIN purchases p ON p.id = pi.purchase_id
+     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+     INNER JOIN orders o ON o.id = $2
+     WHERE p.profile_id = $1
+       AND pi.product_id = $3
+       AND p.status = 'open'
+       AND (
+         LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_id))
+         OR (
+           o.order_group_id IS NOT NULL
+           AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_group_id))
+         )
+       )`,
+    [profileId, orderDbId, productId]
+  );
+  const fromOpen = Number(r.rows?.[0]?.qty) || 0;
+  if (fromOpen >= recorded) return Math.min(recorded, fromOpen);
+
+  if (resetStale && recorded > 0 && fromOpen === 0) {
+    const params = [profileId, orderDbId, productId];
+    let whereExtra = '';
+    if (lineKey) {
+      whereExtra = ' AND fl.line_key = $4';
+      params.push(lineKey);
+    }
+    await query(
+      `UPDATE order_fulfillment_lines fl
+       SET quantity_purchased = 0,
+           status = CASE
+             WHEN fl.quantity_reserved >= fl.quantity_needed THEN 'reserved'
+             WHEN fl.quantity_reserved > 0 THEN 'partial'
+             ELSE 'pending'
+           END,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE fl.profile_id = $1 AND fl.order_db_id = $2 AND fl.product_id = $3${whereExtra}`,
+      params
+    );
+    logger.info('[OrderProcurement] reset stale purchased qty (no open purchase)', {
+      orderDbId,
+      productId,
+      lineKey,
+      was: recorded,
+    });
+    return 0;
+  }
+
+  return fromOpen;
+}
+
+/** Перевести заказ(ы) в статус «В закупке» после оформления закупки или отправки поставщику. */
+async function ensureOrdersMarkedInProcurement(profileId, marketplace, orderId, orderRows = []) {
+  const pid = normalizeProfileId(profileId);
+  const oid = String(orderId ?? '').trim();
+  if (pid == null || !oid) return { updated: 0 };
+
+  const refs = [];
+  const seen = new Set();
+  const dbMp = orderMarketplaceToDb(marketplace);
+  for (const row of orderRows || []) {
+    const mp = row.marketplace || dbMp;
+    const id = row.order_id || oid;
+    const key = `${mp}|${id}`;
+    if (!mp || !id || seen.has(key)) continue;
+    seen.add(key);
+    refs.push({ marketplace: mp, orderId: id });
+  }
+  if (!seen.has(`${dbMp}|${oid}`)) {
+    refs.push({ marketplace: dbMp, orderId: oid });
+  }
+  if (!refs.length) return { updated: 0 };
+
+  try {
+    return await ordersService.bulkSetToProcurement(refs, pid, { skipReserveReapply: true });
+  } catch (e) {
+    logger.warn('[OrderProcurement] ensureOrdersMarkedInProcurement failed', {
+      orderId: oid,
+      message: e?.message || String(e),
+    });
+    return { updated: 0, error: e?.message || String(e) };
+  }
+}
+
 async function sumOpenPurchaseTotal(client, purchaseId, supplierId) {
   const r = await client.query(
     `SELECT COALESCE(SUM(
@@ -463,8 +673,24 @@ async function sumOpenPurchaseTotal(client, purchaseId, supplierId) {
   return Number(r.rows?.[0]?.total) || 0;
 }
 
-async function pickSupplierForDeficit(productId, suppliers, qty, { client, profileId, profileRow, warehouseWeekendDays = null } = {}) {
-  const candidates = await rankSupplierCandidates(productId, suppliers, qty, { profileRow });
+async function pickSupplierForDeficit(
+  productId,
+  suppliers,
+  qty,
+  {
+    client,
+    profileId,
+    profileRow,
+    warehouseWeekendDays = null,
+    allowZeroStockForApiSuppliers = false,
+    ignoreMinOrderForApiSuppliers = false,
+    now = new Date(),
+  } = {}
+) {
+  const candidates = await rankSupplierCandidates(productId, suppliers, qty, {
+    profileRow,
+    allowZeroStockForApiSuppliers,
+  });
   for (const cand of candidates) {
     const price = cand.price != null && cand.price > 0 ? cand.price : 0;
     const lineTotal = price * qty;
@@ -475,13 +701,15 @@ async function pickSupplierForDeficit(productId, suppliers, qty, { client, profi
     if (client && profileId) {
       const bucket = resolveProcurementArrivalBucketFromApiConfig(
         cand.apiConfig,
-        new Date(),
-        warehouseWeekendDays
+        now,
+        warehouseWeekendDays,
+        cand.code
       );
       openPurchaseId = await findOpenAutoPurchaseId(client, {
         profileId,
         supplierId: cand.id,
         arrivalBucket: bucket,
+        now,
       });
       if (openPurchaseId) {
         openTotal = await sumOpenPurchaseTotal(client, openPurchaseId, cand.id);
@@ -490,13 +718,18 @@ async function pickSupplierForDeficit(productId, suppliers, qty, { client, profi
 
     if (minOrder != null && minOrder > 0) {
       const projected = (openPurchaseId ? openTotal : 0) + lineTotal;
-      if (projected < minOrder && !openPurchaseId) continue;
+      const apiOrderSupplier = supplierSupportsApiOrder(cand);
+      if (projected < minOrder && !openPurchaseId) {
+        if (!(ignoreMinOrderForApiSuppliers && apiOrderSupplier)) continue;
+      }
       if (projected < minOrder && openPurchaseId) {
         // Накопление в открытой закупке — допустимо
       }
     }
 
-    if (cand.stock != null && cand.stock < qty) continue;
+    if (cand.stock != null && cand.stock < qty) {
+      if (!(allowZeroStockForApiSuppliers && supplierSupportsApiOrder(cand))) continue;
+    }
 
     return { supplier: cand, openPurchaseId, lineTotal, price };
   }
@@ -522,7 +755,7 @@ function groupKey(supplierId, arrivalBucket) {
 
 class OrderProcurementPlannerService {
   /**
-   * Отправить заказ в закупку: резерв со склада → API поставщика → закупка дефицита → резерв.
+   * Отправить заказ в закупку: резерв со склада → закупка дефицита → резерв (без API поставщика).
    */
   async runForMarketplaceOrder(
     marketplace,
@@ -643,7 +876,14 @@ class OrderProcurementPlannerService {
          WHERE profile_id = $1 AND order_db_id = $2 AND line_key = $3`,
         [pid, line.orderDbId, line.lineKey]
       );
-      const prevPurchased = Number(existing.rows?.[0]?.quantity_purchased) || 0;
+      const recordedPurchased = Number(existing.rows?.[0]?.quantity_purchased) || 0;
+      const prevPurchased = await effectivePurchasedQty(
+        pid,
+        line.orderDbId,
+        line.productId,
+        recordedPurchased,
+        { resetStale: true, lineKey: line.lineKey }
+      );
 
       const coverage = computeProcurementDeficit({
         quantityNeeded: line.quantityNeeded,
@@ -681,6 +921,9 @@ class OrderProcurementPlannerService {
             profileId: pid,
             profileRow,
             warehouseWeekendDays,
+            allowZeroStockForApiSuppliers: true,
+            ignoreMinOrderForApiSuppliers: true,
+            now,
           });
         });
 
@@ -711,7 +954,8 @@ class OrderProcurementPlannerService {
           supplier.apiConfig,
           now,
           supplier.deliveryDays,
-          warehouseWeekendDays
+          warehouseWeekendDays,
+          supplier.code
         );
         const gKey = groupKey(supplier.id, dates.arrivalBucket);
         if (!purchaseGroups.has(gKey)) {
@@ -790,6 +1034,7 @@ class OrderProcurementPlannerService {
         const result = await purchasesService.procureFromOrders(payload, {
           userId,
           profileId: pid,
+          submitToSupplier: false,
         });
         const purchaseId = result?.purchaseId ?? g.existingPurchaseId;
         if (purchaseId) {
@@ -840,7 +1085,7 @@ class OrderProcurementPlannerService {
           message: e?.message || String(e),
         });
         const failReason =
-          e?.supplierSubmit?.message || e?.message || 'Ошибка закупки или отправки поставщику';
+          e?.message || 'Ошибка оформления закупки';
         for (const it of g.items) {
           const lr = lineResults.find(
             (x) => x.lineKey === it.lineKey && x.productId === it.productId
@@ -911,10 +1156,13 @@ class OrderProcurementPlannerService {
     const allManual = lineResults.length > 0 && manualLines.length === lineResults.length;
 
     if (allManual && !purchasesTouched.length) {
+      const reason = manualLines.find((l) => l.manualReason)?.manualReason;
       return {
         ok: false,
         error: 'manual_required',
-        message: 'Не удалось автоматически закупить позиции заказа',
+        message: reason
+          ? `Не удалось оформить закупку: ${reason}`
+          : 'Не удалось автоматически закупить позиции заказа',
         lines: lineResults,
         manualLines,
       };
@@ -955,6 +1203,19 @@ class OrderProcurementPlannerService {
       message += `. Требуется ручной выбор поставщика: ${manualLines.length} поз.`;
     }
 
+    let procurementStatus = null;
+    if (purchasesTouched.some((p) => p.purchaseId)) {
+      procurementStatus = await ensureOrdersMarkedInProcurement(
+        pid,
+        marketplace,
+        orderId,
+        eligibleRows
+      );
+      if (procurementStatus?.updated > 0) {
+        message += '. Статус заказа: В закупке';
+      }
+    }
+
     return {
       ok: true,
       message,
@@ -964,6 +1225,7 @@ class OrderProcurementPlannerService {
       totalReserved,
       totalPurchased,
       reserveOnly,
+      procurementStatus,
     };
   }
 
@@ -1019,10 +1281,18 @@ class OrderProcurementPlannerService {
       const quantityNeeded = Number(row.quantity_needed) || 0;
       const quantityPurchased = Number(row.quantity_purchased) || 0;
       const reservedNow = await ordersService._getReservedQtyForOrderProduct(orderDbId, productId);
+      const effectivePurchased = await effectivePurchasedQty(
+        pid,
+        orderDbId,
+        productId,
+        quantityPurchased,
+        { resetStale: false, lineKey: row.line_key }
+      );
       const coverage = computeProcurementDeficit({
         quantityNeeded,
         quantityReserved: reservedNow,
-        quantityPurchased,
+        quantityPurchased:
+          effectivePurchased < quantityPurchased ? effectivePurchased : quantityPurchased,
       });
 
       if (!includeAll && coverage.deficit <= 0) continue;
@@ -1194,7 +1464,13 @@ class OrderProcurementPlannerService {
     }
 
     const warehouseWeekendDays = await loadWarehouseWeekendDays(whId, pid);
-    const dates = computeProcurementDates(supplierApiConfig, now, maxDeliveryDays, warehouseWeekendDays);
+    const dates = computeProcurementDates(
+      supplierApiConfig,
+      now,
+      maxDeliveryDays,
+      warehouseWeekendDays,
+      supplierRow.code
+    );
     const processedLines = [];
 
     const note = `${autoArrivalNoteText(dates.arrivalBucket)} · ручная закупка (${orderId})`;
@@ -1228,6 +1504,7 @@ class OrderProcurementPlannerService {
       const result = await purchasesService.procureFromOrders(payload, {
         userId,
         profileId: pid,
+        submitToSupplier: false,
       });
       purchaseId = result?.purchaseId ?? openId;
       supplierSubmit = result?.supplierSubmit ?? null;
@@ -1243,9 +1520,7 @@ class OrderProcurementPlannerService {
         ok: false,
         error: 'procure_failed',
         message:
-          e?.supplierSubmit?.message ||
-          e?.message ||
-          'Не удалось отправить заказ поставщику или создать закупку',
+          e?.message || 'Не удалось оформить закупку',
       };
     }
 
@@ -1281,7 +1556,7 @@ class OrderProcurementPlannerService {
       });
     }
 
-    let message = `Заказ отправлен поставщику, оформлена закупка №${purchaseId}`;
+    let message = `Оформлена закупка №${purchaseId}`;
     if (supplierSubmit?.message) {
       message += `. ${supplierSubmit.message}`;
     }
@@ -1295,6 +1570,134 @@ class OrderProcurementPlannerService {
       supplierSubmit,
       lines: processedLines,
     };
+  }
+
+  /**
+   * Явная отправка открытых закупок заказа в API поставщика (кнопка у заказа).
+   */
+  async submitPurchasesToSupplierForOrder(
+    marketplace,
+    orderId,
+    { profileId, force = false } = {}
+  ) {
+    const pid = normalizeProfileId(profileId);
+    const oid = String(orderId ?? '').trim();
+    if (pid == null) {
+      return { ok: false, error: 'no_profile', message: 'Профиль не определён' };
+    }
+    if (!oid) {
+      return { ok: false, error: 'invalid_order', message: 'Не указан заказ' };
+    }
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { ok: false, error: 'not_pg', message: 'Доступно только с PostgreSQL' };
+    }
+
+    const profilesRepo = repositoryFactory.getProfilesRepository?.();
+    const profileRow =
+      profilesRepo && typeof profilesRepo.findById === 'function'
+        ? await profilesRepo.findById(pid)
+        : null;
+    if (!isProfileSupplierSyncEnabled(profileRow)) {
+      return {
+        ok: false,
+        error: 'supplier_sync_disabled',
+        message: 'Работа с поставщиками отключена для этого аккаунта',
+      };
+    }
+
+    const openPurchases = await findOpenPurchasesForOrder(pid, marketplace, oid);
+    if (!openPurchases.length) {
+      return {
+        ok: false,
+        error: 'no_purchase',
+        message: 'Нет открытой закупки по заказу. Сначала отправьте заказ в закупку.',
+      };
+    }
+
+    const purchases = [];
+    let anySubmitted = false;
+    let anyFailed = false;
+
+    for (const row of openPurchases) {
+      const purchaseId = Number(row.purchase_id);
+      const supplierId = Number(row.supplier_id);
+      if (!Number.isFinite(purchaseId) || !Number.isFinite(supplierId)) continue;
+
+      const pre = await supplierPreSubmitRequired(supplierId, pid);
+      if (!pre.required) {
+        purchases.push({
+          purchaseId,
+          supplierId,
+          supplierName: row.supplier_name,
+          supplierSubmit: {
+            submitted: false,
+            skipped: true,
+            reason: 'api_not_configured',
+            message: 'У поставщика не настроен API-заказ',
+          },
+        });
+        continue;
+      }
+
+      const supplierSubmit = await trySubmitPurchaseToSupplier({
+        purchaseId,
+        supplierId,
+        profileId: pid,
+        force: Boolean(force),
+      }).catch((e) => ({
+        submitted: false,
+        reason: 'submit_error',
+        message: e?.message || String(e),
+      }));
+
+      if (supplierSubmit?.submitted) {
+        anySubmitted = true;
+      } else if (!supplierSubmit?.skipped) {
+        anyFailed = true;
+      }
+
+      purchases.push({
+        purchaseId,
+        supplierId,
+        supplierName: row.supplier_name,
+        supplierSubmit,
+      });
+    }
+
+    if (anySubmitted) {
+      await ensureOrdersMarkedInProcurement(pid, marketplace, oid, []);
+    }
+
+    if (!anySubmitted && anyFailed) {
+      const reason = purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message;
+      return {
+        ok: false,
+        error: 'submit_failed',
+        message: reason || 'Не удалось отправить заказ поставщику',
+        purchases,
+      };
+    }
+
+    if (!anySubmitted) {
+      const reason = purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message;
+      return {
+        ok: false,
+        error: 'nothing_submitted',
+        message:
+          reason ||
+          'Закупка не отправлена: уже была у поставщика или API не настроен',
+        purchases,
+      };
+    }
+
+    const ids = purchases.map((p) => p.purchaseId).filter(Boolean);
+    let message = `Заказ отправлен поставщику (закупка №${ids.join(', №')})`;
+    const submitMsg = purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message;
+    if (submitMsg && !message.includes(submitMsg)) {
+      message += `. ${submitMsg}`;
+    }
+
+    return { ok: true, message, purchases };
   }
 }
 

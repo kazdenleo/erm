@@ -372,14 +372,14 @@ class ProductsService {
     if (warehouseScoped) return;
 
     const { syncProductReservedQuantityFromJournal } = await import('./sellableQuantity.service.js');
-    const { isKitProductId, readKitDisplayReservedQuantity } = await import('./kitStock.service.js');
+    const { isKitProductId, readKitSkuNetReserved } = await import('./kitStock.service.js');
     await Promise.all(
       products.map(async (p) => {
         const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
         if (!Number.isFinite(nid) || nid < 1) return;
         try {
           if (await isKitProductId(nid)) {
-            const rv = await readKitDisplayReservedQuantity(nid, options);
+            const rv = await readKitSkuNetReserved(nid, options);
             await syncProductReservedQuantityFromJournal(nid, { reserved: rv });
           } else {
             const rv =
@@ -1302,6 +1302,19 @@ class ProductsService {
           }
         }
       }
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(updates, 'mp_wb_vendor_code') &&
+      !Object.prototype.hasOwnProperty.call(updates, 'sku_wb')
+    ) {
+      const toStr = (v) => (v != null && String(v).trim() !== '' ? String(v).trim() : null);
+      const vendor = sanitizeWbVendorCode(toStr(updates.mp_wb_vendor_code));
+      updates.marketplace_skus = {
+        ...(updates.marketplace_skus && typeof updates.marketplace_skus === 'object'
+          ? updates.marketplace_skus
+          : {}),
+        wb: vendor,
+      };
     }
     // Баркоды: явно пробрасываем массив в репозиторий (нормализуем для надёжности)
     if (Object.prototype.hasOwnProperty.call(updates, 'barcodes')) {

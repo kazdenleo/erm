@@ -32,6 +32,10 @@ router.post(
 router.post('/', wrapAsync(purchasesController.create.bind(purchasesController)));
 router.get('/:id', wrapAsync(purchasesController.getById.bind(purchasesController)));
 router.post('/:id/draft-items', wrapAsync(purchasesController.appendDraftItems.bind(purchasesController)));
+router.post(
+  '/:id/submit-to-supplier',
+  wrapAsync(purchasesController.submitToSupplier.bind(purchasesController))
+);
 router.put('/:id', wrapAsync(purchasesController.updatePurchase.bind(purchasesController)));
 router.put('/:id/items/:itemId', wrapAsync(purchasesController.updatePurchaseItem.bind(purchasesController)));
 router.post('/:id/mark-ordered', wrapAsync(purchasesController.markOrdered.bind(purchasesController)));

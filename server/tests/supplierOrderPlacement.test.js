@@ -2,7 +2,25 @@
  * Unit-тесты подготовки позиций к отправке поставщику.
  */
 
-import { mergeProcurementItemsByProductId } from '../src/services/supplierOrderPlacement.service.js';
+import {
+  mergeProcurementItemsByProductId,
+  shouldSkipSupplierSubmit,
+} from '../src/services/supplierOrderPlacement.service.js';
+
+describe('shouldSkipSupplierSubmit', () => {
+  test('пропускает повтор без force', () => {
+    expect(shouldSkipSupplierSubmit({ supplier_submitted_at: '2026-01-01' })).toBe(true);
+    expect(shouldSkipSupplierSubmit({ supplierSubmittedAt: '2026-01-01' })).toBe(true);
+    expect(shouldSkipSupplierSubmit({ supplier_submitted_at: null })).toBe(false);
+    expect(shouldSkipSupplierSubmit({})).toBe(false);
+  });
+
+  test('force разрешает повтор', () => {
+    expect(shouldSkipSupplierSubmit({ supplier_submitted_at: '2026-01-01' }, { force: true })).toBe(
+      false
+    );
+  });
+});
 
 describe('mergeProcurementItemsByProductId', () => {
   test('схлопывает одинаковые productId в одну строку', () => {

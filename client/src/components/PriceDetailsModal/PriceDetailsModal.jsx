@@ -274,7 +274,7 @@ export function PriceDetailsModal({
   
   const productVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product) || 0;
   
-  // Обработка отправления (fbs_first_mile_max_amount) - отдельная статья расходов
+  // Обработка отправления (fbs_first_mile_min_amount) - отдельная статья расходов
   const shipmentProcessingCost = marketplace === 'ozon' 
     ? (Number(commission.first_mile_amount) || 0)
     : 0;
@@ -506,7 +506,7 @@ export function PriceDetailsModal({
                       }
                     })()
                   ) : marketplace === 'ozon' ? (
-                    `= ${logisticsCost.toFixed(2)} ₽ (fbs_direct_flow_trans_max_amount из API Ozon)`
+                    `= ${logisticsCost.toFixed(2)} ₽ (fbs_direct_flow_trans_min_amount из API Ozon)`
                   ) : (
                     `= ${logisticsCost.toFixed(2)} ₽ (из API YM)`
                   )}

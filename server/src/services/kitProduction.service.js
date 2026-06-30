@@ -9,7 +9,7 @@ import stockMovementsService from './stockMovements.service.js';
 import {
   isKitProductId,
   getKitComponents,
-  buildKitComponentQtyMap,
+  buildKitAssemblyDeductionPlan,
   computeAssemblableFromComponents,
   readKitPhysicalOnHandFromDb,
 } from './kitStock.service.js';
@@ -33,7 +33,8 @@ export async function applyKitAssemblyMovements({
     err.statusCode = 400;
     throw err;
   }
-  const compQtyMap = buildKitComponentQtyMap(components, kits);
+
+  const compQtyMap = await buildKitAssemblyDeductionPlan(kitId, kits, { warehouseId });
 
   for (const [compId, compQty] of compQtyMap) {
     const metrics = await computeAvailableQuantity(compId, {

@@ -673,9 +673,9 @@ class ProductsRepositoryPG {
     const idsToUpdate = [];
     const rvsToUpdate = [];
     const {
-      kitDisplayReservedFromContext,
+      kitSkuReservedFromContext,
       buildKitListStockContext,
-      readKitDisplayReservedQuantity,
+      readKitSkuNetReserved,
       isKitCatalogProduct
     } = await import('../services/kitStock.service.js');
 
@@ -696,8 +696,8 @@ class ProductsRepositoryPG {
       if (isKitCatalogProduct(p)) {
         if (Number.isFinite(nid) && nid > 0) {
           calc = ctx
-            ? kitDisplayReservedFromContext(nid, ctx)
-            : await readKitDisplayReservedQuantity(nid, options);
+            ? kitSkuReservedFromContext(nid, ctx)
+            : await readKitSkuNetReserved(nid, options);
         }
       } else if (Number.isFinite(nid) && nid > 0) {
         if (key && byPid.has(key)) {

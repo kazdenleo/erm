@@ -66,6 +66,53 @@ class OrderSupplierOrderService {
     return proc;
   }
 
+  async submitToSupplier(marketplace, orderId, { profileId, force = false } = {}) {
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const err = new Error('Отправка поставщику доступна только при PostgreSQL');
+      err.statusCode = 501;
+      throw err;
+    }
+
+    const profilesRepo = repositoryFactory.getProfilesRepository?.();
+    const profileRow =
+      profilesRepo && typeof profilesRepo.findById === 'function'
+        ? await profilesRepo.findById(pid)
+        : null;
+    if (!isProfileSupplierSyncEnabled(profileRow)) {
+      const err = new Error('Работа с поставщиками отключена для этого аккаунта');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const result = await orderProcurementPlanner.submitPurchasesToSupplierForOrder(
+      marketplace,
+      orderId,
+      { profileId: pid, force }
+    );
+
+    if (!result?.ok) {
+      const err = new Error(result?.message || 'Не удалось отправить заказ поставщику');
+      err.statusCode =
+        result?.error === 'order_not_found'
+          ? 404
+          : result?.error === 'no_purchase'
+            ? 400
+            : result?.error === 'submit_failed' || result?.error === 'nothing_submitted'
+              ? 400
+              : 400;
+      err.details = result;
+      throw err;
+    }
+
+    return result;
+  }
+
   async getProcurementLines(marketplace, orderId, { profileId } = {}) {
     return orderProcurementPlanner.listFulfillmentLinesForMarketplaceOrder(marketplace, orderId, {
       profileId: normalizeProfileId(profileId),

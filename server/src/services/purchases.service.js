@@ -1496,6 +1496,7 @@ class PurchasesService {
        )
        SELECT p.id, p.created_at, p.updated_at, p.ordered_at, p.completed_at,
               p.status, p.supplier_id, p.organization_id, p.warehouse_id, p.note,
+              p.supplier_submitted_at, p.supplier_order_ref,
               s.name AS supplier_name,
               o.name AS organization_name,
               COALESCE(w.address, '') AS warehouse_name,
@@ -1665,8 +1666,50 @@ class PurchasesService {
     return { purchase, items: lines.rows || [], receipts: receipts2.rows || [] };
   }
 
+  /** Отправить закупку поставщику (Mikado / Moskvorechie). force=true — повторная отправка. */
+  async submitToSupplier(purchaseId, { profileId, force = false } = {}) {
+    const id = parseInt(purchaseId, 10);
+    if (!id || Number.isNaN(id)) {
+      const err = new Error('Некорректный ID закупки');
+      err.statusCode = 400;
+      throw err;
+    }
+    const pid = normalizeProfileId(profileId);
+    if (pid == null) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    const own = await query(
+      `SELECT 1 FROM purchases WHERE id = $1 AND profile_id = $2 LIMIT 1`,
+      [id, pid]
+    );
+    if (!own.rows?.length) {
+      const err = new Error('Закупка не найдена');
+      err.statusCode = 404;
+      throw err;
+    }
+    const head = await query(
+      `SELECT supplier_id FROM purchases WHERE id = $1 AND profile_id = $2 LIMIT 1`,
+      [id, pid]
+    );
+    const supplierId =
+      head.rows?.[0]?.supplier_id != null ? Number(head.rows[0].supplier_id) : null;
+    if (!Number.isFinite(supplierId) || supplierId < 1) {
+      const err = new Error('У закупки не указан поставщик');
+      err.statusCode = 400;
+      throw err;
+    }
+    return trySubmitPurchaseToSupplier({
+      purchaseId: id,
+      supplierId,
+      profileId: pid,
+      force: Boolean(force),
+    });
+  }
+
   /**
-   * Из заказов: сначала API поставщика (если настроен) → закупка → резерв по заказам.
+   * Из заказов: закупка в ERP → резерв по заказам. API поставщика — только по явному submitToSupplier.
    */
   async procureFromOrders(
     {
@@ -1679,7 +1722,7 @@ class PurchasesService {
       note = null,
       supplierWarehouseName = null,
     } = {},
-    { userId, profileId, submitToSupplier = true, syncReserveReapply = true } = {}
+    { userId, profileId, submitToSupplier = false, syncReserveReapply = true } = {}
   ) {
     const initialItems = Array.isArray(items) ? items : [];
     let resolvedSupplierId =

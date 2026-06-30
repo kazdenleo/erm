@@ -41,6 +41,7 @@ export function ProductSearchInput({
   onSelect,
   products = [],
   organizationId = null,
+  warehouseId = null,
   placeholder = 'Штрихкод, артикул или название',
   id,
   className = 'warehouse-ops-scan-input',
@@ -87,6 +88,7 @@ export function ProductSearchInput({
         const merged = await searchProductsCombined(q, {
           products,
           organizationId,
+          warehouseId,
           limit: 40,
         });
         if (cancelled) return;
@@ -114,7 +116,7 @@ export function ProductSearchInput({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [q, showQuery, products, organizationId, autoSelectSingleScan, pickProduct]);
+  }, [q, showQuery, products, organizationId, warehouseId, autoSelectSingleScan, pickProduct]);
 
   const panelTitle = useMemo(() => {
     if (loading) return 'Поиск…';

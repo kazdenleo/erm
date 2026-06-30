@@ -21,9 +21,13 @@ function parseApiConfig(raw) {
   }
 }
 
-function hasSupplierCredentials(config) {
-  if (!config?.user_id) return false;
-  return Boolean(config.password || config.apiKey);
+function hasSupplierCredentials(config, apiCode = null) {
+  if (!config || typeof config !== 'object') return false;
+  const code = String(apiCode || '').toLowerCase();
+  const apiKey = config.apiKey || config.password || config.api_key;
+  if (code === 'moskvorechie' && apiKey) return true;
+  if (!config.user_id) return false;
+  return Boolean(apiKey);
 }
 
 async function loadIntegrationConfigForOrder(apiCode, profileId) {
@@ -38,10 +42,10 @@ async function loadIntegrationConfigForOrder(apiCode, profileId) {
     });
   }
 
-  if (!hasSupplierCredentials(integrationConfig)) {
+  if (!hasSupplierCredentials(integrationConfig, apiCode)) {
     try {
       const fallback = await integrationsService.getSupplierConfig(apiCode, { profileId: null });
-      if (hasSupplierCredentials(fallback)) {
+      if (hasSupplierCredentials(fallback, apiCode)) {
         logger.info('[SupplierOrderPlacement] using shared supplier credentials', {
           apiCode,
           profileId,
@@ -67,10 +71,49 @@ function submitEnabledForSupplier(apiConfig, integrationConfig) {
   return true;
 }
 
+/** Не отправлять повторно, если закупка уже ушла поставщику (без force). */
+export function shouldSkipSupplierSubmit(purchase, { force = false } = {}) {
+  if (force) return false;
+  const at = purchase?.supplier_submitted_at ?? purchase?.supplierSubmittedAt;
+  return at != null && String(at).trim() !== '';
+}
+
+export async function markPurchaseSupplierSubmitted(
+  purchaseId,
+  { supplierOrderRef = null, force = false } = {}
+) {
+  const pid = Number(purchaseId);
+  if (!Number.isFinite(pid) || pid < 1) return;
+  const ref =
+    supplierOrderRef != null && String(supplierOrderRef).trim() !== ''
+      ? String(supplierOrderRef).trim()
+      : null;
+  if (force) {
+    await query(
+      `UPDATE purchases SET
+         supplier_submitted_at = CURRENT_TIMESTAMP,
+         supplier_order_ref = COALESCE($2, supplier_order_ref),
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [pid, ref]
+    );
+    return;
+  }
+  await query(
+    `UPDATE purchases SET
+       supplier_submitted_at = COALESCE(supplier_submitted_at, CURRENT_TIMESTAMP),
+       supplier_order_ref = COALESCE(supplier_order_ref, $2),
+       updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [pid, ref]
+  );
+}
+
 async function loadPurchaseSubmitContext(purchaseId, supplierId, profileId) {
   const prof = profileId != null ? Number(profileId) : null;
   const purchaseRes = await query(
     `SELECT pu.id, pu.supplier_id, pu.profile_id, pu.note, pu.supplier_warehouse_name,
+            pu.supplier_submitted_at, pu.supplier_order_ref,
             s.id AS supplier_id, s.name AS supplier_name, s.code AS supplier_code, s.api_config
      FROM purchases pu
      INNER JOIN suppliers s ON s.id = pu.supplier_id
@@ -104,6 +147,8 @@ async function loadPurchaseSubmitContext(purchaseId, supplierId, profileId) {
       profile_id: row.profile_id,
       note: row.note,
       supplier_warehouse_name: row.supplier_warehouse_name,
+      supplier_submitted_at: row.supplier_submitted_at,
+      supplier_order_ref: row.supplier_order_ref,
     },
     supplier: {
       id: row.supplier_id,
@@ -325,6 +370,31 @@ export async function trySubmitPurchaseToSupplier({
     return { submitted: false, reason: 'no_lines', message: 'В закупке нет позиций для отправки' };
   }
 
+  if (shouldSkipSupplierSubmit(ctx.purchase, { force })) {
+    logger.info('[SupplierOrderPlacement] skip duplicate submit', {
+      purchaseId: pid,
+      supplierId: sid,
+      submittedAt: ctx.purchase.supplier_submitted_at,
+    });
+    return {
+      submitted: false,
+      skipped: true,
+      reason: 'already_submitted',
+      message: `Закупка №${pid} уже отправлена поставщику${
+        ctx.purchase.supplier_order_ref
+          ? ` (№${ctx.purchase.supplier_order_ref})`
+          : ctx.purchase.supplier_submitted_at
+            ? ` (${new Date(ctx.purchase.supplier_submitted_at).toLocaleString('ru-RU')})`
+            : ''
+      }. Повтор — только кнопкой «Повторить отправку».`,
+      supplierName: ctx.supplier.name,
+      supplierCode: ctx.supplier.code,
+      purchaseId: pid,
+      supplierSubmittedAt: ctx.purchase.supplier_submitted_at,
+      supplierOrderRef: ctx.purchase.supplier_order_ref,
+    };
+  }
+
   const apiCode = canonicalSupplierApiCode(ctx.supplier.code);
   const adapter = resolveSupplierOrderAdapter(apiCode);
   if (!adapter) {
@@ -369,6 +439,18 @@ export async function trySubmitPurchaseToSupplier({
       integrationConfig,
       supplier: ctx.supplier,
     });
+    if (result?.submitted) {
+      const orderRef =
+        result.supplierOrderId ??
+        result.supplierOrderIds?.[0] ??
+        (Array.isArray(result.supplierOrderIds) && result.supplierOrderIds.length
+          ? result.supplierOrderIds.join(',')
+          : null);
+      await markPurchaseSupplierSubmitted(pid, {
+        supplierOrderRef: orderRef,
+        force: Boolean(force),
+      });
+    }
     return {
       ...result,
       supplierName: ctx.supplier.name,
@@ -398,4 +480,6 @@ export default {
   supplierPreSubmitRequired,
   buildSubmitLinesFromItems,
   mergeProcurementItemsByProductId,
+  shouldSkipSupplierSubmit,
+  markPurchaseSupplierSubmitted,
 };

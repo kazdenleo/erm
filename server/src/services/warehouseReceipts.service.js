@@ -7,6 +7,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import { query } from '../config/database.js';
 import stockMovementsService from './stockMovements.service.js';
 import { isKitProductId } from './kitStock.service.js';
+import { readProductWarehouseOnHand } from './productWarehouseQuantity.service.js';
 
 class WarehouseReceiptsService {
   constructor() {
@@ -268,15 +269,14 @@ class WarehouseReceiptsService {
 
     const whId = await this._requireReceiptWarehouseId(warehouseId);
 
-    const receipt = await this.receiptsRepo.create({ supplierId, organizationId, documentType: 'return' });
-    if (!receipt) throw new Error('Не удалось создать возвратную накладную');
-
-    const receiptNumber = receipt.receipt_number || `ВН-${receipt.id}`;
-    const reason = `Возврат поставщику ${receiptNumber}`;
-
     const byProduct = new Map();
     for (const line of lines) {
-      const productId = typeof line.productId === 'string' ? parseInt(line.productId, 10) : line.productId;
+      const productId =
+        typeof line.productId === 'string'
+          ? parseInt(line.productId, 10)
+          : typeof line.product_id === 'string'
+            ? parseInt(line.product_id, 10)
+            : line.productId ?? line.product_id;
       if (!productId) continue;
       const quantity = Math.max(1, parseInt(line.quantity, 10) || 1);
       const key = productId;
@@ -288,6 +288,45 @@ class WarehouseReceiptsService {
       }
     }
 
+    if (!byProduct.size) {
+      const err = new Error('Не удалось определить товары в позициях возврата (productId)');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    for (const [, row] of byProduct) {
+      const { productId, quantity } = row;
+      const isKit = await isKitProductId(productId);
+      let onHand;
+      if (isKit) {
+        const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
+        const metrics = await computeAvailableQuantity(productId, {
+          warehouseId: whId,
+          supplierSyncEnabled: false,
+        });
+        onHand = Math.max(0, Number(metrics.onHand) || 0);
+      } else {
+        onHand = await readProductWarehouseOnHand(productId, whId);
+      }
+      if (onHand < quantity) {
+        const product = await this.productsRepository.findById(productId);
+        const label = product?.sku || product?.name || `#${productId}`;
+        const err = new Error(
+          isKit
+            ? `Недостаточно комплектов на складе для возврата поставщику (${label}): нужно ${quantity}, на складе ${onHand}`
+            : `Недостаточно товара на выбранном складе (${label}): нужно ${quantity}, доступно ${onHand}`
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+    }
+
+    const receipt = await this.receiptsRepo.create({ supplierId, organizationId, documentType: 'return' });
+    if (!receipt) throw new Error('Не удалось создать возвратную накладную');
+
+    const receiptNumber = receipt.receipt_number || `ВН-${receipt.id}`;
+    const reason = `Возврат поставщику ${receiptNumber}`;
+
     for (const [, row] of byProduct) {
       const { productId, quantity } = row;
       const isKit = await isKitProductId(productId);
@@ -296,30 +335,14 @@ class WarehouseReceiptsService {
         receiptId: receipt.id,
         productId,
         quantity,
-        cost: null
+        cost: null,
       });
-
-      if (isKit) {
-        const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
-        const metrics = await computeAvailableQuantity(productId, {
-          warehouseId: whId,
-          supplierSyncEnabled: false
-        });
-        const onHand = Math.max(0, Number(metrics.onHand) || 0);
-        if (onHand < quantity) {
-          const err = new Error(
-            `Недостаточно комплектов на складе для возврата поставщику: нужно ${quantity}, на складе ${onHand}`
-          );
-          err.statusCode = 409;
-          throw err;
-        }
-      }
 
       const extraMeta = {
         receipt_id: receipt.id,
         receipt_number: receiptNumber,
         supplier_id: supplierId,
-        warehouse_id: whId
+        warehouse_id: whId,
       };
       if (isKit) {
         extraMeta.kit_return_to_supplier = true;
@@ -340,13 +363,13 @@ class WarehouseReceiptsService {
         delta: -quantity,
         type: 'return_to_supplier',
         reason,
-        meta: extraMeta
+        meta: extraMeta,
       });
     }
 
     return {
       receipt,
-      linesCount: byProduct.size
+      linesCount: byProduct.size,
     };
   }
 

@@ -140,13 +140,25 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
-  /** Отправить заказ в закупку: резерв + закупка дефицита. */
+  /** Отправить заказ в закупку: резерв + закупка дефицита (без API поставщика). */
   sendToProcurement: async (marketplace, orderId) => {
     const mp = encodeURIComponent(marketplace);
     const id = encodeURIComponent(orderId);
     const response = await api.post(`/orders/${mp}/${id}/send-to-procurement`, null, {
       timeout: 300000,
     });
+    return response.data?.data ?? response.data;
+  },
+
+  /** Отправить открытые закупки заказа в API поставщика. */
+  submitToSupplier: async (marketplace, orderId, { force = false } = {}) => {
+    const mp = encodeURIComponent(marketplace);
+    const id = encodeURIComponent(orderId);
+    const response = await api.post(
+      `/orders/${mp}/${id}/submit-to-supplier`,
+      force ? { force: true } : null,
+      { timeout: 300000 }
+    );
     return response.data?.data ?? response.data;
   },
 
@@ -166,11 +178,11 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
-  /** @deprecated — алиас sendToProcurement */
+  /** @deprecated — алиас submitToSupplier */
   orderAtSupplier: async (marketplace, orderId) => {
     const mp = encodeURIComponent(marketplace);
     const id = encodeURIComponent(orderId);
-    const response = await api.post(`/orders/${mp}/${id}/send-to-procurement`);
+    const response = await api.post(`/orders/${mp}/${id}/submit-to-supplier`);
     return response.data?.data ?? response.data;
   },
 

@@ -46,26 +46,26 @@ describe('resolveProcurementArrivalBucketWithCalendar', () => {
     { name: 'MSK', time: '18:00', arrivalDay: 'today' },
   ];
 
-  test('before cutoff on Friday stays today', () => {
+  test('before cutoff on Friday uses same-day cutoff bucket', () => {
     const now = moscowDate(2026, 5, 29, 17, 0);
     const bucket = resolveProcurementArrivalBucketWithCalendar(supplierWarehouses, {
       now,
       warehouseWeekendDays: WEEKENDS,
     });
-    expect(bucket).toBe('today');
+    expect(bucket).toBe('cutoff:2026-05-29:18:00');
   });
 
-  test('after cutoff on Friday groups to date:Monday', () => {
+  test('after cutoff on Friday groups to Monday cutoff bucket', () => {
     const now = moscowDate(2026, 5, 29, 19, 0);
     const bucket = resolveProcurementArrivalBucketWithCalendar(supplierWarehouses, {
       now,
       warehouseWeekendDays: WEEKENDS,
     });
-    expect(bucket).toBe('date:2026-06-01');
+    expect(bucket).toBe('cutoff:2026-06-01:18:00');
     expect(shipDateFromArrivalBucket(bucket)).toBe('2026-06-01');
   });
 
-  test('Saturday and Sunday share Monday date bucket', () => {
+  test('Saturday and Sunday share Monday cutoff bucket', () => {
     const sat = moscowDate(2026, 5, 30, 11, 0);
     const sun = moscowDate(2026, 5, 31, 11, 0);
     const bSat = resolveProcurementArrivalBucketWithCalendar(supplierWarehouses, {
@@ -76,7 +76,7 @@ describe('resolveProcurementArrivalBucketWithCalendar', () => {
       now: sun,
       warehouseWeekendDays: WEEKENDS,
     });
-    expect(bSat).toBe('date:2026-06-01');
+    expect(bSat).toBe('cutoff:2026-06-01:18:00');
     expect(bSun).toBe(bSat);
   });
 });

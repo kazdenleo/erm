@@ -148,7 +148,11 @@ class PurchasesController {
           items: body.items,
           note: body.note,
         },
-        { userId, profileId }
+        {
+          userId,
+          profileId,
+          submitToSupplier: body.submitToSupplier === true,
+        }
       );
       return res.status(201).json({ ok: true, data });
     } catch (e) {
@@ -464,6 +468,21 @@ class PurchasesController {
         { action, supplierId, note, warehouseId },
         { profileId, userId }
       );
+      return res.status(200).json({ ok: true, data });
+    } catch (e) {
+      if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {
+        return res.status(e.statusCode).json({ ok: false, message: e.message });
+      }
+      next(e);
+    }
+  }
+
+  async submitToSupplier(req, res, next) {
+    try {
+      const { id } = req.params;
+      const force = req.body?.force === true || req.body?.force === 'true';
+      const profileId = req.user?.profileId ?? null;
+      const data = await purchasesService.submitToSupplier(id, { profileId, force });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {

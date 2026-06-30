@@ -105,15 +105,20 @@ export function mergeProductLists(...lists) {
   return [...map.values()];
 }
 
-export async function searchProductsRemote(query, { organizationId = null, limit = 40 } = {}) {
+export async function searchProductsRemote(
+  query,
+  { organizationId = null, warehouseId = null, limit = 40 } = {}
+) {
   const q = normalizeProductSearchQuery(query);
   if (!q || q.length < 1) return [];
   try {
+    const wh = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId).trim() : null;
     const res = await productsApi.getAll({
       search: q,
       organizationId: organizationId || undefined,
+      warehouseId: wh || undefined,
       limit,
-      listView: 'full',
+      listView: wh ? 'stock' : 'full',
     });
     return Array.isArray(res?.data) ? res.data.filter(Boolean) : [];
   } catch {
@@ -121,7 +126,10 @@ export async function searchProductsRemote(query, { organizationId = null, limit
   }
 }
 
-export async function searchProductsCombined(query, { products = [], organizationId = null, limit = 40 } = {}) {
+export async function searchProductsCombined(
+  query,
+  { products = [], organizationId = null, warehouseId = null, limit = 40 } = {}
+) {
   const q = normalizeProductSearchQuery(query);
   if (!q) return [];
 
@@ -135,7 +143,7 @@ export async function searchProductsCombined(query, { products = [], organizatio
   }
 
   const local = matchProductsLocal(products, q, { limit });
-  const remote = await searchProductsRemote(q, { organizationId, limit });
+  const remote = await searchProductsRemote(q, { organizationId, warehouseId, limit });
   const merged = mergeProductLists(barcodeHit ? [barcodeHit] : [], local, remote);
   return merged.slice(0, limit);
 }

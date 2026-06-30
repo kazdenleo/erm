@@ -345,6 +345,7 @@ export function Purchases() {
   const excelInputRef = useRef(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [submitSupplierBusy, setSubmitSupplierBusy] = useState(false);
 
   const [receipt, setReceipt] = useState(null);
   const scanRef = useRef(null);
@@ -2047,6 +2048,16 @@ export function Purchases() {
                   {detail.purchase.completed_at ? ` · ${fmtDt(detail.purchase.completed_at)}` : ''}).
                 </>
               )}
+              {detail.purchase.supplier_submitted_at ? (
+                <>
+                  {' '}
+                  <strong>Отправлено поставщику</strong>
+                  {detail.purchase.supplier_order_ref
+                    ? ` (№${detail.purchase.supplier_order_ref})`
+                    : ''}{' '}
+                  · {fmtDt(detail.purchase.supplier_submitted_at)}.
+                </>
+              ) : null}
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
               <span className="muted" style={{ fontSize: 13 }}>Поставщик</span>
@@ -2139,6 +2150,58 @@ export function Purchases() {
               >
                 Редактировать
               </Button>
+              {detail.purchase.supplier_id ? (
+                <Button
+                  variant="secondary"
+                  disabled={
+                    submitSupplierBusy || String(detail?.purchase?.status || '') === 'archived'
+                  }
+                  onClick={async () => {
+                    if (submitSupplierBusy) return;
+                    const alreadySent = Boolean(detail.purchase.supplier_submitted_at);
+                    if (
+                      alreadySent &&
+                      !window.confirm(
+                        'Закупка уже отправлялась поставщику. Повторить отправку всего состава? Лишние заказы у поставщика придётся отменить вручную.'
+                      )
+                    ) {
+                      return;
+                    }
+                    if (
+                      !alreadySent &&
+                      !window.confirm('Отправить закупку поставщику через API?')
+                    ) {
+                      return;
+                    }
+                    try {
+                      setSubmitSupplierBusy(true);
+                      setErr(null);
+                      const res = await purchasesApi.submitToSupplier(detail.purchase.id, {
+                        force: alreadySent,
+                      });
+                      if (res?.skipped) {
+                        setErr(res.message || 'Закупка уже отправлена поставщику');
+                      } else if (res?.submitted) {
+                        setErr(null);
+                        window.alert(res.message || 'Заказ отправлен поставщику');
+                      } else {
+                        setErr(res?.message || 'Не удалось отправить поставщику');
+                      }
+                      await openDetail(detail.purchase.id);
+                    } catch (ex) {
+                      setErr(ex.response?.data?.message || ex.message || 'Не удалось отправить поставщику');
+                    } finally {
+                      setSubmitSupplierBusy(false);
+                    }
+                  }}
+                >
+                  {submitSupplierBusy
+                    ? 'Отправляем…'
+                    : detail.purchase.supplier_submitted_at
+                      ? 'Повторить отправку поставщику'
+                      : 'Отправить поставщику'}
+                </Button>
+              ) : null}
               <Button
                 variant="secondary"
                 onClick={() => setExpectedDraftOpen(true)}

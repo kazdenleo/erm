@@ -150,7 +150,27 @@ export async function processAssemblyShipmentsInBackground(orderIds, { profileId
     for (const oid of uniq) {
       ordersLabelsService
         .findOrderById(oid)
-        .then((order) => ordersLabelsService.getLabelStatus(order, { organizationId }))
+        .then(async (order) => {
+          if (!order) return;
+          const mp = String(order.marketplace || '').toLowerCase();
+          if (mp === 'manual') return;
+          // После ship на Ozon/WB этикетка часто появляется с задержкой — несколько попыток.
+          const maxAttempts = mp === 'ozon' || mp === 'wb' ? 4 : 2;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              await ordersLabelsService.ensureLabelFile(order, { organizationId });
+              return;
+            } catch (e) {
+              const status = e?.statusCode;
+              const retryable = status === 409 || status === 429 || status === 502 || status === 504;
+              if (!retryable || attempt >= maxAttempts) {
+                await ordersLabelsService.getLabelStatus(order, { organizationId });
+                return;
+              }
+              await new Promise((r) => setTimeout(r, attempt === 1 ? 3000 : attempt === 2 ? 8000 : 15000));
+            }
+          }
+        })
         .catch(() => {});
     }
   } catch {

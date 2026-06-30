@@ -142,7 +142,14 @@ router.post(
   wrapAsync(ordersController.manualProcure.bind(ordersController))
 );
 
-// @deprecated — алиас send-to-procurement
+// Отправить открытые закупки заказа в API поставщика
+router.post(
+  '/:marketplace/:orderId/submit-to-supplier',
+  validateOrderDetailParams,
+  wrapAsync(ordersController.submitToSupplier.bind(ordersController))
+);
+
+// @deprecated — алиас submit-to-supplier
 router.post(
   '/:marketplace/:orderId/order-at-supplier',
   validateOrderDetailParams,

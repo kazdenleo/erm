@@ -323,6 +323,7 @@ export function WarehouseOperations({
   const returnScanDebounceRef = useRef(null);
   const returnScanInputRef = useRef(null);
   const returnScanDedupRef = useRef({ key: '', at: 0 });
+  const returnWhPrevRef = useRef(null);
   // Возврат от клиентов на склад
   const [customerReturnOrganizationId, setCustomerReturnOrganizationId] = useState('');
   const [customerReturnList, setCustomerReturnList] = useState([]);
@@ -553,6 +554,21 @@ export function WarehouseOperations({
       setWriteoffWarehouseId(String(inventoryWarehouseId));
     }
   }, [mode, writeoffWarehouseId, inventoryWarehouseId]);
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_SUPPLIER) return;
+    if (!returnWarehouseId && inventoryWarehouseId) {
+      setReturnWarehouseId(String(inventoryWarehouseId));
+    }
+  }, [mode, returnWarehouseId, inventoryWarehouseId]);
+
+  useEffect(() => {
+    const wh = String(returnWarehouseId || '');
+    if (returnWhPrevRef.current != null && returnWhPrevRef.current !== wh && wh) {
+      setReturnList([]);
+    }
+    if (wh) returnWhPrevRef.current = wh;
+  }, [returnWarehouseId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
@@ -1553,22 +1569,59 @@ export function WarehouseOperations({
     }
   };
 
-  /** Добавить товар в список возврата поставщику (qty ограничено остатком на складе) */
-  const addToReturnList = (product, add) => {
-    const maxQty = Math.max(0, product.quantity ?? 0);
+  const warehouseQtyForProduct = async (product, warehouseId) => {
+    if (!product?.id) return 0;
+    const wid = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId) : '';
+    if (!wid) return 0;
+    const fromList =
+      product?.quantity != null &&
+      String(product.quantity_warehouse_id ?? product.quantityWarehouseId ?? '') === wid
+        ? Math.max(0, Number(product.quantity) || 0)
+        : 0;
+    try {
+      const data = await stockMovementsApi.getWarehouseStock(product.id, wid);
+      const apiQty = Math.max(0, Number(data?.quantity) || 0);
+      return Math.max(apiQty, fromList);
+    } catch {
+      return fromList;
+    }
+  };
+
+  /** Добавить товар в список возврата поставщику (qty ограничено остатком на выбранном складе) */
+  const addToReturnList = async (product, add) => {
+    if (!returnWarehouseId) {
+      setOpMessage('Выберите склад списания');
+      return;
+    }
+    const maxQty = await warehouseQtyForProduct(product, returnWarehouseId);
+    if (maxQty < 1) {
+      setOpMessage('Нет остатка на выбранном складе');
+      return;
+    }
     const qty = Math.min(Math.max(1, parseInt(add, 10) || 1), maxQty);
     if (qty < 1) return;
     const id = product.id;
-    setReturnList(prev => {
-      const existing = prev.find(item => String(item.productId) === String(id));
+    setReturnList((prev) => {
+      const existing = prev.find((item) => String(item.productId) === String(id));
       if (existing) {
         const newQty = Math.min(existing.quantity + qty, maxQty);
         if (newQty <= 0) return prev;
-        return prev.map(item =>
-          String(item.productId) === String(id) ? { ...item, quantity: newQty } : item
+        return prev.map((item) =>
+          String(item.productId) === String(id)
+            ? { ...item, quantity: newQty, warehouseMaxQty: maxQty }
+            : item
         );
       }
-      return [...prev, { productId: id, sku: product.sku || '—', name: product.name || 'Без названия', quantity: qty }];
+      return [
+        ...prev,
+        {
+          productId: id,
+          sku: product.sku || '—',
+          name: product.name || 'Без названия',
+          quantity: qty,
+          warehouseMaxQty: maxQty,
+        },
+      ];
     });
   };
 
@@ -1589,13 +1642,13 @@ export function WarehouseOperations({
     setLookupError(null);
     try {
       const product = await lookupProductByAny(v, { title: 'Выберите товар для возврата поставщику' });
-      const available = product.quantity ?? 0;
+      const available = await warehouseQtyForProduct(product, returnWarehouseId);
       if (available < 1) {
-        setLookupError('Нет остатка на складе');
+        setLookupError('Нет остатка на выбранном складе');
         playEventSound(SOUND_EVENTS.scan_error);
         return;
       }
-      addToReturnList(product, 1);
+      await addToReturnList(product, 1);
       setOpMessage(`В список возврата: +1 шт — ${product.name || product.sku}`);
       playEventSound(SOUND_EVENTS.scan_ok);
       clearScanField(returnScanInputRef.current);
@@ -1648,7 +1701,7 @@ export function WarehouseOperations({
     ]
   );
 
-  const handleReturnFromList = () => {
+  const handleReturnFromList = async () => {
     if (!returnWarehouseId) {
       setOpMessage('Выберите склад списания');
       return;
@@ -1661,13 +1714,9 @@ export function WarehouseOperations({
       return;
     }
     const product = products.find((p) => String(p.id) === String(picked.id)) || picked;
-    if ((product.quantity ?? 0) <= 0) {
-      setOpMessage('Нет остатка для возврата');
-      return;
-    }
     const add = Math.max(1, parseInt(returnListQty, 10) || 1);
-    addToReturnList(product, add);
-    setOpMessage(`В список возврата: ${product.name} — ${add} шт`);
+    await addToReturnList(product, add);
+    setOpMessage(`В список возврата: ${product.name} — до ${add} шт`);
     setReturnPickedProduct(null);
     setReturnSelectedProductId('');
     setReturnListSearch('');
@@ -1681,10 +1730,9 @@ export function WarehouseOperations({
     const num = parseInt(value, 10);
     const item = returnList[index];
     if (!item) return;
-    const product = products.find(p => String(p.id) === String(item.productId));
-    const maxQty = Math.max(0, product?.quantity ?? 0);
-    const qty = Math.min(isNaN(num) || num < 1 ? 1 : num, maxQty);
-    setReturnList(prev =>
+    const maxQty = Math.max(0, Number(item.warehouseMaxQty) || 0);
+    const qty = Math.min(isNaN(num) || num < 1 ? 1 : num, maxQty || 1);
+    setReturnList((prev) =>
       prev.map((it, i) => (i === index ? { ...it, quantity: qty } : it))
     );
   };
@@ -1709,12 +1757,14 @@ export function WarehouseOperations({
     setOpLoading(true);
     setOpMessage(null);
     try {
-      const lines = returnList.map(l => ({
-        productId: l.productId,
-        quantity: Math.min(l.quantity, products.find(p => String(p.id) === String(l.productId))?.quantity ?? 0)
-      })).filter(l => l.quantity > 0);
+      const lines = returnList
+        .map((l) => ({
+          productId: l.productId,
+          quantity: Math.max(1, parseInt(l.quantity, 10) || 1),
+        }))
+        .filter((l) => l.productId != null && String(l.productId).trim() !== '' && l.quantity > 0);
       if (lines.length === 0) {
-        setOpMessage('Нет позиций для возврата (проверьте остатки)');
+        setOpMessage('Список пуст — добавьте товары в возврат');
         setOpLoading(false);
         return;
       }
@@ -2101,18 +2151,6 @@ export function WarehouseOperations({
     }
     return { plus, minus, net: plus - minus };
   }, [inventoryDetailView]);
-
-  const warehouseQtyForProduct = async (product, warehouseId) => {
-    if (!product?.id) return 0;
-    const wid = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId) : '';
-    if (!wid) return 0;
-    try {
-      const data = await stockMovementsApi.getWarehouseStock(product.id, wid);
-      return Math.max(0, Number(data?.quantity) || 0);
-    } catch {
-      return 0;
-    }
-  };
 
   const addOneToInventoryNewRow = async (product) => {
     if (!product?.id) {
@@ -2684,7 +2722,7 @@ export function WarehouseOperations({
 
       {mode === MODE_RETURN_SUPPLIER && (
         <div className="warehouse-ops-panel return-supplier-panel">
-          <p className="warehouse-ops-hint">Укажите организацию (от имени которой возврат), поставщика и склад списания; добавьте товары по скану или из списка. Документы сохраняются в списке ниже.</p>
+          <p className="warehouse-ops-hint">Укажите организацию (от имени которой возврат), поставщика и склад списания; добавьте товары по скану или из списка. Остаток проверяется по выбранному складу, а не по общему количеству в каталоге. Документы сохраняются в списке ниже.</p>
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
@@ -2830,8 +2868,7 @@ export function WarehouseOperations({
                     </thead>
                     <tbody>
                       {returnList.map((item, index) => {
-                        const product = products.find(p => String(p.id) === String(item.productId));
-                        const maxQty = product?.quantity ?? 0;
+                        const maxQty = Math.max(1, Number(item.warehouseMaxQty) || 1);
                         return (
                           <tr key={`${item.productId}-${index}`}>
                             <td className="sku-cell">{item.sku}</td>

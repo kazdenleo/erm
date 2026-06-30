@@ -199,6 +199,7 @@ async function procureGroupForSupplierOrder(
       profileId,
       supplierId: g.supplierId,
       arrivalBucket: g.arrivalBucket,
+      now,
     })
   );
 
@@ -250,6 +251,7 @@ async function procureGroupForSupplierOrder(
   const result = await purchasesService.procureFromOrders(payload, {
     userId,
     profileId,
+    submitToSupplier: false,
   });
 
   return {
@@ -323,7 +325,8 @@ class AutoProcurementService {
         const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
           supplier.apiConfig,
           now,
-          warehouseWeekendDays
+          warehouseWeekendDays,
+          supplier.code
         );
         const key = groupKey(supplier.id, arrivalBucket);
         if (!groups.has(key)) {
@@ -368,6 +371,7 @@ class AutoProcurementService {
           profileId: pid,
           supplierId: g.supplierId,
           arrivalBucket: g.arrivalBucket,
+          now,
         })
       );
 
@@ -419,6 +423,7 @@ class AutoProcurementService {
         const result = await purchasesService.procureFromOrders(payload, {
           userId,
           profileId: pid,
+          submitToSupplier: false,
         });
         if (result?.purchaseId) purchasesTouched += 1;
         itemsAdded += g.items.length;
@@ -587,7 +592,8 @@ class AutoProcurementService {
     const arrivalBucket = resolveProcurementArrivalBucketFromApiConfig(
       supplierRow.apiConfig,
       now,
-      warehouseWeekendDays
+      warehouseWeekendDays,
+      supplierRow.code
     );
     const procResult = await procureGroupForSupplierOrder(
       {

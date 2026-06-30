@@ -196,6 +196,32 @@ class AssemblyController {
           message: 'Заказ не на сборке или уже собран'
         });
       }
+      const mpNorm = String(marketplace || '').toLowerCase();
+      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
+      const organizationId =
+        orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
+      const needsMpLabel =
+        mpNorm !== 'manual' &&
+        (mpNorm === 'ozon' ||
+          mpNorm === 'wb' ||
+          mpNorm === 'wildberries' ||
+          mpNorm === 'yandex' ||
+          mpNorm === 'ym' ||
+          mpNorm === 'yandexmarket');
+      if (needsMpLabel && !ordersLabelsService.hasLabelCached(order)) {
+        try {
+          await ordersLabelsService.ensureLabelFile(order, { organizationId });
+        } catch (e) {
+          const hint =
+            mpNorm === 'ozon'
+              ? 'Для Ozon этикетка появляется после перевода в «Ожидает отгрузки»; для продаж юрлицам заполните данные в ЛК Ozon.'
+              : 'Дождитесь загрузки этикетки на странице сборки (иконка печати) или проверьте заказ в ЛК маркетплейса.';
+          return res.status(409).json({
+            ok: false,
+            message: e?.message ? `${e.message}. ${hint}` : `Этикетка не готова. ${hint}`
+          });
+        }
+      }
       if (!config.auth?.disabled && !req.user?.id) {
         return res.status(401).json({ ok: false, message: 'Требуется авторизация для отметки сборки' });
       }
@@ -208,17 +234,16 @@ class AssemblyController {
         req.user?.profileId ?? null,
         stickerNumber
       );
-      const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
-      const organizationId =
-        orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
-      let labelReady = false;
-      if (updated) {
+      let labelReady = needsMpLabel ? ordersLabelsService.hasLabelCached(updated || order) : false;
+      if (updated && needsMpLabel && !labelReady) {
         try {
           await ordersLabelsService.ensureLabelFile(updated, { organizationId });
           labelReady = true;
         } catch {
-          /* сборка успешна — этикетку догрузит клиент или повторная печать */
+          /* сборка уже отмечена — этикетку догрузит клиент */
         }
+      } else if (updated && needsMpLabel) {
+        labelReady = true;
       }
       return res.status(200).json({
         ok: true,

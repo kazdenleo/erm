@@ -83,6 +83,31 @@ function normMarketplace(o) {
   return m;
 }
 
+/** Ручные заказы — без этикетки МП; остальные маркетплейсы требуют стикер до завершения сборки. */
+function orderRequiresMarketplaceLabel(order) {
+  const mp = normMarketplace(order);
+  return mp === 'ozon' || mp === 'wildberries' || mp === 'yandex';
+}
+
+function labelNotReadyAssemblyMessage(marketplace) {
+  const mp = normMarketplace({ marketplace });
+  if (mp === 'ozon') {
+    return (
+      'Этикетка Ozon ещё не загружена. Подождите 1–2 минуты после «На сборку» или проверьте заказ в ЛК Ozon ' +
+      '(для продаж юрлицам сначала заполните данные отправления — без них стикер не выдаётся).'
+    );
+  }
+  if (mp === 'wildberries') {
+    return (
+      'Стикер WB ещё не загружен. Подождите или проверьте, что заказ переведён в сборку в кабинете Wildberries.'
+    );
+  }
+  if (mp === 'yandex') {
+    return 'Этикетка Яндекс.Маркета ещё не загружена. Подождите или проверьте статус заказа в кабинете.';
+  }
+  return 'Этикетка заказа ещё не загружена на сервер. Подождите и повторите.';
+}
+
 /**
  * Один заказ на сборке для группы МП (несколько строк в БД с разным orderId).
  * Ключ сессии должен быть стабильным — иначе при скане второй позиции приходит другая строка,
@@ -204,8 +229,8 @@ export function Assembly() {
       if (!silent) setLoading(true);
       setError(null);
       const [assemblyResponse, collectedResponse] = await Promise.all([
-        ordersApi.getAll({ status: 'in_assembly', limit: 500, enrichReserve: 'full' }),
-        ordersApi.getAll({ status: 'assembled', limit: 200 }),
+        ordersApi.getAll({ status: 'in_assembly', limit: 500, skipAutoReserve: '1' }),
+        ordersApi.getAll({ status: 'assembled', limit: 200, skipAutoReserve: '1' }),
       ]);
       const assemblyList = Array.isArray(assemblyResponse?.data) ? assemblyResponse.data : [];
       const collectedList = Array.isArray(collectedResponse?.data) ? collectedResponse.data : [];
@@ -559,11 +584,30 @@ export function Assembly() {
 
   /** Отметка «Собран» + печать этикетки (общая для скана и таблицы). */
   const runMarkCollectedFlow = useCallback(
-    async (marketplace, orderId, stickerRaw = null, { afterSuccess } = {}) => {
+    async (marketplace, orderId, stickerRaw = null, { afterSuccess, order: orderHint = null } = {}) => {
       const trimmed = stickerRaw != null ? String(stickerRaw).trim() : '';
       const oid = orderId != null ? String(orderId) : '';
+      const orderForLabel =
+        orderHint ||
+        assemblyOrders.find((o) => String(o.orderId ?? o.order_id) === oid) ||
+        collectedOrders.find((o) => String(o.orderId ?? o.order_id) === oid) ||
+        currentOrderData?.order;
       printingFlowRef.current = true;
       try {
+        if (orderForLabel && orderRequiresMarketplaceLabel(orderForLabel)) {
+          let ready = labelReadyByOrderId?.[oid] === true;
+          if (!ready) {
+            ready = await waitLabelCachedOnServer(oid, { maxMs: 90000 });
+            if (ready) {
+              setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [oid]: true }));
+            }
+          }
+          if (!ready) {
+            setLabelPrintError(labelNotReadyAssemblyMessage(orderForLabel.marketplace));
+            setTimeout(() => setLabelPrintError(null), 15000);
+            return false;
+          }
+        }
         const collected = await assemblyApi.markCollected(marketplace, orderId, trimmed || null);
         afterSuccess?.(trimmed || null);
         void loadOrders({ silent: true });
@@ -593,7 +637,7 @@ export function Assembly() {
         return false;
       }
     },
-    [loadOrders, requestLabelPrint, labelReadyByOrderId]
+    [loadOrders, requestLabelPrint, labelReadyByOrderId, waitLabelCachedOnServer, assemblyOrders, collectedOrders, currentOrderData?.order]
   );
 
   useEffect(() => {
@@ -760,9 +804,44 @@ export function Assembly() {
     isOrderFullyCollected &&
     String(currentOrderData?.order?.status ?? '').toLowerCase() !== 'assembled';
 
-  // Автозавершение скан-сборки: все позиции (в т.ч. комплектующие) отсканированы → печать этикетки.
+  const currentOrderLabelReady =
+    !currentOrderData?.order ||
+    !orderRequiresMarketplaceLabel(currentOrderData.order) ||
+    labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true;
+
+  const waitingForOrderLabel =
+    showScanStickerFinish &&
+    currentOrderData?.order &&
+    orderRequiresMarketplaceLabel(currentOrderData.order) &&
+    !currentOrderLabelReady;
+
+  // Пока ждём этикетку — опрашиваем статус чаще, чем фоновый список.
   useEffect(() => {
-    if (!showScanStickerFinish) return;
+    if (!waitingForOrderLabel || !currentOrderData?.order?.orderId) return undefined;
+    const oid = String(currentOrderData.order.orderId);
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await api.get(`/orders/${encodeURIComponent(oid)}/label/status`, { timeout: 20000 });
+        const exists = r?.data?.data?.exists === true || r?.data?.exists === true;
+        if (exists && !cancelled) {
+          setLabelReadyByOrderId((prev) => ({ ...(prev || {}), [oid]: true }));
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [waitingForOrderLabel, currentOrderData?.order?.orderId]);
+
+  // Автозавершение скан-сборки: все позиции отсканированы и этикетка на сервере → печать.
+  useEffect(() => {
+    if (!showScanStickerFinish || !currentOrderLabelReady) return;
     if (!currentOrderData?.order || !currentOrderKey) return;
     if (finishScanSubmitting || printingFlowRef.current) return;
     if (markedCollectedKeyRef.current === currentOrderKey) return;
@@ -774,7 +853,7 @@ export function Assembly() {
       void handleFinishScanAssembly();
     }, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- намеренно не добавляем handleFinishScanAssembly (не stable)
-  }, [showScanStickerFinish, currentOrderKey, currentOrderData?.order, finishScanSubmitting]);
+  }, [showScanStickerFinish, currentOrderLabelReady, currentOrderKey, currentOrderData?.order, finishScanSubmitting]);
 
   const handleFinishScanAssembly = async () => {
     if (!currentOrderData?.order || !currentOrderKey || finishScanSubmitting) return;
@@ -834,7 +913,13 @@ export function Assembly() {
     const orderId = String(o.orderId ?? o.order_id ?? '').trim();
     if (!marketplace || !orderId) return;
     if (printingFlowRef.current) return;
+    if (orderRequiresMarketplaceLabel(o) && labelReadyByOrderId?.[orderId] !== true) {
+      setLabelPrintError(labelNotReadyAssemblyMessage(o.marketplace));
+      setTimeout(() => setLabelPrintError(null), 12000);
+      return;
+    }
     void runMarkCollectedFlow(marketplace, orderId, o.assemblyStickerNumber ?? o.assembly_sticker_number ?? null, {
+      order: o,
       afterSuccess: () => {
         if (currentOrderKey === rowKey) handleClearCurrentOrder();
       },
@@ -1018,17 +1103,25 @@ export function Assembly() {
             {showScanStickerFinish && (
               <div className="assembly-sticker-finish">
                 <p className="assembly-ready-text">
-                  {finishScanSubmitting
-                    ? 'Все позиции отсканированы. Загружаем этикетку и отправляем на печать…'
-                    : 'Все позиции отсканированы. Этикетка отправляется в печать автоматически…'}
+                  {waitingForOrderLabel
+                    ? 'Все позиции отсканированы. Загружаем этикетку с маркетплейса — сборка начнётся автоматически, как только стикер будет готов.'
+                    : finishScanSubmitting
+                      ? 'Все позиции отсканированы. Отмечаем собранным и отправляем этикетку на печать…'
+                      : 'Все позиции отсканированы. Этикетка отправляется в печать автоматически…'}
                 </p>
+                {waitingForOrderLabel && currentOrderData?.order && (
+                  <p className="assembly-label-wait-hint" style={{ marginTop: 8, fontSize: '0.92rem', opacity: 0.9 }}>
+                    {labelNotReadyAssemblyMessage(currentOrderData.order.marketplace)}
+                  </p>
+                )}
                 <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Button
                     variant="primary"
                     onClick={() => void handleFinishScanAssembly()}
-                    disabled={finishScanSubmitting}
+                    disabled={finishScanSubmitting || waitingForOrderLabel}
+                    title={waitingForOrderLabel ? 'Дождитесь загрузки этикетки' : undefined}
                   >
-                    {finishScanSubmitting ? '…' : 'Завершить сборку и напечатать'}
+                    {finishScanSubmitting ? '…' : waitingForOrderLabel ? 'Ожидание этикетки…' : 'Завершить сборку и напечатать'}
                   </Button>
                   {labelReadyByOrderId?.[String(currentOrderData.order.orderId)] === true && (
                     <button
@@ -1231,10 +1324,23 @@ export function Assembly() {
                           variant="primary"
                           size="small"
                           onClick={() => handleManualAssembleFromTable(primary)}
-                          disabled={isReturnLoading || finishScanSubmitting}
-                          title="Отметить заказ собранным без сканирования и напечатать этикетку"
+                          disabled={
+                            isReturnLoading ||
+                            finishScanSubmitting ||
+                            (orderRequiresMarketplaceLabel(primary) &&
+                              labelReadyByOrderId?.[String(primary.orderId)] !== true)
+                          }
+                          title={
+                            orderRequiresMarketplaceLabel(primary) &&
+                            labelReadyByOrderId?.[String(primary.orderId)] !== true
+                              ? labelNotReadyAssemblyMessage(primary.marketplace)
+                              : 'Отметить заказ собранным без сканирования и напечатать этикетку'
+                          }
                         >
-                          ✓ Собрать
+                          {orderRequiresMarketplaceLabel(primary) &&
+                          labelReadyByOrderId?.[String(primary.orderId)] !== true
+                            ? '⏳ Этикетка…'
+                            : '✓ Собрать'}
                         </Button>
                         <Button
                           variant="secondary"

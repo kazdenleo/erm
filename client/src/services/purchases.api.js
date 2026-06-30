@@ -39,6 +39,15 @@ export const purchasesApi = {
     return response.data?.data ?? response.data;
   },
 
+  submitToSupplier: async (id, { force = false } = {}) => {
+    const response = await api.post(
+      `/purchases/${id}/submit-to-supplier`,
+      { force: Boolean(force) },
+      { timeout: 300000 }
+    );
+    return response.data?.data ?? response.data;
+  },
+
   /** Закупка из заказов + статус «В закупке» одним запросом */
   procureFromOrders: async (payload) => {
     const response = await api.post('/purchases/procure-from-orders', payload, { timeout: 300000 });

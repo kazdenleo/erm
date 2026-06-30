@@ -165,7 +165,8 @@ export function OrderCardActions({
   const [cancelLoading, setCancelLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [supplierOrderLoading, setSupplierOrderLoading] = useState(false);
-  const busy = cancelLoading || deleteLoading || supplierOrderLoading;
+  const [supplierSubmitLoading, setSupplierSubmitLoading] = useState(false);
+  const busy = cancelLoading || deleteLoading || supplierOrderLoading || supplierSubmitLoading;
   const showCancel = orderCanShowCancel(marketplace, status);
   const showSupplierOrder =
     supplierSyncEnabled && isOrderStatusEligibleForSupplierOrder(marketplace, status);
@@ -193,6 +194,19 @@ export function OrderCardActions({
       }
     } finally {
       setSupplierOrderLoading(false);
+    }
+  };
+
+  const handleSubmitToSupplier = async () => {
+    setSupplierSubmitLoading(true);
+    try {
+      const result = await ordersApi.submitToSupplier(marketplace, orderId);
+      onSupplierOrdered?.(result);
+    } catch (e) {
+      const msg = e.response?.data?.message || e.message || 'Не удалось отправить заказ поставщику';
+      onError?.(msg);
+    } finally {
+      setSupplierSubmitLoading(false);
     }
   };
 
@@ -238,6 +252,9 @@ export function OrderCardActions({
             <Button variant="primary" size="small" onClick={handleSendToProcurement} disabled={busy}>
               {supplierOrderLoading ? 'Отправка…' : 'Отправить в закупку'}
             </Button>
+            <Button variant="secondary" size="small" onClick={handleSubmitToSupplier} disabled={busy}>
+              {supplierSubmitLoading ? 'Отправка…' : 'Отправить поставщику'}
+            </Button>
             <Button
               variant="secondary"
               size="small"
@@ -259,7 +276,7 @@ export function OrderCardActions({
       </div>
       <p className="order-detail-actions-hint">
         {showSupplierOrder
-          ? '«Отправить в закупку» — резерв со склада и «в пути», закупка только на недостающее количество. '
+          ? '«Отправить в закупку» — резерв и закупка в ERM без API поставщика. «Отправить поставщику» — заказ в Moskvorechie / Mikado по открытой закупке. '
           : ''}
         «Удалить из системы» убирает заказ из ERM и не отменяет его на маркетплейсе. «Отменить» — отмена в
         системе и запрос отмены на МП (если доступно).

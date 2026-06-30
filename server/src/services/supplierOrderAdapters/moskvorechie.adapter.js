@@ -1,5 +1,5 @@
 /**
- * Отправка закупки поставщику Moskvorechie (portal.api).
+ * Отправка закупки поставщику Moskvorechie (portal.api — проценка, REST v1 — заказы).
  */
 
 import logger from '../../utils/logger.js';
@@ -10,6 +10,10 @@ import {
   warehouseNameMatches,
   xmlTag,
 } from './shared.js';
+import {
+  moskvorechieV1Configured,
+  submitMoskvorechieV1Order,
+} from './moskvorechie.v1.js';
 
 const MOSKV_ORDER_ID_KEYS = [
   'order_id',
@@ -43,17 +47,23 @@ function pickOrderIdFromObject(obj) {
   return null;
 }
 
+function moskvApiMessage(obj) {
+  return String(obj?.message || obj?.msg || obj?.info || '').trim();
+}
+
+/** У portal.api status "1" — код ошибки, "0" — успех (если нет явного success). */
 function looksLikeMoskvSuccess(obj) {
   if (!obj || typeof obj !== 'object') return false;
   if (obj.success === true || obj.ok === true) return true;
   const status = obj.status;
-  if (status === 1 || status === '1' || status === 'ok' || status === 'success') return true;
-  const msg = String(obj.message || obj.msg || obj.info || '').toLowerCase();
+  if (status === 1 || status === '1') return false;
+  if (status === 0 || status === '0' || status === 'ok' || status === 'success') return true;
+  const msg = moskvApiMessage(obj).toLowerCase();
   return (
     msg.includes('успеш') ||
     msg.includes('принят') ||
     msg.includes('оформлен') ||
-    msg.includes('добавлен')
+    (msg.includes('добавлен') && !msg.includes('не добавлен'))
   );
 }
 
@@ -61,12 +71,91 @@ function looksLikeMoskvFailure(obj) {
   if (!obj || typeof obj !== 'object') return false;
   if (obj.success === false || obj.ok === false) return true;
   const status = obj.status;
-  if (status === 0 || status === '0' || status === 'error' || status === 'fail') return true;
-  return Boolean(obj.error || obj.err);
+  if (status === 1 || status === '1') return true;
+  if (status === 'error' || status === 'fail') return true;
+  if (status === 0 || status === '0') return false;
+  const msg = moskvApiMessage(obj).toLowerCase();
+  if (!msg) return Boolean(obj.error || obj.err);
+  return (
+    msg.includes('ошиб') ||
+    msg.includes('не верная') ||
+    msg.includes('неверн') ||
+    msg.includes('пуст') ||
+    msg.includes('отказ') ||
+    msg.includes('нет ') ||
+    msg.includes('невозмож') ||
+    Boolean(obj.error || obj.err)
+  );
+}
+
+function failureMessageFromMoskvObj(obj, fallback = 'Moskvorechie отклонил запрос') {
+  const msg = moskvApiMessage(obj);
+  if (msg) return msg;
+  if (obj?.error) return String(obj.error);
+  if (obj?.err) return String(obj.err);
+  return fallback;
 }
 
 function apiKeyFromConfig(config) {
-  return config?.apiKey || config?.password || '';
+  return config?.apiKey || config?.v1ApiKey || config?.v1_api_key || '';
+}
+
+/** Ключ portal.api (проценка, price_by_nr_firm) — отличается от v1 «Клиентский API». */
+export function portalCredentialsFromConfig(config, integrationConfig = {}) {
+  const merged = { ...config, ...integrationConfig };
+  const userId = String(merged.user_id || merged.userId || '').trim();
+  const v1Key = apiKeyFromConfig(merged);
+  const portalKey = String(
+    merged.portalApiKey || merged.portal_api_key || merged.portalPassword || merged.portal_password || ''
+  ).trim();
+  const legacyPassword = String(merged.password || '').trim();
+  const legacyFilePortalKey = String(merged.legacyPortalApiKey || merged.filePortalApiKey || '').trim();
+  const apiKey =
+    portalKey ||
+    (legacyPassword && legacyPassword !== v1Key ? legacyPassword : '') ||
+    (legacyFilePortalKey && legacyFilePortalKey !== v1Key ? legacyFilePortalKey : '');
+  return {
+    userId,
+    apiKey,
+    hasPortalKey: Boolean(
+      portalKey ||
+        (legacyPassword && legacyPassword !== v1Key) ||
+        (legacyFilePortalKey && legacyFilePortalKey !== v1Key)
+    ),
+  };
+}
+
+function portalLookupErrorMessage(text, { userId, apiKey } = {}) {
+  let errMsg = 'Товар не найден у Moskvorechie';
+  try {
+    const data = JSON.parse(text);
+    const msg = String(data?.result?.msg || data?.error || data?.message || '').trim();
+    if (msg) errMsg = msg;
+    if (/логин|авториза/i.test(msg)) {
+      if (!userId || !apiKey) {
+        return (
+          'Для поиска товара (gid) укажите в интеграциях Moskvorechie → Дополнительно: ' +
+          'User ID (логин portal) и Portal API Key из раздела «Доступ к API Портала». ' +
+          'Ключ «Клиентский API» (v1) для этого не подходит.'
+        );
+      }
+      return `Ошибка portal.api Moskvorechie: ${msg}. Проверьте User ID и Portal API Key в интеграциях.`;
+    }
+  } catch {
+    /* ignore */
+  }
+  return errMsg;
+}
+
+/** REST v1 — если есть API Key или уже заданы Agreement/Filial. */
+export function shouldUseMoskvorechieV1OrderApi(config, integrationConfig = {}) {
+  const merged = { ...config, ...integrationConfig };
+  return (
+    integrationConfig.orderApiVersion === 'v1' ||
+    integrationConfig.order_api_version === 'v1' ||
+    Boolean(apiKeyFromConfig(merged)) ||
+    moskvorechieV1Configured(config, integrationConfig)
+  );
 }
 
 function parseMoskvorechieOffers(responseText, sku) {
@@ -89,10 +178,15 @@ function parseMoskvorechieOffers(responseText, sku) {
   }
 }
 
-async function fetchMoskvorechieOffers({ sku, brand, config }) {
-  const apiKey = apiKeyFromConfig(config);
+async function fetchMoskvorechieOffers({ sku, brand, config, integrationConfig = {} }) {
+  const { userId, apiKey } = portalCredentialsFromConfig(config, integrationConfig);
+  if (!userId || !apiKey) {
+    throw new Error(
+      'Не настроен portal.api Moskvorechie (User ID + Portal API Key в интеграциях → Дополнительно)'
+    );
+  }
   const params = new URLSearchParams({
-    l: config.user_id,
+    l: userId,
     p: apiKey,
     act: 'price_by_nr_firm',
     v: '1',
@@ -114,24 +208,41 @@ async function fetchMoskvorechieOffers({ sku, brand, config }) {
   return { text, offers: parseMoskvorechieOffers(text, sku) };
 }
 
-async function lookupMoskvorechieOffer({ sku, brand, config }) {
+async function lookupMoskvorechieOffer({ sku, brand, config, integrationConfig = {} }) {
+  const portalCreds = portalCredentialsFromConfig(config, integrationConfig);
+  if (!portalCreds.userId || !portalCreds.apiKey) {
+    return {
+      ok: false,
+      message:
+        'Для заказа нужен Portal API Key: интеграции → Moskvorechie → Дополнительно → User ID и ключ из «Доступ к API Портала» (не путать с «Клиентский API»).',
+      offers: [],
+    };
+  }
+
   const trimmedBrand = String(brand || '').trim();
-  let { text, offers } = await fetchMoskvorechieOffers({ sku, brand: trimmedBrand, config });
+  let { text, offers } = await fetchMoskvorechieOffers({
+    sku,
+    brand: trimmedBrand,
+    config,
+    integrationConfig,
+  });
 
   if (!offers.length && trimmedBrand) {
     logger.info('[MoskvorechieOrder] retry lookup without brand', { sku, brand: trimmedBrand });
-    ({ text, offers } = await fetchMoskvorechieOffers({ sku, brand: '', config }));
+    ({ text, offers } = await fetchMoskvorechieOffers({
+      sku,
+      brand: '',
+      config,
+      integrationConfig,
+    }));
   }
 
   if (!offers.length) {
-    let errMsg = 'Товар не найден у Moskvorechie';
-    try {
-      const data = JSON.parse(text);
-      if (data?.error || data?.message) errMsg = String(data.error || data.message);
-    } catch {
-      /* ignore */
-    }
-    return { ok: false, message: errMsg, offers: [] };
+    return {
+      ok: false,
+      message: portalLookupErrorMessage(text, portalCreds),
+      offers: [],
+    };
   }
   return { ok: true, offers };
 }
@@ -158,7 +269,7 @@ function parseMoskvorechieOrderResponseFromJson(data, raw) {
       if (looksLikeMoskvFailure(result)) {
         return {
           ok: false,
-          message: String(result.message || result.error || result.err || 'Moskvorechie отклонил заказ'),
+          message: failureMessageFromMoskvObj(result, 'Moskvorechie отклонил заказ'),
         };
       }
       const orderId = pickOrderIdFromObject(result);
@@ -268,45 +379,24 @@ export function parseMoskvorechieOrderResponse(text) {
 }
 
 async function submitMoskvorechieOrder({ config, integrationConfig, orderLines, comment }) {
-  const apiKey = apiKeyFromConfig(config);
-  const act =
-    integrationConfig.orderAct ||
-    integrationConfig.order_act ||
-    'make_orders';
+  const mergedConfig = { ...config, ...integrationConfig };
+  const useV1 = shouldUseMoskvorechieV1OrderApi(config, integrationConfig);
 
-  const params = new URLSearchParams({
-    l: config.user_id,
-    p: apiKey,
-    act,
-    v: '1',
-    cs: 'utf8',
-  });
-  if (comment) params.set('comment', comment);
-
-  for (const line of orderLines) {
-    params.append('gid', line.gid);
-    params.append('col', String(line.quantity));
+  if (useV1) {
+    return submitMoskvorechieV1Order({
+      config: mergedConfig,
+      integrationConfig,
+      orderLines,
+      comment,
+    });
   }
 
-  const url = `${MOSKVORECHIE_API_BASE}?${params.toString()}`;
-  const response = await fetchWithTimeout(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json, */*' },
-  });
-  if (!response.ok) {
-    throw new Error(`Moskvorechie ${act}: HTTP ${response.status}`);
-  }
-  const text = await response.text();
-  const parsed = parseMoskvorechieOrderResponse(text);
-  logger.info('[MoskvorechieOrder] make_orders response', {
-    act,
-    lines: orderLines.length,
-    ok: parsed.ok,
-    orderId: parsed.orderId ?? null,
-    confirmedWithoutOrderId: parsed.confirmedWithoutOrderId === true,
-    preview: text.slice(0, 500),
-  });
-  return parsed;
+  return {
+    ok: false,
+    message:
+      'Для отправки заказов Moskvorechie укажите API Key из «Клиентский API» в интеграциях. ' +
+      'Agreement ID и Filial ID подтягиваются автоматически из GET /profile.',
+  };
 }
 
 /**
@@ -315,11 +405,11 @@ async function submitMoskvorechieOrder({ config, integrationConfig, orderLines, 
 export async function submitMoskvorechiePurchase(ctx) {
   const { purchase, lines, config, integrationConfig = {} } = ctx;
   const apiKey = apiKeyFromConfig(config);
-  if (!config?.user_id || !apiKey) {
+  if (!apiKey) {
     return {
       submitted: false,
       reason: 'no_credentials',
-      message: 'Не настроены логин/API-ключ Moskvorechie в интеграциях',
+      message: 'Не настроен API Key Moskvorechie в интеграциях',
     };
   }
 
@@ -338,7 +428,7 @@ export async function submitMoskvorechiePurchase(ctx) {
 
     let lookup;
     try {
-      lookup = await lookupMoskvorechieOffer({ sku, brand, config });
+      lookup = await lookupMoskvorechieOffer({ sku, brand, config, integrationConfig });
     } catch (e) {
       failedLines.push({
         productId: line.product_id,
@@ -427,7 +517,7 @@ export async function submitMoskvorechiePurchase(ctx) {
     }
     return {
       submitted: true,
-      mode: integrationConfig.orderMode || 'order',
+      mode: 'v1',
       message: result.message,
       supplierOrderId: result.orderId || null,
       lines: orderLines,

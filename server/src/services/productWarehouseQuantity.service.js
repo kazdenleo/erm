@@ -68,3 +68,33 @@ export async function reconcileLegacyProductQuantityToPws(productId, warehouseId
   );
   return legacy;
 }
+
+/**
+ * Остаток на складе для операций (возврат, списание): reconcile legacy + как в списке остатков.
+ */
+export async function readProductWarehouseOnHand(productId, warehouseId) {
+  const pid = Number(productId);
+  const wid = Number(warehouseId);
+  if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(wid) || wid < 1) return 0;
+
+  await reconcileLegacyProductQuantityToPws(pid, wid).catch(() => {});
+
+  const whR = await query(
+    `SELECT quantity FROM product_warehouse_stock WHERE product_id = $1 AND warehouse_id = $2`,
+    [pid, wid]
+  );
+  if (whR.rows?.length) {
+    return Math.max(0, parseInt(whR.rows[0].quantity, 10) || 0);
+  }
+
+  const sumR = await query(
+    `SELECT COALESCE(SUM(quantity), 0)::int AS total
+     FROM product_warehouse_stock WHERE product_id = $1`,
+    [pid]
+  );
+  const pwsSum = Math.max(0, Number(sumR.rows[0]?.total) || 0);
+  const pr = await query(`SELECT COALESCE(quantity, 0)::int AS legacy FROM products WHERE id = $1`, [pid]);
+  const legacy = Math.max(0, Number(pr.rows[0]?.legacy) || 0);
+  if (pwsSum <= 0 && legacy > 0) return legacy;
+  return 0;
+}

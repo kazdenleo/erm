@@ -44,11 +44,19 @@ export function Login({ mode = 'user' }) {
       }
       navigate(from, { replace: true });
     } catch (err) {
-      setError(
-        err?.message ||
-          err?.response?.data?.message ||
-          'Ошибка входа'
-      );
+      const status = err?.response?.status;
+      const serverMsg = err?.response?.data?.message;
+      let msg = serverMsg || err?.message || 'Ошибка входа';
+      if (
+        !serverMsg &&
+        (err?.code === 'ERR_NETWORK' ||
+          err?.code === 'ECONNREFUSED' ||
+          (status === 500 && String(err?.message || '').includes('status code 500')))
+      ) {
+        msg =
+          'Сервер API недоступен. Убедитесь, что backend запущен (cd server && npm run dev) или повторите попытку через минуту.';
+      }
+      setError(msg);
     } finally {
       setSubmitting(false);
     }

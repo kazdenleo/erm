@@ -1041,7 +1041,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
   }
 
   /**
-   * Отправить заказ в закупку: резерв + закупка дефицита у поставщика.
+   * Отправить заказ в закупку: резерв + закупка дефицита (без API поставщика).
    * POST /orders/:marketplace/:orderId/send-to-procurement
    */
   async sendToProcurement(req, res, next) {
@@ -1074,10 +1074,42 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
   }
 
   /**
-   * @deprecated POST /orders/:marketplace/:orderId/order-at-supplier — алиас send-to-procurement
+   * @deprecated POST /orders/:marketplace/:orderId/order-at-supplier — алиас submit-to-supplier
    */
   async orderAtSupplier(req, res, next) {
-    return this.sendToProcurement(req, res, next);
+    return this.submitToSupplier(req, res, next);
+  }
+
+  /**
+   * Отправить открытые закупки заказа в API поставщика.
+   * POST /orders/:marketplace/:orderId/submit-to-supplier
+   */
+  async submitToSupplier(req, res, next) {
+    try {
+      const { marketplace, orderId } = req.params;
+      const tid = tenantListProfileId(req);
+      const profileId = tid === TENANT_LIST_EMPTY ? null : tid;
+      const force = req.body?.force === true;
+      const data = await orderSupplierOrderService.submitToSupplier(marketplace, orderId, {
+        profileId,
+        force,
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      if (
+        error.statusCode === 400 ||
+        error.statusCode === 403 ||
+        error.statusCode === 404 ||
+        error.statusCode === 501
+      ) {
+        return res.status(error.statusCode).json({
+          ok: false,
+          message: error.message,
+          details: error.details ?? null,
+        });
+      }
+      next(error);
+    }
   }
 
   /** GET /orders/:marketplace/:orderId/procurement-lines */

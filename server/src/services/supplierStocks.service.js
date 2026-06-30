@@ -11,7 +11,7 @@ import integrationsService from './integrations.service.js';
 import productsService from './products.service.js';
 import { getCache, setCache, deleteCache } from '../config/redis.js';
 import logger from '../utils/logger.js';
-import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
+import { portalCredentialsFromConfig } from './supplierOrderAdapters/moskvorechie.adapter.js';
 
 class SupplierStocksService {
   /**
@@ -679,24 +679,23 @@ async function getMoskvorechieStock(sku, config = null) {
   try {
     console.log(`[Moskvorechie Stock] Fetching stock for SKU: ${sku}`);
     const moskvorechieConfig = config || await integrationsService.getSupplierConfig('moskvorechie');
+    const portalCreds = portalCredentialsFromConfig(moskvorechieConfig);
     console.log(`[Moskvorechie Stock] Config check:`, {
       hasConfig: !!moskvorechieConfig,
-      hasUserId: !!moskvorechieConfig?.user_id,
-      hasApiKey: !!moskvorechieConfig?.apiKey,
-      hasPassword: !!moskvorechieConfig?.password,
+      hasUserId: !!portalCreds.userId,
+      hasPortalApiKey: !!portalCreds.apiKey,
       configKeys: moskvorechieConfig ? Object.keys(moskvorechieConfig) : []
     });
-    if (!moskvorechieConfig || !moskvorechieConfig.user_id || (!moskvorechieConfig.apiKey && !moskvorechieConfig.password)) {
-      console.log('[Moskvorechie Stock] No credentials configured');
+    if (!moskvorechieConfig || !portalCreds.userId || !portalCreds.apiKey) {
+      console.log('[Moskvorechie Stock] No portal.api credentials configured (User ID + Portal API Key)');
       return null;
     }
-    console.log(`[Moskvorechie Stock] Credentials found, user_id: ${moskvorechieConfig.user_id}`);
+    console.log(`[Moskvorechie Stock] Credentials found, user_id: ${portalCreds.userId}`);
 
-    const apiKey = moskvorechieConfig.apiKey || moskvorechieConfig.password;
     const url = `http://portal.moskvorechie.ru/portal.api?l=${encodeURIComponent(
-      moskvorechieConfig.user_id
+      portalCreds.userId
     )}&p=${encodeURIComponent(
-      apiKey
+      portalCreds.apiKey
     )}&act=price_by_nr_firm&v=1&nr=${encodeURIComponent(
       sku
     )}&f=&cs=utf8&avail&extstor`;
@@ -911,8 +910,9 @@ async function getMikadoWarehouses() {
 async function getMoskvorechieWarehouses() {
   try {
     const moskvorechieConfig = await integrationsService.getSupplierConfig('moskvorechie');
-    if (!moskvorechieConfig || !moskvorechieConfig.user_id || (!moskvorechieConfig.apiKey && !moskvorechieConfig.password)) {
-      console.log('[Moskvorechie Warehouses] No credentials configured');
+    const portalCreds = portalCredentialsFromConfig(moskvorechieConfig || {});
+    if (!moskvorechieConfig || !portalCreds.userId || !portalCreds.apiKey) {
+      console.log('[Moskvorechie Warehouses] No portal.api credentials configured');
       return [];
     }
 
@@ -934,11 +934,10 @@ async function getMoskvorechieWarehouses() {
       }
     }
 
-    const apiKey = moskvorechieConfig.apiKey || moskvorechieConfig.password;
     const url = `http://portal.moskvorechie.ru/portal.api?l=${encodeURIComponent(
-      moskvorechieConfig.user_id
+      portalCreds.userId
     )}&p=${encodeURIComponent(
-      apiKey
+      portalCreds.apiKey
     )}&act=price_by_nr_firm&v=1&nr=${encodeURIComponent(
       testSku
     )}&f=&cs=utf8&avail&extstor`;
