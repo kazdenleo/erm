@@ -3,7 +3,7 @@
  * Custom hook для работы с заказами
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ordersApi } from '../services/orders.api';
 
 export function useOrders(options = {}) {
@@ -12,19 +12,28 @@ export function useOrders(options = {}) {
   const [meta, setMeta] = useState({ total: null, limit: null, offset: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const inFlightRef = useRef(false);
 
   /**
-   * @param {boolean | { silent?: boolean }} [options] — при silent=true не трогаем loading
+   * @param {boolean | { silent?: boolean, params?: object }} [options] — при silent=true не трогаем loading
    * (чтобы не скрывать всю страницу при обновлении списка после смены статуса и т.п.)
    */
   const loadOrders = useCallback(async (options) => {
     const silent = options === true || Boolean(options?.silent);
+    if (inFlightRef.current) {
+      return { data: null, meta: null, skipped: true };
+    }
+    inFlightRef.current = true;
     try {
       if (!silent) {
         setLoading(true);
       }
       setError(null);
-      const params = options && typeof options === 'object' ? (options.params || {}) : {};
+      const params =
+        options && typeof options === 'object' ? { ...(options.params || {}) } : {};
+      if (silent) {
+        params.skipAutoReserve = '1';
+      }
       const response = await ordersApi.getAll(params);
       const loadedOrders = Array.isArray(response?.data) ? response.data : [];
       setOrders(loadedOrders);
@@ -40,6 +49,7 @@ export function useOrders(options = {}) {
       setError(err.message || 'Ошибка загрузки заказов');
       return { data: [], meta: { total: null, limit: null, offset: 0 } };
     } finally {
+      inFlightRef.current = false;
       if (!silent) {
         setLoading(false);
       }

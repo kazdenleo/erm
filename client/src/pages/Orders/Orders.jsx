@@ -18,6 +18,7 @@ import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
 import { formatProductOptionLabel } from '../../utils/productSearch';
+import { manualOrderAvailabilityLabel } from '../../utils/kitStockMetrics';
 import {
   getOrderStatusLabel,
   getOrderProcurementSupplierName,
@@ -470,6 +471,7 @@ export function Orders() {
   const [procurementLoadingKey, setProcurementLoadingKey] = useState(null);
   const [supplierOrderLoadingKey, setSupplierOrderLoadingKey] = useState(null);
   const [supplierOrderMessage, setSupplierOrderMessage] = useState(null);
+  const supplierOrderMessageRef = useRef(null);
   const [manualProcurementTarget, setManualProcurementTarget] = useState(null);
   /** Сброс нативного select «Статус в системе» после применения */
   const [bulkErmStatusKey, setBulkErmStatusKey] = useState(0);
@@ -700,22 +702,35 @@ export function Orders() {
   }, [allowPrivateOrders]);
 
   useEffect(() => {
-    if (!addOrderOpen || editManualOrderGroupId) return;
-    const defaultWh =
-      profile?.manual_orders_warehouse_id != null && profile.manual_orders_warehouse_id !== ''
-        ? String(profile.manual_orders_warehouse_id)
-        : profile?.manualOrdersWarehouseId != null && profile.manualOrdersWarehouseId !== ''
-          ? String(profile.manualOrdersWarehouseId)
-          : '';
-    setAddOrderWarehouseId(defaultWh);
-    productsApi
-      .getAll({ limit: 400, listView: 'full' })
+    if (!addOrderOpen) return;
+    if (!editManualOrderGroupId) {
+      const defaultWh =
+        profile?.manual_orders_warehouse_id != null && profile.manual_orders_warehouse_id !== ''
+          ? String(profile.manual_orders_warehouse_id)
+          : profile?.manualOrdersWarehouseId != null && profile.manualOrdersWarehouseId !== ''
+            ? String(profile.manualOrdersWarehouseId)
+            : '';
+      setAddOrderWarehouseId(defaultWh);
+    }
+  }, [addOrderOpen, editManualOrderGroupId, profile]);
+
+  const loadManualOrderProducts = useCallback((warehouseId) => {
+    const wh = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId).trim() : null;
+    const params = { limit: 400, listView: wh ? 'stock' : 'full' };
+    if (wh) params.warehouseId = wh;
+    return productsApi
+      .getAll(params)
       .then((data) => {
         const list = Array.isArray(data) ? data : data?.data ?? data?.products ?? [];
         setProductsList(list.filter((p) => p?.id != null));
       })
       .catch(() => setProductsList([]));
-  }, [addOrderOpen, editManualOrderGroupId, profile]);
+  }, []);
+
+  useEffect(() => {
+    if (!addOrderOpen) return;
+    void loadManualOrderProducts(addOrderWarehouseId);
+  }, [addOrderOpen, addOrderWarehouseId, loadManualOrderProducts]);
 
   const buildOrdersListParams = useCallback(
     (page = currentPage) => {
@@ -1030,22 +1045,48 @@ export function Orders() {
   useEffect(() => {
     if (!ordersAutoSyncPauseLoaded || ordersAutoSyncPaused) return undefined;
     let mounted = true;
-    const POLL_MS = 30 * 1000;
+    let timerId = null;
+    const POLL_VISIBLE_MS = 30 * 1000;
+    const POLL_HIDDEN_MS = 90 * 1000;
+
+    const pollMs = () =>
+      typeof document !== 'undefined' && document.visibilityState === 'hidden'
+        ? POLL_HIDDEN_MS
+        : POLL_VISIBLE_MS;
+
+    const scheduleNext = () => {
+      if (!mounted) return;
+      if (timerId) clearTimeout(timerId);
+      timerId = setTimeout(() => {
+        if (!mounted) return;
+        void reloadOrders({ silent: true })
+          .finally(() => requestNewOrdersSoundCheck())
+          .finally(() => scheduleNext());
+      }, pollMs());
+    };
 
     const t0 = setTimeout(() => {
       if (!mounted) return;
-      void reloadOrders({ silent: true }).finally(() => requestNewOrdersSoundCheck());
+      void reloadOrders({ silent: true })
+        .finally(() => requestNewOrdersSoundCheck())
+        .finally(() => scheduleNext());
     }, 5000);
 
-    const poll = setInterval(() => {
-      if (!mounted) return;
-      void reloadOrders({ silent: true }).finally(() => requestNewOrdersSoundCheck());
-    }, POLL_MS);
+    const onVisibility = () => {
+      if (!mounted || document.visibilityState !== 'visible') return;
+      if (timerId) clearTimeout(timerId);
+      void reloadOrders({ silent: true })
+        .finally(() => requestNewOrdersSoundCheck())
+        .finally(() => scheduleNext());
+    };
+
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       mounted = false;
       clearTimeout(t0);
-      clearInterval(poll);
+      if (timerId) clearTimeout(timerId);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [reloadOrders, runSync, ordersAutoSyncPauseLoaded, ordersAutoSyncPaused]);
 
@@ -1334,33 +1375,71 @@ export function Orders() {
     setManualProcurementTarget({ marketplace, orderId: String(orderId) });
   };
 
+  const showSupplierOrderMessage = useCallback((msg) => {
+    setSupplierOrderMessage(msg);
+    requestAnimationFrame(() => {
+      supplierOrderMessageRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    });
+  }, []);
+
   const handleSendToProcurement = async (row) => {
     const toSend = row.orders || [row.first];
     const first = toSend[0];
-    if (!first?.marketplace || !first?.orderId) return;
+    const marketplace = first?.marketplace;
+    const orderId = marketplaceOrderIdForApi(toSend, marketplace);
+    if (!marketplace || !orderId) {
+      const msg = 'Не удалось определить маркетплейс или номер заказа';
+      showSupplierOrderMessage(msg);
+      setRefreshError(msg);
+      return;
+    }
     try {
       setSupplierOrderLoadingKey(row.key);
       setSupplierOrderMessage(null);
       setRefreshError(null);
-      const result = await ordersApi.sendToProcurement(first.marketplace, first.orderId);
+      const result = await ordersApi.sendToProcurement(marketplace, orderId);
       let msg = result?.message || 'Заказ отправлен в закупку';
       if (result?.purchases?.length) {
         const ids = result.purchases.map((p) => p.purchaseId).filter(Boolean);
+        const sent = result.purchases.some((p) => p.supplierSubmit?.submitted);
         if (ids.length) msg += `. Закупки: №${ids.join(', №')}`;
+        if (sent) msg += '. Заказ отправлен поставщику Moskvorechie';
+        else if (result.purchases.some((p) => p.supplierSubmit?.message)) {
+          msg += `. ${result.purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message}`;
+        } else if (!sent && !msg.includes('не отправлен')) {
+          msg += '. Заказ создан в ERM, но не отправлен поставщику — проверьте API Key Moskvorechie';
+        }
+      } else if (result?.reserveOnly) {
+        msg =
+          result.message ||
+          (result.totalPurchased > 0
+            ? 'Позиция уже отмечена как закупленная — новая отправка в Moskvorechie не выполнена'
+            : 'Товар уже на складе — закупка и отправка в Moskvorechie не требуются');
+      }
+      if (result?.purchases?.some((p) => p.supplierSubmit?.submitted)) {
+        const submitMsg = result.purchases.find((p) => p.supplierSubmit?.submitted)?.supplierSubmit
+          ?.message;
+        if (submitMsg && !msg.includes(submitMsg)) msg = `${msg}. ${submitMsg}`;
       }
       if (result?.manualLines?.length) {
+        const reason = result.manualLines.find((l) => l.manualReason)?.manualReason;
+        if (reason && !msg.includes(reason)) msg += `. ${reason}`;
         msg += `. Ручной выбор: ${result.manualLines.length} поз.`;
-        openManualProcurement(first.marketplace, first.orderId);
+        openManualProcurement(marketplace, orderId);
       }
-      setSupplierOrderMessage(msg);
+      showSupplierOrderMessage(msg);
       await reloadOrders({ silent: true });
     } catch (e) {
       const details = e.response?.data?.details;
-      const msg = getApiErrorMessage(e, 'Не удалось отправить заказ в закупку');
-      setSupplierOrderMessage(msg);
+      let msg = getApiErrorMessage(e, 'Не удалось отправить заказ в закупку');
+      const manualReason = details?.manualLines?.find((l) => l.manualReason)?.manualReason;
+      if (manualReason && !msg.includes(manualReason)) {
+        msg = `${msg}. ${manualReason}`;
+      }
+      showSupplierOrderMessage(msg);
       setRefreshError(msg);
       if (details?.manualLines?.length || e.response?.status === 422) {
-        openManualProcurement(first.marketplace, first.orderId);
+        openManualProcurement(marketplace, orderId);
       }
     } finally {
       setSupplierOrderLoadingKey(null);
@@ -1432,14 +1511,37 @@ export function Orders() {
       })
     );
     setAddOrderOpen(true);
-    productsApi
-      .getAll({ limit: 400, listView: 'full' })
-      .then((data) => {
-        const list = Array.isArray(data) ? data : data?.data ?? data?.products ?? [];
-        setProductsList(list.filter((p) => p?.id != null));
-      })
-      .catch(() => setProductsList([]));
   };
+
+  const manualOrderProductById = useCallback(
+    (productId) => {
+      if (productId == null || productId === '') return null;
+      return productsList.find((p) => String(p.id) === String(productId)) ?? null;
+    },
+    [productsList]
+  );
+
+  const renderManualOrderProductOption = useCallback(
+    (product) => {
+      const avail = manualOrderAvailabilityLabel(product, productsList, {
+        warehouseId: addOrderWarehouseId,
+      });
+      return (
+        <>
+          <div className="product-search-input__row">
+            <div className="product-search-input__sku">{product.sku || '—'}</div>
+            {avail != null ? (
+              <div className="product-search-input__meta">Доступно: {avail}</div>
+            ) : null}
+          </div>
+          <div className="product-search-input__name">
+            {product.name || formatProductOptionLabel(product)}
+          </div>
+        </>
+      );
+    },
+    [productsList, addOrderWarehouseId]
+  );
 
   const handleManualOrderModalClose = () => {
     setAddOrderOpen(false);
@@ -2344,29 +2446,43 @@ export function Orders() {
                 Нет складов типа «Склад». Создайте склад в разделе «Склады».
               </p>
             )}
+            {!addOrderWarehouseId ? (
+              <p className="text-muted small" style={{ marginTop: 6, marginBottom: 0 }}>
+                Выберите склад — в списке товаров будет показана доступность на этом складе.
+              </p>
+            ) : null}
           </div>
           {addOrderItems.map((row, index) => (
             <div key={index} className="orders-add-row" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', marginBottom: '12px', flexWrap: 'wrap' }}>
               <div className="form-group" style={{ flex: '1 1 240px', minWidth: 200 }}>
                 <label className="label">Товар</label>
                 {row.productId ? (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      marginBottom: 6,
-                      fontSize: 13,
-                    }}
-                  >
-                    <span style={{ fontWeight: 600 }}>{row.productLabel || `Товар #${row.productId}`}</span>
-                    <button
-                      type="button"
-                      className="btn btn-link btn-sm p-0"
-                      onClick={() => addOrderClearProduct(index)}
+                  <div style={{ marginBottom: 6 }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        fontSize: 13,
+                      }}
                     >
-                      Сменить
-                    </button>
+                      <span style={{ fontWeight: 600 }}>{row.productLabel || `Товар #${row.productId}`}</span>
+                      <button
+                        type="button"
+                        className="btn btn-link btn-sm p-0"
+                        onClick={() => addOrderClearProduct(index)}
+                      >
+                        Сменить
+                      </button>
+                    </div>
+                    {addOrderWarehouseId ? (
+                      <div className="text-muted small" style={{ marginTop: 4 }}>
+                        Доступно на складе:{' '}
+                        {manualOrderAvailabilityLabel(manualOrderProductById(row.productId), productsList, {
+                          warehouseId: addOrderWarehouseId,
+                        }) ?? '—'}
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
                   <ProductSearchInput
@@ -2377,6 +2493,8 @@ export function Orders() {
                     onSelect={(p) => addOrderSelectProduct(index, p)}
                     products={productsList}
                     organizationId={contextOrganizationId}
+                    warehouseId={addOrderWarehouseId || null}
+                    renderOption={renderManualOrderProductOption}
                     placeholder="Артикул, штрихкод или название"
                     disabled={addOrderLoading}
                   />
@@ -2943,14 +3061,17 @@ export function Orders() {
       )}
       {supplierOrderMessage && (
         <div
+          ref={supplierOrderMessageRef}
           className={
             supplierOrderMessage.includes('Не удалось') ||
             supplierOrderMessage.includes('нет ') ||
-            supplierOrderMessage.includes('Нет ')
+            supplierOrderMessage.includes('Нет ') ||
+            supplierOrderMessage.includes('не отправлен')
               ? 'error'
               : 'info'
           }
           style={{ marginBottom: '16px' }}
+          role="status"
         >
           {supplierOrderMessage}
         </div>

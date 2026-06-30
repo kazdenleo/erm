@@ -82,6 +82,11 @@ class OrdersController {
       const listOptions = {
         ...options,
         ...(hasPaging ? { lightReserveEnrich: !fullReserveEnrich } : {}),
+        ...(req.query?.skipAutoReserve === '1' ||
+        req.query?.skipAutoReserve === 'true' ||
+        req.query?.skip_auto_reserve === '1'
+          ? { skipAutoReserve: true }
+          : {}),
       };
       const result = hasPaging
         ? await ordersService.getPage(listOptions)

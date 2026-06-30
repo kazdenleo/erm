@@ -6,7 +6,7 @@ import { playEventSound, SOUND_EVENTS } from '../utils/soundSettings';
 export const NEW_ORDERS_SOUND_CHECK_EVENT = 'erm:check-new-orders-sound';
 
 /** Интервал опроса, когда вкладка активна (мс). */
-const ACTIVE_INTERVAL_MS = 5000;
+const ACTIVE_INTERVAL_MS = 10000;
 /** Интервал, когда вкладка в фоне — реже, чтобы не грузить API. */
 const HIDDEN_INTERVAL_MS = 30000;
 

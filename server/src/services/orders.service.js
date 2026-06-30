@@ -3030,7 +3030,9 @@ class OrdersService {
       const [items, total] = await Promise.all([this.repository.findAll(options), countPromise]);
       await this.enrichOrdersReserveMetrics(items, { light: lightReserve });
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
-      this._scheduleEnsureReservesForUnderReservedOrders(items);
+      if (!options.skipAutoReserve) {
+        this._scheduleEnsureReservesForUnderReservedOrders(items);
+      }
       return { items, total: total ?? items.length };
     }
     const items = await this.repository.findAll();

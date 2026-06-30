@@ -33,6 +33,8 @@ echo "==> client build"
 cd "$APP_ROOT/client"
 if [ -f package-lock.json ]; then npm ci; else npm install; fi
 npm run build
+# Сборка иногда создаёт каталоги с umask 077 — nginx (www-data) не видит CSS/JS.
+chmod -R a+rX "$APP_ROOT/client/build" 2>/dev/null || true
 
 echo "==> pm2 restart (cwd=$APP_ROOT/server)"
 cd "$APP_ROOT/server"
@@ -57,6 +59,11 @@ curl -sf -o /dev/null -w "HTTPS /api/auth/me → %{http_code}\n" -k -H "Host: $D
 echo "==> nginx API timeouts (504 fix)"
 if [ -f "$APP_ROOT/scripts/vps-fix-nginx-timeouts.sh" ]; then
   bash "$APP_ROOT/scripts/vps-fix-nginx-timeouts.sh" || echo "WARN: nginx timeout patch skipped (run with sudo if needed)"
+fi
+
+echo "==> nginx gzip (static assets)"
+if [ -f "$APP_ROOT/scripts/vps-fix-nginx-gzip.sh" ]; then
+  bash "$APP_ROOT/scripts/vps-fix-nginx-gzip.sh" || echo "WARN: nginx gzip patch skipped"
 fi
 
 echo "==> done"
