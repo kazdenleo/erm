@@ -1092,6 +1092,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
       const force = req.body?.force === true;
       const data = await orderSupplierOrderService.submitToSupplier(marketplace, orderId, {
         profileId,
+        userId: req.user?.id ?? null,
         force,
       });
       return res.status(200).json({ ok: true, data });
@@ -1100,6 +1101,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         error.statusCode === 400 ||
         error.statusCode === 403 ||
         error.statusCode === 404 ||
+        error.statusCode === 422 ||
         error.statusCode === 501
       ) {
         return res.status(error.statusCode).json({

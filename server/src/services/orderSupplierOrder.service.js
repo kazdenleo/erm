@@ -66,7 +66,7 @@ class OrderSupplierOrderService {
     return proc;
   }
 
-  async submitToSupplier(marketplace, orderId, { profileId, force = false } = {}) {
+  async submitToSupplier(marketplace, orderId, { profileId, userId = null, force = false } = {}) {
     const pid = normalizeProfileId(profileId);
     if (pid == null) {
       const err = new Error('Профиль не определён');
@@ -93,7 +93,7 @@ class OrderSupplierOrderService {
     const result = await orderProcurementPlanner.submitPurchasesToSupplierForOrder(
       marketplace,
       orderId,
-      { profileId: pid, force }
+      { profileId: pid, userId, force }
     );
 
     if (!result?.ok) {
@@ -101,9 +101,13 @@ class OrderSupplierOrderService {
       err.statusCode =
         result?.error === 'order_not_found'
           ? 404
-          : result?.error === 'no_purchase'
-            ? 400
-            : result?.error === 'submit_failed' || result?.error === 'nothing_submitted'
+          : result?.error === 'manual_required'
+            ? 422
+            : result?.error === 'no_purchase' ||
+                result?.error === 'submit_failed' ||
+                result?.error === 'nothing_submitted' ||
+                result?.error === 'nothing_to_submit' ||
+                result?.error === 'procure_failed'
               ? 400
               : 400;
       err.details = result;

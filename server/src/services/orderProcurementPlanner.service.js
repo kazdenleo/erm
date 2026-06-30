@@ -1563,7 +1563,7 @@ class OrderProcurementPlannerService {
   async submitPurchasesToSupplierForOrder(
     marketplace,
     orderId,
-    { profileId, force = false } = {}
+    { profileId, userId = null, force = false } = {}
   ) {
     const pid = normalizeProfileId(profileId);
     const oid = String(orderId ?? '').trim();
@@ -1590,13 +1590,53 @@ class OrderProcurementPlannerService {
       };
     }
 
-    const openPurchases = await findOpenPurchasesForOrder(pid, marketplace, oid);
+    let openPurchases = await findOpenPurchasesForOrder(pid, marketplace, oid);
+    let autoProcure = null;
+
     if (!openPurchases.length) {
-      return {
-        ok: false,
-        error: 'no_purchase',
-        message: 'Нет открытой закупки по заказу. Сначала отправьте заказ в закупку.',
-      };
+      autoProcure = await this.runForMarketplaceOrder(marketplace, oid, {
+        profileId: pid,
+        userId,
+      });
+      if (!autoProcure?.ok) {
+        return {
+          ok: false,
+          error: autoProcure?.error || 'procure_failed',
+          message: autoProcure?.message || 'Не удалось создать закупку по заказу',
+          procurement: autoProcure,
+        };
+      }
+      openPurchases = await findOpenPurchasesForOrder(pid, marketplace, oid);
+      if (!openPurchases.length) {
+        if (autoProcure.reserveOnly) {
+          return {
+            ok: false,
+            error: 'nothing_to_submit',
+            message:
+              autoProcure.message ||
+              'Закупка не требуется — товар уже на складе, отправка поставщику не нужна',
+            procurement: autoProcure,
+          };
+        }
+        if (autoProcure.manualLines?.length) {
+          return {
+            ok: false,
+            error: 'manual_required',
+            message:
+              autoProcure.message ||
+              'Не удалось автоматически выбрать поставщика — требуется ручная закупка',
+            procurement: autoProcure,
+            manualLines: autoProcure.manualLines,
+          };
+        }
+        return {
+          ok: false,
+          error: 'no_purchase',
+          message:
+            'Не удалось создать открытую закупку по заказу. Проверьте остатки у поставщиков или отправьте заказ в закупку вручную.',
+          procurement: autoProcure,
+        };
+      }
     }
 
     const purchases = [];
@@ -1677,6 +1717,12 @@ class OrderProcurementPlannerService {
 
     const ids = purchases.map((p) => p.purchaseId).filter(Boolean);
     let message = `Заказ отправлен поставщику (закупка №${ids.join(', №')})`;
+    if (autoProcure?.purchases?.length) {
+      const createdIds = autoProcure.purchases.map((p) => p.purchaseId).filter(Boolean);
+      if (createdIds.length) {
+        message = `Создана закупка №${createdIds.join(', №')}. ${message}`;
+      }
+    }
     const submitMsg = purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message;
     if (submitMsg && !message.includes(submitMsg)) {
       message += `. ${submitMsg}`;

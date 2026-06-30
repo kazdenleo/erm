@@ -1456,7 +1456,6 @@ export function Orders() {
     } catch (e) {
       const msg = getApiErrorMessage(e, 'Не удалось отправить заказ поставщику');
       showSupplierOrderMessage(msg);
-      setRefreshError(msg);
     } finally {
       setSupplierSubmitLoadingKey(null);
     }
