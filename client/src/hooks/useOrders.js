@@ -12,7 +12,8 @@ export function useOrders(options = {}) {
   const [meta, setMeta] = useState({ total: null, limit: null, offset: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const inFlightRef = useRef(false);
+  /** Счётчик запросов: в state попадает только ответ последнего (устаревшие ответы отбрасываются). */
+  const loadSeqRef = useRef(0);
 
   /**
    * @param {boolean | { silent?: boolean, params?: object }} [options] — при silent=true не трогаем loading
@@ -20,10 +21,7 @@ export function useOrders(options = {}) {
    */
   const loadOrders = useCallback(async (options) => {
     const silent = options === true || Boolean(options?.silent);
-    if (inFlightRef.current) {
-      return { data: null, meta: null, skipped: true };
-    }
-    inFlightRef.current = true;
+    const seq = ++loadSeqRef.current;
     try {
       if (!silent) {
         setLoading(true);
@@ -35,6 +33,9 @@ export function useOrders(options = {}) {
         params.skipAutoReserve = '1';
       }
       const response = await ordersApi.getAll(params);
+      if (seq !== loadSeqRef.current) {
+        return { data: null, meta: null, stale: true };
+      }
       const loadedOrders = Array.isArray(response?.data) ? response.data : [];
       setOrders(loadedOrders);
       const nextMeta = {
@@ -45,15 +46,21 @@ export function useOrders(options = {}) {
       setMeta(nextMeta);
       return { data: loadedOrders, meta: nextMeta };
     } catch (err) {
+      if (seq !== loadSeqRef.current) {
+        return { data: null, meta: null, stale: true };
+      }
       console.error('Error loading orders:', err);
       setError(err.message || 'Ошибка загрузки заказов');
       return { data: [], meta: { total: null, limit: null, offset: 0 } };
     } finally {
-      inFlightRef.current = false;
-      if (!silent) {
+      if (seq === loadSeqRef.current && !silent) {
         setLoading(false);
       }
     }
+  }, []);
+
+  const patchOrders = useCallback((updater) => {
+    setOrders((prev) => (typeof updater === 'function' ? updater(prev) : updater));
   }, []);
 
   useEffect(() => {
@@ -69,8 +76,7 @@ export function useOrders(options = {}) {
     meta,
     loading,
     error,
-    loadOrders
+    loadOrders,
+    patchOrders,
   };
 }
-
-

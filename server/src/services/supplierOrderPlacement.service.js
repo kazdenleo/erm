@@ -2,7 +2,7 @@
  * Отправка закупки поставщику через внешний API (Mikado / Moskvorechie).
  */
 
-import { query } from '../config/database.js';
+import { query, transaction } from '../config/database.js';
 import logger from '../utils/logger.js';
 import integrationsService from './integrations.service.js';
 import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
@@ -71,11 +71,78 @@ function submitEnabledForSupplier(apiConfig, integrationConfig) {
   return true;
 }
 
+const SUPPLIER_SUBMIT_LOCK_NS = 8843211;
+
 /** Не отправлять повторно, если закупка уже ушла поставщику (без force). */
 export function shouldSkipSupplierSubmit(purchase, { force = false } = {}) {
   if (force) return false;
   const at = purchase?.supplier_submitted_at ?? purchase?.supplierSubmittedAt;
   return at != null && String(at).trim() !== '';
+}
+
+/** Закупку помечаем отправленной, если API принял хотя бы одну позицию. */
+export function shouldMarkPurchaseSupplierSubmitted(result) {
+  if (!result || typeof result !== 'object') return false;
+  if (result.submitted === true) return true;
+  if (Array.isArray(result.lines) && result.lines.length > 0) return true;
+  if (Array.isArray(result.supplierOrderIds) && result.supplierOrderIds.length > 0) return true;
+  return false;
+}
+
+async function claimPurchaseForSupplierSubmit(purchaseId, { force = false } = {}) {
+  const pid = Number(purchaseId);
+  if (!Number.isFinite(pid) || pid < 1) return { claimed: false, reason: 'invalid_args' };
+
+  return transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock($1::bigint, $2::bigint)', [
+      SUPPLIER_SUBMIT_LOCK_NS,
+      pid,
+    ]);
+    const head = await client.query(
+      `SELECT supplier_submitted_at, supplier_order_ref
+       FROM purchases WHERE id = $1 FOR UPDATE`,
+      [pid]
+    );
+    const row = head.rows?.[0];
+    if (!row) return { claimed: false, reason: 'purchase_not_found' };
+    if (shouldSkipSupplierSubmit(row, { force })) {
+      return {
+        claimed: false,
+        reason: 'already_submitted',
+        supplierSubmittedAt: row.supplier_submitted_at,
+        supplierOrderRef: row.supplier_order_ref,
+      };
+    }
+    if (force) {
+      return { claimed: true, force: true };
+    }
+    const claim = await client.query(
+      `UPDATE purchases SET
+         supplier_submitted_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND supplier_submitted_at IS NULL
+       RETURNING id`,
+      [pid]
+    );
+    if (!claim.rows?.length) {
+      return { claimed: false, reason: 'already_submitted' };
+    }
+    return { claimed: true, force: false };
+  });
+}
+
+async function releasePurchaseSupplierSubmitClaim(purchaseId) {
+  const pid = Number(purchaseId);
+  if (!Number.isFinite(pid) || pid < 1) return;
+  await query(
+    `UPDATE purchases SET
+       supplier_submitted_at = NULL,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1
+       AND supplier_order_ref IS NULL
+       AND supplier_submitted_at IS NOT NULL`,
+    [pid]
+  );
 }
 
 export async function markPurchaseSupplierSubmitted(
@@ -370,28 +437,37 @@ export async function trySubmitPurchaseToSupplier({
     return { submitted: false, reason: 'no_lines', message: 'В закупке нет позиций для отправки' };
   }
 
-  if (shouldSkipSupplierSubmit(ctx.purchase, { force })) {
-    logger.info('[SupplierOrderPlacement] skip duplicate submit', {
-      purchaseId: pid,
-      supplierId: sid,
-      submittedAt: ctx.purchase.supplier_submitted_at,
-    });
+  const claim = await claimPurchaseForSupplierSubmit(pid, { force: Boolean(force) });
+  if (!claim.claimed) {
+    if (claim.reason === 'already_submitted') {
+      logger.info('[SupplierOrderPlacement] skip duplicate submit', {
+        purchaseId: pid,
+        supplierId: sid,
+        submittedAt: claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at,
+      });
+      return {
+        submitted: false,
+        skipped: true,
+        reason: 'already_submitted',
+        message: `Закупка №${pid} уже отправлена поставщику${
+          claim.supplierOrderRef ?? ctx.purchase.supplier_order_ref
+            ? ` (№${claim.supplierOrderRef ?? ctx.purchase.supplier_order_ref})`
+            : claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at
+              ? ` (${new Date(claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at).toLocaleString('ru-RU')})`
+              : ''
+        }. Повтор — только кнопкой «Повторить отправку».`,
+        supplierName: ctx.supplier.name,
+        supplierCode: ctx.supplier.code,
+        purchaseId: pid,
+        supplierSubmittedAt: claim.supplierSubmittedAt ?? ctx.purchase.supplier_submitted_at,
+        supplierOrderRef: claim.supplierOrderRef ?? ctx.purchase.supplier_order_ref,
+      };
+    }
     return {
       submitted: false,
-      skipped: true,
-      reason: 'already_submitted',
-      message: `Закупка №${pid} уже отправлена поставщику${
-        ctx.purchase.supplier_order_ref
-          ? ` (№${ctx.purchase.supplier_order_ref})`
-          : ctx.purchase.supplier_submitted_at
-            ? ` (${new Date(ctx.purchase.supplier_submitted_at).toLocaleString('ru-RU')})`
-            : ''
-      }. Повтор — только кнопкой «Повторить отправку».`,
-      supplierName: ctx.supplier.name,
-      supplierCode: ctx.supplier.code,
+      reason: claim.reason || 'claim_failed',
+      message: 'Не удалось зарезервировать закупку для отправки поставщику',
       purchaseId: pid,
-      supplierSubmittedAt: ctx.purchase.supplier_submitted_at,
-      supplierOrderRef: ctx.purchase.supplier_order_ref,
     };
   }
 
@@ -431,6 +507,7 @@ export async function trySubmitPurchaseToSupplier({
     profileId: ctx.purchase.profile_id ?? profileId,
   });
 
+  let claimedWithoutForce = claim.claimed && !claim.force;
   try {
     const result = await adapter({
       purchase: ctx.purchase,
@@ -439,7 +516,7 @@ export async function trySubmitPurchaseToSupplier({
       integrationConfig,
       supplier: ctx.supplier,
     });
-    if (result?.submitted) {
+    if (shouldMarkPurchaseSupplierSubmitted(result)) {
       const orderRef =
         result.supplierOrderId ??
         result.supplierOrderIds?.[0] ??
@@ -450,6 +527,10 @@ export async function trySubmitPurchaseToSupplier({
         supplierOrderRef: orderRef,
         force: Boolean(force),
       });
+      claimedWithoutForce = false;
+    } else if (claimedWithoutForce) {
+      await releasePurchaseSupplierSubmitClaim(pid);
+      claimedWithoutForce = false;
     }
     return {
       ...result,
@@ -459,6 +540,9 @@ export async function trySubmitPurchaseToSupplier({
       purchaseId: pid,
     };
   } catch (e) {
+    if (claimedWithoutForce) {
+      await releasePurchaseSupplierSubmitClaim(pid).catch(() => {});
+    }
     logger.error('[SupplierOrderPlacement] adapter error', {
       purchaseId: pid,
       supplierCode: apiCode,
@@ -481,5 +565,6 @@ export default {
   buildSubmitLinesFromItems,
   mergeProcurementItemsByProductId,
   shouldSkipSupplierSubmit,
+  shouldMarkPurchaseSupplierSubmitted,
   markPurchaseSupplierSubmitted,
 };

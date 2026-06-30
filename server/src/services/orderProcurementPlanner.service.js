@@ -471,18 +471,42 @@ async function upsertFulfillmentLine(
   );
 }
 
+async function orderIdsForPurchaseLookup(profileId, marketplace, orderId) {
+  const rows = await loadOrderRows(profileId, marketplace, orderId);
+  const ids = new Set();
+  const addId = (raw) => {
+    const s = String(raw ?? '').trim();
+    if (!s) return;
+    ids.add(s.toLowerCase());
+  };
+  addId(orderId);
+  for (const row of rows) {
+    addId(row.order_id);
+    const gid = row.order_group_id != null ? String(row.order_group_id).trim() : '';
+    if (gid) {
+      addId(gid);
+      const tilde = gid.indexOf('~');
+      if (tilde > 0) addId(gid.slice(0, tilde));
+    }
+  }
+  return [...ids];
+}
+
 async function findOpenPurchasesForOrder(profileId, marketplace, orderId) {
-  const dbMp = orderMarketplaceToDb(marketplace);
   const oid = String(orderId ?? '').trim();
   if (!oid) return [];
+  const lookupIds = await orderIdsForPurchaseLookup(profileId, marketplace, orderId);
   const mpVariants = [
     ...new Set(
-      [marketplace, dbMp, String(marketplace || '').toLowerCase()]
+      [marketplace, orderMarketplaceToDb(marketplace), String(marketplace || '').toLowerCase()]
         .filter(Boolean)
         .map((m) => String(m).toLowerCase())
     ),
   ];
-  const r = await query(
+  const orderRows = await loadOrderRows(profileId, marketplace, orderId);
+  const orderDbIds = orderRows.map((r) => Number(r.id)).filter((id) => id > 0);
+
+  const bySource = await query(
     `SELECT DISTINCT p.id AS purchase_id, p.supplier_id, s.name AS supplier_name, s.code AS supplier_code
      FROM purchases p
      INNER JOIN purchase_items pi ON pi.purchase_id = p.id
@@ -491,11 +515,35 @@ async function findOpenPurchasesForOrder(profileId, marketplace, orderId) {
      WHERE p.profile_id = $1
        AND p.status = 'open'
        AND p.supplier_id IS NOT NULL
-       AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM($2))
+       AND LOWER(TRIM(elem->>'orderId')) = ANY($2::text[])
        AND LOWER(TRIM(elem->>'marketplace')) = ANY($3::text[])`,
-    [profileId, oid, mpVariants]
+    [profileId, lookupIds, mpVariants]
   );
-  return r.rows || [];
+
+  let viaFulfillment = { rows: [] };
+  if (orderDbIds.length) {
+    viaFulfillment = await query(
+      `SELECT DISTINCT p.id AS purchase_id, p.supplier_id, s.name AS supplier_name, s.code AS supplier_code
+       FROM order_fulfillment_lines fl
+       INNER JOIN purchase_items pi ON pi.id = fl.purchase_item_id
+       INNER JOIN purchases p ON p.id = pi.purchase_id
+       LEFT JOIN suppliers s ON s.id = p.supplier_id
+       WHERE fl.profile_id = $1
+         AND fl.order_db_id = ANY($2::bigint[])
+         AND p.status = 'open'
+         AND p.supplier_id IS NOT NULL`,
+      [profileId, orderDbIds]
+    );
+  }
+
+  const map = new Map();
+  for (const row of [...(bySource.rows || []), ...(viaFulfillment.rows || [])]) {
+    const purchaseId = Number(row.purchase_id);
+    if (Number.isFinite(purchaseId) && purchaseId > 0) {
+      map.set(purchaseId, row);
+    }
+  }
+  return [...map.values()];
 }
 
 /** Повторная отправка в API поставщика, если закупка уже есть, но заказ не ушёл (дефицит = 0). */
@@ -1641,6 +1689,7 @@ class OrderProcurementPlannerService {
 
     const purchases = [];
     let anySubmitted = false;
+    let anyAlreadySubmitted = false;
     let anyFailed = false;
 
     for (const row of openPurchases) {
@@ -1677,6 +1726,8 @@ class OrderProcurementPlannerService {
 
       if (supplierSubmit?.submitted) {
         anySubmitted = true;
+      } else if (supplierSubmit?.skipped && supplierSubmit?.reason === 'already_submitted') {
+        anyAlreadySubmitted = true;
       } else if (!supplierSubmit?.skipped) {
         anyFailed = true;
       }
@@ -1693,7 +1744,7 @@ class OrderProcurementPlannerService {
       await ensureOrdersMarkedInProcurement(pid, marketplace, oid, []);
     }
 
-    if (!anySubmitted && anyFailed) {
+    if (!anySubmitted && !anyAlreadySubmitted && anyFailed) {
       const reason = purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message;
       return {
         ok: false,
@@ -1703,7 +1754,7 @@ class OrderProcurementPlannerService {
       };
     }
 
-    if (!anySubmitted) {
+    if (!anySubmitted && !anyAlreadySubmitted) {
       const reason = purchases.find((p) => p.supplierSubmit?.message)?.supplierSubmit?.message;
       return {
         ok: false,
@@ -1716,7 +1767,12 @@ class OrderProcurementPlannerService {
     }
 
     const ids = purchases.map((p) => p.purchaseId).filter(Boolean);
-    let message = `Заказ отправлен поставщику (закупка №${ids.join(', №')})`;
+    let message;
+    if (anySubmitted) {
+      message = `Заказ отправлен поставщику (закупка №${ids.join(', №')})`;
+    } else {
+      message = `Закупка уже была отправлена поставщику (№${ids.join(', №')})`;
+    }
     if (autoProcure?.purchases?.length) {
       const createdIds = autoProcure.purchases.map((p) => p.purchaseId).filter(Boolean);
       if (createdIds.length) {

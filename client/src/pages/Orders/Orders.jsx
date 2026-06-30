@@ -417,7 +417,7 @@ export function Orders() {
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
   const { warehouses, loadWarehouses } = useWarehouses();
   const { organizations } = useOrganizations();
-  const { orders, meta, loading, error, loadOrders } = useOrders({ autoLoad: false });
+  const { orders, meta, loading, error, loadOrders, patchOrders } = useOrders({ autoLoad: false });
   const initialOrdersLoadedRef = useRef(false);
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
   const [syncLoading, setSyncLoading] = useState(false);
@@ -761,6 +761,28 @@ export function Orders() {
       });
     },
     [buildOrdersListParams, currentPage, loadOrders]
+  );
+
+  const markOrdersProcurementLocally = useCallback(
+    (orderRows) => {
+      const rows = Array.isArray(orderRows) ? orderRows : [];
+      if (!rows.length) return;
+      const keys = new Set(
+        rows.map((o) => {
+          const mp = String(o.marketplace || '').toLowerCase();
+          const id = String(o.orderId ?? o.order_id ?? '');
+          return `${mp}|${id}`;
+        })
+      );
+      patchOrders((prev) =>
+        prev.map((o) => {
+          const mp = String(o.marketplace || '').toLowerCase();
+          const id = String(o.orderId ?? o.order_id ?? '');
+          return keys.has(`${mp}|${id}`) ? { ...o, status: 'in_procurement' } : o;
+        })
+      );
+    },
+    [patchOrders]
   );
 
   useEffect(() => {
@@ -1303,6 +1325,11 @@ export function Orders() {
       }
       successMsg += '.';
       setAssemblyMessage(successMsg);
+      if (procUpdated > 0 && procurementStatusEnabled) {
+        for (const r of sourceRows) {
+          markOrdersProcurementLocally(ordersArrayForPurchaseRow(r));
+        }
+      }
       await reloadOrders({ silent: true });
       setSelectedKeys((prev) => {
         const next = new Set(prev);
@@ -1417,6 +1444,12 @@ export function Orders() {
         openManualProcurement(marketplace, orderId);
       }
       showSupplierOrderMessage(msg);
+      const shouldMarkProcurement =
+        (result?.procurementStatus?.updated ?? 0) > 0 ||
+        (Array.isArray(result?.purchases) && result.purchases.some((p) => p.purchaseId));
+      if (shouldMarkProcurement) {
+        markOrdersProcurementLocally(toSend);
+      }
       await reloadOrders({ silent: true });
     } catch (e) {
       const details = e.response?.data?.details;
@@ -1452,6 +1485,7 @@ export function Orders() {
       setRefreshError(null);
       const result = await ordersApi.submitToSupplier(marketplace, orderId);
       showSupplierOrderMessage(result?.message || 'Заказ отправлен поставщику');
+      markOrdersProcurementLocally(toSend);
       await reloadOrders({ silent: true });
     } catch (e) {
       const msg = getApiErrorMessage(e, 'Не удалось отправить заказ поставщику');
@@ -2079,6 +2113,9 @@ export function Orders() {
               skipped ? ` Пропущено (нет права из текущего статуса): ${skipped}.` : '',
             ].join('')
           );
+          if (ok > 0) {
+            markOrdersProcurementLocally(toSend);
+          }
         } catch (e) {
           setAssemblyMessage(
             `Не удалось перевести в «В закупке»: ${e.response?.data?.message || e.message}`

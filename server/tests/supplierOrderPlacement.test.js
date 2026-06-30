@@ -5,6 +5,7 @@
 import {
   mergeProcurementItemsByProductId,
   shouldSkipSupplierSubmit,
+  shouldMarkPurchaseSupplierSubmitted,
 } from '../src/services/supplierOrderPlacement.service.js';
 
 describe('shouldSkipSupplierSubmit', () => {
@@ -19,6 +20,20 @@ describe('shouldSkipSupplierSubmit', () => {
     expect(shouldSkipSupplierSubmit({ supplier_submitted_at: '2026-01-01' }, { force: true })).toBe(
       false
     );
+  });
+});
+
+describe('shouldMarkPurchaseSupplierSubmitted', () => {
+  test('полный и частичный успех помечают закупку отправленной', () => {
+    expect(shouldMarkPurchaseSupplierSubmitted({ submitted: true })).toBe(true);
+    expect(shouldMarkPurchaseSupplierSubmitted({ submitted: false, lines: [{ sku: 'x' }] })).toBe(
+      true
+    );
+    expect(
+      shouldMarkPurchaseSupplierSubmitted({ submitted: false, supplierOrderIds: [101] })
+    ).toBe(true);
+    expect(shouldMarkPurchaseSupplierSubmitted({ submitted: false })).toBe(false);
+    expect(shouldMarkPurchaseSupplierSubmitted(null)).toBe(false);
   });
 });
 
