@@ -2589,7 +2589,7 @@ export function WarehouseOperations({
             className={`warehouse-ops-tab ${mode === MODE_RETURN_CUSTOMER ? 'active' : ''}`}
             onClick={() => setMode(MODE_RETURN_CUSTOMER)}
           >
-            📥 Возвраты
+            📥 Возвраты от клиентов
           </button>
           <button
             type="button"

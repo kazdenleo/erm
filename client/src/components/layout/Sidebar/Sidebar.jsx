@@ -53,7 +53,7 @@ const stockWarehouseChildren = [
   },
   {
     path: opsByKey.return_customer?.to || '/stock-levels/warehouse?op=return_customer',
-    label: '📥 Возвраты',
+    label: '📥 Возвраты от клиентов',
     iconClass: 'pe-7s-angle-right',
     warehouseOp: 'return_customer',
     sectionKey: 'warehouse_return_customer',
@@ -327,7 +327,7 @@ export function Sidebar() {
                         <li key={sub.warehouseOp ?? sub.path}>
                           <Link to={sub.path} className={subActive ? 'mm-active' : ''}>
                             <i className={`metismenu-icon ${sub.iconClass || ''}`} />
-                            {sub.label}
+                            <span className="sidebar-nav-label">{sub.label}</span>
                             {showReturnsBadge ? (
                               <span className="sidebar-menu-badge" title="Возвратов, ждущих забора">
                                 {returnsBadgeText}

@@ -52,7 +52,7 @@ export const NAV_SECTION_LABELS = {
   warehouse_receipts: 'Склад — приёмка',
   warehouse_transfer: 'Склад — перемещение',
   warehouse_return_supplier: 'Склад — возврат поставщику',
-  warehouse_return_customer: 'Склад — возвраты',
+  warehouse_return_customer: 'Склад — возвраты от клиентов',
   warehouse_inventory: 'Склад — инвентаризация',
   warehouse_writeoff: 'Склад — списание',
   prices: 'Цены',
