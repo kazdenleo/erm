@@ -2957,7 +2957,7 @@ class PurchasesService {
     });
   }
 
-  /** Ручной ввод: добавить сразу N штук в сканирование (коробками). */
+  /** Ручной ввод: установить количество в коробке (не прибавлять к скану идентификации). */
   async addQuantityToReceipt(
     receiptId,
     { productId = null, barcode = null, sku = null, quantity = 0, scannerId = null } = {},
@@ -3038,7 +3038,7 @@ class PurchasesService {
 
       const sc = scannerId != null ? String(scannerId).trim() : '';
       const { scannedQuantity } = await upsertReceiptItemQuantityInTx(client, rid, resolvedProductId, {
-        delta: qty,
+        absoluteQty: qty,
         scannerId: sc || null,
         userId,
       });
@@ -3046,7 +3046,7 @@ class PurchasesService {
         ok: true,
         productId: resolvedProductId,
         scannedQuantity,
-        added: qty,
+        quantity: qty,
         scannerId: sc || null,
       };
     });

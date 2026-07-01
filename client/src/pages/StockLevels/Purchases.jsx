@@ -1317,7 +1317,7 @@ export function Purchases() {
         scheduleReceiptRefresh(rid);
         playEventSound(SOUND_EVENTS.scan_ok);
       } catch (ex) {
-        setErr(ex.response?.data?.message || ex.message || 'Не удалось добавить количество');
+        setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить количество');
         playEventSound(SOUND_EVENTS.scan_error);
       } finally {
         setBoxAddBusy(false);
@@ -2788,7 +2788,7 @@ export function Purchases() {
             <>
             <h4 style={{ marginTop: 14 }}>Коробкой</h4>
             <p className="warehouse-ops-hint" style={{ marginTop: 0 }}>
-              Отсканируйте товар выше, затем укажите количество — через 2 с добавим +N шт. и вернём фокус в поле скана.
+              Отсканируйте товар выше (идентификация), затем укажите количество в коробке — через 2 с установим это количество и вернём фокус в поле скана.
               Либо введите ШК/артикул и количество в поля ниже.
             </p>
             <form
