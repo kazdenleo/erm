@@ -323,8 +323,6 @@ export function WarehouseOperations({
   const returnScanDebounceRef = useRef(null);
   const returnScanInputRef = useRef(null);
   const returnScanDedupRef = useRef({ key: '', at: 0 });
-  const returnWhPrevRef = useRef(null);
-  // Возврат от клиентов на склад
   const [customerReturnOrganizationId, setCustomerReturnOrganizationId] = useState('');
   const [customerReturnList, setCustomerReturnList] = useState([]);
   const [customerReturnMode, setCustomerReturnMode] = useState('scan');
@@ -563,14 +561,6 @@ export function WarehouseOperations({
   }, [mode, returnWarehouseId, inventoryWarehouseId]);
 
   useEffect(() => {
-    const wh = String(returnWarehouseId || '');
-    if (returnWhPrevRef.current != null && returnWhPrevRef.current !== wh && wh) {
-      setReturnList([]);
-    }
-    if (wh) returnWhPrevRef.current = wh;
-  }, [returnWarehouseId]);
-
-  useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
     const allowed = new Set(transferWarehouses.map((w) => String(w.id)));
     if (transferFromWarehouseId && !allowed.has(String(transferFromWarehouseId))) {
@@ -799,10 +789,7 @@ export function WarehouseOperations({
     return () => clearTimeout(t);
   }, [mode, inventoryNewSession]);
 
-  const returnSupplierProducts = useMemo(
-    () => (products || []).filter((p) => (p.quantity ?? 0) > 0),
-    [products]
-  );
+  const returnSupplierProducts = useMemo(() => products || [], [products]);
 
   const pickListProduct = useCallback((product, { setProduct, setSearch, setId }) => {
     if (!product?.id) return;
@@ -1757,14 +1744,25 @@ export function WarehouseOperations({
     setOpLoading(true);
     setOpMessage(null);
     try {
-      const lines = returnList
-        .map((l) => ({
-          productId: l.productId,
-          quantity: Math.max(1, parseInt(l.quantity, 10) || 1),
-        }))
-        .filter((l) => l.productId != null && String(l.productId).trim() !== '' && l.quantity > 0);
+      const lines = [];
+      for (const l of returnList) {
+        const pid = Number(l.productId);
+        if (!Number.isFinite(pid) || pid < 1) continue;
+        const product =
+          products.find((p) => Number(p.id) === pid) || {
+            id: pid,
+            sku: l.sku,
+            name: l.name,
+          };
+        const maxQty = await warehouseQtyForProduct(product, returnWarehouseId);
+        if (maxQty < 1) continue;
+        const qty = Math.min(Math.max(1, parseInt(l.quantity, 10) || 1), maxQty);
+        lines.push({ productId: pid, quantity: qty });
+      }
       if (lines.length === 0) {
-        setOpMessage('Список пуст — добавьте товары в возврат');
+        setOpMessage(
+          'Нет позиций с остатком на выбранном складе — добавьте товары по скану или из списка'
+        );
         setOpLoading(false);
         return;
       }

@@ -81,7 +81,18 @@ class StockMovementsController {
         return res.status(400).json({ ok: false, message: 'Склад не найден' });
       }
       const { readProductWarehouseOnHand } = await import('../services/productWarehouseQuantity.service.js');
-      const quantity = await readProductWarehouseOnHand(id, whId);
+      const { isKitProductId } = await import('../services/kitStock.service.js');
+      let quantity;
+      if (await isKitProductId(id)) {
+        const { computeAvailableQuantity } = await import('../services/sellableQuantity.service.js');
+        const metrics = await computeAvailableQuantity(id, {
+          warehouseId: whId,
+          supplierSyncEnabled: false,
+        });
+        quantity = Math.max(0, Number(metrics.onHand) || 0);
+      } else {
+        quantity = await readProductWarehouseOnHand(id, whId);
+      }
       return res.status(200).json({ ok: true, data: { warehouseId: whId, quantity } });
     } catch (error) {
       next(error);

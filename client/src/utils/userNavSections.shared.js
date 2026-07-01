@@ -7,6 +7,7 @@ export const NAV_SECTION_KEYS = [
   'analytics',
   'products',
   'orders',
+  'assembly',
   'shipments',
   'fbo',
   'questions',
@@ -39,6 +40,7 @@ export const NAV_SECTION_LABELS = {
   analytics: 'Аналитика',
   products: 'Товары',
   orders: 'Заказы',
+  assembly: 'Сборка',
   shipments: 'Отгрузки',
   fbo: 'Поставки FBO',
   questions: 'Вопросы',
@@ -70,7 +72,7 @@ export const NAV_SECTION_LABELS = {
 export const NAV_SECTION_GROUPS = [
   {
     title: 'Основное',
-    keys: ['analytics', 'products', 'orders', 'shipments', 'prices'],
+    keys: ['analytics', 'products', 'orders', 'assembly', 'shipments', 'prices'],
   },
   {
     title: 'Маркетплейс',
@@ -307,6 +309,6 @@ export function navSectionKeyForPath(pathname, search = '') {
   if (path.startsWith('/categories')) return 'categories';
   if (path.startsWith('/brands')) return 'brands';
   if (path.startsWith('/integrations')) return 'integrations';
-  if (path.startsWith('/assembly')) return 'orders';
+  if (path.startsWith('/assembly')) return 'assembly';
   return null;
 }

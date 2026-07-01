@@ -30,5 +30,8 @@ export function isNavFeatureEnabled(features, key) {
     if (f.nav_warehouse_return_customer === false || f.nav_wb_returns === false) return false;
     return true;
   }
+  if (key === 'assembly') {
+    return f.nav_assembly !== false;
+  }
   return f[`nav_${key}`] !== false;
 }
