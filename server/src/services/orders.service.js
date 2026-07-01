@@ -97,6 +97,15 @@ export function isStrictWarehouseOrderRow(orderRow) {
   return isMarketplaceFbsOrderRow(orderRow) || isManualOrderRow(orderRow);
 }
 
+/** Пакетный резерв комплектующих из applyKitOrderReserve — не пересчитывать собираемость между шагами цикла. */
+export function isKitComponentBatchReserve(meta) {
+  if (!meta || meta?.kit_product_id == null || Number(meta.kit_product_id) <= 0) return false;
+  if (!(meta?.kit_reserve_batch === true || Number(meta?.kit_reserve_from_components) > 0)) {
+    return false;
+  }
+  return Number(meta?.kit_units) > 0;
+}
+
 /**
  * Покрытие резерва по заказу: со склада или с «в пути».
  * Резерв в системе возможен только при доступном остатке/ожидании — «без покрытия» не показываем.
@@ -1286,18 +1295,11 @@ class OrdersService {
 
   /**
    * Склад для резерва/отгрузки заказа.
-   * FBS с маркетплейса — только привязка из warehouse_mappings (без поиска «где есть остаток»).
-   * Ручной заказ — только склад из profiles.manual_orders_warehouse_id (без поиска «где есть остаток»).
+   * Все склады изолированы: только привязка заказа (warehouse_mappings / ручной склад),
+   * без подбора «где есть остаток» по другим складам.
    */
-  async _resolveWarehouseIdForOrderReserve(orderRow, productId = null) {
-    const mappedWh = await this._resolveOwnWarehouseIdForOrder(orderRow);
-    if (isMarketplaceFbsOrderRow(orderRow) || isManualOrderRow(orderRow)) {
-      return mappedWh;
-    }
-    if (productId != null) {
-      return stockMovementsService.resolveWarehouseIdForProductStock(productId, mappedWh);
-    }
-    return mappedWh;
+  async _resolveWarehouseIdForOrderReserve(orderRow, _productId = null) {
+    return this._resolveOwnWarehouseIdForOrder(orderRow);
   }
 
   /** FBS / ручной заказ без привязки склада — резерв недоступен. */
@@ -1478,6 +1480,7 @@ class OrdersService {
 
     const reserveAsKitComponentEarly =
       meta?.kit_product_id != null && Number(meta.kit_product_id) > 0;
+    const kitComponentBatch = isKitComponentBatchReserve(meta);
     const hasKitPrealloc =
       (await isKitProductId(productId)) &&
       !reserveAsKitComponentEarly &&
@@ -1486,13 +1489,22 @@ class OrdersService {
     if (!hasKitPrealloc) {
       const supplyOpts = reserveSnapshotOptsFromMeta(meta);
       if (reserveAsKitComponentEarly && Number(meta?.kit_product_id) > 0) {
-        const orderRow =
-          meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
-        const gateAvail = await this._getAvailableUnitsForOrderReserveLine(productId, orderRow, {
-          warehouseId: supplyOpts.warehouseId ?? null,
-          kitProductId: Number(meta.kit_product_id)
-        });
-        if (Math.floor(gateAvail) <= 0) return;
+        if (kitComponentBatch) {
+          const compAvail = Math.floor(
+            await getReservableSupplyUnits(productId, {
+              warehouseId: supplyOpts.warehouseId ?? null
+            })
+          );
+          if (compAvail < qtyWanted) return;
+        } else {
+          const orderRow =
+            meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
+          const gateAvail = await this._getAvailableUnitsForOrderReserveLine(productId, orderRow, {
+            warehouseId: supplyOpts.warehouseId ?? null,
+            kitProductId: Number(meta.kit_product_id)
+          });
+          if (Math.floor(gateAvail) <= 0) return;
+        }
       } else {
         const orderRow =
           meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
@@ -1527,12 +1539,20 @@ class OrdersService {
       const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
       const kitParentId = reserveAsKitComponent ? Number(meta.kit_product_id) : null;
       if (kitParentId > 0) {
-        const orderRow =
-          meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
-        availableSupply = await this._getAvailableUnitsForOrderReserveLine(productId, orderRow, {
-          warehouseId: wh,
-          kitProductId: kitParentId
-        });
+        if (kitComponentBatch) {
+          availableSupply = Math.floor(
+            await getReservableSupplyUnits(productId, {
+              warehouseId: wh != null && String(wh).trim() !== '' ? wh : null
+            })
+          );
+        } else {
+          const orderRow =
+            meta?.order_row && typeof meta.order_row === 'object' ? meta.order_row : null;
+          availableSupply = await this._getAvailableUnitsForOrderReserveLine(productId, orderRow, {
+            warehouseId: wh,
+            kitProductId: kitParentId
+          });
+        }
       } else {
         availableSupply = await getComponentAssemblableUnits(productId, { warehouseId: wh });
       }
@@ -2529,11 +2549,6 @@ class OrdersService {
 
     const reserveNow = Math.min(need, snapAvail);
     if (reserveNow <= 0) return;
-
-    if (!isMarketplaceFbsOrderRow(orderRow)) {
-      const snapFinal = await getProductSupplySnapshotWithClient(null, productId);
-      if (Math.floor(snapFinal.available) < reserveNow) return;
-    }
 
     try {
       await this._applyReserveForOrder(productId, reserveNow, orderIdStr || String(id), {
@@ -5577,7 +5592,7 @@ class OrdersService {
         warehouse_id: warehouseId,
         order_id: id,
         orderId: orderIdStr,
-        strict_warehouse: isMarketplaceFbsOrderRow(row),
+        strict_warehouse: isStrictWarehouseOrderRow(row),
         source: 'order_reserve_summary'
       };
 

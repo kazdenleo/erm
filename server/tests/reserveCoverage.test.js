@@ -7,7 +7,25 @@ import {
   onHandHeadroomBeforeReserve,
   orderStatusAllowsIncomingReserve,
   orderRowAllowsIncomingReserve,
+  isKitComponentBatchReserve,
 } from '../src/services/orders.service.js';
+
+describe('isKitComponentBatchReserve', () => {
+  test('пакетный резерв комплектующих', () => {
+    expect(
+      isKitComponentBatchReserve({
+        kit_product_id: 352,
+        kit_reserve_batch: true,
+        kit_reserve_from_components: 1,
+        kit_units: 1
+      })
+    ).toBe(true);
+  });
+
+  test('обычный резерв комплектующей без пакета', () => {
+    expect(isKitComponentBatchReserve({ kit_product_id: 352 })).toBe(false);
+  });
+});
 
 describe('orderStatusAllowsIncomingReserve', () => {
   test('новый заказ — только со склада', () => {

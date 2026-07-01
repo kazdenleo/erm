@@ -2328,6 +2328,7 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
   const orderDbId = Number(meta?.order_id ?? meta?.orderId);
   let reservedBeforeKit = null;
   let onKitForAlloc = 0;
+  let fromCompBefore = 0;
   if (Number.isFinite(orderDbId) && orderDbId > 0) {
     reservedBeforeKit = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
     const already = reservedBeforeKit;
@@ -2348,7 +2349,8 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
       meta?.warehouse_id ?? meta?.warehouseId ?? null
     );
     onKitForAlloc = onKit;
-    const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId);
+    fromCompBefore = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId);
+    const fromComp = fromCompBefore;
     if (onKit > 0 && fromComp > 0) {
       if (meta?.reconcile_kit_to_components || meta?.reconcile_force_mixed) {
         return 0;
@@ -2422,11 +2424,26 @@ export async function applyKitOrderReserve(kitProductId, kitsWanted, orderIdLabe
       await applyReserveFn(compId, compQty, orderIdLabel, {
         ...meta,
         kit_product_id: kitId,
+        kit_reserve_batch: true,
         kit_reserve_from_whole: 0,
         kit_reserve_from_components: alloc.fromComponents,
         kit_reserve_scope: 'component',
         kit_units: alloc.fromComponents
       });
+    }
+    if (Number.isFinite(orderDbId) && orderDbId > 0) {
+      const fromCompAfter = await getReservedKitUnitsFromComponentsForOrder(kitId, orderDbId);
+      const expectedFromComp = fromCompBefore + alloc.fromComponents;
+      if (fromCompAfter < expectedFromComp) {
+        logger.error('[kitReserve] неполный пакетный резерв комплектующих', {
+          kitProductId: kitId,
+          orderDbId,
+          fromCompBefore,
+          fromCompAfter,
+          expectedFromComp,
+          allocFromComponents: alloc.fromComponents
+        });
+      }
     }
     for (const c of components) {
       scheduleMarketplaceSyncForParentKits(c.component_product_id, {
