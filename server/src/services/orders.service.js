@@ -261,7 +261,8 @@ async function buildReserveCoverageMetaMap({ orderDbIds = null, productIds = nul
        AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
      WHERE ${clauses.join(' AND ')}
      GROUP BY o.id, sm.product_id
-     HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
+     HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
+        OR (${RESERVE_META_ON_HAND_SUM_SQL} + ${RESERVE_META_INCOMING_SUM_SQL}) > 0`,
     params
   );
 
@@ -280,6 +281,50 @@ function resolveReserveCoverageKind(fifoKey, { metaMap, fifoMap, supplyMap, pid,
   if (fifoKey && fifoMap?.has(fifoKey)) return fifoMap.get(fifoKey);
   const sup = supplyMap?.get(pid);
   return sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
+}
+
+function aggregateCoverageKinds(kinds) {
+  if (!Array.isArray(kinds) || !kinds.length) return null;
+  if (kinds.some((k) => k === 'incoming')) return 'incoming';
+  if (kinds.some((k) => k === 'on_hand')) return 'on_hand';
+  return 'incoming';
+}
+
+/** Покрытие по meta движений всех product_id заказа (комплектующие комплекта). */
+function coverageKindsForOrderFromMetaMap(orderDbId, metaMap, { excludeProductId = null } = {}) {
+  const oid = Number(orderDbId);
+  if (!Number.isFinite(oid) || oid < 1 || !metaMap?.size) return [];
+  const prefix = `${oid}:`;
+  const exclude =
+    excludeProductId != null && Number.isFinite(Number(excludeProductId))
+      ? Number(excludeProductId)
+      : null;
+  const kinds = [];
+  for (const [key, kind] of metaMap) {
+    if (!key.startsWith(prefix)) continue;
+    const pid = Number(key.slice(prefix.length));
+    if (exclude != null && pid === exclude) continue;
+    if (kind) kinds.push(kind);
+  }
+  return kinds;
+}
+
+function mergeOrderCoverage(existing, addition) {
+  if (!addition) return existing ?? null;
+  if (!existing) return addition;
+  if (existing === 'incoming' || addition === 'incoming') return 'incoming';
+  return 'on_hand';
+}
+
+function mergeOrderCoverageFromMetaMap(map, orderDbIds, metaMap) {
+  for (const rawId of orderDbIds || []) {
+    const oid = Number(rawId);
+    if (!Number.isFinite(oid) || oid < 1) continue;
+    const fromMeta = aggregateCoverageKinds(coverageKindsForOrderFromMetaMap(oid, metaMap));
+    if (!fromMeta) continue;
+    map.set(oid, mergeOrderCoverage(map.get(oid), fromMeta));
+  }
+  return map;
 }
 
 /** Сколько ещё можно покрыть резервом с фактического остатка (FIFO: сначала занят on_hand). */
@@ -427,6 +472,7 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
     }
     map.set(oid, anyIncoming ? 'incoming' : anyOnHand ? 'on_hand' : 'incoming');
   }
+  mergeOrderCoverageFromMetaMap(map, ids, metaMap);
   return map;
 }
 
@@ -497,6 +543,15 @@ function enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap = null, me
     }
     const oid = Number(line.orderRowDbId);
     const fifoKey = Number.isFinite(oid) && oid > 0 ? `${oid}:${pid}` : null;
+    if (line.kitReserveFromComponents && Number.isFinite(oid) && oid > 0) {
+      const kitKind = aggregateCoverageKinds(
+        coverageKindsForOrderFromMetaMap(oid, metaMap, { excludeProductId: pid })
+      );
+      if (kitKind) {
+        line.reserveCoverage = kitKind;
+        continue;
+      }
+    }
     line.reserveCoverage = resolveReserveCoverageKind(fifoKey, {
       metaMap,
       fifoMap: coverageFifoMap,
@@ -2983,10 +3038,10 @@ class OrdersService {
         const pid = Number(o.productId ?? o.product_id);
         const sqlReserved = reserved;
         if (oid && kitId && Number.isFinite(pid) && pid > 0 && kitPiecesMap.has(pid)) {
-          reserved = kitReservedMap.get(oid) ?? reserved;
+          reserved = kitReservedMap.has(oid) ? Number(kitReservedMap.get(oid)) || 0 : reserved;
           need = Math.max(1, parseInt(o.quantity, 10) || 1);
         } else if (oid && kitId && (!Number.isFinite(pid) || pid < 1)) {
-          reserved = kitReservedMap.get(oid) ?? reserved;
+          reserved = kitReservedMap.has(oid) ? Number(kitReservedMap.get(oid)) || 0 : reserved;
           need = Math.max(1, parseInt(o.quantity, 10) || 1);
         } else if (
           oid &&
