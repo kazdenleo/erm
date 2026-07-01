@@ -28,7 +28,8 @@ import logger from '../utils/logger.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
 import { enqueueProcurementReserveJob } from '../utils/procurementReserveQueue.js';
 
-const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(w.name, w.address, w.city, '')), '')`;
+/** Подпись склада: в БД есть address и wb_warehouse_name, колонок name/city нет. */
+const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(w.address, w.wb_warehouse_name, '')), '')`;
 const PURCHASE_LOCK_TIMEOUT_MS = 60000;
 
 function sleep(ms) {

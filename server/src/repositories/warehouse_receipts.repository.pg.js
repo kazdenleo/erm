@@ -125,7 +125,7 @@ class WarehouseReceiptsRepositoryPG {
         AND COALESCE(l.cost, p.cost) IS NOT NULL
     ) AS total_amount_rub`;
     const receiptWarehouseLabelSql = `(
-      SELECT NULLIF(TRIM(COALESCE(wh.name, wh.address, wh.city, '')), '')
+      SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
       FROM stock_movements sm
       LEFT JOIN warehouses wh ON wh.id = sm.warehouse_id
       WHERE (sm.meta->>'receipt_id')::bigint = r.id
