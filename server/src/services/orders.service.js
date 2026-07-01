@@ -449,10 +449,14 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
     if (!byOrder.has(oid)) byOrder.set(oid, []);
     byOrder.get(oid).push({ pid, reserved });
   }
-  if (!byOrder.size) return map;
+
+  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
+  if (!byOrder.size) {
+    mergeOrderCoverageFromMetaMap(map, ids, metaMap);
+    return map;
+  }
 
   const supplyMap = await batchProductReserveSupplyMap(movementPids);
-  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
   const fifoMap = opts.skipFifo === true ? null : await buildReserveCoverageFifoMap(movementPids);
 
   for (const [oid, lines] of byOrder) {
@@ -581,7 +585,7 @@ async function enrichReserveSummaryCoverage(summary, { light = false } = {}) {
   const pids = lines.map((l) => Number(l.productId)).filter((id) => id > 0);
   const orderDbIds = lines.map((l) => Number(l.orderRowDbId)).filter((id) => id > 0);
   const supplyMap = await batchProductReserveSupplyMap(pids);
-  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds, productIds: pids });
+  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds });
   const coverageFifoMap = light ? null : await buildReserveCoverageFifoMap(pids);
   enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap, metaMap);
   summary.reserveCoverage = reserveCoverageFromLines(lines);
