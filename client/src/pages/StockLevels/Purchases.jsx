@@ -28,6 +28,12 @@ import { FastScanInput } from '../../components/common/FastScanInput/FastScanInp
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
+import {
+  applySingleOrgWarehouseDefaults,
+  stockDestinationWarehouses,
+  useStockDestinationDefaults,
+  warehouseDisplayLabel,
+} from '../../utils/stockDestinationDefaults.js';
 import { onNavigationClick } from '../../utils/navigationClick.js';
 import { PurchaseExpectedDraftModal } from './PurchaseExpectedDraftModal.jsx';
 import { supplierPrefixesFromApiConfig } from '../../utils/supplierArticlePrefixes';
@@ -312,6 +318,10 @@ export function Purchases() {
   const { warehouses } = useWarehouses();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
+  const { destWarehouses, singleOrganizationId, singleWarehouseId } = useStockDestinationDefaults(
+    organizations,
+    warehouses
+  );
   const [showArchived, setShowArchived] = useState(false);
   const [filterSupplierId, setFilterSupplierId] = useState('');
   const [list, setList] = useState([]);
@@ -576,6 +586,35 @@ export function Purchases() {
     setExcelImportLoading(false);
     setExcelPreviewInfo(null);
   }, []);
+
+  const openCreatePurchase = useCallback(() => {
+    applySingleOrgWarehouseDefaults({
+      singleOrganizationId,
+      singleWarehouseId,
+      organizationId: createOrganizationId,
+      warehouseId: createWarehouseId,
+      setOrganizationId: setCreateOrganizationId,
+      setWarehouseId: setCreateWarehouseId,
+    });
+    setCreateOpen(true);
+  }, [
+    singleOrganizationId,
+    singleWarehouseId,
+    createOrganizationId,
+    createWarehouseId,
+  ]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    applySingleOrgWarehouseDefaults({
+      singleOrganizationId,
+      singleWarehouseId,
+      organizationId: createOrganizationId,
+      warehouseId: createWarehouseId,
+      setOrganizationId: setCreateOrganizationId,
+      setWarehouseId: setCreateWarehouseId,
+    });
+  }, [createOpen, singleOrganizationId, singleWarehouseId, createOrganizationId, createWarehouseId]);
 
   const closeEditModal = useCallback(() => {
     setEditOpen(false);
@@ -1061,7 +1100,7 @@ export function Purchases() {
           ? String(p.warehouseId)
           : dp?.warehouse_id != null
             ? String(dp.warehouse_id)
-            : ''
+            : singleWarehouseId || ''
       );
       setReceiptSupplierId(
         p.supplierId != null
@@ -1534,7 +1573,7 @@ export function Purchases() {
         </p>
       )}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
-        <Button onClick={() => setCreateOpen(true)}>Новая закупка</Button>
+        <Button onClick={openCreatePurchase}>Новая закупка</Button>
         <Button variant="secondary" onClick={() => reload()} disabled={loading}>
           {loading ? '...' : 'Обновить'}
         </Button>
@@ -1593,7 +1632,7 @@ export function Purchases() {
                   <td>№{p.id}</td>
                   <td>{p.supplier_name || '—'}</td>
                   <td>{p.organization_name || '—'}</td>
-                  <td>{p.warehouse_name || '—'}</td>
+                  <td>{p.warehouse_name || warehouseDisplayLabel(null, p.warehouse_id) || '—'}</td>
                   <td>{qtyCell(p.expected_total ?? p.expectedTotal)}</td>
                   <td>{qtyCell(p.received_total ?? p.receivedTotal)}</td>
                   <td>
@@ -1650,11 +1689,10 @@ export function Purchases() {
           <span className="muted" style={{ fontSize: 13 }}>Склад</span>
           <select className="warehouse-ops-select" value={createWarehouseId} onChange={(e) => setCreateWarehouseId(e.target.value)}>
             <option value="">— Выберите склад —</option>
-            {(warehouses || [])
-              .filter((w) => w?.type === 'warehouse' && !w?.supplier_id)
+            {(destWarehouses || [])
               .map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.name || w.address || w.city || `Склад #${w.id}`}
+                  {warehouseDisplayLabel(w)}
                 </option>
               ))}
           </select>
@@ -1836,11 +1874,10 @@ export function Purchases() {
             disabled={editSaveBusy}
           >
             <option value="">— Выберите склад —</option>
-            {(warehouses || [])
-              .filter((w) => w?.type === 'warehouse' && !w?.supplier_id)
+            {(destWarehouses || [])
               .map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.name || w.address || w.city || `Склад #${w.id}`}
+                  {warehouseDisplayLabel(w)}
                 </option>
               ))}
           </select>
@@ -2133,11 +2170,9 @@ export function Purchases() {
                 }}
               >
                 <option value="">— Не указан —</option>
-                {(warehouses || [])
-                  .filter((w) => w?.type === 'warehouse' && !w?.supplier_id)
-                  .map((w) => (
+                {(destWarehouses || []).map((w) => (
                     <option key={w.id} value={w.id}>
-                      {w.name || w.address || w.city || `Склад #${w.id}`}
+                      {warehouseDisplayLabel(w)}
                     </option>
                   ))}
               </select>
@@ -2393,6 +2428,7 @@ export function Purchases() {
                     <tr>
                       <th>Дата</th>
                       <th>№</th>
+                      <th>Склад</th>
                       <th>Статус</th>
                       <th>Позиций</th>
                       <th>Действия</th>
@@ -2406,6 +2442,7 @@ export function Purchases() {
                         <tr key={r.id}>
                           <td>{fmtDt(r.started_at || r.created_at)}</td>
                           <td>№{r.id}</td>
+                          <td>{r.warehouse_name || warehouseDisplayLabel(null, r.warehouse_id) || '—'}</td>
                           <td>{receiptStatusLabel(r.status)}</td>
                           <td>{r.items_count ?? '—'}</td>
                           <td>
@@ -2558,11 +2595,9 @@ export function Purchases() {
                 onChange={(e) => setReceiptWarehouseId(e.target.value)}
               >
                 <option value="">— По умолчанию —</option>
-                {(warehouses || [])
-                  .filter((w) => w?.type === 'warehouse' && !w?.supplier_id)
-                  .map((w) => (
+                {(destWarehouses || []).map((w) => (
                     <option key={w.id} value={w.id}>
-                      {w.name || w.address || w.city || `Склад #${w.id}`}
+                      {warehouseDisplayLabel(w)}
                     </option>
                   ))}
               </select>

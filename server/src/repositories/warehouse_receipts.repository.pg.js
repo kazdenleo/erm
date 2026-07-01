@@ -124,6 +124,15 @@ class WarehouseReceiptsRepositoryPG {
       WHERE l.receipt_id = r.id
         AND COALESCE(l.cost, p.cost) IS NOT NULL
     ) AS total_amount_rub`;
+    const receiptWarehouseLabelSql = `(
+      SELECT NULLIF(TRIM(COALESCE(wh.name, wh.address, wh.city, '')), '')
+      FROM stock_movements sm
+      LEFT JOIN warehouses wh ON wh.id = sm.warehouse_id
+      WHERE (sm.meta->>'receipt_id')::bigint = r.id
+        AND sm.warehouse_id IS NOT NULL
+      ORDER BY sm.id DESC
+      LIMIT 1
+    ) AS warehouse_name`;
     const pid =
       profileId != null && profileId !== ''
         ? typeof profileId === 'string'
@@ -163,6 +172,7 @@ class WarehouseReceiptsRepositoryPG {
                   (SELECT SUM(l.quantity) FROM warehouse_receipt_lines l WHERE l.receipt_id = r.id),
                   0
                 )::int AS total_quantity,
+                ${receiptWarehouseLabelSql},
                 ${amountRub}
          FROM warehouse_receipts r
          LEFT JOIN suppliers s ON s.id = r.supplier_id

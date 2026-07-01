@@ -27,6 +27,8 @@ import {
 import logger from '../utils/logger.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
 import { enqueueProcurementReserveJob } from '../utils/procurementReserveQueue.js';
+
+const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(w.name, w.address, w.city, '')), '')`;
 const PURCHASE_LOCK_TIMEOUT_MS = 60000;
 
 function sleep(ms) {
@@ -1499,7 +1501,7 @@ class PurchasesService {
               p.supplier_submitted_at, p.supplier_order_ref,
               s.name AS supplier_name,
               o.name AS organization_name,
-              COALESCE(w.address, '') AS warehouse_name,
+              ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
               COALESCE(agg.cnt, 0)::int AS items_count,
               COALESCE(agg.exp_sum, 0)::int AS expected_total,
               COALESCE(agg.rec_sum, 0)::int AS received_total
@@ -1546,7 +1548,7 @@ class PurchasesService {
       `SELECT p.*,
               s.name AS supplier_name,
               o.name AS organization_name,
-              COALESCE(w.address, '') AS warehouse_name
+              ${WAREHOUSE_LABEL_SQL} AS warehouse_name
        FROM purchases p
        LEFT JOIN suppliers s ON s.id = p.supplier_id
        LEFT JOIN organizations o ON o.id = p.organization_id
@@ -1584,8 +1586,12 @@ class PurchasesService {
       receipts = await query(
         `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at,
                 r.warehouse_receipt_id,
+                p.warehouse_id,
+                ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
                 (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
          FROM purchase_receipts r
+         JOIN purchases p ON p.id = r.purchase_id
+         LEFT JOIN warehouses w ON w.id = p.warehouse_id
          WHERE r.purchase_id = $1
            AND r.status IN ('completed', 'scanning', 'expected')
          ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
@@ -1597,8 +1603,12 @@ class PurchasesService {
         receipts = await query(
           `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at,
                   NULL::bigint AS warehouse_receipt_id,
+                  p.warehouse_id,
+                  ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
                   (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
            FROM purchase_receipts r
+           JOIN purchases p ON p.id = r.purchase_id
+           LEFT JOIN warehouses w ON w.id = p.warehouse_id
            WHERE r.purchase_id = $1
              AND r.status IN ('completed', 'scanning', 'expected')
            ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
@@ -1638,8 +1648,12 @@ class PurchasesService {
       receipts2 = await query(
         `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at,
                 r.warehouse_receipt_id,
+                p.warehouse_id,
+                ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
                 (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
          FROM purchase_receipts r
+         JOIN purchases p ON p.id = r.purchase_id
+         LEFT JOIN warehouses w ON w.id = p.warehouse_id
          WHERE r.purchase_id = $1
            AND r.status IN ('completed', 'scanning', 'expected')
          ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
@@ -1651,10 +1665,14 @@ class PurchasesService {
         receipts2 = await query(
           `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at,
                   NULL::bigint AS warehouse_receipt_id,
+                  p.warehouse_id,
+                  ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
                   (SELECT COUNT(*) FROM purchase_receipt_items ri WHERE ri.receipt_id = r.id) AS items_count
            FROM purchase_receipts r
+           JOIN purchases p ON p.id = r.purchase_id
+           LEFT JOIN warehouses w ON w.id = p.warehouse_id
            WHERE r.purchase_id = $1
-             AND r.status IN ('completed', 'scanning', 'expected')
+           AND r.status IN ('completed', 'scanning', 'expected')
            ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
           [id]
         );
@@ -2714,7 +2732,7 @@ class PurchasesService {
               p.organization_id,
               o.name AS organization_name,
               p.warehouse_id,
-              COALESCE(w.address, '') AS warehouse_name
+              ${WAREHOUSE_LABEL_SQL} AS warehouse_name
        FROM purchase_receipts r
        JOIN purchases p ON p.id = r.purchase_id
        LEFT JOIN suppliers s ON s.id = p.supplier_id

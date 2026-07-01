@@ -22,6 +22,11 @@ import { FastScanInput } from '../../components/common/FastScanInput/FastScanInp
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
 import { onNavigationClick } from '../../utils/navigationClick.js';
+import {
+  applySingleOrgWarehouseDefaults,
+  useStockDestinationDefaults,
+  warehouseDisplayLabel,
+} from '../../utils/stockDestinationDefaults.js';
 import { usersApi } from '../../services/users.api.js';
 import {
   isLikelyBarcodeScan,
@@ -206,6 +211,11 @@ export function WarehouseOperations({
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
   const { warehouses } = useWarehouses();
+  const { singleOrganizationId, singleWarehouseId } = useStockDestinationDefaults(
+    organizations,
+    warehouses,
+    { ownOnly: true }
+  );
   const ownWarehouses = useMemo(
     () =>
       (warehouses || []).filter(
@@ -263,7 +273,7 @@ export function WarehouseOperations({
   const [receiptPickedProduct, setReceiptPickedProduct] = useState(null);
   const [listQty, setListQty] = useState(1);
   const [receiptSupplierId, setReceiptSupplierId] = useState('');
-  const [receiptOrganizationId] = useState('');
+  const [receiptOrganizationId, setReceiptOrganizationId] = useState('');
   /** Обязательный склад приёмки (поступление / возвраты) */
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
   const [returnWarehouseId, setReturnWarehouseId] = useState('');
@@ -524,8 +534,19 @@ export function WarehouseOperations({
     if (mode !== MODE_TRANSFER) return;
     if (!transferOrganizationId && defaultOrganizationId) {
       setTransferOrganizationId(String(defaultOrganizationId));
+    } else if (!transferOrganizationId && singleOrganizationId) {
+      setTransferOrganizationId(singleOrganizationId);
     }
-  }, [mode, transferOrganizationId, defaultOrganizationId]);
+  }, [mode, transferOrganizationId, defaultOrganizationId, singleOrganizationId]);
+
+  useEffect(() => {
+    if (!returnOrganizationId && singleOrganizationId) {
+      setReturnOrganizationId(singleOrganizationId);
+    }
+    if (!customerReturnOrganizationId && singleOrganizationId) {
+      setCustomerReturnOrganizationId(singleOrganizationId);
+    }
+  }, [singleOrganizationId, returnOrganizationId, customerReturnOrganizationId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
@@ -548,17 +569,27 @@ export function WarehouseOperations({
 
   useEffect(() => {
     if (mode !== MODE_WRITEOFF) return;
-    if (!writeoffWarehouseId && inventoryWarehouseId) {
-      setWriteoffWarehouseId(String(inventoryWarehouseId));
+    if (!writeoffWarehouseId) {
+      if (inventoryWarehouseId) setWriteoffWarehouseId(String(inventoryWarehouseId));
+      else if (singleWarehouseId) setWriteoffWarehouseId(singleWarehouseId);
     }
-  }, [mode, writeoffWarehouseId, inventoryWarehouseId]);
+  }, [mode, writeoffWarehouseId, inventoryWarehouseId, singleWarehouseId]);
 
   useEffect(() => {
     if (mode !== MODE_RETURN_SUPPLIER) return;
-    if (!returnWarehouseId && inventoryWarehouseId) {
-      setReturnWarehouseId(String(inventoryWarehouseId));
+    if (!returnWarehouseId) {
+      if (inventoryWarehouseId) setReturnWarehouseId(String(inventoryWarehouseId));
+      else if (singleWarehouseId) setReturnWarehouseId(singleWarehouseId);
     }
-  }, [mode, returnWarehouseId, inventoryWarehouseId]);
+  }, [mode, returnWarehouseId, inventoryWarehouseId, singleWarehouseId]);
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_CUSTOMER) return;
+    if (!customerReturnWarehouseId) {
+      if (inventoryWarehouseId) setCustomerReturnWarehouseId(String(inventoryWarehouseId));
+      else if (singleWarehouseId) setCustomerReturnWarehouseId(singleWarehouseId);
+    }
+  }, [mode, customerReturnWarehouseId, inventoryWarehouseId, singleWarehouseId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
@@ -1008,8 +1039,30 @@ export function WarehouseOperations({
   const receiptWarehouseLabel = useMemo(() => {
     if (!receiptWarehouseId) return '';
     const w = ownWarehouses.find((x) => String(x.id) === String(receiptWarehouseId));
-    return w?.address || w?.name || `Склад #${receiptWarehouseId}`;
+    return warehouseDisplayLabel(w, receiptWarehouseId);
   }, [receiptWarehouseId, ownWarehouses]);
+
+  const openAddReceiptModal = useCallback(() => {
+    setReceiptList([]);
+    setOpMessage(null);
+    setLookupError(null);
+    if (!receiptWarehouseId) {
+      const preferred = inventoryWarehouseId ? String(inventoryWarehouseId) : singleWarehouseId;
+      if (preferred) setReceiptWarehouseId(preferred);
+    }
+    applySingleOrgWarehouseDefaults({
+      singleOrganizationId,
+      organizationId: receiptOrganizationId,
+      setOrganizationId: setReceiptOrganizationId,
+    });
+    setAddReceiptModalOpen(true);
+  }, [
+    receiptWarehouseId,
+    inventoryWarehouseId,
+    singleWarehouseId,
+    singleOrganizationId,
+    receiptOrganizationId,
+  ]);
 
   const joinReceiptSessionFromUrl = useCallback(
     async (sid) => {
@@ -2125,6 +2178,7 @@ export function WarehouseOperations({
                 {showTypeColumn ? <th>Тип</th> : null}
                 <th>Организация</th>
                 {showSupplier ? <th>Поставщик</th> : null}
+                <th>Склад</th>
                 <th>Кол-во, шт</th>
                 <th>Сумма, ₽</th>
               </tr>
@@ -2153,6 +2207,7 @@ export function WarehouseOperations({
                   ) : null}
                   <td>{r.organization_name || '—'}</td>
                   {showSupplier ? <td>{r.supplier_name || r.supplier_code || '—'}</td> : null}
+                  <td>{r.warehouse_name || '—'}</td>
                   <td>{receiptRowTotalUnits(r)}</td>
                   <td>{formatReceiptListAmountRub(r.total_amount_rub ?? r.totalAmountRub)}</td>
                 </tr>
@@ -3947,17 +4002,7 @@ export function WarehouseOperations({
                 «Кол-во, шт» — сумма единиц по строкам; «Сумма, ₽» — по строкам с указанной себестоимостью.
               </p>
             </div>
-            <Button
-              onClick={() => {
-                setReceiptList([]);
-                setOpMessage(null);
-                setLookupError(null);
-                setReceiptWarehouseId(inventoryWarehouseId || '');
-                setAddReceiptModalOpen(true);
-              }}
-            >
-              Добавить поступление
-            </Button>
+            <Button onClick={openAddReceiptModal}>Добавить поступление</Button>
           </div>
           {renderWarehouseDocumentsList({
             title: '',
