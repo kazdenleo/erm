@@ -2320,11 +2320,15 @@ class OrdersService {
   async _lightOrderReserveSnapshot(rows) {
     let totalNeed = 0;
     let totalReserved = 0;
+    let anyDbReserve = false;
     for (const row of rows || []) {
       const id = orderRowDbId(row);
       const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
       totalNeed += qty;
       if (!id) continue;
+      if (await this._hasDbReserveForOrder(id)) {
+        anyDbReserve = true;
+      }
       const productId = await this._resolveProductIdForOrderStock(row).catch(() => null);
       const pid = Number(productId);
       if (!Number.isFinite(pid) || pid < 1) continue;
@@ -2335,11 +2339,75 @@ class OrdersService {
       }
     }
     return {
-      hasReserve: totalReserved > 0,
+      hasReserve: totalReserved > 0 || anyDbReserve,
       reservedQty: totalReserved,
       needQty: totalNeed,
       fullyReserved: totalNeed > 0 && totalReserved >= totalNeed
     };
+  }
+
+  /** Неполный резерв комплекта: в журнале есть движения, но целых комплектов 0. */
+  async _hasOrphanedKitOrderReserve(orderRow) {
+    const orderDbId = orderRowDbId(orderRow);
+    if (!orderDbId || !(await this._hasDbReserveForOrder(orderDbId))) return false;
+    const kitId = Number(await this._resolveProductIdForOrderStock(orderRow));
+    if (!Number.isFinite(kitId) || kitId < 1 || !(await isKitProductId(kitId))) {
+      return false;
+    }
+    const validated = await getReservedKitUnitsForOrderValidation(kitId, orderDbId);
+    return validated <= 0;
+  }
+
+  async _releaseOrphanedKitOrderReserve(orderRow, orderIdLabel) {
+    if (!(await this._hasOrphanedKitOrderReserve(orderRow))) {
+      return [];
+    }
+    return this._releaseReservesForOrderRows([orderRow], orderIdLabel, async (pid, net, label, meta) => {
+      await stockMovementsService.applyChange(pid, {
+        delta: net,
+        type: 'unreserve',
+        reason: `Снятие неполного резерва комплекта (заказ ${label})`.trim(),
+        meta: { ...meta, manual_unreserve: true, skip_auto_reserve: true, orphaned_kit_reserve: true }
+      });
+    });
+  }
+
+  async _reserveFailureHintForRows(rows) {
+    const row = rows?.[0];
+    if (!row) return '';
+    const kitId = Number(await this._resolveProductIdForOrderStock(row).catch(() => null));
+    if (!Number.isFinite(kitId) || kitId < 1 || !(await isKitProductId(kitId))) {
+      return '';
+    }
+    const orderDbId = orderRowDbId(row);
+    if (await this._hasOrphanedKitOrderReserve(row)) {
+      return ' На заказе остался неполный резерв комплектующих — снимите резерв и повторите.';
+    }
+    const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, kitId);
+    const assemblable = await computeAssemblableFromComponents(kitId, { warehouseId });
+    if (assemblable <= 0) {
+      const components = await getKitComponents(kitId);
+      const shortages = [];
+      for (const c of components) {
+        const cpid = Number(c.component_product_id);
+        const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+        const supply = Math.floor(
+          await getReservableSupplyUnits(cpid, { warehouseId: warehouseId ?? null })
+        );
+        const kitsFromPart = Math.floor(supply / perKit);
+        if (kitsFromPart <= 0) {
+          const label = (await this._productDisplayLabelById(cpid)) || `id ${cpid}`;
+          shortages.push(label);
+        }
+      }
+      if (shortages.length > 0) {
+        return ` На складе FBS заказа не хватает: ${shortages.join('; ')}.`;
+      }
+    }
+    if (orderDbId && (await this._getReservedProductIdsForOrder(orderDbId)).length > 0) {
+      return ' На заказе есть резерв отдельных комплектующих без полного комплекта.';
+    }
+    return '';
   }
 
   /**
@@ -6059,7 +6127,9 @@ class OrdersService {
       // Не перераспределяем освободившийся остаток на другие заказы сразу после ручного снятия в карточке.
     } else {
       const reservedBefore = Number(before.reservedQty) || 0;
+      const oidLabel = String(rows[0]?.orderId ?? rows[0]?.order_id ?? orderId);
       for (const row of rows) {
+        await this._releaseOrphanedKitOrderReserve(row, oidLabel);
         const productId = await this._resolveProductIdForOrderStock(row);
         if (!productId) {
           const err = new Error(
@@ -6086,10 +6156,11 @@ class OrdersService {
       );
       const reservedAfter = Number(afterTry.reservedQty) || 0;
       if (reservedAfter <= reservedBefore) {
+        const hint = await this._reserveFailureHintForRows(rows);
         const err = new Error(
-          isManualOrderRow(rows[0])
+          (isManualOrderRow(rows[0])
             ? 'Не удалось поставить резерв — проверьте остаток на складе для ручных заказов (Настройки → Аккаунт).'
-            : 'Не удалось поставить резерв — проверьте остаток на складе FBS и сопоставление товара с каталогом.'
+            : 'Не удалось поставить резерв — проверьте остаток на складе FBS и сопоставление товара с каталогом.') + hint
         );
         err.statusCode = 400;
         throw err;
