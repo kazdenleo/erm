@@ -42,6 +42,7 @@ export function FboSupplies() {
   const navigate = useNavigate();
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [reserveLoading, setReserveLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [importMode, setImportMode] = useState(null);
   const [templateLoading, setTemplateLoading] = useState(false);
@@ -58,16 +59,29 @@ export function FboSupplies() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setReserveLoading(false);
     setErr(null);
+    const listParams = {
+      statuses: statusFilterList.length ? statusFilterList.join(',') : undefined,
+    };
     try {
-      const data = await fboSuppliesApi.list({
-        statuses: statusFilterList.length ? statusFilterList.join(',') : undefined,
-      });
+      const data = await fboSuppliesApi.list(listParams, { skipReserve: true });
       setList(Array.isArray(data) ? data : []);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить список');
+      setList([]);
+      return;
     } finally {
       setLoading(false);
+    }
+    setReserveLoading(true);
+    try {
+      const withReserve = await fboSuppliesApi.list(listParams);
+      setList(Array.isArray(withReserve) ? withReserve : []);
+    } catch {
+      /* список без резерва уже показан */
+    } finally {
+      setReserveLoading(false);
     }
   }, [statusFilterList]);
 
@@ -309,16 +323,22 @@ export function FboSupplies() {
                   <td>
                     <div className="fbo-supply-qty-with-reserve">
                       <span className="fbo-supply-qty-with-reserve__qty">{row.itemCount ?? '—'}</span>
-                      <FboSupplyReserveBreakdown
-                        inline
-                        reserveDisabled={row.deductStock === false}
-                        reservedFromStock={
-                          row.reservedFromStockTotal ?? row.reserved_from_stock_total
-                        }
-                        reservedFromIncoming={
-                          row.reservedFromIncomingTotal ?? row.reserved_from_incoming_total
-                        }
-                      />
+                      {reserveLoading && row.deductStock !== false ? (
+                        <span className="muted" style={{ fontSize: 11 }}>
+                          резерв…
+                        </span>
+                      ) : (
+                        <FboSupplyReserveBreakdown
+                          inline
+                          reserveDisabled={row.deductStock === false}
+                          reservedFromStock={
+                            row.reservedFromStockTotal ?? row.reserved_from_stock_total
+                          }
+                          reservedFromIncoming={
+                            row.reservedFromIncomingTotal ?? row.reserved_from_incoming_total
+                          }
+                        />
+                      )}
                     </div>
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>

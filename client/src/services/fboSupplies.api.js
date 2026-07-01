@@ -91,10 +91,10 @@ export const fboSuppliesApi = {
     return { buffer: response.data, filename };
   },
 
-  list: async (params = {}) => {
-    const response = await api.get('/fbo-supplies', {
-      params: { ...params, skipReserve: '1' },
-    });
+  list: async (params = {}, { skipReserve = false } = {}) => {
+    const queryParams = { ...params };
+    if (skipReserve) queryParams.skipReserve = '1';
+    const response = await api.get('/fbo-supplies', { params: queryParams });
     return response.data?.data ?? response.data;
   },
 
