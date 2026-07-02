@@ -730,6 +730,14 @@ async function archiveAnsweredMissingFromMarketplace(profileId, marketplace, ext
   let purged = 0;
   for (const row of missing) {
     try {
+      const mp = String(row.marketplace || '').toLowerCase();
+      // Ozon question/list по question_id часто отдаёт другой вопрос — закрываем локальную строку без refresh.
+      if (mp === 'ozon') {
+        const closed = finalizeQuestionRowAsAnsweredOnMarketplace(row);
+        await marketplaceQuestionsRepo.upsertRow(closed);
+        archived += 1;
+        continue;
+      }
       let refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
       if (refreshed && rowNeedsSellerReply(refreshed)) {
         refreshed = finalizeQuestionRowAsAnsweredOnMarketplace(refreshed);
@@ -881,12 +889,21 @@ async function refreshQuestionRowFromMarketplace(profileId, row, organizationId 
           { profileId, ozonOverride }
         );
         const items = extractOzonQuestions(data);
-        if (items[0]) return mapOzonQuestion(items[0], profileId);
+        const item = items[0];
+        const itemId = String(item?.id ?? item?.question_id ?? item?.questionId ?? '').trim();
+        const wantId = String(qid).trim();
+        if (item && itemId && itemId === wantId) {
+          return mapOzonQuestion(item, profileId);
+        }
       } catch {
         /* fallback to stored raw */
       }
     }
-    return mapOzonQuestion(raw, profileId);
+    const mapped = mapOzonQuestion(raw, profileId);
+    if (mapped && String(mapped.external_id) !== String(row.external_id)) {
+      return mapOzonQuestion({ ...raw, id: row.external_id, question_id: row.external_id }, profileId);
+    }
+    return mapped;
   }
   return null;
 }
