@@ -303,6 +303,7 @@ const EMPTY_PRODUCT_FORM_DATA = {
     ozon_product_id: '',
     sku_wb: '',
     sku_ym: '',
+    ym_market_sku: '',
     buyout_rate: 95,
     barcodes: [{ ...EMPTY_BARCODE_ROW }],
     weight: '',
@@ -580,6 +581,12 @@ export function ProductForm({
             : '',
         sku_wb: currentProduct.sku_wb || '',
         sku_ym: currentProduct.sku_ym || '',
+        ym_market_sku:
+          currentProduct.ym_market_sku != null && currentProduct.ym_market_sku !== ''
+            ? String(currentProduct.ym_market_sku)
+            : currentProduct.ym_product_id != null && currentProduct.ym_product_id !== ''
+              ? String(currentProduct.ym_product_id)
+              : '',
         buyout_rate: buyoutRate,
         barcodes: barcodesForForm(currentProduct.barcodes),
         weight: currentProduct.weight || '',
@@ -1616,6 +1623,9 @@ export function ProductForm({
       setFormData((prev) => {
         const next = { ...prev };
         if (resolvedOfferId) next.sku_ym = resolvedOfferId;
+        if (data.marketSku != null && String(data.marketSku).trim() !== '') {
+          next.ym_market_sku = String(data.marketSku).trim();
+        }
         if (name) next.mp_ym_name = name;
         if (description) next.mp_ym_description = description;
         return next;
@@ -2642,6 +2652,13 @@ export function ProductForm({
         }
         const cur = currentProduct?.ozon_product_id;
         if (cur != null && cur !== '' && Number.isFinite(Number(cur))) return Number(cur);
+        return null;
+      })(),
+      marketplace_ym_product_id: (() => {
+        const manual = String(formData.ym_market_sku || '').trim();
+        if (manual !== '' && /^\d+$/.test(manual)) return Number(manual);
+        const cur = currentProduct?.ym_product_id ?? currentProduct?.ym_market_sku;
+        if (cur != null && cur !== '' && /^\d+$/.test(String(cur))) return Number(cur);
         return null;
       })(),
     };

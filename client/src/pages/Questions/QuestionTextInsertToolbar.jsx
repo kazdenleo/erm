@@ -4,7 +4,11 @@
 
 import React, { useRef, useState } from 'react';
 import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
-import { formatProductOptionLabel } from '../../utils/productSearch';
+import {
+  formatProductForQuestionReply,
+  getProductMarketplaceNumber,
+  productNameWithoutArticle,
+} from './questionsDisplay';
 import { QUESTION_TEMPLATE_NAME_TOKEN, resolveBuyerNameForReply } from './questionTemplateText';
 import '../../components/common/ProductSearchInput/ProductSearchInput.css';
 
@@ -46,6 +50,7 @@ export function QuestionTextInsertToolbar({
   organizationId = null,
   buyerNameLabel = null,
   questionProductLabel = null,
+  questionMarketplace = null,
 }) {
   const [productPickerOpen, setProductPickerOpen] = useState(false);
   const [productSearch, setProductSearch] = useState('');
@@ -56,6 +61,7 @@ export function QuestionTextInsertToolbar({
     const text = isReply
       ? resolveBuyerNameForReply(buyerNameLabel)
       : QUESTION_TEMPLATE_NAME_TOKEN;
+    if (!String(text ?? '').trim()) return;
     insertTextAtCursor({ textareaRef, value, onChange, text });
   };
 
@@ -91,6 +97,24 @@ export function QuestionTextInsertToolbar({
         onSelect: () => insertProduct(questionProductLabel),
       }
     : null;
+
+  const renderProductOption = (product) => {
+    const sku = String(product?.sku || '').trim() || '—';
+    const mpNumber = getProductMarketplaceNumber(product, questionMarketplace);
+    const displayArticle = mpNumber || sku;
+    const nameOnly = productNameWithoutArticle(sku, product?.name);
+    return (
+      <>
+        <div className="product-search-input__row">
+          <div className="product-search-input__sku">{displayArticle}</div>
+          {mpNumber && sku !== '—' && sku !== mpNumber ? (
+            <div className="product-search-input__meta">{sku}</div>
+          ) : null}
+        </div>
+        {nameOnly ? <div className="product-search-input__name">{nameOnly}</div> : null}
+      </>
+    );
+  };
 
   return (
     <div className="questions-template-body-editor__toolbar">
@@ -144,7 +168,10 @@ export function QuestionTextInsertToolbar({
               autoFocus
               leadingOption={leadingOption}
               onEscape={closeProductPicker}
-              onSelect={(product) => insertProduct(formatProductOptionLabel(product))}
+              renderOption={renderProductOption}
+              onSelect={(product) =>
+                insertProduct(formatProductForQuestionReply(product, questionMarketplace))
+              }
             />
             <button
               type="button"

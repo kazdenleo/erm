@@ -18,8 +18,10 @@ export const questionsApi = {
   },
 
   /** Одна карточка с веткой threadMessages */
-  getOne: async (id) => {
-    const response = await api.get(`/questions/${encodeURIComponent(id)}`);
+  getOne: async (id, { refresh = true } = {}) => {
+    const response = await api.get(`/questions/${encodeURIComponent(id)}`, {
+      params: refresh ? {} : { refresh: '0' },
+    });
     const payload = response.data;
     return payload?.data ?? payload ?? null;
   },

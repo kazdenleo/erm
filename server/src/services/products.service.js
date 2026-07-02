@@ -1066,7 +1066,8 @@ class ProductsService {
       (productData.sku_ozon != null ||
         productData.sku_wb != null ||
         productData.sku_ym != null ||
-        productData.marketplace_ozon_product_id != null)
+        productData.marketplace_ozon_product_id != null ||
+        productData.marketplace_ym_product_id != null)
     ) {
       productData.marketplace_skus = {};
       if (productData.sku_ozon && String(productData.sku_ozon).trim()) productData.marketplace_skus.ozon = String(productData.sku_ozon).trim();
@@ -1301,6 +1302,13 @@ class ProductsService {
             console.warn('[Products Service] Could not resolve Ozon product_id for offer:', updates.marketplace_skus.ozon, e?.message);
           }
         }
+      }
+      if (
+        updates.marketplace_ym_product_id != null &&
+        updates.marketplace_ym_product_id !== '' &&
+        Number.isFinite(Number(updates.marketplace_ym_product_id))
+      ) {
+        updates.marketplace_ym_product_id = Number(updates.marketplace_ym_product_id);
       }
     }
     if (

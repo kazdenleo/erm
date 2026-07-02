@@ -20,10 +20,10 @@ function tokenTypeFromMatch(m) {
   return 'product';
 }
 
-/** Имя для прямого ответа (без метки в тексте). */
+/** Имя для прямого ответа (без метки в тексте). Пустая строка, если имя неизвестно. */
 export function resolveBuyerNameForReply(buyerName) {
   const name = buyerName != null ? String(buyerName).trim() : '';
-  return name || 'Покупатель';
+  return name;
 }
 
 /**
@@ -35,7 +35,7 @@ export function applyQuestionTemplate(templateText, { buyerName, productLabel } 
   const name = buyerName != null ? String(buyerName).trim() : '';
   const product = productLabel != null ? String(productLabel).trim() : '';
   return String(templateText ?? '')
-    .replace(NAME_PLACEHOLDER_RE, name || 'Покупатель')
+    .replace(NAME_PLACEHOLDER_RE, name)
     .replace(PRODUCT_PLACEHOLDER_RE, product || 'товар');
 }
 

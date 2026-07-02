@@ -167,6 +167,55 @@ function parseSubjectNameAndArticle(q) {
   return { name: subj || null, article: article || null };
 }
 
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Убрать артикул из начала названия («ART Название» → «Название»). */
+function stripArticlePrefix(article, text) {
+  const art = String(article || '').trim();
+  let s = String(text || '').trim();
+  if (!s) return '';
+  if (!art) return s;
+  if (s.toLowerCase() === art.toLowerCase()) return '';
+  const patterns = [
+    new RegExp(`^${escapeRegex(art)}\\s*[—–\\-·|:]\\s*`, 'i'),
+    new RegExp(`^${escapeRegex(art)}\\s+`, 'i'),
+  ];
+  for (const re of patterns) {
+    if (re.test(s)) return s.replace(re, '').trim();
+  }
+  return s;
+}
+
+/** Название без артикула в начале (для списка поиска). */
+export function productNameWithoutArticle(article, name) {
+  const stripped = stripArticlePrefix(article, name);
+  if (stripped) return stripped;
+  const raw = String(name || '').trim();
+  const art = String(article || '').trim();
+  if (raw && art && raw.toLowerCase() !== art.toLowerCase()) return raw;
+  return '';
+}
+
+/**
+ * «ART — Название» без дублирования артикула в названии.
+ * @param {string|null|undefined} article
+ * @param {string|null|undefined} name
+ */
+export function formatArticleWithProductName(article, name) {
+  const art = String(article || '').trim();
+  const rawName = String(name || '').trim();
+  const cleanName = stripArticlePrefix(art, rawName);
+  if (art && cleanName && cleanName.toLowerCase() !== art.toLowerCase()) {
+    return `${art} — ${cleanName}`;
+  }
+  if (art) return art;
+  if (cleanName) return cleanName;
+  if (rawName) return rawName;
+  return 'товар';
+}
+
 /**
  * Артикул и название товара с маркетплейса: «ART — Название».
  * @param {object|null|undefined} q
@@ -175,10 +224,118 @@ export function formatProductArticleWithName(q) {
   const { name: fromSubject, article } = parseSubjectNameAndArticle(q);
   const name = pickString(fromSubject, productNameFromRaw(q));
   const art = article || extractArticleOnly(q);
-  if (art && name && name !== art) return `${art} — ${name}`;
+  return formatArticleWithProductName(art, name);
+}
+
+/** @param {string|null|undefined} marketplace */
+export function normalizeQuestionMarketplace(marketplace) {
+  const s = String(marketplace || '').toLowerCase();
+  if (s === 'ozon') return 'ozon';
+  if (s === 'wildberries' || s === 'wb') return 'wb';
+  if (s === 'yandex' || s === 'ym') return 'ym';
+  return s || null;
+}
+
+function pickNumericId(...values) {
+  for (const v of values) {
+    const s = v != null ? String(v).trim() : '';
+    if (s && /^\d+$/.test(s)) return s;
+  }
+  return null;
+}
+
+/**
+ * Числовой / строковый ID карточки на маркетплейсе из карточки ERP.
+ * @param {object|null|undefined} product
+ * @param {string|null|undefined} marketplace
+ */
+export function getProductMarketplaceNumber(product, marketplace) {
+  if (!product) return null;
+  const mp = normalizeQuestionMarketplace(marketplace);
+  if (mp === 'ozon') {
+    return pickNumericId(product.ozon_product_id, product.marketplace_ozon_product_id);
+  }
+  if (mp === 'wb') {
+    return pickNumericId(product.sku_wb, product.wb_nmid, product.nmId, product.nm_id);
+  }
+  if (mp === 'ym') {
+    return pickNumericId(
+      product.ym_market_sku,
+      product.ym_product_id,
+      product.marketplace_ym_product_id,
+      product.marketSku,
+      product.market_sku,
+      product.sku_ym
+    );
+  }
+  return null;
+}
+
+/**
+ * ID карточки из payload вопроса (для «Из вопроса»).
+ * @param {object|null|undefined} q
+ */
+export function extractQuestionMarketplaceProductId(q) {
+  const mp = normalizeQuestionMarketplace(q?.marketplace);
+  const raw = q?.rawPayload ?? q?.raw_payload;
+  if (!raw || typeof raw !== 'object') return null;
+
+  if (mp === 'ozon') {
+    const fromPid = pickString(raw.product_id, raw.productId);
+    if (fromPid && /^\d+$/.test(fromPid)) return fromPid;
+    const sku = raw.sku ?? raw.offer_id;
+    const s = sku != null ? String(sku).trim() : '';
+    if (/^\d+$/.test(s)) return s;
+    return null;
+  }
+  if (mp === 'wb') {
+    const pd = raw.productDetails ?? raw.product_details ?? {};
+    return pickNumericId(pd.nmId, pd.nmID, pd.nm_id);
+  }
+  if (mp === 'ym') {
+    const qi = raw.questionIdentifiers ?? raw.QuestionIdentifiers ?? raw.question_identifiers ?? {};
+    return pickNumericId(qi.marketSku, qi.market_sku, raw.marketSku, raw.market_sku);
+  }
+  return null;
+}
+
+function formatQuestionReplyLabel(article, name) {
+  const art = String(article || '').trim();
+  const cleanName = String(name || '').trim();
+  if (art && cleanName) return formatArticleWithProductName(art, cleanName);
   if (art) return art;
-  if (name) return name;
+  if (cleanName) return cleanName;
   return 'товар';
+}
+
+/**
+ * Товар из каталога для вставки в ответ: «номер_МП — Название».
+ * @param {object|null|undefined} product
+ * @param {string|null|undefined} marketplace
+ */
+export function formatProductForQuestionReply(product, marketplace) {
+  const erpSku = String(product?.sku || '').trim();
+  const cleanName =
+    productNameWithoutArticle(erpSku, product?.name) || String(product?.name || '').trim();
+  const mpNumber = getProductMarketplaceNumber(product, marketplace);
+  const article = mpNumber || erpSku;
+  if (!article && !cleanName) {
+    return product?.id != null ? `Товар #${product.id}` : 'товар';
+  }
+  return formatQuestionReplyLabel(article, cleanName);
+}
+
+/**
+ * Товар из текущего вопроса для вставки в ответ.
+ * @param {object|null|undefined} q
+ */
+export function formatQuestionProductForReply(q) {
+  const mpNumber = extractQuestionMarketplaceProductId(q);
+  const { name: fromSubject, article } = parseSubjectNameAndArticle(q);
+  const rawName = pickString(fromSubject, productNameFromRaw(q));
+  const erpArt = article || extractArticleOnly(q);
+  const cleanName = productNameWithoutArticle(erpArt, rawName) || rawName;
+  return formatQuestionReplyLabel(mpNumber || erpArt, cleanName);
 }
 
 /**

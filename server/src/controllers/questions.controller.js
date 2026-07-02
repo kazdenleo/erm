@@ -28,7 +28,12 @@ class QuestionsController {
         return res.status(200).json({ ok: true, data: null });
       }
       const organizationId = this.parseOrganizationId(req);
-      const item = await getMarketplaceQuestionById(tid, req.params.id, { organizationId });
+      const refreshRaw = req.query?.refresh;
+      const refresh =
+        refreshRaw == null || refreshRaw === ''
+          ? true
+          : !['0', 'false', 'no'].includes(String(refreshRaw).trim().toLowerCase());
+      const item = await getMarketplaceQuestionById(tid, req.params.id, { organizationId, refresh });
       if (!item) {
         return res.status(404).json({ ok: false, message: 'Вопрос не найден' });
       }

@@ -12,6 +12,7 @@ import {
   formatProductTheme,
   extractBuyerName,
   formatProductArticleWithName,
+  formatQuestionProductForReply,
   questionNeedsReply,
 } from './questionsDisplay';
 import { applyQuestionTemplate } from './questionTemplateText';
@@ -52,7 +53,7 @@ export function Questions() {
   const { selectedOrganizationId: contextOrganizationId, setSelectedOrganizationId } = useAuth();
   const { organizations } = useOrganizations();
 
-  const [loading, setLoading] = useState(true);
+  const [fetching, setFetching] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
@@ -62,7 +63,7 @@ export function Questions() {
   const [mpCounts, setMpCounts] = useState({ ozon: 0, wildberries: 0, yandex: 0 });
   const [threadModalId, setThreadModalId] = useState(null);
   const [threadDetail, setThreadDetail] = useState(null);
-  const [threadLoading, setThreadLoading] = useState(false);
+  const [threadRefreshing, setThreadRefreshing] = useState(false);
   const [threadError, setThreadError] = useState('');
   const [threadDraft, setThreadDraft] = useState('');
   const [threadSending, setThreadSending] = useState(false);
@@ -83,10 +84,10 @@ export function Questions() {
     }
   }, [marketplaceFilter]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ silent = false } = {}) => {
     try {
-      setLoading(true);
-      setError('');
+      setFetching(true);
+      if (!silent) setError('');
       const params = { answered: answeredFilter };
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
       const data = await questionsApi.getAll(params);
@@ -94,9 +95,9 @@ export function Questions() {
       bumpQuestionsStats();
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Не удалось загрузить вопросы');
-      setItems([]);
+      if (!silent) setItems([]);
     } finally {
-      setLoading(false);
+      setFetching(false);
       loadCounts();
     }
   }, [marketplaceFilter, answeredFilter, loadCounts]);
@@ -126,9 +127,8 @@ export function Questions() {
   }, []);
 
   useEffect(() => {
-    if (!contextOrganizationId) return;
     void loadAnswerTemplates();
-  }, [contextOrganizationId, loadAnswerTemplates]);
+  }, [loadAnswerTemplates]);
 
   useEffect(() => {
     if (!templatesModalOpen) {
@@ -139,9 +139,8 @@ export function Questions() {
   const syncFromMarketplaces = useCallback(async () => {
     try {
       setSyncing(true);
-      setError('');
       await questionsApi.sync({});
-      await loadRef.current();
+      await loadRef.current({ silent: true });
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Ошибка синхронизации с маркетплейсами');
     } finally {
@@ -151,24 +150,33 @@ export function Questions() {
 
   useEffect(() => {
     if (!contextOrganizationId) return undefined;
-    syncFromMarketplaces();
+    let cancelled = false;
+    const runSync = () => {
+      if (!cancelled) void syncFromMarketplaces();
+    };
+    const delayId = setTimeout(runSync, 3000);
     const id = setInterval(syncFromMarketplaces, AUTO_SYNC_MS);
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearTimeout(delayId);
+      clearInterval(id);
+    };
   }, [syncFromMarketplaces, contextOrganizationId]);
 
   const mpTotalNew = mpCounts.ozon + mpCounts.wildberries + mpCounts.yandex;
 
-  const openThread = useCallback((id) => {
-    setThreadModalId(String(id));
-    setThreadDetail(null);
+  const openThread = useCallback((q) => {
+    setThreadModalId(String(q.id));
+    setThreadDetail(q);
     setThreadError('');
     setThreadDraft('');
+    setThreadRefreshing(false);
   }, []);
 
   const closeThread = useCallback(() => {
     setThreadModalId(null);
     setThreadDetail(null);
-    setThreadLoading(false);
+    setThreadRefreshing(false);
     setThreadError('');
     setThreadDraft('');
     setThreadSending(false);
@@ -178,26 +186,30 @@ export function Questions() {
     if (!threadModalId) return undefined;
     let cancelled = false;
     (async () => {
-      setThreadLoading(true);
+      setThreadRefreshing(true);
       setThreadError('');
       try {
-        const data = await questionsApi.getOne(threadModalId);
+        const data = await questionsApi.getOne(threadModalId, { refresh: false });
         if (!cancelled) {
           if (!data) {
             setThreadError('Вопрос не найден.');
-            setThreadDetail(null);
           } else {
             setThreadDetail(data);
-            setThreadDraft('');
           }
         }
       } catch (e) {
         if (!cancelled) {
           setThreadError(e?.response?.data?.message || e?.message || 'Не удалось загрузить ветку');
-          setThreadDetail(null);
         }
       } finally {
-        if (!cancelled) setThreadLoading(false);
+        if (!cancelled) setThreadRefreshing(false);
+      }
+      if (cancelled) return;
+      try {
+        const fresh = await questionsApi.getOne(threadModalId, { refresh: true });
+        if (!cancelled && fresh) setThreadDetail(fresh);
+      } catch {
+        /* свежие данные с МП — по возможности; ответ уже доступен из БД */
       }
     })();
     return () => {
@@ -264,7 +276,7 @@ export function Questions() {
                 type="button"
                 className={`erp-filter-btn${answeredFilter === f.id ? ' erp-filter-btn--active' : ''}`}
                 onClick={() => setAnsweredFilter(f.id)}
-                disabled={loading || syncing}
+                disabled={fetching}
               >
                 {f.label}
                 <span className="erp-filter-btn__count">{listCounts[f.id] ?? 0}</span>
@@ -279,7 +291,7 @@ export function Questions() {
               type="button"
               className={`erp-filter-btn${marketplaceFilter === 'all' ? ' erp-filter-btn--active' : ''}`}
               onClick={() => setMarketplaceFilter('all')}
-              disabled={loading || syncing}
+              disabled={fetching}
             >
               Все МП
               <span className="erp-filter-btn__count">{mpTotalNew}</span>
@@ -290,7 +302,7 @@ export function Questions() {
                 type="button"
                 className={`erp-filter-btn${marketplaceFilter === mp.code ? ' erp-filter-btn--active' : ''}`}
                 onClick={() => setMarketplaceFilter(mp.code)}
-                disabled={loading || syncing}
+                disabled={fetching}
                 title={mp.name}
                 aria-label={`${mp.name}, ${mpCounts[mp.code] ?? 0} новых вопросов`}
               >
@@ -304,21 +316,25 @@ export function Questions() {
             variant="secondary"
             size="small"
             onClick={() => setTemplatesModalOpen(true)}
-            disabled={loading || syncing}
           >
             Шаблоны ответов
           </Button>
         </div>
-        {syncing && (
+        {syncing ? (
           <p className="text-muted small questions-sync-hint" aria-live="polite">
             Синхронизация с маркетплейсами…
           </p>
-        )}
+        ) : null}
+        {fetching && items.length > 0 ? (
+          <p className="text-muted small questions-sync-hint" aria-live="polite">
+            Обновление списка…
+          </p>
+        ) : null}
       </div>
 
       {error && <div className="error questions-error">{error}</div>}
 
-      {loading ? (
+      {fetching && items.length === 0 ? (
         <div className="loading">Загрузка…</div>
       ) : items.length === 0 ? (
         <p className="text-muted questions-empty">{emptyMessage}</p>
@@ -384,8 +400,7 @@ export function Questions() {
                         type="button"
                         variant={needsReply ? 'primary' : 'secondary'}
                         size="small"
-                        onClick={() => openThread(q.id)}
-                        disabled={loading || syncing}
+                        onClick={() => openThread(q)}
                       >
                         {needsReply ? 'Ответить' : 'Переписка'}
                       </Button>
@@ -404,10 +419,14 @@ export function Questions() {
         title={threadDetail ? `Ветка · ${formatProductArticleWithName(threadDetail)}` : 'Ветка переписки'}
         size="large"
       >
-        {threadLoading && <div className="loading">Загрузка ветки с маркетплейса…</div>}
-        {!threadLoading && threadError && <div className="error">{threadError}</div>}
-        {!threadLoading && threadDetail && (
+        {threadError && <div className="error">{threadError}</div>}
+        {threadDetail && (
           <div className="questions-thread-modal">
+            {threadRefreshing ? (
+              <p className="text-muted small questions-thread-refresh-hint" aria-live="polite">
+                Обновление переписки с маркетплейса…
+              </p>
+            ) : null}
             <p className="text-muted small questions-thread-meta">
               {formatDt(threadDetail.sourceCreatedAt)} ·{' '}
               {MARKETPLACE_TABLE_BADGES.find((m) => m.code === normalizeMarketplaceForUI(threadDetail.marketplace))
@@ -424,7 +443,7 @@ export function Questions() {
                     <strong>
                       {m.role === 'seller'
                         ? 'Продавец'
-                        : questionBuyerLabel(threadDetail) || 'Покупатель'}
+                        : questionBuyerLabel(threadDetail) || ''}
                     </strong>
                     {m.at ? <span className="text-muted small">{formatDt(m.at)}</span> : null}
                   </div>
@@ -465,7 +484,8 @@ export function Questions() {
                   showProduct
                   organizationId={contextOrganizationId}
                   buyerNameLabel={questionBuyerLabel(threadDetail)}
-                  questionProductLabel={formatProductArticleWithName(threadDetail)}
+                  questionMarketplace={threadDetail.marketplace}
+                  questionProductLabel={formatQuestionProductForReply(threadDetail)}
                 />
                 <textarea
                   ref={replyTextareaRef}
@@ -508,6 +528,8 @@ export function Questions() {
       <QuestionTemplatesModal
         isOpen={templatesModalOpen}
         onClose={() => setTemplatesModalOpen(false)}
+        prefetchedItems={answerTemplates}
+        onTemplatesChange={loadAnswerTemplates}
       />
     </div>
   );

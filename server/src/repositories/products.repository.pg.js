@@ -105,7 +105,7 @@ async function upsertProductSkuRow(client, { productId, marketplace, skuRaw, mar
       ? Number(marketplaceProductId)
       : null;
   if (mpid != null && !Number.isFinite(mpid)) mpid = null;
-  const mpidArg = mp === 'ozon' ? mpid : null;
+  const mpidArg = mp === 'ozon' || mp === 'ym' ? mpid : null;
 
   if (mp === 'ozon') {
     if (!sku && mpidArg == null) return;
@@ -144,7 +144,7 @@ async function upsertProductSkuRow(client, { productId, marketplace, skuRaw, mar
  * Частичное обновление product_skus: только ключи, присутствующие в mus (ozon/wb/ym).
  * Пустое значение — удалить строку для этого маркетплейса.
  */
-async function applyMarketplaceSkusPatch(client, productId, mus, { ozonProductId = undefined } = {}) {
+async function applyMarketplaceSkusPatch(client, productId, mus, { ozonProductId = undefined, ymProductId = undefined } = {}) {
   if (!mus || typeof mus !== 'object') return;
   const numId = Number(productId);
   if (!Number.isFinite(numId) || numId < 1) return;
@@ -163,7 +163,8 @@ async function applyMarketplaceSkusPatch(client, productId, mus, { ozonProductId
       productId: numId,
       marketplace: mp,
       skuRaw,
-      marketplaceProductId: mp === 'ozon' ? marketplaceProductId : null,
+      marketplaceProductId:
+        mp === 'ozon' || mp === 'ym' ? marketplaceProductId : null,
     });
   };
 
@@ -187,7 +188,20 @@ async function applyMarketplaceSkusPatch(client, productId, mus, { ozonProductId
     await patchMp('wb', mus.wb, null);
   }
   if (Object.prototype.hasOwnProperty.call(mus, 'ym')) {
-    await patchMp('ym', mus.ym, null);
+    let ymPid = null;
+    if (ymProductId !== undefined) {
+      ymPid =
+        ymProductId != null && ymProductId !== '' && Number.isFinite(Number(ymProductId))
+          ? Number(ymProductId)
+          : null;
+    } else {
+      const cur = await client.query(
+        `SELECT marketplace_product_id FROM product_skus WHERE product_id = $1 AND marketplace = 'ym'`,
+        [numId]
+      );
+      ymPid = cur.rows[0]?.marketplace_product_id ?? null;
+    }
+    await patchMp('ym', mus.ym, ymPid);
   }
 }
 
@@ -227,6 +241,34 @@ function applyWbListingFields(product) {
     product.mp_wb_vendor_code = wbSkuRow;
   }
   product.sku_wb = null;
+}
+
+function parseMpExtraColumn(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(String(raw));
+  } catch {
+    return {};
+  }
+}
+
+function attachMarketplaceSkuMeta(bucket, row) {
+  if (!bucket || !row) return;
+  bucket[row.marketplace] = row.sku;
+  if (row.marketplace === 'ozon' && row.marketplace_product_id != null) {
+    bucket.ozon_product_id = Number(row.marketplace_product_id);
+  }
+  if (row.marketplace === 'ym') {
+    if (row.marketplace_product_id != null) {
+      bucket.ym_product_id = String(row.marketplace_product_id);
+    }
+    const extra = parseMpExtraColumn(row.mp_extra);
+    const marketSku = extra?.marketSku ?? extra?.market_sku ?? null;
+    if (marketSku != null && String(marketSku).trim() !== '') {
+      bucket.ym_market_sku = String(marketSku).trim();
+    }
+  }
 }
 
 /** Значение фильтра «без ERP-категории» с фронта; в SQL только IS NULL, не подставляем в bigint. */
@@ -982,16 +1024,30 @@ class ProductsRepositoryPG {
       let skusResult;
       try {
         skusResult = await query(
-          `SELECT product_id, marketplace, sku, marketplace_product_id FROM product_skus WHERE product_id = ANY($1)`,
+          `SELECT product_id, marketplace, sku, marketplace_product_id, mp_extra FROM product_skus WHERE product_id = ANY($1)`,
           [productIds]
         );
       } catch (skusErr) {
-        if (skusErr.message && (skusErr.message.includes('marketplace_product_id') || skusErr.message.includes('does not exist'))) {
-          skusResult = await query(
-            `SELECT product_id, marketplace, sku FROM product_skus WHERE product_id = ANY($1)`,
-            [productIds]
-          );
-          console.warn('[Products Repository] Column marketplace_product_id missing — run migration 026. Ozon product_id will be null.');
+        if (skusErr.message && (skusErr.message.includes('marketplace_product_id') || skusErr.message.includes('does not exist') || skusErr.message.includes('mp_extra'))) {
+          try {
+            skusResult = await query(
+              `SELECT product_id, marketplace, sku, marketplace_product_id FROM product_skus WHERE product_id = ANY($1)`,
+              [productIds]
+            );
+          } catch (skusErr2) {
+            if (skusErr2.message && (skusErr2.message.includes('marketplace_product_id') || skusErr2.message.includes('does not exist'))) {
+              skusResult = await query(
+                `SELECT product_id, marketplace, sku FROM product_skus WHERE product_id = ANY($1)`,
+                [productIds]
+              );
+              console.warn('[Products Repository] Column marketplace_product_id missing — run migration 026. Ozon product_id will be null.');
+            } else {
+              throw skusErr2;
+            }
+          }
+          if (skusErr.message && skusErr.message.includes('mp_extra')) {
+            console.warn('[Products Repository] Column mp_extra missing — run migration 096.');
+          }
         } else {
           throw skusErr;
         }
@@ -1074,10 +1130,7 @@ class ProductsRepositoryPG {
       skusResult.rows.forEach(row => {
         const key = String(row.product_id);
         if (!skusByProduct[key]) skusByProduct[key] = {};
-        skusByProduct[key][row.marketplace] = row.sku;
-        if (row.marketplace === 'ozon' && row.marketplace_product_id != null) {
-          skusByProduct[key].ozon_product_id = Number(row.marketplace_product_id);
-        }
+        attachMarketplaceSkuMeta(skusByProduct[key], row);
       });
       const barcodesByProduct = {};
       barcodesResult.rows.forEach(row => {
@@ -1108,6 +1161,9 @@ class ProductsRepositoryPG {
         product.sku_wb = skus.wb ?? null;
         product.sku_ym = skus.ym ?? null;
         product.ozon_product_id = skus.ozon_product_id ?? null;
+        product.ym_market_sku = skus.ym_market_sku ?? null;
+        product.ym_product_id = skus.ym_product_id ?? null;
+        applyWbListingFields(product);
         product.barcodes = barcodesByProduct[String(product.id)] || [];
         if (product.user_category_id) product.categoryId = product.user_category_id;
         if (product.brand_name) product.brand = product.brand_name;
@@ -1477,26 +1533,38 @@ class ProductsRepositoryPG {
     let skusResult;
     try {
       skusResult = await query(
-        'SELECT marketplace, sku, marketplace_product_id FROM product_skus WHERE product_id = $1',
+        'SELECT marketplace, sku, marketplace_product_id, mp_extra FROM product_skus WHERE product_id = $1',
         [numericId]
       );
     } catch (skusErr) {
-      if (skusErr.message && (skusErr.message.includes('marketplace_product_id') || skusErr.message.includes('does not exist'))) {
-        skusResult = await query(
-          'SELECT marketplace, sku FROM product_skus WHERE product_id = $1',
-          [numericId]
-        );
+      if (skusErr.message && (skusErr.message.includes('marketplace_product_id') || skusErr.message.includes('does not exist') || skusErr.message.includes('mp_extra'))) {
+        try {
+          skusResult = await query(
+            'SELECT marketplace, sku, marketplace_product_id FROM product_skus WHERE product_id = $1',
+            [numericId]
+          );
+        } catch (skusErr2) {
+          if (skusErr2.message && (skusErr2.message.includes('marketplace_product_id') || skusErr2.message.includes('does not exist'))) {
+            skusResult = await query(
+              'SELECT marketplace, sku FROM product_skus WHERE product_id = $1',
+              [numericId]
+            );
+          } else {
+            throw skusErr2;
+          }
+        }
       } else {
         throw skusErr;
       }
     }
-    skusResult.rows.forEach(row => {
-      if (row.marketplace === 'ozon') {
-        product.sku_ozon = row.sku;
-        product.ozon_product_id = row.marketplace_product_id != null ? Number(row.marketplace_product_id) : null;
-      } else if (row.marketplace === 'wb') product.sku_wb = row.sku;
-      else if (row.marketplace === 'ym') product.sku_ym = row.sku;
-    });
+    const skuMeta = {};
+    skusResult.rows.forEach((row) => attachMarketplaceSkuMeta(skuMeta, row));
+    product.sku_ozon = skuMeta.ozon ?? null;
+    product.sku_wb = skuMeta.wb ?? null;
+    product.sku_ym = skuMeta.ym ?? null;
+    product.ozon_product_id = skuMeta.ozon_product_id ?? null;
+    product.ym_market_sku = skuMeta.ym_market_sku ?? null;
+    product.ym_product_id = skuMeta.ym_product_id ?? null;
     applyWbListingFields(product);
     await this._reconcileReservedQuantityFromMovements([product]);
     const { isKitCatalogProduct, attachKitDisplayMetrics, buildKitListStockContext } =
@@ -2063,7 +2131,8 @@ class ProductsRepositoryPG {
           productId: product.id,
           marketplace: 'ym',
           skuRaw: mus.ym,
-          marketplaceProductId: null,
+          marketplaceProductId:
+            productData.marketplace_ym_product_id != null ? productData.marketplace_ym_product_id : null,
         });
       }
       
@@ -2273,7 +2342,13 @@ class ProductsRepositoryPG {
         const ozonPidOpt = Object.prototype.hasOwnProperty.call(updates, 'marketplace_ozon_product_id')
           ? updates.marketplace_ozon_product_id
           : undefined;
-        await applyMarketplaceSkusPatch(client, numId, mus, { ozonProductId: ozonPidOpt });
+        const ymPidOpt = Object.prototype.hasOwnProperty.call(updates, 'marketplace_ym_product_id')
+          ? updates.marketplace_ym_product_id
+          : undefined;
+        await applyMarketplaceSkusPatch(client, numId, mus, {
+          ozonProductId: ozonPidOpt,
+          ymProductId: ymPidOpt,
+        });
       }
 
       if (updates.mp_linked) {

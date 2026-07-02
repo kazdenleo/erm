@@ -852,15 +852,19 @@ export async function getMarketplaceQuestionById(profileId, questionRowId, opts 
   const row = await marketplaceQuestionsRepo.findRowByIdAndProfile(questionRowId, profileId);
   if (!row) return null;
 
-  let refreshed = null;
-  try {
-    refreshed = await refreshQuestionRowFromMarketplace(profileId, row, opts.organizationId ?? null);
-  } catch (e) {
-    logger.warn('[MarketplaceQuestions] refresh thread failed:', e?.message || e);
-  }
+  const shouldRefresh = opts.refresh !== false;
 
-  if (refreshed) {
-    await marketplaceQuestionsRepo.upsertRow(refreshed);
+  if (shouldRefresh) {
+    let refreshed = null;
+    try {
+      refreshed = await refreshQuestionRowFromMarketplace(profileId, row, opts.organizationId ?? null);
+    } catch (e) {
+      logger.warn('[MarketplaceQuestions] refresh thread failed:', e?.message || e);
+    }
+
+    if (refreshed) {
+      await marketplaceQuestionsRepo.upsertRow(refreshed);
+    }
   }
 
   return await marketplaceQuestionsRepo.findOneApiByIdAndProfile(questionRowId, profileId);

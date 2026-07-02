@@ -10,7 +10,12 @@ import { QuestionTemplateBodyEditor, TemplateBodySnippet } from './QuestionTempl
 
 const EMPTY_FORM = { title: '', body: '' };
 
-export function QuestionTemplatesModal({ isOpen, onClose }) {
+export function QuestionTemplatesModal({
+  isOpen,
+  onClose,
+  prefetchedItems = [],
+  onTemplatesChange = null,
+}) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -36,8 +41,15 @@ export function QuestionTemplatesModal({ isOpen, onClose }) {
     if (!isOpen) return;
     setEditingId(null);
     setForm(EMPTY_FORM);
+    if (Array.isArray(prefetchedItems) && prefetchedItems.length > 0) {
+      setItems(prefetchedItems);
+    }
     void load();
-  }, [isOpen, load]);
+  }, [isOpen, load, prefetchedItems]);
+
+  const notifyParent = () => {
+    if (typeof onTemplatesChange === 'function') onTemplatesChange();
+  };
 
   const startEdit = (tpl) => {
     setEditingId(String(tpl.id));
@@ -75,6 +87,7 @@ export function QuestionTemplatesModal({ isOpen, onClose }) {
         setItems((prev) => prev.map((t) => (String(t.id) === String(editingId) ? updated : t)));
       }
       cancelForm();
+      notifyParent();
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Не удалось сохранить шаблон');
     } finally {
@@ -90,6 +103,7 @@ export function QuestionTemplatesModal({ isOpen, onClose }) {
       await questionAnswerTemplatesApi.remove(id);
       setItems((prev) => prev.filter((t) => String(t.id) !== String(id)));
       if (String(editingId) === String(id)) cancelForm();
+      notifyParent();
     } catch (e) {
       setError(e?.response?.data?.message || e?.message || 'Не удалось удалить шаблон');
     } finally {
@@ -101,84 +115,86 @@ export function QuestionTemplatesModal({ isOpen, onClose }) {
     <Modal isOpen={isOpen} onClose={onClose} title="Шаблоны ответов" size="large" usePortal>
       <div className="questions-templates-modal">
         <p className="text-muted small questions-templates-hint">
-          Вставьте метку <strong>Имя покупателя</strong> — при выборе шаблона в ответе подставится имя из вопроса
-          (или «Покупатель», если имя неизвестно).
+          Вставьте метку <strong>Имя покупателя</strong> — при выборе шаблона в ответе подставится имя из вопроса.
+          Если имя неизвестно, метка останется пустой.
         </p>
 
         {error && <div className="error questions-templates-error">{error}</div>}
 
-        {loading ? (
+        {loading && items.length === 0 ? (
           <div className="loading">Загрузка…</div>
         ) : (
-          <>
-            <div className="questions-templates-list">
-              {items.length === 0 && editingId !== 'new' ? (
-                <p className="text-muted small">Шаблонов пока нет. Добавьте первый.</p>
-              ) : (
-                items.map((tpl) => (
-                  <div key={tpl.id} className="questions-templates-item">
-                    <div className="questions-templates-item__main">
-                      <strong className="questions-templates-item__title">{tpl.title}</strong>
-                      <p className="questions-templates-item__preview">
-                        <TemplateBodySnippet text={tpl.body} />
-                      </p>
-                    </div>
-                    <div className="questions-templates-item__actions">
-                      <Button type="button" variant="secondary" size="small" onClick={() => startEdit(tpl)} disabled={saving}>
-                        Изменить
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="small"
-                        onClick={() => void removeTemplate(tpl.id)}
-                        disabled={saving}
-                      >
-                        Удалить
-                      </Button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {editingId ? (
-              <div className="questions-templates-form">
-                <label className="label" htmlFor="qtpl-title">
-                  Название (для кнопки выбора)
-                </label>
-                <input
-                  id="qtpl-title"
-                  className="form-control"
-                  value={form.title}
-                  onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-                  disabled={saving}
-                  placeholder="Например: Уточните VIN"
-                />
-                <label className="label" htmlFor="qtpl-body">
-                  Текст шаблона
-                </label>
-                <QuestionTemplateBodyEditor
-                  id="qtpl-body"
-                  value={form.body}
-                  onChange={(body) => setForm((f) => ({ ...f, body }))}
-                  disabled={saving}
-                />
-                <div className="questions-templates-form-actions">
-                  <Button type="button" variant="primary" onClick={() => void saveForm()} disabled={saving}>
-                    {saving ? 'Сохранение…' : editingId === 'new' ? 'Добавить' : 'Сохранить'}
-                  </Button>
-                  <Button type="button" variant="secondary" onClick={cancelForm} disabled={saving}>
-                    Отмена
-                  </Button>
-                </div>
-              </div>
+          <div className="questions-templates-list">
+            {items.length === 0 && editingId !== 'new' ? (
+              <p className="text-muted small">Шаблонов пока нет. Добавьте первый.</p>
             ) : (
-              <Button type="button" variant="secondary" onClick={startCreate} disabled={saving}>
-                + Добавить шаблон
-              </Button>
+              items.map((tpl) => (
+                <div key={tpl.id} className="questions-templates-item">
+                  <div className="questions-templates-item__main">
+                    <strong className="questions-templates-item__title">{tpl.title}</strong>
+                    <p className="questions-templates-item__preview">
+                      <TemplateBodySnippet text={tpl.body} />
+                    </p>
+                  </div>
+                  <div className="questions-templates-item__actions">
+                    <Button type="button" variant="secondary" size="small" onClick={() => startEdit(tpl)} disabled={saving}>
+                      Изменить
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      onClick={() => void removeTemplate(tpl.id)}
+                      disabled={saving}
+                    >
+                      Удалить
+                    </Button>
+                  </div>
+                </div>
+              ))
             )}
-          </>
+          </div>
+        )}
+
+        {loading && items.length > 0 ? (
+          <p className="text-muted small questions-templates-refresh-hint">Обновление списка…</p>
+        ) : null}
+
+        {editingId ? (
+          <div className="questions-templates-form">
+            <label className="label" htmlFor="qtpl-title">
+              Название (для кнопки выбора)
+            </label>
+            <input
+              id="qtpl-title"
+              className="form-control"
+              value={form.title}
+              onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+              disabled={saving}
+              placeholder="Например: Уточните VIN"
+            />
+            <label className="label" htmlFor="qtpl-body">
+              Текст шаблона
+            </label>
+            <QuestionTemplateBodyEditor
+              id="qtpl-body"
+              value={form.body}
+              onChange={(body) => setForm((f) => ({ ...f, body }))}
+              disabled={saving}
+            />
+            <div className="questions-templates-form-actions">
+              <Button type="button" variant="primary" onClick={() => void saveForm()} disabled={saving}>
+                {saving ? 'Сохранение…' : editingId === 'new' ? 'Добавить' : 'Сохранить'}
+              </Button>
+              <Button type="button" variant="secondary" onClick={cancelForm} disabled={saving}>
+                Отмена
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button type="button" variant="secondary" onClick={startCreate} disabled={saving}>
+            + Добавить шаблон
+          </Button>
         )}
       </div>
     </Modal>
