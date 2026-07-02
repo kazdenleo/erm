@@ -60,60 +60,74 @@ function pendingAnswerTextFromRawPayload(raw) {
   return s ? s : null;
 }
 
-function buyerNameFromRawPayload(marketplace, raw) {
+function parseRawPayloadObject(raw) {
   if (raw == null) return null;
-  const o =
-    typeof raw === 'string'
-      ? (() => {
-          try {
-            return JSON.parse(raw);
-          } catch {
-            return null;
-          }
-        })()
-      : raw;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return typeof raw === 'object' ? raw : null;
+}
+
+function isSellerAuthorType(type) {
+  const t = String(type ?? '').toUpperCase();
+  if (!t) return false;
+  return (
+    t.includes('SELLER') ||
+    t.includes('SHOP') ||
+    t.includes('PARTNER') ||
+    t.includes('BUSINESS') ||
+    t.includes('MERCHANT')
+  );
+}
+
+function buyerNameFromRawPayload(marketplace, raw) {
+  const o = parseRawPayloadObject(raw);
   if (!o || typeof o !== 'object') return null;
 
   const mp = String(marketplace || '').toLowerCase();
+
   const candidates = [];
 
-  // Ozon: варианты названий зависят от версии API/обвязки
-  if (mp === 'ozon') {
+  const pushAuthorName = (author) => {
+    if (!author || typeof author !== 'object') return;
+    if (isSellerAuthorType(author.type ?? author.author_type)) return;
     candidates.push(
-      o.user_name,
-      o.userName,
-      o.customer_name,
-      o.customerName,
-      o.author?.name,
-      o.author?.full_name,
-      o.author?.fullName,
-      o.buyer?.name,
-      o.buyer?.fullName,
-      o.client?.name
+      author.name,
+      author.fullName,
+      author.full_name,
+      author.nickname,
+      author.displayName,
+      author.display_name
     );
-  }
+  };
 
-  // WB: часто имя не приходит, но иногда есть
-  if (mp === 'wildberries' || mp === 'wb') {
-    candidates.push(
-      o.userName,
-      o.user_name,
-      o.customerName,
-      o.customer_name,
-      o.buyerName,
-      o.buyer_name
-    );
-  }
+  pushAuthorName(o.author);
+  pushAuthorName(o.questionAuthor);
+  pushAuthorName(o.question_author);
+  pushAuthorName(o.customer);
+  pushAuthorName(o.buyer);
+  pushAuthorName(o.client);
+  pushAuthorName(o.user);
 
-  // YM: иногда есть user в ответе
+  candidates.push(
+    o.userName,
+    o.user_name,
+    o.customerName,
+    o.customer_name,
+    o.buyerName,
+    o.buyer_name,
+    o.nickname,
+    o.displayName,
+    o.display_name
+  );
+
+  // Яндекс.Маркет: имя покупателя часто только в author.name на корне вопроса.
   if (mp === 'yandex' || mp === 'ym') {
-    candidates.push(
-      o.user?.name,
-      o.user?.nickname,
-      o.buyer?.name,
-      o.buyerName,
-      o.buyer_name
-    );
+    candidates.unshift(o.author?.name, o.author?.nickname);
   }
 
   for (const v of candidates) {

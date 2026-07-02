@@ -8,7 +8,10 @@ import { Modal } from '../../components/common/Modal/Modal';
 import { questionsApi } from '../../services/questions.api';
 import { MARKETPLACE_TABLE_BADGES } from '../../constants/marketplaceUi';
 import { normalizeMarketplaceForUI } from '../../utils/orderListGroupKey';
-import { formatProductTheme } from './questionsDisplay';
+import { formatProductTheme, extractBuyerName } from './questionsDisplay';
+import { applyQuestionTemplate } from './questionTemplateText';
+import { QuestionTemplatesModal } from './QuestionTemplatesModal';
+import { questionAnswerTemplatesApi } from '../../services/questionAnswerTemplates.api';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import './Questions.css';
@@ -27,10 +30,8 @@ function formatDt(iso) {
   }
 }
 
-function truncate(s, n = 200) {
-  const t = s == null ? '' : String(s);
-  if (t.length <= n) return t;
-  return `${t.slice(0, n)}…`;
+function questionBuyerLabel(q) {
+  return extractBuyerName(q);
 }
 
 const AUTO_SYNC_MS = 10 * 60 * 1000;
@@ -51,6 +52,8 @@ export function Questions() {
   const [threadError, setThreadError] = useState('');
   const [threadDraft, setThreadDraft] = useState('');
   const [threadSending, setThreadSending] = useState(false);
+  const [answerTemplates, setAnswerTemplates] = useState([]);
+  const [templatesModalOpen, setTemplatesModalOpen] = useState(false);
 
   const loadCounts = useCallback(async () => {
     try {
@@ -95,6 +98,26 @@ export function Questions() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const loadAnswerTemplates = useCallback(async () => {
+    try {
+      const data = await questionAnswerTemplatesApi.getAll();
+      setAnswerTemplates(Array.isArray(data) ? data : []);
+    } catch {
+      setAnswerTemplates([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!contextOrganizationId) return;
+    void loadAnswerTemplates();
+  }, [contextOrganizationId, loadAnswerTemplates]);
+
+  useEffect(() => {
+    if (!templatesModalOpen) {
+      void loadAnswerTemplates();
+    }
+  }, [templatesModalOpen, loadAnswerTemplates]);
 
   const syncFromMarketplaces = useCallback(async () => {
     try {
@@ -189,6 +212,13 @@ export function Questions() {
     }
   };
 
+  const applyTemplateToDraft = (template) => {
+    if (!template) return;
+    const buyerName = threadDetail ? questionBuyerLabel(threadDetail) : null;
+    setThreadDraft(applyQuestionTemplate(template.body, { buyerName }));
+    setThreadError('');
+  };
+
   const threadNeedsReply =
     threadDetail &&
     (() => {
@@ -210,7 +240,8 @@ export function Questions() {
       </p>
 
       <div className="questions-toolbar">
-        <div className="erp-filter-row" role="group" aria-label="Фильтр по маркетплейсу">
+        <div className="questions-toolbar-row">
+          <div className="erp-filter-row" role="group" aria-label="Фильтр по маркетплейсу">
           <button
             type="button"
             className={`erp-filter-btn${marketplaceFilter === 'all' ? ' erp-filter-btn--active' : ''}`}
@@ -234,6 +265,16 @@ export function Questions() {
               <span className="erp-filter-btn__count">{mpCounts[mp.code] ?? 0}</span>
             </button>
           ))}
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="small"
+            onClick={() => setTemplatesModalOpen(true)}
+            disabled={loading || syncing}
+          >
+            Шаблоны ответов
+          </Button>
         </div>
         {syncing && (
           <p className="text-muted small questions-sync-hint" aria-live="polite">
@@ -253,11 +294,17 @@ export function Questions() {
       ) : (
         <div className="table-responsive questions-table-wrap">
           <table className="table questions-table">
+            <colgroup>
+              <col className="questions-col-date" />
+              <col className="questions-col-mp" />
+              <col className="questions-col-theme" />
+              <col className="questions-col-question" />
+              <col className="questions-col-thread" />
+            </colgroup>
             <thead>
               <tr>
                 <th className="questions-col-date">Дата</th>
                 <th className="questions-col-mp">МП</th>
-                <th className="questions-col-name">Имя</th>
                 <th className="questions-col-theme">Артикул</th>
                 <th className="questions-col-question">Вопрос</th>
                 <th className="questions-col-thread">Ответ</th>
@@ -268,6 +315,7 @@ export function Questions() {
                 const mpNorm = normalizeMarketplaceForUI(q.marketplace);
                 const mpMeta = MARKETPLACE_TABLE_BADGES.find((m) => m.code === mpNorm);
                 const mpLabel = mpMeta?.name ?? String(q.marketplace ?? '—');
+                const buyerLabel = questionBuyerLabel(q);
                 return (
                   <tr key={q.id}>
                     <td className="questions-col-date">{formatDt(q.sourceCreatedAt)}</td>
@@ -286,9 +334,19 @@ export function Questions() {
                         </span>
                       )}
                     </td>
-                    <td className="questions-col-name">{truncate(q.buyerName || '—', 28)}</td>
-                    <td className="questions-col-theme">{formatProductTheme(q, 40)}</td>
-                    <td className="questions-col-question">{q.body}</td>
+                    <td className="questions-col-theme" title={formatProductTheme(q, 200)}>
+                      {formatProductTheme(q, 40)}
+                    </td>
+                    <td className="questions-col-question">
+                      <div className="questions-question-cell">
+                        {buyerLabel ? (
+                          <span className="questions-question-author" title={buyerLabel}>
+                            {buyerLabel}
+                          </span>
+                        ) : null}
+                        <span className="questions-question-body">{q.body}</span>
+                      </div>
+                    </td>
                     <td className="questions-col-thread">
                       <Button
                         type="button"
@@ -330,7 +388,11 @@ export function Questions() {
                   className={`questions-thread-msg questions-thread-msg--${m.role === 'seller' ? 'seller' : 'buyer'}`}
                 >
                   <div className="questions-thread-msg__head">
-                    <strong>{m.role === 'seller' ? 'Продавец' : 'Покупатель'}</strong>
+                    <strong>
+                      {m.role === 'seller'
+                        ? 'Продавец'
+                        : questionBuyerLabel(threadDetail) || 'Покупатель'}
+                    </strong>
                     {m.at ? <span className="text-muted small">{formatDt(m.at)}</span> : null}
                   </div>
                   <div className="questions-thread-msg__body">{m.text}</div>
@@ -339,6 +401,25 @@ export function Questions() {
             </div>
             {threadNeedsReply ? (
               <div className="questions-thread-reply">
+                {answerTemplates.length > 0 ? (
+                  <div className="questions-template-pick">
+                    <span className="questions-template-pick__label">Быстрый ответ:</span>
+                    <div className="questions-template-pick__list" role="list">
+                      {answerTemplates.map((tpl) => (
+                        <button
+                          key={tpl.id}
+                          type="button"
+                          className="questions-template-pick__btn"
+                          title={tpl.body}
+                          onClick={() => applyTemplateToDraft(tpl)}
+                          disabled={threadSending}
+                        >
+                          {tpl.title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <label className="label" htmlFor="questions-thread-reply-input">
                   Ваш ответ
                 </label>
@@ -373,6 +454,11 @@ export function Questions() {
           </div>
         )}
       </Modal>
+
+      <QuestionTemplatesModal
+        isOpen={templatesModalOpen}
+        onClose={() => setTemplatesModalOpen(false)}
+      />
     </div>
   );
 }

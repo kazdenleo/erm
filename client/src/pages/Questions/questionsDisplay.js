@@ -8,6 +8,62 @@ function truncate(s, n) {
   return `${t.slice(0, n)}…`;
 }
 
+function pickString(...values) {
+  for (const v of values) {
+    const s = v != null ? String(v).trim() : '';
+    if (s) return s;
+  }
+  return null;
+}
+
+function isSellerAuthorType(type) {
+  const t = String(type ?? '').toUpperCase();
+  if (!t) return false;
+  return (
+    t.includes('SELLER') ||
+    t.includes('SHOP') ||
+    t.includes('PARTNER') ||
+    t.includes('BUSINESS') ||
+    t.includes('MERCHANT')
+  );
+}
+
+function authorBuyerName(author) {
+  if (!author || typeof author !== 'object' || isSellerAuthorType(author.type ?? author.author_type)) {
+    return null;
+  }
+  return pickString(author.name, author.fullName, author.full_name, author.nickname);
+}
+
+/**
+ * Имя покупателя из API-поля или raw_payload (fallback для Яндекса/Ozon).
+ * @param {object|null|undefined} q
+ */
+export function extractBuyerName(q) {
+  const direct = pickString(q?.buyerName, q?.customerName);
+  if (direct) return direct;
+
+  const raw = q?.rawPayload ?? q?.raw_payload;
+  if (!raw || typeof raw !== 'object') return null;
+
+  return pickString(
+    authorBuyerName(raw.author),
+    authorBuyerName(raw.questionAuthor),
+    authorBuyerName(raw.question_author),
+    authorBuyerName(raw.user),
+    authorBuyerName(raw.buyer),
+    authorBuyerName(raw.customer),
+    authorBuyerName(raw.client),
+    raw.userName,
+    raw.user_name,
+    raw.customerName,
+    raw.customer_name,
+    raw.buyerName,
+    raw.buyer_name,
+    raw.nickname
+  );
+}
+
 function wbSupplierArticleFromRaw(raw) {
   if (!raw || typeof raw !== 'object') return '';
   const pd = raw.productDetails ?? raw.product_details ?? {};

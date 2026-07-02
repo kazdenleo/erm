@@ -1,0 +1,344 @@
+/**
+ * Мобильная адаптация ERM (телефоны и планшеты).
+ * Дополняет ArchitectUI: видимый хедер, оверлей меню, без горизонтального «уезда» страницы.
+ */
+
+:root {
+  --erm-bp-md: 768px;
+  --erm-bp-lg: 992px;
+}
+
+/* Базовая защита от горизонтального скролла всей страницы */
+html {
+  overflow-x: hidden;
+}
+
+body.erm-mobile-menu-open {
+  overflow: hidden;
+  touch-action: none;
+}
+
+.app-container {
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+/* Затемнение при открытом боковом меню */
+.sidebar-mobile-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: rgba(15, 23, 42, 0.45);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 991.98px) {
+  /* ArchitectUI скрывает .app-header__content на md — показываем снова */
+  .fixed-header .app-header {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px;
+    padding-right: 8px;
+    min-height: var(--erm-header-height, 60px);
+    max-width: 100vw;
+  }
+
+  .fixed-header .app-header__content {
+    visibility: visible !important;
+    opacity: 1 !important;
+    position: relative !important;
+    top: auto !important;
+    left: auto !important;
+    right: auto !important;
+    display: flex !important;
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto !important;
+    height: auto !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    transform: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .fixed-header .app-header__logo {
+    display: none !important;
+  }
+
+  .fixed-header .app-header__mobile-menu {
+    flex-shrink: 0;
+    display: flex !important;
+    align-items: center;
+  }
+
+  .app-header__content .app-header-left {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .header-quick-actions {
+    flex-shrink: 0;
+    gap: 0;
+  }
+
+  .header-profile__name {
+    display: none;
+  }
+
+  .header-profile__trigger {
+    max-width: 44px;
+    padding: 0 8px !important;
+  }
+
+  /* Поиск: компактная лупа, раскрытие на всю ширину */
+  .global-search.search-wrapper {
+    margin-right: 0;
+  }
+
+  .global-search.search-wrapper.active {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 0;
+    z-index: 1300;
+    width: 100% !important;
+    max-width: 100vw;
+    margin: 0;
+    padding: 8px 12px;
+    background: var(--card, #fff);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  }
+
+  .global-search.search-wrapper.active .input-holder {
+    width: 100% !important;
+    max-width: none;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.05);
+  }
+
+  .global-search.search-wrapper.active .search-input {
+    opacity: 1;
+    transform: translate(0, 11px);
+    padding-right: 48px;
+  }
+
+  .global-search.search-wrapper.active .btn-close {
+    left: auto !important;
+    right: 20px;
+    opacity: 0.7 !important;
+    z-index: 2;
+  }
+
+  .global-search__panel {
+    position: fixed !important;
+    left: 12px !important;
+    right: 12px !important;
+    top: calc(var(--erm-header-height, 60px) + 4px) !important;
+    width: auto !important;
+    max-width: none !important;
+  }
+
+  /* Контент */
+  .app-main__outer,
+  .app-main__inner {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+    max-width: 100%;
+  }
+
+  .app-main__inner {
+    padding-top: 12px !important;
+    padding-bottom: 24px !important;
+  }
+
+  .card {
+    padding: 14px 12px 12px;
+    border-radius: 12px;
+    overflow: visible;
+  }
+
+  .title {
+    font-size: 1.15rem;
+  }
+
+  .page-header,
+  .orders-page-header,
+  .products-page-header {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 12px;
+  }
+
+  .page-header__actions,
+  .orders-page-header__actions,
+  .products-page-header__actions {
+    justify-content: flex-start;
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .actions {
+    flex-wrap: wrap;
+  }
+
+  /* Фильтры */
+  .erp-filter-row {
+    gap: 8px;
+  }
+
+  .erp-filter-row--search {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .erp-filter-search-wrap {
+    margin-left: 0 !important;
+    flex: 1 1 100% !important;
+    width: 100%;
+    max-width: none;
+  }
+
+  .erp-filter-btn {
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  /* Таблицы — скролл внутри контейнера, не на всей странице */
+  .table-container,
+  .products-table-container,
+  .orders-list,
+  .warehouses-list,
+  .suppliers-list,
+  .stock-levels-table-wrapper,
+  .questions-table-wrap {
+    margin-left: -4px;
+    margin-right: -4px;
+    padding-bottom: 4px;
+    -webkit-overflow-scrolling: touch;
+    max-width: calc(100% + 8px);
+  }
+
+  .table,
+  .products-table,
+  .orders-table,
+  .warehouses-table,
+  .suppliers-table,
+  .stock-levels-table,
+  .questions-table {
+    min-width: 560px;
+    margin: 12px 0;
+  }
+
+  /* Модалки */
+  .modal-erm .modal-dialog {
+    margin: 0.5rem auto;
+    max-width: calc(100vw - 1rem);
+  }
+
+  .modal-erm .modal-body {
+    padding: 0.85rem 1rem 1rem;
+  }
+
+  /* Карточка товара */
+  .erm-product-card-overlay {
+    top: 0;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .product-form__footer-inner {
+    padding: 10px 12px !important;
+  }
+
+  /* Платформа (админка) */
+  .platform-main {
+    padding: 12px !important;
+  }
+
+  .platform-header {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .platform-header__nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
+  }
+
+  .stock-levels-table {
+    min-width: 560px;
+  }
+
+  .fbo-purchase-calc-table,
+  .fbo-supplies-table {
+    min-width: 560px;
+  }
+
+  /* Широкие формы и панели */
+  .warehouse-ops-filters,
+  .stock-levels-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .warehouse-ops-filters > *,
+  .stock-levels-filters > * {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 575.98px) {
+  .header-quick-action {
+    width: 36px;
+    height: 36px;
+    font-size: 1.2rem;
+  }
+
+  .orders-page.card {
+    padding: 12px 10px;
+  }
+
+  .modal-erm .modal-dialog.modal-lg,
+  .modal-erm .modal-dialog.modal-xl {
+    max-width: 100%;
+    margin: 0;
+  }
+
+  .modal-erm .modal-content {
+    border-radius: 0;
+    min-height: 100dvh;
+  }
+}
+
+/* Профиль: меню по тапу (класс .header-profile--open) */
+@media (hover: none), (max-width: 991.98px) {
+  .header-profile__menu {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .header-profile--open .header-profile__menu,
+  .header-profile:focus-within .header-profile__menu {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  .header-profile::after {
+    display: none;
+  }
+}

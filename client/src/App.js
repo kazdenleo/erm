@@ -54,6 +54,7 @@ import { PlatformMarketplaceNotifications } from './platform/PlatformMarketplace
 import './App.css';
 import './styles/mp-badges.css';
 import './styles/erp-filter-bar.css';
+import './styles/mobile.css';
 
 function ProductionRoute() {
   const { profile } = useAuth();
