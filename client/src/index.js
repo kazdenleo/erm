@@ -7,6 +7,12 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles/architectui-overrides.css';
+import './styles/variables.css';
+import './styles/pages.css';
+import './styles/tables.css';
+import './styles/variables.css';
+import './styles/pages.css';
+import './styles/tables.css';
 import { installNavigationClickPointerTracking } from './utils/navigationClick.js';
 
 installNavigationClickPointerTracking();

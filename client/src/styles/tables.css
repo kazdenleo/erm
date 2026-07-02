@@ -111,7 +111,7 @@
   .suppliers-table,
   .stock-levels-table {
     font-size: 12px;
-    min-width: 800px;
+    min-width: 560px;
   }
   
   .table th,
