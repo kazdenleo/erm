@@ -13,6 +13,7 @@ import { useAuth } from '../../context/AuthContext';
 import { FboPackingLimitFields } from '../../components/integrations/FboPackingLimitFields.jsx';
 import { OzonAutoPromotionsFields } from '../../components/integrations/OzonAutoPromotionsFields.jsx';
 import { pricesApi } from '../../services/prices.api';
+import { getApiErrorMessage } from '../../utils/apiErrorMessage.js';
 import './Integrations.css';
 
 export function Integrations() {
@@ -38,7 +39,7 @@ export function Integrations() {
       setConfigs((prev) => response.data || prev);
     } catch (err) {
       console.error('Ошибка загрузки настроек интеграций:', err);
-      setError(err.message || 'Ошибка загрузки настроек');
+      setError(getApiErrorMessage(err, 'Ошибка загрузки настроек'));
     } finally {
       setLoading(false);
     }
@@ -101,7 +102,7 @@ export function Integrations() {
       alert(`${type === 'ozon' ? 'Ozon' : type === 'wildberries' ? 'Wildberries' : 'Yandex Market'} настроен успешно!`);
     } catch (err) {
       console.error(`Ошибка сохранения настроек ${type}:`, err);
-      setError(err.message || `Ошибка сохранения настроек ${type}`);
+      setError(getApiErrorMessage(err, `Ошибка сохранения настроек ${type}`));
     }
   };
 
@@ -113,7 +114,7 @@ export function Integrations() {
       alert(`${type === 'mikado' ? 'Mikado' : 'Moskvorechie'} настроен успешно!`);
     } catch (err) {
       console.error(`Ошибка сохранения настроек ${type}:`, err);
-      setError(err.message || `Ошибка сохранения настроек ${type}`);
+      setError(getApiErrorMessage(err, `Ошибка сохранения настроек ${type}`));
     }
   };
 
@@ -1485,8 +1486,11 @@ function SuppliersTab({ configs, onSave, onTest }) {
             <input
               type="password"
               className="input"
-              value={formData.password || ''}
-              onChange={(e) => handleChange('password', e.target.value)}
+              value={formData.apiKey || formData.password || ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFormData({ ...formData, apiKey: v, password: v });
+              }}
               placeholder="Ваш API ключ от Moskvorechie"
               required
             />

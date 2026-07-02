@@ -110,10 +110,10 @@ describe('moskvorechie.adapter portalCredentialsFromConfig', () => {
     expect(c.hasPortalKey).toBe(true);
   });
 
-  test('does not treat v1 password copy as portal key', () => {
+  test('uses single apiKey for portal when no separate portal key', () => {
     const c = portalCredentialsFromConfig({ apiKey: 'same', password: 'same', user_id: 'u' });
-    expect(c.apiKey).toBe('');
-    expect(c.hasPortalKey).toBe(false);
+    expect(c.apiKey).toBe('same');
+    expect(c.hasPortalKey).toBe(true);
   });
 });
 

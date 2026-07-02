@@ -110,18 +110,18 @@ export function portalCredentialsFromConfig(config, integrationConfig = {}) {
   ).trim();
   const legacyPassword = String(merged.password || '').trim();
   const legacyFilePortalKey = String(merged.legacyPortalApiKey || merged.filePortalApiKey || '').trim();
-  const apiKey =
+  let apiKey =
     portalKey ||
     (legacyPassword && legacyPassword !== v1Key ? legacyPassword : '') ||
     (legacyFilePortalKey && legacyFilePortalKey !== v1Key ? legacyFilePortalKey : '');
+  // Один ключ в интеграциях (apiKey = password) — типичная настройка: и v1 заказы, и portal остатки.
+  if (!apiKey && v1Key) {
+    apiKey = v1Key;
+  }
   return {
     userId,
     apiKey,
-    hasPortalKey: Boolean(
-      portalKey ||
-        (legacyPassword && legacyPassword !== v1Key) ||
-        (legacyFilePortalKey && legacyFilePortalKey !== v1Key)
-    ),
+    hasPortalKey: Boolean(apiKey),
   };
 }
 

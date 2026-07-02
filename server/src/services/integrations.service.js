@@ -865,7 +865,7 @@ class IntegrationsService {
       const fromFile = (await readData(type)) || {};
       if (integration) {
         const fromDb = this._parseIntegrationConfig(integration.config);
-        return {
+        const merged = {
           ...fromFile,
           ...fromDb,
           user_id: fromDb.user_id || fromFile.user_id,
@@ -876,10 +876,33 @@ class IntegrationsService {
               ? fromDb.warehouses
               : fromFile.warehouses
         };
+        return type === 'moskvorechie' ? this._normalizeMoskvorechieConfig(merged) : merged;
       }
       return fromFile;
     }
     return (await readData(type)) || {};
+  }
+
+  /**
+   * Нормализовать конфиг Москворечья: один ключ для v1 и portal.api.
+   */
+  _normalizeMoskvorechieConfig(config) {
+    if (!config || typeof config !== 'object') return {};
+    const key = String(
+      config.apiKey || config.password || config.portalApiKey || config.portal_api_key || ''
+    ).trim();
+    if (!key && !config.user_id) return { ...config };
+    return {
+      ...config,
+      user_id: String(config.user_id || '').trim(),
+      ...(key
+        ? {
+            apiKey: key,
+            portalApiKey: String(config.portalApiKey || config.portal_api_key || key).trim(),
+            password: String(config.password || key).trim(),
+          }
+        : {}),
+    };
   }
 
   /**
@@ -901,38 +924,93 @@ class IntegrationsService {
       }
     }
 
+    let payload = { ...(config || {}) };
+
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      let integration = null;
+      if (profileId != null && profileId !== '') {
+        integration = await this.repository.findFirstSupplierByCodeForProfile(type, profileId);
+      }
+      if (!integration) {
+        integration = await this.repository.findFirstActiveSupplierByCode(type);
+      }
+
+      const existing = integration ? this._parseIntegrationConfig(integration.config) : {};
+
+      if (type === 'mikado') {
+        const pwd = String(payload.password ?? '').trim();
+        if (!pwd && existing.password) {
+          payload = { ...existing, ...payload, password: existing.password };
+        }
+        if (!String(payload.user_id ?? '').trim() && existing.user_id) {
+          payload.user_id = existing.user_id;
+        }
+      } else if (type === 'moskvorechie') {
+        const key = String(payload.apiKey || payload.password || '').trim();
+        if (!key && (existing.apiKey || existing.password)) {
+          const existingKey = String(existing.apiKey || existing.password || '').trim();
+          payload = {
+            ...existing,
+            ...payload,
+            apiKey: existingKey,
+            password: existing.password || existingKey,
+          };
+        }
+        if (!String(payload.user_id ?? '').trim() && existing.user_id) {
+          payload.user_id = existing.user_id;
+        }
+      }
+    }
+
     // Валидация обязательных полей
     if (type === 'mikado') {
-      if (!config.user_id || !config.password) {
+      if (!payload.user_id || !payload.password) {
         const err = new Error('Для Mikado требуется user_id и password');
         err.statusCode = 400;
         throw err;
       }
     } else if (type === 'moskvorechie') {
-      if (!config.user_id || (!config.apiKey && !config.password)) {
+      if (!payload.user_id || (!payload.apiKey && !payload.password)) {
         const err = new Error('Для Moskvorechie требуется user_id и apiKey (или password)');
         err.statusCode = 400;
         throw err;
       }
     }
 
+    if (type === 'moskvorechie') {
+      payload = this._normalizeMoskvorechieConfig(payload);
+    }
+
     if (repositoryFactory.isUsingPostgreSQL()) {
-      let integration = await this.repository.findByCode(type);
+      let integration = null;
+      if (profileId != null && profileId !== '') {
+        integration = await this.repository.findFirstSupplierByCodeForProfile(type, profileId);
+      }
+      if (!integration) {
+        integration = await this.repository.findFirstActiveSupplierByCode(type);
+      }
+
       if (integration) {
-        await this.repository.updateConfig(integration.id, config);
+        await this.repository.updateConfig(integration.id, payload);
       } else {
+        if (profileId == null || profileId === '') {
+          const err = new Error('Нет привязки к аккаунту для сохранения настроек поставщика');
+          err.statusCode = 400;
+          throw err;
+        }
         await this.repository.create({
+          profile_id: profileId,
           type: 'supplier',
           name: type === 'mikado' ? 'Mikado' : 'Moskvorechie',
           code: type,
-          config: config,
+          config: payload,
           is_active: true
         });
       }
       return { success: true, type };
     } else {
       // Старое хранилище
-      await writeData(type, config);
+      await writeData(type, payload);
       return { success: true, type };
     }
   }
