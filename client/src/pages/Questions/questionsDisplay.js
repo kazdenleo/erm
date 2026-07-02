@@ -128,3 +128,69 @@ export function formatProductTheme(q, maxLen = 48) {
   if (!art) return '—';
   return truncate(art, maxLen);
 }
+
+function productNameFromRaw(q) {
+  const raw = q?.rawPayload ?? q?.raw_payload;
+  if (!raw || typeof raw !== 'object') return null;
+  const mp = String(q?.marketplace || '').toLowerCase();
+  const pd = raw.productDetails ?? raw.product_details ?? {};
+  if (mp === 'wildberries' || mp === 'wb') {
+    return pickString(pd.productName, pd.product_name, pd.name, raw.productName, raw.product_name);
+  }
+  if (mp === 'yandex' || mp === 'ym') {
+    return pickString(
+      raw.offer?.name,
+      raw.offer?.title,
+      raw.productName,
+      raw.product_name,
+      raw.title
+    );
+  }
+  return pickString(raw.product_name, raw.product_title, raw.productName, raw.name, raw.title);
+}
+
+function parseSubjectNameAndArticle(q) {
+  let subj = q?.subject != null && String(q.subject).trim() !== '' ? String(q.subject).trim() : '';
+  subj = subj.replace(/^Арт\.\s*/i, '').trim();
+  const article = extractArticleOnly(q);
+  if (subj.includes(' · ')) {
+    const head = subj.split(' · ')[0].trim();
+    const tail = subj.split(' · ').pop().trim();
+    return {
+      name: head || null,
+      article: tail || article || null,
+    };
+  }
+  if (article && subj && subj !== article) {
+    return { name: subj, article };
+  }
+  return { name: subj || null, article: article || null };
+}
+
+/**
+ * Артикул и название товара с маркетплейса: «ART — Название».
+ * @param {object|null|undefined} q
+ */
+export function formatProductArticleWithName(q) {
+  const { name: fromSubject, article } = parseSubjectNameAndArticle(q);
+  const name = pickString(fromSubject, productNameFromRaw(q));
+  const art = article || extractArticleOnly(q);
+  if (art && name && name !== art) return `${art} — ${name}`;
+  if (art) return art;
+  if (name) return name;
+  return 'товар';
+}
+
+/**
+ * @param {object|null|undefined} q
+ */
+export function questionNeedsReply(q) {
+  if (q?.needsReply === true) return true;
+  if (q?.needsReply === false) return false;
+  const tm = q?.threadMessages;
+  if (Array.isArray(tm) && tm.length > 0) {
+    return String(tm[tm.length - 1]?.role || '').toLowerCase() === 'buyer';
+  }
+  const t = q?.answerText;
+  return t == null || String(t).trim() === '';
+}

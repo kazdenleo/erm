@@ -648,23 +648,22 @@ export async function syncMarketplaceQuestions(profileId, opts = {}) {
       } else if (mp === 'yandex') {
         ({ imported, externalIds } = await syncYandex(profileId, opts.organizationId ?? null));
       }
-      const purge = await marketplaceQuestionsRepo.deleteUnansweredMissingFromMarketplace(
+      const archiveStats = await archiveAnsweredMissingFromMarketplace(
         profileId,
         mp,
         externalIds,
-        { purgeAllIfEmpty: true }
+        opts.organizationId ?? null
       );
-      const cleaned = await marketplaceQuestionsRepo.deleteNotNeedingReplyByProfile(profileId);
       results.push({
         marketplace: mp,
         ok: true,
         imported,
-        purged: purge.deleted,
-        cleaned: cleaned.deleted,
+        archived: archiveStats.archived,
+        purged: archiveStats.purged,
         error: null,
       });
       logger.info(
-        `[MarketplaceQuestions] ${mp} profile=${profileId} imported=${imported} purged=${purge.deleted}`
+        `[MarketplaceQuestions] ${mp} profile=${profileId} imported=${imported} archived=${archiveStats.archived} purged=${archiveStats.purged}`
       );
     } catch (e) {
       const msg = e?.message || String(e);
@@ -673,6 +672,77 @@ export async function syncMarketplaceQuestions(profileId, opts = {}) {
     }
   }
   return { results };
+}
+
+/** Закрытые на МП вопросы: обновляем ветку в БД (архив), а не удаляем. */
+async function archiveAnsweredMissingFromMarketplace(profileId, marketplace, externalIds, organizationId = null) {
+  const missing = await marketplaceQuestionsRepo.findNeedingReplyMissingFromMarketplace(
+    profileId,
+    marketplace,
+    externalIds,
+    { allIfEmpty: true }
+  );
+  let archived = 0;
+  let purged = 0;
+  for (const row of missing) {
+    try {
+      const refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
+      if (refreshed) {
+        await marketplaceQuestionsRepo.upsertRow(refreshed);
+        archived += 1;
+      } else {
+        await marketplaceQuestionsRepo.deleteByIdAndProfile(row.id, profileId);
+        purged += 1;
+      }
+    } catch (e) {
+      logger.warn('[MarketplaceQuestions] archive missing question failed', {
+        profileId,
+        marketplace,
+        questionId: row.id,
+        error: e?.message || String(e),
+      });
+      await marketplaceQuestionsRepo.deleteByIdAndProfile(row.id, profileId);
+      purged += 1;
+    }
+  }
+  return { archived, purged };
+}
+
+async function persistRowAfterAnswer(profileId, row, trimmed, organizationId = null) {
+  const mp = String(row.marketplace || '').toLowerCase();
+  try {
+    const refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
+    if (refreshed) {
+      await marketplaceQuestionsRepo.upsertRow(refreshed);
+      return await marketplaceQuestionsRepo.findOneApiByIdAndProfile(row.id, profileId);
+    }
+  } catch (e) {
+    logger.warn('[MarketplaceQuestions] refresh after answer failed', {
+      profileId,
+      questionRowId: String(row.id),
+      error: e?.message || String(e),
+    });
+  }
+
+  let mergedRaw;
+  if (mp === 'ozon') mergedRaw = mergeOzonRawAfterAnswer(row, trimmed);
+  else if (mp === 'wildberries' || mp === 'wb') mergedRaw = mergeWbRawAfterAnswer(row, trimmed);
+  else mergedRaw = { ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}) };
+
+  const thread = buildThreadMessagesFromRow({
+    marketplace: row.marketplace,
+    rawPayload: mergedRaw,
+    body: row.body,
+    answerText: trimmed,
+    sourceCreatedAt: row.source_created_at,
+  });
+  return await marketplaceQuestionsRepo.updateAnswerFields(
+    row.id,
+    profileId,
+    trimmed,
+    mergedRaw,
+    thread
+  );
 }
 
 function parseAnsweredFilter(query) {
@@ -696,7 +766,7 @@ export async function listMarketplaceQuestions(profileId, query = {}) {
     marketplace: marketplace && marketplace !== 'all' ? marketplace : null,
     limit: Number.isFinite(limit) ? limit : 200,
     offset: Number.isFinite(offset) ? offset : 0,
-    answered: 'new',
+    answered: parseAnsweredFilter(query),
   });
 }
 
@@ -790,10 +860,6 @@ export async function getMarketplaceQuestionById(profileId, questionRowId, opts 
   }
 
   if (refreshed) {
-    if (!rowNeedsSellerReply(refreshed)) {
-      await marketplaceQuestionsRepo.deleteByIdAndProfile(questionRowId, profileId);
-      return null;
-    }
     await marketplaceQuestionsRepo.upsertRow(refreshed);
   }
 
@@ -1359,24 +1425,43 @@ export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, 
   const organizationId = opts.organizationId ?? null;
   if (mp === 'ozon') {
     await submitAnswerOzon(profileId, row, trimmed, organizationId);
-    await marketplaceQuestionsRepo.deleteByIdAndProfile(questionRowId, profileId);
-    return { id: String(questionRowId), deleted: true, marketplace: mp };
+    const saved = await persistRowAfterAnswer(profileId, row, trimmed, organizationId);
+    return {
+      id: String(questionRowId),
+      deleted: false,
+      archived: true,
+      needsReply: saved?.needsReply === true,
+      marketplace: mp,
+    };
   }
   if (mp === 'wildberries') {
     const out = await submitAnswerWildberries(profileId, row, trimmed, organizationId);
     if (!out?.verified) {
-      logger.warn('[MarketplaceQuestions] WB answer sent but not verified; removing from queue anyway', {
+      logger.warn('[MarketplaceQuestions] WB answer sent but not verified; keeping in archive', {
         profileId,
         questionRowId: String(questionRowId),
       });
     }
-    await marketplaceQuestionsRepo.deleteByIdAndProfile(questionRowId, profileId);
-    return { id: String(questionRowId), deleted: true, marketplace: mp, pending: !out?.verified };
+    const saved = await persistRowAfterAnswer(profileId, row, trimmed, organizationId);
+    return {
+      id: String(questionRowId),
+      deleted: false,
+      archived: true,
+      needsReply: saved?.needsReply === true,
+      marketplace: mp,
+      pending: !out?.verified,
+    };
   }
   if (mp === 'yandex') {
     await submitAnswerYandex(profileId, row, trimmed, organizationId);
-    await marketplaceQuestionsRepo.deleteByIdAndProfile(questionRowId, profileId);
-    return { id: String(questionRowId), deleted: true, marketplace: mp };
+    const saved = await persistRowAfterAnswer(profileId, row, trimmed, organizationId);
+    return {
+      id: String(questionRowId),
+      deleted: false,
+      archived: true,
+      needsReply: saved?.needsReply === true,
+      marketplace: mp,
+    };
   }
   const err = new Error('Неизвестный маркетплейс');
   err.statusCode = 400;

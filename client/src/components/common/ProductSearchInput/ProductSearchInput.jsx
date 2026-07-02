@@ -51,6 +51,8 @@ export function ProductSearchInput({
   minQueryLength = 1,
   autoSelectSingleScan = false,
   renderOption = null,
+  leadingOption = null,
+  onEscape = null,
 }) {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -125,8 +127,10 @@ export function ProductSearchInput({
     return '';
   }, [loading, results.length]);
 
-  const showPanel = open && showQuery && (loading || results.length > 0 || !loading);
-  const showEmpty = showPanel && !loading && results.length === 0;
+  const showLeading = leadingOption && !showQuery;
+  const showPanel =
+    open && (showLeading || (showQuery && (loading || results.length > 0 || !loading)));
+  const showEmpty = showPanel && showQuery && !loading && results.length === 0;
 
   const renderItem = typeof renderOption === 'function' ? renderOption : defaultRenderOption;
 
@@ -148,6 +152,7 @@ export function ProductSearchInput({
     if (e.key === 'Escape') {
       setOpen(false);
       setActiveIndex(-1);
+      onEscape?.();
       return;
     }
     if (e.key !== 'Enter') return;
@@ -184,7 +189,7 @@ export function ProductSearchInput({
           setOpen(true);
         }}
         onFocus={() => {
-          if (showQuery) setOpen(true);
+          setOpen(true);
         }}
         onBlur={() => {
           setTimeout(() => setOpen(false), 150);
@@ -195,6 +200,23 @@ export function ProductSearchInput({
         <div className="product-search-input__panel">
           {panelTitle ? <div className="product-search-input__title">{panelTitle}</div> : null}
           <div className="product-search-input__list">
+            {showLeading ? (
+              <button
+                type="button"
+                className="product-search-input__item product-search-input__item--active"
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => {
+                  leadingOption.onSelect?.();
+                  setOpen(false);
+                  setActiveIndex(-1);
+                }}
+              >
+                <div className="product-search-input__sku">{leadingOption.label}</div>
+                {leadingOption.sublabel ? (
+                  <div className="product-search-input__name">{leadingOption.sublabel}</div>
+                ) : null}
+              </button>
+            ) : null}
             {results.map((p, idx) => (
               <button
                 key={p.id}

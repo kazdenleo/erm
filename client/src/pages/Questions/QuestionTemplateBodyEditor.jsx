@@ -1,41 +1,43 @@
 /**
- * Редактор текста шаблона с визуальной вставкой «Имя покупателя»
+ * Редактор текста шаблона с визуальной вставкой переменных
  */
 
 import React, { useRef } from 'react';
 import {
-  QUESTION_TEMPLATE_NAME_TOKEN,
   QUESTION_TEMPLATE_PREVIEW_SAMPLE_NAME,
   applyQuestionTemplate,
   splitTemplateForDisplay,
   templateContainsNamePlaceholder,
 } from './questionTemplateText';
+import { QuestionTextInsertToolbar } from './QuestionTextInsertToolbar';
 
 function TemplateTextPreview({ text, sampleName, label }) {
   const resolved = applyQuestionTemplate(text, { buyerName: sampleName });
   const parts = splitTemplateForDisplay(text);
-  const hasToken = templateContainsNamePlaceholder(text);
+  const hasName = templateContainsNamePlaceholder(text);
 
   return (
     <div className="questions-template-preview-block">
       <div className="questions-template-preview-block__label">{label}</div>
-      {hasToken ? (
+      {hasName ? (
         <p className="questions-template-preview-block__resolved">{resolved}</p>
       ) : (
         <p className="questions-template-preview-block__resolved questions-template-preview-block__resolved--muted">
           {text.trim() ? text : '—'}
         </p>
       )}
-      {hasToken && parts.length > 0 ? (
+      {hasName && parts.length > 0 ? (
         <p className="questions-template-preview-block__tokens text-muted small">
           В шаблоне:{' '}
           {parts.map((part, i) =>
-            part.type === 'name' ? (
-              <span key={`n-${i}`} className="questions-template-token" title="Подставится имя покупателя">
+            part.type === 'text' ? (
+              <span key={`t-${i}`}>{part.value}</span>
+            ) : part.type === 'name' ? (
+              <span key={`n-${i}`} className="questions-template-token" title="Имя покупателя">
                 Имя покупателя
               </span>
             ) : (
-              <span key={`t-${i}`}>{part.value}</span>
+              <span key={`p-${i}`}>{part.value}</span>
             )
           )}
         </p>
@@ -47,49 +49,16 @@ function TemplateTextPreview({ text, sampleName, label }) {
 export function QuestionTemplateBodyEditor({ id, value, onChange, disabled }) {
   const textareaRef = useRef(null);
 
-  const insertNameToken = () => {
-    const el = textareaRef.current;
-    const token = QUESTION_TEMPLATE_NAME_TOKEN;
-    const body = String(value ?? '');
-
-    if (!el) {
-      onChange(body ? `${body}${body.endsWith(' ') ? '' : ' '}${token}` : token);
-      return;
-    }
-
-    const start = el.selectionStart ?? body.length;
-    const end = el.selectionEnd ?? body.length;
-    const before = body.slice(0, start);
-    const after = body.slice(end);
-    const needSpace = before.length > 0 && !/[\s([{«"']$/.test(before);
-    const insert = `${needSpace ? ' ' : ''}${token}`;
-    const newBody = before + insert + after;
-    onChange(newBody);
-
-    const cursor = start + insert.length;
-    requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(cursor, cursor);
-    });
-  };
-
   return (
     <div className="questions-template-body-editor">
-      <div className="questions-template-body-editor__toolbar">
-        <span className="questions-template-body-editor__toolbar-label">Вставить в текст:</span>
-        <button
-          type="button"
-          className="questions-template-token questions-template-token--insert"
-          onClick={insertNameToken}
-          disabled={disabled}
-          title="Вставить метку «Имя покупателя» в позицию курсора"
-        >
-          <span className="questions-template-token__icon" aria-hidden="true">
-            👤
-          </span>
-          Имя покупателя
-        </button>
-      </div>
+      <QuestionTextInsertToolbar
+        textareaRef={textareaRef}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        mode="template"
+        showProduct={false}
+      />
 
       <textarea
         ref={textareaRef}
@@ -99,7 +68,7 @@ export function QuestionTemplateBodyEditor({ id, value, onChange, disabled }) {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        placeholder="Здравствуйте! Нажмите «Имя покупателя» выше, чтобы обратиться к клиенту по имени."
+        placeholder="Здравствуйте! Нажмите «Имя покупателя», чтобы вставить метку для подстановки имени."
       />
 
       {String(value ?? '').trim() ? (
@@ -134,6 +103,11 @@ export function TemplateBodySnippet({ text, maxLen = 160 }) {
         </span>
       );
       len += 4;
+      continue;
+    }
+    if (part.type === 'product') {
+      nodes.push(<span key={`p-${i}`}>{part.value}</span>);
+      len += part.value.length;
       continue;
     }
     const chunk = part.value;

@@ -421,6 +421,36 @@
   margin: 0 2px;
 }
 
+.questions-template-token--product {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.questions-template-token--insert.questions-template-token--product:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: rgba(5, 150, 105, 0.55);
+}
+
+.questions-template-token--insert-active {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+.questions-template-token--insert.questions-template-token--product.questions-template-token--insert-active {
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.3);
+}
+
+.questions-row--archived {
+  opacity: 0.92;
+}
+
+.questions-thread-done-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
 .questions-template-token__icon {
   font-size: 13px;
   line-height: 1;
@@ -441,6 +471,74 @@
   border: 1px dashed rgba(59, 130, 246, 0.35);
   border-radius: 8px;
   background: rgba(59, 130, 246, 0.05);
+}
+
+.questions-product-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 11rem;
+  min-width: 9rem;
+  max-width: 18rem;
+  padding: 2px 6px 2px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.14);
+  position: relative;
+  min-height: 28px;
+}
+
+.questions-product-inline__icon {
+  flex-shrink: 0;
+}
+
+.questions-product-inline .product-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.questions-product-inline__input {
+  width: 100%;
+  border: none !important;
+  background: transparent !important;
+  padding: 4px 2px !important;
+  font-size: 12px !important;
+  font-weight: 600;
+  line-height: 1.3;
+  min-height: 0 !important;
+  height: auto !important;
+  box-shadow: none !important;
+  color: #047857;
+}
+
+.questions-product-inline__input::placeholder {
+  color: rgba(4, 120, 87, 0.55);
+  font-weight: 500;
+}
+
+.questions-product-inline__input:focus {
+  outline: none;
+}
+
+.questions-product-inline__close {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  color: #047857;
+  padding: 0 2px;
+  opacity: 0.75;
+}
+
+.questions-product-inline__close:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.questions-product-inline .product-search-input__panel {
+  z-index: 30;
+  min-width: 14rem;
 }
 
 .questions-template-body-editor__toolbar-label {

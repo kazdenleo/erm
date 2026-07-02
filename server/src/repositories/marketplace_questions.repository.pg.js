@@ -197,7 +197,17 @@ function rowToApi(row) {
     }
   }
   out.threadMessages = threadMessages;
+  out.needsReply = computeNeedsReply(row, threadMessages);
   return out;
+}
+
+function computeNeedsReply(row, threadMessages) {
+  const tm = Array.isArray(threadMessages) ? threadMessages : [];
+  if (tm.length > 0) {
+    return String(tm[tm.length - 1]?.role || '').toLowerCase() === 'buyer';
+  }
+  const t = row.answer_text;
+  return t == null || String(t).trim() === '';
 }
 
 class MarketplaceQuestionsRepositoryPG {
@@ -233,8 +243,42 @@ class MarketplaceQuestionsRepositoryPG {
   }
 
   /**
+   * Вопросы «ждут ответа» в БД, но уже нет в списке неотвеченных на МП — для архивации.
+   * @returns {Promise<object[]>}
+   */
+  async findNeedingReplyMissingFromMarketplace(profileId, marketplace, externalIds, { allIfEmpty = false } = {}) {
+    const mp = String(marketplace || '').trim();
+    if (!['ozon', 'wildberries', 'yandex'].includes(mp)) return [];
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) return [];
+
+    const ids = Array.isArray(externalIds)
+      ? externalIds.map((x) => String(x).trim()).filter(Boolean)
+      : [];
+
+    if (ids.length === 0) {
+      if (!allIfEmpty) return [];
+      const result = await query(
+        `SELECT * FROM marketplace_questions
+         WHERE profile_id = $1 AND marketplace = $2 AND ${SQL_NEEDS_REPLY}`,
+        [pid, mp]
+      );
+      return result.rows || [];
+    }
+
+    const result = await query(
+      `SELECT * FROM marketplace_questions
+       WHERE profile_id = $1 AND marketplace = $2 AND ${SQL_NEEDS_REPLY}
+         AND NOT (external_id = ANY($3::text[]))`,
+      [pid, mp, ids]
+    );
+    return result.rows || [];
+  }
+
+  /**
    * Убираем из БД вопросы, которые больше не в списке «без ответа» на МП
    * (ответили на маркетплейсе или ветка закрыта с нашей стороны).
+   * @deprecated Используйте findNeedingReplyMissingFromMarketplace + upsert для архива.
    */
   async deleteUnansweredMissingFromMarketplace(profileId, marketplace, externalIds, { purgeAllIfEmpty = false } = {}) {
     const mp = String(marketplace || '').trim();
