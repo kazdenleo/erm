@@ -76,17 +76,58 @@ async function enrichYandexQuestionWithAnswers(profileId, organizationId, rawQue
   };
 }
 
+/** Ozon API: допустимые status — NEW, ALL, VIEWED, PROCESSED, UNPROCESSED (UNANSWERED снят). */
 const OZON_QUESTION_BODY = {
-  filter: { status: 'UNANSWERED' },
+  filter: { status: 'NEW' },
   limit: 100,
   offset: 0,
 };
 
 const OZON_QUESTION_BODY_FALLBACK = {
-  filter: {},
+  filter: { status: 'UNPROCESSED' },
   limit: 100,
   offset: 0,
 };
+
+function isOzonQuestionProcessedStatus(status) {
+  const st = String(status ?? '').trim().toUpperCase();
+  return st === 'PROCESSED' || st === 'VIEWED' || st === 'ANSWERED';
+}
+
+/** Закрыть ветку локально: на МП вопроса уже нет в списке без ответа. */
+function finalizeQuestionRowAsAnsweredOnMarketplace(row) {
+  if (!row) return row;
+  let tm =
+    Array.isArray(row.thread_messages) && row.thread_messages.length > 0
+      ? row.thread_messages.map((m) => ({ ...m }))
+      : buildThreadMessagesFromRow({
+          marketplace: row.marketplace,
+          rawPayload: row.raw_payload,
+          body: row.body,
+          answerText: row.answer_text,
+          sourceCreatedAt: row.source_created_at,
+        });
+  const lastRole = String(tm[tm.length - 1]?.role || '').toLowerCase();
+  if (lastRole !== 'buyer') {
+    return { ...row, thread_messages: tm };
+  }
+  const existingAnswer =
+    row.answer_text != null && String(row.answer_text).trim() !== ''
+      ? String(row.answer_text).trim()
+      : null;
+  tm.push({
+    role: 'seller',
+    text: existingAnswer || '—',
+    at: row.updated_at ?? row.synced_at ?? null,
+    externalId: null,
+  });
+  return {
+    ...row,
+    answer_text: existingAnswer ?? row.answer_text,
+    thread_messages: tm,
+    status: isOzonQuestionProcessedStatus(row.status) ? row.status : 'answered',
+  };
+}
 
 function extractOzonQuestions(data) {
   const r = data?.result ?? data;
@@ -186,6 +227,9 @@ function mapOzonQuestion(q, profileId) {
     answerText: row.answer_text,
     sourceCreatedAt: row.source_created_at,
   });
+  if (isOzonQuestionProcessedStatus(status)) {
+    return finalizeQuestionRowAsAnsweredOnMarketplace(row);
+  }
   return row;
 }
 
@@ -686,7 +730,10 @@ async function archiveAnsweredMissingFromMarketplace(profileId, marketplace, ext
   let purged = 0;
   for (const row of missing) {
     try {
-      const refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
+      let refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
+      if (refreshed && rowNeedsSellerReply(refreshed)) {
+        refreshed = finalizeQuestionRowAsAnsweredOnMarketplace(refreshed);
+      }
       if (refreshed) {
         await marketplaceQuestionsRepo.upsertRow(refreshed);
         archived += 1;

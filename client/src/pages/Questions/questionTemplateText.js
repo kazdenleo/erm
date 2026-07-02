@@ -20,6 +20,29 @@ function tokenTypeFromMatch(m) {
   return 'product';
 }
 
+/** Убрать запятую и лишние пробелы, если метка имени пустая («Здравствуйте, !» → «Здравствуйте!»). */
+function cleanupAfterEmptyBuyerName(text) {
+  let s = String(text ?? '');
+  s = s.replace(/,\s*([!?.…])/g, '$1');
+  s = s.replace(/,\s*,/g, ',');
+  s = s.replace(/,\s*$/g, '');
+  s = s.replace(/\s+([!?.…])/g, '$1');
+  s = s.replace(/ {2,}/g, ' ');
+  return s;
+}
+
+function replaceBuyerNameInTemplate(text, name) {
+  const trimmed = name != null ? String(name).trim() : '';
+  if (trimmed) {
+    return String(text ?? '').replace(NAME_PLACEHOLDER_RE, trimmed);
+  }
+  let s = String(text ?? '');
+  s = s.replace(/,\s*(\{\{\s*(имя|name)\s*\}\}|\{\s*(имя|name)\s*\})/gi, '');
+  s = s.replace(/(\{\{\s*(имя|name)\s*\}\}|\{\s*(имя|name)\s*\})\s*,\s*/gi, '');
+  s = s.replace(NAME_PLACEHOLDER_RE, '');
+  return cleanupAfterEmptyBuyerName(s);
+}
+
 /** Имя для прямого ответа (без метки в тексте). Пустая строка, если имя неизвестно. */
 export function resolveBuyerNameForReply(buyerName) {
   const name = buyerName != null ? String(buyerName).trim() : '';
@@ -32,11 +55,11 @@ export function resolveBuyerNameForReply(buyerName) {
  * @returns {string}
  */
 export function applyQuestionTemplate(templateText, { buyerName, productLabel } = {}) {
-  const name = buyerName != null ? String(buyerName).trim() : '';
   const product = productLabel != null ? String(productLabel).trim() : '';
-  return String(templateText ?? '')
-    .replace(NAME_PLACEHOLDER_RE, name)
-    .replace(PRODUCT_PLACEHOLDER_RE, product || 'товар');
+  return replaceBuyerNameInTemplate(templateText, buyerName).replace(
+    PRODUCT_PLACEHOLDER_RE,
+    product || 'товар'
+  );
 }
 
 export function templateContainsNamePlaceholder(templateText) {
