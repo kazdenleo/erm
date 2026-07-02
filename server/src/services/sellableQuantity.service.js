@@ -14,7 +14,9 @@ import {
   NET_RESERVED_MOVEMENT_ROW_CASE_SQL,
   NET_RESERVED_SUM_EXPR_SQL,
   RAW_RESERVED_SUM_EXPR_SQL,
+  INCOMING_NET_SUM_EXPR_SQL,
   allocateWarehouseScopedIncoming,
+  clampStockMetric,
   parseStockMovementWarehouseId,
   warehouseScopedOnHandForAllocation,
 } from '../constants/netReservedStockSql.js';
@@ -74,13 +76,13 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
   const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR, whJournalR, globalNetR, snapshotR] =
     await Promise.all([
     run(
-      `SELECT COALESCE(SUM(quantity_change), 0)::int AS inc
+      `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
        FROM stock_movements
        WHERE product_id = $1 AND LOWER(TRIM(type::text)) = 'incoming' AND warehouse_id = $2`,
       [pid, wh]
     ),
     run(
-      `SELECT COALESCE(SUM(quantity_change), 0)::int AS inc
+      `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
        FROM stock_movements
        WHERE product_id = $1 AND LOWER(TRIM(type::text)) = 'incoming' AND warehouse_id IS NULL`,
       [pid]
@@ -121,7 +123,7 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
       [pid, wh]
     ),
     run(
-      `SELECT COALESCE(SUM(quantity_change), 0)::int AS inc
+      `SELECT ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
        FROM stock_movements
        WHERE product_id = $1 AND LOWER(TRIM(type::text)) = 'incoming'`,
       [pid]
@@ -144,20 +146,22 @@ async function readWarehouseScopedIncomingWithClient(run, productId, whId) {
     legacyProductQty
   });
 
-  return allocateWarehouseScopedIncoming({
-    strictRaw: Number(strictR.rows[0]?.inc ?? 0) || 0,
-    nullRaw: Number(nullR.rows[0]?.inc ?? 0) || 0,
-    whOnHand,
-    totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
-    legacyProductQty,
-    globalIncoming: Number(globalR.rows[0]?.inc ?? 0) || 0,
-    globalJournalNet: Number(globalNetR.rows[0]?.inc ?? 0) || 0,
-    hasIncomingJournal: (journalR.rows?.length ?? 0) > 0,
-    hasStockJournal: (stockJournalR.rows?.length ?? 0) > 0,
-    hasWarehouseIncomingJournal: (whJournalR.rows?.length ?? 0) > 0,
-    warehouseIncomingSnapshot:
-      snapshotR.rows?.[0]?.inc != null ? Number(snapshotR.rows[0].inc) || 0 : null
-  });
+  return clampStockMetric(
+    allocateWarehouseScopedIncoming({
+      strictRaw: Number(strictR.rows[0]?.inc ?? 0) || 0,
+      nullRaw: Number(nullR.rows[0]?.inc ?? 0) || 0,
+      whOnHand,
+      totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
+      legacyProductQty,
+      globalIncoming: Number(globalR.rows[0]?.inc ?? 0) || 0,
+      globalJournalNet: Number(globalNetR.rows[0]?.inc ?? 0) || 0,
+      hasIncomingJournal: (journalR.rows?.length ?? 0) > 0,
+      hasStockJournal: (stockJournalR.rows?.length ?? 0) > 0,
+      hasWarehouseIncomingJournal: (whJournalR.rows?.length ?? 0) > 0,
+      warehouseIncomingSnapshot:
+        snapshotR.rows?.[0]?.inc != null ? Number(snapshotR.rows[0].inc) || 0 : null
+    })
+  );
 }
 
 /** Резерв из журнала (как в таблице остатков на клиенте), а не устаревший products.reserved_quantity. */
@@ -248,7 +252,7 @@ export async function computeAvailableQuantity(productId, opts = {}) {
     );
     const pwsOnHand = Number(r.rows[0]?.pws_qty ?? 0) || 0;
     const productQty = Number(r.rows[0]?.product_qty ?? 0) || 0;
-    onHand = Math.max(pwsOnHand, productQty);
+    onHand = clampStockMetric(Math.max(pwsOnHand, productQty));
   }
 
   let incoming = 0;
@@ -289,9 +293,9 @@ export async function computeAvailableQuantity(productId, opts = {}) {
   const available = Math.max(0, Math.floor(onHand + incoming + suppliers - reserved));
   return {
     available,
-    onHand,
-    incoming,
-    suppliers,
+    onHand: clampStockMetric(onHand),
+    incoming: clampStockMetric(incoming),
+    suppliers: clampStockMetric(suppliers),
     ...(opts.forMarketplace
       ? {
           reserved,
@@ -381,7 +385,7 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
        WHERE product_id = $1 AND warehouse_id = $2`,
       [pid, whId]
     );
-    onHand = Number(onHandR.rows[0]?.pws_qty ?? 0) || 0;
+    onHand = clampStockMetric(Number(onHandR.rows[0]?.pws_qty ?? 0) || 0);
   } else {
     const onHandR = await run(
       `SELECT COALESCE(SUM(quantity), 0)::int AS pws_qty
@@ -399,7 +403,7 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
     } catch {
       productQty = 0;
     }
-    onHand = Math.max(pwsOnHand, productQty);
+    onHand = clampStockMetric(Math.max(pwsOnHand, productQty));
   }
 
   let incoming = 0;
@@ -432,16 +436,23 @@ export async function getProductSupplySnapshotWithClient(client, productId, opts
       ? reserved
       : await getRawReservedQuantityFromMovementsWithClient(client, pid);
 
-  const supplyCap = onHand + incoming;
+  const supplyCap = clampStockMetric(onHand) + clampStockMetric(incoming);
   // На конкретном складе «доступно» — по резерву, привязанному к этому складу (не глобальному).
   const reservedForAvailable = warehouseScoped ? reservedWarehouseScoped : reservedRaw;
   const available = computeOwnWarehouseAvailable({
-    onHand,
-    incoming,
-    reserved: reservedForAvailable
+    onHand: clampStockMetric(onHand),
+    incoming: clampStockMetric(incoming),
+    reserved: clampStockMetric(reservedForAvailable)
   });
 
-  return { onHand, incoming, reserved, reservedRaw, available, supplyCap };
+  return {
+    onHand: clampStockMetric(onHand),
+    incoming: clampStockMetric(incoming),
+    reserved: clampStockMetric(reserved),
+    reservedRaw,
+    available,
+    supplyCap
+  };
 }
 
 /**

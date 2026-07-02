@@ -2487,8 +2487,8 @@ export function WarehouseStocks() {
 
   const rows = useMemo(() => {
     const built = buildStockRowsWithKits(products, (product) => {
-      const onHand = Number(product.quantity ?? 0) || 0;
-      const incoming = Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0;
+      const onHand = Math.max(0, Number(product.quantity ?? 0) || 0);
+      const incoming = Math.max(0, Number(product.incoming_quantity ?? product.incomingQuantity ?? 0) || 0);
       const reservedRaw =
         product.net_reserved_quantity ??
         product.netReservedQuantity ??

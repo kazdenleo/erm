@@ -370,10 +370,10 @@ export function buildStockRowsWithKits(products, buildBaseMetrics) {
       };
       return {
         product,
-        onHand: display.whole_on_hand,
+        onHand: Math.max(0, Number(display.whole_on_hand) || 0),
         incoming: Math.max(0, Number(base.incoming) || 0),
-        incomingFromComponents,
-        reserved: base.reserved,
+        incomingFromComponents: Math.max(0, incomingFromComponents),
+        reserved: Math.max(0, Number(base.reserved) || 0),
         suppliers: suppliersDisplay ? 0 : base.suppliers,
         supplierDetails: base.supplierDetails,
         suppliersDisplay,

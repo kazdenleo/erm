@@ -8,7 +8,9 @@ import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import {
   NET_RESERVED_SUM_EXPR_SQL,
+  INCOMING_NET_SUM_EXPR_SQL,
   allocateWarehouseScopedIncoming,
+  clampStockMetric,
   orderReserveMovementMatchSql,
   orderReserveMovementMatchOrderRowSql,
   parseStockMovementWarehouseId,
@@ -1965,39 +1967,12 @@ export async function batchGetReservedKitUnitsForOrders(entries) {
     );
   if (!normalized.length) return result;
 
-  const orderDbIds = [...new Set(normalized.map((e) => e.orderDbId))];
-  const netByOrderProduct = await batchOrderNetReservedByProductMap(orderDbIds);
-
-  const kitIds = [...new Set(normalized.map((e) => e.kitProductId))];
-  const compR = await query(
-    `SELECT kit_product_id, component_product_id, quantity
-     FROM kit_components
-     WHERE kit_product_id = ANY($1::int[])
-     ORDER BY id`,
-    [kitIds]
+  await Promise.all(
+    normalized.map(async (e) => {
+      const units = await getReservedKitUnitsForOrderValidation(e.kitProductId, e.orderDbId);
+      result.set(e.orderDbId, units);
+    })
   );
-  const componentsByKit = new Map();
-  for (const row of compR.rows || []) {
-    const kid = Number(row.kit_product_id);
-    if (!componentsByKit.has(kid)) componentsByKit.set(kid, []);
-    componentsByKit.get(kid).push({
-      component_product_id: Number(row.component_product_id),
-      quantity: Math.max(1, parseInt(row.quantity, 10) || 1),
-    });
-  }
-
-  for (const e of normalized) {
-    const onKit = netByOrderProduct.get(`${e.orderDbId}:${e.kitProductId}`) || 0;
-    const components = componentsByKit.get(e.kitProductId) || [];
-    const fromComp =
-      components.length > 0
-        ? minKitUnitsFromComponentReserves(
-            components,
-            (pid) => netByOrderProduct.get(`${e.orderDbId}:${pid}`) ?? 0
-          )
-        : 0;
-    result.set(e.orderDbId, resolveComplementaryKitReserveUnits(onKit, fromComp, e.orderQty));
-  }
   return result;
 }
 
@@ -2893,7 +2868,7 @@ async function batchIncomingMap(productIds, opts = {}) {
         [ids]
       ),
       query(
-        `SELECT product_id, GREATEST(0, COALESCE(SUM(quantity_change), 0))::int AS inc
+        `SELECT product_id, ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
          FROM stock_movements
          WHERE product_id = ANY($1::bigint[])
            AND LOWER(TRIM(type::text)) = 'incoming'
@@ -2941,7 +2916,7 @@ async function batchIncomingMap(productIds, opts = {}) {
     await Promise.all([
     query(
       `SELECT product_id,
-              COALESCE(SUM(quantity_change), 0)::int AS inc
+              ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])
          AND LOWER(TRIM(type::text)) = 'incoming'
@@ -2951,7 +2926,7 @@ async function batchIncomingMap(productIds, opts = {}) {
     ),
     query(
       `SELECT product_id,
-              COALESCE(SUM(quantity_change), 0)::int AS inc
+              ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])
          AND LOWER(TRIM(type::text)) = 'incoming'
@@ -2999,7 +2974,7 @@ async function batchIncomingMap(productIds, opts = {}) {
       [ids, wid]
     ),
     query(
-      `SELECT product_id, COALESCE(SUM(quantity_change), 0)::int AS inc
+      `SELECT product_id, ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
        FROM stock_movements
        WHERE product_id = ANY($1::bigint[])
          AND LOWER(TRIM(type::text)) = 'incoming'
@@ -3063,21 +3038,23 @@ async function batchIncomingMap(productIds, opts = {}) {
     });
     map.set(
       pid,
-      allocateWarehouseScopedIncoming({
-        strictRaw: strictMap.get(pid) ?? 0,
-        nullRaw: nullMap.get(pid) ?? 0,
-        whOnHand,
-        totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
-        legacyProductQty,
-        globalIncoming: globalIncMap.get(pid) ?? 0,
-        globalJournalNet: globalJournalNetMap.get(pid) ?? 0,
-        hasIncomingJournal: journalIncomingSet.has(pid),
-        hasStockJournal: stockJournalSet.has(pid),
-        hasWarehouseIncomingJournal: whIncomingJournalSet.has(pid),
-        warehouseIncomingSnapshot: incomingSnapshotMap.has(pid)
-          ? incomingSnapshotMap.get(pid)
-          : null
-      })
+      clampStockMetric(
+        allocateWarehouseScopedIncoming({
+          strictRaw: strictMap.get(pid) ?? 0,
+          nullRaw: nullMap.get(pid) ?? 0,
+          whOnHand,
+          totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
+          legacyProductQty,
+          globalIncoming: globalIncMap.get(pid) ?? 0,
+          globalJournalNet: globalJournalNetMap.get(pid) ?? 0,
+          hasIncomingJournal: journalIncomingSet.has(pid),
+          hasStockJournal: stockJournalSet.has(pid),
+          hasWarehouseIncomingJournal: whIncomingJournalSet.has(pid),
+          warehouseIncomingSnapshot: incomingSnapshotMap.has(pid)
+            ? incomingSnapshotMap.get(pid)
+            : null
+        })
+      )
     );
   }
   return map;

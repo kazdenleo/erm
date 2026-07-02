@@ -261,6 +261,21 @@ export function stockListOnHandQuantity(product) {
   return Math.max(0, Number(product.quantity) || 0);
 }
 
+/** «В пути» в таблице остатков. */
+export function stockListIncomingQuantity(product) {
+  if (!product) return 0;
+  const kit = product.kit_display ?? product.kitDisplay;
+  if (kit && typeof kit === 'object') {
+    const fromSku = Math.max(0, Number(product.incoming_quantity ?? product.incomingQuantity) || 0);
+    const fromComponents = Math.max(
+      0,
+      Number(kit.incoming_from_components ?? kit.incomingFromComponents ?? product.incoming_from_components) || 0
+    );
+    return fromSku + fromComponents;
+  }
+  return Math.max(0, Number(product.incoming_quantity ?? product.incomingQuantity) || 0);
+}
+
 /** Резерв в таблице остатков (колонка «Резерв»). */
 export function stockListReservedQuantity(product) {
   if (!product) return 0;
@@ -292,7 +307,7 @@ export function stockListAvailableQuantity(product) {
     return Math.max(0, a + w);
   }
   const onHand = stockListOnHandQuantity(product);
-  const incoming = Math.max(0, Number(product.incoming_quantity ?? product.incomingQuantity) || 0);
+  const incoming = stockListIncomingQuantity(product);
   const reserved = stockListReservedQuantity(product);
   return Math.max(0, onHand + incoming - reserved);
 }
@@ -887,7 +902,7 @@ class ProductsRepositoryPG {
             const globalSum = sumByProduct.has(key) ? sumByProduct.get(key) : 0;
             p.quantity_pws_total = globalSum;
             if (whQty != null) {
-              p.quantity = whQty;
+              p.quantity = Math.max(0, whQty);
             } else if (globalSum <= 0 && legacy > 0) {
               p.quantity = legacy;
             } else {
@@ -938,10 +953,22 @@ class ProductsRepositoryPG {
           const legacy = Math.max(0, Number(p.quantity) || 0);
           if (sum != null) {
             p.quantity_total_all_warehouses = p.quantity != null ? Number(p.quantity) : 0;
-            p.quantity = sum > 0 ? sum : legacy;
+            p.quantity = Math.max(0, sum > 0 ? sum : legacy);
           } else {
             p.quantity = legacy;
           }
+        });
+        const { batchWarehouseScopedIncomingMap } = await import('../services/kitStock.service.js');
+        const incomingMap = await batchWarehouseScopedIncomingMap(productIds, {});
+        products.forEach((p) => {
+          const nid = typeof p.id === 'string' ? parseInt(p.id, 10) : Number(p.id);
+          if (!Number.isFinite(nid)) return;
+          const inc =
+            incomingMap.has(nid) ?
+              Math.max(0, Number(incomingMap.get(nid)) || 0)
+            : Math.max(0, Number(p.incoming_quantity ?? p.incomingQuantity) || 0);
+          p.incoming_quantity = inc;
+          p.incomingQuantity = inc;
         });
       }
     }

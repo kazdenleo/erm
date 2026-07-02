@@ -21,6 +21,15 @@ export const NET_RESERVED_MOVEMENT_ROW_CASE_SQL = `
 /** GREATEST(0, SUM(...)) для агрегата по product_id. */
 export const NET_RESERVED_SUM_EXPR_SQL = `GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))`;
 
+/** Нетто «в пути» по журналу incoming (не ниже нуля в отображении и снимках). */
+export const INCOMING_NET_SUM_EXPR_SQL = 'GREATEST(0, COALESCE(SUM(quantity_change), 0))';
+
+/** Метрики остатков в UI и API: наличие, в пути, резерв, доступно — не отрицательные. */
+export function clampStockMetric(value) {
+  const n = Math.floor(Number(value) || 0);
+  return n < 0 ? 0 : n;
+}
+
 /** Сырой нетто-резерв без GREATEST(0, …) — для жёсткой проверки лимита резерва. */
 export const RAW_RESERVED_SUM_EXPR_SQL = `COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)`;
 
@@ -67,10 +76,10 @@ export function allocateWarehouseScopedReserved({
   const legacy = Math.max(0, Math.floor(Number(legacyProductQty) || 0));
 
   if (total > 0) {
-    return s + Math.floor(nr * (wh / total));
+    return clampStockMetric(s + Math.floor(nr * (wh / total)));
   }
   if (legacy > 0 && wh > 0) {
-    return s + nr;
+    return clampStockMetric(s + nr);
   }
   return s;
 }
@@ -111,15 +120,15 @@ export function allocateWarehouseScopedIncoming({
   if (hasIncomingJournal) {
     if (hasWarehouseIncomingJournal) {
       const strictPositive = Math.max(0, strict);
-      if (strict < 0 && snapshotInc != null) return snapshotInc;
+      if (strict < 0 && snapshotInc != null) return clampStockMetric(snapshotInc);
       return strictPositive;
     }
     if (journalNetGlobal <= 0) return 0;
     const whPositive = Math.max(0, strict);
     const nullPositive = Math.max(0, nullSum);
     if (nullPositive <= 0) return whPositive;
-    if (total > 0) return whPositive + Math.floor(nullPositive * (wh / total));
-    if (legacy > 0 && wh > 0) return whPositive + nullPositive;
+    if (total > 0) return clampStockMetric(whPositive + Math.floor(nullPositive * (wh / total)));
+    if (legacy > 0 && wh > 0) return clampStockMetric(whPositive + nullPositive);
     if (whPositive > 0) return whPositive;
     return 0;
   }
@@ -130,7 +139,7 @@ export function allocateWarehouseScopedIncoming({
 
   if (globalInc <= 0) return 0;
   if (total > 0) {
-    return Math.floor(globalInc * (wh / total));
+    return clampStockMetric(Math.floor(globalInc * (wh / total)));
   }
   if (legacy > 0 && wh > 0) {
     return globalInc;

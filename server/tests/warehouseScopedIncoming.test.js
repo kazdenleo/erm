@@ -1,5 +1,16 @@
 import { describe, test, expect } from '@jest/globals';
-import { allocateWarehouseScopedIncoming } from '../src/constants/netReservedStockSql.js';
+import {
+  allocateWarehouseScopedIncoming,
+  clampStockMetric,
+} from '../src/constants/netReservedStockSql.js';
+
+describe('clampStockMetric', () => {
+  test('отрицательные и дробные — 0', () => {
+    expect(clampStockMetric(-5)).toBe(0);
+    expect(clampStockMetric(-0.2)).toBe(0);
+    expect(clampStockMetric(3.9)).toBe(3);
+  });
+});
 
 describe('allocateWarehouseScopedIncoming', () => {
   test('без журнала incoming — доля globalIncoming по наличию на складе', () => {
@@ -140,5 +151,20 @@ describe('allocateWarehouseScopedIncoming', () => {
         warehouseIncomingSnapshot: 1
       })
     ).toBe(1);
+  });
+
+  test('результат никогда не отрицательный', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: -99,
+        nullRaw: -50,
+        globalJournalNet: -149,
+        whOnHand: 0,
+        totalOnHand: 0,
+        globalIncoming: 0,
+        hasIncomingJournal: true,
+        hasWarehouseIncomingJournal: true
+      })
+    ).toBe(0);
   });
 });
