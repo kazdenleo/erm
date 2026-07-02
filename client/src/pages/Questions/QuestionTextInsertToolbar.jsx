@@ -4,13 +4,31 @@
 
 import React, { useRef, useState } from 'react';
 import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
+import { productsApi } from '../../services/products.api';
 import {
   formatProductForQuestionReply,
   getProductMarketplaceNumber,
+  normalizeQuestionMarketplace,
   productNameWithoutArticle,
 } from './questionsDisplay';
 import { QUESTION_TEMPLATE_NAME_TOKEN, resolveBuyerNameForReply } from './questionTemplateText';
 import '../../components/common/ProductSearchInput/ProductSearchInput.css';
+
+function enrichProductWithMarketplaceNumber(product, marketplace, number) {
+  const mp = normalizeQuestionMarketplace(marketplace);
+  const num = number != null ? String(number).trim() : '';
+  if (!num || !mp) return product;
+  if (mp === 'ozon') {
+    return { ...product, ozon_product_id: Number(num), marketplace_ozon_product_id: Number(num) };
+  }
+  if (mp === 'wb') {
+    return { ...product, sku_wb: num };
+  }
+  if (mp === 'ym') {
+    return { ...product, ym_market_sku: num, ym_product_id: num, marketplace_ym_product_id: Number(num) };
+  }
+  return product;
+}
 
 export function insertTextAtCursor({ textareaRef, value, onChange, text }) {
   const el = textareaRef?.current;
@@ -54,6 +72,7 @@ export function QuestionTextInsertToolbar({
 }) {
   const [productPickerOpen, setProductPickerOpen] = useState(false);
   const [productSearch, setProductSearch] = useState('');
+  const [productResolving, setProductResolving] = useState(false);
   const productSearchRef = useRef(null);
   const isReply = mode === 'reply';
 
@@ -76,6 +95,27 @@ export function QuestionTextInsertToolbar({
   const closeProductPicker = () => {
     setProductPickerOpen(false);
     setProductSearch('');
+    setProductResolving(false);
+  };
+
+  const handleProductSelect = async (product) => {
+    if (!product) return;
+    let enriched = product;
+    const mp = normalizeQuestionMarketplace(questionMarketplace);
+    if (mp && !getProductMarketplaceNumber(product, mp)) {
+      setProductResolving(true);
+      try {
+        const resolved = await productsApi.resolveMarketplaceNumber(product.id, mp);
+        if (resolved?.number) {
+          enriched = enrichProductWithMarketplaceNumber(product, mp, resolved.number);
+        }
+      } catch {
+        /* вставим ERP-артикул */
+      } finally {
+        setProductResolving(false);
+      }
+    }
+    insertProduct(formatProductForQuestionReply(enriched, questionMarketplace));
   };
 
   const openProductPicker = () => {
@@ -163,15 +203,13 @@ export function QuestionTextInsertToolbar({
               value={productSearch}
               onChange={setProductSearch}
               organizationId={organizationId}
-              placeholder="Артикул или название"
-              disabled={disabled}
+              placeholder={productResolving ? 'Загрузка номера МП…' : 'Артикул или название'}
+              disabled={disabled || productResolving}
               autoFocus
               leadingOption={leadingOption}
               onEscape={closeProductPicker}
               renderOption={renderProductOption}
-              onSelect={(product) =>
-                insertProduct(formatProductForQuestionReply(product, questionMarketplace))
-              }
+              onSelect={handleProductSelect}
             />
             <button
               type="button"

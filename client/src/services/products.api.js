@@ -163,6 +163,22 @@ export const productsApi = {
   },
 
   /**
+   * Номер карточки на МП (из БД или через API кабинета организации).
+   * @param {number|string} productId
+   * @param {'ozon'|'wb'|'ym'|string} marketplace
+   */
+  resolveMarketplaceNumber: async (productId, marketplace, options = {}) => {
+    const id = encodeURIComponent(String(productId));
+    const params = { marketplace: String(marketplace).trim() };
+    if (options.persist === false) params.persist = '0';
+    const response = await api.get(`/products/${id}/marketplace-number`, {
+      params,
+      timeout: options.timeout ?? 45000
+    });
+    return response.data?.data ?? response.data;
+  },
+
+  /**
    * Получить товар по штрихкоду
    */
   getByBarcode: async (barcode) => {

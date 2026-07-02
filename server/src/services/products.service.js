@@ -70,6 +70,44 @@ function patchWbNmIdDraft(existingDraft, nmId) {
   return Object.keys(draft).length > 0 ? draft : null;
 }
 
+function pickNumericMarketplaceId(...values) {
+  for (const v of values) {
+    const s = v != null ? String(v).trim() : '';
+    if (s && /^\d+$/.test(s)) return s;
+  }
+  return null;
+}
+
+function normalizeQuestionMarketplaceCode(marketplace) {
+  const s = String(marketplace || '').toLowerCase();
+  if (s === 'ozon') return 'ozon';
+  if (s === 'wildberries' || s === 'wb') return 'wb';
+  if (s === 'yandex' || s === 'ym') return 'ym';
+  return s || null;
+}
+
+/** Номер карточки на МП из полей товара ERP (как на фронте в questionsDisplay). */
+function pickProductMarketplaceNumber(product, marketplace) {
+  if (!product) return null;
+  const mp = normalizeQuestionMarketplaceCode(marketplace);
+  if (mp === 'ozon') {
+    return pickNumericMarketplaceId(product.ozon_product_id, product.marketplace_ozon_product_id);
+  }
+  if (mp === 'wb') {
+    return pickNumericMarketplaceId(product.sku_wb, product.wb_nmid, product.nmId, product.nm_id);
+  }
+  if (mp === 'ym') {
+    return pickNumericMarketplaceId(
+      product.ym_market_sku,
+      product.ym_product_id,
+      product.marketplace_ym_product_id,
+      product.marketSku,
+      product.market_sku
+    );
+  }
+  return null;
+}
+
 /** camelCase с фронта → snake_case для PostgreSQL */
 function normalizeMarketplaceCardTextFields(obj) {
   if (!obj || typeof obj !== 'object') return;
@@ -1596,6 +1634,113 @@ class ProductsService {
 
     const updated = await this.update(productId, updates);
     return { product: updated, link: resolved };
+  }
+
+  /**
+   * Номер карточки на маркетплейсе для вставки в ответ на вопрос.
+   * Сначала из БД; если пусто — запрос в API кабинета организации и сохранение.
+   * @param {number|string} productId
+   * @param {'ozon'|'wb'|'ym'|string} marketplace
+   * @param {{ profileId?: number|string|null, persist?: boolean }} [options]
+   */
+  async resolveMarketplaceNumberForQuestion(productId, marketplace, options = {}) {
+    const product = await this.getByIdWithDetails(productId);
+    if (!product) {
+      const err = new Error('Товар не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const mp = normalizeQuestionMarketplaceCode(marketplace);
+    if (!mp) {
+      const err = new Error('Укажите маркетплейс: ozon, wb или ym.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const existing = pickProductMarketplaceNumber(product, mp);
+    if (existing) {
+      return { marketplace: mp, number: existing, source: 'db', persisted: false };
+    }
+
+    const orgId = product.organization_id ?? product.organizationId;
+    if (orgId == null || orgId === '') {
+      const err = new Error('У товара не указана организация — выберите организацию в карточке.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const profileId = options.profileId ?? product.profile_id ?? product.profileId ?? null;
+    const erpSku = product.sku;
+    const hints = {
+      sku_ozon: product.sku_ozon ?? product.marketplace_skus?.ozon ?? null,
+      ozon_product_id: product.marketplace_ozon_product_id ?? product.ozon_product_id ?? null,
+      mp_wb_vendor_code: product.mp_wb_vendor_code ?? null,
+      sku_wb: product.sku_wb ?? product.marketplace_skus?.wb ?? null,
+      sku_ym: product.sku_ym ?? product.marketplace_skus?.ym ?? null,
+      _product: product
+    };
+
+    let resolved;
+    try {
+      resolved = await resolveMarketplaceListingByErpSku({
+        marketplace: mp,
+        erpSku,
+        profileId,
+        organizationId: orgId,
+        hints
+      });
+    } catch (e) {
+      if (e?.statusCode === 404) {
+        return { marketplace: mp, number: null, source: 'api', persisted: false };
+      }
+      throw e;
+    }
+
+    let number = null;
+    const updates = {};
+    if (mp === 'ozon') {
+      const pid = resolved.marketplace_ozon_product_id;
+      number = pid != null ? String(pid) : null;
+      if (number) {
+        updates.sku_ozon = resolved.sku_ozon;
+        updates.marketplace_ozon_product_id = Number(pid);
+        updates.marketplace_skus = { ozon: resolved.sku_ozon };
+      }
+    } else if (mp === 'wb') {
+      number = pickNumericMarketplaceId(resolved.sku_wb);
+      if (number) {
+        const vendor = resolved.mp_wb_vendor_code
+          ? sanitizeWbVendorCode(resolved.mp_wb_vendor_code)
+          : null;
+        updates.mp_wb_vendor_code = vendor;
+        updates.sku_wb = number;
+        updates.marketplace_skus = { wb: vendor };
+        updates.wb_draft = patchWbNmIdDraft(parseWbDraftColumn(product.wb_draft), number);
+      }
+    } else if (mp === 'ym') {
+      const ymInfo = await integrationsService.getYandexProductInfo({
+        offer_id: resolved.sku_ym,
+        profileId,
+        organizationId: orgId
+      });
+      number = pickNumericMarketplaceId(ymInfo?.marketSku);
+      updates.sku_ym = resolved.sku_ym;
+      updates.marketplace_skus = { ym: resolved.sku_ym };
+      if (number) {
+        updates.marketplace_ym_product_id = Number(number);
+      }
+    }
+
+    if (!number) {
+      return { marketplace: mp, number: null, source: 'api', persisted: false };
+    }
+
+    if (options.persist !== false && Object.keys(updates).length > 0) {
+      await this.update(productId, updates, { profileId });
+    }
+
+    return { marketplace: mp, number, source: 'api', persisted: options.persist !== false };
   }
 
   /**

@@ -171,6 +171,12 @@ router.get(
   wrapAsync(productsController.getParticipation.bind(productsController))
 );
 
+router.get(
+  '/:id/marketplace-number',
+  validateProductId,
+  wrapAsync(productsController.getMarketplaceNumber.bind(productsController))
+);
+
 router.post(
   '/:id/archive',
   validateProductId,

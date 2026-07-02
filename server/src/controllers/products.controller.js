@@ -404,6 +404,25 @@ class ProductsController {
     }
   }
 
+  async getMarketplaceNumber(req, res, next) {
+    try {
+      const { id } = req.params;
+      const marketplace = req.query?.marketplace;
+      if (!marketplace || String(marketplace).trim() === '') {
+        return res.status(400).json({ ok: false, message: 'Укажите query-параметр marketplace (ozon, wb, ym).' });
+      }
+      const profileId = req.user?.profileId ?? null;
+      const persist = req.query?.persist !== '0' && req.query?.persist !== 'false';
+      const data = await productsService.resolveMarketplaceNumberForQuestion(id, marketplace, {
+        profileId,
+        persist
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getByBarcode(req, res, next) {
     try {
       const { barcode } = req.params;
