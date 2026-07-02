@@ -256,8 +256,15 @@ function parseMpExtraColumn(raw) {
 function attachMarketplaceSkuMeta(bucket, row) {
   if (!bucket || !row) return;
   bucket[row.marketplace] = row.sku;
-  if (row.marketplace === 'ozon' && row.marketplace_product_id != null) {
-    bucket.ozon_product_id = Number(row.marketplace_product_id);
+  if (row.marketplace === 'ozon') {
+    if (row.marketplace_product_id != null) {
+      bucket.ozon_product_id = Number(row.marketplace_product_id);
+    }
+    const extra = parseMpExtraColumn(row.mp_extra);
+    const ozonSku = extra?.ozonSku ?? extra?.ozon_sku ?? extra?.marketSku ?? null;
+    if (ozonSku != null && String(ozonSku).trim() !== '') {
+      bucket.ozon_market_sku = String(ozonSku).trim();
+    }
   }
   if (row.marketplace === 'ym') {
     if (row.marketplace_product_id != null) {
@@ -1161,6 +1168,7 @@ class ProductsRepositoryPG {
         product.sku_wb = skus.wb ?? null;
         product.sku_ym = skus.ym ?? null;
         product.ozon_product_id = skus.ozon_product_id ?? null;
+        product.ozon_market_sku = skus.ozon_market_sku ?? null;
         product.ym_market_sku = skus.ym_market_sku ?? null;
         product.ym_product_id = skus.ym_product_id ?? null;
         applyWbListingFields(product);
@@ -1563,6 +1571,7 @@ class ProductsRepositoryPG {
     product.sku_wb = skuMeta.wb ?? null;
     product.sku_ym = skuMeta.ym ?? null;
     product.ozon_product_id = skuMeta.ozon_product_id ?? null;
+    product.ozon_market_sku = skuMeta.ozon_market_sku ?? null;
     product.ym_market_sku = skuMeta.ym_market_sku ?? null;
     product.ym_product_id = skuMeta.ym_product_id ?? null;
     applyWbListingFields(product);
@@ -2808,6 +2817,23 @@ class ProductsRepositoryPG {
       skusWithStock: Number(skusRes.rows[0]?.skus_with_stock) || 0,
       totalProducts: Number(totalRes.rows[0]?.total_products) || 0,
     };
+  }
+
+  /** Дополняет mp_extra у строки product_skus (merge JSON). */
+  async patchProductSkuMpExtra(productId, marketplace, patch) {
+    const mp = String(marketplace || '').toLowerCase();
+    const numId = Number(productId);
+    if (!Number.isFinite(numId) || numId < 1 || !patch || typeof patch !== 'object') return;
+    try {
+      await query(
+        `UPDATE product_skus
+         SET mp_extra = COALESCE(mp_extra, '{}'::jsonb) || $3::jsonb
+         WHERE product_id = $1 AND marketplace = $2`,
+        [numId, mp, JSON.stringify(patch)]
+      );
+    } catch (e) {
+      if (!String(e?.message || '').includes('mp_extra')) throw e;
+    }
   }
 }
 

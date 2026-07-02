@@ -423,6 +423,31 @@ class ProductsController {
     }
   }
 
+  async getMarketplaceNumberByOffer(req, res, next) {
+    try {
+      const marketplace = req.query?.marketplace;
+      const offerId = req.query?.offer_id ?? req.query?.offerId;
+      const organizationId = req.query?.organizationId ?? req.query?.organization_id;
+      if (!marketplace || String(marketplace).trim() === '') {
+        return res.status(400).json({ ok: false, message: 'Укажите query-параметр marketplace (ozon, wb, ym).' });
+      }
+      if (!offerId || String(offerId).trim() === '') {
+        return res.status(400).json({ ok: false, message: 'Укажите query-параметр offer_id.' });
+      }
+      if (organizationId == null || String(organizationId).trim() === '') {
+        return res.status(400).json({ ok: false, message: 'Укажите query-параметр organizationId.' });
+      }
+      const profileId = req.user?.profileId ?? null;
+      const data = await productsService.resolveMarketplaceNumberByOffer(marketplace, offerId, {
+        profileId,
+        organizationId
+      });
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getByBarcode(req, res, next) {
     try {
       const { barcode } = req.params;

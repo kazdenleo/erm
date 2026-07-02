@@ -178,6 +178,21 @@ export const productsApi = {
     return response.data?.data ?? response.data;
   },
 
+  resolveMarketplaceNumberByOffer: async (offerId, marketplace, options = {}) => {
+    const params = {
+      marketplace: String(marketplace).trim(),
+      offer_id: String(offerId).trim()
+    };
+    if (options.organizationId != null && options.organizationId !== '') {
+      params.organizationId = String(options.organizationId);
+    }
+    const response = await api.get('/products/marketplace-number-by-offer', {
+      params,
+      timeout: options.timeout ?? 45000
+    });
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Получить товар по штрихкоду
    */

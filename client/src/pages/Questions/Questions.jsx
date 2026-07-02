@@ -485,6 +485,7 @@ export function Questions() {
                   organizationId={contextOrganizationId}
                   buyerNameLabel={questionBuyerLabel(threadDetail)}
                   questionMarketplace={threadDetail.marketplace}
+                  questionSkuOrOffer={threadDetail.skuOrOffer ?? threadDetail.sku_or_offer}
                   questionProductLabel={formatQuestionProductForReply(threadDetail)}
                 />
                 <textarea

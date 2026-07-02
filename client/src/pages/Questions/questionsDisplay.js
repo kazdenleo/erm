@@ -253,7 +253,7 @@ export function getProductMarketplaceNumber(product, marketplace) {
   if (!product) return null;
   const mp = normalizeQuestionMarketplace(marketplace);
   if (mp === 'ozon') {
-    return pickNumericId(product.ozon_product_id, product.marketplace_ozon_product_id);
+    return pickNumericId(product.ozon_market_sku, product.ozon_sku);
   }
   if (mp === 'wb') {
     return pickNumericId(product.sku_wb, product.wb_nmid, product.nmId, product.nm_id);
@@ -281,11 +281,7 @@ export function extractQuestionMarketplaceProductId(q) {
   if (!raw || typeof raw !== 'object') return null;
 
   if (mp === 'ozon') {
-    const fromPid = pickString(raw.product_id, raw.productId);
-    if (fromPid && /^\d+$/.test(fromPid)) return fromPid;
-    const sku = raw.sku ?? raw.offer_id;
-    const s = sku != null ? String(sku).trim() : '';
-    if (/^\d+$/.test(s)) return s;
+    // product_id из вопроса Ozon ≠ номер карточки для покупателя (нужен sku из API).
     return null;
   }
   if (mp === 'wb') {
@@ -299,43 +295,32 @@ export function extractQuestionMarketplaceProductId(q) {
   return null;
 }
 
-function formatQuestionReplyLabel(article, name) {
-  const art = String(article || '').trim();
-  const cleanName = String(name || '').trim();
-  if (art && cleanName) return formatArticleWithProductName(art, cleanName);
-  if (art) return art;
-  if (cleanName) return cleanName;
-  return 'товар';
-}
-
 /**
- * Товар из каталога для вставки в ответ: «номер_МП — Название».
+ * Товар из каталога для вставки в ответ: только номер карточки на МП (или ERP-артикул).
  * @param {object|null|undefined} product
  * @param {string|null|undefined} marketplace
  */
 export function formatProductForQuestionReply(product, marketplace) {
   const erpSku = String(product?.sku || '').trim();
-  const cleanName =
-    productNameWithoutArticle(erpSku, product?.name) || String(product?.name || '').trim();
   const mpNumber = getProductMarketplaceNumber(product, marketplace);
   const article = mpNumber || erpSku;
-  if (!article && !cleanName) {
+  if (!article) {
     return product?.id != null ? `Товар #${product.id}` : 'товар';
   }
-  return formatQuestionReplyLabel(article, cleanName);
+  return article;
 }
 
 /**
- * Товар из текущего вопроса для вставки в ответ.
+ * Товар из текущего вопроса для вставки в ответ: только номер карточки (или артикул).
  * @param {object|null|undefined} q
  */
 export function formatQuestionProductForReply(q) {
   const mpNumber = extractQuestionMarketplaceProductId(q);
-  const { name: fromSubject, article } = parseSubjectNameAndArticle(q);
-  const rawName = pickString(fromSubject, productNameFromRaw(q));
+  const { article } = parseSubjectNameAndArticle(q);
   const erpArt = article || extractArticleOnly(q);
-  const cleanName = productNameWithoutArticle(erpArt, rawName) || rawName;
-  return formatQuestionReplyLabel(mpNumber || erpArt, cleanName);
+  const articleOut = mpNumber || erpArt;
+  if (!articleOut) return 'товар';
+  return articleOut;
 }
 
 /**

@@ -67,6 +67,11 @@ router.get(
   wrapAsync(productsController.getByBarcode.bind(productsController))
 );
 
+router.get(
+  '/marketplace-number-by-offer',
+  wrapAsync(productsController.getMarketplaceNumberByOffer.bind(productsController))
+);
+
 // ID товаров по ERP-категории (до /:id)
 router.get(
   '/grouped-by-user-category',

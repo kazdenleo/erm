@@ -19,7 +19,7 @@ function enrichProductWithMarketplaceNumber(product, marketplace, number) {
   const num = number != null ? String(number).trim() : '';
   if (!num || !mp) return product;
   if (mp === 'ozon') {
-    return { ...product, ozon_product_id: Number(num), marketplace_ozon_product_id: Number(num) };
+    return { ...product, ozon_market_sku: num };
   }
   if (mp === 'wb') {
     return { ...product, sku_wb: num };
@@ -68,6 +68,7 @@ export function QuestionTextInsertToolbar({
   organizationId = null,
   buyerNameLabel = null,
   questionProductLabel = null,
+  questionSkuOrOffer = null,
   questionMarketplace = null,
 }) {
   const [productPickerOpen, setProductPickerOpen] = useState(false);
@@ -96,6 +97,28 @@ export function QuestionTextInsertToolbar({
     setProductPickerOpen(false);
     setProductSearch('');
     setProductResolving(false);
+  };
+
+  const handleInsertFromQuestion = async () => {
+    const mp = normalizeQuestionMarketplace(questionMarketplace);
+    const offerId = String(questionSkuOrOffer ?? '').trim();
+    if (mp && offerId && organizationId) {
+      setProductResolving(true);
+      try {
+        const resolved = await productsApi.resolveMarketplaceNumberByOffer(offerId, mp, {
+          organizationId
+        });
+        if (resolved?.number) {
+          insertProduct(resolved.number);
+          return;
+        }
+      } catch {
+        /* fallback */
+      } finally {
+        setProductResolving(false);
+      }
+    }
+    insertProduct(questionProductLabel);
   };
 
   const handleProductSelect = async (product) => {
@@ -134,7 +157,7 @@ export function QuestionTextInsertToolbar({
     ? {
         label: 'Из вопроса',
         sublabel: questionProductLabel,
-        onSelect: () => insertProduct(questionProductLabel),
+        onSelect: handleInsertFromQuestion,
       }
     : null;
 
@@ -184,7 +207,7 @@ export function QuestionTextInsertToolbar({
             className="questions-template-token questions-template-token--insert questions-template-token--product"
             onClick={openProductPicker}
             disabled={disabled}
-            title="Найти товар и вставить артикул с названием"
+            title="Найти товар и вставить номер карточки на МП"
           >
             <span className="questions-template-token__icon" aria-hidden="true">
               📦

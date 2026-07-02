@@ -91,7 +91,8 @@ function pickProductMarketplaceNumber(product, marketplace) {
   if (!product) return null;
   const mp = normalizeQuestionMarketplaceCode(marketplace);
   if (mp === 'ozon') {
-    return pickNumericMarketplaceId(product.ozon_product_id, product.marketplace_ozon_product_id);
+    // Ozon: для покупателя — поле sku из API (не product_id / id).
+    return pickNumericMarketplaceId(product.ozon_market_sku);
   }
   if (mp === 'wb') {
     return pickNumericMarketplaceId(product.sku_wb, product.wb_nmid, product.nmId, product.nm_id);
@@ -105,6 +106,13 @@ function pickProductMarketplaceNumber(product, marketplace) {
       product.market_sku
     );
   }
+  return null;
+}
+
+function pickOzonMarketSkuFromInfo(info) {
+  const sku = info?.sku;
+  const skuStr = sku != null ? String(sku).trim() : '';
+  if (skuStr && /^\d+$/.test(skuStr)) return skuStr;
   return null;
 }
 
@@ -1637,6 +1645,99 @@ class ProductsService {
   }
 
   /**
+   * Ozon SKU (поле sku в API) для отображения покупателю; product_id хранится отдельно.
+   */
+  async ensureOzonMarketSku(productId, product, { profileId = null, organizationId = null } = {}) {
+    const cached = pickProductMarketplaceNumber(product, 'ozon');
+    if (cached) return cached;
+
+    const offerId =
+      product?.sku_ozon ??
+      product?.marketplace_skus?.ozon ??
+      product?.sku ??
+      null;
+    if (!offerId || String(offerId).trim() === '') return null;
+
+    const info = await integrationsService.getOzonProductInfo({
+      offer_id: String(offerId).trim(),
+      profileId,
+      organizationId
+    });
+    const ozonSku = pickOzonMarketSkuFromInfo(info);
+    if (!ozonSku) return null;
+
+    const updates = {};
+    if (info?.id != null && !product?.ozon_product_id && !product?.marketplace_ozon_product_id) {
+      updates.marketplace_ozon_product_id = Number(info.id);
+      updates.marketplace_skus = { ozon: String(offerId).trim() };
+    }
+    if (Object.keys(updates).length > 0) {
+      await this.update(productId, updates, { profileId });
+    }
+    await this.repository.patchProductSkuMpExtra(productId, 'ozon', { ozonSku });
+    return ozonSku;
+  }
+
+  /**
+   * Номер карточки по offer_id (артикул продавца) — для «Из вопроса» на Ozon.
+   */
+  async resolveMarketplaceNumberByOffer(marketplace, offerId, options = {}) {
+    const mp = normalizeQuestionMarketplaceCode(marketplace);
+    const offer = offerId != null ? String(offerId).trim() : '';
+    if (!mp) {
+      const err = new Error('Укажите маркетплейс: ozon, wb или ym.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!offer) {
+      const err = new Error('Укажите offer_id (артикул продавца).');
+      err.statusCode = 400;
+      throw err;
+    }
+    const orgId = options.organizationId ?? options.organization_id ?? null;
+    if (orgId == null || orgId === '') {
+      const err = new Error('Укажите organizationId.');
+      err.statusCode = 400;
+      throw err;
+    }
+    const profileId = options.profileId ?? null;
+
+    if (mp === 'ozon') {
+      const info = await integrationsService.getOzonProductInfo({
+        offer_id: offer,
+        profileId,
+        organizationId: orgId
+      });
+      const number = pickOzonMarketSkuFromInfo(info);
+      return { marketplace: mp, number, source: 'api' };
+    }
+
+    const resolved = await resolveMarketplaceListingByErpSku({
+      marketplace: mp,
+      erpSku: offer,
+      profileId,
+      organizationId: orgId,
+      hints: { sku_ozon: offer, sku_ym: offer, mp_wb_vendor_code: offer }
+    });
+    if (mp === 'wb') {
+      return { marketplace: mp, number: pickNumericMarketplaceId(resolved.sku_wb), source: 'api' };
+    }
+    if (mp === 'ym') {
+      const ymInfo = await integrationsService.getYandexProductInfo({
+        offer_id: resolved.sku_ym ?? offer,
+        profileId,
+        organizationId: orgId
+      });
+      return {
+        marketplace: mp,
+        number: pickNumericMarketplaceId(ymInfo?.marketSku),
+        source: 'api'
+      };
+    }
+    return { marketplace: mp, number: null, source: 'api' };
+  }
+
+  /**
    * Номер карточки на маркетплейсе для вставки в ответ на вопрос.
    * Сначала из БД; если пусто — запрос в API кабинета организации и сохранение.
    * @param {number|string} productId
@@ -1671,6 +1772,18 @@ class ProductsService {
     }
 
     const profileId = options.profileId ?? product.profile_id ?? product.profileId ?? null;
+
+    if (mp === 'ozon') {
+      const ozonSku = await this.ensureOzonMarketSku(productId, product, {
+        profileId,
+        organizationId: orgId
+      });
+      if (ozonSku) {
+        return { marketplace: mp, number: ozonSku, source: 'api', persisted: true };
+      }
+      return { marketplace: mp, number: null, source: 'api', persisted: false };
+    }
+
     const erpSku = product.sku;
     const hints = {
       sku_ozon: product.sku_ozon ?? product.marketplace_skus?.ozon ?? null,
@@ -1699,15 +1812,7 @@ class ProductsService {
 
     let number = null;
     const updates = {};
-    if (mp === 'ozon') {
-      const pid = resolved.marketplace_ozon_product_id;
-      number = pid != null ? String(pid) : null;
-      if (number) {
-        updates.sku_ozon = resolved.sku_ozon;
-        updates.marketplace_ozon_product_id = Number(pid);
-        updates.marketplace_skus = { ozon: resolved.sku_ozon };
-      }
-    } else if (mp === 'wb') {
+    if (mp === 'wb') {
       number = pickNumericMarketplaceId(resolved.sku_wb);
       if (number) {
         const vendor = resolved.mp_wb_vendor_code
