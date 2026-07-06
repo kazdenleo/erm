@@ -12,6 +12,7 @@ import productsService from './products.service.js';
 import { getCache, setCache, deleteCache } from '../config/redis.js';
 import logger from '../utils/logger.js';
 import { portalCredentialsFromConfig } from './supplierOrderAdapters/moskvorechie.adapter.js';
+import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
 
 class SupplierStocksService {
   /**
@@ -110,7 +111,10 @@ class SupplierStocksService {
               stock: stockRecord.stock || 0,
               stockName: stockRecord.stock_name || `Склад ${supplier}`,
               deliveryDays: stockRecord.delivery_days || 0,
-              price: stockRecord.price || null,
+              price:
+                stockRecord.price != null && stockRecord.price !== ''
+                  ? Number(stockRecord.price)
+                  : null,
               source: stockRecord.source || 'cache',
               warehouses: warehouses
             };
@@ -402,8 +406,11 @@ class SupplierStocksService {
         const product = await productsService.getBySku(sku);
         if (product) {
           await supplierStocksPg.default.upsert(apiSupplierCode, sku, {
-            stock: stockData.stock || 0,
-            price: stockData.price || null,
+            stock: stockData.stock != null ? Number(stockData.stock) || 0 : 0,
+            price:
+              stockData.price != null && stockData.price !== ''
+                ? Number(stockData.price)
+                : null,
             deliveryDays: stockData.deliveryDays || stockData.delivery_days || 0,
             stockName: stockData.stockName || stockData.stock_name || null,
             source: stockData.source || 'api',

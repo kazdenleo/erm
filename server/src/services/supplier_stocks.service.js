@@ -4,6 +4,19 @@
  */
 
 import repositoryFactory from '../config/repository-factory.js';
+import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
+
+async function resolveSupplierByCode(suppliersRepo, supplierRef) {
+  const code = canonicalSupplierApiCode(supplierRef);
+  if (!code) return null;
+  if (typeof suppliersRepo.findByCode === 'function') {
+    return suppliersRepo.findByCode(code);
+  }
+  if (typeof suppliersRepo.findByName === 'function') {
+    return suppliersRepo.findByName(supplierRef);
+  }
+  return null;
+}
 
 class SupplierStocksService {
   /**
@@ -15,9 +28,8 @@ class SupplierStocksService {
       throw new Error('Supplier stocks repository not available');
     }
 
-    // Получаем supplier_id по имени
     const suppliersRepo = repositoryFactory.getRepository('suppliers');
-    const supplier = await suppliersRepo.findByName(supplierName);
+    const supplier = await resolveSupplierByCode(suppliersRepo, supplierName);
     if (!supplier) {
       return null;
     }
@@ -42,13 +54,9 @@ class SupplierStocksService {
     }
 
     const suppliersRepo = repositoryFactory.getRepository('suppliers');
-    const supplier = await suppliersRepo.findByCode(supplierName);
+    const supplier = await resolveSupplierByCode(suppliersRepo, supplierName);
     if (!supplier) {
-      const supplierByName = await suppliersRepo.findByName(supplierName);
-      if (!supplierByName) {
-        throw new Error(`Supplier ${supplierName} not found`);
-      }
-      return await this.upsert(supplierByName.code, sku, data);
+      throw new Error(`Supplier ${supplierName} not found`);
     }
 
     // Получаем product_id по SKU
@@ -69,8 +77,11 @@ class SupplierStocksService {
     const stockData = {
       supplier_id: supplierId,
       product_id: productId,
-      stock: data.stock || 0,
-      price: data.price || null,
+      stock: data.stock != null ? Number(data.stock) || 0 : 0,
+      price:
+        data.price != null && data.price !== ''
+          ? Number(data.price)
+          : null,
       delivery_days: data.deliveryDays || data.delivery_days || 0,
       stock_name: data.stockName || data.stock_name || null,
       source: data.source || 'api',
@@ -91,7 +102,7 @@ class SupplierStocksService {
     }
 
     const suppliersRepo = repositoryFactory.getRepository('suppliers');
-    const supplier = await suppliersRepo.findByName(supplierName);
+    const supplier = await resolveSupplierByCode(suppliersRepo, supplierName);
     if (!supplier) {
       return [];
     }
