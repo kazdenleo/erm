@@ -38,6 +38,7 @@ import {
   searchProductsCombined,
 } from '../../utils/productSearch';
 import { MarketplaceReturnsPanel } from '../../components/returns/MarketplaceReturnsPanel';
+import { orderRowCatalogSku } from '../../utils/orderActions.js';
 import './WarehouseOperations.css';
 
 const MODE_TABLE = 'table';
@@ -51,6 +52,15 @@ const MODE_TRANSFER = 'transfer';
 
 const INVENTORY_LIVE_DRAFT_LS = 'warehouse_ops_inventory_live_draft';
 const WAREHOUSE_SCAN_DEDUP_MS = 500;
+
+function resolveCustomerReturnLineSku(line, fromCatalog) {
+  const fromLine = orderRowCatalogSku(line);
+  if (fromLine) return fromLine;
+  const raw = String(line?.sku ?? '').trim();
+  if (raw && raw !== '—') return raw;
+  const fromProduct = String(fromCatalog?.sku ?? '').trim();
+  return fromProduct || '—';
+}
 
 function clearWarehouseScanDebounce(debounceRef) {
   if (debounceRef?.current) {
@@ -2117,7 +2127,7 @@ export function WarehouseOperations({
           costRaw != null && costRaw !== '' && Number.isFinite(Number(costRaw)) ? Number(costRaw) : '';
         return {
           productId,
-          sku: line.sku || fromCatalog?.sku || '—',
+          sku: resolveCustomerReturnLineSku(line, fromCatalog),
           name: line.name || fromCatalog?.name || `Товар #${productId}`,
           quantity: Math.max(1, Number(line.quantity) || 1),
           cost,
@@ -2144,6 +2154,26 @@ export function WarehouseOperations({
     scrollToCustomerReturnAccept,
     lookupByBarcodeOrSkuThenCustomerReturnOne,
   ]);
+
+  // Если список заполнили до загрузки products — дотянуть артикулы из каталога.
+  useEffect(() => {
+    if (mode !== MODE_RETURN_CUSTOMER || !Array.isArray(products) || products.length === 0) return undefined;
+    setCustomerReturnList((prev) => {
+      if (!prev.length) return prev;
+      let changed = false;
+      const next = prev.map((item) => {
+        const sku = String(item.sku ?? '').trim();
+        if (sku && sku !== '—') return item;
+        const fromCatalog = products.find((p) => String(p.id) === String(item.productId));
+        const resolved = resolveCustomerReturnLineSku(item, fromCatalog);
+        if (resolved === item.sku) return item;
+        changed = true;
+        return { ...item, sku: resolved };
+      });
+      return changed ? next : prev;
+    });
+    return undefined;
+  }, [mode, products]);
 
   const handleCustomerReturnFromList = () => {
     if (!customerReturnWarehouseId) {

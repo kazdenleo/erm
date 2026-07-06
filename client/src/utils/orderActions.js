@@ -56,25 +56,39 @@ export function resolveManualOrderReturnNavigationState({
   if (!row) return null;
   return buildManualOrderReturnNavigationState(row, { organizationId });
 }
+/** Артикул из строки заказа (как в списке заказов). */
+export function orderRowCatalogSku(o) {
+  if (!o) return '';
+  const v =
+    o.productSku ??
+    o.product_sku ??
+    o.offerId ??
+    o.offer_id ??
+    o.marketplaceSku ??
+    o.marketplace_sku ??
+    (o.sku != null && o.sku !== '' ? String(o.sku) : null);
+  const s = v != null ? String(v).trim() : '';
+  return s !== '' && s !== '—' ? s : '';
+}
+
 export function customerReturnLinesFromOrderRows(orders) {
   const byProduct = new Map();
   for (const o of orders || []) {
     const productId = Number(o.productId ?? o.product_id);
     if (!Number.isFinite(productId) || productId < 1) continue;
     const qty = Math.max(1, Number(o.quantity) || 1);
-    const sku = String(
-      o.offerId ?? o.offer_id ?? o.marketplaceSku ?? o.marketplace_sku ?? o.product_sku ?? o.sku ?? ''
-    ).trim();
+    const sku = orderRowCatalogSku(o);
     const name = String(o.productName ?? o.product_name ?? o.name ?? '').trim();
     const prev = byProduct.get(productId);
     if (prev) {
       prev.quantity += qty;
+      if (!prev.sku && sku) prev.sku = sku;
       continue;
     }
     byProduct.set(productId, {
       productId,
       quantity: qty,
-      sku: sku || '—',
+      sku: sku || '',
       name: name || `Товар #${productId}`,
       cost: '',
     });

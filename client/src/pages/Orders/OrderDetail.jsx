@@ -25,7 +25,6 @@ import {
   orderCanShowCancel,
   orderDeleteConfirmMessage,
   manualOrderCanAcceptWarehouseReturn,
-  isManualMarketplaceOrder,
   resolveManualOrderReturnNavigationState,
 } from '../../utils/orderActions.js';
 import './OrderDetail.css';
