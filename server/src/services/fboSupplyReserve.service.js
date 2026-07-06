@@ -51,7 +51,7 @@ function normalizeWarehouseId(v) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** Склады-источники для FBO: только склад списания FBO из настроек аккаунта. */
+/** Склады-источники для FBO: склад списания FBO + основной склад заказов (где лежит физический остаток). */
 async function getFboSourceWarehouseIds(profileId) {
   const pid = normalizeProfileId(profileId);
   if (pid == null) return [];
@@ -60,14 +60,50 @@ async function getFboSourceWarehouseIds(profileId) {
     return fboSourceWarehousesCache.get(cacheKey);
   }
   const r = await query(
-    `SELECT fbo_deduction_warehouse_id FROM profiles WHERE id = $1`,
+    `SELECT fbo_deduction_warehouse_id, manual_orders_warehouse_id
+     FROM profiles WHERE id = $1`,
     [pid]
   );
   const row = r.rows?.[0];
-  const n = normalizeWarehouseId(row?.fbo_deduction_warehouse_id);
-  const ids = n != null ? [n] : [];
-  fboSourceWarehousesCache.set(cacheKey, ids);
-  return ids;
+  const ids = [];
+  const push = (v) => {
+    const n = normalizeWarehouseId(v);
+    if (n != null && !ids.includes(n)) ids.push(n);
+  };
+  push(row?.fbo_deduction_warehouse_id);
+  push(row?.manual_orders_warehouse_id);
+
+  if (ids.length > 0) {
+    const valid = await query(
+      `SELECT id FROM warehouses
+       WHERE profile_id = $1 AND type = 'warehouse' AND supplier_id IS NULL
+         AND id = ANY($2::bigint[])`,
+      [pid, ids]
+    );
+    const allowed = new Set((valid.rows || []).map((w) => Number(w.id)));
+    const filtered = ids.filter((id) => allowed.has(id));
+    fboSourceWarehousesCache.set(cacheKey, filtered);
+    return filtered;
+  }
+
+  const wr = await query(
+    `SELECT id FROM warehouses
+     WHERE profile_id = $1 AND type = 'warehouse' AND supplier_id IS NULL
+     ORDER BY id ASC LIMIT 1`,
+    [pid]
+  );
+  push(wr.rows?.[0]?.id);
+  const result = ids.filter((id) => id != null);
+  fboSourceWarehousesCache.set(cacheKey, result);
+  return result;
+}
+
+export function clearFboSourceWarehousesCache(profileId = null) {
+  if (profileId == null) {
+    fboSourceWarehousesCache.clear();
+    return;
+  }
+  fboSourceWarehousesCache.delete(String(profileId));
 }
 
 function normalizeWarehouseIdList(warehouseId) {
