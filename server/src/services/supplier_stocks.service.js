@@ -6,11 +6,29 @@
 import repositoryFactory from '../config/repository-factory.js';
 import { canonicalSupplierApiCode } from '../repositories/suppliers.repository.pg.js';
 
-async function resolveSupplierByCode(suppliersRepo, supplierRef) {
+function normalizePersistCtx(ctx = {}) {
+  const supplierIdRaw = ctx.supplierId ?? ctx.supplier_id;
+  const profileIdRaw = ctx.profileId ?? ctx.profile_id;
+  const supplierId =
+    supplierIdRaw != null && supplierIdRaw !== '' && !Number.isNaN(Number(supplierIdRaw))
+      ? Number(supplierIdRaw)
+      : null;
+  const profileId =
+    profileIdRaw != null && profileIdRaw !== '' && !Number.isNaN(Number(profileIdRaw))
+      ? Number(profileIdRaw)
+      : null;
+  return { supplierId, profileId };
+}
+
+async function resolveSupplier(suppliersRepo, supplierRef, ctx = {}) {
+  const { supplierId, profileId } = normalizePersistCtx(ctx);
+  if (supplierId != null && typeof suppliersRepo.findById === 'function') {
+    return suppliersRepo.findById(supplierId, profileId);
+  }
   const code = canonicalSupplierApiCode(supplierRef);
   if (!code) return null;
   if (typeof suppliersRepo.findByCode === 'function') {
-    return suppliersRepo.findByCode(code);
+    return suppliersRepo.findByCode(code, profileId);
   }
   if (typeof suppliersRepo.findByName === 'function') {
     return suppliersRepo.findByName(supplierRef);
@@ -22,21 +40,22 @@ class SupplierStocksService {
   /**
    * Получить остатки по поставщику и SKU
    */
-  async getBySupplierAndProduct(supplierName, sku) {
+  async getBySupplierAndProduct(supplierName, sku, ctx = {}) {
     const repository = repositoryFactory.getRepository('supplier_stocks');
     if (!repository) {
       throw new Error('Supplier stocks repository not available');
     }
 
+    const { profileId } = normalizePersistCtx(ctx);
     const suppliersRepo = repositoryFactory.getRepository('suppliers');
-    const supplier = await resolveSupplierByCode(suppliersRepo, supplierName);
+    const supplier = await resolveSupplier(suppliersRepo, supplierName, ctx);
     if (!supplier) {
       return null;
     }
 
     // Получаем product_id по SKU
     const productsRepo = repositoryFactory.getRepository('products');
-    const product = await productsRepo.findBySku(sku);
+    const product = await productsRepo.findBySku(sku, { profileId });
     if (!product) {
       return null;
     }
@@ -47,21 +66,22 @@ class SupplierStocksService {
   /**
    * Создать или обновить остатки
    */
-  async upsert(supplierName, sku, data) {
+  async upsert(supplierName, sku, data, ctx = {}) {
     const repository = repositoryFactory.getRepository('supplier_stocks');
     if (!repository) {
       throw new Error('Supplier stocks repository not available');
     }
 
+    const { profileId } = normalizePersistCtx(ctx);
     const suppliersRepo = repositoryFactory.getRepository('suppliers');
-    const supplier = await resolveSupplierByCode(suppliersRepo, supplierName);
+    const supplier = await resolveSupplier(suppliersRepo, supplierName, ctx);
     if (!supplier) {
       throw new Error(`Supplier ${supplierName} not found`);
     }
 
     // Получаем product_id по SKU
     const productsRepo = repositoryFactory.getRepository('products');
-    const product = await productsRepo.findBySku(sku);
+    const product = await productsRepo.findBySku(sku, { profileId });
     if (!product) {
       throw new Error(`Product with SKU ${sku} not found`);
     }
@@ -95,14 +115,14 @@ class SupplierStocksService {
   /**
    * Получить все остатки по поставщику
    */
-  async getBySupplier(supplierName) {
+  async getBySupplier(supplierName, ctx = {}) {
     const repository = repositoryFactory.getRepository('supplier_stocks');
     if (!repository) {
       throw new Error('Supplier stocks repository not available');
     }
 
     const suppliersRepo = repositoryFactory.getRepository('suppliers');
-    const supplier = await resolveSupplierByCode(suppliersRepo, supplierName);
+    const supplier = await resolveSupplier(suppliersRepo, supplierName, ctx);
     if (!supplier) {
       return [];
     }

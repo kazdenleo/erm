@@ -10,11 +10,14 @@ class SupplierStocksController {
   async getStock(req, res, next) {
     try {
       const { supplier, sku, brand, cities } = req.query;
+      const tid = tenantListProfileId(req);
+      const profileId = tid != null && tid !== TENANT_LIST_EMPTY ? tid : null;
       const result = await supplierStocksService.getSupplierStock({
         supplier,
         sku,
         cities,
-        brand
+        brand,
+        profileId
       });
       // Если данных нет (null), возвращаем пустой объект вместо ошибки
       if (result === null) {

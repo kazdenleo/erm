@@ -1218,9 +1218,10 @@ class ProductsService {
     const suppressMarketplacePush = opts.suppressMarketplacePush === true;
 
     try {
-      // Получаем список активных поставщиков
+      // Получаем список активных поставщиков аккаунта товара
+      const profileId = product.profile_id ?? product.profileId ?? null;
       const suppliersService = await import('./suppliers.service.js');
-      const suppliers = await suppliersService.default.getAll();
+      const suppliers = await suppliersService.default.getAll({ profileId });
       const activeSuppliers = suppliers.filter(s => s.is_active !== false && s.code);
       
       if (activeSuppliers.length === 0) {
@@ -1243,7 +1244,9 @@ class ProductsService {
             supplier: supplierCode,
             sku: product.sku,
             brand: product.brand || product.brand_name,
-            forceRefresh: true // Принудительно обновляем из API при ручном обновлении остатков
+            forceRefresh: true, // Принудительно обновляем из API при ручном обновлении остатков
+            supplierId: supplier.id,
+            profileId
           });
           
           if (stockData) {

@@ -23,7 +23,15 @@ class SupplierStocksService {
    * 4) при отсутствии кэша идёт в API Mikado / Moskvorechie
    * 5) опционально фильтрует по списку городов/складов
    */
-  async getSupplierStock({ supplier, sku, brand, cities, forceRefresh = false }) {
+  async getSupplierStock({
+    supplier,
+    sku,
+    brand,
+    cities,
+    forceRefresh = false,
+    supplierId = null,
+    profileId = null
+  }) {
     if (!supplier) {
       const err = new Error('Поставщик не указан');
       err.statusCode = 400;
@@ -36,6 +44,10 @@ class SupplierStocksService {
     }
 
     const apiSupplierCode = canonicalSupplierApiCode(supplier);
+    const persistCtx = {
+      supplierId: supplierId ?? null,
+      profileId: profileId ?? null
+    };
 
     // Получаем конфигурацию поставщика
     // Сначала пробуем получить из таблицы suppliers (новый способ)
@@ -43,7 +55,14 @@ class SupplierStocksService {
     if (repositoryFactory.isUsingPostgreSQL()) {
       try {
         const suppliersService = await import('./suppliers.service.js');
-        const supplierData = await suppliersService.default.getByCode(supplier);
+        const supplierData =
+          persistCtx.supplierId != null
+            ? await suppliersService.default.getById(persistCtx.supplierId, {
+                profileId: persistCtx.profileId
+              })
+            : await suppliersService.default.getByCode(supplier, {
+                profileId: persistCtx.profileId
+              });
         logger.info(`[Supplier Stocks] Supplier data from DB for ${supplier} (api: ${apiSupplierCode}): ${JSON.stringify(supplierData, null, 2)}`);
         if (supplierData && supplierData.apiConfig) {
           supplierConfig = supplierData.apiConfig;
@@ -57,7 +76,9 @@ class SupplierStocksService {
     // Если не нашли в suppliers или нет учётных данных — integrations (+ файл data/*.json)
     if (!supplierConfig || (!supplierConfig.user_id && !supplierConfig.password && !supplierConfig.apiKey)) {
       try {
-        const integrationsConfig = await integrationsService.getSupplierConfig(apiSupplierCode);
+        const integrationsConfig = await integrationsService.getSupplierConfig(apiSupplierCode, {
+          profileId: persistCtx.profileId
+        });
         logger.info(`[Supplier Stocks] Config from integrations for ${apiSupplierCode}: ${JSON.stringify(integrationsConfig, null, 2)}`);
         // Объединяем конфигурации: сначала из suppliers, потом из integrations
         supplierConfig = {
@@ -99,7 +120,11 @@ class SupplierStocksService {
     if (!stockData && repositoryFactory.isUsingPostgreSQL()) {
       try {
         const supplierStocksService = await import('./supplier_stocks.service.js');
-        const stockRecord = await supplierStocksService.default.getBySupplierAndProduct(apiSupplierCode, sku);
+        const stockRecord = await supplierStocksService.default.getBySupplierAndProduct(
+          apiSupplierCode,
+          sku,
+          persistCtx
+        );
         if (stockRecord && stockRecord.cached_at) {
           // Проверяем, не устарел ли кэш (24 часа)
           const cacheAge = Date.now() - new Date(stockRecord.cached_at).getTime();
@@ -172,7 +197,7 @@ class SupplierStocksService {
 
       // Если данных нет — обнуляем кэш (иначе остаётся устаревший stock>0 до 24 ч)
       if (!stockData) {
-        await this._markSupplierStockEmpty(apiSupplierCode, supplier, sku);
+        await this._markSupplierStockEmpty(apiSupplierCode, supplier, sku, persistCtx);
         return null;
       }
 
@@ -258,7 +283,7 @@ class SupplierStocksService {
         logger.warn(`[Supplier Stocks] Available warehouses from API: ${stockData.warehouses.map(w => w.city || w.name).join(', ')}`);
         logger.warn(`[Supplier Stocks] ⚠️ WARNING: No matches found. Returning null (strict filtering).`);
         logger.info(`[Supplier Stocks] 💡 Tip: Update supplier config with correct warehouse names from the list above.`);
-        await this._markSupplierStockEmpty(apiSupplierCode, supplier, sku);
+        await this._markSupplierStockEmpty(apiSupplierCode, supplier, sku, persistCtx);
         return null;
       }
 
@@ -293,7 +318,7 @@ class SupplierStocksService {
           price: stockData.price,
           source: 'api',
           warehouses: stockData.warehouses || null
-        });
+        }, persistCtx);
         return {
           supplier,
           sku,
@@ -315,7 +340,7 @@ class SupplierStocksService {
         price: stockData.price,
         source: 'api',
         warehouses: stockData.warehouses || null
-      });
+      }, persistCtx);
       return {
         supplier,
         sku,
@@ -329,7 +354,7 @@ class SupplierStocksService {
       };
     }
 
-    await this._persistSupplierStockToCaches(apiSupplierCode, supplier, sku, stockData);
+    await this._persistSupplierStockToCaches(apiSupplierCode, supplier, sku, stockData, persistCtx);
 
     const result = {
       supplier,
@@ -349,7 +374,7 @@ class SupplierStocksService {
   }
 
   /** Обнулить кэш поставщика, когда API не вернул остаток (товара нет у поставщика). */
-  async _markSupplierStockEmpty(apiSupplierCode, supplier, sku) {
+  async _markSupplierStockEmpty(apiSupplierCode, supplier, sku, persistCtx = {}) {
     const empty = {
       stock: 0,
       stockName: `Склад ${supplier}`,
@@ -367,12 +392,12 @@ class SupplierStocksService {
     if (repositoryFactory.isUsingPostgreSQL()) {
       try {
         const supplierStocksPg = await import('./supplier_stocks.service.js');
-        const product = await productsService.getBySku(sku);
+        const product = await productsService.getBySku(sku, { profileId: persistCtx.profileId });
         if (product) {
           await supplierStocksPg.default.upsert(apiSupplierCode, sku, {
             ...empty,
             cached_at: new Date()
-          });
+          }, persistCtx);
         }
       } catch (error) {
         logger.error(`[Supplier Stocks] PostgreSQL zero-stock save for ${supplier}:${sku}:`, error.message);
@@ -392,7 +417,7 @@ class SupplierStocksService {
   }
 
   /** Сохранить остаток в PostgreSQL и файловый кэш (после фильтрации по складам). */
-  async _persistSupplierStockToCaches(apiSupplierCode, supplier, sku, stockData) {
+  async _persistSupplierStockToCaches(apiSupplierCode, supplier, sku, stockData, persistCtx = {}) {
     if (!stockData) return;
     try {
       const redisKey = `supplier_stock:${apiSupplierCode}:${sku}`;
@@ -403,7 +428,7 @@ class SupplierStocksService {
     if (repositoryFactory.isUsingPostgreSQL()) {
       try {
         const supplierStocksPg = await import('./supplier_stocks.service.js');
-        const product = await productsService.getBySku(sku);
+        const product = await productsService.getBySku(sku, { profileId: persistCtx.profileId });
         if (product) {
           await supplierStocksPg.default.upsert(apiSupplierCode, sku, {
             stock: stockData.stock != null ? Number(stockData.stock) || 0 : 0,
@@ -416,7 +441,7 @@ class SupplierStocksService {
             source: stockData.source || 'api',
             warehouses: stockData.warehouses || null,
             cached_at: new Date()
-          });
+          }, persistCtx);
         }
       } catch (error) {
         logger.error(`[Supplier Stocks] PostgreSQL save error for ${supplier}:${sku}:`, error.message);
@@ -479,7 +504,8 @@ class SupplierStocksService {
             supplier: code,
             sku: product.sku,
             brand: product.brand,
-            forceRefresh: true
+            forceRefresh: true,
+            profileId: product.profile_id ?? product.profileId ?? null
           });
           if (data && !data.excluded && (data.stock || 0) > 0) {
             results[code].success++;
