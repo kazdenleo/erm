@@ -502,3 +502,34 @@ export function computeProcurementDates(
     supplierWarehouseName: resolvedWarehouseName,
   };
 }
+
+/**
+ * Плановая дата прихода на склад по окнам приёма заказа (time / arrivalDay в api_config)
+ * и delivery_days из supplier_stocks. Для сравнения поставщиков при равном сроке доставки.
+ */
+export function plannedDeliveryYmdForSupplier(
+  apiConfig,
+  {
+    now = new Date(),
+    deliveryDays = 0,
+    warehouseWeekendDays = null,
+    supplierCode = null,
+    supplierWarehouseName = null,
+  } = {}
+) {
+  try {
+    const dates = computeProcurementDates(
+      apiConfig,
+      now,
+      deliveryDays,
+      warehouseWeekendDays,
+      supplierCode,
+      supplierWarehouseName
+    );
+    const ymd = String(dates?.plannedDeliveryDate || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd;
+  } catch {
+    /* ignore */
+  }
+  return '9999-12-31';
+}

@@ -13,6 +13,7 @@ import { autoOrderSettingsFromApiConfig } from '../utils/supplierAutoOrderSettin
 import {
   autoArrivalNoteText,
   computeProcurementDates,
+  plannedDeliveryYmdForSupplier,
   resolveProcurementArrivalBucketFromApiConfig,
 } from '../utils/supplierProcurementArrival.js';
 import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
@@ -286,7 +287,7 @@ async function rankSupplierCandidates(
   productId,
   suppliers,
   qty,
-  { profileRow } = {}
+  { profileRow, warehouseWeekendDays = null, now = new Date() } = {}
 ) {
   const scoped = await suppliersForProductBinding(productId, suppliers, profileRow);
   const ids = scoped.map((s) => s.id);
@@ -329,15 +330,30 @@ async function rankSupplierCandidates(
     });
   }
   out.sort((a, b) => {
-    if (a.isPriority !== b.isPriority) return a.isPriority ? -1 : 1;
     const pa = a.price != null ? a.price : Infinity;
     const pb = b.price != null ? b.price : Infinity;
     if (pa !== pb) return pa - pb;
     if (a.deliveryDays !== b.deliveryDays) return a.deliveryDays - b.deliveryDays;
+    if (a.deliveryDays === b.deliveryDays) {
+      const arrivalA = plannedDeliveryYmdForSupplier(a.apiConfig, {
+        now,
+        deliveryDays: a.deliveryDays,
+        warehouseWeekendDays,
+        supplierCode: a.code,
+      });
+      const arrivalB = plannedDeliveryYmdForSupplier(b.apiConfig, {
+        now,
+        deliveryDays: b.deliveryDays,
+        warehouseWeekendDays,
+        supplierCode: b.code,
+      });
+      if (arrivalA !== arrivalB) return arrivalA.localeCompare(arrivalB);
+    }
+    if (a.isPriority !== b.isPriority) return a.isPriority ? -1 : 1;
     const sa = a.stock ?? 0;
     const sb = b.stock ?? 0;
     if (sa !== sb) return sb - sa;
-    return (a.warehousePriority || 999) - (b.warehousePriority || 999);
+    return 0;
   });
   return out;
 }
@@ -700,6 +716,8 @@ async function pickSupplierForDeficit(
 ) {
   const candidates = await rankSupplierCandidates(productId, suppliers, qty, {
     profileRow,
+    warehouseWeekendDays,
+    now,
   });
   for (const cand of candidates) {
     const price = cand.price != null && cand.price > 0 ? cand.price : 0;
@@ -1303,11 +1321,12 @@ class OrderProcurementPlannerService {
       if (!includeAll && coverage.deficit <= 0) continue;
 
       const suppliers = await loadSuppliersForWarehouse(pid, orderWarehouseId);
+      const warehouseWeekendDays = await loadWarehouseWeekendDays(orderWarehouseId, pid);
       const suggestedSuppliers = await rankSupplierCandidates(
         productId,
         suppliers,
         coverage.deficit || 1,
-        { profileRow }
+        { profileRow, warehouseWeekendDays, now: new Date() }
       );
 
       const boundSupplierId =
