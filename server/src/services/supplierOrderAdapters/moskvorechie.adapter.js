@@ -100,10 +100,14 @@ function apiKeyFromConfig(config) {
   return config?.apiKey || config?.v1ApiKey || config?.v1_api_key || '';
 }
 
-/** Ключ «Клиентский API» v1 (UUID с дефисами), не portal.api. */
+/** Ключ «Клиентский API» v1: prefix:secret или UUID с дефисами; не portal.api. */
 export function looksLikeMoskvorechieV1ApiKey(key) {
   const s = String(key || '').trim();
   if (!s || s.length < 20) return false;
+  if (s.includes(':')) {
+    const [prefix, secret] = s.split(':', 2);
+    return Boolean(prefix && secret && prefix.length >= 4 && secret.length >= 16);
+  }
   return s.includes('-') && /^[a-zA-Z0-9_-]+$/.test(s);
 }
 

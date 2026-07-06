@@ -1521,7 +1521,7 @@ function SuppliersTab({ configs, onSave, onTest }) {
                 const v = e.target.value;
                 setFormData({ ...formData, apiKey: v, v1ApiKey: v });
               }}
-              placeholder="Ключ из раздела «Клиентский API» на портале"
+              placeholder="Ключ из «Доступы API» (формат prefix:secret)"
             />
             <small style={{ color: 'var(--muted)', fontSize: '12px', marginTop: '4px', display: 'block' }}>
               api.moskvorechie.ru/v1 — заказы (POST /cart/add, POST /orders). Agreement и Filial подтянутся из GET /profile.

@@ -8,7 +8,7 @@ import {
   warehouseNameMatches,
   xmlTag,
 } from '../src/services/supplierOrderAdapters/shared.js';
-import { parseMoskvorechieOrderResponse, portalCredentialsFromConfig, shouldUseMoskvorechieV1OrderApi } from '../src/services/supplierOrderAdapters/moskvorechie.adapter.js';
+import { parseMoskvorechieOrderResponse, portalCredentialsFromConfig, shouldUseMoskvorechieV1OrderApi, looksLikeMoskvorechieV1ApiKey } from '../src/services/supplierOrderAdapters/moskvorechie.adapter.js';
 import {
   parseMoskvorechieV1CartAddResponse,
   parseMoskvorechieV1OrderResponse,
@@ -97,6 +97,10 @@ describe('moskvorechie.adapter shouldUseMoskvorechieV1OrderApi', () => {
 });
 
 describe('moskvorechie.adapter portalCredentialsFromConfig', () => {
+  test('recognizes v1 key format prefix:secret', () => {
+    expect(looksLikeMoskvorechieV1ApiKey('hcX4A1oMrNn6:TWtp6s3ZwBegcgk5JPJzcsTeRrDbEGFV')).toBe(true);
+  });
+
   test('prefers portalApiKey over v1 apiKey', () => {
     const c = portalCredentialsFromConfig({ apiKey: 'v1', portalApiKey: 'portal', user_id: 'u' });
     expect(c.apiKey).toBe('portal');
