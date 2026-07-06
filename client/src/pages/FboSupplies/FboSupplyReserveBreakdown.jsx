@@ -37,15 +37,15 @@ export function FboSupplyReserveBreakdown({
   const parts = [];
   if (stock > 0) {
     parts.push(
-      <span key="stock" className="fbo-reserve-breakdown__part" title="С наличия на складах FBO и основном">
+      <span key="stock" className="fbo-reserve-breakdown__part" title="С наличия на складе списания остатков">
         нал: {stock}
       </span>
     );
   } else if (showEmpty) {
     const hint =
       onHand != null && onHand > 0
-        ? `На складах ${onHand} шт., но не покрывает эту строку (занято заказами или более ранними поставками)`
-        : 'Свободного наличия на складах FBO и основном нет';
+        ? `На складе списания ${onHand} шт., но не покрывает эту строку (занято заказами или более ранними поставками)`
+        : 'Нет свободного наличия на складе списания остатков';
     parts.push(
       <span key="stock" className="fbo-reserve-breakdown__part fbo-reserve-breakdown__part--empty" title={hint}>
         нал: 0
