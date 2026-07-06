@@ -161,10 +161,12 @@ async function collectDistinctMappedCategoryIds() {
       WHERE uc.marketplace_mappings->>'ozon' IS NOT NULL
         AND TRIM(uc.marketplace_mappings->>'ozon') <> ''
       UNION
-      SELECT cm.category_id AS val
+      SELECT c.marketplace_category_id AS val
       FROM category_mappings cm
+      JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ozon'
       WHERE cm.marketplace = 'ozon'
-        AND TRIM(cm.category_id) <> ''
+        AND c.marketplace_category_id IS NOT NULL
+        AND TRIM(c.marketplace_category_id) <> ''
     ) t
     WHERE val IS NOT NULL AND TRIM(val) <> ''
     `
@@ -183,10 +185,12 @@ async function collectDistinctMappedCategoryIds() {
       WHERE uc.marketplace_mappings->>'yandex' IS NOT NULL
         AND TRIM(uc.marketplace_mappings->>'yandex') <> ''
       UNION
-      SELECT cm.category_id AS val
+      SELECT c.marketplace_category_id AS val
       FROM category_mappings cm
+      JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ym'
       WHERE cm.marketplace = 'ym'
-        AND TRIM(cm.category_id) <> ''
+        AND c.marketplace_category_id IS NOT NULL
+        AND TRIM(c.marketplace_category_id) <> ''
     ) t
     WHERE val IS NOT NULL AND TRIM(val) <> ''
     `
@@ -248,12 +252,13 @@ async function findOzonSampleViaCategoryMappings(ozonCategoryId) {
       p.id AS product_id,
       TRIM(COALESCE(ps.sku, p.sku)) AS offer_id
     FROM category_mappings cm
+    JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ozon'
     JOIN products p ON p.id = cm.product_id
     LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
     WHERE cm.marketplace = 'ozon'
       AND (
-        cm.category_id = ANY($1::text[])
-        OR REPLACE(cm.category_id, 'ozon_', '') = ANY($1::text[])
+        c.marketplace_category_id = ANY($1::text[])
+        OR REPLACE(c.marketplace_category_id, 'ozon_', '') = ANY($1::text[])
       )
       AND TRIM(COALESCE(ps.sku, p.sku, '')) <> ''
     ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
@@ -421,10 +426,11 @@ async function findYmSampleViaCategoryMappings(ymCategoryId) {
       p.id AS product_id,
       TRIM(COALESCE(ps.sku, p.sku)) AS offer_id
     FROM category_mappings cm
+    JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ym'
     JOIN products p ON p.id = cm.product_id
     LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ym'
     WHERE cm.marketplace = 'ym'
-      AND CAST(cm.category_id AS TEXT) = $1
+      AND TRIM(c.marketplace_category_id) = $1
       AND TRIM(COALESCE(ps.sku, p.sku, '')) <> ''
     ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
     LIMIT 1
