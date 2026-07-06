@@ -3,9 +3,10 @@
  */
 
 import { query } from '../config/database.js';
-import repositoryFactory from '../config/repository-factory.js';
-import fboSuppliesService from './fboSupplies.service.js';
-import { syncSupplyStatusForPacking } from '../utils/fboSupplyPackingCheck.js';
+import {
+  packingEvalFromItemStats,
+  syncSupplyStatusForPacking,
+} from '../utils/fboSupplyPackingCheck.js';
 import {
   buildWeightExceededMessage,
   enrichCargoWeightLimits,
@@ -95,48 +96,33 @@ function normalizeProfileId(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+const SUPPLY_ITEM_SCAN_SELECT = `i.id, i.product_id, i.quantity, i.barcode, i.sku, i.name,
+            i.placement_zone, i.ozon_tags,
+            p.name AS product_name`;
+
 async function assertSupplyAccess(supplyId, profileId) {
-  const supply = await fboSuppliesService.getById(supplyId, { profileId });
-  return supply;
-}
-
-async function resolveProductIdByBarcode(barcode, profileId) {
-  const code = normalizeBarcode(barcode);
-  if (!code) return null;
   const pid = normalizeProfileId(profileId);
-
-  if (repositoryFactory.isUsingPostgreSQL()) {
-    const repo = repositoryFactory.getProductsRepository();
-    if (typeof repo?.findByBarcode === 'function') {
-      const product = await repo.findByBarcode(code);
-      if (product?.id != null) {
-        if (pid != null && product.profile_id != null && Number(product.profile_id) !== pid) {
-          return null;
-        }
-        return Number(product.id);
-      }
-    }
-  }
-
   const r = await query(
-    `SELECT p.id
-     FROM products p
-     WHERE ($1::bigint IS NULL OR p.profile_id = $1)
-       AND (
-         EXISTS (
-           SELECT 1 FROM barcodes b
-           WHERE b.product_id = p.id AND TRIM(b.barcode) = $2
-         )
-         OR TRIM(COALESCE(p.sku, '')) = $2
-         OR EXISTS (
-           SELECT 1 FROM product_skus ps
-           WHERE ps.product_id = p.id AND TRIM(ps.sku) = $2
-         )
-       )
+    `SELECT id, profile_id, organization_id, marketplace, status, deduct_stock
+     FROM fbo_supplies
+     WHERE id = $1 AND ($2::bigint IS NULL OR profile_id = $2)
      LIMIT 1`,
-    [pid, code]
+    [supplyId, pid]
   );
-  return r.rows?.[0]?.id != null ? Number(r.rows[0].id) : null;
+  if (!r.rows?.length) {
+    const err = new Error('Поставка FBO не найдена');
+    err.statusCode = 404;
+    throw err;
+  }
+  const row = r.rows[0];
+  return {
+    id: row.id,
+    profileId: row.profile_id,
+    organizationId: row.organization_id,
+    marketplace: row.marketplace,
+    status: row.status,
+    deductStock: row.deduct_stock,
+  };
 }
 
 function isOzonSupply(supply) {
@@ -178,26 +164,48 @@ async function assertCargoPlacementZoneCompatible(cargoUnitId, supplyItem, suppl
 async function findSupplyItemForScan(supplyId, barcode, profileId) {
   const code = normalizeBarcode(barcode);
   if (!code) return null;
-  const itemsR = await query(
-    `SELECT i.id, i.product_id, i.quantity, i.barcode, i.sku, i.name,
-            i.placement_zone, i.ozon_tags,
-            p.name AS product_name
+
+  const directR = await query(
+    `SELECT ${SUPPLY_ITEM_SCAN_SELECT}
      FROM fbo_supply_items i
      LEFT JOIN products p ON p.id = i.product_id
-     WHERE i.fbo_supply_id = $1`,
-    [supplyId]
+     WHERE i.fbo_supply_id = $1
+       AND (
+         TRIM(COALESCE(i.barcode, '')) = $2
+         OR TRIM(COALESCE(i.sku, '')) = $2
+       )
+     LIMIT 1`,
+    [supplyId, code]
   );
-  const items = itemsR.rows || [];
-  for (const row of items) {
-    if (row.barcode && normalizeBarcode(row.barcode) === code) return row;
-    if (row.sku && normalizeBarcode(row.sku) === code) return row;
+  if (directR.rows?.[0]) return directR.rows[0];
+
+  const pid = normalizeProfileId(profileId);
+  const params = [supplyId, code];
+  let profileFilter = '';
+  if (pid != null) {
+    params.push(pid);
+    profileFilter = ` AND p.profile_id = $${params.length}`;
   }
-  const productId = await resolveProductIdByBarcode(code, profileId);
-  if (productId != null) {
-    const match = items.find((row) => row.product_id != null && Number(row.product_id) === productId);
-    if (match) return match;
-  }
-  return null;
+  const byProductR = await query(
+    `SELECT ${SUPPLY_ITEM_SCAN_SELECT}
+     FROM fbo_supply_items i
+     JOIN products p ON p.id = i.product_id
+     WHERE i.fbo_supply_id = $1${profileFilter}
+       AND (
+         TRIM(COALESCE(p.sku, '')) = $2
+         OR EXISTS (
+           SELECT 1 FROM barcodes b
+           WHERE b.product_id = p.id AND TRIM(b.barcode) = $2
+         )
+         OR EXISTS (
+           SELECT 1 FROM product_skus ps
+           WHERE ps.product_id = p.id AND TRIM(ps.sku) = $2
+         )
+       )
+     LIMIT 1`,
+    params
+  );
+  return byProductR.rows?.[0] || null;
 }
 
 function normalizeCargoKind(v) {
@@ -221,7 +229,13 @@ function mapCargoRow(row) {
 }
 
 async function withPackingStatusSync(supplyId, packing) {
-  const sync = await syncSupplyStatusForPacking(supplyId);
+  const packingEval =
+    packing?.itemStats?.length > 0
+      ? packingEvalFromItemStats(packing.itemStats)
+      : null;
+  const sync = await syncSupplyStatusForPacking(supplyId, {
+    packingEval: packingEval ?? undefined,
+  });
   return {
     packing,
     supplyStatus: sync.status,
@@ -231,9 +245,10 @@ async function withPackingStatusSync(supplyId, packing) {
 }
 
 class FboSuppliesPackingService {
-  async getPackingState(supplyId, { profileId } = {}) {
-    const supply = await assertSupplyAccess(supplyId, profileId);
-    const weightLimits = await loadFboWeightLimitsForSupply(supply, { profileId });
+  async getPackingState(supplyId, { profileId, supply: supplyIn, weightLimits: weightLimitsIn } = {}) {
+    const supply = supplyIn || (await assertSupplyAccess(supplyId, profileId));
+    const weightLimits =
+      weightLimitsIn ?? (await loadFboWeightLimitsForSupply(supply, { profileId }));
 
     const cargoR = await query(
       `SELECT c.id, c.fbo_supply_id, c.barcode, c.cargo_kind, c.pallet_tare_weight_kg, c.created_at
@@ -247,11 +262,7 @@ class FboSuppliesPackingService {
       `SELECT cc.id, cc.cargo_unit_id, cc.fbo_supply_item_id, cc.quantity,
               cc.placement_zone, cc.expires_at,
               i.product_id, i.sku, i.barcode AS item_barcode, i.quantity AS planned_qty,
-              TRIM(COALESCE(
-                i.barcode,
-                fb.barcode,
-                ''
-              )) AS product_barcode,
+              TRIM(COALESCE(i.barcode, '')) AS product_barcode,
               i.placement_zone AS item_placement_zone, i.ozon_tags AS item_ozon_tags,
               COALESCE(p.name, i.name) AS product_name,
               p.weight AS product_weight,
@@ -263,13 +274,6 @@ class FboSuppliesPackingService {
        JOIN fbo_supply_cargo_units cu ON cu.id = cc.cargo_unit_id
        JOIN fbo_supply_items i ON i.id = cc.fbo_supply_item_id
        LEFT JOIN products p ON p.id = i.product_id
-       LEFT JOIN LATERAL (
-         SELECT b.barcode
-         FROM barcodes b
-         WHERE b.product_id = p.id
-         ORDER BY b.id
-         LIMIT 1
-       ) fb ON p.id IS NOT NULL
        WHERE cu.fbo_supply_id = $1
        ORDER BY cc.cargo_unit_id, cc.id`,
       [supplyId]
@@ -427,7 +431,7 @@ class FboSuppliesPackingService {
     return { packing };
   }
 
-  async _createCargoUnit(supplyId, code, { profileId, activeId } = {}) {
+  async _createCargoUnit(supplyId, code, { profileId, activeId, supply, weightLimits } = {}) {
     const ins = await query(
       `INSERT INTO fbo_supply_cargo_units (fbo_supply_id, barcode)
        VALUES ($1, $2)
@@ -435,7 +439,7 @@ class FboSuppliesPackingService {
       [supplyId, code]
     );
     const cargo = mapCargoRow(ins.rows[0]);
-    const packing = await this.getPackingState(supplyId, { profileId });
+    const packing = await this.getPackingState(supplyId, { profileId, supply, weightLimits });
     const switched = activeId != null && Number.isFinite(activeId) && activeId > 0;
     return {
       action: 'cargo_created',
@@ -450,6 +454,8 @@ class FboSuppliesPackingService {
 
   async scan(supplyId, { barcode, activeCargoUnitId, scanMode } = {}, { profileId } = {}) {
     const supply = await assertSupplyAccess(supplyId, profileId);
+    const weightLimits = await loadFboWeightLimitsForSupply(supply, { profileId });
+    const packingCtx = { profileId, supply, weightLimits };
     const code = normalizeBarcode(barcode);
     if (!code) {
       const err = new Error('Укажите штрихкод');
@@ -471,7 +477,7 @@ class FboSuppliesPackingService {
 
     if (existingCargoR.rows?.length) {
       const cargo = mapCargoRow(existingCargoR.rows[0]);
-      const packing = await this.getPackingState(supplyId, { profileId });
+      const packing = await this.getPackingState(supplyId, packingCtx);
       return {
         action: 'cargo_selected',
         message: `Грузоместо: ${cargo.barcode}`,
@@ -482,14 +488,14 @@ class FboSuppliesPackingService {
     }
 
     if (mode === 'cargo') {
-      return this._createCargoUnit(supplyId, code, { profileId, activeId });
+      return this._createCargoUnit(supplyId, code, { profileId, activeId, ...packingCtx });
     }
 
     if (!activeId) {
       if (!ozonStrictCargo) {
         const unknownOnWb = await findSupplyItemForScan(supplyId, code, profileId);
         if (!unknownOnWb) {
-          return this._createCargoUnit(supplyId, code, { profileId, activeId });
+          return this._createCargoUnit(supplyId, code, { profileId, activeId, ...packingCtx });
         }
       }
       const err = new Error(
@@ -526,7 +532,7 @@ class FboSuppliesPackingService {
         [activeId, supplyItem.id]
       );
       const newQty = Number(upsert.rows[0]?.quantity ?? 1);
-      const packing = await this.getPackingState(supplyId, { profileId });
+      const packing = await this.getPackingState(supplyId, packingCtx);
       const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
       const syncMeta = await withPackingStatusSync(supplyId, packing);
       const activeCargo = (packing.cargoUnits || []).find((c) => Number(c.id) === activeId);
@@ -551,7 +557,7 @@ class FboSuppliesPackingService {
     );
     if (activeCargoR.rows?.[0] && normalizeBarcode(activeCargoR.rows[0].barcode) === code) {
       const cargo = mapCargoRow(activeCargoR.rows[0]);
-      const packing = await this.getPackingState(supplyId, { profileId });
+      const packing = await this.getPackingState(supplyId, packingCtx);
       return {
         action: 'cargo_selected',
         message: `Грузоместо уже активно: ${cargo.barcode}`,
@@ -569,14 +575,16 @@ class FboSuppliesPackingService {
       throw err;
     }
 
-    return this._createCargoUnit(supplyId, code, { profileId, activeId });
+    return this._createCargoUnit(supplyId, code, { profileId, activeId, ...packingCtx });
   }
 
   /**
    * Снять 1 шт. товара из активного грузоместа по скану штрихкода.
    */
   async scanRemove(supplyId, { barcode, activeCargoUnitId } = {}, { profileId } = {}) {
-    await assertSupplyAccess(supplyId, profileId);
+    const supply = await assertSupplyAccess(supplyId, profileId);
+    const weightLimits = await loadFboWeightLimitsForSupply(supply, { profileId });
+    const packingCtx = { profileId, supply, weightLimits };
     const code = normalizeBarcode(barcode);
     if (!code) {
       const err = new Error('Укажите штрихкод');
@@ -633,7 +641,7 @@ class FboSuppliesPackingService {
       );
     }
 
-    const packing = await this.getPackingState(supplyId, { profileId });
+    const packing = await this.getPackingState(supplyId, packingCtx);
     const name = supplyItem.product_name || supplyItem.name || supplyItem.sku || 'товар';
     const newQty = Math.max(0, prevQty - 1);
     const syncMeta = await withPackingStatusSync(supplyId, packing);

@@ -473,6 +473,11 @@ export function FboSupplyPacking({
         </div>
       )}
 
+      {scanLoading ? (
+        <div className="alert alert-info" role="status">
+          Сканирование…
+        </div>
+      ) : null}
       {scanError && <div className="alert alert-danger">{scanError}</div>}
       {placementWarning ? (
         <div className="alert alert-warning">{placementWarning}</div>

@@ -59,14 +59,51 @@ export async function evaluateSupplyPacking(supplyId) {
   };
 }
 
+/** Сверка плана/факта из уже посчитанного packing.itemStats (без лишнего запроса в БД). */
+export function packingEvalFromItemStats(itemStats = []) {
+  const discrepancies = [];
+  for (const row of itemStats) {
+    const supplyItemId = Number(row.supplyItemId);
+    if (!Number.isFinite(supplyItemId)) continue;
+    const planned = Number(row.planned) || 0;
+    const packed = Number(row.packed) || 0;
+    if (planned <= 0) {
+      if (packed > 0) {
+        discrepancies.push({
+          supplyItemId,
+          planned,
+          packed,
+          discrepancy: packed - planned,
+        });
+      }
+      continue;
+    }
+    if (packed !== planned) {
+      discrepancies.push({
+        supplyItemId,
+        planned,
+        packed,
+        discrepancy: packed - planned,
+      });
+    }
+  }
+  const hasPlannedQty = itemStats.some((row) => (Number(row.planned) || 0) > 0);
+  return {
+    allMatch: hasPlannedQty && discrepancies.length === 0,
+    hasItems: itemStats.length > 0,
+    hasPlannedQty,
+    discrepancies,
+  };
+}
+
 /**
  * После изменения сборки:
  * — при расхождениях откатываем «Упакован» / «Готов к поставке» → «Новая»;
  * — при полной сборке из «Новая» → «Упакован».
  * @returns {Promise<{ allMatch: boolean, hasItems: boolean, status: string, reverted: boolean, promoted: boolean, discrepancies: Array }>}
  */
-export async function syncSupplyStatusForPacking(supplyId) {
-  const packingEval = await evaluateSupplyPacking(supplyId);
+export async function syncSupplyStatusForPacking(supplyId, { packingEval: precomputed } = {}) {
+  const packingEval = precomputed ?? (await evaluateSupplyPacking(supplyId));
   const { allMatch, hasItems, hasPlannedQty, discrepancies } = packingEval;
   const statusR = await query(`SELECT status FROM fbo_supplies WHERE id = $1 LIMIT 1`, [supplyId]);
   let status = statusR.rows?.[0]?.status || 'new';
