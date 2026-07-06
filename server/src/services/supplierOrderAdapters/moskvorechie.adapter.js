@@ -100,6 +100,21 @@ function apiKeyFromConfig(config) {
   return config?.apiKey || config?.v1ApiKey || config?.v1_api_key || '';
 }
 
+/** Ключ «Клиентский API» v1 (UUID с дефисами), не portal.api. */
+export function looksLikeMoskvorechieV1ApiKey(key) {
+  const s = String(key || '').trim();
+  if (!s || s.length < 20) return false;
+  return s.includes('-') && /^[a-zA-Z0-9_-]+$/.test(s);
+}
+
+/** Длинный opaque-ключ portal.api (остатки), не v1. */
+export function looksLikeMoskvorechiePortalApiKey(key) {
+  const s = String(key || '').trim();
+  if (!s) return false;
+  if (looksLikeMoskvorechieV1ApiKey(s)) return false;
+  return s.length >= 32;
+}
+
 /** Ключ portal.api (проценка, price_by_nr_firm) — отличается от v1 «Клиентский API». */
 export function portalCredentialsFromConfig(config, integrationConfig = {}) {
   const merged = { ...config, ...integrationConfig };
@@ -114,7 +129,7 @@ export function portalCredentialsFromConfig(config, integrationConfig = {}) {
     portalKey ||
     (legacyPassword && legacyPassword !== v1Key ? legacyPassword : '') ||
     (legacyFilePortalKey && legacyFilePortalKey !== v1Key ? legacyFilePortalKey : '');
-  // Один ключ в интеграциях (apiKey = password) — типичная настройка: и v1 заказы, и portal остатки.
+  // Для portal.api: fallback на apiKey (в т.ч. legacy, когда один ключ в apiKey).
   if (!apiKey && v1Key) {
     apiKey = v1Key;
   }

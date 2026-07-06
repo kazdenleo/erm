@@ -18,7 +18,7 @@ function configValue(config, ...keys) {
 
 export function moskvorechieV1Configured(config, integrationConfig = {}) {
   const merged = { ...config, ...integrationConfig };
-  const apiKey = configValue(merged, 'apiKey', 'password', 'v1ApiKey', 'v1_api_key');
+  const apiKey = configValue(merged, 'apiKey', 'v1ApiKey', 'v1_api_key');
   const agreementId = configValue(merged, 'agreementId', 'agreement_id', 'xAgreementId');
   const filialId = configValue(merged, 'filialId', 'filial_id', 'xFilialId');
   return Boolean(apiKey && agreementId && filialId);
@@ -151,7 +151,7 @@ export async function fetchMoskvorechieV1ProfileApiKeyOnly(apiKey) {
 /** Подставляет Agreement/Filial из GET /profile, если в конфиге только API Key. */
 export async function resolveMoskvorechieV1Credentials(config, integrationConfig = {}) {
   const merged = { ...config, ...integrationConfig };
-  const apiKey = configValue(merged, 'apiKey', 'password', 'v1ApiKey', 'v1_api_key');
+  const apiKey = configValue(merged, 'apiKey', 'v1ApiKey', 'v1_api_key');
   if (!apiKey) {
     return { ok: false, message: 'Не указан API Key Moskvorechie', config: merged };
   }
@@ -216,7 +216,7 @@ export async function resolveMoskvorechieV1Credentials(config, integrationConfig
 }
 
 function v1Headers(config, integrationConfig = {}) {
-  const apiKey = configValue(config, 'apiKey', 'password', 'v1ApiKey', 'v1_api_key');
+  const apiKey = configValue(config, 'apiKey', 'v1ApiKey', 'v1_api_key');
   const agreementId = configValue(
     integrationConfig,
     'agreementId',
@@ -255,7 +255,14 @@ function v1ErrorMessage(data, httpStatus, fallback) {
   const err = data?.error;
   if (err && typeof err === 'object') {
     const code = err.code ? `${err.code}: ` : '';
-    return `${code}${err.message || fallback}`;
+    const msg = `${code}${err.message || fallback}`;
+    if (err.code === 'bad_token') {
+      return (
+        `${msg}. Для заказов нужен ключ «Клиентский API» (api.moskvorechie.ru/v1), ` +
+        'не ключ «Доступ к API Портала» (portal.api). Укажите оба ключа в Интеграции → Москворечье.'
+      );
+    }
+    return msg;
   }
   if (data?.message) return String(data.message);
   if (httpStatus === 401) {

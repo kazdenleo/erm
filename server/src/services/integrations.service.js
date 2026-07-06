@@ -18,6 +18,14 @@ import {
   isOzonBlockAutoPromotionsEnabled,
   pickOzonCredentials,
 } from '../utils/ozonAutoPromotions.js';
+import {
+  portalCredentialsFromConfig,
+  looksLikeMoskvorechiePortalApiKey,
+  looksLikeMoskvorechieV1ApiKey,
+} from './supplierOrderAdapters/moskvorechie.adapter.js';
+import { resolveMoskvorechieV1Credentials } from './supplierOrderAdapters/moskvorechie.v1.js';
+import { MOSKVORECHIE_API_BASE } from './supplierOrderAdapters/shared.js';
+import fetch from 'node-fetch';
 
 export { extractWbWarehouseList, hasWbTariffsWarehouseList };
 export { isOzonBlockAutoPromotionsEnabled };
@@ -884,24 +892,148 @@ class IntegrationsService {
   }
 
   /**
-   * Нормализовать конфиг Москворечья: один ключ для v1 и portal.api.
+   * Нормализовать конфиг Москворечья: portal.api и «Клиентский API» v1 — разные ключи.
    */
   _normalizeMoskvorechieConfig(config) {
     if (!config || typeof config !== 'object') return {};
-    const key = String(
-      config.apiKey || config.password || config.portalApiKey || config.portal_api_key || ''
-    ).trim();
-    if (!key && !config.user_id) return { ...config };
-    return {
+
+    let v1Key = String(config.apiKey || config.v1ApiKey || config.v1_api_key || '').trim();
+    let portalKey = String(config.portalApiKey || config.portal_api_key || '').trim();
+    const legacyPassword = String(config.password || '').trim();
+
+    if (!portalKey && legacyPassword) {
+      if (looksLikeMoskvorechiePortalApiKey(legacyPassword) && legacyPassword !== v1Key) {
+        portalKey = legacyPassword;
+      } else if (!v1Key && looksLikeMoskvorechieV1ApiKey(legacyPassword)) {
+        v1Key = legacyPassword;
+      } else if (!v1Key && !portalKey) {
+        portalKey = legacyPassword;
+      }
+    }
+
+    // Раньше один portal-ключ дублировали в apiKey — не считаем его v1.
+    if (v1Key && portalKey && v1Key === portalKey && looksLikeMoskvorechiePortalApiKey(v1Key)) {
+      v1Key = '';
+    }
+    if (v1Key && !portalKey && looksLikeMoskvorechiePortalApiKey(v1Key) && !looksLikeMoskvorechieV1ApiKey(v1Key)) {
+      portalKey = v1Key;
+      v1Key = '';
+    }
+
+    const out = {
       ...config,
       user_id: String(config.user_id || '').trim(),
-      ...(key
-        ? {
-            apiKey: key,
-            portalApiKey: String(config.portalApiKey || config.portal_api_key || key).trim(),
-            password: String(config.password || key).trim(),
-          }
-        : {}),
+    };
+    if (portalKey) {
+      out.portalApiKey = portalKey;
+      out.portal_api_key = portalKey;
+      out.password = portalKey;
+    }
+    if (v1Key) {
+      out.apiKey = v1Key;
+      out.v1ApiKey = v1Key;
+      out.v1_api_key = v1Key;
+    } else {
+      delete out.apiKey;
+      delete out.v1ApiKey;
+      delete out.v1_api_key;
+    }
+    if (config.agreementId || config.agreement_id) {
+      out.agreementId = String(config.agreementId || config.agreement_id).trim();
+      out.agreement_id = out.agreementId;
+    }
+    if (config.filialId || config.filial_id) {
+      out.filialId = String(config.filialId || config.filial_id).trim();
+      out.filial_id = out.filialId;
+    }
+    if (config.deliveryTerm || config.delivery_term) {
+      out.deliveryTerm = String(config.deliveryTerm || config.delivery_term).trim();
+      out.delivery_term = out.deliveryTerm;
+    }
+    return out;
+  }
+
+  /**
+   * Проверить настройки поставщика (portal остатки + v1 заказы).
+   */
+  async testSupplierConfig(type, { profileId = null } = {}) {
+    if (!['mikado', 'moskvorechie'].includes(type)) {
+      const err = new Error('Неизвестный тип поставщика');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const config = await this.getSupplierConfig(type, { profileId });
+    if (type === 'mikado') {
+      if (!config?.user_id || !config?.password) {
+        return { ok: false, message: 'Укажите user_id и password' };
+      }
+      return { ok: true, message: 'Mikado: учётные данные заданы' };
+    }
+
+    const portal = portalCredentialsFromConfig(config);
+    const results = { portal: null, v1: null };
+
+    if (portal.userId && portal.hasPortalKey) {
+      try {
+        const url =
+          `${MOSKVORECHIE_API_BASE}?l=${encodeURIComponent(portal.userId)}` +
+          `&p=${encodeURIComponent(portal.apiKey)}&act=price_by_nr_firm&v=1&nr=E500108&f=&cs=utf8&avail&extstor`;
+        const response = await fetch(url, { method: 'GET' });
+        const text = await response.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = null;
+        }
+        const msg = String(data?.result?.msg || data?.error || '').trim();
+        const ok = response.ok && !/логин|авториза|bad_token|неверн/i.test(msg);
+        results.portal = {
+          ok,
+          message: ok ? 'Portal API: подключение OK' : msg || `HTTP ${response.status}`,
+        };
+      } catch (e) {
+        results.portal = { ok: false, message: e?.message || 'Portal API: ошибка сети' };
+      }
+    } else {
+      results.portal = {
+        ok: false,
+        message: 'Portal API: укажите User ID и Portal API Key (остатки)',
+      };
+    }
+
+    const v1Key = String(config.apiKey || config.v1ApiKey || '').trim();
+    if (v1Key) {
+      const resolved = await resolveMoskvorechieV1Credentials(config, {});
+      if (resolved.ok) {
+        const ctx = resolved.config || {};
+        results.v1 = {
+          ok: true,
+          message:
+            `Клиентский API v1: OK` +
+            (ctx.agreementId ? `, Agreement ${ctx.agreementId.slice(0, 8)}…` : '') +
+            (ctx.filialId ? `, Filial ${ctx.filialId.slice(0, 8)}…` : ''),
+          agreementId: ctx.agreementId || null,
+          filialId: ctx.filialId || null,
+          deliveryTerm: ctx.deliveryTerm || ctx.delivery_term || null,
+        };
+      } else {
+        results.v1 = { ok: false, message: resolved.message || 'Клиентский API v1: ошибка' };
+      }
+    } else {
+      results.v1 = {
+        ok: false,
+        message:
+          'Клиентский API v1: ключ не задан (нужен для POST /orders — заказы поставщику)',
+      };
+    }
+
+    const ok = Boolean(results.portal?.ok && results.v1?.ok);
+    return {
+      ok,
+      message: [results.portal?.message, results.v1?.message].filter(Boolean).join('\n'),
+      details: results,
     };
   }
 
@@ -946,14 +1078,21 @@ class IntegrationsService {
           payload.user_id = existing.user_id;
         }
       } else if (type === 'moskvorechie') {
-        const key = String(payload.apiKey || payload.password || '').trim();
-        if (!key && (existing.apiKey || existing.password)) {
-          const existingKey = String(existing.apiKey || existing.password || '').trim();
+        const v1Key = String(payload.apiKey || payload.v1ApiKey || '').trim();
+        const portalKey = String(payload.portalApiKey || payload.portal_api_key || '').trim();
+        if (!v1Key && (existing.apiKey || existing.v1ApiKey)) {
+          const ek = String(existing.apiKey || existing.v1ApiKey || '').trim();
+          payload = { ...existing, ...payload, apiKey: ek, v1ApiKey: ek };
+        }
+        if (!portalKey && (existing.portalApiKey || existing.portal_api_key || existing.password)) {
+          const pk = String(
+            existing.portalApiKey || existing.portal_api_key || existing.password || ''
+          ).trim();
           payload = {
             ...existing,
             ...payload,
-            apiKey: existingKey,
-            password: existing.password || existingKey,
+            portalApiKey: pk,
+            password: pk,
           };
         }
         if (!String(payload.user_id ?? '').trim() && existing.user_id) {
@@ -970,8 +1109,19 @@ class IntegrationsService {
         throw err;
       }
     } else if (type === 'moskvorechie') {
-      if (!payload.user_id || (!payload.apiKey && !payload.password)) {
-        const err = new Error('Для Moskvorechie требуется user_id и apiKey (или password)');
+      const portalKey = String(
+        payload.portalApiKey || payload.portal_api_key || payload.password || ''
+      ).trim();
+      const v1Key = String(payload.apiKey || payload.v1ApiKey || '').trim();
+      if (!payload.user_id) {
+        const err = new Error('Для Moskvorechie требуется User ID (логин portal)');
+        err.statusCode = 400;
+        throw err;
+      }
+      if (!portalKey && !v1Key) {
+        const err = new Error(
+          'Укажите Portal API Key (остатки) и/или API Key «Клиентский API» (заказы v1)'
+        );
         err.statusCode = 400;
         throw err;
       }

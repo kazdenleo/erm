@@ -38,6 +38,12 @@ export const integrationsApi = {
     return response.data;
   },
 
+  /** Проверить настройки поставщика (portal + v1). */
+  testSupplier: async (type) => {
+    const response = await api.post(`/integrations/suppliers/${type}/test`);
+    return response.data;
+  },
+
   /**
    * Получить все настройки интеграций
    */

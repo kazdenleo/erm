@@ -101,6 +101,24 @@ class IntegrationsController {
   }
 
   /**
+   * POST /api/integrations/suppliers/:type/test
+   * Проверить настройки поставщика
+   */
+  async testSupplier(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(403).json({ ok: false, message: 'Нет привязки к аккаунту' });
+      }
+      const { type } = req.params;
+      const result = await integrationsService.testSupplierConfig(type, { profileId: tid });
+      return res.status(result.ok ? 200 : 400).json({ ok: result.ok, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/integrations/all
    * Получить все настройки интеграций (только конфигурации)
    */

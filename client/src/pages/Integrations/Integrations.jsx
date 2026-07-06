@@ -118,9 +118,23 @@ export function Integrations() {
     }
   };
 
-  const handleTest = (type, category) => {
-    // Заглушка для теста подключения (можно добавить реальный тест позже)
-    alert(`Проверка подключения ${category === 'marketplaces' ? type : type} (в разработке)`);
+  const handleTest = async (type, category) => {
+    if (category !== 'suppliers') {
+      alert(`Проверка подключения ${type} (в разработке)`);
+      return;
+    }
+    try {
+      setError(null);
+      const res = await integrationsApi.testSupplier(type);
+      const data = res?.data || res;
+      const msg = data?.message || (data?.ok ? 'OK' : 'Ошибка');
+      alert(msg);
+    } catch (err) {
+      const data = err?.response?.data?.data;
+      const msg = data?.message || getApiErrorMessage(err, 'Ошибка проверки подключения');
+      setError(msg);
+      alert(msg);
+    }
   };
 
   if (loading) {
@@ -1477,25 +1491,40 @@ function SuppliersTab({ configs, onSave, onTest }) {
               className="input"
               value={formData.user_id || ''}
               onChange={(e) => handleChange('user_id', e.target.value)}
-              placeholder="Ваш User ID"
+              placeholder="Логин portal.moskvorechie.ru"
               required
             />
           </div>
           <div className="field">
-            <label className="label">API Key</label>
+            <label className="label">Portal API Key</label>
             <input
               type="password"
               className="input"
-              value={formData.apiKey || formData.password || ''}
+              value={formData.portalApiKey || formData.password || ''}
               onChange={(e) => {
                 const v = e.target.value;
-                setFormData({ ...formData, apiKey: v, password: v });
+                setFormData({ ...formData, portalApiKey: v, password: v });
               }}
-              placeholder="Ваш API ключ от Moskvorechie"
-              required
+              placeholder="Ключ «Доступ к API Портала» — остатки и цены"
             />
-            <small style={{color: 'var(--muted)', fontSize: '12px', marginTop: '4px', display: 'block'}}>
-              API ключ используется вместо пароля для подключения к API Moskvorechie
+            <small style={{ color: 'var(--muted)', fontSize: '12px', marginTop: '4px', display: 'block' }}>
+              portal.api — синхронизация остатков (price_by_nr_firm)
+            </small>
+          </div>
+          <div className="field">
+            <label className="label">API Key — Клиентский API (v1)</label>
+            <input
+              type="password"
+              className="input"
+              value={formData.apiKey || formData.v1ApiKey || ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFormData({ ...formData, apiKey: v, v1ApiKey: v });
+              }}
+              placeholder="Ключ из раздела «Клиентский API» на портале"
+            />
+            <small style={{ color: 'var(--muted)', fontSize: '12px', marginTop: '4px', display: 'block' }}>
+              api.moskvorechie.ru/v1 — заказы (POST /cart/add, POST /orders). Agreement и Filial подтянутся из GET /profile.
             </small>
           </div>
           <div className="form-actions">

@@ -72,6 +72,9 @@ router.get('/suppliers/:type', (req, res, next) =>
 router.put('/suppliers/:type', (req, res, next) =>
   integrationsController.saveSupplier(req, res, next)
 );
+router.post('/suppliers/:type/test', (req, res, next) =>
+  integrationsController.testSupplier(req, res, next)
+);
 
 // Все настройки (только конфигурации)
 router.get('/all', (req, res, next) =>
