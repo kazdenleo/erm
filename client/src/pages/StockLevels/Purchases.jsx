@@ -24,6 +24,7 @@ import { useWarehouses } from '../../hooks/useWarehouses';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { Button } from '../../components/common/Button/Button';
+import { InviteUserButton } from '../../components/common/InviteUserButton/InviteUserButton';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
@@ -54,20 +55,6 @@ function getOrCreateScannerId() {
     /* ignore */
   }
   return next;
-}
-
-function buildPurchaseReceiptInviteUrl(receiptId) {
-  const rid = String(receiptId || '').trim();
-  if (!rid) return '';
-  try {
-    const url = new URL(window.location.href);
-    url.pathname = '/stock-levels/purchases';
-    url.search = '';
-    url.searchParams.set('purchase_receipt', rid);
-    return url.toString();
-  } catch {
-    return `/stock-levels/purchases?purchase_receipt=${encodeURIComponent(rid)}`;
-  }
 }
 
 function syncPurchaseReceiptInUrl(receiptId) {
@@ -355,16 +342,12 @@ export function Purchases() {
   const excelInputRef = useRef(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [submitSupplierBusy, setSubmitSupplierBusy] = useState(false);
-
   const [receipt, setReceipt] = useState(null);
   const scanRef = useRef(null);
   const scanDebounceRef = useRef(null);
   const [scannerId] = useState(() => getOrCreateScannerId());
   const [inviteUsers, setInviteUsers] = useState([]);
-  const [inviteUserId, setInviteUserId] = useState('');
   const [inviteBusy, setInviteBusy] = useState(false);
-  const [receiptInviteLinkCopied, setReceiptInviteLinkCopied] = useState(false);
   const scanInFlightRef = useRef(false);
   const lastScanRef = useRef({ value: '', at: 0 });
   const receiptRefreshTimerRef = useRef(null);
@@ -398,8 +381,6 @@ export function Purchases() {
   const [excelPreviewInfo, setExcelPreviewInfo] = useState(null);
   const [receiptCompleteInfo, setReceiptCompleteInfo] = useState(null);
   const [deleteReceiptDraftBusy, setDeleteReceiptDraftBusy] = useState(false);
-  const [receiptNote, setReceiptNote] = useState('');
-  const [receiptNoteBusy, setReceiptNoteBusy] = useState(false);
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [deleteReceiptBusy, setDeleteReceiptBusy] = useState(null);
   const [linkBarcodeOpen, setLinkBarcodeOpen] = useState(false);
@@ -424,11 +405,6 @@ export function Purchases() {
     if (receiptOwnerUserId == null || currentUserId == null) return false;
     return Number(receiptOwnerUserId) !== Number(currentUserId);
   }, [receiptOwnerUserId, currentUserId]);
-
-  const purchaseReceiptInviteUrl = useMemo(
-    () => (receipt?.receipt?.id ? buildPurchaseReceiptInviteUrl(receipt.receipt.id) : ''),
-    [receipt?.receipt?.id]
-  );
 
   const sortedDetailItems = useMemo(() => {
     const items = detail?.items;
@@ -635,20 +611,6 @@ export function Purchases() {
     syncPurchaseReceiptInUrl('');
     setReceipt(null);
   }, [receipt?.receipt?.status]);
-
-  const copyPurchaseReceiptInviteLink = useCallback(() => {
-    const url = purchaseReceiptInviteUrl;
-    if (!url) return;
-    const done = () => {
-      setReceiptInviteLinkCopied(true);
-      setTimeout(() => setReceiptInviteLinkCopied(false), 2500);
-    };
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(url).then(done).catch(() => {});
-      return;
-    }
-    done();
-  }, [purchaseReceiptInviteUrl]);
 
   const createSupplierPrefixes = useMemo(() => {
     if (!createSupplierId) return [];
@@ -1085,9 +1047,7 @@ export function Purchases() {
         return;
       }
       setReceipt(data);
-      setReceiptNote(data?.receipt?.note ?? '');
       syncPurchaseReceiptInUrl(data.receipt.id);
-      setReceiptInviteLinkCopied(false);
       setScanMsg(null);
       setLastScanLine(null);
       const p = data?.purchase || {};
@@ -1574,9 +1534,6 @@ export function Purchases() {
       )}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
         <Button onClick={openCreatePurchase}>Новая закупка</Button>
-        <Button variant="secondary" onClick={() => reload()} disabled={loading}>
-          {loading ? '...' : 'Обновить'}
-        </Button>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
           <span className="muted">Поставщик</span>
           <select
@@ -1618,7 +1575,6 @@ export function Purchases() {
                 <th>Склад</th>
                 <th>Заказано, шт.</th>
                 <th>Принято, шт.</th>
-                <th />
               </tr>
             </thead>
             <tbody>
@@ -1635,13 +1591,6 @@ export function Purchases() {
                   <td>{p.warehouse_name || warehouseDisplayLabel(null, p.warehouse_id) || '—'}</td>
                   <td>{qtyCell(p.expected_total ?? p.expectedTotal)}</td>
                   <td>{qtyCell(p.received_total ?? p.receivedTotal)}</td>
-                  <td>
-                    {String(p.status || '') === 'archived' ? (
-                      <span className="muted" style={{ fontSize: 12 }}>Архив</span>
-                    ) : (
-                      <span className="muted">Подробнее →</span>
-                    )}
-                  </td>
                 </tr>
               ))}
             </tbody>
@@ -2185,58 +2134,6 @@ export function Purchases() {
               >
                 Редактировать
               </Button>
-              {detail.purchase.supplier_id ? (
-                <Button
-                  variant="secondary"
-                  disabled={
-                    submitSupplierBusy || String(detail?.purchase?.status || '') === 'archived'
-                  }
-                  onClick={async () => {
-                    if (submitSupplierBusy) return;
-                    const alreadySent = Boolean(detail.purchase.supplier_submitted_at);
-                    if (
-                      alreadySent &&
-                      !window.confirm(
-                        'Закупка уже отправлялась поставщику. Повторить отправку всего состава? Лишние заказы у поставщика придётся отменить вручную.'
-                      )
-                    ) {
-                      return;
-                    }
-                    if (
-                      !alreadySent &&
-                      !window.confirm('Отправить закупку поставщику через API?')
-                    ) {
-                      return;
-                    }
-                    try {
-                      setSubmitSupplierBusy(true);
-                      setErr(null);
-                      const res = await purchasesApi.submitToSupplier(detail.purchase.id, {
-                        force: alreadySent,
-                      });
-                      if (res?.skipped) {
-                        setErr(res.message || 'Закупка уже отправлена поставщику');
-                      } else if (res?.submitted) {
-                        setErr(null);
-                        window.alert(res.message || 'Заказ отправлен поставщику');
-                      } else {
-                        setErr(res?.message || 'Не удалось отправить поставщику');
-                      }
-                      await openDetail(detail.purchase.id);
-                    } catch (ex) {
-                      setErr(ex.response?.data?.message || ex.message || 'Не удалось отправить поставщику');
-                    } finally {
-                      setSubmitSupplierBusy(false);
-                    }
-                  }}
-                >
-                  {submitSupplierBusy
-                    ? 'Отправляем…'
-                    : detail.purchase.supplier_submitted_at
-                      ? 'Повторить отправку поставщику'
-                      : 'Отправить поставщику'}
-                </Button>
-              ) : null}
               <Button
                 variant="secondary"
                 onClick={() => setExpectedDraftOpen(true)}
@@ -2602,124 +2499,32 @@ export function Purchases() {
                   ))}
               </select>
             </div>
-            {isReceiptScanning && !isReceiptGuest ? (
-              <div style={{ marginBottom: 12 }}>
-                <span className="muted" style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
-                  Комментарий к приёмке
-                </span>
-                <textarea
-                  className="warehouse-ops-input"
-                  rows={2}
-                  value={receiptNote}
-                  onChange={(e) => setReceiptNote(e.target.value)}
-                  placeholder="Необязательно"
-                  style={{ width: '100%', maxWidth: 520 }}
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="small"
-                  style={{ marginTop: 8 }}
-                  disabled={receiptNoteBusy}
-                  onClick={async () => {
-                    const rid = receipt.receipt.id;
-                    try {
-                      setReceiptNoteBusy(true);
-                      setErr(null);
-                      await purchasesApi.updateReceipt(rid, { note: receiptNote });
-                      await openReceipt(rid);
-                    } catch (ex) {
-                      setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить комментарий');
-                    } finally {
-                      setReceiptNoteBusy(false);
-                    }
-                  }}
-                >
-                  {receiptNoteBusy ? 'Сохраняю…' : 'Сохранить комментарий'}
-                </Button>
-              </div>
-            ) : receipt.receipt.note ? (
-              <p className="muted" style={{ marginBottom: 12 }}>
-                Комментарий: {receipt.receipt.note}
-              </p>
-            ) : null}
             {isReceiptGuest ? (
               <p className="warehouse-ops-hint" style={{ marginBottom: 10 }}>
                 Вы приглашены в совместную приёмку: сканируйте товары — они попадут в общий список. Завершить приёмку может только создатель.
               </p>
             ) : null}
-            {isReceiptScanning ? (
-              <div className="warehouse-ops-live-invite-panel" style={{ marginBottom: 12 }}>
-                <h4 className="warehouse-ops-live-invite-title">Пригласить коллег / другое устройство</h4>
-                <p className="warehouse-ops-hint warehouse-ops-live-invite-lead">
-                  Несколько человек могут сканировать одну приёмку с телефонов, планшетов или других компьютеров (тот же профиль ERP).
-                </p>
-                <div className="warehouse-ops-live-invite-link-row" style={{ marginTop: 10 }}>
-                  <span className="warehouse-ops-live-invite-label">Ссылка для другого устройства</span>
-                  <input
-                    type="text"
-                    className="warehouse-ops-input warehouse-ops-live-invite-url"
-                    readOnly
-                    value={purchaseReceiptInviteUrl}
-                    onFocus={(e) => e.target.select()}
-                  />
-                  <Button type="button" variant="secondary" onClick={copyPurchaseReceiptInviteLink}>
-                    {receiptInviteLinkCopied ? 'Скопировано' : 'Копировать ссылку'}
-                  </Button>
-                </div>
-                {!isReceiptGuest ? (
-                  <div className="warehouse-ops-live-invite-users" style={{ marginTop: 16 }}>
-                    <label>Пригласить пользователя</label>
-                    <div
-                      style={{
-                        display: 'flex',
-                        gap: 10,
-                        flexWrap: 'wrap',
-                        alignItems: 'center',
-                        marginTop: 8,
-                      }}
-                    >
-                      <select
-                        className="warehouse-ops-select"
-                        value={inviteUserId}
-                        onChange={(e) => setInviteUserId(e.target.value)}
-                        style={{ minWidth: 260 }}
-                      >
-                        <option value="">— Выберите пользователя —</option>
-                        {(inviteUsers || []).map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {(u.full_name ||
-                              [u.last_name, u.first_name].filter(Boolean).join(' ') ||
-                              u.email ||
-                              `User #${u.id}`) + (u.email ? ` (${u.email})` : '')}
-                          </option>
-                        ))}
-                      </select>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        disabled={inviteBusy || !inviteUserId}
-                        onClick={async () => {
-                          const rid = receipt?.receipt?.id;
-                          const uid = inviteUserId ? Number(inviteUserId) : null;
-                          if (!rid || !uid || Number.isNaN(uid) || inviteBusy) return;
-                          try {
-                            setInviteBusy(true);
-                            setErr(null);
-                            await purchasesApi.inviteToReceipt(rid, { userId: uid });
-                            setReceiptCompleteInfo('Приглашение отправлено в уведомления.');
-                          } catch (ex) {
-                            setErr(ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение');
-                          } finally {
-                            setInviteBusy(false);
-                          }
-                        }}
-                      >
-                        {inviteBusy ? 'Отправляю…' : 'Отправить приглашение'}
-                      </Button>
-                    </div>
-                  </div>
-                ) : null}
+            {isReceiptScanning && !isReceiptGuest ? (
+              <div style={{ marginBottom: 12 }}>
+                <InviteUserButton
+                  users={inviteUsers}
+                  busy={inviteBusy}
+                  excludeUserId={currentUserId}
+                  onInvite={async (uid) => {
+                    const rid = receipt?.receipt?.id;
+                    if (!rid || inviteBusy) return;
+                    try {
+                      setInviteBusy(true);
+                      setErr(null);
+                      await purchasesApi.inviteToReceipt(rid, { userId: uid });
+                      setReceiptCompleteInfo('Приглашение отправлено в уведомления.');
+                    } catch (ex) {
+                      setErr(ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение');
+                    } finally {
+                      setInviteBusy(false);
+                    }
+                  }}
+                />
               </div>
             ) : null}
             {isReceiptScanning ? (

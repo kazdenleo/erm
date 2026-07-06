@@ -120,14 +120,19 @@ class QuestionsController {
       }
       const text = req.body?.text;
       const organizationId = this.parseOrganizationId(req);
-      logger.info('[Questions] answer', { profileId: pid, organizationId, questionRowId: req.params.id });
+      logger.info('[Questions] answer', {
+        profileId: pid,
+        organizationId,
+        questionRowId: req.params.id,
+        textLen: String(text ?? '').trim().length,
+      });
       const data = await submitMarketplaceQuestionAnswer(pid, req.params.id, text, { organizationId });
       res.setHeader('Cache-Control', 'no-store');
       const isPendingWb =
         data?.marketplace === 'wildberries' && (data?.status === 'pending_wb_confirm' || !!data?.pendingAnswerText);
       return res.status(isPendingWb ? 202 : 200).json({ ok: true, data, pending: isPendingWb });
     } catch (error) {
-      if (error.statusCode === 400 || error.statusCode === 404 || error.statusCode === 501) {
+      if (error.statusCode === 400 || error.statusCode === 403 || error.statusCode === 404 || error.statusCode === 501) {
         return res.status(error.statusCode).json({ ok: false, message: error.message });
       }
       if (error.code === 'OZON_PREMIUM_PLUS_REQUIRED') {

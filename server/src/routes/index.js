@@ -42,6 +42,7 @@ import fboSuppliesRoutes from './fboSupplies.routes.js';
 import organizationsRoutes from './organizations.routes.js';
 import marketplaceCabinetsRoutes from './marketplace_cabinets.routes.js';
 import certificatesRoutes from './certificates.routes.js';
+import globalSearchController from '../controllers/globalSearch.controller.js';
 import inquiriesRoutes from './inquiries.routes.js';
 import platformMarketplaceNotificationsRoutes from './platformMarketplaceNotifications.routes.js';
 import * as platformMarketplaceNotificationsController from '../controllers/platformMarketplaceNotifications.controller.js';
@@ -178,6 +179,7 @@ router.use(async (req, res, next) => {
 
 // Auth (логин публичный, /me — с авторизацией внутри роута)
 router.use('/auth', authRoutes);
+router.get('/search', requireAuth, wrapAsync(globalSearchController.search.bind(globalSearchController)));
 // Профили и пользователи (защищены в своих роутах)
 router.use('/profiles', profilesRoutes);
 router.use('/users', usersRoutes);

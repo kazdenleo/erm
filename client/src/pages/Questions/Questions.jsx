@@ -2,7 +2,7 @@
  * Вопросы покупателей с маркетплейсов (Ozon, Wildberries, Яндекс Маркет)
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../components/common/Button/Button';
 import { Modal } from '../../components/common/Modal/Modal';
 import { questionsApi } from '../../services/questions.api';
@@ -10,9 +10,11 @@ import { MARKETPLACE_TABLE_BADGES } from '../../constants/marketplaceUi';
 import { normalizeMarketplaceForUI } from '../../utils/orderListGroupKey';
 import {
   formatProductTheme,
+  getQuestionArticle,
   extractBuyerName,
   formatProductArticleWithName,
   formatQuestionProductForReply,
+  getQuestionProductInfo,
   questionNeedsReply,
 } from './questionsDisplay';
 import { applyQuestionTemplate } from './questionTemplateText';
@@ -43,11 +45,31 @@ function questionBuyerLabel(q) {
 
 const AUTO_SYNC_MS = 10 * 60 * 1000;
 
-const ANSWERED_FILTERS = [
-  { id: 'new', label: 'Новые' },
-  { id: 'answered', label: 'Архив' },
-  { id: 'all', label: 'Все' },
-];
+/** @typedef {'date' | 'article'} QuestionsSortField */
+/** @typedef {'asc' | 'desc'} QuestionsSortDir */
+
+function compareArticles(a, b) {
+  const aa = getQuestionArticle(a);
+  const bb = getQuestionArticle(b);
+  if (!aa && !bb) return 0;
+  if (!aa) return 1;
+  if (!bb) return -1;
+  return aa.localeCompare(bb, 'ru', { numeric: true, sensitivity: 'base' });
+}
+
+function sortQuestions(items, field, dir) {
+  const sorted = [...items];
+  if (field === 'article') {
+    sorted.sort((a, b) => (dir === 'asc' ? compareArticles(a, b) : compareArticles(b, a)));
+    return sorted;
+  }
+  sorted.sort((a, b) => {
+    const ta = a?.sourceCreatedAt ? new Date(a.sourceCreatedAt).getTime() : 0;
+    const tb = b?.sourceCreatedAt ? new Date(b.sourceCreatedAt).getTime() : 0;
+    return dir === 'asc' ? ta - tb : tb - ta;
+  });
+  return sorted;
+}
 
 export function Questions() {
   const { selectedOrganizationId: contextOrganizationId, setSelectedOrganizationId } = useAuth();
@@ -58,8 +80,8 @@ export function Questions() {
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
-  const [answeredFilter, setAnsweredFilter] = useState('new');
-  const [listCounts, setListCounts] = useState({ all: 0, new: 0, answered: 0 });
+  const [sortField, setSortField] = useState('date');
+  const [sortDir, setSortDir] = useState('desc');
   const [mpCounts, setMpCounts] = useState({ ozon: 0, wildberries: 0, yandex: 0 });
   const [threadModalId, setThreadModalId] = useState(null);
   const [threadDetail, setThreadDetail] = useState(null);
@@ -75,11 +97,9 @@ export function Questions() {
     try {
       const params = {};
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
-      const { counts, countsByMarketplace } = await questionsApi.getStats(params);
-      setListCounts(counts);
+      const { countsByMarketplace } = await questionsApi.getStats(params);
       setMpCounts(countsByMarketplace);
     } catch {
-      setListCounts({ all: 0, new: 0, answered: 0 });
       setMpCounts({ ozon: 0, wildberries: 0, yandex: 0 });
     }
   }, [marketplaceFilter]);
@@ -88,7 +108,7 @@ export function Questions() {
     try {
       setFetching(true);
       if (!silent) setError('');
-      const params = { answered: answeredFilter };
+      const params = {};
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
       const data = await questionsApi.getAll(params);
       setItems(Array.isArray(data) ? data : []);
@@ -100,7 +120,7 @@ export function Questions() {
       setFetching(false);
       loadCounts();
     }
-  }, [marketplaceFilter, answeredFilter, loadCounts]);
+  }, [marketplaceFilter, loadCounts]);
 
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -165,13 +185,47 @@ export function Questions() {
 
   const mpTotalNew = mpCounts.ozon + mpCounts.wildberries + mpCounts.yandex;
 
+  const displayedItems = useMemo(
+    () => sortQuestions(items, sortField, sortDir),
+    [items, sortField, sortDir]
+  );
+
+  const toggleArticleSort = useCallback(() => {
+    if (sortField !== 'article') {
+      setSortField('article');
+      setSortDir('asc');
+      return;
+    }
+    setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+  }, [sortField]);
+
+  const toggleDateSort = useCallback(() => {
+    if (sortField !== 'date') {
+      setSortField('date');
+      setSortDir('desc');
+      return;
+    }
+    setSortDir((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+  }, [sortField]);
+
   const openThread = useCallback((q) => {
+    if (!q?.id) return;
     setThreadModalId(String(q.id));
     setThreadDetail(q);
     setThreadError('');
     setThreadDraft('');
     setThreadRefreshing(false);
   }, []);
+
+  const onQuestionRowKeyDown = useCallback(
+    (e, q) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openThread(q);
+      }
+    },
+    [openThread]
+  );
 
   const closeThread = useCallback(() => {
     setThreadModalId(null);
@@ -201,15 +255,15 @@ export function Questions() {
         if (!cancelled) {
           setThreadError(e?.response?.data?.message || e?.message || 'Не удалось загрузить ветку');
         }
-      } finally {
-        if (!cancelled) setThreadRefreshing(false);
       }
       if (cancelled) return;
       try {
         const fresh = await questionsApi.getOne(threadModalId, { refresh: true });
         if (!cancelled && fresh) setThreadDetail(fresh);
       } catch {
-        /* свежие данные с МП — по возможности; ответ уже доступен из БД */
+        /* свежие данные с МП — по возможности */
+      } finally {
+        if (!cancelled) setThreadRefreshing(false);
       }
     })();
     return () => {
@@ -248,43 +302,24 @@ export function Questions() {
   };
 
   const threadNeedsReply = threadDetail ? questionNeedsReply(threadDetail) : false;
+  const threadProduct = threadDetail ? getQuestionProductInfo(threadDetail) : null;
 
   const emptyMessage =
-    answeredFilter === 'new'
-      ? 'Новых вопросов нет. Они появятся после синхронизации, если на маркетплейсе есть неотвеченные обращения.'
-      : answeredFilter === 'answered'
-        ? 'В архиве пока нет закрытых переписок. После ответа вопрос сохранится здесь.'
-        : 'Вопросов пока нет.';
+    'Новых вопросов нет. Они появятся после синхронизации, если на маркетплейсе есть неотвеченные обращения.';
+
+  const articleSortLabel =
+    sortField === 'article' ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+  const dateSortLabel = sortField === 'date' ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
 
   return (
     <div className="card questions-page">
       <h1 className="title">Вопросы</h1>
       <p className="subtitle">
-        <strong>Новые</strong> — ждут ответа. <strong>Архив</strong> — закрытые переписки с полной историей. Если
-        покупатель напишет снова, вопрос вернётся в «Новые», а в модалке будет вся цепочка сообщений.
+        Только неотвеченные вопросы с маркетплейсов. Нажмите на строку, чтобы открыть переписку и ответить. После
+        ответа вопрос убирается из списка.
       </p>
 
       <div className="questions-toolbar">
-        <div className="questions-filter-answered-wrap">
-          <div className="questions-filter-answered-heading">
-            <span className="questions-filter-answered-title">Статус</span>
-          </div>
-          <div className="erp-filter-row questions-filter-answered-row" role="group" aria-label="Фильтр по статусу">
-            {ANSWERED_FILTERS.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                className={`erp-filter-btn${answeredFilter === f.id ? ' erp-filter-btn--active' : ''}`}
-                onClick={() => setAnsweredFilter(f.id)}
-                disabled={fetching}
-              >
-                {f.label}
-                <span className="erp-filter-btn__count">{listCounts[f.id] ?? 0}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
         <div className="questions-toolbar-row">
           <div className="erp-filter-row" role="group" aria-label="Фильтр по маркетплейсу">
             <button
@@ -346,27 +381,52 @@ export function Questions() {
               <col className="questions-col-mp" />
               <col className="questions-col-theme" />
               <col className="questions-col-question" />
-              <col className="questions-col-thread" />
             </colgroup>
             <thead>
               <tr>
-                <th className="questions-col-date">Дата</th>
+                <th className="questions-col-date">
+                  <button
+                    type="button"
+                    className={`questions-sort-btn${sortField === 'date' ? ' questions-sort-btn--active' : ''}`}
+                    onClick={toggleDateSort}
+                    aria-label={`Сортировка по дате${sortField === 'date' ? (sortDir === 'asc' ? ', по возрастанию' : ', по убыванию') : ''}`}
+                  >
+                    Дата{dateSortLabel}
+                  </button>
+                </th>
                 <th className="questions-col-mp">МП</th>
-                <th className="questions-col-theme">Артикул</th>
+                <th className="questions-col-theme">
+                  <button
+                    type="button"
+                    className={`questions-sort-btn${sortField === 'article' ? ' questions-sort-btn--active' : ''}`}
+                    onClick={toggleArticleSort}
+                    aria-label={`Сортировка по артикулу${sortField === 'article' ? (sortDir === 'asc' ? ', по возрастанию' : ', по убыванию') : ''}`}
+                  >
+                    Артикул{articleSortLabel}
+                  </button>
+                </th>
                 <th className="questions-col-question">Вопрос</th>
-                <th className="questions-col-thread">{answeredFilter === 'answered' ? 'Переписка' : 'Ответ'}</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((q) => {
+              {displayedItems.map((q) => {
                 const mpNorm = normalizeMarketplaceForUI(q.marketplace);
                 const mpMeta = MARKETPLACE_TABLE_BADGES.find((m) => m.code === mpNorm);
                 const mpLabel = mpMeta?.name ?? String(q.marketplace ?? '—');
                 const buyerLabel = questionBuyerLabel(q);
-                const needsReply = questionNeedsReply(q);
                 return (
-                  <tr key={q.id} className={needsReply ? '' : 'questions-row--archived'}>
-                    <td className="questions-col-date">{formatDt(q.sourceCreatedAt)}</td>
+                  <tr
+                    key={q.id}
+                    className="questions-row--clickable"
+                    onClick={() => openThread(q)}
+                    onKeyDown={(e) => onQuestionRowKeyDown(e, q)}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Вопрос: ${formatProductTheme(q, 80)}. ${buyerLabel ? `Покупатель ${buyerLabel}.` : ''} ${q.body ?? ''}`}
+                  >
+                    <td className="questions-col-date">
+                      {formatDt(q.sourceCreatedAt)}
+                    </td>
                     <td className="questions-col-mp">
                       {mpMeta?.badgeClass && mpMeta.shortLabel ? (
                         <span
@@ -383,7 +443,7 @@ export function Questions() {
                       )}
                     </td>
                     <td className="questions-col-theme" title={formatProductArticleWithName(q)}>
-                      {formatProductTheme(q, 40)}
+                      <span className="questions-article-cell">{getQuestionArticle(q) || '—'}</span>
                     </td>
                     <td className="questions-col-question">
                       <div className="questions-question-cell">
@@ -394,16 +454,6 @@ export function Questions() {
                         ) : null}
                         <span className="questions-question-body">{q.body}</span>
                       </div>
-                    </td>
-                    <td className="questions-col-thread">
-                      <Button
-                        type="button"
-                        variant={needsReply ? 'primary' : 'secondary'}
-                        size="small"
-                        onClick={() => openThread(q)}
-                      >
-                        {needsReply ? 'Ответить' : 'Переписка'}
-                      </Button>
                     </td>
                   </tr>
                 );
@@ -431,8 +481,21 @@ export function Questions() {
               {formatDt(threadDetail.sourceCreatedAt)} ·{' '}
               {MARKETPLACE_TABLE_BADGES.find((m) => m.code === normalizeMarketplaceForUI(threadDetail.marketplace))
                 ?.name ?? threadDetail.marketplace}
-              {!threadNeedsReply ? ' · закрыто' : ''}
+              {questionBuyerLabel(threadDetail) ? ` · ${questionBuyerLabel(threadDetail)}` : ''}
             </p>
+            <div className="questions-thread-product" aria-label="Товар по вопросу">
+              <span className="questions-thread-product__label">Товар</span>
+              {threadProduct?.article ? (
+                <strong className="questions-thread-product__article" title={threadProduct.line}>
+                  {threadProduct.article}
+                </strong>
+              ) : null}
+              {threadProduct?.name ? (
+                <span className="questions-thread-product__name">{threadProduct.name}</span>
+              ) : !threadProduct?.article ? (
+                <span className="questions-thread-product__name">{threadProduct?.line || formatProductArticleWithName(threadDetail)}</span>
+              ) : null}
+            </div>
             <div className="questions-thread-list" role="log" aria-label="Переписка">
               {(threadDetail.threadMessages || []).map((m, i) => (
                 <div
@@ -453,6 +516,11 @@ export function Questions() {
             </div>
             {threadNeedsReply ? (
               <div className="questions-thread-reply">
+                {threadRefreshing ? (
+                  <p className="text-muted small questions-thread-refresh-hint">
+                    Дождитесь обновления переписки с маркетплейса перед отправкой ответа.
+                  </p>
+                ) : null}
                 {answerTemplates.length > 0 ? (
                   <div className="questions-template-pick">
                     <span className="questions-template-pick__label">Быстрый ответ:</span>
@@ -464,7 +532,7 @@ export function Questions() {
                           className="questions-template-pick__btn"
                           title={tpl.body}
                           onClick={() => applyTemplateToDraft(tpl)}
-                          disabled={threadSending}
+                          disabled={threadSending || threadRefreshing}
                         >
                           {tpl.title}
                         </button>
@@ -479,7 +547,7 @@ export function Questions() {
                   textareaRef={replyTextareaRef}
                   value={threadDraft}
                   onChange={setThreadDraft}
-                  disabled={threadSending}
+                  disabled={threadSending || threadRefreshing}
                   mode="reply"
                   showProduct
                   organizationId={contextOrganizationId}
@@ -496,14 +564,14 @@ export function Questions() {
                   placeholder="Текст ответа покупателю…"
                   value={threadDraft}
                   onChange={(e) => setThreadDraft(e.target.value)}
-                  disabled={threadSending}
+                  disabled={threadSending || threadRefreshing}
                 />
                 <div className="questions-thread-reply-actions">
                   <Button
                     type="button"
                     variant="primary"
                     onClick={() => void sendThreadAnswer()}
-                    disabled={threadSending || !String(threadDraft).trim()}
+                    disabled={threadSending || threadRefreshing || !String(threadDraft).trim()}
                   >
                     {threadSending ? 'Отправка…' : 'Отправить на маркетплейс'}
                   </Button>
@@ -515,7 +583,7 @@ export function Questions() {
             ) : (
               <div className="questions-thread-done-wrap">
                 <p className="text-muted small questions-thread-done">
-                  Переписка закрыта. История сохранена в архиве.
+                  На этот вопрос уже ответили. Обновите список или закройте окно.
                 </p>
                 <Button type="button" variant="secondary" onClick={closeThread}>
                   Закрыть

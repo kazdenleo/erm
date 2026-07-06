@@ -19,6 +19,7 @@ router.post('/sessions/:id/complete', wrapAsync(warehouseReceiptsController.comp
 router.post('/sessions/:id/invite', wrapAsync(warehouseReceiptsController.inviteToSession.bind(warehouseReceiptsController)));
 
 router.get('/:id', wrapAsync(warehouseReceiptsController.getById.bind(warehouseReceiptsController)));
+router.put('/:id', wrapAsync(warehouseReceiptsController.update.bind(warehouseReceiptsController)));
 router.post('/', wrapAsync(warehouseReceiptsController.create.bind(warehouseReceiptsController)));
 router.delete('/:id', wrapAsync(warehouseReceiptsController.delete.bind(warehouseReceiptsController)));
 

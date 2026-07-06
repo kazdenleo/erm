@@ -23,6 +23,11 @@ export const receiptsApi = {
     return response.data;
   },
 
+  update: async (id, payload) => {
+    const response = await api.put(`/receipts/${id}`, payload, { timeout: 120000 });
+    return response.data;
+  },
+
   delete: async (id) => {
     const response = await api.delete(`/receipts/${id}`, { timeout: 120000 });
     return response.data;

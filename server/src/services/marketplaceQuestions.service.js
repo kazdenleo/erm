@@ -13,15 +13,19 @@ import {
   getYandexLastSellerAnswerId,
   inferYandexAnswerAuthor,
   sortYandexAnswers,
-  threadLastMessageIsBuyer,
 } from '../utils/marketplaceQuestionThread.js';
 import logger from '../utils/logger.js';
 
-async function enrichYandexQuestionWithAnswers(profileId, organizationId, rawQuestion, questionId) {
-  let config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId });
-  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
-    config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId: null });
-  }
+/**
+ * Вопросы хранятся по profile_id. Кабинет выбранной организации может быть другим продавцом
+ * на том же маркетплейсе — для синка и ответов всегда берём интеграцию профиля.
+ */
+async function getQuestionsMarketplaceConfig(type, profileId) {
+  return integrationsService.getMarketplaceConfig(type, { profileId, organizationId: null });
+}
+
+async function enrichYandexQuestionWithAnswers(profileId, rawQuestion, questionId) {
+  const config = await getQuestionsMarketplaceConfig('yandex', profileId);
   const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
   if (!apiKey) return rawQuestion;
   const { businessId } = await getYandexBusinessAndCampaigns(config);
@@ -77,21 +81,12 @@ async function enrichYandexQuestionWithAnswers(profileId, organizationId, rawQue
 }
 
 /** Ozon API: допустимые status — NEW, ALL, VIEWED, PROCESSED, UNPROCESSED (UNANSWERED снят). */
-const OZON_QUESTION_BODY = {
-  filter: { status: 'NEW' },
-  limit: 100,
-  offset: 0,
-};
-
-const OZON_QUESTION_BODY_FALLBACK = {
-  filter: { status: 'UNPROCESSED' },
-  limit: 100,
-  offset: 0,
-};
+const OZON_SYNC_STATUSES = ['UNPROCESSED', 'VIEWED', 'NEW'];
 
 function isOzonQuestionProcessedStatus(status) {
   const st = String(status ?? '').trim().toUpperCase();
-  return st === 'PROCESSED' || st === 'VIEWED' || st === 'ANSWERED';
+  // VIEWED = просмотрен, но без ответа — не считаем закрытым.
+  return st === 'PROCESSED' || st === 'ANSWERED';
 }
 
 /** Закрыть ветку локально: на МП вопроса уже нет в списке без ответа. */
@@ -204,6 +199,8 @@ function mapOzonQuestion(q, profileId) {
         : null;
   const status = q.status ?? q.question_status ?? null;
   const sourceCreatedAt =
+    parseIsoDate(q.published_at) ??
+    parseIsoDate(q.publishedAt) ??
     parseIsoDate(q.created_at) ??
     parseIsoDate(q.createdAt) ??
     parseIsoDate(q.date) ??
@@ -227,7 +224,10 @@ function mapOzonQuestion(q, profileId) {
     answerText: row.answer_text,
     sourceCreatedAt: row.source_created_at,
   });
-  if (isOzonQuestionProcessedStatus(status)) {
+  if (
+    isOzonQuestionProcessedStatus(status) ||
+    (answerText != null && String(answerText).trim() !== '')
+  ) {
     return finalizeQuestionRowAsAnsweredOnMarketplace(row);
   }
   return row;
@@ -426,50 +426,53 @@ function rowNeedsSellerReply(row) {
   return t == null || String(t).trim() === '';
 }
 
-async function syncOzon(profileId, organizationId = null) {
+async function syncOzon(profileId, _organizationId = null) {
   let imported = 0;
-  let offset = 0;
-  const limit = 100;
   const externalIds = [];
-  let ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
-  if ((!ozonCfg?.client_id || !ozonCfg?.api_key) && organizationId != null) {
-    ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId: null });
-  }
+  const seenIds = new Set();
+  const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId);
   const ozonOverride =
     ozonCfg?.client_id && ozonCfg?.api_key
       ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
       : null;
-  let bodyTemplate = OZON_QUESTION_BODY;
+  const limit = 100;
   try {
-    for (let page = 0; page < 40; page++) {
-      const body = { ...bodyTemplate, limit, offset };
-      let data;
-      try {
-        data = await integrationsService._ozonApiPost('/v1/question/list', body, { profileId, ozonOverride });
-      } catch (e) {
-        if (page === 0 && bodyTemplate === OZON_QUESTION_BODY) {
-          bodyTemplate = OZON_QUESTION_BODY_FALLBACK;
+    for (const status of OZON_SYNC_STATUSES) {
+      let offset = 0;
+      for (let page = 0; page < 40; page++) {
+        let data;
+        try {
           data = await integrationsService._ozonApiPost(
             '/v1/question/list',
-            { ...bodyTemplate, limit, offset },
+            { filter: { status }, limit, offset },
             { profileId, ozonOverride }
           );
-        } else {
+        } catch (e) {
+          if (page === 0) {
+            logger.warn('[MarketplaceQuestions] Ozon sync status skipped', {
+              profileId,
+              status,
+              error: e?.message || String(e),
+            });
+            break;
+          }
           throw e;
         }
+        const items = extractOzonQuestions(data);
+        if (!items.length) break;
+        for (const q of items) {
+          const ext = String(q.id ?? q.question_id ?? q.questionId ?? '').trim();
+          if (!ext || seenIds.has(ext)) continue;
+          const row = mapOzonQuestion(q, profileId);
+          if (!row || !rowNeedsSellerReply(row)) continue;
+          seenIds.add(ext);
+          externalIds.push(row.external_id);
+          await marketplaceQuestionsRepo.upsertRow(row);
+          imported += 1;
+        }
+        if (items.length < limit) break;
+        offset += limit;
       }
-      const items = extractOzonQuestions(data);
-      if (!items.length) break;
-      for (const q of items) {
-        const row = mapOzonQuestion(q, profileId);
-        if (!row) continue;
-        if (!rowNeedsSellerReply(row)) continue;
-        externalIds.push(row.external_id);
-        await marketplaceQuestionsRepo.upsertRow(row);
-        imported += 1;
-      }
-      if (items.length < limit) break;
-      offset += limit;
     }
   } catch (e) {
     if (isOzonPremiumPlusQuestionsError(e)) {
@@ -486,11 +489,8 @@ async function syncOzon(profileId, organizationId = null) {
  * WB GET /api/v1/questions: параметр isAnswered обязателен (true / false).
  * Делаем два прохода — неотвеченные и отвеченные.
  */
-async function syncWildberries(profileId, organizationId = null) {
-  let config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
-  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
-    config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId: null });
-  }
+async function syncWildberries(profileId, _organizationId = null) {
+  const config = await getQuestionsMarketplaceConfig('wildberries', profileId);
   const raw = config?.api_key ?? config?.apiKey;
   const apiKey = raw ? integrationsService._normalizeWbToken(raw) : null;
   if (!apiKey) {
@@ -546,22 +546,15 @@ async function syncWildberries(profileId, organizationId = null) {
   return { imported, externalIds };
 }
 
-async function syncYandex(profileId, organizationId = null) {
-  let config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId });
-  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
-    config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId: null });
-  }
+async function syncYandex(profileId, _organizationId = null) {
+  const config = await getQuestionsMarketplaceConfig('yandex', profileId);
   const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
   if (!apiKey) {
     const err = new Error(
       'Яндекс.Маркет: не настроен Api-Key (нужен доступ «Общение с покупателями» / communication).'
     );
     err.statusCode = 400;
-    logger.warn('[MarketplaceQuestions] Yandex api_key missing for sync', {
-      profileId,
-      organizationId,
-      usedOrganization: organizationId != null,
-    });
+    logger.warn('[MarketplaceQuestions] Yandex api_key missing for sync', { profileId });
     throw err;
   }
   const { businessId } = await getYandexBusinessAndCampaigns(config);
@@ -634,7 +627,7 @@ async function syncYandex(profileId, organizationId = null) {
         let payload = q;
         if (Number.isFinite(qid) && qid >= 1) {
           try {
-            payload = await enrichYandexQuestionWithAnswers(profileId, organizationId, q, qid);
+            payload = await enrichYandexQuestionWithAnswers(profileId, q, qid);
           } catch (e) {
             logger.warn('[MarketplaceQuestions] Yandex enrich on sync failed:', e?.message || e);
           }
@@ -692,22 +685,23 @@ export async function syncMarketplaceQuestions(profileId, opts = {}) {
       } else if (mp === 'yandex') {
         ({ imported, externalIds } = await syncYandex(profileId, opts.organizationId ?? null));
       }
-      const archiveStats = await archiveAnsweredMissingFromMarketplace(
+      const purgeStats = await purgeAnsweredMissingFromMarketplace(
         profileId,
         mp,
         externalIds,
         opts.organizationId ?? null
       );
+      const cleanup = await marketplaceQuestionsRepo.deleteNotNeedingReplyByProfile(profileId);
       results.push({
         marketplace: mp,
         ok: true,
         imported,
-        archived: archiveStats.archived,
-        purged: archiveStats.purged,
+        purged: purgeStats.deleted + (cleanup.deleted ?? 0),
+        kept: purgeStats.kept,
         error: null,
       });
       logger.info(
-        `[MarketplaceQuestions] ${mp} profile=${profileId} imported=${imported} archived=${archiveStats.archived} purged=${archiveStats.purged}`
+        `[MarketplaceQuestions] ${mp} profile=${profileId} imported=${imported} purged=${purgeStats.deleted} kept=${purgeStats.kept} cleanup=${cleanup.deleted ?? 0}`
       );
     } catch (e) {
       const msg = e?.message || String(e);
@@ -718,70 +712,92 @@ export async function syncMarketplaceQuestions(profileId, opts = {}) {
   return { results };
 }
 
-/** Закрытые на МП вопросы: обновляем ветку в БД (архив), а не удаляем. */
-async function archiveAnsweredMissingFromMarketplace(profileId, marketplace, externalIds, organizationId = null) {
+/** Перед архивацией Ozon: уточняем по question/info — просмотрен без ответа не закрываем. */
+async function refreshOzonQuestionRowFromInfo(profileId, row, ozonOverride) {
+  const questionId = String(row.external_id ?? '').trim();
+  if (!questionId || !ozonOverride) return null;
+  try {
+    const info = await integrationsService._ozonApiPost(
+      '/v1/question/info',
+      { question_id: questionId },
+      { profileId, ozonOverride }
+    );
+    if (!info || typeof info !== 'object') return null;
+    const merged = {
+      ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}),
+      ...info,
+      id: questionId,
+    };
+    return mapOzonQuestion(merged, profileId);
+  } catch (e) {
+    logger.warn('[MarketplaceQuestions] Ozon question/info on archive check failed', {
+      profileId,
+      questionRowId: String(row.id),
+      error: e?.message || String(e),
+    });
+    return null;
+  }
+}
+
+/** Закрытые на МП вопросы убираем из БД (архив не храним). */
+async function purgeAnsweredMissingFromMarketplace(profileId, marketplace, externalIds, organizationId = null) {
   const missing = await marketplaceQuestionsRepo.findNeedingReplyMissingFromMarketplace(
     profileId,
     marketplace,
     externalIds,
     { allIfEmpty: true }
   );
-  let archived = 0;
-  let purged = 0;
+  let deleted = 0;
+  let kept = 0;
   for (const row of missing) {
     try {
       const mp = String(row.marketplace || '').toLowerCase();
-      // Ozon question/list по question_id часто отдаёт другой вопрос — закрываем локальную строку без refresh.
       if (mp === 'ozon') {
-        const closed = finalizeQuestionRowAsAnsweredOnMarketplace(row);
-        await marketplaceQuestionsRepo.upsertRow(closed);
-        archived += 1;
+        const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId);
+        const ozonOverride =
+          ozonCfg?.client_id && ozonCfg?.api_key
+            ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
+            : null;
+        const refreshed = await refreshOzonQuestionRowFromInfo(profileId, row, ozonOverride);
+        if (refreshed && rowNeedsSellerReply(refreshed)) {
+          await marketplaceQuestionsRepo.upsertRow(refreshed);
+          kept += 1;
+          continue;
+        }
+        await marketplaceQuestionsRepo.deleteByIdAndProfile(row.id, profileId);
+        deleted += 1;
         continue;
       }
-      let refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
+      const refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
       if (refreshed && rowNeedsSellerReply(refreshed)) {
-        refreshed = finalizeQuestionRowAsAnsweredOnMarketplace(refreshed);
-      }
-      if (refreshed) {
         await marketplaceQuestionsRepo.upsertRow(refreshed);
-        archived += 1;
-      } else {
-        await marketplaceQuestionsRepo.deleteByIdAndProfile(row.id, profileId);
-        purged += 1;
+        kept += 1;
+        continue;
       }
+      await marketplaceQuestionsRepo.deleteByIdAndProfile(row.id, profileId);
+      deleted += 1;
     } catch (e) {
-      logger.warn('[MarketplaceQuestions] archive missing question failed', {
+      logger.warn('[MarketplaceQuestions] purge missing question failed', {
         profileId,
         marketplace,
         questionId: row.id,
         error: e?.message || String(e),
       });
       await marketplaceQuestionsRepo.deleteByIdAndProfile(row.id, profileId);
-      purged += 1;
+      deleted += 1;
     }
   }
-  return { archived, purged };
+  return { deleted, kept };
 }
 
-async function persistRowAfterAnswer(profileId, row, trimmed, organizationId = null) {
+async function persistRowAfterAnswer(profileId, row, trimmed, _organizationId = null) {
   const mp = String(row.marketplace || '').toLowerCase();
-  try {
-    const refreshed = await refreshQuestionRowFromMarketplace(profileId, row, organizationId);
-    if (refreshed) {
-      await marketplaceQuestionsRepo.upsertRow(refreshed);
-      return await marketplaceQuestionsRepo.findOneApiByIdAndProfile(row.id, profileId);
-    }
-  } catch (e) {
-    logger.warn('[MarketplaceQuestions] refresh after answer failed', {
-      profileId,
-      questionRowId: String(row.id),
-      error: e?.message || String(e),
-    });
-  }
-
+  // Не делаем refresh сразу после ответа: маркетплейс может ещё отдавать старый текст
+  // (или чужой ответ), и мы перезапишем только что отправленный ответ пользователя.
   let mergedRaw;
   if (mp === 'ozon') mergedRaw = mergeOzonRawAfterAnswer(row, trimmed);
   else if (mp === 'wildberries' || mp === 'wb') mergedRaw = mergeWbRawAfterAnswer(row, trimmed);
+  else if (mp === 'yandex') mergedRaw = mergeYandexRawAfterAnswer(row, trimmed);
   else mergedRaw = { ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}) };
 
   const thread = buildThreadMessagesFromRow({
@@ -802,12 +818,12 @@ async function persistRowAfterAnswer(profileId, row, trimmed, organizationId = n
 
 function parseAnsweredFilter(query) {
   const raw = query.answered ?? query.status ?? null;
-  if (raw == null || String(raw).trim() === '') return 'all';
+  if (raw == null || String(raw).trim() === '') return 'new';
   const a = String(raw).trim().toLowerCase();
   if (a === 'new' || a === 'unanswered' || a === 'pending') return 'new';
   if (a === 'answered' || a === 'done') return 'answered';
   if (a === 'all') return 'all';
-  return 'all';
+  return 'new';
 }
 
 export async function listMarketplaceQuestions(profileId, query = {}) {
@@ -825,11 +841,8 @@ export async function listMarketplaceQuestions(profileId, query = {}) {
   });
 }
 
-async function fetchWbQuestionPayload(profileId, externalId, organizationId = null) {
-  let config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
-  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
-    config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId: null });
-  }
+async function fetchWbQuestionPayload(profileId, externalId, _organizationId = null) {
+  const config = await getQuestionsMarketplaceConfig('wildberries', profileId);
   const apiKey = integrationsService._normalizeWbToken(config?.api_key ?? config?.apiKey);
   if (!apiKey) return null;
   const ext = String(externalId ?? '').trim();
@@ -867,16 +880,13 @@ async function refreshQuestionRowFromMarketplace(profileId, row, organizationId 
     const qid = qi?.id ?? raw?.id ?? raw?.questionId ?? raw?.question_id ?? row.external_id;
     const questionId = Number(String(qid).trim());
     if (!Number.isFinite(questionId) || questionId < 1) return null;
-    const enrichedRaw = await enrichYandexQuestionWithAnswers(profileId, organizationId, raw, questionId);
+    const enrichedRaw = await enrichYandexQuestionWithAnswers(profileId, raw, questionId);
     return mapYandexQuestion(enrichedRaw, profileId);
   }
   if (mp === 'ozon') {
     const raw = row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {};
     const qid = parseOzonQuestionId(row);
-    let ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
-    if ((!ozonCfg?.client_id || !ozonCfg?.api_key) && organizationId != null) {
-      ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId: null });
-    }
+    const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId);
     const ozonOverride =
       ozonCfg?.client_id && ozonCfg?.api_key
         ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
@@ -980,6 +990,30 @@ function parseOzonQuestionId(row) {
   return s;
 }
 
+function parseOzonQuestionSku(row) {
+  const raw = row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {};
+  const n = Number(raw.sku ?? raw.product_sku);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function resolveOzonQuestionSku(profileId, row, ozonOverride) {
+  const fromRow = parseOzonQuestionSku(row);
+  if (fromRow != null) return fromRow;
+  const questionId = parseOzonQuestionId(row);
+  if (questionId == null || !ozonOverride) return null;
+  try {
+    const info = await integrationsService._ozonApiPost(
+      '/v1/question/info',
+      { question_id: questionId },
+      { profileId, ozonOverride }
+    );
+    const n = Number(info?.sku);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 function mergeOzonRawAfterAnswer(row, trimmed) {
   const mergedRaw = { ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}) };
   const answers = Array.isArray(mergedRaw.answers) ? [...mergedRaw.answers] : [];
@@ -1002,8 +1036,34 @@ function mergeWbRawAfterAnswer(row, trimmed) {
   return mergedRaw;
 }
 
-async function submitAnswerOzon(profileId, row, text, organizationId = null) {
-  const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', { profileId, organizationId });
+function mergeYandexRawAfterAnswer(row, trimmed) {
+  const mergedRaw = { ...(row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {}) };
+  const answers = Array.isArray(mergedRaw.answers) ? [...mergedRaw.answers] : [];
+  let updated = false;
+  for (let i = answers.length - 1; i >= 0; i--) {
+    if (inferYandexAnswerAuthor(answers[i]) === 'seller') {
+      answers[i] = {
+        ...answers[i],
+        text: trimmed,
+        createdAt: answers[i].createdAt ?? answers[i].created_at ?? new Date().toISOString(),
+      };
+      updated = true;
+      break;
+    }
+  }
+  if (!updated) {
+    answers.push({
+      text: trimmed,
+      author: { type: 'BUSINESS' },
+      createdAt: new Date().toISOString(),
+    });
+  }
+  mergedRaw.answers = answers;
+  return mergedRaw;
+}
+
+async function submitAnswerOzon(profileId, row, text, _organizationId = null) {
+  const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId);
   const ozonOverride =
     ozonCfg?.client_id && ozonCfg?.api_key
       ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
@@ -1011,6 +1071,12 @@ async function submitAnswerOzon(profileId, row, text, organizationId = null) {
   const questionId = parseOzonQuestionId(row);
   if (questionId == null) {
     const err = new Error('Ozon: не удалось определить ID вопроса (question_id).');
+    err.statusCode = 400;
+    throw err;
+  }
+  const sku = await resolveOzonQuestionSku(profileId, row, ozonOverride);
+  if (sku == null) {
+    const err = new Error('Ozon: не удалось определить SKU товара для ответа.');
     err.statusCode = 400;
     throw err;
   }
@@ -1028,7 +1094,7 @@ async function submitAnswerOzon(profileId, row, text, organizationId = null) {
     try {
       await integrationsService._ozonApiPost(
         '/v1/question/answer/update',
-        { question_id: questionId, answer_id: existingAnswerId, text },
+        { question_id: questionId, answer_id: existingAnswerId, sku, text },
         { profileId, ozonOverride }
       );
       return;
@@ -1046,7 +1112,7 @@ async function submitAnswerOzon(profileId, row, text, organizationId = null) {
   try {
     await integrationsService._ozonApiPost(
       '/v1/question/answer/create',
-      { question_id: questionId, text },
+      { question_id: questionId, sku, text },
       { profileId, ozonOverride }
     );
   } catch (e) {
@@ -1059,11 +1125,8 @@ async function submitAnswerOzon(profileId, row, text, organizationId = null) {
   }
 }
 
-async function submitAnswerWildberries(profileId, row, text, organizationId = null) {
-  let config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId });
-  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
-    config = await integrationsService.getMarketplaceConfig('wildberries', { profileId, organizationId: null });
-  }
+async function submitAnswerWildberries(profileId, row, text, _organizationId = null) {
+  const config = await getQuestionsMarketplaceConfig('wildberries', profileId);
   const raw = config?.api_key ?? config?.apiKey;
   const apiKey = raw ? integrationsService._normalizeWbToken(raw) : null;
   if (!apiKey) {
@@ -1367,24 +1430,15 @@ function parseYandexQuestionId(row) {
   return Number.isFinite(n) && n >= 1 ? n : null;
 }
 
-async function submitAnswerYandex(profileId, row, text, organizationId = null) {
-  let config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId });
-  let didFallback = false;
-  if ((!config?.api_key || !String(config?.api_key).trim()) && organizationId != null) {
-    config = await integrationsService.getMarketplaceConfig('yandex', { profileId, organizationId: null });
-    didFallback = true;
-  }
+async function submitAnswerYandex(profileId, row, text, _organizationId = null) {
+  const config = await getQuestionsMarketplaceConfig('yandex', profileId);
   const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
   if (!apiKey) {
     const err = new Error(
       'Яндекс.Маркет: не настроен Api-Key (нужен доступ «Общение с покупателями» / communication).'
     );
     err.statusCode = 400;
-    logger.warn('[MarketplaceQuestions] Yandex api_key missing for answer', {
-      profileId,
-      organizationId,
-      didFallback,
-    });
+    logger.warn('[MarketplaceQuestions] Yandex api_key missing for answer', { profileId });
     throw err;
   }
   const { businessId } = await getYandexBusinessAndCampaigns(config);
@@ -1404,16 +1458,15 @@ async function submitAnswerYandex(profileId, row, text, organizationId = null) {
     throw err;
   }
   const agent = getYandexHttpsAgent();
-  const thread = buildThreadMessagesFromRow({
-    marketplace: 'yandex',
-    rawPayload: row.raw_payload,
-    body: row.body,
-    answerText: row.answer_text,
-    sourceCreatedAt: row.source_created_at,
-  });
-  const lastIsBuyer = threadLastMessageIsBuyer(thread);
+  const needsNewReply = rowNeedsSellerReply(row);
   let body;
-  if (!lastIsBuyer) {
+  if (needsNewReply) {
+    body = {
+      operationType: 'CREATE',
+      parentEntityId: { id: questionId, type: 'QUESTION' },
+      text,
+    };
+  } else {
     const answerId = getYandexLastSellerAnswerId(row.raw_payload);
     if (answerId != null && Number.isFinite(answerId) && answerId >= 1) {
       body = {
@@ -1428,13 +1481,15 @@ async function submitAnswerYandex(profileId, row, text, organizationId = null) {
         text,
       };
     }
-  } else {
-    body = {
-      operationType: 'CREATE',
-      parentEntityId: { id: questionId, type: 'QUESTION' },
-      text,
-    };
   }
+  logger.info('[MarketplaceQuestions] Yandex answer request', {
+    profileId,
+    questionRowId: String(row.id),
+    questionId,
+    businessId,
+    operationType: body.operationType,
+    textLen: String(text ?? '').length,
+  });
   const url = `https://api.partner.market.yandex.ru/v1/businesses/${businessId}/goods-questions/update`;
   const response = await fetch(url, {
     method: 'POST',
@@ -1448,7 +1503,14 @@ async function submitAnswerYandex(profileId, row, text, organizationId = null) {
   });
   const respText = await response.text();
   if (!response.ok) {
-    throw new Error(`Яндекс.Маркет API ${response.status}: ${respText.substring(0, 400)}`);
+    const err = new Error(`Яндекс.Маркет API ${response.status}: ${respText.substring(0, 400)}`);
+    err.statusCode =
+      response.status === 401 || response.status === 403
+        ? 403
+        : response.status >= 400 && response.status < 500
+          ? response.status
+          : 502;
+    throw err;
   }
   let json;
   try {
@@ -1488,46 +1550,41 @@ export async function submitMarketplaceQuestionAnswer(profileId, questionRowId, 
     questionRowId: String(questionRowId),
     marketplace: row.marketplace,
     externalId: row.external_id,
+    textLen: trimmed.length,
   });
   const mp = row.marketplace;
   const organizationId = opts.organizationId ?? null;
   if (mp === 'ozon') {
     await submitAnswerOzon(profileId, row, trimmed, organizationId);
-    const saved = await persistRowAfterAnswer(profileId, row, trimmed, organizationId);
+    await marketplaceQuestionsRepo.deleteByIdAndProfile(questionRowId, profileId);
     return {
       id: String(questionRowId),
-      deleted: false,
-      archived: true,
-      needsReply: saved?.needsReply === true,
+      deleted: true,
       marketplace: mp,
     };
   }
   if (mp === 'wildberries') {
     const out = await submitAnswerWildberries(profileId, row, trimmed, organizationId);
     if (!out?.verified) {
-      logger.warn('[MarketplaceQuestions] WB answer sent but not verified; keeping in archive', {
+      logger.warn('[MarketplaceQuestions] WB answer sent but not verified', {
         profileId,
         questionRowId: String(questionRowId),
       });
     }
-    const saved = await persistRowAfterAnswer(profileId, row, trimmed, organizationId);
+    await marketplaceQuestionsRepo.deleteByIdAndProfile(questionRowId, profileId);
     return {
       id: String(questionRowId),
-      deleted: false,
-      archived: true,
-      needsReply: saved?.needsReply === true,
+      deleted: true,
       marketplace: mp,
       pending: !out?.verified,
     };
   }
   if (mp === 'yandex') {
     await submitAnswerYandex(profileId, row, trimmed, organizationId);
-    const saved = await persistRowAfterAnswer(profileId, row, trimmed, organizationId);
+    await marketplaceQuestionsRepo.deleteByIdAndProfile(questionRowId, profileId);
     return {
       id: String(questionRowId),
-      deleted: false,
-      archived: true,
-      needsReply: saved?.needsReply === true,
+      deleted: true,
       marketplace: mp,
     };
   }

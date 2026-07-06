@@ -8,6 +8,7 @@ import { query } from '../config/database.js';
 import stockMovementsService from './stockMovements.service.js';
 import { isKitProductId } from './kitStock.service.js';
 import { readProductWarehouseOnHand } from './productWarehouseQuantity.service.js';
+import { requireWarehouseDocumentScope } from '../utils/stockDocumentScope.js';
 
 class WarehouseReceiptsService {
   constructor() {
@@ -23,6 +24,30 @@ class WarehouseReceiptsService {
       throw err;
     }
     return wid;
+  }
+
+  _normalizeReceiptLines(lines) {
+    const byProduct = new Map();
+    for (const line of lines || []) {
+      const productId =
+        typeof line.productId === 'string'
+          ? parseInt(line.productId, 10)
+          : typeof line.product_id === 'string'
+            ? parseInt(line.product_id, 10)
+            : line.productId ?? line.product_id;
+      if (!productId) continue;
+      const quantity = Math.max(1, parseInt(line.quantity, 10) || 1);
+      const cost = line.cost != null && line.cost !== '' ? parseFloat(line.cost) : null;
+      const key = productId;
+      if (byProduct.has(key)) {
+        const prev = byProduct.get(key);
+        prev.quantity += quantity;
+        if (cost != null && !Number.isNaN(cost)) prev.cost = cost;
+      } else {
+        byProduct.set(key, { productId, quantity, cost: Number.isNaN(cost) ? null : cost });
+      }
+    }
+    return byProduct;
   }
 
   /** Себестоимость строки: из запроса или из карточки товара. */
@@ -49,23 +74,15 @@ class WarehouseReceiptsService {
       throw err;
     }
 
-    const whId = await this._requireReceiptWarehouseId(warehouseId);
+    const scope = requireWarehouseDocumentScope({
+      documentType: 'receipt',
+      organizationId,
+      supplierId,
+      warehouseId,
+    });
+    const whId = await this._requireReceiptWarehouseId(scope.warehouseId);
 
-    const byProduct = new Map();
-    for (const line of lines) {
-      const productId = typeof line.productId === 'string' ? parseInt(line.productId, 10) : line.productId;
-      if (!productId) continue;
-      const quantity = Math.max(1, parseInt(line.quantity, 10) || 1);
-      const cost = line.cost != null && line.cost !== '' ? parseFloat(line.cost) : null;
-      const key = productId;
-      if (byProduct.has(key)) {
-        const prev = byProduct.get(key);
-        prev.quantity += quantity;
-        if (cost != null && !Number.isNaN(cost)) prev.cost = cost;
-      } else {
-        byProduct.set(key, { productId, quantity, cost: Number.isNaN(cost) ? null : cost });
-      }
-    }
+    const byProduct = this._normalizeReceiptLines(lines);
 
     if (byProduct.size === 0) {
       const err = new Error('Добавьте хотя бы одну позицию в приёмку');
@@ -75,7 +92,11 @@ class WarehouseReceiptsService {
 
     let receipt = null;
     try {
-      receipt = await this.receiptsRepo.create({ supplierId, organizationId, documentType: 'receipt' });
+      receipt = await this.receiptsRepo.create({
+        supplierId: scope.supplierId,
+        organizationId: scope.organizationId,
+        documentType: 'receipt',
+      });
       if (!receipt) throw new Error('Не удалось создать приёмку');
 
       const receiptNumber = receipt.receipt_number || `ПТ-${receipt.id}`;
@@ -163,10 +184,28 @@ class WarehouseReceiptsService {
     return (r.rows?.length ?? 0) > 0;
   }
 
-  async _resolveReceiptWarehouseId(receiptId) {
+  async _resolveReceiptWarehouseId(receiptId, profileId = null) {
     const rid = Number(receiptId);
+    let effectiveProfileId = profileId;
+    if (!effectiveProfileId && Number.isFinite(rid) && rid > 0) {
+      try {
+        const pr = await query(
+          `SELECT w.profile_id
+           FROM stock_movements sm
+           INNER JOIN warehouses w ON w.id = sm.warehouse_id
+           WHERE (sm.meta->>'receipt_id')::bigint = $1
+             AND w.profile_id IS NOT NULL
+           ORDER BY sm.id DESC
+           LIMIT 1`,
+          [rid]
+        );
+        effectiveProfileId = pr.rows?.[0]?.profile_id ?? null;
+      } catch {
+        effectiveProfileId = null;
+      }
+    }
     if (!Number.isFinite(rid) || rid < 1) {
-      return this.productsRepository.resolveOwnWarehouseId(null);
+      return this.productsRepository.resolveOwnWarehouseId(null, effectiveProfileId);
     }
     try {
       const r = await query(
@@ -180,16 +219,16 @@ class WarehouseReceiptsService {
       );
       const row = r.rows?.[0];
       if (row?.warehouse_id != null) {
-        return this.productsRepository.resolveOwnWarehouseId(row.warehouse_id);
+        return this.productsRepository.resolveOwnWarehouseId(row.warehouse_id, effectiveProfileId);
       }
       const metaWh = row?.meta?.warehouse_id ?? row?.meta?.warehouseId;
       if (metaWh != null) {
-        return this.productsRepository.resolveOwnWarehouseId(metaWh);
+        return this.productsRepository.resolveOwnWarehouseId(metaWh, effectiveProfileId);
       }
     } catch {
       /* ignore */
     }
-    return this.productsRepository.resolveOwnWarehouseId(null);
+    return this.productsRepository.resolveOwnWarehouseId(null, effectiveProfileId);
   }
 
   /**
@@ -267,26 +306,15 @@ class WarehouseReceiptsService {
       throw err;
     }
 
-    const whId = await this._requireReceiptWarehouseId(warehouseId);
+    const scope = requireWarehouseDocumentScope({
+      documentType: 'return',
+      organizationId,
+      supplierId,
+      warehouseId,
+    });
+    const whId = await this._requireReceiptWarehouseId(scope.warehouseId);
 
-    const byProduct = new Map();
-    for (const line of lines) {
-      const productId =
-        typeof line.productId === 'string'
-          ? parseInt(line.productId, 10)
-          : typeof line.product_id === 'string'
-            ? parseInt(line.product_id, 10)
-            : line.productId ?? line.product_id;
-      if (!productId) continue;
-      const quantity = Math.max(1, parseInt(line.quantity, 10) || 1);
-      const key = productId;
-      if (byProduct.has(key)) {
-        const prev = byProduct.get(key);
-        prev.quantity += quantity;
-      } else {
-        byProduct.set(key, { productId, quantity });
-      }
-    }
+    const byProduct = this._normalizeReceiptLines(lines);
 
     if (!byProduct.size) {
       const err = new Error('Не удалось определить товары в позициях возврата (productId)');
@@ -321,7 +349,11 @@ class WarehouseReceiptsService {
       }
     }
 
-    const receipt = await this.receiptsRepo.create({ supplierId, organizationId, documentType: 'return' });
+    const receipt = await this.receiptsRepo.create({
+      supplierId: scope.supplierId,
+      organizationId: scope.organizationId,
+      documentType: 'return',
+    });
     if (!receipt) throw new Error('Не удалось создать возвратную накладную');
 
     const receiptNumber = receipt.receipt_number || `ВН-${receipt.id}`;
@@ -387,29 +419,25 @@ class WarehouseReceiptsService {
       throw err;
     }
 
-    const whId = await this._requireReceiptWarehouseId(warehouseId);
+    const scope = requireWarehouseDocumentScope({
+      documentType: 'customer_return',
+      organizationId,
+      supplierId: null,
+      warehouseId,
+    });
+    const whId = await this._requireReceiptWarehouseId(scope.warehouseId);
 
-    const receipt = await this.receiptsRepo.create({ supplierId: null, organizationId, documentType: 'customer_return' });
+    const receipt = await this.receiptsRepo.create({
+      supplierId: null,
+      organizationId: scope.organizationId,
+      documentType: 'customer_return',
+    });
     if (!receipt) throw new Error('Не удалось создать документ возврата от клиента');
 
     const receiptNumber = receipt.receipt_number || `ВК-${receipt.id}`;
     const reason = `Возврат от клиента ${receiptNumber}`;
 
-    const byProduct = new Map();
-    for (const line of lines) {
-      const productId = typeof line.productId === 'string' ? parseInt(line.productId, 10) : line.productId;
-      if (!productId) continue;
-      const quantity = Math.max(1, parseInt(line.quantity, 10) || 1);
-      const cost = line.cost != null && line.cost !== '' ? parseFloat(line.cost) : null;
-      const key = productId;
-      if (byProduct.has(key)) {
-        const prev = byProduct.get(key);
-        prev.quantity += quantity;
-        if (cost != null && !Number.isNaN(cost)) prev.cost = cost;
-      } else {
-        byProduct.set(key, { productId, quantity, cost: Number.isNaN(cost) ? null : cost });
-      }
-    }
+    const byProduct = this._normalizeReceiptLines(lines);
 
     for (const [, row] of byProduct) {
       const { productId, quantity } = row;
@@ -465,13 +493,274 @@ class WarehouseReceiptsService {
       [id]
     );
     const link = linkedPr.rows?.[0] || null;
+    const warehouseId = await this._resolveReceiptWarehouseId(id);
     return {
       ...receipt,
       lines,
+      warehouse_id: warehouseId,
       purchase_receipt_id: link?.id != null ? Number(link.id) : null,
       purchase_receipt_status: link?.status ?? null,
       purchase_id: link?.purchase_id != null ? Number(link.purchase_id) : null,
     };
+  }
+
+  async _reverseReceiptLinesStock(receipt, lines, numId) {
+    const receiptNumber =
+      receipt.receipt_number ||
+      (receipt.document_type === 'return'
+        ? `ВН-${numId}`
+        : receipt.document_type === 'customer_return'
+          ? `ВК-${numId}`
+          : `ПТ-${numId}`);
+    const isReturnToSupplier = receipt.document_type === 'return';
+    const isCustomerReturn = receipt.document_type === 'customer_return';
+    const reason = isReturnToSupplier
+      ? `Аннулирование возврата ${receiptNumber}`
+      : isCustomerReturn
+        ? `Аннулирование возврата от клиента ${receiptNumber}`
+        : `Аннулирование приёмки ${receiptNumber}`;
+    const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId);
+    if (stockAlreadyReversed) return { stockSkipped: true, reason, receiptNumber };
+
+    for (const line of lines || []) {
+      const productId = line.product_id ?? line.productId;
+      const quantity = Math.max(0, parseInt(line.quantity, 10) || 0);
+      if (!productId || quantity < 1) continue;
+
+      if (
+        !isReturnToSupplier &&
+        !isCustomerReturn &&
+        (await isKitProductId(productId)) &&
+        (await this._isLegacyKitAssemblyReceipt(numId))
+      ) {
+        const whId = await this._resolveReceiptWarehouseId(numId);
+        await this._reverseLegacyKitAssemblyReceipt({
+          kitProductId: productId,
+          quantity,
+          reason,
+          receiptId: numId,
+          receiptNumber,
+          warehouseId: whId,
+        });
+        continue;
+      }
+
+      const reverseDelta = isReturnToSupplier || isCustomerReturn ? quantity : -quantity;
+      const reverseType = isCustomerReturn
+        ? 'customer_return'
+        : isReturnToSupplier
+          ? 'return_to_supplier'
+          : 'manual';
+      const whId = await this._resolveReceiptWarehouseId(numId);
+      await stockMovementsService.applyChange(productId, {
+        delta: reverseDelta,
+        type: reverseType,
+        reason,
+        meta: {
+          receipt_id: numId,
+          receipt_number: receiptNumber,
+          warehouse_id: whId,
+          deleted: true,
+          receipt_reversal: true,
+        },
+      });
+    }
+    return { stockSkipped: false, reason, receiptNumber };
+  }
+
+  async _applyDocumentLinesStock({
+    receipt,
+    receiptId,
+    receiptNumber,
+    warehouseId,
+    linesByProduct,
+    documentType,
+  }) {
+    const isReturnToSupplier = documentType === 'return';
+    const isCustomerReturn = documentType === 'customer_return';
+    const reason = isReturnToSupplier
+      ? `Возврат поставщику ${receiptNumber}`
+      : isCustomerReturn
+        ? `Возврат от клиента ${receiptNumber}`
+        : `Поступление ${receiptNumber}`;
+
+    for (const [, row] of linesByProduct) {
+      const { productId, quantity } = row;
+      const cost =
+        row.cost != null && row.cost !== ''
+          ? await this._resolveLineCost(productId, row.cost)
+          : !isReturnToSupplier
+            ? await this._resolveLineCost(productId, null)
+            : null;
+      const isKit = await isKitProductId(productId);
+
+      if (isReturnToSupplier) {
+        let onHand;
+        if (isKit) {
+          const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
+          const metrics = await computeAvailableQuantity(productId, {
+            warehouseId,
+            supplierSyncEnabled: false,
+          });
+          onHand = Math.max(0, Number(metrics.onHand) || 0);
+        } else {
+          onHand = await readProductWarehouseOnHand(productId, warehouseId);
+        }
+        if (onHand < quantity) {
+          const product = await this.productsRepository.findById(productId);
+          const label = product?.sku || product?.name || `#${productId}`;
+          const err = new Error(`Недостаточно товара на складе: ${label} (доступно ${onHand}, нужно ${quantity})`);
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+
+      await this.receiptsRepo.addLine({
+        receiptId,
+        productId,
+        quantity,
+        cost: cost != null && cost >= 0 && !isReturnToSupplier ? cost : null,
+      });
+
+      if (isReturnToSupplier) {
+        const extraMeta = {
+          receipt_id: receiptId,
+          receipt_number: receiptNumber,
+          warehouse_id: warehouseId,
+        };
+        if (!isKit) {
+          const kc = await query(
+            `SELECT kit_product_id, quantity FROM kit_components WHERE component_product_id = $1 LIMIT 1`,
+            [productId]
+          );
+          if (kc.rows?.[0]?.kit_product_id != null) {
+            const perKit = Math.max(1, parseInt(kc.rows[0].quantity, 10) || 1);
+            extraMeta.kit_component_return_to_supplier = true;
+            extraMeta.kit_product_id = Number(kc.rows[0].kit_product_id);
+            extraMeta.kit_assemblable_units_lost = Math.max(1, Math.floor(quantity / perKit));
+          }
+        }
+        await stockMovementsService.applyChange(productId, {
+          delta: -quantity,
+          type: 'return_to_supplier',
+          reason,
+          meta: extraMeta,
+        });
+      } else if (isCustomerReturn) {
+        await stockMovementsService.applyChange(productId, {
+          delta: quantity,
+          type: 'customer_return',
+          reason,
+          meta: {
+            receipt_id: receiptId,
+            receipt_number: receiptNumber,
+            warehouse_id: warehouseId,
+            ...(isKit ? { kit_customer_return: true } : {}),
+          },
+        });
+        if (cost != null && !Number.isNaN(cost) && cost >= 0) {
+          await this.productsRepository.update(productId, { cost });
+        }
+      } else {
+        await stockMovementsService.applyChange(productId, {
+          delta: quantity,
+          type: 'receipt',
+          reason,
+          meta: {
+            receipt_id: receiptId,
+            receipt_number: receiptNumber,
+            warehouse_id: warehouseId,
+            ...(isKit ? { kit_receipt: true } : {}),
+          },
+        });
+        if (cost != null && !Number.isNaN(cost) && cost >= 0) {
+          await this.productsRepository.update(productId, { cost });
+        }
+      }
+    }
+  }
+
+  /**
+   * Редактирование приёмки / возврата: откат движений, обновление шапки и строк, повторное проведение.
+   */
+  async updateReceipt(
+    id,
+    { organizationId = null, supplierId = null, warehouseId = null, lines = [], profileId = null } = {}
+  ) {
+    const numId = parseInt(id, 10);
+    if (!numId || Number.isNaN(numId)) {
+      const err = new Error('Некорректный ID документа');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!Array.isArray(lines) || !lines.length) {
+      const err = new Error('Добавьте хотя бы одну позицию');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const receipt = await this.getByIdWithLines(numId);
+    if (!receipt) {
+      const err = new Error('Документ не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const linkedPr = await query(
+      `SELECT pr.id FROM purchase_receipts pr WHERE pr.warehouse_receipt_id = $1 LIMIT 1`,
+      [numId]
+    );
+    if ((linkedPr.rows?.length ?? 0) > 0) {
+      if (receipt.document_type !== 'receipt') {
+        const err = new Error('Документ из закупки можно редактировать только как приёмку');
+        err.statusCode = 400;
+        throw err;
+      }
+      const purchasesService = (await import('./purchases.service.js')).default;
+      await purchasesService.updateWarehouseReceiptLinkedToPurchase(numId, {
+        organizationId,
+        supplierId,
+        warehouseId,
+        lines,
+        profileId,
+      });
+      return this.getByIdWithLines(numId);
+    }
+
+    const documentType = receipt.document_type || 'receipt';
+    const scope = requireWarehouseDocumentScope({
+      documentType,
+      organizationId,
+      supplierId,
+      warehouseId,
+    });
+    const whId = await this._requireReceiptWarehouseId(scope.warehouseId);
+    const byProduct = this._normalizeReceiptLines(lines);
+    if (!byProduct.size) {
+      const err = new Error('Добавьте хотя бы одну позицию');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const oldLines = receipt.lines || [];
+    await this._reverseReceiptLinesStock(receipt, oldLines, numId);
+    await this.receiptsRepo.updateHeader(numId, {
+      supplierId: scope.supplierId,
+      organizationId: scope.organizationId,
+    });
+    await this.receiptsRepo.deleteLines(numId);
+
+    const receiptNumber = receipt.receipt_number || `ПТ-${numId}`;
+    await this._applyDocumentLinesStock({
+      receipt,
+      receiptId: numId,
+      receiptNumber,
+      warehouseId: whId,
+      linesByProduct: byProduct,
+      documentType,
+    });
+
+    return this.getByIdWithLines(numId);
   }
 
   /**
@@ -506,64 +795,13 @@ class WarehouseReceiptsService {
 
     const receipt = await this.getByIdWithLines(numId);
     if (!receipt) return null;
-    const receiptNumber = receipt.receipt_number ||
-      (receipt.document_type === 'return' ? `ВН-${numId}` : (receipt.document_type === 'customer_return' ? `ВК-${numId}` : `ПТ-${numId}`));
-    const lines = receipt.lines || await this.receiptsRepo.getLinesWithProducts(numId);
-    const isReturnToSupplier = receipt.document_type === 'return';
-    const isCustomerReturn = receipt.document_type === 'customer_return';
-    const reason = isReturnToSupplier
-      ? `Аннулирование возврата ${receiptNumber}`
-      : (isCustomerReturn ? `Аннулирование возврата от клиента ${receiptNumber}` : `Аннулирование приёмки ${receiptNumber}`);
+    const lines = receipt.lines || (await this.receiptsRepo.getLinesWithProducts(numId));
     const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId);
-    if (stockAlreadyReversed) {
-      await this.receiptsRepo.delete(numId);
-      return { deleted: true, id: numId, stockSkipped: true };
-    }
-    for (const line of lines) {
-      const productId = line.product_id;
-      const quantity = Math.max(0, parseInt(line.quantity, 10) || 0);
-      if (!productId || quantity < 1) continue;
-
-      if (
-        !isReturnToSupplier &&
-        !isCustomerReturn &&
-        (await isKitProductId(productId)) &&
-        (await this._isLegacyKitAssemblyReceipt(numId))
-      ) {
-        const whId = await this._resolveReceiptWarehouseId(numId);
-        await this._reverseLegacyKitAssemblyReceipt({
-          kitProductId: productId,
-          quantity,
-          reason,
-          receiptId: numId,
-          receiptNumber,
-          warehouseId: whId
-        });
-        continue;
-      }
-
-      const reverseDelta = isReturnToSupplier ? quantity : -quantity;
-      const reverseType = isCustomerReturn
-        ? 'customer_return'
-        : isReturnToSupplier
-          ? 'return_to_supplier'
-          : 'manual';
-      const whId = await this._resolveReceiptWarehouseId(numId);
-      await stockMovementsService.applyChange(productId, {
-        delta: reverseDelta,
-        type: reverseType,
-        reason,
-        meta: {
-          receipt_id: numId,
-          receipt_number: receiptNumber,
-          warehouse_id: whId,
-          deleted: true,
-          receipt_reversal: true
-        }
-      });
+    if (!stockAlreadyReversed) {
+      await this._reverseReceiptLinesStock(receipt, lines, numId);
     }
     await this.receiptsRepo.delete(numId);
-    return { deleted: true, id: numId };
+    return { deleted: true, id: numId, stockSkipped: stockAlreadyReversed };
   }
 }
 

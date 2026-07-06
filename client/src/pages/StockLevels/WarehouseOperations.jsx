@@ -18,6 +18,7 @@ import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
 import { useWarehouses } from '../../hooks/useWarehouses';
 import { Button } from '../../components/common/Button/Button';
+import { InviteUserButton } from '../../components/common/InviteUserButton/InviteUserButton';
 import { FastScanInput } from '../../components/common/FastScanInput/FastScanInput';
 import { Modal } from '../../components/common/Modal/Modal';
 import { playEventSound, SOUND_EVENTS } from '../../utils/soundSettings';
@@ -103,19 +104,6 @@ function warehouseScanErrorMessage(e, fallback = 'Товар не найден')
   const m = e?.response?.data?.message ?? e?.response?.data?.error ?? e?.message;
   const s = String(m || fallback).trim();
   return s || fallback;
-}
-
-function buildInventoryLiveSessionUrl(sessionId) {
-  const sid = String(sessionId || '').trim();
-  if (!sid) return '';
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.set('op', 'inventory');
-    url.searchParams.set('inv_session', sid);
-    return url.toString();
-  } catch {
-    return `/stock-levels/warehouse?op=inventory&inv_session=${encodeURIComponent(sid)}`;
-  }
 }
 
 function readInventoryLiveDraft() {
@@ -310,10 +298,7 @@ export function WarehouseOperations({
   const boxQtyDebounceRef = useRef(null);
   const BOX_QTY_APPLY_MS = 2000;
   const [inviteUsers, setInviteUsers] = useState([]);
-  const [inviteUserId, setInviteUserId] = useState('');
-  const [inventoryInviteUserId, setInventoryInviteUserId] = useState('');
   const [inviteBusy, setInviteBusy] = useState(false);
-  const [inventoryLiveLinkCopied, setInventoryLiveLinkCopied] = useState(false);
   const [inventoryLiveDraft, setInventoryLiveDraft] = useState(null);
   const [receiptDeleteLoading, setReceiptDeleteLoading] = useState(false);
   const [inventoryDeleteLoading, setInventoryDeleteLoading] = useState(false);
@@ -322,7 +307,6 @@ export function WarehouseOperations({
     setReceiptSessionEnabled(false);
     setReceiptSessionId('');
     setReceiptSessionOwnerUserId(null);
-    setInviteUserId('');
     setLookupError(null);
     setOpMessage(null);
     setReceiptList([]);
@@ -947,19 +931,12 @@ export function WarehouseOperations({
     setInventoryLiveEnabled(false);
     setInventoryLiveSessionId('');
     setInventoryLiveOwnerUserId(null);
-    setInventoryInviteUserId('');
-    setInventoryLiveLinkCopied(false);
     syncInventoryLiveSessionInUrl('');
     if (clearDraft) {
       clearInventoryLiveDraft();
       setInventoryLiveDraft(null);
     }
   }, []);
-
-  const inventoryLiveInviteUrl = useMemo(
-    () => (inventoryLiveSessionId ? buildInventoryLiveSessionUrl(inventoryLiveSessionId) : ''),
-    [inventoryLiveSessionId]
-  );
 
   const startInventoryLiveSession = useCallback(async () => {
     if (!inventorySessionWarehouseId) {
@@ -1014,18 +991,6 @@ export function WarehouseOperations({
     inventoryEditingSessionId,
     applyInventoryLiveStateToRows,
   ]);
-
-  const copyInventoryLiveInviteLink = useCallback(async () => {
-    const url = inventoryLiveInviteUrl;
-    if (!url) return;
-    try {
-      await navigator.clipboard.writeText(url);
-      setInventoryLiveLinkCopied(true);
-      window.setTimeout(() => setInventoryLiveLinkCopied(false), 2500);
-    } catch {
-      setLookupError('Не удалось скопировать ссылку — выделите её вручную и скопируйте');
-    }
-  }, [inventoryLiveInviteUrl]);
 
   const joinInventoryLiveSessionFromUrl = useCallback(
     async (sid) => {
@@ -1207,10 +1172,6 @@ export function WarehouseOperations({
           return true;
         });
         setInviteUsers(filtered);
-        // Если в селекте был выбран "сам себя" — сбрасываем.
-        if (meId != null && inviteUserId && Number(inviteUserId) === meId) {
-          setInviteUserId('');
-        }
       } catch {
         if (!cancelled) setInviteUsers([]);
       }
@@ -1218,7 +1179,7 @@ export function WarehouseOperations({
     return () => {
       cancelled = true;
     };
-  }, [addReceiptModalOpen, receiptSessionEnabled, user?.id, user?.userId, user?.email, inviteUserId]);
+  }, [addReceiptModalOpen, receiptSessionEnabled, user?.id, user?.userId, user?.email]);
 
   useEffect(() => {
     if (!RECEIPT_DOCUMENT_TYPE_BY_MODE[mode]) return;
@@ -3612,17 +3573,11 @@ export function WarehouseOperations({
               )}
 
               {!isInventoryLiveGuest && (
-                <div className="warehouse-ops-live-invite-panel">
-                  <h4 className="warehouse-ops-live-invite-title">Пригласить коллег / подключить другое устройство</h4>
-                  <p className="warehouse-ops-hint warehouse-ops-live-invite-lead">
-                    {inventoryEditingSessionId
-                      ? `Редактируется документ №${inventoryEditingSessionId}. Совместный пересчёт синхронизирует строки между участниками; сохранение обновит этот документ.`
-                      : 'Несколько человек могут сканировать в один список с телефонов, планшетов или других компьютеров.'}
-                  </p>
+                <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                   {!inventorySessionWarehouseId ? (
-                    <p className="warehouse-ops-hint warehouse-ops-live-invite-warn">
-                      Сначала выберите склад инвентаризации выше.
-                    </p>
+                    <span className="muted" style={{ fontSize: 13 }}>
+                      Выберите склад для совместного пересчёта.
+                    </span>
                   ) : !inventoryLiveEnabled || !inventoryLiveSessionId ? (
                     <Button
                       type="button"
@@ -3631,99 +3586,42 @@ export function WarehouseOperations({
                     >
                       Включить совместный пересчёт
                     </Button>
-                  ) : null}
-
-                  {inventoryLiveEnabled && inventoryLiveSessionId ? (
-                    <div className="warehouse-ops-live-invite-active">
-                      <div className="warehouse-ops-live-invite-code-row">
-                        <span className="warehouse-ops-live-invite-label">Код сессии</span>
-                        <code className="warehouse-ops-live-invite-code">{inventoryLiveSessionId}</code>
-                      </div>
-                      <div className="warehouse-ops-live-invite-link-row">
-                        <span className="warehouse-ops-live-invite-label">Ссылка для другого устройства</span>
-                        <input
-                          type="text"
-                          className="warehouse-ops-input warehouse-ops-live-invite-url"
-                          readOnly
-                          value={inventoryLiveInviteUrl}
-                          onFocus={(e) => e.target.select()}
-                        />
-                        <Button type="button" variant="secondary" onClick={copyInventoryLiveInviteLink}>
-                          {inventoryLiveLinkCopied ? 'Скопировано' : 'Копировать ссылку'}
-                        </Button>
-                      </div>
-                      <p className="warehouse-ops-hint" style={{ marginTop: 8, marginBottom: 0 }}>
-                        Откройте ссылку на другом устройстве (тот же профиль ERP) или выберите пользователя ниже —
-                        придёт уведомление с кнопкой «Открыть инвентаризацию».
-                      </p>
-                      <div className="warehouse-ops-live-invite-users" style={{ marginTop: 16 }}>
-                        <label>Пригласить пользователя</label>
-                        <div
-                          style={{
-                            display: 'flex',
-                            gap: 10,
-                            flexWrap: 'wrap',
-                            alignItems: 'center',
-                            marginTop: 8,
-                          }}
-                        >
-                          <select
-                            className="warehouse-ops-select"
-                            value={inventoryInviteUserId}
-                            onChange={(e) => setInventoryInviteUserId(e.target.value)}
-                            style={{ minWidth: 260 }}
-                          >
-                            <option value="">— Выберите пользователя —</option>
-                            {(inviteUsers || []).map((u) => (
-                              <option key={u.id} value={u.id}>
-                                {(u.full_name ||
-                                  [u.last_name, u.first_name].filter(Boolean).join(' ') ||
-                                  u.email ||
-                                  `User #${u.id}`) + (u.email ? ` (${u.email})` : '')}
-                              </option>
-                            ))}
-                          </select>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            disabled={inviteBusy || !inventoryInviteUserId}
-                            onClick={async () => {
-                              const sid = String(inventoryLiveSessionId || '').trim();
-                              const uid = inventoryInviteUserId ? Number(inventoryInviteUserId) : null;
-                              if (!sid || !uid || Number.isNaN(uid) || inviteBusy) return;
-                              try {
-                                setInviteBusy(true);
-                                await inventorySessionsApi.inviteToSession(sid, { userId: uid });
-                                setOpMessage('Приглашение отправлено в уведомления.');
-                              } catch (ex) {
-                                setLookupError(
-                                  ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение'
-                                );
-                              } finally {
-                                setInviteBusy(false);
-                              }
-                            }}
-                          >
-                            {inviteBusy ? 'Отправляю…' : 'Отправить приглашение'}
-                          </Button>
-                        </div>
-                      </div>
-                      <div style={{ marginTop: 12 }}>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          onClick={() => {
-                            leaveInventoryLiveSession(true);
-                            if (!inventoryEditingSessionId) {
-                              setInventoryNewRows([]);
-                            }
-                          }}
-                        >
-                          Выйти из совместного пересчёта
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
+                  ) : (
+                    <>
+                      <InviteUserButton
+                        users={inviteUsers}
+                        busy={inviteBusy}
+                        excludeUserId={user?.id ?? user?.userId}
+                        onInvite={async (uid) => {
+                          const sid = String(inventoryLiveSessionId || '').trim();
+                          if (!sid || inviteBusy) return;
+                          try {
+                            setInviteBusy(true);
+                            await inventorySessionsApi.inviteToSession(sid, { userId: uid });
+                            setOpMessage('Приглашение отправлено в уведомления.');
+                          } catch (ex) {
+                            setLookupError(
+                              ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение'
+                            );
+                          } finally {
+                            setInviteBusy(false);
+                          }
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => {
+                          leaveInventoryLiveSession(true);
+                          if (!inventoryEditingSessionId) {
+                            setInventoryNewRows([]);
+                          }
+                        }}
+                      >
+                        Выйти из совместного пересчёта
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -4790,11 +4688,6 @@ export function WarehouseOperations({
               />
               <span>Общая приёмка (несколько устройств)</span>
             </label>
-            {receiptSessionEnabled && receiptSessionId && (
-              <span className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
-                Код: <code>{receiptSessionId}</code> · откройте на другом устройстве ссылку с <code>?session={receiptSessionId}</code>
-              </span>
-            )}
           </div>
           )}
           {receiptSessionEnabled && receiptSessionId && (
@@ -4816,54 +4709,25 @@ export function WarehouseOperations({
           )}
           {receiptSessionEnabled && receiptSessionId && !isReceiptSessionGuest && (
             <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
-              <label>Пригласить пользователя</label>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                <select
-                  className="warehouse-ops-select"
-                  value={inviteUserId}
-                  onChange={(e) => setInviteUserId(e.target.value)}
-                  style={{ minWidth: 260 }}
-                >
-                  <option value="">— Выберите пользователя —</option>
-                  {(inviteUsers || [])
-                    .filter((u) => u && (u.id != null || u.user_id != null || u.userId != null))
-                    .map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {(u.full_name || [u.last_name, u.first_name].filter(Boolean).join(' ') || u.email || `User #${u.id}`) +
-                          (u.email ? ` (${u.email})` : '')}
-                      </option>
-                    ))}
-                </select>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={
-                    inviteBusy ||
-                    !inviteUserId ||
-                    (user?.id != null && Number(inviteUserId) === Number(user.id))
+              <InviteUserButton
+                users={inviteUsers}
+                busy={inviteBusy}
+                excludeUserId={user?.id ?? user?.userId}
+                onInvite={async (uid) => {
+                  const sid = String(receiptSessionId || '').trim();
+                  if (!sid || inviteBusy) return;
+                  try {
+                    setInviteBusy(true);
+                    setLookupError(null);
+                    await receiptsApi.inviteToSession(sid, { userId: uid });
+                    setOpMessage('Приглашение отправлено в уведомления.');
+                  } catch (ex) {
+                    setLookupError(ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение');
+                  } finally {
+                    setInviteBusy(false);
                   }
-                  onClick={async () => {
-                    const sid = String(receiptSessionId || '').trim();
-                    const uid = inviteUserId ? Number(inviteUserId) : null;
-                    if (!sid || !uid || Number.isNaN(uid) || inviteBusy) return;
-                    try {
-                      setInviteBusy(true);
-                      setLookupError(null);
-                      await receiptsApi.inviteToSession(sid, { userId: uid });
-                      setOpMessage('Приглашение отправлено в уведомления.');
-                    } catch (ex) {
-                      setLookupError(ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение');
-                    } finally {
-                      setInviteBusy(false);
-                    }
-                  }}
-                >
-                  {inviteBusy ? 'Отправляю…' : 'Отправить'}
-                </Button>
-              </div>
-              <p className="warehouse-ops-hint" style={{ marginTop: 6 }}>
-                Приглашённый пользователь увидит уведомление и перейдёт сразу в общую приёмку (сканирование).
-              </p>
+                }}
+              />
             </div>
           )}
           <div className="warehouse-ops-receipt-modes">

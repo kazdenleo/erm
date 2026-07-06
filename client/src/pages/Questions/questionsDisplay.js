@@ -16,6 +16,26 @@ function pickString(...values) {
   return null;
 }
 
+/** Ozon: «Пользователь OZON» и т.п. — не имя покупателя. */
+function isOzonGenericBuyerName(name) {
+  const s = String(name ?? '').trim();
+  if (!s) return true;
+  const lower = s.toLowerCase().replace(/\s+/g, ' ');
+  if (lower === 'пользователь ozon' || lower === 'пользователь озон') return true;
+  if (lower.includes('пользователь') && (lower.includes('ozon') || lower.includes('озон'))) return true;
+  if (lower.includes('скрыть') && lower.includes('данн')) return true;
+  if (lower === 'покупатель' || lower === 'buyer' || lower === 'anonymous') return true;
+  return false;
+}
+
+function sanitizeBuyerName(name, marketplace) {
+  const s = pickString(name);
+  if (!s) return null;
+  const mp = String(marketplace || '').toLowerCase();
+  if (mp === 'ozon' && isOzonGenericBuyerName(s)) return null;
+  return s;
+}
+
 function isSellerAuthorType(type) {
   const t = String(type ?? '').toUpperCase();
   if (!t) return false;
@@ -40,27 +60,43 @@ function authorBuyerName(author) {
  * @param {object|null|undefined} q
  */
 export function extractBuyerName(q) {
-  const direct = pickString(q?.buyerName, q?.customerName);
+  const mp = String(q?.marketplace || '').toLowerCase();
+  const direct = sanitizeBuyerName(pickString(q?.buyerName, q?.customerName), mp);
   if (direct) return direct;
 
   const raw = q?.rawPayload ?? q?.raw_payload;
   if (!raw || typeof raw !== 'object') return null;
 
-  return pickString(
-    authorBuyerName(raw.author),
-    authorBuyerName(raw.questionAuthor),
-    authorBuyerName(raw.question_author),
-    authorBuyerName(raw.user),
-    authorBuyerName(raw.buyer),
-    authorBuyerName(raw.customer),
-    authorBuyerName(raw.client),
-    raw.userName,
-    raw.user_name,
-    raw.customerName,
-    raw.customer_name,
-    raw.buyerName,
-    raw.buyer_name,
-    raw.nickname
+  if (mp === 'ozon') {
+    const ozon = sanitizeBuyerName(
+      pickString(raw.author_name, raw.authorName, authorBuyerName(raw.author)),
+      mp
+    );
+    if (ozon) return ozon;
+  }
+  if (mp === 'wildberries' || mp === 'wb') {
+    const wb = pickString(raw.userName, raw.user_name, raw.clientName, raw.client_name);
+    if (wb) return wb;
+  }
+
+  return sanitizeBuyerName(
+    pickString(
+      authorBuyerName(raw.author),
+      authorBuyerName(raw.questionAuthor),
+      authorBuyerName(raw.question_author),
+      authorBuyerName(raw.user),
+      authorBuyerName(raw.buyer),
+      authorBuyerName(raw.customer),
+      authorBuyerName(raw.client),
+      raw.userName,
+      raw.user_name,
+      raw.customerName,
+      raw.customer_name,
+      raw.buyerName,
+      raw.buyer_name,
+      raw.nickname
+    ),
+    mp
   );
 }
 
@@ -88,6 +124,13 @@ function pickOfferSku(q) {
   if (mp === 'wildberries') {
     const fromApi = wbSupplierArticleFromRaw(raw);
     if (fromApi) return fromApi;
+  }
+  if (mp === 'ozon') {
+    if (raw && typeof raw === 'object') {
+      const offer = pickString(raw.offer_id, raw.offerId);
+      if (offer) return offer;
+      if (raw.sku != null && String(raw.sku).trim() !== '') return String(raw.sku).trim();
+    }
   }
   const direct = q.skuOrOffer ?? q.sku_or_offer;
   if (direct != null && String(direct).trim() !== '') return String(direct).trim();
@@ -119,6 +162,11 @@ function extractArticleOnly(q) {
   return subj;
 }
 
+/** Артикул вопроса для сортировки и отображения в списке. */
+export function getQuestionArticle(q) {
+  return extractArticleOnly(q) || '';
+}
+
 /**
  * @param {{ subject?: string|null, skuOrOffer?: string|null, sku_or_offer?: string|null, marketplace?: string|null, rawPayload?: object|null, raw_payload?: object|null }} q
  * @param {number} [maxLen]
@@ -137,8 +185,15 @@ function productNameFromRaw(q) {
   if (mp === 'wildberries' || mp === 'wb') {
     return pickString(pd.productName, pd.product_name, pd.name, raw.productName, raw.product_name);
   }
+  if (mp === 'ozon') {
+    return pickString(raw.product_name, raw.product_title, raw.productName, raw.name, raw.title);
+  }
   if (mp === 'yandex' || mp === 'ym') {
     return pickString(
+      raw.modelName,
+      raw.model_name,
+      raw.shopSku,
+      raw.shop_sku,
       raw.offer?.name,
       raw.offer?.title,
       raw.productName,
@@ -225,6 +280,28 @@ export function formatProductArticleWithName(q) {
   const name = pickString(fromSubject, productNameFromRaw(q));
   const art = article || extractArticleOnly(q);
   return formatArticleWithProductName(art, name);
+}
+
+/**
+ * Артикул и название товара из вопроса (для окна ответа).
+ * @param {object|null|undefined} q
+ * @returns {{ article: string|null, name: string|null, line: string }}
+ */
+export function getQuestionProductInfo(q) {
+  const { name: fromSubject, article } = parseSubjectNameAndArticle(q);
+  const art = article || extractArticleOnly(q) || null;
+  const rawName = pickString(fromSubject, productNameFromRaw(q));
+  const name = rawName ? stripArticlePrefix(art, rawName) || null : null;
+  const cleanName = name && art && name.toLowerCase() === art.toLowerCase() ? null : name;
+  const line = formatArticleWithProductName(art, cleanName);
+  if (!art && !cleanName && line && line !== 'товар') {
+    return { article: null, name: line, line };
+  }
+  return {
+    article: art,
+    name: cleanName,
+    line,
+  };
 }
 
 /** @param {string|null|undefined} marketplace */

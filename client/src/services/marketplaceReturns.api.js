@@ -24,7 +24,6 @@ export const marketplaceReturnsApi = {
     return {
       waitingCount: typeof payload?.waitingCount === 'number' ? payload.waitingCount : 0,
       totalCount: typeof payload?.totalCount === 'number' ? payload.totalCount : 0,
-      completedCount: typeof payload?.completedCount === 'number' ? payload.completedCount : 0,
       countsByMarketplace: {
         ozon: typeof byMp.ozon === 'number' ? byMp.ozon : 0,
         wildberries: typeof byMp.wildberries === 'number' ? byMp.wildberries : 0,

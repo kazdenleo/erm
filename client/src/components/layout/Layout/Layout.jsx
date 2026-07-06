@@ -4,6 +4,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Header } from '../Header/Header';
 import { Sidebar } from '../Sidebar/Sidebar';
 import { useAuth } from '../../../context/AuthContext.jsx';
@@ -12,9 +13,14 @@ import { ProductCardModalProvider } from '../../../context/ProductCardModalConte
 import { NavSectionGuard } from '../../NavSectionGuard.jsx';
 
 export function Layout({ children }) {
+  const location = useLocation();
   const [isSidebarClosed, setIsSidebarClosed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const { user, profileId, hasOrganizations, loading: authLoading } = useAuth();
+
+  const closeMobileSidebar = useCallback(() => {
+    setIsMobileSidebarOpen(false);
+  }, []);
 
   // Глобальный звук "Новый заказ": работает на любой странице, пока пользователь авторизован.
   useNewOrdersSound({ enabled: Boolean(user?.id), profileId });
@@ -28,12 +34,21 @@ export function Layout({ children }) {
   }, []);
 
   useEffect(() => {
+    closeMobileSidebar();
+  }, [location.pathname, closeMobileSidebar]);
+
+  useEffect(() => {
     if (!isMobileSidebarOpen) return;
     const onKeyDown = (e) => {
-      if (e.key === 'Escape') setIsMobileSidebarOpen(false);
+      if (e.key === 'Escape') closeMobileSidebar();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isMobileSidebarOpen, closeMobileSidebar]);
+
+  useEffect(() => {
+    document.body.classList.toggle('erm-mobile-menu-open', isMobileSidebarOpen);
+    return () => document.body.classList.remove('erm-mobile-menu-open');
   }, [isMobileSidebarOpen]);
 
   return (
@@ -49,11 +64,20 @@ export function Layout({ children }) {
           isMobileSidebarOpen ? 'sidebar-mobile-open' : '',
         ].filter(Boolean).join(' ')}
       >
+        {isMobileSidebarOpen ? (
+          <button
+            type="button"
+            className="sidebar-mobile-overlay"
+            aria-label="Закрыть меню"
+            onClick={closeMobileSidebar}
+          />
+        ) : null}
         <Header
           isSidebarClosed={isSidebarClosed}
           onToggleSidebar={toggleSidebar}
           isMobileSidebarOpen={isMobileSidebarOpen}
           onToggleMobileSidebar={toggleMobileSidebar}
+          onCloseMobileSidebar={closeMobileSidebar}
         />
         <div className="app-main">
           <Sidebar />

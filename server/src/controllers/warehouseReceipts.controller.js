@@ -168,6 +168,33 @@ class WarehouseReceiptsController {
     }
   }
 
+  async update(req, res, next) {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!id) return res.status(400).json({ ok: false, message: 'Некорректный ID' });
+      const { organizationId, supplierId, lines, warehouseId, warehouse_id } = req.body || {};
+      const profileId = req.user?.profileId ?? null;
+      const receipt = await warehouseReceiptsService.updateReceipt(id, {
+        organizationId,
+        supplierId,
+        warehouseId: warehouseId ?? warehouse_id ?? null,
+        lines: Array.isArray(lines) ? lines : [],
+        profileId,
+      });
+      return res.status(200).json({ ok: true, data: receipt });
+    } catch (error) {
+      if (
+        error.statusCode === 400 ||
+        error.statusCode === 403 ||
+        error.statusCode === 404 ||
+        error.statusCode === 409
+      ) {
+        return res.status(error.statusCode).json({ ok: false, message: error.message });
+      }
+      next(error);
+    }
+  }
+
   async delete(req, res, next) {
     try {
       const id = parseInt(req.params.id, 10);

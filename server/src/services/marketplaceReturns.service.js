@@ -3,11 +3,7 @@
  */
 
 import integrationsService from './integrations.service.js';
-import {
-  buildGoodsReturnDateRanges,
-  isWbReturnWaitingPickup,
-  listWbGoodsReturns,
-} from './wbReturns.service.js';
+import { listWbGoodsReturns } from './wbReturns.service.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 
@@ -58,11 +54,8 @@ function isoRangeForDays(days = DEFAULT_DAYS) {
   return { timeFrom: from.toISOString(), timeTo: to.toISOString(), fromYmd: formatDateYmd(from), toYmd: formatDateYmd(to) };
 }
 
-function applyPickupFilter(rows, filter) {
-  const f = String(filter || 'waiting').toLowerCase();
-  if (f === 'all') return rows;
-  if (f === 'completed') return rows.filter((r) => !r.waitingPickup);
-  return rows.filter((r) => r.waitingPickup);
+function filterActiveReturns(rows) {
+  return rows.filter((r) => Boolean(r.waitingPickup));
 }
 
 function sortUnifiedRows(rows) {
@@ -265,7 +258,7 @@ async function listOzonReturns(profileId, options = {}) {
   const { clientId, apiKey } = await resolveOzonCredentials(profileId, options.organizationId ?? null);
   const { timeFrom, timeTo } = isoRangeForDays(options.days);
   const raw = await fetchOzonReturnsRaw({ clientId, apiKey, timeFrom, timeTo });
-  const rows = raw.map(mapOzonRow);
+  const rows = filterActiveReturns(raw.map(mapOzonRow));
   ozonCache.set(key, { at: Date.now(), rows });
   return rows;
 }
@@ -338,13 +331,13 @@ async function listYandexReturns(profileId, options = {}) {
     const chunk = await fetchYmReturnsForCampaign(apiKey, campaignId, query);
     allRaw.push(...chunk);
   }
-  const rows = dedupeUnified(allRaw.map(mapYmRow));
+  const rows = filterActiveReturns(dedupeUnified(allRaw.map(mapYmRow)));
   ymCache.set(key, { at: Date.now(), rows });
   return rows;
 }
 
 async function listWildberriesReturns(profileId, options = {}) {
-  const { items } = await listWbGoodsReturns(profileId, { ...options, filter: 'all' });
+  const { items } = await listWbGoodsReturns(profileId, options);
   return items.map(mapWbRow);
 }
 
@@ -367,7 +360,7 @@ async function fetchMarketplaceSlice(profileId, marketplace, options) {
  * @param {number|string} profileId
  * @param {object} [options]
  * @param {string} [options.marketplace] all | ozon | wildberries | yandex
- * @param {string} [options.filter] waiting | all | completed
+ * @param {string} [options.marketplace] all | ozon | wildberries | yandex
  */
 export async function listMarketplaceReturns(profileId, options = {}) {
   const mpFilter = normalizeMarketplaceFilter(options.marketplace);
@@ -387,35 +380,25 @@ export async function listMarketplaceReturns(profileId, options = {}) {
     })
   );
 
-  const normalized = dedupeUnified(slices.flatMap((s) => s.rows));
-  const filtered = applyPickupFilter(normalized, options.filter);
-  const items = sortUnifiedRows(filtered);
-  const waitingCount = normalized.filter((r) => r.waitingPickup).length;
+  const items = sortUnifiedRows(dedupeUnified(slices.flatMap((s) => s.rows)));
 
   return {
     items,
     meta: {
-      totalFetched: normalized.length,
-      waitingCount,
-      completedCount: normalized.length - waitingCount,
-      filter: String(options.filter || 'waiting').toLowerCase(),
+      waitingCount: items.length,
       marketplace: mpFilter,
-      countsByMarketplace: countWaitingByMarketplace(normalized),
+      countsByMarketplace: countWaitingByMarketplace(items),
       errors: Object.keys(errors).length ? errors : undefined,
-      dateRanges: mpFilter === 'all' || mpFilter === 'wildberries'
-        ? buildGoodsReturnDateRanges({ days: options.days, dateFrom: options.dateFrom, dateTo: options.dateTo })
-        : undefined,
     },
   };
 }
 
 export async function getMarketplaceReturnsStats(profileId, options = {}) {
-  const { meta } = await listMarketplaceReturns(profileId, { ...options, filter: 'all' });
+  const { meta } = await listMarketplaceReturns(profileId, options);
   const byMp = meta.countsByMarketplace || { ozon: 0, wildberries: 0, yandex: 0 };
   return {
     waitingCount: meta.waitingCount,
-    totalCount: meta.totalFetched,
-    completedCount: meta.completedCount,
+    totalCount: meta.waitingCount,
     countsByMarketplace: byMp,
     errors: meta.errors,
   };

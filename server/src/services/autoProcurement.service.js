@@ -118,11 +118,11 @@ async function pickSupplierForProduct(productId, autoSuppliers, qty = 1) {
        AND ss.supplier_id = ANY($2::bigint[])
        AND ss.stock IS NOT NULL
        AND ss.stock >= $3
-     ORDER BY
-       CASE WHEN COALESCE((s.api_config->>'isPriority')::boolean, (s.api_config->>'is_priority')::boolean, false)
-         THEN 0 ELSE 1 END,
-       ss.price ASC NULLS LAST,
-       ss.stock DESC NULLS LAST
+     ORDER BY ss.price ASC NULLS LAST,
+              COALESCE(ss.delivery_days, 999) ASC,
+              CASE WHEN COALESCE((s.api_config->>'isPriority')::boolean, (s.api_config->>'is_priority')::boolean, false)
+                THEN 0 ELSE 1 END,
+              ss.stock DESC NULLS LAST
      LIMIT 1`,
     [productId, ids, need]
   );

@@ -273,6 +273,37 @@ class WarehouseReceiptsRepositoryPG {
     const res = await query('DELETE FROM warehouse_receipts WHERE id = $1 RETURNING id', [numId]);
     return res.rows.length > 0;
   }
+
+  async updateHeader(id, { supplierId = null, organizationId = null } = {}) {
+    const numId = typeof id === 'string' ? parseInt(id, 10) : id;
+    if (!numId || Number.isNaN(numId)) return null;
+    try {
+      const res = await query(
+        `UPDATE warehouse_receipts
+         SET supplier_id = $2, organization_id = $3
+         WHERE id = $1
+         RETURNING *`,
+        [numId, supplierId, organizationId]
+      );
+      return res.rows[0] || null;
+    } catch (err) {
+      if (err.message && /column.*does not exist|organization_id/i.test(err.message)) {
+        const res = await query(
+          `UPDATE warehouse_receipts SET supplier_id = $2 WHERE id = $1 RETURNING *`,
+          [numId, supplierId]
+        );
+        const row = res.rows[0];
+        if (row) row.organization_id = organizationId;
+        return row || null;
+      }
+      throw err;
+    }
+  }
+
+  async deleteLines(receiptId) {
+    const rid = typeof receiptId === 'string' ? parseInt(receiptId, 10) : receiptId;
+    await query(`DELETE FROM warehouse_receipt_lines WHERE receipt_id = $1`, [rid]);
+  }
 }
 
 export default new WarehouseReceiptsRepositoryPG();

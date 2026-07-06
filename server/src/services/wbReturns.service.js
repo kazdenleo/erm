@@ -64,14 +64,24 @@ export function buildGoodsReturnDateRanges({ dateFrom, dateTo, days = DEFAULT_DA
   return ranges;
 }
 
+/** Завершённые / просроченные — не показываем и не кэшируем. */
+export function isWbReturnExcluded(row) {
+  if (row == null || typeof row !== 'object') return true;
+  const st = String(row.status || '').toLowerCase();
+  if (!st) return false;
+  if (/ист[её]к|просроч|срок\s*хранен/.test(st)) return true;
+  if (/получен|выдан|заверш|утилиз|закрыт/.test(st)) return true;
+  return false;
+}
+
 /** Возврат уже на ПВЗ и ждёт, когда продавец заберёт (не «в пути»). */
 export function isWbReturnWaitingPickup(row) {
   if (row == null || typeof row !== 'object') return false;
+  if (isWbReturnExcluded(row)) return false;
   const st = String(row.status || '').toLowerCase();
   if (!st) return false;
 
   if (/пути|транзит|доставля|отправлен|перемещ|в\s*дорог/.test(st)) return false;
-  if (/получен|выдан|заверш|утилиз|закрыт/.test(st)) return false;
 
   if (/готов\s*к\s*выдач|ожидает\s*забор|жд(?:е|ё)т\s*забор|можно\s*забрать|ожидает\s*получен/.test(st)) {
     return true;
@@ -79,6 +89,10 @@ export function isWbReturnWaitingPickup(row) {
   if (/на\s*пвз/.test(st) && !/пути/.test(st)) return true;
 
   return false;
+}
+
+function isWbReturnActive(row) {
+  return !isWbReturnExcluded(row) && isWbReturnWaitingPickup(row);
 }
 
 function normalizeGoodsReturnRow(raw) {
@@ -162,11 +176,8 @@ function dedupeRows(rows) {
   return out;
 }
 
-function applyPickupFilter(rows, filter) {
-  const f = String(filter || 'waiting').toLowerCase();
-  if (f === 'all') return rows;
-  if (f === 'completed') return rows.filter((r) => !r.waitingPickup);
-  return rows.filter((r) => r.waitingPickup);
+function filterActiveWbReturns(rows) {
+  return rows.filter((r) => isWbReturnActive(r));
 }
 
 function sortRows(rows) {
@@ -206,7 +217,7 @@ async function fetchNormalizedGoodsReturns(profileId, options = {}) {
     allRaw.push(...chunk);
   }
 
-  const normalized = dedupeRows(allRaw.map(normalizeGoodsReturnRow));
+  const normalized = filterActiveWbReturns(dedupeRows(allRaw.map(normalizeGoodsReturnRow)));
   goodsReturnCache.set(key, { at: Date.now(), normalized, ranges });
   return { normalized, ranges };
 }
@@ -215,34 +226,27 @@ async function fetchNormalizedGoodsReturns(profileId, options = {}) {
  * @param {number|string} profileId
  * @param {object} [options]
  * @param {string|null} [options.organizationId]
- * @param {string} [options.filter] waiting | all | completed
  * @param {string} [options.dateFrom] YYYY-MM-DD
  * @param {string} [options.dateTo] YYYY-MM-DD
  * @param {number} [options.days]
  */
 export async function listWbGoodsReturns(profileId, options = {}) {
   const { normalized, ranges } = await fetchNormalizedGoodsReturns(profileId, options);
-  const filtered = applyPickupFilter(normalized, options.filter);
-  const items = sortRows(filtered);
+  const items = sortRows(normalized);
 
-  const waitingCount = normalized.filter((r) => r.waitingPickup).length;
   return {
     items,
     meta: {
-      totalFetched: normalized.length,
-      waitingCount,
-      completedCount: normalized.length - waitingCount,
-      filter: String(options.filter || 'waiting').toLowerCase(),
+      waitingCount: items.length,
       dateRanges: ranges,
     },
   };
 }
 
 export async function getWbGoodsReturnsStats(profileId, options = {}) {
-  const { meta } = await listWbGoodsReturns(profileId, { ...options, filter: 'all' });
+  const { meta } = await listWbGoodsReturns(profileId, options);
   return {
     waitingCount: meta.waitingCount,
-    totalCount: meta.totalFetched,
-    completedCount: meta.completedCount,
+    totalCount: meta.waitingCount,
   };
 }

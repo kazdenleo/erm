@@ -32,7 +32,6 @@ class MarketplaceReturnsController {
       data: [],
       meta: {
         waitingCount: 0,
-        totalFetched: 0,
         countsByMarketplace: { ozon: 0, wildberries: 0, yandex: 0 },
       },
     });
@@ -45,7 +44,6 @@ class MarketplaceReturnsController {
       data: {
         waitingCount: 0,
         totalCount: 0,
-        completedCount: 0,
         countsByMarketplace: { ozon: 0, wildberries: 0, yandex: 0 },
       },
     });

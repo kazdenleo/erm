@@ -72,7 +72,7 @@ export const NAV_SECTION_LABELS = {
 export const NAV_SECTION_GROUPS = [
   {
     title: 'Основное',
-    keys: ['analytics', 'products', 'orders', 'assembly', 'shipments', 'prices'],
+    keys: ['analytics', 'products', 'orders', 'prices'],
   },
   {
     title: 'Маркетплейс',

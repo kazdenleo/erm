@@ -5,6 +5,7 @@
 import { query } from '../config/database.js';
 import { extractYandexGoodsQuestionOfferId } from '../utils/yandex-goods-question-offer.js';
 import { buildThreadMessagesFromRow } from '../utils/marketplaceQuestionThread.js';
+import { sanitizeMarketplaceBuyerName } from '../utils/marketplaceBuyerName.js';
 
 /** «Новый» = ждёт ответа продавца: последнее в thread_messages — buyer или ветка ещё не собрана и нет answer_text */
 const SQL_NEEDS_REPLY = `(
@@ -129,15 +130,53 @@ function buyerNameFromRawPayload(marketplace, raw) {
   if (mp === 'yandex' || mp === 'ym') {
     candidates.unshift(o.author?.name, o.author?.nickname);
   }
+  if (mp === 'ozon') {
+    candidates.unshift(o.author_name, o.authorName, o.author?.name);
+  }
+  if (mp === 'wildberries' || mp === 'wb') {
+    candidates.unshift(o.userName, o.user_name, o.clientName, o.client_name);
+  }
 
   for (const v of candidates) {
-    const s = v != null ? String(v).trim() : '';
+    const s = sanitizeMarketplaceBuyerName(v, mp);
     if (s) return s;
   }
   return null;
 }
 
-function rowToApi(row) {
+function ozonArticleFromRawPayload(raw) {
+  const o = parseRawPayloadObject(raw);
+  if (!o) return null;
+  const offer = o.offer_id ?? o.offerId;
+  if (offer != null && String(offer).trim() !== '') return String(offer).trim();
+  if (o.sku != null && String(o.sku).trim() !== '') return String(o.sku).trim();
+  return null;
+}
+
+function resolveDisplayCreatedAt(row) {
+  if (row.source_created_at != null) {
+    const d = new Date(row.source_created_at);
+    if (!Number.isNaN(d.getTime())) return row.source_created_at;
+  }
+  const raw = parseRawPayloadObject(row.raw_payload);
+  if (raw && typeof raw === 'object') {
+    const mp = String(row.marketplace || '').toLowerCase();
+    const cand =
+      mp === 'ozon'
+        ? [raw.published_at, raw.publishedAt, raw.created_at, raw.createdAt]
+        : mp === 'wildberries' || mp === 'wb'
+          ? [raw.createdDate, raw.created_at]
+          : [raw.createdAt, raw.created_at];
+    for (const v of cand) {
+      if (v == null || v === '') continue;
+      const d = new Date(v);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  }
+  return row.synced_at ?? row.created_at ?? null;
+}
+
+function rowToApi(row, opts = {}) {
   if (!row) return row;
   let subject = row.subject;
   let skuOrOffer = row.sku_or_offer;
@@ -146,6 +185,10 @@ function rowToApi(row) {
     if (fromRaw) {
       skuOrOffer = fromRaw;
     }
+  }
+  if (row.marketplace === 'ozon') {
+    const fromRaw = ozonArticleFromRawPayload(row.raw_payload);
+    if (fromRaw) skuOrOffer = fromRaw;
   }
   if (row.marketplace === 'yandex') {
     const colSku =
@@ -168,17 +211,22 @@ function rowToApi(row) {
     answerText: row.answer_text,
     status: row.status,
     skuOrOffer,
-    sourceCreatedAt: row.source_created_at,
+    sourceCreatedAt: resolveDisplayCreatedAt(row),
     syncedAt: row.synced_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
   if (
-    row.marketplace === 'yandex' &&
     row.raw_payload != null &&
-    (out.skuOrOffer == null || String(out.skuOrOffer).trim() === '')
+    (out.skuOrOffer == null ||
+      String(out.skuOrOffer).trim() === '' ||
+      out.buyerName == null ||
+      out.sourceCreatedAt == null)
   ) {
-    out.rawPayload = row.raw_payload;
+    out.rawPayload = parseRawPayloadObject(row.raw_payload);
+  }
+  if (opts.includeRaw && row.raw_payload != null) {
+    out.rawPayload = parseRawPayloadObject(row.raw_payload);
   }
   let threadMessages = [];
   if (Array.isArray(row.thread_messages) && row.thread_messages.length > 0) {
@@ -229,7 +277,7 @@ class MarketplaceQuestionsRepositoryPG {
   /** Одна строка в формате API (с threadMessages). */
   async findOneApiByIdAndProfile(id, profileId) {
     const row = await this.findRowByIdAndProfile(id, profileId);
-    return row ? rowToApi(row) : null;
+    return row ? rowToApi(row, { includeRaw: true }) : null;
   }
 
   async deleteByIdAndProfile(id, profileId) {
@@ -446,7 +494,8 @@ class MarketplaceQuestionsRepositoryPG {
    */
   async findByProfile(profileId, opts = {}) {
     const marketplace = opts.marketplace != null ? String(opts.marketplace).trim() : null;
-    const answered = opts.answered === 'new' || opts.answered === 'answered' ? opts.answered : 'all';
+    const answered =
+      opts.answered === 'answered' ? 'answered' : opts.answered === 'all' ? 'all' : 'new';
     const limit = Number.isFinite(opts.limit) && opts.limit > 0 ? Math.min(opts.limit, 500) : 200;
     const offset = Number.isFinite(opts.offset) && opts.offset > 0 ? opts.offset : 0;
     const params = [profileId];
