@@ -21,7 +21,12 @@ import {
   groupReserveCoverageKind,
   reserveBadgeClassName
 } from '../../utils/orderReserveBadge.js';
-import { orderCanShowCancel, orderDeleteConfirmMessage } from '../../utils/orderActions.js';
+import {
+  orderCanShowCancel,
+  orderDeleteConfirmMessage,
+  manualOrderCanAcceptWarehouseReturn,
+  buildManualOrderReturnNavigationStateFromDetail,
+} from '../../utils/orderActions.js';
 import './OrderDetail.css';
 
 function orderReserveLineKey(line) {
@@ -947,6 +952,16 @@ export function OrderDetail() {
   const mpName = marketplaceNames[mpKey] || marketplaceNames[marketplace] || marketplace;
   const detail = data?.detail;
   const localLines = data?.localLines;
+  const ermStatus = data?.ermStatus;
+  const manualReturnNav = buildManualOrderReturnNavigationStateFromDetail({
+    marketplace: mpKey,
+    status: ermStatus,
+    orderId,
+    localLines,
+    warehouseId: localLines?.[0]?.warehouseId ?? localLines?.[0]?.warehouse_id ?? null,
+    organizationId: contextOrganizationId,
+    orderGroupId: localLines?.[0]?.orderGroupId ?? localLines?.[0]?.order_group_id ?? null,
+  });
 
   return (
     <div className="card order-detail">
@@ -985,6 +1000,26 @@ export function OrderDetail() {
       {procMessage ? (
         <div className="info" style={{ marginBottom: 12 }}>
           {procMessage}
+        </div>
+      ) : null}
+
+      {mpKey === 'manual' && manualOrderCanAcceptWarehouseReturn(mpKey, ermStatus) && manualReturnNav ? (
+        <div className="order-detail-manual-return" style={{ marginBottom: 16 }}>
+          <Button
+            variant="primary"
+            size="small"
+            onClick={() =>
+              navigate(
+                { pathname: '/stock-levels/warehouse', search: '?op=return_customer' },
+                { state: manualReturnNav }
+              )
+            }
+          >
+            Оформить возврат на склад
+          </Button>
+          <p className="order-detail-local-hint" style={{ marginTop: 8, marginBottom: 0, fontSize: 13, color: 'var(--muted)' }}>
+            Откроется приёмка возврата от клиента с позициями этого заказа.
+          </p>
         </div>
       ) : null}
 
@@ -1035,12 +1070,15 @@ export function OrderDetail() {
           <YandexDetail detail={detail} localLines={localLines} />
         </>
       )}
+      {mpKey === 'manual' && Array.isArray(localLines) && localLines.length > 0 && (
+        <LocalOrderLinesSection localLines={localLines} showQuantity />
+      )}
     </div>
   );
 }
 
 /** Все позиции заказа из локальной БД (для многотоварных заказов YM/Ozon/WB). */
-function LocalOrderLinesSection({ localLines }) {
+function LocalOrderLinesSection({ localLines, showQuantity = false }) {
   const lines = Array.isArray(localLines) ? localLines : [];
   if (!lines.length) return null;
   return (
@@ -1051,6 +1089,7 @@ function LocalOrderLinesSection({ localLines }) {
           const pid = line.productId ?? line.product_id;
           const name = line.productName || line.product_name || line.offerId || '—';
           const art = line.offerId ?? line.marketplaceSku ?? '—';
+          const qty = Math.max(1, Number(line.quantity) || 1);
           return (
             <li key={line.orderLineId ?? line.order_line_id ?? i}>
               <ProductTitleLink productId={pid}>
@@ -1058,7 +1097,12 @@ function LocalOrderLinesSection({ localLines }) {
               </ProductTitleLink>
               <br />
               Артикул: {art}
-              {line.quantity != null ? `, кол-во: ${line.quantity}` : ''}
+              {showQuantity ? (
+                <>
+                  <br />
+                  Количество: {qty} шт.
+                </>
+              ) : null}
             </li>
           );
         })}

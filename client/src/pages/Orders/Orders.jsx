@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useOrders } from '../../hooks/useOrders';
 import { requestNewOrdersSoundCheck } from '../../hooks/useNewOrdersSound';
@@ -54,6 +54,10 @@ import {
   warehouseOptionsForOrganization,
 } from '../../utils/procurementPreview.js';
 import { isProfileProcurementStatusEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
+import {
+  manualOrderCanAcceptWarehouseReturn,
+  buildManualOrderReturnNavigationState,
+} from '../../utils/orderActions.js';
 import './Orders.css';
 import './OrderDetail.css';
 
@@ -264,8 +268,15 @@ function orderRowHasAnyAction(first) {
   if (first.status === 'in_procurement') return true;
   if (first.status === 'in_assembly' || first.status === 'assembled') return true;
   if (orderCanAddToOpenShipment(first)) return true;
+  if (manualOrderCanAcceptWarehouseReturn(first.marketplace, first.status)) return true;
   if (first.marketplace === 'manual') return true;
   return false;
+}
+
+function manualOrderShowMarkShipped(first) {
+  if (normalizeMarketplaceForUI(first?.marketplace) !== 'manual') return false;
+  const st = String(first?.status || '').trim().toLowerCase();
+  return !['shipped', 'in_transit', 'delivered', 'cancelled'].includes(st);
 }
 
 function manualOrderCanEdit(first) {
@@ -410,6 +421,7 @@ const ORDERS_LIST_PAGE_SIZES = [50, 100, 200];
 
 export function Orders() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { profile, selectedOrganizationId: contextOrganizationId, setSelectedOrganizationId } = useAuth();
   const allowPrivateOrders = profile?.allow_private_orders === true;
   const supplierSyncEnabled = profile?.supplier_sync_enabled !== false;
@@ -442,6 +454,13 @@ export function Orders() {
   /** Колонка «Стикер» — на сборке и у собранных (не на «Новый» / «В закупке») */
   const showStickerColumn = shouldShowOrdersStickerColumn(statusFilter);
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
+  useEffect(() => {
+    const sp = new URLSearchParams(location.search);
+    const q = sp.get('search');
+    if (q != null && String(q).trim() !== '') {
+      setOrderSearchQuery(String(q).trim());
+    }
+  }, [location.search]);
   const [statusCounts, setStatusCounts] = useState({ all: 0 });
   /** null — порядок с сервера; asc/desc — по минимальному артикулу в группе */
   const [sortByArticle, setSortByArticle] = useState(null);
@@ -1139,6 +1158,20 @@ export function Orders() {
     } finally {
       setReturnToNewLoadingKey(null);
     }
+  };
+
+  const handleManualOrderWarehouseReturn = (row) => {
+    const navState = buildManualOrderReturnNavigationState(row, {
+      organizationId: contextOrganizationId,
+    });
+    if (!navState?.prefillCustomerReturn?.lines?.length) {
+      setRefreshError('Не удалось собрать позиции заказа для возврата — проверьте, что товары сопоставлены с каталогом');
+      return;
+    }
+    navigate(
+      { pathname: '/stock-levels/warehouse', search: '?op=return_customer' },
+      { state: navState }
+    );
   };
 
   const handleReleaseReserve = async (marketplace, orderId, rowKey) => {
@@ -3773,21 +3806,35 @@ export function Orders() {
                               <i className="pe-7s-pen" aria-hidden />
                             </Button>
                           )}
-                          <Button
-                            variant="secondary"
-                            size="small"
-                            className="orders-action-icon"
-                            onClick={() => handleMarkShipped(first.marketplace, first.orderId, row.key)}
-                            disabled={markShippedLoadingKey === row.key || returnToNewLoadingKey === row.key}
-                            title={`Поставить статус «${getOrderStatusLabel('shipped')}» (для тестирования)`}
-                            aria-label={getOrderStatusLabel('shipped')}
-                          >
-                            {markShippedLoadingKey === row.key ? (
-                              <span className="orders-action-icon__busy" aria-hidden>…</span>
-                            ) : (
-                              <i className="pe-7s-plane" aria-hidden />
-                            )}
-                          </Button>
+                          {manualOrderCanAcceptWarehouseReturn(first.marketplace, first.status) && (
+                            <Button
+                              variant="primary"
+                              size="small"
+                              className="orders-action-icon"
+                              onClick={() => handleManualOrderWarehouseReturn(row)}
+                              title="Оформить возврат товара на склад"
+                              aria-label="Возврат на склад"
+                            >
+                              <i className="pe-7s-back" aria-hidden />
+                            </Button>
+                          )}
+                          {manualOrderShowMarkShipped(first) && (
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              className="orders-action-icon"
+                              onClick={() => handleMarkShipped(first.marketplace, first.orderId, row.key)}
+                              disabled={markShippedLoadingKey === row.key || returnToNewLoadingKey === row.key}
+                              title={`Поставить статус «${getOrderStatusLabel('shipped')}» (для тестирования)`}
+                              aria-label={getOrderStatusLabel('shipped')}
+                            >
+                              {markShippedLoadingKey === row.key ? (
+                                <span className="orders-action-icon__busy" aria-hidden>…</span>
+                              ) : (
+                                <i className="pe-7s-plane" aria-hidden />
+                              )}
+                            </Button>
+                          )}
                         </>
                       )}
                       {!orderRowHasAnyAction(first) && (

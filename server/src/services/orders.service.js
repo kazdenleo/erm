@@ -6357,7 +6357,10 @@ class OrdersService {
       productId: o.productId ?? o.product_id ?? null,
       offerId: o.offerId ?? o.offer_id ?? null,
       marketplaceSku: o.marketplaceSku ?? o.marketplace_sku ?? o.sku ?? null,
-      productName: o.productName ?? o.product_name ?? null
+      productName: o.productName ?? o.product_name ?? null,
+      quantity: Math.max(1, Number(o.quantity) || 1),
+      warehouseId: o.warehouseId ?? o.warehouse_id ?? null,
+      orderGroupId: o.orderGroupId ?? o.order_group_id ?? null,
     });
     const mapped = (rows || []).map(mapRow);
     for (let i = 0; i < mapped.length; i++) {

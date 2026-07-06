@@ -286,6 +286,9 @@ export function WarehouseOperations({
   const [receiptsList, setReceiptsList] = useState([]);
   const [receiptsLoading, setReceiptsLoading] = useState(false);
   const [receiptDetail, setReceiptDetail] = useState(null);
+  const [receiptEditOpen, setReceiptEditOpen] = useState(false);
+  const [receiptEditSaving, setReceiptEditSaving] = useState(false);
+  const [receiptEditForm, setReceiptEditForm] = useState(null);
   const [addReceiptModalOpen, setAddReceiptModalOpen] = useState(false);
   const [receiptSessionEnabled, setReceiptSessionEnabled] = useState(false);
   const [receiptSessionId, setReceiptSessionId] = useState('');
@@ -1424,6 +1427,14 @@ export function WarehouseOperations({
       setOpMessage('Выберите склад приёмки');
       return;
     }
+    if (!String(receiptOrganizationId || '').trim()) {
+      setOpMessage('Выберите организацию');
+      return;
+    }
+    if (!String(receiptSupplierId || '').trim()) {
+      setOpMessage('Выберите поставщика');
+      return;
+    }
     setOpLoading(true);
     setOpMessage(null);
     try {
@@ -1490,6 +1501,109 @@ export function WarehouseOperations({
   const clearReceiptList = () => {
     setReceiptList([]);
     setOpMessage('Список очищен');
+  };
+
+  const openReceiptEdit = () => {
+    if (!receiptDetail?.id) return;
+    if (
+      receiptDetail.purchase_receipt_id &&
+      String(receiptDetail.purchase_receipt_status) === 'scanning'
+    ) {
+      setOpMessage('Приёмка в процессе сканирования — редактируйте в разделе «Закупки»');
+      return;
+    }
+    setReceiptEditForm({
+      id: receiptDetail.id,
+      documentType: receiptDetail.document_type || 'receipt',
+      organizationId: receiptDetail.organization_id != null ? String(receiptDetail.organization_id) : '',
+      supplierId: receiptDetail.supplier_id != null ? String(receiptDetail.supplier_id) : '',
+      warehouseId:
+        receiptDetail.warehouse_id != null
+          ? String(receiptDetail.warehouse_id)
+          : String(receiptWarehouseId || singleWarehouseId || ''),
+      lines: (receiptDetail.lines || []).map((line) => ({
+        lineId: line.id,
+        productId: line.product_id,
+        sku: line.product_sku,
+        name: line.product_name,
+        quantity: Math.max(1, parseInt(line.quantity, 10) || 1),
+        cost: line.cost != null ? String(line.cost) : '',
+      })),
+    });
+    setReceiptEditOpen(true);
+  };
+
+  const updateReceiptEditLine = (index, field, value) => {
+    setReceiptEditForm((prev) => {
+      if (!prev?.lines) return prev;
+      const lines = prev.lines.map((line, i) => {
+        if (i !== index) return line;
+        if (field === 'quantity') {
+          const n = parseInt(value, 10);
+          return { ...line, quantity: Number.isNaN(n) || n < 1 ? 1 : n };
+        }
+        return { ...line, [field]: value };
+      });
+      return { ...prev, lines };
+    });
+  };
+
+  const removeReceiptEditLine = (index) => {
+    setReceiptEditForm((prev) => {
+      if (!prev?.lines) return prev;
+      return { ...prev, lines: prev.lines.filter((_, i) => i !== index) };
+    });
+  };
+
+  const saveReceiptEdit = async () => {
+    const form = receiptEditForm;
+    if (!form?.id) return;
+    if (!String(form.warehouseId || '').trim()) {
+      setOpMessage('Выберите склад');
+      return;
+    }
+    if (!String(form.organizationId || '').trim()) {
+      setOpMessage('Выберите организацию');
+      return;
+    }
+    if (form.documentType !== 'customer_return' && !String(form.supplierId || '').trim()) {
+      setOpMessage('Выберите поставщика');
+      return;
+    }
+    if (!form.lines?.length) {
+      setOpMessage('Добавьте хотя бы одну позицию');
+      return;
+    }
+    setReceiptEditSaving(true);
+    setOpMessage(null);
+    try {
+      const payload = {
+        organizationId: Number(form.organizationId),
+        warehouseId: Number(form.warehouseId),
+        lines: form.lines.map((line) => ({
+          productId: line.productId,
+          quantity: line.quantity,
+          ...(form.documentType !== 'return' && line.cost !== ''
+            ? { cost: parseFloat(String(line.cost).replace(',', '.')) }
+            : {}),
+        })),
+      };
+      if (form.documentType !== 'customer_return') {
+        payload.supplierId = Number(form.supplierId);
+      }
+      const res = await receiptsApi.update(form.id, payload);
+      const updated = res?.data ?? res;
+      setReceiptEditOpen(false);
+      setReceiptEditForm(null);
+      setReceiptDetail(updated);
+      setOpMessage('Документ сохранён');
+      loadReceiptsList();
+      onRefresh?.();
+    } catch (e) {
+      setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось сохранить'));
+    } finally {
+      setReceiptEditSaving(false);
+    }
   };
 
   const handleInventorySessionWarehouseChange = (e) => {
@@ -1977,11 +2091,47 @@ export function WarehouseOperations({
 
   useEffect(() => {
     if (mode !== MODE_RETURN_CUSTOMER) return undefined;
-    const scanCode = String(prefillCustomerReturn?.scanCode || '').trim();
-    if (!scanCode) return undefined;
-    const key = `${scanCode}|${prefillCustomerReturn?.orderId || ''}|${prefillCustomerReturn?.marketplace || ''}`;
+    const prefill = prefillCustomerReturn;
+    if (!prefill || typeof prefill !== 'object') return undefined;
+
+    const linesKey = Array.isArray(prefill.lines)
+      ? prefill.lines.map((l) => `${l.productId}:${l.quantity}`).join('|')
+      : '';
+    const key = `${prefill.source || ''}|${prefill.orderId || ''}|${prefill.marketplace || ''}|${linesKey}|${prefill.scanCode || ''}`;
     if (customerReturnPrefillRef.current === key) return undefined;
     customerReturnPrefillRef.current = key;
+
+    if (prefill.warehouseId != null && String(prefill.warehouseId).trim() !== '') {
+      setCustomerReturnWarehouseId(String(prefill.warehouseId));
+    }
+    if (prefill.organizationId != null && String(prefill.organizationId).trim() !== '') {
+      setCustomerReturnOrganizationId(String(prefill.organizationId));
+    }
+
+    if (Array.isArray(prefill.lines) && prefill.lines.length > 0) {
+      const enriched = prefill.lines.map((line) => {
+        const productId = line.productId;
+        const fromCatalog = (products || []).find((p) => String(p.id) === String(productId));
+        const costRaw = line.cost ?? fromCatalog?.cost;
+        const cost =
+          costRaw != null && costRaw !== '' && Number.isFinite(Number(costRaw)) ? Number(costRaw) : '';
+        return {
+          productId,
+          sku: line.sku || fromCatalog?.sku || '—',
+          name: line.name || fromCatalog?.name || `Товар #${productId}`,
+          quantity: Math.max(1, Number(line.quantity) || 1),
+          cost,
+        };
+      });
+      setCustomerReturnList(enriched);
+      const orderLabel = prefill.orderId ? `ручному заказу ${prefill.orderId}` : 'заказу';
+      setOpMessage(`Список заполнен по ${orderLabel}. Проверьте количество и оформите возврат.`);
+      scrollToCustomerReturnAccept();
+      return undefined;
+    }
+
+    const scanCode = String(prefill.scanCode || '').trim();
+    if (!scanCode) return undefined;
     scrollToCustomerReturnAccept();
     const timer = setTimeout(() => {
       lookupByBarcodeOrSkuThenCustomerReturnOne(scanCode);
@@ -1990,6 +2140,7 @@ export function WarehouseOperations({
   }, [
     mode,
     prefillCustomerReturn,
+    products,
     scrollToCustomerReturnAccept,
     lookupByBarcodeOrSkuThenCustomerReturnOne,
   ]);
@@ -2035,6 +2186,10 @@ export function WarehouseOperations({
     }
     if (!customerReturnWarehouseId) {
       setOpMessage('Выберите склад приёмки возврата');
+      return;
+    }
+    if (!String(customerReturnOrganizationId || '').trim()) {
+      setOpMessage('Выберите организацию');
       return;
     }
     setOpLoading(true);
@@ -2844,7 +2999,9 @@ export function WarehouseOperations({
               </select>
             </div>
             <div className="warehouse-ops-receipt-supplier-row">
-              <label>Организация (от имени которой возврат):</label>
+              <label>
+                Организация (от имени которой возврат) <span className="warehouse-ops-required-star">*</span>
+              </label>
               <select
                 value={returnOrganizationId}
                 onChange={e => setReturnOrganizationId(e.target.value)}
@@ -2857,7 +3014,9 @@ export function WarehouseOperations({
               </select>
             </div>
             <div className="warehouse-ops-receipt-supplier-row">
-              <label>Поставщик:</label>
+              <label>
+                Поставщик <span className="warehouse-ops-required-star">*</span>
+              </label>
               <select
                 value={returnSupplierId}
                 onChange={e => setReturnSupplierId(e.target.value)}
@@ -3060,7 +3219,9 @@ export function WarehouseOperations({
               </select>
             </div>
             <div className="warehouse-ops-receipt-supplier-row">
-              <label>Организация (принимающая возврат):</label>
+              <label>
+                Организация (принимающая возврат) <span className="warehouse-ops-required-star">*</span>
+              </label>
               <select
                 value={customerReturnOrganizationId}
                 onChange={e => setCustomerReturnOrganizationId(e.target.value)}
@@ -4090,6 +4251,14 @@ export function WarehouseOperations({
                   Открыть в закупке
                 </Button>
               ) : null}
+              {!(
+                receiptDetail.purchase_receipt_id &&
+                String(receiptDetail.purchase_receipt_status) === 'scanning'
+              ) ? (
+                <Button variant="secondary" onClick={openReceiptEdit}>
+                  Редактировать
+                </Button>
+              ) : null}
               <Button
                 variant="danger"
                 onClick={async () => {
@@ -4114,6 +4283,157 @@ export function WarehouseOperations({
                 disabled={receiptDeleteLoading}
               >
                 {receiptDeleteLoading ? 'Удаление…' : 'Удалить'}
+              </Button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={receiptEditOpen}
+        onClose={() => {
+          if (receiptEditSaving) return;
+          setReceiptEditOpen(false);
+          setReceiptEditForm(null);
+        }}
+        title={
+          receiptEditForm
+            ? `Редактирование ${receiptEditForm.documentType === 'return' ? 'возврата' : receiptEditForm.documentType === 'customer_return' ? 'возврата от клиента' : 'приёмки'}`
+            : 'Редактирование'
+        }
+        size="xl"
+        closeOnBackdropClick={!receiptEditSaving}
+        closeOnEscape={!receiptEditSaving}
+      >
+        {receiptEditForm && (
+          <>
+            <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
+              Изменения пересчитают остатки на складе: старые движения отменяются, затем проводятся новые.
+            </p>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Склад <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={receiptEditForm.warehouseId}
+                onChange={(e) => setReceiptEditForm((f) => ({ ...f, warehouseId: e.target.value }))}
+                className="warehouse-ops-select"
+                disabled={receiptEditSaving}
+              >
+                <option value="">— Выберите склад —</option>
+                {ownWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+              <label>
+                Организация <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={receiptEditForm.organizationId}
+                onChange={(e) => setReceiptEditForm((f) => ({ ...f, organizationId: e.target.value }))}
+                className="warehouse-ops-select"
+                disabled={receiptEditSaving}
+              >
+                <option value="">— Выберите организацию —</option>
+                {(organizations || []).map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name || o.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {receiptEditForm.documentType !== 'customer_return' ? (
+              <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+                <label>
+                  Поставщик <span className="warehouse-ops-required-star">*</span>
+                </label>
+                <select
+                  value={receiptEditForm.supplierId}
+                  onChange={(e) => setReceiptEditForm((f) => ({ ...f, supplierId: e.target.value }))}
+                  className="warehouse-ops-select"
+                  disabled={receiptEditSaving}
+                >
+                  <option value="">— Выберите поставщика —</option>
+                  {(suppliers || []).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name || s.code || s.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            <div className="warehouse-ops-receipt-list-wrap" style={{ marginTop: 12 }}>
+              <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
+                <thead>
+                  <tr>
+                    <th>Артикул</th>
+                    <th>Товар</th>
+                    <th>Кол-во</th>
+                    {receiptEditForm.documentType !== 'return' ? <th>Себестоимость, ₽</th> : null}
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(receiptEditForm.lines || []).map((line, index) => (
+                    <tr key={`${line.productId}-${index}`}>
+                      <td className="sku-cell">{line.sku || '—'}</td>
+                      <td className="name-cell">{line.name || '—'}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min={1}
+                          value={line.quantity}
+                          onChange={(e) => updateReceiptEditLine(index, 'quantity', e.target.value)}
+                          className="warehouse-ops-qty-input small"
+                          disabled={receiptEditSaving}
+                        />
+                      </td>
+                      {receiptEditForm.documentType !== 'return' ? (
+                        <td>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={line.cost}
+                            onChange={(e) => updateReceiptEditLine(index, 'cost', e.target.value)}
+                            className="warehouse-ops-qty-input small"
+                            disabled={receiptEditSaving}
+                          />
+                        </td>
+                      ) : null}
+                      <td>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="small"
+                          onClick={() => removeReceiptEditLine(index)}
+                          disabled={receiptEditSaving || (receiptEditForm.lines || []).length <= 1}
+                        >
+                          Удалить
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button onClick={saveReceiptEdit} disabled={receiptEditSaving}>
+                {receiptEditSaving ? 'Сохранение…' : 'Сохранить'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setReceiptEditOpen(false);
+                  setReceiptEditForm(null);
+                }}
+                disabled={receiptEditSaving}
+              >
+                Отмена
               </Button>
             </div>
           </>
@@ -4363,6 +4683,40 @@ export function WarehouseOperations({
               ))}
             </select>
             )}
+          </div>
+          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+            <label>
+              Организация <span className="warehouse-ops-required-star">*</span>
+            </label>
+            <select
+              value={receiptOrganizationId}
+              onChange={(e) => setReceiptOrganizationId(e.target.value)}
+              className="warehouse-ops-select"
+            >
+              <option value="">— Выберите организацию —</option>
+              {(organizations || []).map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name || o.id}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+            <label>
+              Поставщик <span className="warehouse-ops-required-star">*</span>
+            </label>
+            <select
+              value={receiptSupplierId}
+              onChange={(e) => setReceiptSupplierId(e.target.value)}
+              className="warehouse-ops-select"
+            >
+              <option value="">— Выберите поставщика —</option>
+              {(suppliers || []).map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name || s.code || s.id}
+                </option>
+              ))}
+            </select>
           </div>
           {isReceiptSessionGuest && (
             <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
@@ -4616,19 +4970,6 @@ export function WarehouseOperations({
               <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или добавляйте из списка выше.</p>
             ) : (
               <>
-                <div className="warehouse-ops-receipt-supplier-row">
-                  <label>Поставщик:</label>
-                  <select
-                    value={receiptSupplierId}
-                    onChange={e => setReceiptSupplierId(e.target.value)}
-                    className="warehouse-ops-select"
-                  >
-                    <option value="">— Не указан —</option>
-                    {(suppliers || []).map(s => (
-                      <option key={s.id} value={s.id}>{s.name || s.code || s.id}</option>
-                    ))}
-                  </select>
-                </div>
                 <div className="warehouse-ops-receipt-list-wrap">
                   <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
                     <thead>
