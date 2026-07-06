@@ -3,13 +3,59 @@ import { normalizeMarketplaceForUI } from './orderListGroupKey.js';
 const MANUAL_WAREHOUSE_RETURN_STATUSES = new Set(['shipped', 'in_transit', 'delivered']);
 
 /** Ручной заказ после отгрузки — можно оформить возврат от клиента на склад. */
-export function manualOrderCanAcceptWarehouseReturn(marketplace, status) {
+export function manualOrderCanAcceptWarehouseReturn(marketplace, status, { shipmentClosed = false } = {}) {
   const mp = normalizeMarketplaceForUI(marketplace);
   if (mp !== 'manual') return false;
-  return MANUAL_WAREHOUSE_RETURN_STATUSES.has(String(status || '').trim().toLowerCase());
+  const st = String(status || '').trim().toLowerCase();
+  if (MANUAL_WAREHOUSE_RETURN_STATUSES.has(st)) return true;
+  // Закрытая отгрузка: остаток списан, статус мог остаться «Собран».
+  if (st === 'assembled' && shipmentClosed === true) return true;
+  return false;
 }
 
-/** Строки возврата из позиций заказа (группа или одна строка). */
+export function isManualMarketplaceOrder(marketplace) {
+  return normalizeMarketplaceForUI(marketplace) === 'manual';
+}
+
+/** Строка списка заказов из localLines (карточка / модалка). */
+export function manualOrderDisplayRowFromLocalLines(localLines, { orderId, warehouseId, orderGroupId } = {}) {
+  const lines = Array.isArray(localLines) ? localLines : [];
+  if (!lines.length) return null;
+  const orders = lines.map((line) => ({
+    marketplace: 'manual',
+    productId: line.productId ?? line.product_id,
+    quantity: line.quantity ?? 1,
+    offerId: line.offerId ?? line.marketplaceSku,
+    productName: line.productName ?? line.product_name,
+    warehouseId: line.warehouseId ?? line.warehouse_id ?? warehouseId ?? null,
+    orderGroupId: line.orderGroupId ?? line.order_group_id ?? orderGroupId ?? null,
+    orderId: line.orderLineId ?? line.order_line_id ?? orderId ?? null,
+  }));
+  const first = {
+    ...orders[0],
+    marketplace: 'manual',
+    orderId: orderGroupId || orderId || orders[0]?.orderId,
+    orderGroupId: orderGroupId ?? orders[0]?.orderGroupId ?? null,
+    warehouseId: warehouseId ?? orders[0]?.warehouseId ?? null,
+  };
+  return { first, orders };
+}
+
+/** Навигация на приёмку возврата: из строки списка или из localLines. */
+export function resolveManualOrderReturnNavigationState({
+  displayRow = null,
+  localLines = null,
+  orderId = '',
+  warehouseId = null,
+  orderGroupId = null,
+  organizationId = null,
+} = {}) {
+  const row =
+    displayRow ||
+    manualOrderDisplayRowFromLocalLines(localLines, { orderId, warehouseId, orderGroupId });
+  if (!row) return null;
+  return buildManualOrderReturnNavigationState(row, { organizationId });
+}
 export function customerReturnLinesFromOrderRows(orders) {
   const byProduct = new Map();
   for (const o of orders || []) {
@@ -78,37 +124,18 @@ export function buildManualOrderReturnNavigationStateFromDetail({
   warehouseId,
   organizationId,
   orderGroupId,
+  displayRow = null,
+  shipmentClosed = false,
 }) {
-  if (!manualOrderCanAcceptWarehouseReturn(marketplace, status)) return null;
-  const lines = customerReturnLinesFromOrderRows(
-    (localLines || []).map((line) => ({
-      productId: line.productId ?? line.product_id,
-      quantity: line.quantity ?? 1,
-      offerId: line.offerId ?? line.marketplaceSku,
-      productName: line.productName ?? line.product_name,
-    }))
-  );
-  if (!lines.length) return null;
-  const whRaw = warehouseId ?? localLines?.[0]?.warehouseId ?? localLines?.[0]?.warehouse_id ?? null;
-  const whId =
-    whRaw != null && whRaw !== '' && Number.isFinite(Number(whRaw)) ? Number(whRaw) : null;
-  const orgRaw = organizationId;
-  const orgId =
-    orgRaw != null && String(orgRaw).trim() !== '' && Number.isFinite(Number(orgRaw))
-      ? Number(orgRaw)
-      : null;
-  const oid = String(orderGroupId || orderId || '').trim();
-  return {
-    prefillCustomerReturn: {
-      source: 'manual_order',
-      marketplace: 'manual',
-      orderId: oid,
-      warehouseId: whId,
-      organizationId: orgId,
-      lines,
-      scanCode: lines[0]?.sku && lines[0].sku !== '—' ? lines[0].sku : '',
-    },
-  };
+  if (!manualOrderCanAcceptWarehouseReturn(marketplace, status, { shipmentClosed })) return null;
+  return resolveManualOrderReturnNavigationState({
+    displayRow,
+    localLines,
+    orderId,
+    warehouseId,
+    orderGroupId,
+    organizationId,
+  });
 }
 
 /** Отмена на МП + в ERM для этих МП и статусов (до отгрузки). */

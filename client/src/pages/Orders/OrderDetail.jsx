@@ -25,7 +25,8 @@ import {
   orderCanShowCancel,
   orderDeleteConfirmMessage,
   manualOrderCanAcceptWarehouseReturn,
-  buildManualOrderReturnNavigationStateFromDetail,
+  isManualMarketplaceOrder,
+  resolveManualOrderReturnNavigationState,
 } from '../../utils/orderActions.js';
 import './OrderDetail.css';
 
@@ -151,6 +152,72 @@ function shouldShowOrderAssemblySection(assembly) {
       assembly.assembledByEmail ||
       assembly.assembledByFullName ||
       assembly.assemblyStickerNumber
+  );
+}
+
+/** Кнопка перехода к приёмке возврата по отгруженному ручному заказу. */
+export function ManualOrderWarehouseReturnButton({
+  marketplace,
+  status,
+  displayRow = null,
+  localLines = null,
+  orderId = '',
+  organizationId = '',
+  shipmentClosed = false,
+  warehouseId = null,
+  orderGroupId = null,
+  compact = false,
+  className = '',
+}) {
+  const navigate = useNavigate();
+  const eligible = manualOrderCanAcceptWarehouseReturn(marketplace, status, { shipmentClosed });
+  const navState = eligible
+    ? resolveManualOrderReturnNavigationState({
+        displayRow,
+        localLines,
+        orderId,
+        warehouseId,
+        orderGroupId,
+        organizationId,
+      })
+    : null;
+
+  if (!eligible || !navState) return null;
+
+  const go = () => {
+    navigate(
+      { pathname: '/stock-levels/warehouse', search: '?op=return_customer' },
+      { state: navState }
+    );
+  };
+
+  if (compact) {
+    return (
+      <Button
+        variant="primary"
+        size="small"
+        className={className || 'orders-action-icon'}
+        onClick={go}
+        title="Оформить возврат товара на склад"
+        aria-label="Возврат на склад"
+      >
+        <i className="pe-7s-download" aria-hidden />
+      </Button>
+    );
+  }
+
+  return (
+    <div className={`order-detail-manual-return${className ? ` ${className}` : ''}`} style={{ marginBottom: 16 }}>
+      <Button variant="primary" size="small" onClick={go}>
+        Оформить возврат на склад
+      </Button>
+      <p
+        className="order-detail-local-hint"
+        style={{ marginTop: 8, marginBottom: 0, fontSize: 13, color: 'var(--muted)' }}
+      >
+        Откроется приёмка возврата от клиента с позициями этого заказа.
+      </p>
+    </div>
   );
 }
 
@@ -953,15 +1020,6 @@ export function OrderDetail() {
   const detail = data?.detail;
   const localLines = data?.localLines;
   const ermStatus = data?.ermStatus;
-  const manualReturnNav = buildManualOrderReturnNavigationStateFromDetail({
-    marketplace: mpKey,
-    status: ermStatus,
-    orderId,
-    localLines,
-    warehouseId: localLines?.[0]?.warehouseId ?? localLines?.[0]?.warehouse_id ?? null,
-    organizationId: contextOrganizationId,
-    orderGroupId: localLines?.[0]?.orderGroupId ?? localLines?.[0]?.order_group_id ?? null,
-  });
 
   return (
     <div className="card order-detail">
@@ -1003,24 +1061,16 @@ export function OrderDetail() {
         </div>
       ) : null}
 
-      {mpKey === 'manual' && manualOrderCanAcceptWarehouseReturn(mpKey, ermStatus) && manualReturnNav ? (
-        <div className="order-detail-manual-return" style={{ marginBottom: 16 }}>
-          <Button
-            variant="primary"
-            size="small"
-            onClick={() =>
-              navigate(
-                { pathname: '/stock-levels/warehouse', search: '?op=return_customer' },
-                { state: manualReturnNav }
-              )
-            }
-          >
-            Оформить возврат на склад
-          </Button>
-          <p className="order-detail-local-hint" style={{ marginTop: 8, marginBottom: 0, fontSize: 13, color: 'var(--muted)' }}>
-            Откроется приёмка возврата от клиента с позициями этого заказа.
-          </p>
-        </div>
+      {mpKey === 'manual' ? (
+        <ManualOrderWarehouseReturnButton
+          marketplace={mpKey}
+          status={ermStatus}
+          localLines={localLines}
+          orderId={orderId}
+          organizationId={contextOrganizationId}
+          warehouseId={localLines?.[0]?.warehouseId ?? localLines?.[0]?.warehouse_id ?? null}
+          orderGroupId={localLines?.[0]?.orderGroupId ?? localLines?.[0]?.order_group_id ?? null}
+        />
       ) : null}
 
       <ManualProcurementModal
@@ -1112,7 +1162,14 @@ function LocalOrderLinesSection({ localLines, showQuantity = false }) {
 }
 
 /** Контент деталей заказа по данным API (для использования в модалке на странице заказов) */
-export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange }) {
+export function OrderDetailContent({
+  data,
+  orderId: orderIdProp,
+  onReserveChange,
+  organizationId = '',
+  displayRow = null,
+  shipmentClosed = false,
+}) {
   if (!data) return null;
   const detail = data.detail;
   const localLines = data.localLines;
@@ -1137,10 +1194,27 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
     ) : null;
   const assemblyBlock = <OrderAssemblySection assembly={assembly} />;
   const localLinesBlock =
-    localLines?.length > 0 ? <LocalOrderLinesSection localLines={localLines} /> : null;
+    localLines?.length > 0 ? (
+      <LocalOrderLinesSection localLines={localLines} showQuantity={mpNorm === 'manual'} />
+    ) : null;
+  const manualReturnBlock =
+    mpNorm === 'manual' ? (
+      <ManualOrderWarehouseReturnButton
+        marketplace={data.marketplace}
+        status={data.ermStatus}
+        displayRow={displayRow}
+        localLines={localLines}
+        orderId={orderId}
+        organizationId={organizationId}
+        shipmentClosed={shipmentClosed}
+        warehouseId={localLines?.[0]?.warehouseId ?? localLines?.[0]?.warehouse_id ?? null}
+        orderGroupId={localLines?.[0]?.orderGroupId ?? localLines?.[0]?.order_group_id ?? null}
+      />
+    ) : null;
   if (mpNorm === 'ozon' && detail)
     return (
       <>
+        {manualReturnBlock}
         {reserveBlock}
         {assemblyBlock}
         {localLinesBlock}
@@ -1150,6 +1224,7 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
   if ((mpNorm === 'wildberries' || mpNorm === 'wb') && detail) {
     return (
       <>
+        {manualReturnBlock}
         {reserveBlock}
         {assemblyBlock}
         {localLinesBlock}
@@ -1169,6 +1244,7 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
   if ((mpNorm === 'yandex' || mpNorm === 'ym' || mpNorm === 'yandexmarket') && detail) {
     return (
       <>
+        {manualReturnBlock}
         {reserveBlock}
         {assemblyBlock}
         {localLinesBlock}
@@ -1183,6 +1259,7 @@ export function OrderDetailContent({ data, orderId: orderIdProp, onReserveChange
   }
   return (
     <>
+      {manualReturnBlock}
       {reserveBlock}
       {assemblyBlock}
       {localLinesBlock}

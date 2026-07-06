@@ -25,7 +25,7 @@ import {
   isOrderStatusEligibleForProcurement,
   isOrderStatusEligibleForSupplierOrder,
 } from '../../constants/orderStatuses';
-import { OrderCardActions, OrderDetailContent, OrderSummaryFromList } from './OrderDetail';
+import { OrderCardActions, OrderDetailContent, OrderSummaryFromList, ManualOrderWarehouseReturnButton } from './OrderDetail';
 import { ManualProcurementModal } from '../../components/orders/ManualProcurementModal/ManualProcurementModal';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import { onNavigationClick } from '../../utils/navigationClick.js';
@@ -56,7 +56,7 @@ import {
 import { isProfileProcurementStatusEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import {
   manualOrderCanAcceptWarehouseReturn,
-  buildManualOrderReturnNavigationState,
+  isManualMarketplaceOrder,
 } from '../../utils/orderActions.js';
 import './Orders.css';
 import './OrderDetail.css';
@@ -268,13 +268,19 @@ function orderRowHasAnyAction(first) {
   if (first.status === 'in_procurement') return true;
   if (first.status === 'in_assembly' || first.status === 'assembled') return true;
   if (orderCanAddToOpenShipment(first)) return true;
-  if (manualOrderCanAcceptWarehouseReturn(first.marketplace, first.status)) return true;
-  if (first.marketplace === 'manual') return true;
+  if (
+    manualOrderCanAcceptWarehouseReturn(first.marketplace, first.status, {
+      shipmentClosed: first.localShipmentClosed === true,
+    })
+  ) {
+    return true;
+  }
+  if (isManualMarketplaceOrder(first.marketplace)) return true;
   return false;
 }
 
 function manualOrderShowMarkShipped(first) {
-  if (normalizeMarketplaceForUI(first?.marketplace) !== 'manual') return false;
+  if (!isManualMarketplaceOrder(first?.marketplace)) return false;
   const st = String(first?.status || '').trim().toLowerCase();
   return !['shipped', 'in_transit', 'delivered', 'cancelled'].includes(st);
 }
@@ -1158,20 +1164,6 @@ export function Orders() {
     } finally {
       setReturnToNewLoadingKey(null);
     }
-  };
-
-  const handleManualOrderWarehouseReturn = (row) => {
-    const navState = buildManualOrderReturnNavigationState(row, {
-      organizationId: contextOrganizationId,
-    });
-    if (!navState?.prefillCustomerReturn?.lines?.length) {
-      setRefreshError('Не удалось собрать позиции заказа для возврата — проверьте, что товары сопоставлены с каталогом');
-      return;
-    }
-    navigate(
-      { pathname: '/stock-levels/warehouse', search: '?op=return_customer' },
-      { state: navState }
-    );
   };
 
   const handleReleaseReserve = async (marketplace, orderId, rowKey) => {
@@ -3083,6 +3075,9 @@ export function Orders() {
                 <OrderDetailContent
                   data={detailModalData}
                   orderId={marketplaceOrderIdForApi(detailModalRow.orders ?? [detailModalRow.first], detailModalRow.first.marketplace)}
+                  organizationId={contextOrganizationId}
+                  displayRow={detailModalRow}
+                  shipmentClosed={detailModalRow.first.localShipmentClosed === true}
                   onReserveChange={(r) => {
                     setDetailModalData((d) => (d ? { ...d, reserve: r } : d));
                     reloadOrders({ silent: true });
@@ -3093,12 +3088,34 @@ export function Orders() {
               (!detailModalData ||
                 detailModalError ||
                 !['ozon', 'wildberries', 'wb', 'yandex', 'manual'].includes(detailModalRow.first.marketplace)) && (
-                <OrderSummaryFromList
-                  orders={detailModalRow.orders}
-                  marketplace={detailModalRow.first.marketplace}
-                  reserve={detailModalData?.reserve}
-                  onReserveChange={() => reloadOrders({ silent: true })}
-                />
+                <>
+                  {isManualMarketplaceOrder(detailModalRow.first.marketplace) ? (
+                    <ManualOrderWarehouseReturnButton
+                      marketplace={detailModalRow.first.marketplace}
+                      status={detailModalData?.ermStatus ?? detailModalRow.first.status}
+                      displayRow={detailModalRow}
+                      orderId={marketplaceOrderIdForApi(
+                        detailModalRow.orders ?? [detailModalRow.first],
+                        detailModalRow.first.marketplace
+                      )}
+                      organizationId={contextOrganizationId}
+                      shipmentClosed={detailModalRow.first.localShipmentClosed === true}
+                      warehouseId={detailModalRow.first.warehouseId ?? detailModalRow.first.warehouse_id ?? null}
+                      orderGroupId={
+                        detailModalRow.orderGroupId ??
+                        detailModalRow.first.orderGroupId ??
+                        detailModalRow.first.order_group_id ??
+                        null
+                      }
+                    />
+                  ) : null}
+                  <OrderSummaryFromList
+                    orders={detailModalRow.orders}
+                    marketplace={detailModalRow.first.marketplace}
+                    reserve={detailModalData?.reserve}
+                    onReserveChange={() => reloadOrders({ silent: true })}
+                  />
+                </>
               )}
           </div>
         )}
@@ -3792,7 +3809,7 @@ export function Orders() {
                           )}
                         </Button>
                       )}
-                      {first.marketplace === 'manual' && (
+                      {isManualMarketplaceOrder(first.marketplace) && (
                         <>
                           {manualOrderCanEdit(first) && (
                             <Button
@@ -3806,18 +3823,17 @@ export function Orders() {
                               <i className="pe-7s-pen" aria-hidden />
                             </Button>
                           )}
-                          {manualOrderCanAcceptWarehouseReturn(first.marketplace, first.status) && (
-                            <Button
-                              variant="primary"
-                              size="small"
-                              className="orders-action-icon"
-                              onClick={() => handleManualOrderWarehouseReturn(row)}
-                              title="Оформить возврат товара на склад"
-                              aria-label="Возврат на склад"
-                            >
-                              <i className="pe-7s-back" aria-hidden />
-                            </Button>
-                          )}
+                          <ManualOrderWarehouseReturnButton
+                            marketplace={first.marketplace}
+                            status={first.status}
+                            displayRow={row}
+                            organizationId={contextOrganizationId}
+                            shipmentClosed={first.localShipmentClosed === true}
+                            warehouseId={first.warehouseId ?? first.warehouse_id ?? null}
+                            orderGroupId={row.orderGroupId ?? first.orderGroupId ?? first.order_group_id ?? null}
+                            orderId={first.orderId}
+                            compact
+                          />
                           {manualOrderShowMarkShipped(first) && (
                             <Button
                               variant="secondary"
