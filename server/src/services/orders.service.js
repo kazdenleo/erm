@@ -1279,6 +1279,7 @@ class OrdersService {
 
   async _resolveOwnWarehouseIdForOrder(orderRow) {
     if (!repositoryFactory.isUsingPostgreSQL() || !orderRow) return null;
+    const profileId = orderRow.profile_id ?? orderRow.profileId ?? null;
     const mpRaw = String(orderRow.marketplace || '').toLowerCase();
     const mp = mpRaw === 'wildberries' ? 'wb' : mpRaw === 'yandex' ? 'ym' : mpRaw;
     const isMpOrder = isMarketplaceFbsOrderRow(orderRow);
@@ -1286,12 +1287,20 @@ class OrdersService {
     if (mp && mpWarehouseId) {
       try {
         const repo = repositoryFactory.getRepository('warehouse_mappings');
-        let wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(mp, mpWarehouseId);
+        let wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(
+          mp,
+          mpWarehouseId,
+          profileId
+        );
         if (wid) return wid;
 
         const numMatch = mpWarehouseId.match(/^(\d+)/);
         if (numMatch) {
-          wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(mp, numMatch[1]);
+          wid = await repo?.findOwnWarehouseIdByMarketplaceWarehouseId?.(
+            mp,
+            numMatch[1],
+            profileId
+          );
           if (wid) return wid;
         }
 
@@ -1302,8 +1311,8 @@ class OrdersService {
               .join('—')
               .trim()
           : mpWarehouseId;
-        if (namePart && repo?.findByMarketplace) {
-          const mappings = await repo.findByMarketplace(mp);
+        if (namePart && repo?.findAll) {
+          const mappings = await repo.findAll({ marketplace: mp, profileId });
           for (const m of mappings || []) {
             const mid = String(m.marketplace_warehouse_id || '').trim();
             if (!mid) continue;
@@ -1324,7 +1333,7 @@ class OrdersService {
     if (isMpOrder && mp) {
       try {
         const repo = repositoryFactory.getRepository('warehouse_mappings');
-        const primary = await repo?.findPrimaryOwnWarehouseIdForMarketplace?.(mp);
+        const primary = await repo?.findPrimaryOwnWarehouseIdForMarketplace?.(mp, profileId);
         if (primary) return primary;
       } catch {
         // ignore

@@ -136,44 +136,55 @@ class WarehouseMappingsRepositoryPG {
    * Найти "свой" склад по идентификатору/названию склада маркетплейса.
    * marketplace_warehouse_id хранится как строка (для Ozon/WB/YM это может быть name или id).
    */
-  async findOwnWarehouseIdByMarketplaceWarehouseId(marketplace, marketplaceWarehouseId) {
+  async findOwnWarehouseIdByMarketplaceWarehouseId(marketplace, marketplaceWarehouseId, profileId = null) {
     const mp = String(marketplace || '').toLowerCase();
     const mw = String(marketplaceWarehouseId ?? '').trim();
     if (!mp || !mw) return null;
-    const r = await query(
-      `SELECT warehouse_id
-       FROM warehouse_mappings
-       WHERE marketplace = $1
+    const pid = normalizeProfileId(profileId);
+    const params = [mp, mw];
+    let sql = `SELECT wm.warehouse_id
+       FROM warehouse_mappings wm`;
+    if (pid) {
+      sql += ` INNER JOIN warehouses w ON w.id = wm.warehouse_id AND w.profile_id = $3`;
+      params.push(pid);
+    }
+    sql += `
+       WHERE wm.marketplace = $1
          AND (
-           TRIM(marketplace_warehouse_id) = TRIM($2)
-           OR TRIM(REGEXP_REPLACE(marketplace_warehouse_id, '\\s*—.*$', '')) =
+           TRIM(wm.marketplace_warehouse_id) = TRIM($2)
+           OR TRIM(REGEXP_REPLACE(wm.marketplace_warehouse_id, '\\s*—.*$', '')) =
               TRIM(REGEXP_REPLACE($2, '\\s*—.*$', ''))
          )
-       ORDER BY id DESC
-       LIMIT 1`,
-      [mp, mw]
-    );
+       ORDER BY wm.id DESC
+       LIMIT 1`;
+    const r = await query(sql, params);
     return r.rows?.[0]?.warehouse_id ?? null;
   }
 
   /**
    * Основной FBS-склад маркетплейса (если в заказе нет ID склада МП).
    * Предпочитаем привязки вида «id — название» (FBS), затем меньший warehouse_id.
+   * @param {number|string|null} [profileId] — только склады этого профиля
    */
-  async findPrimaryOwnWarehouseIdForMarketplace(marketplace) {
+  async findPrimaryOwnWarehouseIdForMarketplace(marketplace, profileId = null) {
     const mp = String(marketplace || '').toLowerCase();
     if (!mp) return null;
-    const r = await query(
-      `SELECT warehouse_id
-       FROM warehouse_mappings
-       WHERE marketplace = $1
+    const pid = normalizeProfileId(profileId);
+    const params = [mp];
+    let sql = `SELECT wm.warehouse_id
+       FROM warehouse_mappings wm`;
+    if (pid) {
+      sql += ` INNER JOIN warehouses w ON w.id = wm.warehouse_id AND w.profile_id = $2`;
+      params.push(pid);
+    }
+    sql += `
+       WHERE wm.marketplace = $1
        ORDER BY
-         CASE WHEN marketplace_warehouse_id ~ '\\s*[—–-]\\s*' THEN 0 ELSE 1 END,
-         warehouse_id ASC,
-         id ASC
-       LIMIT 1`,
-      [mp]
-    );
+         CASE WHEN wm.marketplace_warehouse_id ~ '\\s*[—–-]\\s*' THEN 0 ELSE 1 END,
+         wm.warehouse_id ASC,
+         wm.id ASC
+       LIMIT 1`;
+    const r = await query(sql, params);
     return r.rows?.[0]?.warehouse_id ?? null;
   }
 
