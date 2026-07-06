@@ -156,39 +156,72 @@ class StockMovementsService {
   /**
    * Склад для списания/отгрузки: предпочтительный → где есть остаток → последний резерв → склад по умолчанию.
    */
-  async resolveWarehouseIdForProductStock(productId, preferredWarehouseId = null) {
+  async resolveWarehouseIdForProductStock(productId, preferredWarehouseId = null, profileId = null) {
     const idNum = Number(productId);
-    if (!Number.isFinite(idNum) || idNum < 1) {
-      return this.productsRepository.resolveOwnWarehouseId(preferredWarehouseId);
+    let effectiveProfileId = profileId;
+    if (!effectiveProfileId && Number.isFinite(idNum) && idNum > 0) {
+      const product = await this.productsRepository.findById(idNum);
+      effectiveProfileId = product?.profile_id ?? product?.profileId ?? null;
     }
-    const pref = await this.productsRepository.resolveOwnWarehouseId(preferredWarehouseId);
+    if (!Number.isFinite(idNum) || idNum < 1) {
+      return this.productsRepository.resolveOwnWarehouseId(preferredWarehouseId, effectiveProfileId);
+    }
+    const pref = await this.productsRepository.resolveOwnWarehouseId(
+      preferredWarehouseId,
+      effectiveProfileId
+    );
     if (pref) {
       const onPref = await this.productsRepository.getWarehouseFreeStock(idNum, pref);
       if (onPref > 0) return pref;
     }
-    const withStock = await query(
-      `SELECT warehouse_id FROM product_warehouse_stock
-       WHERE product_id = $1 AND COALESCE(quantity, 0) > 0
-       ORDER BY quantity DESC, warehouse_id ASC
-       LIMIT 1`,
-      [idNum]
-    );
+    const withStock = effectiveProfileId
+      ? await query(
+          `SELECT pws.warehouse_id
+           FROM product_warehouse_stock pws
+           INNER JOIN warehouses w ON w.id = pws.warehouse_id
+           WHERE pws.product_id = $1
+             AND COALESCE(pws.quantity, 0) > 0
+             AND w.profile_id = $2
+           ORDER BY pws.quantity DESC, pws.warehouse_id ASC
+           LIMIT 1`,
+          [idNum, effectiveProfileId]
+        )
+      : await query(
+          `SELECT warehouse_id FROM product_warehouse_stock
+           WHERE product_id = $1 AND COALESCE(quantity, 0) > 0
+           ORDER BY quantity DESC, warehouse_id ASC
+           LIMIT 1`,
+          [idNum]
+        );
     if (withStock.rows?.[0]?.warehouse_id != null) {
       return Number(withStock.rows[0].warehouse_id);
     }
-    const fromReserve = await query(
-      `SELECT warehouse_id FROM stock_movements
-       WHERE product_id = $1
-         AND warehouse_id IS NOT NULL
-         AND type IN ('reserve', 'unreserve', 'shipment')
-       ORDER BY id DESC
-       LIMIT 1`,
-      [idNum]
-    );
+    const fromReserve = effectiveProfileId
+      ? await query(
+          `SELECT sm.warehouse_id
+           FROM stock_movements sm
+           INNER JOIN warehouses w ON w.id = sm.warehouse_id
+           WHERE sm.product_id = $1
+             AND sm.warehouse_id IS NOT NULL
+             AND sm.type IN ('reserve', 'unreserve', 'shipment')
+             AND w.profile_id = $2
+           ORDER BY sm.id DESC
+           LIMIT 1`,
+          [idNum, effectiveProfileId]
+        )
+      : await query(
+          `SELECT warehouse_id FROM stock_movements
+           WHERE product_id = $1
+             AND warehouse_id IS NOT NULL
+             AND type IN ('reserve', 'unreserve', 'shipment')
+           ORDER BY id DESC
+           LIMIT 1`,
+          [idNum]
+        );
     if (fromReserve.rows?.[0]?.warehouse_id != null) {
       return Number(fromReserve.rows[0].warehouse_id);
     }
-    return pref || (await this.productsRepository.resolveOwnWarehouseId(null));
+    return pref || (await this.productsRepository.resolveOwnWarehouseId(null, effectiveProfileId));
   }
 
   /**
@@ -220,7 +253,8 @@ class StockMovementsService {
 
     const metaObj = meta && typeof meta === 'object' && !Array.isArray(meta) ? { ...meta } : {};
     const whRaw = metaObj.warehouse_id ?? metaObj.warehouseId;
-    const warehouseId = await this.productsRepository.resolveOwnWarehouseId(whRaw);
+    const productProfileId = product.profile_id ?? product.profileId ?? null;
+    const warehouseId = await this.productsRepository.resolveOwnWarehouseId(whRaw, productProfileId);
     if (!warehouseId) {
       const error = new Error('Не найден склад для операции (добавьте склад type=warehouse без поставщика)');
       error.statusCode = 400;
@@ -615,7 +649,7 @@ class StockMovementsService {
 
     let whFilter = null;
     if (warehouseId != null && String(warehouseId).trim() !== '') {
-      whFilter = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
+      whFilter = await this.productsRepository.resolveOwnWarehouseId(warehouseId, profileId);
     }
 
     const rows = await this.repository.findByProduct(productId, {
@@ -648,9 +682,9 @@ class StockMovementsService {
    * Формула нетто-резерва совпадает с products.repository / kitStock (unreserve уменьшает резерв).
    * Для комплектов reservedQty — комплектов под заказ (validation: SKU + комплектующие без двойного счёта).
    */
-  async resolveWarehouseFilter(warehouseId) {
+  async resolveWarehouseFilter(warehouseId, profileId = null) {
     if (warehouseId == null || String(warehouseId).trim() === '') return null;
-    return this.productsRepository.resolveOwnWarehouseId(warehouseId);
+    return this.productsRepository.resolveOwnWarehouseId(warehouseId, profileId);
   }
 
   _movementWarehouseSql(warehouseId, params) {
@@ -1661,7 +1695,7 @@ class StockMovementsService {
 
     const whFilter =
       warehouseId != null && String(warehouseId).trim() !== ''
-        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId)
+        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId, tid ?? profileId)
         : null;
     const movementOpts =
       whFilter != null ? { warehouseId: whFilter } : {};
@@ -1791,7 +1825,7 @@ class StockMovementsService {
 
     const whFilter =
       warehouseId != null && String(warehouseId).trim() !== ''
-        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId)
+        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId, profileId)
         : null;
 
     const { isKitProductId } = await import('./kitStock.service.js');
@@ -1850,7 +1884,7 @@ class StockMovementsService {
 
     const whFilter =
       warehouseId != null && String(warehouseId).trim() !== ''
-        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId)
+        ? await this.productsRepository.resolveOwnWarehouseId(warehouseId, profileId)
         : null;
 
     const summary = await this.getReserveSummaryForProduct(idNum, {
@@ -2394,7 +2428,7 @@ class StockMovementsService {
     const isKit =
       pt === 'kit' || product.is_kit_catalog === true || (await isKitProductId(pid));
 
-    const whId = await this.productsRepository.resolveOwnWarehouseId(warehouseId);
+    const whId = await this.productsRepository.resolveOwnWarehouseId(warehouseId, productProfileId);
     if (!whId) {
       const error = new Error('Укажите склад для установки наличия');
       error.statusCode = 400;
@@ -2483,7 +2517,7 @@ class StockMovementsService {
     const totalPws = warehouseStocks.reduce((sum, row) => sum + row.quantity, 0);
     const productQty = Math.max(0, Number(metrics.quantity) || 0);
     if (warehouseStocks.length === 0 && productQty > 0) {
-      const whId = await this.productsRepository.resolveOwnWarehouseId(null);
+      const whId = await this.productsRepository.resolveOwnWarehouseId(null, productProfileId);
       if (whId) {
         warehouseStocks = [{ warehouseId: whId, quantity: productQty }];
       }
@@ -2572,7 +2606,7 @@ class StockMovementsService {
               ? row
               : best
           ).warehouseId
-        : await this.productsRepository.resolveOwnWarehouseId(null);
+        : await this.productsRepository.resolveOwnWarehouseId(null, profId ?? product?.profile_id ?? product?.profileId ?? null);
 
     const metaBase = {
       stock_history_reset: true,
@@ -2773,14 +2807,15 @@ class StockMovementsService {
 
     const metaObj = meta && typeof meta === 'object' && !Array.isArray(meta) ? { ...meta } : {};
     const whRaw = metaObj.warehouse_id ?? metaObj.warehouseId;
-    const warehouseId = await this.productsRepository.resolveOwnWarehouseId(whRaw);
+    const productProfileId = product.profile_id ?? product.profileId ?? null;
+    const warehouseId = await this.productsRepository.resolveOwnWarehouseId(whRaw, productProfileId);
     if (!warehouseId) {
       const error = new Error('Не найден склад для отгрузки по заказу');
       error.statusCode = 400;
       throw error;
     }
 
-    const profId = product.profile_id ?? product.profileId ?? null;
+    const profId = productProfileId;
     const orgId = product.organization_id ?? product.organizationId ?? null;
     const totalBefore = product.quantity != null ? Number(product.quantity) : 0;
 

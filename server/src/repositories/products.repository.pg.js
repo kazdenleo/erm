@@ -4,6 +4,7 @@
  */
 
 import { query, transaction } from '../config/database.js';
+import { profileIdFromDb } from '../utils/profileId.js';
 import {
   coerceBarcodeString,
   normalizeBarcodeRows,
@@ -2434,16 +2435,30 @@ class ProductsRepositoryPG {
     return await this.findByIdWithDetails(id);
   }
 
-  /** Первый «свой» склад (type=warehouse, без поставщика) по MIN(id) — для операций без явного склада. */
-  async getDefaultOwnWarehouseId() {
-    // Приоритет: явный ID из env (если задан), затем «Москва» (по адресу), затем MIN(id).
+  /**
+   * Первый «свой» склад аккаунта (type=warehouse, без поставщика).
+   * @param {number|string|null} [profileId] — обязателен в мультитенантном режиме
+   */
+  async getDefaultOwnWarehouseId(profileId = null) {
+    const pid = profileIdFromDb(profileId);
+    const profileSql = pid ? ' AND profile_id = $PROFILE' : '';
+    const profileParams = (base) => (pid ? [...base, pid] : base);
+    const bindProfile = (sql, baseParams) =>
+      pid ? sql.replace('$PROFILE', `$${baseParams.length + 1}`) : sql.replace('$PROFILE', '');
+
+    // Приоритет: явный ID из env (если задан и принадлежит профилю), затем «Москва», затем MIN(id).
     const envIdRaw = process.env.DEFAULT_OWN_WAREHOUSE_ID;
     if (envIdRaw != null && String(envIdRaw).trim() !== '') {
       const n = parseInt(String(envIdRaw), 10);
       if (Number.isFinite(n) && n > 0) {
         const ok = await query(
-          `SELECT 1 FROM warehouses WHERE id = $1 AND type = 'warehouse' AND supplier_id IS NULL LIMIT 1`,
-          [n]
+          bindProfile(
+            `SELECT 1 FROM warehouses
+             WHERE id = $1 AND type = 'warehouse' AND supplier_id IS NULL${profileSql}
+             LIMIT 1`,
+            [n]
+          ),
+          profileParams([n])
         );
         if (ok.rows?.length) return n;
       }
@@ -2453,37 +2468,50 @@ class ProductsRepositoryPG {
     const preferCity = String(preferCityRaw || '').trim();
     if (preferCity) {
       const rCity = await query(
-        `SELECT id
-         FROM warehouses
-         WHERE type = 'warehouse'
-           AND supplier_id IS NULL
-           AND COALESCE(address, '') ILIKE $1
-         ORDER BY id ASC
-         LIMIT 1`,
-        [`%${preferCity}%`]
+        bindProfile(
+          `SELECT id
+           FROM warehouses
+           WHERE type = 'warehouse'
+             AND supplier_id IS NULL
+             AND COALESCE(address, '') ILIKE $1${profileSql}
+           ORDER BY id ASC
+           LIMIT 1`,
+          [`%${preferCity}%`]
+        ),
+        profileParams([`%${preferCity}%`])
       );
       if (rCity.rows?.[0]?.id != null) return rCity.rows[0].id;
     }
 
     const r = await query(
-      `SELECT id FROM warehouses WHERE type = 'warehouse' AND supplier_id IS NULL ORDER BY id ASC LIMIT 1`
+      bindProfile(
+        `SELECT id FROM warehouses
+         WHERE type = 'warehouse' AND supplier_id IS NULL${profileSql}
+         ORDER BY id ASC LIMIT 1`,
+        []
+      ),
+      profileParams([])
     );
     return r.rows?.[0]?.id ?? null;
   }
 
-  /** Проверка id склада и fallback на склад по умолчанию. */
-  async resolveOwnWarehouseId(warehouseId) {
+  /** Проверка id склада и fallback на склад по умолчанию аккаунта. */
+  async resolveOwnWarehouseId(warehouseId, profileId = null) {
+    const pid = profileIdFromDb(profileId);
     if (warehouseId != null && warehouseId !== '') {
       const n = typeof warehouseId === 'string' ? parseInt(warehouseId, 10) : Number(warehouseId);
       if (Number.isFinite(n)) {
-        const r = await query(
-          `SELECT id FROM warehouses WHERE id = $1 AND type = 'warehouse' AND supplier_id IS NULL`,
-          [n]
-        );
+        const params = [n];
+        let sql = `SELECT id FROM warehouses WHERE id = $1 AND type = 'warehouse' AND supplier_id IS NULL`;
+        if (pid) {
+          sql += ' AND profile_id = $2';
+          params.push(pid);
+        }
+        const r = await query(sql, params);
         if (r.rows?.length) return n;
       }
     }
-    return await this.getDefaultOwnWarehouseId();
+    return await this.getDefaultOwnWarehouseId(profileId);
   }
 
   /** Склад обязателен: без fallback на склад по умолчанию. */
@@ -2526,7 +2554,9 @@ class ProductsRepositoryPG {
   async updateQuantity(id, quantity) {
     const numId = typeof id === 'string' ? parseInt(id, 10) : id;
     const q = quantity != null ? Math.max(0, Number(quantity) || 0) : 0;
-    const wId = await this.getDefaultOwnWarehouseId();
+    const product = await this.findById(numId);
+    const profileId = product?.profile_id ?? product?.profileId ?? null;
+    const wId = await this.getDefaultOwnWarehouseId(profileId);
     if (wId) {
       await this.setWarehouseFreeStock(numId, wId, q);
     } else {
@@ -2544,7 +2574,9 @@ class ProductsRepositoryPG {
     const numId = typeof id === 'string' ? parseInt(id, 10) : id;
     const q = quantity != null ? Math.max(0, Number(quantity) || 0) : 0;
     const reserved = reservedQuantity != null && !Number.isNaN(Number(reservedQuantity)) ? Math.max(0, Number(reservedQuantity)) : 0;
-    const wId = await this.getDefaultOwnWarehouseId();
+    const product = await this.findById(numId);
+    const profileId = product?.profile_id ?? product?.profileId ?? null;
+    const wId = await this.getDefaultOwnWarehouseId(profileId);
     if (wId) {
       await this.setWarehouseFreeStock(numId, wId, q);
     } else {

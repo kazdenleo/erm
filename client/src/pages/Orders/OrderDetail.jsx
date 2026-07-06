@@ -495,6 +495,12 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
           ) : null}
           <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted, #888)' }}>
             По каждой позиции укажите количество и нажмите «Снять» или «В резерв» (не обязательно всё сразу).
+            {reserve?.orderWarehouseLabel ? (
+              <>
+                {' '}
+                Резерв берётся со склада: {reserve.orderWarehouseLabel}.
+              </>
+            ) : null}
           </p>
         </div>
         <Button variant={variant} size="small" onClick={handleToggleAll} disabled={loading}>
@@ -626,7 +632,17 @@ export function OrderReservePanel({ marketplace, orderId, reserve: reserveProp, 
                       )
                     </span>
                   ) : remaining > 0 && !canAddMore ? (
-                    <span style={{ color: 'var(--muted)', fontSize: 12 }}> — нет доступного остатка</span>
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+                      {' '}
+                      —{' '}
+                      {line.otherWarehousesAvailableQty > 0
+                        ? reserveInKitUnits
+                          ? `на складе заказа нет остатка; на других складах: ${line.otherWarehousesAvailableQty} компл.`
+                          : `на складе заказа нет остатка; на других складах: ${line.otherWarehousesAvailableQty} шт.`
+                        : line.orderWarehouseLabel
+                          ? `нет остатка на складе «${line.orderWarehouseLabel}»`
+                          : 'нет доступного остатка'}
+                    </span>
                   ) : null}
                 </span>
                 <div className="order-reserve-line__actions">

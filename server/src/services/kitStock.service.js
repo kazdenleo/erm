@@ -858,7 +858,14 @@ async function resolveWarehouseIdsForKitRecalc(kitProductId, warehouseId = null)
   if (ids.length === 0) {
     const repo = repositoryFactory.getProductsRepository();
     if (repo && typeof repo.getDefaultOwnWarehouseId === 'function') {
-      const def = await repo.getDefaultOwnWarehouseId();
+      let profileId = null;
+      try {
+        const pr = await query(`SELECT profile_id FROM products WHERE id = $1 LIMIT 1`, [kitId]);
+        profileId = pr.rows?.[0]?.profile_id ?? null;
+      } catch {
+        profileId = null;
+      }
+      const def = await repo.getDefaultOwnWarehouseId(profileId);
       if (def) ids = [def];
     }
   }

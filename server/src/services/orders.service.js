@@ -50,6 +50,7 @@ import {
 } from './sellableQuantity.service.js';
 import { resolveProfileProcurementStatusEnabled } from '../utils/profileProcurementStatus.js';
 import logger from '../utils/logger.js';
+import { profileIdFromDb } from '../utils/profileId.js';
 import {
   orderReserveMovementMatchOrderRowSql,
   orderReserveMovementMatchSql,
@@ -1358,7 +1359,7 @@ class OrdersService {
         // ignore
       }
     }
-    return await stockMovementsService.productsRepository.resolveOwnWarehouseId(null);
+    return await stockMovementsService.productsRepository.resolveOwnWarehouseId(null, profileId);
   }
 
   /**
@@ -5468,6 +5469,79 @@ class OrdersService {
     return gid ? orders.filter((o) => String(o.orderGroupId || '') === String(gid)) : [row];
   }
 
+  async _warehouseDisplayLabel(warehouseId) {
+    const wid = Number(warehouseId);
+    if (!Number.isFinite(wid) || wid < 1) return null;
+    const r = await query(
+      `SELECT address, wb_warehouse_name FROM warehouses WHERE id = $1 LIMIT 1`,
+      [wid]
+    );
+    const row = r.rows?.[0];
+    if (!row) return `Склад #${wid}`;
+    const label = String(row.address || row.wb_warehouse_name || '').trim();
+    return label || `Склад #${wid}`;
+  }
+
+  async _getOtherWarehousesAvailableForReserve(productId, excludeWarehouseId, orderRow, extra = {}) {
+    const profileId = profileIdFromDb(orderRow?.profile_id ?? orderRow?.profileId);
+    const excl = Number(excludeWarehouseId);
+    const pid = Number(productId);
+    if (!profileId || !Number.isFinite(excl) || excl < 1 || !Number.isFinite(pid) || pid < 1) {
+      return 0;
+    }
+    const r = await query(
+      `SELECT w.id
+       FROM warehouses w
+       WHERE w.profile_id = $1
+         AND w.type = 'warehouse'
+         AND w.supplier_id IS NULL
+         AND w.id <> $2
+       ORDER BY w.id ASC`,
+      [profileId, excl]
+    );
+    let sum = 0;
+    for (const row of r.rows || []) {
+      const wh = Number(row.id);
+      if (!Number.isFinite(wh) || wh < 1) continue;
+      const avail = await this._getAvailableUnitsForOrderReserveLine(pid, orderRow, {
+        warehouseId: wh,
+        kitProductId: extra.kitProductId ?? null
+      });
+      sum += Math.max(0, Math.floor(avail));
+    }
+    return sum;
+  }
+
+  async _attachReserveLineWarehouseContext(le, orderRow, warehouseId) {
+    const orderWh = warehouseId != null ? Number(warehouseId) : null;
+    const whLabel =
+      Number.isFinite(orderWh) && orderWh > 0 ? await this._warehouseDisplayLabel(orderWh) : null;
+    const pid = Number(le.productId);
+    const reserved = Math.max(0, Number(le.reservedQty) || 0);
+    const need = Math.max(0, Number(le.needQty) || 0);
+    const remaining = Math.max(0, need - reserved);
+    const availOnWh = Math.max(0, Math.floor(Number(le.availableQty) || 0));
+    let otherAvail = 0;
+    if (
+      Number.isFinite(orderWh) &&
+      orderWh > 0 &&
+      Number.isFinite(pid) &&
+      pid > 0 &&
+      remaining > 0 &&
+      availOnWh < remaining
+    ) {
+      otherAvail = await this._getOtherWarehousesAvailableForReserve(pid, orderWh, orderRow, {
+        kitProductId: le.kitProductId ?? null
+      });
+    }
+    return {
+      ...le,
+      orderWarehouseId: Number.isFinite(orderWh) && orderWh > 0 ? orderWh : null,
+      orderWarehouseLabel: whLabel,
+      otherWarehousesAvailableQty: otherAvail
+    };
+  }
+
   async _summarizeReserveForRows(rows) {
     const lines = [];
     let totalNeed = 0;
@@ -5482,6 +5556,7 @@ class OrdersService {
       }
       const pid = Number(productId);
       const lineEntries = [];
+      let lineWarehouseId = null;
       const orderLineLabel = await this._orderLineDisplayLabel(row);
 
       if (id && Number.isFinite(pid) && pid > 0 && (await isKitProductId(pid))) {
@@ -5514,6 +5589,7 @@ class OrdersService {
         totalNeed += qty;
         totalReserved += reserved;
         const warehouseId = preferredWh;
+        lineWarehouseId = warehouseId;
         const maxKitsAvail = await this._computeMaxKitUnitsReservableForOrder(pid, warehouseId, {
           orderRow: row
         });
@@ -5611,6 +5687,7 @@ class OrdersService {
         reserved = await this._getReservedQtyForOrderProduct(id, pid);
         totalReserved += reserved;
         const warehouseId = await this._resolveWarehouseIdForOrderReserve(row, pid);
+        lineWarehouseId = warehouseId;
         lineEntries.push({
           productId: pid,
           reservedQty: reserved,
@@ -5646,6 +5723,7 @@ class OrdersService {
 
       for (const le of lineEntries) {
         const isComponentLine = String(le.lineKind || '').toLowerCase() === 'component';
+        const enriched = await this._attachReserveLineWarehouseContext(le, row, lineWarehouseId);
         lines.push({
           orderLineId: row.orderId ?? row.order_id,
           orderRowDbId: id,
@@ -5653,7 +5731,7 @@ class OrdersService {
           ...(isComponentLine
             ? {}
             : { offerId: row.offerId ?? row.offer_id ?? null }),
-          ...le
+          ...enriched
         });
       }
     }
@@ -5662,11 +5740,17 @@ class OrdersService {
       totalReserved > 0 || totalNeed > 0
         ? totalReserved
         : lines.reduce((s, l) => s + (Number(l.reservedQty) || 0), 0);
+    const orderWarehouseId = lines.find((l) => l.orderWarehouseId != null)?.orderWarehouseId ?? null;
+    const orderWarehouseLabel =
+      lines.find((l) => l.orderWarehouseLabel)?.orderWarehouseLabel ??
+      (orderWarehouseId ? await this._warehouseDisplayLabel(orderWarehouseId) : null);
     return {
       hasReserve: reservedQty > 0,
       reservedQty,
       needQty,
       fullyReserved: needQty > 0 && reservedQty >= needQty,
+      orderWarehouseId,
+      orderWarehouseLabel,
       lines
     };
   }

@@ -115,9 +115,13 @@ class WarehouseMappingsRepositoryPG {
   }
   
   /**
-   * Получить маппинги по маркетплейсу
+   * Получить маппинги по маркетплейсу (только склады указанного аккаунта при profileId).
    */
-  async findByMarketplace(marketplace) {
+  async findByMarketplace(marketplace, profileId = null) {
+    const pid = normalizeProfileId(profileId);
+    if (pid) {
+      return this.findAll({ marketplace, profileId: pid });
+    }
     const result = await query(`
       SELECT 
         wm.*,

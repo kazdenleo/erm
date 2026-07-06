@@ -282,15 +282,23 @@ function receiptCalendarDayKey(isoOrDate) {
   return d.toLocaleDateString('en-CA', { timeZone: RECEIPT_CALENDAR_TZ });
 }
 
-async function getDefaultWarehouseIdForTx(client) {
-  const r = await client.query(
-    `SELECT id FROM warehouses WHERE type = 'warehouse' AND supplier_id IS NULL ORDER BY id ASC LIMIT 1`
-  );
+async function getDefaultWarehouseIdForTx(client, profileId = null) {
+  const pid = normalizeProfileId(profileId);
+  const r = pid
+    ? await client.query(
+        `SELECT id FROM warehouses
+         WHERE type = 'warehouse' AND supplier_id IS NULL AND profile_id = $1
+         ORDER BY id ASC LIMIT 1`,
+        [pid]
+      )
+    : await client.query(
+        `SELECT id FROM warehouses WHERE type = 'warehouse' AND supplier_id IS NULL ORDER BY id ASC LIMIT 1`
+      );
   return r.rows?.[0]?.id ?? null;
 }
 
-async function resolveReceiptWarehouseIdForTx(client, warehouseId) {
-  if (warehouseId == null || warehouseId === '') return await getDefaultWarehouseIdForTx(client);
+async function resolveReceiptWarehouseIdForTx(client, warehouseId, profileId = null) {
+  if (warehouseId == null || warehouseId === '') return await getDefaultWarehouseIdForTx(client, profileId);
   const wid = typeof warehouseId === 'string' ? parseInt(warehouseId, 10) : Number(warehouseId);
   if (!wid || Number.isNaN(wid)) {
     const err = new Error('Некорректный склад приёмки');
@@ -310,10 +318,10 @@ async function resolveReceiptWarehouseIdForTx(client, warehouseId) {
 }
 
 /** Увеличить свободный остаток на складе по умолчанию (дельта); products.quantity синхронизируется триггером. */
-async function addToDefaultWarehouseStock(client, productId, delta) {
+async function addToDefaultWarehouseStock(client, productId, delta, profileId = null) {
   const d = Math.max(0, parseInt(delta, 10) || 0);
   if (d <= 0) return;
-  const dwId = await getDefaultWarehouseIdForTx(client);
+  const dwId = await getDefaultWarehouseIdForTx(client, profileId);
   if (!dwId) return;
   await client.query(
     `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
@@ -3444,7 +3452,7 @@ class PurchasesService {
       if (whArg == null || whArg === '') {
         whArg = purchaseWarehouseId;
       }
-      const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, whArg);
+      const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, whArg, pid);
 
       const { deltas, extras } = await applyPurchaseReceiptStockByProductInTx(client, {
         purchaseReceiptId: rid,
@@ -3706,7 +3714,7 @@ class PurchasesService {
       await assertPurchaseNotArchivedInTx(client, purchaseId);
       await client.query('SELECT id FROM purchases WHERE id = $1 FOR UPDATE', [purchaseId]);
 
-      const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, scope.warehouseId);
+      const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, scope.warehouseId, pid);
 
       for (const row of completed) {
         const rId = Number(row.id);
@@ -3959,7 +3967,7 @@ class PurchasesService {
       }
 
       if (act === 'accept') {
-        const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, warehouseId);
+        const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, warehouseId, pid);
         for (const line of extras) {
           const pr = await client.query('SELECT quantity FROM products WHERE id = $1 FOR UPDATE', [line.productId]);
           if (!pr.rows?.[0]) continue;
@@ -3979,7 +3987,7 @@ class PurchasesService {
               [line.productId]
             );
           } else {
-            await addToDefaultWarehouseStock(client, line.productId, d);
+            await addToDefaultWarehouseStock(client, line.productId, d, pid);
             await client.query(
               `UPDATE products SET
                  quantity = COALESCE((SELECT SUM(s.quantity)::int FROM product_warehouse_stock s WHERE s.product_id = $1), 0),

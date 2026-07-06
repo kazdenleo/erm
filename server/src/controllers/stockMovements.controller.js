@@ -76,7 +76,7 @@ class StockMovementsController {
       if (warehouseId == null || String(warehouseId).trim() === '') {
         return res.status(400).json({ ok: false, message: 'warehouseId обязателен' });
       }
-      const whId = await stockMovementsService.productsRepository.resolveOwnWarehouseId(warehouseId);
+      const whId = await stockMovementsService.productsRepository.resolveOwnWarehouseId(warehouseId, tid);
       if (!whId) {
         return res.status(400).json({ ok: false, message: 'Склад не найден' });
       }
@@ -131,7 +131,7 @@ class StockMovementsController {
       }
       const { id } = req.params;
       const warehouseRaw = req.query.warehouseId ?? req.query.warehouse_id ?? null;
-      const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw);
+      const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw, tid);
 
       let rows = await stockMovementsService.listReservedOrdersForProduct(id, {
         profileId: tid,
@@ -219,7 +219,7 @@ class StockMovementsController {
       const { id } = req.params;
       const warehouseRaw =
         req.body?.warehouseId ?? req.body?.warehouse_id ?? req.query?.warehouseId ?? req.query?.warehouse_id ?? null;
-      const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw);
+      const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw, tid);
       const summary = await stockMovementsService.releaseUnattributedJournalReserve(id, {
         profileId: tid,
         warehouseId: whFilter
@@ -247,7 +247,7 @@ class StockMovementsController {
       const { id } = req.params;
       const warehouseRaw =
         req.body?.warehouseId ?? req.body?.warehouse_id ?? req.query?.warehouseId ?? req.query?.warehouse_id ?? null;
-      const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw);
+      const whFilter = await stockMovementsService.resolveWarehouseFilter(warehouseRaw, tid);
       const summary = await stockMovementsService.releaseAllReservesForProduct(id, {
         profileId: tid,
         warehouseId: whFilter

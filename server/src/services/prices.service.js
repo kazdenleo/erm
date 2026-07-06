@@ -1820,9 +1820,22 @@ class PricesService {
       console.log(`[Prices Service] Provided wbWarehouseName: "${wbWarehouseName || 'none'}"`);
 
       try {
-        const mainWarehouseResult = await query(
-          `SELECT id FROM warehouses WHERE main_warehouse_id IS NULL AND type = 'warehouse' LIMIT 1`
-        );
+        const integrationScope = options.integrationScope || {};
+        const scopeProfileId =
+          integrationScope.profileId != null && integrationScope.profileId !== ''
+            ? integrationScope.profileId
+            : integrationScope.profile_id ?? null;
+
+        const mainWarehouseResult = scopeProfileId
+          ? await query(
+              `SELECT id FROM warehouses
+               WHERE main_warehouse_id IS NULL AND type = 'warehouse' AND profile_id = $1
+               ORDER BY id ASC LIMIT 1`,
+              [scopeProfileId]
+            )
+          : await query(
+              `SELECT id FROM warehouses WHERE main_warehouse_id IS NULL AND type = 'warehouse' LIMIT 1`
+            );
 
         console.log(`[Prices Service] Main warehouse query result: ${mainWarehouseResult.rows.length} rows`);
 
@@ -1854,7 +1867,7 @@ class PricesService {
             }
             // Если привязка есть у другого склада — берём любой маппинг WB
             if (!finalWbWarehouseName) {
-              const allWb = await warehouseMappingsRepo.findByMarketplace('wb');
+              const allWb = await warehouseMappingsRepo.findByMarketplace('wb', scopeProfileId);
               const first = allWb && allWb[0];
               if (first && first.marketplace_warehouse_id) {
                 finalWbWarehouseName = String(first.marketplace_warehouse_id).trim();
@@ -1867,7 +1880,7 @@ class PricesService {
         }
         // Если всё ещё нет — ищем любой маппинг WB (привязка может быть у любого склада)
         if (!finalWbWarehouseName) {
-          const allWb = await warehouseMappingsRepo.findByMarketplace('wb');
+          const allWb = await warehouseMappingsRepo.findByMarketplace('wb', scopeProfileId);
           const first = allWb && allWb[0];
           if (first && first.marketplace_warehouse_id) {
             finalWbWarehouseName = String(first.marketplace_warehouse_id).trim();
