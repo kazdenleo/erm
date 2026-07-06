@@ -53,6 +53,28 @@ export function assemblyLinesToCompleteOnKitScan(product, orderItems) {
   return keys;
 }
 
+/** Скан штрихкода корневого SKU комплекта при строках-составляющих в orderItems. */
+export function isRootKitSkuScanForOrder(product, orderItems) {
+  if (!product?.id || !orderItems?.length) return false;
+  const scanId = String(product.id);
+  return orderItems.some(
+    (item) => String(item.kitProductId ?? item.kit_product_id ?? '') === scanId
+  );
+}
+
+/** Закрыть все строки одного комплекта при скане его SKU. */
+export function assemblyLinesToCompleteOnRootKitScan(product, orderItems) {
+  if (!product?.id || !orderItems?.length) return new Set();
+  const scanId = String(product.id);
+  const keys = new Set();
+  orderItems.forEach((item, idx) => {
+    if (String(item.kitProductId ?? item.kit_product_id ?? '') === scanId) {
+      keys.add(idx);
+    }
+  });
+  return keys;
+}
+
 /** Совпадение скана с одной строкой состава (product_id строки — комплектующая). */
 export function orderItemMatchesScannedProduct(item, product) {
   if (!product?.id) return false;

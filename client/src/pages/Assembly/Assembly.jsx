@@ -21,6 +21,8 @@ import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay
 import {
   isKitSkuScanForOrder,
   assemblyLinesToCompleteOnKitScan,
+  isRootKitSkuScanForOrder,
+  assemblyLinesToCompleteOnRootKitScan,
   orderItemMatchesScannedProduct,
 } from '../../utils/assemblyKitScan.js';
 import './Assembly.css';
@@ -673,6 +675,16 @@ export function Assembly() {
 
           if (isKitSkuScanForOrder(product, items)) {
             const lineIdxs = assemblyLinesToCompleteOnKitScan(product, items);
+            for (const idx of lineIdxs) {
+              const item = items[idx];
+              const need = item.quantity ?? 1;
+              next[assemblyLineScanKey(item, idx)] = need;
+            }
+            return next;
+          }
+
+          if (isRootKitSkuScanForOrder(product, items)) {
+            const lineIdxs = assemblyLinesToCompleteOnRootKitScan(product, items);
             for (const idx of lineIdxs) {
               const item = items[idx];
               const need = item.quantity ?? 1;

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   isKitSkuScanForOrder,
   assemblyLinesToCompleteOnKitScan,
+  isRootKitSkuScanForOrder,
+  assemblyLinesToCompleteOnRootKitScan,
   orderItemMatchesScannedProduct,
 } from '../../client/src/utils/assemblyKitScan.js';
 
@@ -48,4 +50,11 @@ test('scan of whole kit line completes only that line', () => {
 test('component scan matches only its line', () => {
   assert.equal(orderItemMatchesScannedProduct(componentLines[0], { id: compA }), true);
   assert.equal(orderItemMatchesScannedProduct(componentLines[1], { id: compA }), false);
+});
+
+test('scan of root kit SKU completes all component lines', () => {
+  assert.equal(isRootKitSkuScanForOrder({ id: kitId }, componentLines), true);
+  assert.equal(isRootKitSkuScanForOrder({ id: compA }, componentLines), false);
+  const keys = assemblyLinesToCompleteOnRootKitScan({ id: kitId }, componentLines);
+  assert.deepEqual([...keys].sort(), [0, 1]);
 });

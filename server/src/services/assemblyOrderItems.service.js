@@ -45,6 +45,11 @@ async function canUseWholeKitAssemblyLine(kitId, kitsNeeded, order, opts = {}) {
   const aggregated = aggregateKitComponents(await getKitComponents(kitId));
 
   const scannedId = opts.scannedProductId != null ? Number(opts.scannedProductId) : NaN;
+  const kitNum = Number(kitId);
+  // Физический скан штрихкода целого комплекта — одна строка сборки, даже если резерв на комплектующих.
+  if (Number.isFinite(scannedId) && scannedId > 0 && Number.isFinite(kitNum) && scannedId === kitNum) {
+    return true;
+  }
   if (Number.isFinite(scannedId) && scannedId > 0) {
     if (aggregated.some((c) => Number(c.component_product_id) === scannedId)) return false;
   }
@@ -340,4 +345,21 @@ export async function buildAssemblyOrderItemsFromGroup(groupOrders, ordersServic
     items.push(...part);
   }
   return items;
+}
+
+/** Колонка «Состав» в списке сборки (для light-обогащения без полного reserveLines). */
+export async function enrichOrdersAssemblyCompositionLines(orders, ordersService) {
+  if (!Array.isArray(orders) || !orders.length || !ordersService) return;
+  const targets = orders.filter((o) => String(o?.status || '').trim().toLowerCase() === 'in_assembly');
+  if (!targets.length) return;
+  await Promise.all(
+    targets.map(async (o) => {
+      try {
+        o.assemblyCompositionLines = await buildAssemblyCompositionLinesForOrder(o, ordersService);
+        o.assembly_composition_lines = o.assemblyCompositionLines;
+      } catch {
+        /* ignore */
+      }
+    })
+  );
 }

@@ -56,7 +56,7 @@ import {
   parseStockMovementWarehouseId
 } from '../constants/netReservedStockSql.js';
 import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
-import { buildAssemblyCompositionLinesForOrder } from './assemblyOrderItems.service.js';
+import { buildAssemblyCompositionLinesForOrder, enrichOrdersAssemblyCompositionLines } from './assemblyOrderItems.service.js';
 
 function reserveSnapshotOptsFromMeta(meta = {}) {
   const wh = meta?.warehouse_id ?? meta?.warehouseId ?? null;
@@ -3104,6 +3104,7 @@ class OrdersService {
           o.reserve_coverage = 'none';
         }
       }
+      await enrichOrdersAssemblyCompositionLines(orders, this);
       return orders;
     }
     for (const o of orders) {
