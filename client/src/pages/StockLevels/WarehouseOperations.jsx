@@ -48,6 +48,18 @@ const MODE_WRITEOFF = 'writeoff';
 const MODE_INVENTORY = 'inventory';
 const MODE_RECEIPTS_LIST = 'receipts_list';
 const MODE_RETURN_SUPPLIER = 'return_supplier';
+
+function formatWarehouseReceiptNumber(r) {
+  const prId = r?.purchase_receipt_id ?? r?.purchaseReceiptId;
+  const docNo = r?.receipt_number || (r?.id != null ? `#${r.id}` : '—');
+  if (prId != null && String(prId).trim() !== '') {
+    return `закуп. приёмка №${prId} · ${docNo}`;
+  }
+  return docNo;
+}
+
+/** @deprecated используйте formatWarehouseReceiptNumber */
+const formatPurchaseReceiptNumber = formatWarehouseReceiptNumber;
 const MODE_RETURN_CUSTOMER = 'return_customer';
 const MODE_TRANSFER = 'transfer';
 
@@ -182,6 +194,15 @@ function receiptDocumentTypeLabel(documentType) {
   if (documentType === 'return') return 'Возврат поставщику';
   if (documentType === 'customer_return') return 'Возврат от клиента';
   return 'Приёмка';
+}
+
+function warehousesForOrganization(ownWarehouses, organizationId) {
+  const orgId = String(organizationId || '').trim();
+  if (!orgId) return [];
+  return (ownWarehouses || []).filter((w) => {
+    const wOrg = w.organizationId ?? w.organization_id;
+    return wOrg != null && String(wOrg) === orgId;
+  });
 }
 
 export function WarehouseOperations({
@@ -331,6 +352,14 @@ export function WarehouseOperations({
   const returnScanInputRef = useRef(null);
   const returnScanDedupRef = useRef({ key: '', at: 0 });
   const [customerReturnOrganizationId, setCustomerReturnOrganizationId] = useState('');
+  const returnWarehouses = useMemo(
+    () => warehousesForOrganization(ownWarehouses, returnOrganizationId),
+    [ownWarehouses, returnOrganizationId]
+  );
+  const customerReturnWarehouses = useMemo(
+    () => warehousesForOrganization(ownWarehouses, customerReturnOrganizationId),
+    [ownWarehouses, customerReturnOrganizationId]
+  );
   const [customerReturnList, setCustomerReturnList] = useState([]);
   const [customerReturnMode, setCustomerReturnMode] = useState('scan');
   const [customerReturnSelectedProductId, setCustomerReturnSelectedProductId] = useState('');
@@ -537,13 +566,18 @@ export function WarehouseOperations({
   }, [mode, transferOrganizationId, defaultOrganizationId, singleOrganizationId]);
 
   useEffect(() => {
-    if (!returnOrganizationId && singleOrganizationId) {
-      setReturnOrganizationId(singleOrganizationId);
+    const allowed = new Set(returnWarehouses.map((w) => String(w.id)));
+    if (returnWarehouseId && !allowed.has(String(returnWarehouseId))) {
+      setReturnWarehouseId('');
     }
-    if (!customerReturnOrganizationId && singleOrganizationId) {
-      setCustomerReturnOrganizationId(singleOrganizationId);
+  }, [returnWarehouses, returnWarehouseId]);
+
+  useEffect(() => {
+    const allowed = new Set(customerReturnWarehouses.map((w) => String(w.id)));
+    if (customerReturnWarehouseId && !allowed.has(String(customerReturnWarehouseId))) {
+      setCustomerReturnWarehouseId('');
     }
-  }, [singleOrganizationId, returnOrganizationId, customerReturnOrganizationId]);
+  }, [customerReturnWarehouses, customerReturnWarehouseId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
@@ -571,22 +605,6 @@ export function WarehouseOperations({
       else if (singleWarehouseId) setWriteoffWarehouseId(singleWarehouseId);
     }
   }, [mode, writeoffWarehouseId, inventoryWarehouseId, singleWarehouseId]);
-
-  useEffect(() => {
-    if (mode !== MODE_RETURN_SUPPLIER) return;
-    if (!returnWarehouseId) {
-      if (inventoryWarehouseId) setReturnWarehouseId(String(inventoryWarehouseId));
-      else if (singleWarehouseId) setReturnWarehouseId(singleWarehouseId);
-    }
-  }, [mode, returnWarehouseId, inventoryWarehouseId, singleWarehouseId]);
-
-  useEffect(() => {
-    if (mode !== MODE_RETURN_CUSTOMER) return;
-    if (!customerReturnWarehouseId) {
-      if (inventoryWarehouseId) setCustomerReturnWarehouseId(String(inventoryWarehouseId));
-      else if (singleWarehouseId) setCustomerReturnWarehouseId(singleWarehouseId);
-    }
-  }, [mode, customerReturnWarehouseId, inventoryWarehouseId, singleWarehouseId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
@@ -1217,6 +1235,10 @@ export function WarehouseOperations({
     if (mode === MODE_RECEIPT && receiptMode === 'scan') {
       return;
     }
+    if (mode === MODE_WRITEOFF) {
+      resolveWriteoffProductSearch(readScanFieldValue(scanInputRef.current));
+      return;
+    }
     lookupByBarcodeOrSku(readScanFieldValue(scanInputRef.current));
   };
 
@@ -1600,23 +1622,25 @@ export function WarehouseOperations({
     [lookupByBarcodeOrSkuThenReceiptOne]
   );
 
-  const handleWriteoffBarcodeScan = useCallback(
-    (code) => {
-      setLookupError(null);
-      lookupByBarcodeOrSku(code).catch(() => {});
-      clearScanField(scanInputRef.current);
-    },
-    [lookupByBarcodeOrSku]
-  );
-
   const handleWriteoffManualQuery = useCallback(
     async (qq) => {
-      if (qq.length < 2) return;
+      if (qq.length < 2) {
+        if (suggestContext === 'writeoff_scan') closeSuggest();
+        return;
+      }
       let matches = findLocalMatches(qq);
       const remote = await searchProductsRemote(qq, { limit: 40 });
       matches = mergeProductLists(matches, remote);
       if (matches.length === 0) {
         if (suggestContext === 'writeoff_scan') closeSuggest();
+        return;
+      }
+      if (matches.length === 1) {
+        closeSuggest();
+        setFoundProduct(matches[0]);
+        setQtyInput(1);
+        clearScanField(scanInputRef.current);
+        scanInputRef.current?.focus();
         return;
       }
       openSuggest('writeoff_scan', 'Выберите товар', matches, (p) => {
@@ -1628,6 +1652,44 @@ export function WarehouseOperations({
       });
     },
     [findLocalMatches, suggestContext, closeSuggest, openSuggest]
+  );
+
+  const resolveWriteoffProductSearch = useCallback(
+    async (value) => {
+      const v = normalizeQuery(value);
+      if (!v) return;
+      setLookupError(null);
+      let matches = findLocalMatches(v);
+      const remote = await searchProductsRemote(v, { limit: 40 });
+      matches = mergeProductLists(matches, remote);
+      if (matches.length === 1) {
+        closeSuggest();
+        setFoundProduct(matches[0]);
+        setQtyInput(1);
+        clearScanField(scanInputRef.current);
+        scanInputRef.current?.focus();
+        return;
+      }
+      if (matches.length > 1) {
+        openSuggest('writeoff_scan', 'Выберите товар', matches, (p) => {
+          if (!p) return;
+          setFoundProduct(p);
+          setQtyInput(1);
+          clearScanField(scanInputRef.current);
+          scanInputRef.current?.focus();
+        });
+        return;
+      }
+      await lookupByBarcodeOrSku(v);
+    },
+    [findLocalMatches, closeSuggest, openSuggest, lookupByBarcodeOrSku]
+  );
+
+  const handleWriteoffBarcodeScan = useCallback(
+    (code) => {
+      resolveWriteoffProductSearch(code).catch(() => {});
+    },
+    [resolveWriteoffProductSearch]
   );
 
   const applyWarehouseReceiptBoxQty = useCallback(
@@ -2072,11 +2134,11 @@ export function WarehouseOperations({
     if (customerReturnPrefillRef.current === key) return undefined;
     customerReturnPrefillRef.current = key;
 
-    if (prefill.warehouseId != null && String(prefill.warehouseId).trim() !== '') {
-      setCustomerReturnWarehouseId(String(prefill.warehouseId));
-    }
     if (prefill.organizationId != null && String(prefill.organizationId).trim() !== '') {
       setCustomerReturnOrganizationId(String(prefill.organizationId));
+    }
+    if (prefill.warehouseId != null && String(prefill.warehouseId).trim() !== '') {
+      setCustomerReturnWarehouseId(String(prefill.warehouseId));
     }
 
     if (Array.isArray(prefill.lines) && prefill.lines.length > 0) {
@@ -2347,7 +2409,7 @@ export function WarehouseOperations({
                         })
                       : '—'}
                   </td>
-                  <td>{r.receipt_number || `#${r.id}`}</td>
+                  <td>{formatWarehouseReceiptNumber(r)}</td>
                   {showTypeColumn ? (
                     <td>{receiptDocumentTypeLabel(r.document_type)}</td>
                   ) : null}
@@ -2881,7 +2943,7 @@ export function WarehouseOperations({
                 onScan={handleWriteoffBarcodeScan}
                 onManualQuery={handleWriteoffManualQuery}
                 debounceMs={120}
-                manualDebounceMs={250}
+                manualDebounceMs={400}
                 placeholder="Штрихкод / артикул / название — сканер или Enter"
                 onBlur={() => {
                   setTimeout(() => {
@@ -2974,23 +3036,6 @@ export function WarehouseOperations({
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
-                Склад списания <span className="warehouse-ops-required-star">*</span>
-              </label>
-              <select
-                value={returnWarehouseId}
-                onChange={(e) => setReturnWarehouseId(e.target.value)}
-                className="warehouse-ops-select"
-              >
-                <option value="">— Выберите склад —</option>
-                {ownWarehouses.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="warehouse-ops-receipt-supplier-row">
-              <label>
                 Организация (от имени которой возврат) <span className="warehouse-ops-required-star">*</span>
               </label>
               <select
@@ -3001,6 +3046,26 @@ export function WarehouseOperations({
                 <option value="">— Выберите организацию —</option>
                 {(organizations || []).map(org => (
                   <option key={org.id} value={org.id}>{org.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Склад списания <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={returnWarehouseId}
+                onChange={(e) => setReturnWarehouseId(e.target.value)}
+                className="warehouse-ops-select"
+                disabled={!returnOrganizationId}
+              >
+                <option value="">
+                  {returnOrganizationId ? '— Выберите склад —' : '— Сначала выберите организацию —'}
+                </option>
+                {returnWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
                 ))}
               </select>
             </div>
@@ -3189,26 +3254,9 @@ export function WarehouseOperations({
           >
           <h4 className="warehouse-ops-subsection-title">Принять возврат на склад</h4>
           <p className="warehouse-ops-hint">
-            Укажите склад приёмки и организацию (при необходимости), добавьте товары по скану или из списка. Документы сохраняются в списке ниже.
+            Сначала выберите организацию и склад приёмки, затем добавьте товары по скану или из списка. Документы сохраняются в списке ниже.
           </p>
           <div className="warehouse-ops-return-org-supplier">
-            <div className="warehouse-ops-receipt-supplier-row">
-              <label>
-                Склад приёмки <span className="warehouse-ops-required-star">*</span>
-              </label>
-              <select
-                value={customerReturnWarehouseId}
-                onChange={(e) => setCustomerReturnWarehouseId(e.target.value)}
-                className="warehouse-ops-select"
-              >
-                <option value="">— Выберите склад —</option>
-                {ownWarehouses.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.address || w.name || `Склад #${w.id}`}
-                  </option>
-                ))}
-              </select>
-            </div>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
                 Организация (принимающая возврат) <span className="warehouse-ops-required-star">*</span>
@@ -3218,9 +3266,29 @@ export function WarehouseOperations({
                 onChange={e => setCustomerReturnOrganizationId(e.target.value)}
                 className="warehouse-ops-select"
               >
-                <option value="">— Не указана —</option>
+                <option value="">— Выберите организацию —</option>
                 {(organizations || []).map(org => (
                   <option key={org.id} value={org.id}>{org.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Склад приёмки <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={customerReturnWarehouseId}
+                onChange={(e) => setCustomerReturnWarehouseId(e.target.value)}
+                className="warehouse-ops-select"
+                disabled={!customerReturnOrganizationId}
+              >
+                <option value="">
+                  {customerReturnOrganizationId ? '— Выберите склад —' : '— Сначала выберите организацию —'}
+                </option>
+                {customerReturnWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
                 ))}
               </select>
             </div>

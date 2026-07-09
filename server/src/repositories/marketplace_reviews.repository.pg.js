@@ -4,6 +4,9 @@
 
 import { query } from '../config/database.js';
 
+/** Строка «ждёт ответа» — без текста ответа продавца в БД. */
+const SQL_NEEDS_REPLY = `(answer_text IS NULL OR TRIM(COALESCE(answer_text, '')) = '')`;
+
 function rowToApi(row) {
   if (!row) return row;
   return {
@@ -56,6 +59,58 @@ class MarketplaceReviewsRepositoryPG {
       [nid, profileId, answerText]
     );
     return rowToApi(result.rows[0]);
+  }
+
+  async deleteByIdAndProfile(id, profileId) {
+    const nid = Number(id);
+    if (!Number.isFinite(nid) || nid < 1) return false;
+    const result = await query(
+      'DELETE FROM marketplace_reviews WHERE id = $1 AND profile_id = $2',
+      [nid, profileId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** Отзывы без ответа в БД, которых уже нет в списке неотвеченных на МП. */
+  async findNeedingReplyMissingFromMarketplace(profileId, marketplace, externalIds, { allIfEmpty = false } = {}) {
+    const mp = String(marketplace || '').trim();
+    if (!['ozon', 'wildberries', 'yandex'].includes(mp)) return [];
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) return [];
+
+    const ids = Array.isArray(externalIds)
+      ? externalIds.map((x) => String(x).trim()).filter(Boolean)
+      : [];
+
+    if (ids.length === 0) {
+      if (!allIfEmpty) return [];
+      const result = await query(
+        `SELECT * FROM marketplace_reviews
+         WHERE profile_id = $1 AND marketplace = $2 AND ${SQL_NEEDS_REPLY}`,
+        [pid, mp]
+      );
+      return result.rows || [];
+    }
+
+    const result = await query(
+      `SELECT * FROM marketplace_reviews
+       WHERE profile_id = $1 AND marketplace = $2 AND ${SQL_NEEDS_REPLY}
+         AND NOT (external_id = ANY($3::text[]))`,
+      [pid, mp, ids]
+    );
+    return result.rows || [];
+  }
+
+  /** Удалить отзывы, на которые уже ответили (архив не храним). */
+  async deleteNotNeedingReplyByProfile(profileId) {
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) return { deleted: 0 };
+    const result = await query(
+      `DELETE FROM marketplace_reviews
+       WHERE profile_id = $1 AND NOT (${SQL_NEEDS_REPLY})`,
+      [pid]
+    );
+    return { deleted: result.rowCount != null ? Number(result.rowCount) : 0 };
   }
 
   async upsertRow(row) {
@@ -216,7 +271,7 @@ class MarketplaceReviewsRepositoryPG {
     const byMpRes = await query(
       `SELECT marketplace, COUNT(*)::bigint AS c
        FROM marketplace_reviews
-       WHERE profile_id = $1
+       WHERE profile_id = $1 AND ${SQL_NEEDS_REPLY}
        GROUP BY marketplace`,
       [pid]
     );

@@ -11,6 +11,7 @@ import {
 } from '../repositories/products.repository.pg.js';
 import { query } from '../config/database.js';
 import { resolveProfileKitsEnabled } from '../utils/profileFeatureFlags.js';
+import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 import pricesService from './prices.service.js';
 import integrationsService from './integrations.service.js';
 import {
@@ -1220,6 +1221,12 @@ class ProductsService {
     try {
       // Получаем список активных поставщиков аккаунта товара
       const profileId = product.profile_id ?? product.profileId ?? null;
+      if (profileId != null) {
+        const prof = await repositoryFactory.getProfilesRepository().findById(profileId);
+        if (!isProfileSupplierSyncEnabled(prof)) {
+          return;
+        }
+      }
       const suppliersService = await import('./suppliers.service.js');
       const suppliers = await suppliersService.default.getAll({ profileId });
       const activeSuppliers = suppliers.filter(s => s.is_active !== false && s.code);
@@ -1475,10 +1482,11 @@ class ProductsService {
   /**
    * Принудительно обновить остатки и цены у поставщиков для всех товаров или конкретного товара
    */
-  async refreshSupplierStocks(productId = null) {
+  async refreshSupplierStocks(productId = null, opts = {}) {
     try {
       let productsToUpdate = [];
-      
+      const scopeProfileId = opts.profileId ?? opts.profile_id ?? null;
+
       if (productId) {
         // Обновляем остатки для конкретного товара
         const product = await this.getById(productId);
@@ -1487,12 +1495,65 @@ class ProductsService {
           error.statusCode = 404;
           throw error;
         }
+        const productProfileId = product.profile_id ?? product.profileId ?? null;
+        if (productProfileId != null) {
+          const prof = await repositoryFactory.getProfilesRepository().findById(productProfileId);
+          if (!isProfileSupplierSyncEnabled(prof)) {
+            return {
+              total: 0,
+              success: 0,
+              failed: 0,
+              details: [],
+              marketplacePushScheduled: 0,
+              skipped: true,
+              reason: 'supplier_sync_disabled'
+            };
+          }
+        }
         productsToUpdate = [product];
         console.log(`[Products Service] Refreshing supplier stocks for product ID: ${productId}, SKU: ${product.sku}`);
+      } else if (scopeProfileId != null && scopeProfileId !== '') {
+        const prof = await repositoryFactory.getProfilesRepository().findById(scopeProfileId);
+        if (!isProfileSupplierSyncEnabled(prof)) {
+          console.log(
+            `[Products Service] Supplier stocks refresh skipped: integration disabled for profile ${scopeProfileId}`
+          );
+          return {
+            total: 0,
+            success: 0,
+            failed: 0,
+            details: [],
+            marketplacePushScheduled: 0,
+            skipped: true,
+            reason: 'supplier_sync_disabled'
+          };
+        }
+        productsToUpdate = await this.getAll({ profileId: scopeProfileId });
+        console.log(
+          `[Products Service] Refreshing supplier stocks for profile ${scopeProfileId}: ${productsToUpdate.length} products`
+        );
       } else {
-        // Обновляем остатки для всех товаров
-        productsToUpdate = await this.getAll();
-        console.log(`[Products Service] Refreshing supplier stocks for all ${productsToUpdate.length} products`);
+        const enabledProfiles = await repositoryFactory.getProfilesRepository().findSupplierSyncEnabled();
+        if (enabledProfiles.length === 0) {
+          console.log('[Products Service] Supplier stocks refresh skipped: no profiles with integration enabled');
+          return {
+            total: 0,
+            success: 0,
+            failed: 0,
+            details: [],
+            marketplacePushScheduled: 0,
+            skipped: true,
+            reason: 'no_enabled_profiles'
+          };
+        }
+        productsToUpdate = [];
+        for (const prof of enabledProfiles) {
+          const batch = await this.getAll({ profileId: prof.id });
+          productsToUpdate.push(...batch);
+        }
+        console.log(
+          `[Products Service] Refreshing supplier stocks for ${productsToUpdate.length} products across ${enabledProfiles.length} profile(s)`
+        );
       }
       
       const results = {

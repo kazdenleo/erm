@@ -28,6 +28,11 @@ import logger from '../utils/logger.js';
 import { runWithDbRetry } from '../utils/dbRetry.js';
 import { enqueueProcurementReserveJob } from '../utils/procurementReserveQueue.js';
 import { requireWarehouseDocumentScope } from '../utils/stockDocumentScope.js';
+import {
+  readDocumentIncomingNetOnWarehouse,
+  readProductGlobalIncomingNet,
+  transferIncomingBetweenWarehouses,
+} from '../utils/stockWarehouseReassign.js';
 
 /** Подпись склада: в БД есть address и wb_warehouse_name, колонок name/city нет. */
 const WAREHOUSE_LABEL_SQL = `NULLIF(TRIM(COALESCE(w.address, w.wb_warehouse_name, '')), '')`;
@@ -122,6 +127,13 @@ async function applyIncomingDeltasAfterCommit(deltas, { purchaseId = null, profi
   );
   const warehouseId = purchaseId != null ? await getPurchaseWarehouseId(null, purchaseId) : null;
   await writePurchaseIncomingJournalEntries(null, purchaseId, deltas, profileId, warehouseId);
+  if (purchaseId != null && profileId != null) {
+    await transaction(async (client) => {
+      for (const productId of batchIds) {
+        await reconcilePurchasePendingIncomingOnWarehouseInTx(client, purchaseId, productId, profileId);
+      }
+    });
+  }
   scheduleProcurementReserveReapply(batchIds, {
     label: 'background reserve after incoming batch update',
   });
@@ -623,6 +635,55 @@ async function addIncomingDeltaForPurchaseInTx(
   });
 }
 
+/** Догнать журнал incoming до непринятого ожидания по строке закупки на складе назначения. */
+async function reconcilePurchasePendingIncomingOnWarehouseInTx(
+  client,
+  purchaseId,
+  productId,
+  profileId
+) {
+  const purId = parseInt(purchaseId, 10);
+  const pid = Number(productId);
+  if (!Number.isFinite(purId) || purId < 1 || !Number.isFinite(pid) || pid < 1) return;
+
+  const line = await client.query(
+    `SELECT expected_quantity, received_quantity FROM purchase_items
+     WHERE purchase_id = $1 AND product_id = $2`,
+    [purId, pid]
+  );
+  const row = line.rows?.[0];
+  if (!row) return;
+
+  const expected = Math.max(0, Math.floor(Number(row.expected_quantity) || 0));
+  const received = Math.max(0, Math.floor(Number(row.received_quantity) || 0));
+  const pending = Math.max(0, expected - received);
+  if (pending <= 0) return;
+
+  const wh = await getPurchaseWarehouseId(client, purId);
+  const docNet = await readDocumentIncomingNetOnWarehouse(client, pid, wh, {
+    metaKey: 'purchase_id',
+    documentId: purId,
+  });
+  const gap = pending - docNet;
+  if (gap <= 0) return;
+
+  await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
+  const globalNet = await readProductGlobalIncomingNet(client, pid);
+  await client.query(
+    'UPDATE products SET incoming_quantity = GREATEST(0, $1::int), updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+    [Math.max(0, globalNet + gap), pid]
+  );
+  await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+    productId: pid,
+    type: 'incoming',
+    quantityChange: gap,
+    reason: `Закупка №${purId} — ожидание`,
+    meta: { purchase_id: purId, incoming_reconcile: true },
+    warehouseId: wh,
+    profileId,
+  });
+}
+
 async function mergeNormalizedPurchaseLines(normalized) {
   const byProduct = new Map();
   for (const it of normalized) {
@@ -762,11 +823,24 @@ async function applyPurchaseLineItemsInTx(
     );
     await writePurchaseIncomingJournalEntries(client, purchaseId, incomingDeltas, profileId);
   }
+
+  if (!deferIncomingUpdate) {
+    const uniqueProductIds = [...new Set(normalized.map((it) => it.productId).filter(Boolean))];
+    for (const productId of uniqueProductIds) {
+      await reconcilePurchasePendingIncomingOnWarehouseInTx(client, purchaseId, productId, profileId);
+    }
+  }
   return null;
 }
 
-/** Снять incoming по ещё не принятой части удаляемой строки закупки. */
-async function subtractIncomingForPurchaseLineRemovalInTx(client, purchaseId, productId, remainderQty) {
+/** Снять incoming по ещё не принятой части строки закупки. */
+async function subtractIncomingForPurchaseLineRemovalInTx(
+  client,
+  purchaseId,
+  productId,
+  remainderQty,
+  { reason: reasonOverride } = {}
+) {
   const rem = Math.max(0, parseInt(remainderQty, 10) || 0);
   if (rem <= 0) return;
   const pid = Number(productId);
@@ -777,10 +851,16 @@ async function subtractIncomingForPurchaseLineRemovalInTx(client, purchaseId, pr
   );
   const profileIdForMove = purProf.rows?.[0]?.profile_id ?? null;
   const purchaseWarehouseId = purProf.rows?.[0]?.warehouse_id ?? null;
+  const netOnPurchaseWh = await readDocumentIncomingNetOnWarehouse(client, pid, purchaseWarehouseId, {
+    metaKey: 'purchase_id',
+    documentId: purchaseId,
+  });
+  const actualRem = Math.min(rem, netOnPurchaseWh > 0 ? netOnPurchaseWh : rem);
+  if (actualRem <= 0) return;
+
   await client.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [pid]);
-  const pr = await client.query('SELECT COALESCE(incoming_quantity, 0) AS inc FROM products WHERE id = $1', [pid]);
-  const incoming = pr.rows?.[0]?.inc != null ? Number(pr.rows[0].inc) : 0;
-  const newIncoming = Math.max(0, incoming - rem);
+  const globalNet = await readProductGlobalIncomingNet(client, pid);
+  const newIncoming = Math.max(0, globalNet - actualRem);
   await client.query(
     'UPDATE products SET incoming_quantity = GREATEST(0, $1::int), updated_at = CURRENT_TIMESTAMP WHERE id = $2',
     [newIncoming, pid]
@@ -788,12 +868,76 @@ async function subtractIncomingForPurchaseLineRemovalInTx(client, purchaseId, pr
   await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
     productId: pid,
     type: 'incoming',
-    quantityChange: -rem,
-    reason: `Снятие ожидания при удалении строки закупки №${purchaseId}`,
-    meta: { purchase_id: purchaseId, line_removed: true },
+    quantityChange: -actualRem,
+    reason:
+      reasonOverride ||
+      `Снятие ожидания при изменении строки закупки №${purchaseId}`,
+    meta: {
+      purchase_id: purchaseId,
+      line_removed: true,
+      warehouse_incoming_before: netOnPurchaseWh,
+      warehouse_incoming_after: Math.max(0, netOnPurchaseWh - actualRem),
+    },
     warehouseId: purchaseWarehouseId,
     profileId: profileIdForMove,
   });
+}
+
+/** Перенос непринятого ожидания (в пути) на новый склад назначения закупки. */
+async function reassignPurchasePendingIncomingWarehouseInTx(
+  client,
+  purchaseId,
+  oldWarehouseId,
+  newWarehouseId,
+  profileId
+) {
+  const purId = parseInt(purchaseId, 10);
+  if (!Number.isFinite(purId) || purId < 1) return;
+  const oldWh =
+    oldWarehouseId != null && oldWarehouseId !== ''
+      ? Number(oldWarehouseId)
+      : null;
+  const newWh =
+    newWarehouseId != null && newWarehouseId !== ''
+      ? Number(newWarehouseId)
+      : null;
+  if (!Number.isFinite(newWh) || newWh < 1) return;
+  if (Number.isFinite(oldWh) && oldWh > 0 && oldWh === newWh) return;
+
+  const lines = await client.query(
+    `SELECT product_id, expected_quantity, received_quantity
+     FROM purchase_items
+     WHERE purchase_id = $1`,
+    [purId]
+  );
+  const reason = `Закупка №${purId} — смена склада назначения`;
+
+  for (const row of lines.rows || []) {
+    const productId = Number(row.product_id);
+    if (!Number.isFinite(productId) || productId < 1) continue;
+    await assertProductAllowedInProfile(client, productId, profileId);
+
+    const expected = row.expected_quantity != null ? Number(row.expected_quantity) : 0;
+    const received = row.received_quantity != null ? Number(row.received_quantity) : 0;
+    const pending = Math.max(0, Math.floor(expected) - Math.floor(received));
+    if (pending <= 0) continue;
+
+    const documentNet = await readDocumentIncomingNetOnWarehouse(client, productId, oldWh, {
+      metaKey: 'purchase_id',
+      documentId: purId,
+    });
+
+    await transferIncomingBetweenWarehouses(client, {
+      productId,
+      fromWarehouseId: oldWh,
+      toWarehouseId: newWh,
+      quantity: pending,
+      reason,
+      meta: { purchase_id: purId },
+      profileId,
+      documentNetOnSource: documentNet,
+    });
+  }
 }
 
 async function ensureWarehouseReceiptForPurchaseReceiptInTx(client, { purchaseId, purchaseReceiptId } = {}) {
@@ -1021,9 +1165,10 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
         productId: pid,
         type: 'receipt',
         quantityChange: -ch,
-        reason: `Сторно: откат приёмки №${rid}`,
+        reason: `Отмена приёмки №${rid}`,
         meta: {
           storno: true,
+          cancelled: true,
           purchase_id: purchaseId,
           purchase_receipt_id: rid,
           reversal_of: m.id,
@@ -1194,7 +1339,7 @@ async function removeRemainingIncomingForPurchaseInTx(client, purchaseId) {
       productId,
       type: 'incoming',
       quantityChange: -rem,
-      reason: `Сторно: снятие ожидания при удалении закупки №${purchaseId}`,
+      reason: `Снятие ожидания при удалении закупки №${purchaseId}`,
       meta: { storno: true, purchase_id: purchaseId, purchase_deleted: true },
       warehouseId: purchaseWarehouseId,
       profileId: profileIdForMove,
@@ -1569,7 +1714,7 @@ async function applyPurchaseReceiptStockByProductInTx(
 class PurchasesService {
   async updatePurchase(
     purchaseId,
-    { supplierId = null, organizationId = null, warehouseId = null, note = null } = {},
+    { supplierId, organizationId, warehouseId, note } = {},
     { profileId } = {}
   ) {
     const pid = normalizeProfileId(profileId);
@@ -1584,46 +1729,110 @@ class PurchasesService {
       err.statusCode = 400;
       throw err;
     }
-    const supplier =
-      supplierId === '' || supplierId == null ? null : Number.isNaN(Number(supplierId)) ? null : Number(supplierId);
-    const org =
-      organizationId === '' || organizationId == null
-        ? null
-        : Number.isNaN(Number(organizationId))
+
+    const sets = [];
+    const params = [id];
+    let paramIdx = 2;
+
+    if (supplierId !== undefined) {
+      const supplier =
+        supplierId === '' || supplierId == null
           ? null
-          : Number(organizationId);
-    const wid =
-      warehouseId === '' || warehouseId == null ? null : Number.isNaN(Number(warehouseId)) ? null : Number(warehouseId);
-    if (supplierId !== undefined && (!Number.isFinite(supplier) || supplier < 1)) {
-      const err = new Error('Выберите поставщика');
-      err.statusCode = 400;
-      throw err;
+          : Number.isNaN(Number(supplierId))
+            ? null
+            : Number(supplierId);
+      if (!Number.isFinite(supplier) || supplier < 1) {
+        const err = new Error('Выберите поставщика');
+        err.statusCode = 400;
+        throw err;
+      }
+      sets.push(`supplier_id = $${paramIdx++}`);
+      params.push(supplier);
     }
-    if (organizationId !== undefined && (!Number.isFinite(org) || org < 1)) {
-      const err = new Error('Выберите организацию');
-      err.statusCode = 400;
-      throw err;
+    if (organizationId !== undefined) {
+      const org =
+        organizationId === '' || organizationId == null
+          ? null
+          : Number.isNaN(Number(organizationId))
+            ? null
+            : Number(organizationId);
+      if (!Number.isFinite(org) || org < 1) {
+        const err = new Error('Выберите организацию');
+        err.statusCode = 400;
+        throw err;
+      }
+      sets.push(`organization_id = $${paramIdx++}`);
+      params.push(org);
     }
-    if (warehouseId !== undefined && (!Number.isFinite(wid) || wid < 1)) {
-      const err = new Error('Выберите склад назначения');
-      err.statusCode = 400;
-      throw err;
+    if (warehouseId !== undefined) {
+      const wid =
+        warehouseId === '' || warehouseId == null
+          ? null
+          : Number.isNaN(Number(warehouseId))
+            ? null
+            : Number(warehouseId);
+      if (!Number.isFinite(wid) || wid < 1) {
+        const err = new Error('Выберите склад назначения');
+        err.statusCode = 400;
+        throw err;
+      }
+      sets.push(`warehouse_id = $${paramIdx++}`);
+      params.push(wid);
     }
+    if (note !== undefined) {
+      sets.push(`note = $${paramIdx++}`);
+      params.push(note);
+    }
+
+    if (sets.length === 0) {
+      return { ok: true, id };
+    }
+
+    const warehousePatch =
+      warehouseId !== undefined
+        ? warehouseId === '' || warehouseId == null
+          ? null
+          : Number.isNaN(Number(warehouseId))
+            ? null
+            : Number(warehouseId)
+        : undefined;
 
     return transaction(async (client) => {
       await assertPurchaseInProfile(client, id, pid);
       await assertPurchaseNotArchivedInTx(client, id);
+
+      let oldWarehouseId = null;
+      if (warehousePatch !== undefined) {
+        const curWh = await client.query(
+          `SELECT warehouse_id FROM purchases WHERE id = $1 FOR UPDATE`,
+          [id]
+        );
+        oldWarehouseId = curWh.rows?.[0]?.warehouse_id ?? null;
+      }
+
+      sets.push('updated_at = CURRENT_TIMESTAMP');
       await client.query(
-        `UPDATE purchases
-         SET supplier_id = $2,
-             organization_id = $3,
-             warehouse_id = $4,
-             note = COALESCE($5, note),
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [id, supplier, org, wid, note]
+        `UPDATE purchases SET ${sets.join(', ')} WHERE id = $1`,
+        params
       );
-      return { ok: true, id, supplierId: supplier };
+
+      if (
+        warehousePatch !== undefined &&
+        warehousePatch != null &&
+        Number.isFinite(warehousePatch) &&
+        warehousePatch > 0 &&
+        Number(oldWarehouseId) !== warehousePatch
+      ) {
+        await reassignPurchasePendingIncomingWarehouseInTx(
+          client,
+          id,
+          oldWarehouseId,
+          warehousePatch,
+          pid
+        );
+      }
+
+      return { ok: true, id };
     });
   }
 
@@ -1798,7 +2007,7 @@ class PurchasesService {
     let receipts;
     try {
       receipts = await query(
-        `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at,
+        `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at, r.cancelled_at,
                 r.warehouse_receipt_id,
                 p.warehouse_id,
                 ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
@@ -1807,7 +2016,7 @@ class PurchasesService {
          JOIN purchases p ON p.id = r.purchase_id
          LEFT JOIN warehouses w ON w.id = p.warehouse_id
          WHERE r.purchase_id = $1
-           AND r.status IN ('completed', 'scanning', 'expected')
+           AND r.status IN ('completed', 'scanning', 'expected', 'cancelled')
          ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
         [id]
       );
@@ -1815,7 +2024,7 @@ class PurchasesService {
       const msg = String(e?.message || '');
       if (msg.includes('warehouse_receipt_id') && msg.includes('does not exist')) {
         receipts = await query(
-          `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at,
+          `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at, r.cancelled_at,
                   NULL::bigint AS warehouse_receipt_id,
                   p.warehouse_id,
                   ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
@@ -1824,7 +2033,7 @@ class PurchasesService {
            JOIN purchases p ON p.id = r.purchase_id
            LEFT JOIN warehouses w ON w.id = p.warehouse_id
            WHERE r.purchase_id = $1
-             AND r.status IN ('completed', 'scanning', 'expected')
+             AND r.status IN ('completed', 'scanning', 'expected', 'cancelled')
            ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
           [id]
         );
@@ -1860,7 +2069,7 @@ class PurchasesService {
     let receipts2;
     try {
       receipts2 = await query(
-        `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at,
+        `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at, r.cancelled_at,
                 r.warehouse_receipt_id,
                 p.warehouse_id,
                 ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
@@ -1869,7 +2078,7 @@ class PurchasesService {
          JOIN purchases p ON p.id = r.purchase_id
          LEFT JOIN warehouses w ON w.id = p.warehouse_id
          WHERE r.purchase_id = $1
-           AND r.status IN ('completed', 'scanning', 'expected')
+           AND r.status IN ('completed', 'scanning', 'expected', 'cancelled')
          ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
         [id]
       );
@@ -1877,7 +2086,7 @@ class PurchasesService {
       const msg = String(e?.message || '');
       if (msg.includes('warehouse_receipt_id') && msg.includes('does not exist')) {
         receipts2 = await query(
-          `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at,
+          `SELECT r.id, r.created_at, r.status, r.started_at, r.completed_at, r.cancelled_at,
                   NULL::bigint AS warehouse_receipt_id,
                   p.warehouse_id,
                   ${WAREHOUSE_LABEL_SQL} AS warehouse_name,
@@ -1886,7 +2095,7 @@ class PurchasesService {
            JOIN purchases p ON p.id = r.purchase_id
            LEFT JOIN warehouses w ON w.id = p.warehouse_id
            WHERE r.purchase_id = $1
-           AND r.status IN ('completed', 'scanning', 'expected')
+           AND r.status IN ('completed', 'scanning', 'expected', 'cancelled')
            ORDER BY CASE WHEN r.status = 'scanning' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC`,
           [id]
         );
@@ -2470,7 +2679,13 @@ class PurchasesService {
       }
 
       if (productId) {
-        await subtractIncomingForPurchaseLineRemovalInTx(client, purId, productId, reduceBy);
+        const incomingReason =
+          newExpected === 0 && rec === 0
+            ? `Снятие ожидания при удалении строки закупки №${purId}`
+            : `Снятие ожидания при уменьшении строки закупки №${purId}`;
+        await subtractIncomingForPurchaseLineRemovalInTx(client, purId, productId, reduceBy, {
+          reason: incomingReason,
+        });
       }
 
       if (newExpected === 0 && rec === 0) {
@@ -2568,6 +2783,7 @@ class PurchasesService {
           const remaining = Math.max(0, expected - received);
           if (remaining === 0) continue;
           await addIncomingDeltaForPurchaseInTx(client, id, productId, remaining, pid);
+          await reconcilePurchasePendingIncomingOnWarehouseInTx(client, id, productId, pid);
         }
         await client.query(
           `UPDATE purchases SET ordered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
@@ -3617,8 +3833,14 @@ class PurchasesService {
       if (st === 'completed') {
         const pids = await reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId);
         for (const x of pids) trimProducts.add(x);
-        await client.query(`DELETE FROM purchase_receipts WHERE id = $1`, [rid]);
-        await maybeDeleteOrphanWarehouseReceiptInTx(client, whId);
+        await client.query(
+          `UPDATE purchase_receipts
+           SET status = 'cancelled',
+               cancelled_at = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [rid]
+        );
         await recalcPurchaseStatusAfterReceiptChangeInTx(client, purchaseId);
       } else {
         const pids = await deleteScanningPurchaseReceiptInTx(client, rid);

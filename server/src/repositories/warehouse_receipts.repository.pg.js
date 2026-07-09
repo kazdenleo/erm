@@ -124,15 +124,33 @@ class WarehouseReceiptsRepositoryPG {
       WHERE l.receipt_id = r.id
         AND COALESCE(l.cost, p.cost) IS NOT NULL
     ) AS total_amount_rub`;
-    const receiptWarehouseLabelSql = `(
-      SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
-      FROM stock_movements sm
-      LEFT JOIN warehouses wh ON wh.id = sm.warehouse_id
-      WHERE (sm.meta->>'receipt_id')::bigint = r.id
-        AND sm.warehouse_id IS NOT NULL
-      ORDER BY sm.id DESC
-      LIMIT 1
+    const receiptWarehouseLabelSql = `COALESCE(
+      (
+        SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
+        FROM purchase_receipts pr
+        JOIN purchases pur ON pur.id = pr.purchase_id
+        LEFT JOIN warehouses wh ON wh.id = pur.warehouse_id
+        WHERE pr.warehouse_receipt_id = r.id
+        ORDER BY pr.id DESC
+        LIMIT 1
+      ),
+      (
+        SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
+        FROM stock_movements sm
+        LEFT JOIN warehouses wh ON wh.id = sm.warehouse_id
+        WHERE (sm.meta->>'receipt_id')::bigint = r.id
+          AND sm.warehouse_id IS NOT NULL
+        ORDER BY sm.id DESC
+        LIMIT 1
+      )
     ) AS warehouse_name`;
+    const purchaseReceiptIdSql = `(
+      SELECT pr.id
+      FROM purchase_receipts pr
+      WHERE pr.warehouse_receipt_id = r.id
+      ORDER BY pr.id DESC
+      LIMIT 1
+    ) AS purchase_receipt_id`;
     const pid =
       profileId != null && profileId !== ''
         ? typeof profileId === 'string'
@@ -173,6 +191,7 @@ class WarehouseReceiptsRepositoryPG {
                   0
                 )::int AS total_quantity,
                 ${receiptWarehouseLabelSql},
+                ${purchaseReceiptIdSql},
                 ${amountRub}
          FROM warehouse_receipts r
          LEFT JOIN suppliers s ON s.id = r.supplier_id

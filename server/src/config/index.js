@@ -28,7 +28,9 @@ const configSchema = z.object({
   DB_NAME: z.string().min(1).default('erp_system'),
   DB_USER: z.string().default('admin'),
   DB_PASSWORD: z.string().default(''),
-  /** Макс. соединений пула Node → PostgreSQL (на VPS при нехватке — 30–40) */
+  /** Макс. соединений пула Node → PostgreSQL.
+   *  На VPS без увеличения max_connections Postgres: 20–30; 40+ при тяжёлых SUM по stock_movements
+   *  усиливает конкуренцию (пул исчерпан, load avg растёт). RESERVE_DB_CONCURRENCY_MAX — лимит rebalance. */
   DB_POOL_MAX: z.string().regex(/^\d+$/).transform(Number).optional(),
   /** Ожидание свободного соединения из пула, мс */
   DB_CONNECTION_TIMEOUT_MS: z.string().regex(/^\d+$/).transform(Number).optional(),

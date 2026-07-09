@@ -36,7 +36,12 @@ export function accountSettingsFromProfile(profile) {
   };
 }
 
-/** Статус заказа «В закупке» включён (по умолчанию да). */
+/** Интеграция с поставщиками включена (по умолчанию да; выключает администратор системы). */
+export function isProfileSupplierSyncEnabled(profile) {
+  if (profile == null) return true;
+  return profile.supplier_sync_enabled !== false && profile.supplierSyncEnabled !== false;
+}
+
 export function isProfileProcurementStatusEnabled(profile) {
   if (profile == null) return true;
   return profile.procurement_status_enabled !== false;

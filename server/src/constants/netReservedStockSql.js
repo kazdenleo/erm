@@ -147,6 +147,22 @@ export function allocateWarehouseScopedIncoming({
   return globalInc;
 }
 
+/**
+ * Согласовать «в пути» на складе с непринятыми строками открытых закупок:
+ * прочий incoming (не по закупкам на этом складе) + ожидание по закупкам.
+ */
+export function reconcileWarehouseIncomingWithPurchasePending({
+  journalIncoming = 0,
+  purchaseDocNet = 0,
+  purchasePending = 0,
+} = {}) {
+  const journal = clampStockMetric(journalIncoming);
+  const docNet = clampStockMetric(purchaseDocNet);
+  const pending = clampStockMetric(purchasePending);
+  const otherIncoming = Math.max(0, journal - docNet);
+  return clampStockMetric(otherIncoming + pending);
+}
+
 /** Наличие на выбранном складе для доли legacy; не подставляем products.quantity, если остаток на других складах. */
 export function warehouseScopedOnHandForAllocation({
   whOnHand = 0,

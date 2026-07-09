@@ -9,12 +9,6 @@ import { reviewsApi } from '../../services/reviews.api';
 import { Button } from '../../components/common/Button/Button';
 import './Reviews.css';
 
-const ANSWERED_OPTIONS = [
-  { value: 'all', label: 'Все' },
-  { value: 'new', label: 'Новые' },
-  { value: 'answered', label: 'Отвеченные' },
-];
-
 const HAS_TEXT_OPTIONS = [
   { value: 'all', label: 'Все' },
   { value: 'true', label: 'С текстом' },
@@ -56,12 +50,7 @@ function starsLabel(n) {
   return `${Math.round(x)}★`;
 }
 
-function hasSellerAnswer(r) {
-  const t = r?.answerText;
-  return t != null && String(t).trim() !== '';
-}
-
-const AUTO_REFRESH_MS = 10 * 60 * 1000;
+const AUTO_REFRESH_MS = 60 * 60 * 1000;
 
 export function Reviews() {
   const [loading, setLoading] = useState(true);
@@ -69,12 +58,11 @@ export function Reviews() {
   const [error, setError] = useState('');
 
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
-  const [answeredFilter, setAnsweredFilter] = useState('new');
   const [starsFilter, setStarsFilter] = useState('all');
   const [hasTextFilter, setHasTextFilter] = useState('all');
   const [sort, setSort] = useState('date_desc');
 
-  const [filterCounts, setFilterCounts] = useState({ all: 0, new: 0, answered: 0 });
+  const [filterCounts, setFilterCounts] = useState({ new: 0 });
   const [mpCounts, setMpCounts] = useState({ ozon: 0, wildberries: 0, yandex: 0 });
   const [drafts, setDrafts] = useState({});
   const [sendingId, setSendingId] = useState(null);
@@ -84,10 +72,10 @@ export function Reviews() {
       const params = {};
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
       const { counts, countsByMarketplace } = await reviewsApi.getStats(params);
-      setFilterCounts(counts);
+      setFilterCounts({ new: counts?.new ?? 0 });
       setMpCounts(countsByMarketplace);
     } catch {
-      setFilterCounts({ all: 0, new: 0, answered: 0 });
+      setFilterCounts({ new: 0 });
       setMpCounts({ ozon: 0, wildberries: 0, yandex: 0 });
     }
   }, [marketplaceFilter]);
@@ -96,9 +84,8 @@ export function Reviews() {
     try {
       setLoading(true);
       setError('');
-      const params = { sort };
+      const params = { sort, answered: 'new' };
       if (marketplaceFilter !== 'all') params.marketplace = marketplaceFilter;
-      if (answeredFilter !== 'all') params.answered = answeredFilter;
       if (starsFilter !== 'all') params.stars = starsFilter;
       if (hasTextFilter !== 'all') params.hasText = hasTextFilter;
       const data = await reviewsApi.getAll(params);
@@ -111,7 +98,7 @@ export function Reviews() {
       setLoading(false);
       loadCounts();
     }
-  }, [marketplaceFilter, answeredFilter, starsFilter, hasTextFilter, sort, loadCounts]);
+  }, [marketplaceFilter, starsFilter, hasTextFilter, sort, loadCounts]);
 
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -126,7 +113,7 @@ export function Reviews() {
   }, []);
 
   const getDraft = (r) =>
-    Object.prototype.hasOwnProperty.call(drafts, r.id) ? drafts[r.id] : (r.answerText || '');
+    Object.prototype.hasOwnProperty.call(drafts, r.id) ? drafts[r.id] : '';
 
   const setDraft = (id, value) => {
     setDrafts((prev) => ({ ...prev, [id]: value }));
@@ -161,8 +148,8 @@ export function Reviews() {
     <div className="card reviews-page">
       <h1 className="title">Отзывы</h1>
       <p className="subtitle">
-        Отзывы о товарах из кабинетов маркетплейсов. Данные обновляются автоматически на сервере. Страница обновляет список
-        и счётчики каждые 10 минут. Ответ можно отправить из таблицы — он уйдёт в API соответствующего маркетплейса.
+        Новые отзывы без ответа. Отвеченные не хранятся — после ответа отзыв исчезает из списка. Данные
+        обновляются на сервере раз в час.
       </p>
 
       <div className="reviews-toolbar">
@@ -175,16 +162,6 @@ export function Reviews() {
               <option value="ozon">Ozon ({mpCounts.ozon})</option>
               <option value="wildberries">WB ({mpCounts.wildberries})</option>
               <option value="yandex">Яндекс ({mpCounts.yandex})</option>
-            </select>
-          </div>
-          <div className="reviews-filter">
-            <span className="reviews-filter-label">Статус</span>
-            <select value={answeredFilter} onChange={(e) => setAnsweredFilter(e.target.value)}>
-              {ANSWERED_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
             </select>
           </div>
           <div className="reviews-filter">
@@ -220,15 +197,14 @@ export function Reviews() {
       </div>
 
       <div className="reviews-counts text-muted small">
-        Всего: <strong>{filterCounts.all}</strong> · новых: <strong>{filterCounts.new}</strong> · отвеченных:{' '}
-        <strong>{filterCounts.answered}</strong>
+        Новых отзывов: <strong>{filterCounts.new}</strong>
       </div>
 
       {error && <div className="alert alert-danger mt-2">{error}</div>}
       {loading && <div className="text-muted mt-3">Загрузка…</div>}
 
       {!loading && !error && items.length === 0 && (
-        <div className="text-muted mt-3">Нет отзывов по выбранным фильтрам.</div>
+        <div className="text-muted mt-3">Нет новых отзывов по выбранным фильтрам.</div>
       )}
 
       {!loading && items.length > 0 && (
@@ -248,7 +224,6 @@ export function Reviews() {
               {items.map((r) => {
                 const mp = normalizeMarketplaceForUI(r.marketplace);
                 const badge = MARKETPLACE_TABLE_BADGES[mp] || null;
-                const answered = hasSellerAnswer(r);
                 return (
                   <tr key={r.id}>
                     <td className="text-nowrap">{formatDt(r.sourceCreatedAt)}</td>
@@ -262,33 +237,26 @@ export function Reviews() {
                       {!r.hasText && <div className="text-muted small">Без текста (только оценка)</div>}
                     </td>
                     <td style={{ minWidth: 320 }}>
-                      {answered ? (
-                        <div className="reviews-answer">
-                          <div className="reviews-answer-label text-muted small">Ответ отправлен</div>
-                          <div className="reviews-answer-text">{truncate(r.answerText, 300)}</div>
+                      <div className="reviews-answer-form">
+                        <textarea
+                          className="form-control form-control-sm"
+                          rows={3}
+                          value={getDraft(r)}
+                          onChange={(e) => setDraft(r.id, e.target.value)}
+                          placeholder="Ответ продавца…"
+                        />
+                        <div className="d-flex gap-2 mt-2">
+                          <Button
+                            type="button"
+                            variant="primary"
+                            size="small"
+                            onClick={() => sendAnswer(r)}
+                            disabled={sendingId === r.id}
+                          >
+                            {sendingId === r.id ? 'Отправка…' : 'Ответить'}
+                          </Button>
                         </div>
-                      ) : (
-                        <div className="reviews-answer-form">
-                          <textarea
-                            className="form-control form-control-sm"
-                            rows={3}
-                            value={getDraft(r)}
-                            onChange={(e) => setDraft(r.id, e.target.value)}
-                            placeholder="Ответ продавца…"
-                          />
-                          <div className="d-flex gap-2 mt-2">
-                            <Button
-                              type="button"
-                              variant="primary"
-                              size="small"
-                              onClick={() => sendAnswer(r)}
-                              disabled={sendingId === r.id}
-                            >
-                              {sendingId === r.id ? 'Отправка…' : 'Ответить'}
-                            </Button>
-                          </div>
-                        </div>
-                      )}
+                      </div>
                     </td>
                   </tr>
                 );

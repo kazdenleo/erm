@@ -94,6 +94,7 @@ function App() {
           />
           <Route path="/" element={<ProtectedRoute><Layout><Home /></Layout></ProtectedRoute>} />
           <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
+          <Route path="/accounts" element={<Navigate to="/platform/accounts" replace />} />
           <Route
             path="/platform"
             element={

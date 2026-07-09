@@ -10,6 +10,7 @@ import {
   NET_RESERVED_SUM_EXPR_SQL,
   INCOMING_NET_SUM_EXPR_SQL,
   allocateWarehouseScopedIncoming,
+  reconcileWarehouseIncomingWithPurchasePending,
   clampStockMetric,
   orderReserveMovementMatchSql,
   orderReserveMovementMatchOrderRowSql,
@@ -1627,6 +1628,68 @@ export async function getNetReservedForOrderProduct(
   return Number(globalRes.rows?.[0]?.rv ?? 0) || 0;
 }
 
+/** Пакет: нетто-резерв по заказу для нескольких product_id (один запрос). */
+async function batchNetReservedForOrderProducts(
+  orderDbId,
+  productIds,
+  marketplaceOrderId = null,
+  warehouseId = null
+) {
+  const oid = Number(orderDbId);
+  const ids = [...new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const mpLabel =
+    marketplaceOrderId != null && String(marketplaceOrderId).trim() !== ''
+      ? String(marketplaceOrderId).trim()
+      : null;
+  const whId = parseStockMovementWarehouseId(warehouseId);
+  if (!ids.length) return new Map();
+  if ((!Number.isFinite(oid) || oid < 1) && !mpLabel) {
+    return new Map(ids.map((id) => [id, 0]));
+  }
+
+  const params = [ids, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel];
+  let whSql = '';
+  if (whId != null) {
+    params.push(whId);
+    whSql = ` AND warehouse_id = $${params.length}`;
+  }
+  const r = await query(
+    `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+     FROM stock_movements
+     WHERE product_id = ANY($1::bigint[])
+       AND type IN ('reserve', 'unreserve')
+       AND ${orderReserveMovementMatchSql('', 2, 3)}${whSql}
+     GROUP BY product_id`,
+    params
+  );
+  const map = new Map(ids.map((id) => [id, 0]));
+  for (const row of r.rows || []) {
+    map.set(Number(row.product_id), Number(row.rv) || 0);
+  }
+
+  if (whId != null) {
+    const needGlobal = ids.filter((id) => (map.get(id) || 0) <= 0);
+    if (needGlobal.length) {
+      const globalRes = await query(
+        `SELECT product_id, ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+         FROM stock_movements
+         WHERE product_id = ANY($1::bigint[])
+           AND type IN ('reserve', 'unreserve')
+           AND ${orderReserveMovementMatchSql('', 2, 3)}
+         GROUP BY product_id`,
+        [needGlobal, Number.isFinite(oid) && oid >= 1 ? oid : 0, mpLabel]
+      );
+      for (const row of globalRes.rows || []) {
+        const pid = Number(row.product_id);
+        if ((map.get(pid) || 0) <= 0) {
+          map.set(pid, Number(row.rv) || 0);
+        }
+      }
+    }
+  }
+  return map;
+}
+
 /** Нетто-резерв комплектов из комплектующих под заказ (min floor по составу). */
 export async function getReservedKitUnitsFromComponentsForOrder(kitProductId, orderDbId, opts = {}) {
   const kitId = Number(kitProductId);
@@ -1643,12 +1706,10 @@ export async function getReservedKitUnitsFromComponentsForOrder(kitProductId, or
   ];
   const whId = await resolveOrderReserveWarehouseId(oid, mpLabel, productIds, opts);
 
-  const nets = new Map();
-  for (const c of components) {
-    const pid = Number(c.component_product_id);
-    if (!Number.isFinite(pid) || pid < 1 || nets.has(pid)) continue;
-    nets.set(pid, await getNetReservedForOrderProduct(oid, pid, mpLabel, whId));
-  }
+  const compIds = (components || [])
+    .map((c) => Number(c.component_product_id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const nets = await batchNetReservedForOrderProducts(oid, compIds, mpLabel, whId);
   return minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0);
 }
 
@@ -1823,12 +1884,12 @@ export async function getReservedKitUnitsForOrderValidation(kitProductId, orderD
     ...(components || []).map((c) => Number(c.component_product_id)).filter((id) => id > 0)
   ];
   const whId = await resolveOrderReserveWarehouseId(oid, mpLabel, productIds, opts);
-  const onKit = await getNetReservedForOrderProduct(oid, kitId, mpLabel, whId);
-  const fromComp = await getReservedKitUnitsFromComponentsForOrder(kitId, oid, {
-    ...opts,
-    marketplaceOrderId: mpLabel,
-    warehouseId: whId
-  });
+  const nets = await batchNetReservedForOrderProducts(oid, productIds, mpLabel, whId);
+  const onKit = nets.get(kitId) ?? 0;
+  const fromComp =
+    components.length > 0
+      ? minKitUnitsFromComponentReserves(components, (pid) => nets.get(pid) ?? 0)
+      : 0;
   let orderQty = null;
   try {
     const ord = await query(`SELECT quantity FROM orders WHERE id = $1 LIMIT 1`, [oid]);
@@ -1974,12 +2035,10 @@ export async function batchGetReservedKitUnitsForOrders(entries) {
     );
   if (!normalized.length) return result;
 
-  await Promise.all(
-    normalized.map(async (e) => {
-      const units = await getReservedKitUnitsForOrderValidation(e.kitProductId, e.orderDbId);
-      result.set(e.orderDbId, units);
-    })
-  );
+  for (const e of normalized) {
+    const units = await getReservedKitUnitsForOrderValidation(e.kitProductId, e.orderDbId);
+    result.set(e.orderDbId, units);
+  }
   return result;
 }
 
@@ -2862,6 +2921,54 @@ async function batchKitJournalBalanceMap(kitIds) {
   );
 }
 
+/** Непринятое ожидание и нетто incoming по закупкам на складе (для согласования «в пути»). */
+async function batchPurchaseIncomingOnWarehouseMaps(productIds, warehouseId) {
+  const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
+  const wid = parseWarehouseIdFromOpts({ warehouseId });
+  const pendingMap = new Map();
+  const docNetMap = new Map();
+  if (!ids.length || wid == null) {
+    return { pendingMap, docNetMap };
+  }
+
+  const [pendingR, docNetR] = await Promise.all([
+    query(
+      `SELECT pi.product_id,
+              SUM(
+                GREATEST(
+                  0,
+                  COALESCE(pi.expected_quantity, 0) - COALESCE(pi.received_quantity, 0)
+                )
+              )::int AS pending
+       FROM purchase_items pi
+       INNER JOIN purchases p ON p.id = pi.purchase_id
+       WHERE pi.product_id = ANY($1::bigint[])
+         AND p.status = 'open'
+         AND p.warehouse_id = $2
+       GROUP BY pi.product_id`,
+      [ids, wid]
+    ),
+    query(
+      `SELECT product_id, ${INCOMING_NET_SUM_EXPR_SQL}::int AS net
+       FROM stock_movements
+       WHERE product_id = ANY($1::bigint[])
+         AND LOWER(TRIM(type::text)) = 'incoming'
+         AND warehouse_id = $2
+         AND COALESCE(meta->>'purchase_id', '') ~ '^[0-9]+$'
+       GROUP BY product_id`,
+      [ids, wid]
+    ),
+  ]);
+
+  for (const row of pendingR.rows || []) {
+    pendingMap.set(Number(row.product_id), Number(row.pending) || 0);
+  }
+  for (const row of docNetR.rows || []) {
+    docNetMap.set(Number(row.product_id), Number(row.net) || 0);
+  }
+  return { pendingMap, docNetMap };
+}
+
 async function batchIncomingMap(productIds, opts = {}) {
   const ids = [...new Set(productIds.filter((n) => Number.isFinite(n) && n > 0))];
   if (!ids.length) return new Map();
@@ -2919,8 +3026,19 @@ async function batchIncomingMap(productIds, opts = {}) {
     );
   }
 
-  const [strictR, nullR, whOnHandR, totalOnHandR, globalR, journalR, stockJournalR, whJournalR, globalNetR, snapshotR] =
-    await Promise.all([
+  const [
+    strictR,
+    nullR,
+    whOnHandR,
+    totalOnHandR,
+    globalR,
+    journalR,
+    stockJournalR,
+    whJournalR,
+    globalNetR,
+    snapshotR,
+    purchaseMaps,
+  ] = await Promise.all([
     query(
       `SELECT product_id,
               ${INCOMING_NET_SUM_EXPR_SQL}::int AS inc
@@ -2996,8 +3114,10 @@ async function batchIncomingMap(productIds, opts = {}) {
          AND incoming_after IS NOT NULL
        ORDER BY product_id, created_at DESC, id DESC`,
       [ids, wid]
-    )
+    ),
+    batchPurchaseIncomingOnWarehouseMaps(ids, wid),
   ]);
+  const { pendingMap: purchasePendingMap, docNetMap: purchaseDocNetMap } = purchaseMaps;
 
   const strictMap = new Map(
     (strictR.rows || []).map((row) => [Number(row.product_id), Number(row.inc) || 0])
@@ -3043,25 +3163,30 @@ async function batchIncomingMap(productIds, opts = {}) {
       totalOnHand,
       legacyProductQty
     });
+    const journalIncoming = clampStockMetric(
+      allocateWarehouseScopedIncoming({
+        strictRaw: strictMap.get(pid) ?? 0,
+        nullRaw: nullMap.get(pid) ?? 0,
+        whOnHand,
+        totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
+        legacyProductQty,
+        globalIncoming: globalIncMap.get(pid) ?? 0,
+        globalJournalNet: globalJournalNetMap.get(pid) ?? 0,
+        hasIncomingJournal: journalIncomingSet.has(pid),
+        hasStockJournal: stockJournalSet.has(pid),
+        hasWarehouseIncomingJournal: whIncomingJournalSet.has(pid),
+        warehouseIncomingSnapshot: incomingSnapshotMap.has(pid)
+          ? incomingSnapshotMap.get(pid)
+          : null,
+      })
+    );
     map.set(
       pid,
-      clampStockMetric(
-        allocateWarehouseScopedIncoming({
-          strictRaw: strictMap.get(pid) ?? 0,
-          nullRaw: nullMap.get(pid) ?? 0,
-          whOnHand,
-          totalOnHand: totalOnHand > 0 ? totalOnHand : legacyProductQty,
-          legacyProductQty,
-          globalIncoming: globalIncMap.get(pid) ?? 0,
-          globalJournalNet: globalJournalNetMap.get(pid) ?? 0,
-          hasIncomingJournal: journalIncomingSet.has(pid),
-          hasStockJournal: stockJournalSet.has(pid),
-          hasWarehouseIncomingJournal: whIncomingJournalSet.has(pid),
-          warehouseIncomingSnapshot: incomingSnapshotMap.has(pid)
-            ? incomingSnapshotMap.get(pid)
-            : null
-        })
-      )
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming,
+        purchaseDocNet: purchaseDocNetMap.get(pid) ?? 0,
+        purchasePending: purchasePendingMap.get(pid) ?? 0,
+      })
     );
   }
   return map;

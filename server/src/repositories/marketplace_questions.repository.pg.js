@@ -148,8 +148,10 @@ function ozonArticleFromRawPayload(raw) {
   const o = parseRawPayloadObject(raw);
   if (!o) return null;
   const offer = o.offer_id ?? o.offerId;
-  if (offer != null && String(offer).trim() !== '') return String(offer).trim();
-  if (o.sku != null && String(o.sku).trim() !== '') return String(o.sku).trim();
+  if (offer != null && String(offer).trim() !== '') {
+    const s = String(offer).trim();
+    if (!/^\d{6,}$/.test(s)) return s;
+  }
   return null;
 }
 
@@ -187,8 +189,12 @@ function rowToApi(row, opts = {}) {
     }
   }
   if (row.marketplace === 'ozon') {
+    const colSku =
+      skuOrOffer != null && String(skuOrOffer).trim() !== '' && !/^\d{6,}$/.test(String(skuOrOffer).trim())
+        ? String(skuOrOffer).trim()
+        : null;
     const fromRaw = ozonArticleFromRawPayload(row.raw_payload);
-    if (fromRaw) skuOrOffer = fromRaw;
+    skuOrOffer = colSku || fromRaw || null;
   }
   if (row.marketplace === 'yandex') {
     const colSku =

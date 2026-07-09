@@ -8,7 +8,7 @@ import { query } from '../config/database.js';
 import stockMovementsService from './stockMovements.service.js';
 import { isKitProductId } from './kitStock.service.js';
 import { readProductWarehouseOnHand } from './productWarehouseQuantity.service.js';
-import { requireWarehouseDocumentScope } from '../utils/stockDocumentScope.js';
+import { requireWarehouseDocumentScope, assertWarehouseBelongsToOrganization } from '../utils/stockDocumentScope.js';
 
 class WarehouseReceiptsService {
   constructor() {
@@ -312,6 +312,7 @@ class WarehouseReceiptsService {
       supplierId,
       warehouseId,
     });
+    await assertWarehouseBelongsToOrganization(scope.warehouseId, scope.organizationId);
     const whId = await this._requireReceiptWarehouseId(scope.warehouseId);
 
     const byProduct = this._normalizeReceiptLines(lines);
@@ -375,6 +376,7 @@ class WarehouseReceiptsService {
         receipt_number: receiptNumber,
         supplier_id: supplierId,
         warehouse_id: whId,
+        organization_id: scope.organizationId,
       };
       if (isKit) {
         extraMeta.kit_return_to_supplier = true;
@@ -425,6 +427,7 @@ class WarehouseReceiptsService {
       supplierId: null,
       warehouseId,
     });
+    await assertWarehouseBelongsToOrganization(scope.warehouseId, scope.organizationId);
     const whId = await this._requireReceiptWarehouseId(scope.warehouseId);
 
     const receipt = await this.receiptsRepo.create({
@@ -459,6 +462,7 @@ class WarehouseReceiptsService {
           receipt_id: receipt.id,
           receipt_number: receiptNumber,
           warehouse_id: whId,
+          organization_id: scope.organizationId,
           ...(isKit ? { kit_customer_return: true } : {})
         }
       });
@@ -504,7 +508,7 @@ class WarehouseReceiptsService {
     };
   }
 
-  async _reverseReceiptLinesStock(receipt, lines, numId) {
+  async _reverseReceiptLinesStock(receipt, lines, numId, { reasonSuffix = '' } = {}) {
     const receiptNumber =
       receipt.receipt_number ||
       (receipt.document_type === 'return'
@@ -514,11 +518,12 @@ class WarehouseReceiptsService {
           : `ПТ-${numId}`);
     const isReturnToSupplier = receipt.document_type === 'return';
     const isCustomerReturn = receipt.document_type === 'customer_return';
+    const suffix = reasonSuffix != null ? String(reasonSuffix) : '';
     const reason = isReturnToSupplier
-      ? `Аннулирование возврата ${receiptNumber}`
+      ? `Аннулирование возврата ${receiptNumber}${suffix}`
       : isCustomerReturn
-        ? `Аннулирование возврата от клиента ${receiptNumber}`
-        : `Аннулирование приёмки ${receiptNumber}`;
+        ? `Аннулирование возврата от клиента ${receiptNumber}${suffix}`
+        : `Аннулирование приёмки ${receiptNumber}${suffix}`;
     const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId);
     if (stockAlreadyReversed) return { stockSkipped: true, reason, receiptNumber };
 
@@ -575,14 +580,16 @@ class WarehouseReceiptsService {
     warehouseId,
     linesByProduct,
     documentType,
+    reasonSuffix = '',
   }) {
     const isReturnToSupplier = documentType === 'return';
     const isCustomerReturn = documentType === 'customer_return';
+    const suffix = reasonSuffix != null ? String(reasonSuffix) : '';
     const reason = isReturnToSupplier
-      ? `Возврат поставщику ${receiptNumber}`
+      ? `Возврат поставщику ${receiptNumber}${suffix}`
       : isCustomerReturn
-        ? `Возврат от клиента ${receiptNumber}`
-        : `Поступление ${receiptNumber}`;
+        ? `Возврат от клиента ${receiptNumber}${suffix}`
+        : `Поступление ${receiptNumber}${suffix}`;
 
     for (const [, row] of linesByProduct) {
       const { productId, quantity } = row;
@@ -706,6 +713,8 @@ class WarehouseReceiptsService {
       throw err;
     }
 
+    const oldWarehouseId = await this._resolveReceiptWarehouseId(numId);
+
     const linkedPr = await query(
       `SELECT pr.id FROM purchase_receipts pr WHERE pr.warehouse_receipt_id = $1 LIMIT 1`,
       [numId]
@@ -743,7 +752,14 @@ class WarehouseReceiptsService {
     }
 
     const oldLines = receipt.lines || [];
-    await this._reverseReceiptLinesStock(receipt, oldLines, numId);
+    const warehouseChanged =
+      oldWarehouseId != null &&
+      whId != null &&
+      Number(oldWarehouseId) > 0 &&
+      Number(whId) > 0 &&
+      Number(oldWarehouseId) !== Number(whId);
+    const reasonSuffix = warehouseChanged ? ' — смена склада' : '';
+    await this._reverseReceiptLinesStock(receipt, oldLines, numId, { reasonSuffix });
     await this.receiptsRepo.updateHeader(numId, {
       supplierId: scope.supplierId,
       organizationId: scope.organizationId,
@@ -758,6 +774,7 @@ class WarehouseReceiptsService {
       warehouseId: whId,
       linesByProduct: byProduct,
       documentType,
+      reasonSuffix,
     });
 
     return this.getByIdWithLines(numId);

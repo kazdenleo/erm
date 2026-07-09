@@ -42,6 +42,12 @@ export const ordersApi = {
     return response.data?.data ?? response.data;
   },
 
+  /** Лёгкий счётчик «Новых» (для глобального звука). */
+  getNewCount: async () => {
+    const response = await api.get('/orders/new-count');
+    return response.data?.data ?? response.data;
+  },
+
   /**
    * Синхронизировать FBS‑заказы со всех маркетплейсов.
    * Таймаут увеличен (90 с): Ozon + WB + Yandex + обновление статусов могут занимать больше 30 с.

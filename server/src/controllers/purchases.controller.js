@@ -211,9 +211,22 @@ class PurchasesController {
   async updatePurchase(req, res, next) {
     try {
       const { id } = req.params;
-      const { supplierId, organizationId, warehouseId, note } = req.body || {};
+      const body = req.body || {};
+      const patch = {};
+      if ('supplierId' in body || 'supplier_id' in body) {
+        patch.supplierId = body.supplierId ?? body.supplier_id;
+      }
+      if ('organizationId' in body || 'organization_id' in body) {
+        patch.organizationId = body.organizationId ?? body.organization_id;
+      }
+      if ('warehouseId' in body || 'warehouse_id' in body) {
+        patch.warehouseId = body.warehouseId ?? body.warehouse_id;
+      }
+      if ('note' in body) {
+        patch.note = body.note;
+      }
       const profileId = req.user?.profileId ?? null;
-      const data = await purchasesService.updatePurchase(id, { supplierId, organizationId, warehouseId, note }, { profileId });
+      const data = await purchasesService.updatePurchase(id, patch, { profileId });
       return res.status(200).json({ ok: true, data });
     } catch (e) {
       if (e.statusCode === 400 || e.statusCode === 403 || e.statusCode === 404) {

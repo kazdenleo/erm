@@ -163,6 +163,37 @@ class OrdersController {
   }
 
   /**
+   * Лёгкий счётчик «Новых» заказов для глобального звукового оповещения.
+   * GET /orders/new-count
+   */
+  async getNewCount(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json({ ok: true, data: { new: 0 } });
+      }
+
+      let excludeManual = false;
+      if (tid != null) {
+        const prof = await profilesRepo.findById(tid);
+        excludeManual = !prof || prof.allow_private_orders !== true;
+      }
+
+      const options = {
+        ...(tid != null ? { profileId: tid } : {}),
+        ...(excludeManual ? { excludeManual: true } : {}),
+      };
+
+      const count = await ordersService.getNewCount(options);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ ok: true, data: { new: count } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Ручное добавление заказа: один товар или несколько.
    * Body: { customerName, customerPhone, productId, quantity, price } — одна позиция;
    *   или { customerName, customerPhone, items: [{ productId, quantity, price }, ...] } — несколько позиций.

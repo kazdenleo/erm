@@ -628,7 +628,9 @@ class ProductsController {
             }
           });
         }
-        const started = startSupplierStocksSyncInBackground();
+        const started = startSupplierStocksSyncInBackground(
+          tid != null && tid !== TENANT_LIST_EMPTY ? tid : null
+        );
         return res.status(202).json({
           ok: true,
           data: {

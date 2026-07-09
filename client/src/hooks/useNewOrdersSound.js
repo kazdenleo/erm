@@ -17,7 +17,7 @@ const HIDDEN_INTERVAL_MS = 30000;
  * Логика:
  * - Первый полученный count только "вооружает" (без звука), чтобы не пищать при первом заходе в приложение.
  * - Звук только при росте количества "new" относительно предыдущего значения.
- * - При активной вкладке опрос каждые 5 с; при возврате на вкладку — сразу.
+ * - При активной вкладке опрос каждые 10 с; при возврате на вкладку — сразу.
  */
 export function useNewOrdersSound({ enabled = true, profileId = null } = {}) {
   const prevRef = useRef(null);
@@ -47,7 +47,7 @@ export function useNewOrdersSound({ enabled = true, profileId = null } = {}) {
       if (inFlightRef.current) return;
       inFlightRef.current = true;
       try {
-        const data = await ordersApi.getStatusCounts({});
+        const data = await ordersApi.getNewCount();
         if (cancelled) return;
         const cur = Number(data?.new ?? 0);
         const prev = prevRef.current;

@@ -28,6 +28,12 @@ router.get(
   wrapAsync(ordersController.getStatusCounts.bind(ordersController))
 );
 
+// Лёгкий счётчик «Новых» для звукового оповещения
+router.get(
+  '/new-count',
+  wrapAsync(ordersController.getNewCount.bind(ordersController))
+);
+
 // Ручное добавление заказа (товар + количество)
 router.post(
   '/manual',

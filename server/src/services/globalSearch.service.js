@@ -53,6 +53,7 @@ class GlobalSearchService {
          FROM orders o
          LEFT JOIN products p ON p.id = o.product_id
          WHERE o.profile_id = $1
+           AND o.archived_at IS NULL
            AND (
              o.order_id ILIKE $2 ESCAPE '\\'
              OR COALESCE(o.product_name, '') ILIKE $2 ESCAPE '\\'

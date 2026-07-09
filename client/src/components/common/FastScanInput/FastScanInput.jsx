@@ -12,6 +12,15 @@ function assignRef(ref, el) {
   else if (ref) ref.current = el;
 }
 
+/** При ручном вводе артикула авто-скан только для длинного числового штрихкода (8+ цифр). */
+function isBarcodeLikeForScan(raw, { manualTypingMode = false } = {}) {
+  const v = normalizeProductSearchQuery(raw);
+  if (!v) return false;
+  if (/[a-zа-я]/i.test(v)) return false;
+  if (!manualTypingMode) return isLikelyBarcodeScan(v);
+  return /^\d{8,}$/.test(v);
+}
+
 function FastScanInputInner({
   onScan,
   onManualQuery = null,
@@ -85,13 +94,15 @@ function FastScanInputInner({
       manualDebounceRef.current = setTimeout(() => {
         manualDebounceRef.current = null;
         const q = readScanFieldValue(el).trim();
-        if (q.length < minLength || isLikelyBarcodeScan(q)) return;
+        if (q.length < minLength) return;
+        if (isBarcodeLikeForScan(q, { manualTypingMode: true })) return;
         onManualQueryRef.current?.(q);
       }, manualDebounceMs);
     };
 
     const onInput = () => {
       const v = readScanFieldValue(el);
+      const hasManualQuery = typeof onManualQueryRef.current === 'function';
       if (/[\r\n]/.test(el.value)) {
         const cleaned = normalizeProductSearchQuery(el.value);
         clearScanField(el);
@@ -101,6 +112,17 @@ function FastScanInputInner({
       if (!v.trim()) {
         clearScanDebounce();
         clearManualDebounce();
+        return;
+      }
+      if (hasManualQuery) {
+        if (isBarcodeLikeForScan(v, { manualTypingMode: true })) {
+          scheduleScan(v);
+          return;
+        }
+        if (v.trim().length >= minLength) {
+          clearScanDebounce();
+          scheduleManualQuery();
+        }
         return;
       }
       if (isLikelyBarcodeScan(v) || v.trim().length >= minLength) {

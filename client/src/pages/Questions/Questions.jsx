@@ -14,7 +14,7 @@ import {
   extractBuyerName,
   formatProductArticleWithName,
   formatQuestionProductForReply,
-  getQuestionProductInfo,
+  questionModalProductLine,
   questionNeedsReply,
 } from './questionsDisplay';
 import { applyQuestionTemplate } from './questionTemplateText';
@@ -41,6 +41,27 @@ function formatDt(iso) {
 
 function questionBuyerLabel(q) {
   return extractBuyerName(q);
+}
+
+function QuestionThreadModalTitle({ q }) {
+  if (!q) return 'Переписка';
+  const mpNorm = normalizeMarketplaceForUI(q.marketplace);
+  const mpMeta = MARKETPLACE_TABLE_BADGES.find((m) => m.code === mpNorm);
+  const productLine = questionModalProductLine(q);
+  return (
+    <span className="questions-modal-title">
+      {mpMeta?.badgeClass && mpMeta.shortLabel ? (
+        <span
+          className={`mp-badge questions-modal-title__mp ${mpMeta.badgeClass}`}
+          title={mpMeta.name}
+          aria-label={mpMeta.name}
+        >
+          {mpMeta.shortLabel}
+        </span>
+      ) : null}
+      <span className="questions-modal-title__text">{productLine}</span>
+    </span>
+  );
 }
 
 const AUTO_SYNC_MS = 10 * 60 * 1000;
@@ -302,7 +323,6 @@ export function Questions() {
   };
 
   const threadNeedsReply = threadDetail ? questionNeedsReply(threadDetail) : false;
-  const threadProduct = threadDetail ? getQuestionProductInfo(threadDetail) : null;
 
   const emptyMessage =
     'Новых вопросов нет. Они появятся после синхронизации, если на маркетплейсе есть неотвеченные обращения.';
@@ -466,7 +486,7 @@ export function Questions() {
       <Modal
         isOpen={Boolean(threadModalId)}
         onClose={closeThread}
-        title={threadDetail ? `Ветка · ${formatProductArticleWithName(threadDetail)}` : 'Ветка переписки'}
+        title={<QuestionThreadModalTitle q={threadDetail} />}
         size="large"
       >
         {threadError && <div className="error">{threadError}</div>}
@@ -477,25 +497,6 @@ export function Questions() {
                 Обновление переписки с маркетплейса…
               </p>
             ) : null}
-            <p className="text-muted small questions-thread-meta">
-              {formatDt(threadDetail.sourceCreatedAt)} ·{' '}
-              {MARKETPLACE_TABLE_BADGES.find((m) => m.code === normalizeMarketplaceForUI(threadDetail.marketplace))
-                ?.name ?? threadDetail.marketplace}
-              {questionBuyerLabel(threadDetail) ? ` · ${questionBuyerLabel(threadDetail)}` : ''}
-            </p>
-            <div className="questions-thread-product" aria-label="Товар по вопросу">
-              <span className="questions-thread-product__label">Товар</span>
-              {threadProduct?.article ? (
-                <strong className="questions-thread-product__article" title={threadProduct.line}>
-                  {threadProduct.article}
-                </strong>
-              ) : null}
-              {threadProduct?.name ? (
-                <span className="questions-thread-product__name">{threadProduct.name}</span>
-              ) : !threadProduct?.article ? (
-                <span className="questions-thread-product__name">{threadProduct?.line || formatProductArticleWithName(threadDetail)}</span>
-              ) : null}
-            </div>
             <div className="questions-thread-list" role="log" aria-label="Переписка">
               {(threadDetail.threadMessages || []).map((m, i) => (
                 <div
@@ -575,20 +576,12 @@ export function Questions() {
                   >
                     {threadSending ? 'Отправка…' : 'Отправить на маркетплейс'}
                   </Button>
-                  <Button type="button" variant="secondary" onClick={closeThread} disabled={threadSending}>
-                    Закрыть
-                  </Button>
                 </div>
               </div>
             ) : (
-              <div className="questions-thread-done-wrap">
-                <p className="text-muted small questions-thread-done">
-                  На этот вопрос уже ответили. Обновите список или закройте окно.
-                </p>
-                <Button type="button" variant="secondary" onClick={closeThread}>
-                  Закрыть
-                </Button>
-              </div>
+              <p className="text-muted small questions-thread-done">
+                На этот вопрос уже ответили. Обновите список.
+              </p>
             )}
           </div>
         )}

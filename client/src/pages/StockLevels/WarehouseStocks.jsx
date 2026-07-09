@@ -97,15 +97,60 @@ function movementNum(m, snakeKey) {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Снимок «в пути / резерв / наличие» из строки журнала (учёт старых записей без incoming_after). */
-function warehouseBalanceFromMovement(m, warehouseFilterId) {
-  if (!m || warehouseFilterId == null || String(warehouseFilterId).trim() === '') return null;
+function movementWarehouseId(m) {
+  if (!m) return null;
   const meta = parseMovementMeta(m);
   const whRaw = m.warehouse_id ?? m.warehouseId ?? meta.warehouse_id ?? meta.warehouseId;
-  if (whRaw == null || String(whRaw) !== String(warehouseFilterId)) return null;
+  return whRaw != null && String(whRaw).trim() !== '' ? String(whRaw) : null;
+}
+
+function movementMatchesWarehouseFilter(m, warehouseFilterId) {
+  if (!m || warehouseFilterId == null || String(warehouseFilterId).trim() === '') return false;
+  const moveWh = movementWarehouseId(m);
+  if (moveWh == null) return false;
+  return moveWh === String(warehouseFilterId).trim();
+}
+
+/** Складской снимок «в пути» из meta (для incoming с warehouse_id). */
+function warehouseIncomingFromMovement(m, warehouseFilterId) {
+  if (!movementMatchesWarehouseFilter(m, warehouseFilterId)) return null;
+  const meta = parseMovementMeta(m);
+  const after = meta.warehouse_incoming_after ?? meta.warehouseIncomingAfter;
+  if (after == null || after === '') return null;
+  const n = Number(after);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Снимок «в пути / резерв / наличие» из строки журнала (учёт старых записей без incoming_after). */
+function warehouseBalanceFromMovement(m, warehouseFilterId) {
+  if (!m) return null;
+  const moveWhId = movementWarehouseId(m);
+  if (moveWhId == null) return null;
+  const filter =
+    warehouseFilterId != null && String(warehouseFilterId).trim() !== ''
+      ? String(warehouseFilterId).trim()
+      : null;
+  if (filter != null && moveWhId !== filter) return null;
+  const meta = parseMovementMeta(m);
   const after = meta.warehouse_balance_after ?? meta.warehouseBalanceAfter;
   if (after == null || after === '') return null;
   const n = Number(after);
+  return Number.isFinite(n) ? n : null;
+}
+
+function warehouseBalanceBeforeFromMovement(m, warehouseFilterId) {
+  if (!m) return null;
+  const moveWhId = movementWarehouseId(m);
+  if (moveWhId == null) return null;
+  const filter =
+    warehouseFilterId != null && String(warehouseFilterId).trim() !== ''
+      ? String(warehouseFilterId).trim()
+      : null;
+  if (filter != null && moveWhId !== filter) return null;
+  const meta = parseMovementMeta(m);
+  const before = meta.warehouse_balance_before ?? meta.warehouseBalanceBefore;
+  if (before == null || before === '') return null;
+  const n = Number(before);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -116,13 +161,15 @@ function snapshotFromMovement(m, warehouseFilterId = null) {
   const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
   const hasNew = incDb != null || resDb != null;
   const t = movementTypeLower(m);
+  const isWarehouseScopedReturn =
+    t === 'return_to_supplier' || t === 'customer_return';
 
   let inc = incDb;
   if (inc == null && t === 'incoming' && balDb != null && !hasNew) {
     inc = balDb;
   }
   let res = resDb;
-  let bal = whBal != null ? whBal : balDb;
+  let bal = whBal != null ? whBal : isWarehouseScopedReturn && movementWarehouseId(m) ? null : balDb;
 
   if (t === 'incoming' && !hasNew) {
     return { inc, res: res != null ? res : null, bal: null };
@@ -150,12 +197,24 @@ function formatAfterDelta(after, prev) {
 }
 
 /** Если в журнале нет более старой строки — восстанавливаем «до» из quantity_change и типа. */
-function inferPrevForDelta(after, prev, m, column) {
+function inferPrevForDelta(after, prev, m, column, warehouseFilterId = null) {
   if (prev != null && !Number.isNaN(prev)) return prev;
   if (after == null || Number.isNaN(after) || m == null) return null;
+  if (column === 'bal') {
+    const whBefore = warehouseBalanceBeforeFromMovement(m, warehouseFilterId);
+    if (whBefore != null) return whBefore;
+  }
   const qc = Number(m.quantity_change);
   if (!Number.isFinite(qc)) return null;
   if (column === 'inc' && movementTypeLower(m) === 'incoming') {
+    if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
+      const meta = parseMovementMeta(m);
+      const beforeRaw = meta.warehouse_incoming_before ?? meta.warehouseIncomingBefore;
+      if (movementMatchesWarehouseFilter(m, warehouseFilterId) && beforeRaw != null && beforeRaw !== '') {
+        const beforeN = Number(beforeRaw);
+        if (Number.isFinite(beforeN)) return beforeN;
+      }
+    }
     return after - qc;
   }
   if (column === 'res' && movementTypeLower(m) === 'reserve' && qc < 0) {
@@ -175,8 +234,8 @@ function inferPrevForDelta(after, prev, m, column) {
   return null;
 }
 
-function formatAfterDeltaSmart(after, prev, m, column) {
-  const eff = inferPrevForDelta(after, prev, m, column);
+function formatAfterDeltaSmart(after, prev, m, column, warehouseFilterId = null) {
+  const eff = inferPrevForDelta(after, prev, m, column, warehouseFilterId);
   return formatAfterDelta(after, eff);
 }
 
@@ -215,11 +274,22 @@ function historyStockMetricsFromRow(row) {
   };
 }
 
-/** Не показывать в истории остатков: техническое incoming после приёмки (уменьшение «в пути» уже видно в строке приёмки). */
+/** Не показывать в истории: техническое incoming при приёмке/сторно (эффект уже в строке приёмки или сторно). */
 function isHiddenStockHistoryMovement(m) {
   if (movementTypeLower(m) !== 'incoming') return false;
   const r = String(m.reason || '').trim();
-  return /списание\s+incoming\s+по\s+при[её]мке/i.test(r);
+  if (/списание\s+incoming\s+по\s+при[её]мке/i.test(r)) return true;
+  if (/возврат\s+ожидания\s*\(incoming\)\s+по\s+при[её]мке/i.test(r)) return true;
+  return false;
+}
+
+function isCancelledReceiptRollbackMovement(m) {
+  if (movementTypeLower(m) !== 'receipt') return false;
+  const r = String(m.reason || '').trim();
+  return (
+    /^(?:сторно:\s*)?откат\s+при[её]мки/i.test(r) ||
+    /^отмена\s+при[её]мки/i.test(r)
+  );
 }
 
 function extractOrderIdFromReserveMovement(m) {
@@ -606,7 +676,7 @@ function kitReserveUnitsFromMovements(movements) {
  * одиночный «Резерв по заказу» — те же правила, что у сгруппированных резервов;
  * пачка отгрузки — «в пути» 0, резерв 0.
  */
-function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
+function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, warehouseFilterId = null) {
   const out = {
     inc: cur.inc != null && !Number.isNaN(Number(cur.inc)) ? Number(cur.inc) : cur.inc,
     res: cur.res != null && !Number.isNaN(Number(cur.res)) ? Number(cur.res) : cur.res,
@@ -695,8 +765,10 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
         ? ms.find((m) => String(m.product_id ?? m.productId) === String(kitProduct.id))
         : null;
     const head = kitLine || ms[0];
+    const whBal = warehouseBalanceFromMovement(kitLine || head, warehouseFilterId);
     const dbBal = kitLine ? movementNum(kitLine, 'balance_after') : movementNum(head, 'balance_after');
-    if (dbBal != null) out.bal = dbBal;
+    if (whBal != null) out.bal = whBal;
+    else if (dbBal != null) out.bal = dbBal;
     else if (prevLineBelow?.bal != null && kitLine) {
       out.bal = Number(prevLineBelow.bal) + (Number(kitLine.quantity_change) || 0);
     } else if (prevLineBelow?.bal != null) {
@@ -748,6 +820,35 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
     const m = item.m;
     const t = movementTypeLower(m);
     const reason = String(m.reason || '');
+
+    if (
+      t === 'incoming' &&
+      warehouseFilterId != null &&
+      String(warehouseFilterId).trim() !== '' &&
+      movementMatchesWarehouseFilter(m, warehouseFilterId)
+    ) {
+      const whInc = warehouseIncomingFromMovement(m, warehouseFilterId);
+      const qc = Number(m.quantity_change);
+      if (whInc != null) {
+        out.inc = whInc;
+      } else if (prevLineBelow?.inc != null && Number.isFinite(qc)) {
+        out.inc = Math.max(0, Number(prevLineBelow.inc) + qc);
+      } else if (Number.isFinite(qc) && qc !== 0) {
+        out.inc = Math.max(0, qc);
+      }
+      if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
+        out.bal = Number(prevLineBelow.bal);
+      } else if (out.bal == null || Number.isNaN(Number(out.bal))) {
+        out.bal = 0;
+      }
+      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        out.res = Number(prevLineBelow.res);
+      } else if (out.res == null || Number.isNaN(Number(out.res))) {
+        out.res = 0;
+      }
+      return out;
+    }
+
     if (t === 'incoming' && /закупк/i.test(reason) && /ожидан/i.test(reason)) {
       const meta = parseMovementMeta(m);
       if (
@@ -774,6 +875,19 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
       }
       if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
       if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
+    }
+    if (t === 'receipt' && isCancelledReceiptRollbackMovement(m)) {
+      const moveQty = Math.abs(Number(m.quantity_change) || 0);
+      if (prevLineBelow?.inc != null && moveQty > 0) {
+        out.inc = Math.max(0, Number(prevLineBelow.inc) + moveQty);
+      } else if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = moveQty;
+      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        out.res = Number(prevLineBelow.res);
+      }
+      if (prevLineBelow?.bal != null && moveQty > 0) {
+        out.bal = Math.max(0, Number(prevLineBelow.bal) - moveQty);
+      } else if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
+      return out;
     }
     if (t === 'receipt' && /при[её]мка\s+по\s+закупке/i.test(reason)) {
       const moveQty = Math.max(0, Number(m.quantity_change) || 0);
@@ -823,14 +937,21 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null) {
     if (t === 'return_to_supplier' || t === 'customer_return') {
       const meta = parseMovementMeta(m);
       const dbBal = movementNum(m, 'balance_after');
+      const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
       if (meta.kit_component_return_to_supplier === true) {
         if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
           out.bal = Number(prevLineBelow.bal);
+        } else if (whBal != null) {
+          out.bal = whBal;
         } else if (dbBal != null) {
           out.bal = dbBal;
         }
         const lost = Math.max(0, Number(meta.kit_assemblable_units_lost) || 0);
         out._kitAssemblableUnitsLost = lost > 0 ? lost : Math.max(0, Math.abs(Number(m.quantity_change) || 0));
+      } else if (whBal != null) {
+        out.bal = whBal;
+      } else if (out.bal != null && !Number.isNaN(Number(out.bal))) {
+        out.bal = Number(out.bal);
       } else if (dbBal != null) {
         out.bal = dbBal;
       } else if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
@@ -880,7 +1001,7 @@ function buildHistoryDisplaySnapshots(
     const item = displayRows[i];
     const raw = snapshotAfterDisplayItem(item, warehouseFilterId);
     const prevLineBelow = i + 1 < n ? enriched[i + 1] : null;
-    enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow, kitProduct);
+    enriched[i] = enrichHistoryRowSnapshot(item, raw, prevLineBelow, kitProduct, warehouseFilterId);
   }
   const net =
     currentNetReserved != null && Number.isFinite(Number(currentNetReserved))
@@ -973,6 +1094,18 @@ function movementForDeltaInference(item, column) {
     }
     return head;
   }
+  if (item.kind === 'single' && item.m) {
+    if (isCancelledReceiptRollbackMovement(item.m)) {
+      const moveQty = Math.abs(Number(item.m.quantity_change) || 0);
+      if (column === 'inc' && moveQty > 0) {
+        return { ...item.m, type: 'incoming', quantity_change: moveQty };
+      }
+      if (column === 'bal' && moveQty > 0) {
+        return { ...item.m, type: 'receipt', quantity_change: -moveQty };
+      }
+    }
+    return item.m;
+  }
   return item.m;
 }
 
@@ -984,12 +1117,23 @@ function formatMovementReason(m) {
   if (reason.startsWith('Сборка:')) {
     reason = `Отгрузка${reason.slice('Сборка'.length)}`;
   }
+  const stornoReceipt =
+    /(?:сторно:\s*)?откат\s+при[её]мки\s+№\s*(\d+)/i.exec(reason) ||
+    /^отмена\s+при[её]мки\s+№\s*(\d+)/i.exec(reason);
+  if (stornoReceipt) {
+    return `Отмена приёмки №${stornoReceipt[1]}`;
+  }
   if (reason) {
-    if (isStorno && !/^сторно/i.test(reason)) return `Сторно: ${reason}`;
+    if (isStorno && !/^сторно/i.test(reason) && !/^отмена/i.test(reason)) {
+      return `Отмена: ${reason}`;
+    }
+    if (/^сторно:\s*/i.test(reason)) {
+      return reason.replace(/^сторно:\s*/i, 'Отмена: ');
+    }
     return reason;
   }
   const typeLabel = (MOVEMENT_TYPE_LABELS[movementTypeLower(m)] || movementTypeLower(m)) || '—';
-  if (isStorno) return `Сторно (${typeLabel})`;
+  if (isStorno) return `Отмена (${typeLabel})`;
   return typeLabel;
 }
 
@@ -1006,6 +1150,23 @@ function getMovementLink(m) {
       to: { pathname: '/stock-levels/warehouse', search: `?op=${op}` },
       state: { openReceiptId: meta.receipt_id, openTab: op },
       label: reasonText
+    };
+  }
+  const purchaseReceiptId = meta.purchase_receipt_id ?? meta.purchaseReceiptId;
+  const purchaseId = meta.purchase_id ?? meta.purchaseId;
+  if (
+    purchaseReceiptId != null &&
+    String(purchaseReceiptId).trim() !== '' &&
+    purchaseId != null &&
+    String(purchaseId).trim() !== ''
+  ) {
+    return {
+      to: {
+        pathname: '/stock-levels/purchases',
+        search: `?purchase=${encodeURIComponent(String(purchaseId).trim())}&purchase_receipt=${encodeURIComponent(String(purchaseReceiptId).trim())}`,
+      },
+      state: null,
+      label: reasonText,
     };
   }
   if (t === 'reserve' && meta.orderId != null && String(meta.orderId).trim() !== '') {
@@ -3155,6 +3316,8 @@ export function WarehouseStocks() {
                 {historyRowMetrics && !isKitProduct(historyProduct)
                   ? ' Верхняя строка — текущие остатки как в таблице.'
                   : null}
+                {' '}
+                Возвраты показывают наличие на складе из документа (ВК/ВН), а не общий остаток по всем складам.
               </p>
             ) : historyRowMetrics && !isKitProduct(historyProduct) ? (
               <p className="text-muted small mb-2" role="status">
@@ -3186,9 +3349,9 @@ export function WarehouseStocks() {
                   const mInferInc = movementForDeltaInference(item, 'inc');
                   const mInferRes = movementForDeltaInference(item, 'res');
                   const mInferBal = movementForDeltaInference(item, 'bal');
-                  const incCell = formatAfterDeltaSmart(cur.inc, prev?.inc, mInferInc, 'inc');
-                  const resCell = formatAfterDeltaSmart(cur.res, prev?.res, mInferRes, 'res');
-                  const balCell = formatAfterDeltaSmart(cur.bal, prev?.bal, mInferBal, 'bal');
+                  const incCell = formatAfterDeltaSmart(cur.inc, prev?.inc, mInferInc, 'inc', stockWarehouseId);
+                  const resCell = formatAfterDeltaSmart(cur.res, prev?.res, mInferRes, 'res', stockWarehouseId);
+                  const balCell = formatAfterDeltaSmart(cur.bal, prev?.bal, mInferBal, 'bal', stockWarehouseId);
 
                   if (item.kind === 'outboundGroup') {
                     const oids = orderIdsFromOutboundMovements(item.movements);

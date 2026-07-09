@@ -226,6 +226,33 @@
   margin: 0;
 }
 
+.questions-modal-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.questions-modal-title__mp {
+  flex-shrink: 0;
+}
+
+.questions-modal-title__text {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.modal-erm .modal-header .modal-title:has(.questions-modal-title) {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  padding-right: 0.5rem;
+}
+
 .questions-thread-product {
   display: flex;
   flex-wrap: wrap;

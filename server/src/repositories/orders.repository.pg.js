@@ -12,6 +12,27 @@ import {
 
 const ORDER_RESERVED_QTY_SQL = orderReservedQtyCorrelatedSubquerySql('sm', 'o');
 
+const ORDER_ARCHIVE_TERMINAL_STATUSES_SQL = `('delivered', 'cancelled', 'canceled')`;
+
+const UPSERT_FROM_SYNC_ARCHIVE_SQL = `
+        terminal_status_at = CASE
+          WHEN orders.terminal_status_at IS NOT NULL THEN orders.terminal_status_at
+          WHEN LOWER(TRIM(EXCLUDED.status)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL}
+            AND LOWER(TRIM(COALESCE(orders.status, ''))) NOT IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL}
+          THEN CURRENT_TIMESTAMP
+          ELSE orders.terminal_status_at
+        END,
+        archived_at = orders.archived_at`;
+
+const STATUS_UPDATE_ARCHIVE_SQL = `
+        terminal_status_at = CASE
+          WHEN $1::text = 'new' THEN NULL
+          WHEN terminal_status_at IS NOT NULL THEN terminal_status_at
+          WHEN LOWER(TRIM($1::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP
+          ELSE terminal_status_at
+        END,
+        archived_at = CASE WHEN $1::text = 'new' THEN NULL ELSE archived_at END`;
+
 /** Преобразование строки БД (snake_case) в формат API (camelCase) для совместимости с фронтом и файловым хранилищем */
 function rowToCamel(row) {
   if (!row) return row;
@@ -53,6 +74,8 @@ function rowToCamel(row) {
     assembledByFullName: row.assembled_by_full_name ?? null,
     assemblyStickerNumber: row.assembly_sticker_number ?? null,
     returnedToNewAt: row.returned_to_new_at ?? null,
+    terminalStatusAt: row.terminal_status_at ?? null,
+    archivedAt: row.archived_at ?? null,
     warehouseId:
       row.warehouse_id != null && row.warehouse_id !== '' ? Number(row.warehouse_id) : null,
     hasReserve: row.has_reserve ?? row.hasReserve ?? false,
@@ -90,7 +113,7 @@ function normalizeProfileId(profileId) {
 
 class OrdersRepositoryPG {
   buildFindAllFilters(options = {}) {
-    const { marketplace, status, productId, search, profileId, excludeManual } = options;
+    const { marketplace, status, productId, search, profileId, excludeManual, includeArchived } = options;
     const params = [];
     let paramIndex = 1;
     let whereSql = ' WHERE 1=1';
@@ -98,6 +121,9 @@ class OrdersRepositoryPG {
     if (pid) {
       whereSql += ` AND o.profile_id = $${paramIndex++}`;
       params.push(pid);
+    }
+    if (includeArchived !== true) {
+      whereSql += ' AND o.archived_at IS NULL';
     }
     if (excludeManual === true) {
       whereSql += ` AND o.marketplace <> 'manual'`;
@@ -267,6 +293,7 @@ class OrdersRepositoryPG {
              o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number
       FROM orders o
       WHERE 1=1
+        AND o.archived_at IS NULL
     `;
     if (pid) {
       sql += ` AND o.profile_id = $1`;
@@ -322,6 +349,40 @@ class OrdersRepositoryPG {
 
     const result = await query(sql, params);
     return result.rows?.map((r) => ({ status: r.status, count: Number(r.count) || 0 })) ?? [];
+  }
+
+  /**
+   * Количество групп заказов в статусе «Новый» (лёгкий запрос для звукового оповещения).
+   * Та же логика группировки и фильтра «new», что в findAll со status=new.
+   */
+  async countNewGroups(options = {}) {
+    const { profileId, excludeManual } = options;
+    const { whereSql, params } = this.buildFindAllFilters({
+      marketplace: null,
+      status: 'new',
+      productId: null,
+      search: null,
+      profileId,
+      excludeManual,
+    });
+
+    const result = await query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM (
+        SELECT DISTINCT
+          CASE
+            WHEN o.order_group_id IS NOT NULL AND TRIM(COALESCE(o.order_group_id, '')) <> ''
+              THEN (o.marketplace || '|g|' || o.order_group_id)
+            ELSE (o.marketplace || '|o|' || o.order_id)
+          END AS gk
+        FROM orders o
+        ${whereSql}
+      ) groups
+    `,
+      params
+    );
+    return Number(result.rows?.[0]?.count || 0);
   }
 
   /**
@@ -539,8 +600,11 @@ class OrdersRepositoryPG {
       INSERT INTO orders (
         profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
-        customer_phone, delivery_address, created_at, in_process_at, shipment_date, returned_to_new_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        customer_phone, delivery_address, created_at, in_process_at, shipment_date, returned_to_new_at,
+        terminal_status_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text, $12, $13, $14, $15, $16, $17, $18,
+        CASE WHEN LOWER(TRIM($11::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP ELSE NULL END
+      )
       ON CONFLICT (profile_id, marketplace, order_id) DO UPDATE SET
         order_group_id = CASE
           WHEN orders.order_group_id LIKE '%|split|%' THEN orders.order_group_id
@@ -579,6 +643,7 @@ class OrdersRepositoryPG {
         assembled_at = orders.assembled_at,
         assembled_by_user_id = orders.assembled_by_user_id,
         assembly_sticker_number = orders.assembly_sticker_number,
+        ${UPSERT_FROM_SYNC_ARCHIVE_SQL},
         updated_at = CURRENT_TIMESTAMP
       RETURNING *
     `, params);
@@ -594,7 +659,8 @@ class OrdersRepositoryPG {
     const BATCH = 100;
     const cols = `profile_id, marketplace, order_id, order_group_id, product_id, offer_id, marketplace_sku,
         product_name, quantity, price, status, customer_name,
-        customer_phone, delivery_address, created_at, in_process_at, shipment_date, returned_to_new_at`;
+        customer_phone, delivery_address, created_at, in_process_at, shipment_date, returned_to_new_at,
+        terminal_status_at`;
     const setClause = `
         order_group_id = CASE
           WHEN orders.order_group_id LIKE '%|split|%' THEN orders.order_group_id
@@ -633,6 +699,7 @@ class OrdersRepositoryPG {
         assembled_at = orders.assembled_at,
         assembled_by_user_id = orders.assembled_by_user_id,
         assembly_sticker_number = orders.assembly_sticker_number,
+        ${UPSERT_FROM_SYNC_ARCHIVE_SQL},
         updated_at = CURRENT_TIMESTAMP`;
     for (let i = 0; i < orders.length; i += BATCH) {
       const chunk = orders.slice(i, i + BATCH);
@@ -643,7 +710,7 @@ class OrdersRepositoryPG {
         params.push(...p);
         const base = idx * 18 + 1;
         placeholders.push(
-          `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16}, $${base + 17})`
+          `($${base}, $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}::text, $${base + 11}, $${base + 12}, $${base + 13}, $${base + 14}, $${base + 15}, $${base + 16}, $${base + 17}, CASE WHEN LOWER(TRIM($${base + 10}::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP ELSE NULL END)`
         );
       });
       await query(`
@@ -812,9 +879,10 @@ class OrdersRepositoryPG {
       UPDATE orders SET
         status = $1::text,
         returned_to_new_at = CASE WHEN $1::text = 'new' THEN CURRENT_TIMESTAMP ELSE NULL END,
-        assembled_at = CASE WHEN $3 THEN NULL ELSE assembled_at END,
-        assembled_by_user_id = CASE WHEN $3 THEN NULL ELSE assembled_by_user_id END,
-        assembly_sticker_number = CASE WHEN $3 THEN NULL ELSE assembly_sticker_number END,
+        assembled_at = CASE WHEN $3::boolean THEN NULL ELSE assembled_at END,
+        assembled_by_user_id = CASE WHEN $3::boolean THEN NULL ELSE assembled_by_user_id END,
+        assembly_sticker_number = CASE WHEN $3::boolean THEN NULL ELSE assembly_sticker_number END,
+        ${STATUS_UPDATE_ARCHIVE_SQL},
         updated_at = CURRENT_TIMESTAMP
       WHERE order_group_id = $2::text${pid ? ' AND profile_id = $4::bigint' : ''}
       RETURNING id
@@ -969,12 +1037,28 @@ class OrdersRepositoryPG {
       'delivery_address', 'warehouse_id', 'order_id', 'order_group_id',
       'in_process_at', 'shipment_date'
     ];
-    
+
+    let statusParamIdx = null;
     for (const field of allowedFields) {
       if (updates.hasOwnProperty(field)) {
-        updateFields.push(`${field} = $${paramIndex++}`);
+        if (field === 'status') {
+          statusParamIdx = paramIndex;
+          updateFields.push(`${field} = $${paramIndex++}::text`);
+        } else {
+          updateFields.push(`${field} = $${paramIndex++}`);
+        }
         params.push(updates[field]);
       }
+    }
+
+    if (statusParamIdx != null) {
+      updateFields.push(`terminal_status_at = CASE
+        WHEN $${statusParamIdx}::text = 'new' THEN NULL
+        WHEN terminal_status_at IS NOT NULL THEN terminal_status_at
+        WHEN LOWER(TRIM($${statusParamIdx}::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP
+        ELSE terminal_status_at
+      END`);
+      updateFields.push(`archived_at = CASE WHEN $${statusParamIdx}::text = 'new' THEN NULL ELSE archived_at END`);
     }
     
     if (updateFields.length === 0) {
@@ -1008,9 +1092,15 @@ class OrdersRepositoryPG {
       'delivery_address', 'warehouse_id', 'in_process_at', 'shipment_date', 'returned_to_new_at'
     ];
     
+    let statusParamIdx = null;
     for (const field of allowedFields) {
       if (updates.hasOwnProperty(field)) {
-        updateFields.push(`${field} = $${paramIndex++}`);
+        if (field === 'status') {
+          statusParamIdx = paramIndex;
+          updateFields.push(`${field} = $${paramIndex++}::text`);
+        } else {
+          updateFields.push(`${field} = $${paramIndex++}`);
+        }
         params.push(updates[field]);
       }
     }
@@ -1031,6 +1121,16 @@ class OrdersRepositoryPG {
       params.push(null);
       updateFields.push(`assembly_sticker_number = $${paramIndex++}`);
       params.push(null);
+    }
+
+    if (statusParamIdx != null) {
+      updateFields.push(`terminal_status_at = CASE
+        WHEN $${statusParamIdx}::text = 'new' THEN NULL
+        WHEN terminal_status_at IS NOT NULL THEN terminal_status_at
+        WHEN LOWER(TRIM($${statusParamIdx}::text)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL} THEN CURRENT_TIMESTAMP
+        ELSE terminal_status_at
+      END`);
+      updateFields.push(`archived_at = CASE WHEN $${statusParamIdx}::text = 'new' THEN NULL ELSE archived_at END`);
     }
     
     if (updateFields.length === 0) {
@@ -1214,6 +1314,43 @@ class OrdersRepositoryPG {
     
     const result = await query(sql, params);
     return result.rows;
+  }
+
+  /**
+   * Архивировать завершённые заказы старше N дней с момента финального статуса.
+   * @returns {number} сколько строк обновлено
+   */
+  async archiveOldTerminalOrders({ olderThanDays = 30, batchSize = 5000, profileId = null } = {}) {
+    const days = Math.max(1, parseInt(olderThanDays, 10) || 30);
+    const limit = Math.max(1, parseInt(batchSize, 10) || 5000);
+    const pid = normalizeProfileId(profileId);
+    const params = [days, limit];
+    let profileSql = '';
+    if (pid) {
+      profileSql = ' AND profile_id = $3::bigint';
+      params.push(pid);
+    }
+    const result = await query(
+      `
+      WITH candidates AS (
+        SELECT id
+        FROM orders
+        WHERE archived_at IS NULL
+          AND terminal_status_at IS NOT NULL
+          AND terminal_status_at < CURRENT_TIMESTAMP - ($1::int || ' days')::interval
+          AND LOWER(TRIM(status)) IN ${ORDER_ARCHIVE_TERMINAL_STATUSES_SQL}
+          ${profileSql}
+        ORDER BY terminal_status_at ASC
+        LIMIT $2
+      )
+      UPDATE orders o
+      SET archived_at = CURRENT_TIMESTAMP
+      FROM candidates c
+      WHERE o.id = c.id
+    `,
+      params
+    );
+    return result.rowCount || 0;
   }
 }
 

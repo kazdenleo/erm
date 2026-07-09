@@ -20,9 +20,10 @@ export function getSupplierStocksSyncStatus() {
 }
 
 /**
+ * @param {number|string|null} [profileId] — только этот аккаунт; без параметра — все с включённой интеграцией
  * @returns {{ started: boolean, inProgress: boolean }}
  */
-export function startSupplierStocksSyncInBackground() {
+export function startSupplierStocksSyncInBackground(profileId = null) {
   if (inProgress) {
     return { started: false, inProgress: true };
   }
@@ -35,12 +36,14 @@ export function startSupplierStocksSyncInBackground() {
   setImmediate(async () => {
     try {
       const { default: productsService } = await import('./products.service.js');
-      lastResult = await productsService.refreshSupplierStocks(null);
+      lastResult = await productsService.refreshSupplierStocks(null, { profileId });
       logger.info('[SupplierStocksSync] Background refresh completed', {
+        profileId: profileId ?? 'all-enabled',
         total: lastResult?.total ?? 0,
         success: lastResult?.success ?? 0,
         failed: lastResult?.failed ?? 0,
-        marketplacePushScheduled: lastResult?.marketplacePushScheduled ?? 0
+        marketplacePushScheduled: lastResult?.marketplacePushScheduled ?? 0,
+        skipped: lastResult?.skipped === true
       });
     } catch (error) {
       lastError = error?.message || String(error);

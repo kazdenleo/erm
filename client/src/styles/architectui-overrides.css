@@ -208,6 +208,44 @@
   padding: 1.15rem 1.35rem 1.35rem;
 }
 
+.modal-erm .modal-header .modal-title:has(.purchase-detail-modal-title) {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  padding-right: 0.5rem;
+}
+
+.purchase-detail-modal-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.purchase-detail-modal-title__heading {
+  font-size: 1rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.purchase-detail-modal-title__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.purchase-detail-modal-title__save--hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* Подменю сайдбара (Остатки, Настройки): показывать только при классе mm-show */
 .app-sidebar .vertical-nav-menu > li > ul {
   display: none;

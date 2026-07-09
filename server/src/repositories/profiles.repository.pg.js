@@ -13,6 +13,16 @@ class ProfilesRepositoryPG {
     return result.rows;
   }
 
+  /** Аккаунты с включённой интеграцией поставщиков (для фоновой синхронизации остатков). */
+  async findSupplierSyncEnabled() {
+    const result = await query(
+      `SELECT * FROM profiles
+       WHERE COALESCE(supplier_sync_enabled, true) = true
+       ORDER BY id`
+    );
+    return result.rows;
+  }
+
   /**
    * Список профилей с количеством пользователей и организаций (админка продукта)
    */

@@ -32,9 +32,12 @@ npm run migrate
 echo "==> client build"
 cd "$APP_ROOT/client"
 if [ -f package-lock.json ]; then npm ci; else npm install; fi
+umask 022
 npm run build
-# Сборка иногда создаёт каталоги с umask 077 — nginx (www-data) не видит CSS/JS.
-chmod -R a+rX "$APP_ROOT/client/build" 2>/dev/null || true
+# postbuild в package.json тоже выставляет права; дублируем на случай старого package.json
+bash "$APP_ROOT/scripts/vps-fix-client-build-perms.sh" 2>/dev/null \
+  || chmod -R a+rX "$APP_ROOT/client/build" 2>/dev/null \
+  || true
 
 echo "==> pm2 restart (cwd=$APP_ROOT/server)"
 cd "$APP_ROOT/server"

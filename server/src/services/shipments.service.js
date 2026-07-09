@@ -1697,6 +1697,95 @@ async function removeOrdersFromShipment(
   return out;
 }
 
+function normalizeShipmentMarketplaceCode(marketplace) {
+  const m = String(marketplace || '').toLowerCase();
+  if (m === 'wb' || m === 'wildberries') return 'wildberries';
+  return m;
+}
+
+/**
+ * Убрать заказы из открытых поставок пакетом.
+ * Для WB при relocateWbToNewSupply все затронутые заказы попадают в одну новую поставку.
+ * @param {{ marketplace: string, orderId?: string, order_id?: string, profileId?: *, profile_id?: *, organizationId?: *, organization_id?: * }[]} orderRefs
+ */
+async function removeOrdersFromOpenShipmentsBatch(
+  orderRefs,
+  { profileId = null, organizationId = null, relocateWbToNewSupply = false } = {}
+) {
+  if (!Array.isArray(orderRefs) || orderRefs.length === 0) {
+    return { removedFrom: [], relocatedShipment: null };
+  }
+
+  const byScope = new Map();
+  for (const ref of orderRefs) {
+    const mp = normalizeShipmentMarketplaceCode(ref.marketplace);
+    const oid = String(ref.orderId ?? ref.order_id ?? '').trim();
+    if (!mp || !oid) continue;
+    const prof = ref.profileId ?? ref.profile_id ?? profileId ?? null;
+    const org = ref.organizationId ?? ref.organization_id ?? organizationId ?? null;
+    const scopeKey = `${mp}|${prof ?? ''}|${org ?? ''}`;
+    if (!byScope.has(scopeKey)) {
+      byScope.set(scopeKey, { mp, profileId: prof, organizationId: org, orderIds: new Set() });
+    }
+    byScope.get(scopeKey).orderIds.add(oid);
+  }
+
+  const removedFrom = [];
+  let relocatedShipment = null;
+
+  for (const { mp, profileId: prof, organizationId: org, orderIds } of byScope.values()) {
+    if (!orderIds.size) continue;
+    const idsArr = [...orderIds];
+    const shipments = await getLocalShipments();
+    const isWb = mp === 'wildberries';
+    const affectedShipments = [];
+
+    for (const ship of shipments) {
+      if (ship.closed) continue;
+      const m = ship.marketplace === 'wb' ? 'wildberries' : ship.marketplace;
+      if (m !== mp) continue;
+      if (!shipmentVisibleForScope(ship, prof, org)) continue;
+      const shipOrderIds = (ship.orderIds || []).map(String);
+      const matching = idsArr.filter((id) => shipOrderIds.includes(id));
+      if (matching.length > 0) {
+        affectedShipments.push({ ship, matching });
+      }
+    }
+
+    if (!affectedShipments.length) continue;
+
+    const allRemovedIds = new Set();
+    for (const { ship, matching } of affectedShipments) {
+      try {
+        await removeOrdersFromShipment(ship.id, matching, {
+          profileId: prof,
+          organizationId: org,
+          relocateWbToNewSupply: false,
+        });
+        removedFrom.push(ship.id);
+        for (const id of matching) allRemovedIds.add(id);
+      } catch (e) {
+        logger.warn(
+          `[Shipments] removeOrdersFromOpenShipmentsBatch ${ship.id}: ${e?.message || e}`
+        );
+      }
+    }
+
+    if (isWb && relocateWbToNewSupply && allRemovedIds.size > 0) {
+      relocatedShipment = await relocateWildberriesOrdersToNewShipment(
+        affectedShipments[0].ship,
+        [...allRemovedIds],
+        { profileId: prof, organizationId: org }
+      );
+      logger.info(
+        `[Shipments WB] Relocated ${allRemovedIds.size} order(s) to shipment ${relocatedShipment?.id}`
+      );
+    }
+  }
+
+  return { removedFrom: [...new Set(removedFrom)], relocatedShipment };
+}
+
 /**
  * Убрать заказ из всех незакрытых локальных поставок (и с WB-поставки, если привязана).
  * @returns {Promise<string[]>} id поставок, из которых удалили
@@ -1737,6 +1826,7 @@ const shipmentsService = {
   createShipment,
   addOrdersToShipment,
   removeOrdersFromShipment,
+  removeOrdersFromOpenShipmentsBatch,
   removeOrderFromOpenShipments,
   getOrCreateOpenShipment,
   getOrderShipmentIndex,

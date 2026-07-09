@@ -27,7 +27,18 @@ function normalizeBody(v) {
   return s.trim();
 }
 
+function isOzonReviewProcessed(r) {
+  const st = String(r?.status ?? '').trim().toUpperCase();
+  return st === 'PROCESSED' || st === 'ANSWERED';
+}
+
+function isWbReviewAnswered(fb) {
+  const answerText = fb?.answer?.text ?? fb?.answer?.message ?? fb?.answerText ?? null;
+  return answerText != null && String(answerText).trim() !== '';
+}
+
 function mapOzonReview(r, profileId) {
+  if (isOzonReviewProcessed(r)) return null;
   const ext = String(r.id ?? r.review_id ?? r.reviewId ?? '').trim();
   if (!ext) return null;
   const rating = safeRating(r.rating ?? r.score);
@@ -68,6 +79,7 @@ async function syncOzon(profileId) {
     throw new Error('Ozon API не настроен (client_id / api_key)');
   }
   let imported = 0;
+  const externalIds = [];
   let lastId = null;
   for (let page = 0; page < 20; page++) {
     /* eslint-disable no-await-in-loop */
@@ -75,12 +87,14 @@ async function syncOzon(profileId) {
       limit: 100,
       ...(lastId ? { last_id: String(lastId) } : {}),
       sort_dir: 'DESC',
-      status: 'ALL',
+      status: 'UNPROCESSED',
     };
     const data = await integrationsService._ozonApiPost('/v1/review/list', body, { profileId });
     const r = data?.result ?? data;
     const reviews = Array.isArray(r?.reviews) ? r.reviews : (Array.isArray(r?.items) ? r.items : []);
     for (const it of reviews) {
+      const ext = String(it.id ?? it.review_id ?? it.reviewId ?? '').trim();
+      if (ext) externalIds.push(ext);
       const row = mapOzonReview(it, profileId);
       if (!row) continue;
       await marketplaceReviewsRepo.upsertRow(row);
@@ -91,7 +105,7 @@ async function syncOzon(profileId) {
     if (!lastId) break;
     /* eslint-enable no-await-in-loop */
   }
-  return imported;
+  return { imported, externalIds };
 }
 
 function wbProductDetails(raw) {
@@ -99,12 +113,13 @@ function wbProductDetails(raw) {
 }
 
 function mapWbFeedback(fb, profileId) {
+  if (isWbReviewAnswered(fb)) return null;
   const ext = String(fb.id ?? fb.feedbackId ?? '').trim();
   if (!ext) return null;
   const rating = safeRating(fb.productValuation ?? fb.valuation ?? fb.rating ?? fb.stars);
   const body = normalizeBody(fb.text ?? fb.feedbackText ?? '');
   const hasText = body !== '';
-  const answerText = fb.answer?.text ?? fb.answer?.message ?? fb.answerText ?? null;
+  const answerText = null;
   const pd = wbProductDetails(fb);
   const skuOrOffer =
     (pd.supplierArticle ?? pd.vendorCode ?? fb.vendorCode ?? fb.vendor_code ?? null) != null
@@ -119,7 +134,7 @@ function mapWbFeedback(fb, profileId) {
     rating,
     body,
     has_text: hasText,
-    answer_text: answerText != null && String(answerText).trim() !== '' ? String(answerText).trim() : null,
+    answer_text: answerText,
     status: status != null ? String(status) : null,
     sku_or_offer: skuOrOffer,
     source_created_at: sourceCreatedAt,
@@ -135,47 +150,68 @@ async function syncWildberries(profileId) {
     throw new Error('Wildberries: не настроен API-ключ (нужна категория «Вопросы и отзывы» в токене).');
   }
   let imported = 0;
-  // WB API требует isAnswered=true|false (в некоторых версиях без параметра отдаёт 400)
-  const answerFlags = ['false', 'true'];
-  for (const isAnswered of answerFlags) {
-    const qs = new URLSearchParams();
-    qs.set('take', '500');
-    qs.set('skip', '0');
-    qs.set('isAnswered', isAnswered);
-    const url = `https://feedbacks-api.wildberries.ru/api/v1/feedbacks?${qs.toString()}`;
-    /* eslint-disable no-await-in-loop */
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`Wildberries API ${response.status}: ${text.substring(0, 400)}`);
-    }
-    let json;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      json = null;
-    }
-    const root = json?.data ?? json;
-    const list = Array.isArray(root?.feedbacks) ? root.feedbacks : (Array.isArray(root) ? root : []);
-    for (const fb of list) {
-      const row = mapWbFeedback(fb, profileId);
-      if (!row) continue;
-      await marketplaceReviewsRepo.upsertRow(row);
-      imported += 1;
-    }
-    /* eslint-enable no-await-in-loop */
+  const externalIds = [];
+  const qs = new URLSearchParams();
+  qs.set('take', '500');
+  qs.set('skip', '0');
+  qs.set('isAnswered', 'false');
+  const url = `https://feedbacks-api.wildberries.ru/api/v1/feedbacks?${qs.toString()}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Wildberries API ${response.status}: ${text.substring(0, 400)}`);
   }
-  return imported;
+  let json;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+  const root = json?.data ?? json;
+  const list = Array.isArray(root?.feedbacks) ? root.feedbacks : (Array.isArray(root) ? root : []);
+  for (const fb of list) {
+    const ext = String(fb.id ?? fb.feedbackId ?? '').trim();
+    if (ext) externalIds.push(ext);
+    const row = mapWbFeedback(fb, profileId);
+    if (!row) continue;
+    await marketplaceReviewsRepo.upsertRow(row);
+    imported += 1;
+  }
+  return { imported, externalIds };
 }
 
 async function syncYandex(profileId) {
-  // Пока не реализовано: оставим точку расширения, как в вопросах.
-  // Яндекс имеет отдельные API по общению; добавим позже.
   void profileId;
-  return 0;
+  return { imported: 0, externalIds: [] };
+}
+
+/** Убираем из БД отзывы, на которые уже ответили или которых нет в списке неотвеченных на МП. */
+async function purgeAnsweredMissingFromMarketplace(profileId, marketplace, externalIds) {
+  const missing = await marketplaceReviewsRepo.findNeedingReplyMissingFromMarketplace(
+    profileId,
+    marketplace,
+    externalIds,
+    { allIfEmpty: true }
+  );
+  let deleted = 0;
+  for (const row of missing) {
+    await marketplaceReviewsRepo.deleteByIdAndProfile(row.id, profileId);
+    deleted += 1;
+  }
+  return { deleted };
+}
+
+function parseAnsweredFilter(query) {
+  const raw = query.answered ?? query.status ?? null;
+  if (raw == null || String(raw).trim() === '') return 'new';
+  const a = String(raw).trim().toLowerCase();
+  if (a === 'new' || a === 'unanswered' || a === 'pending') return 'new';
+  if (a === 'answered' || a === 'done') return 'answered';
+  if (a === 'all') return 'all';
+  return 'new';
 }
 
 /**
@@ -202,14 +238,29 @@ export async function syncMarketplaceReviews(profileId, opts = {}) {
     run.push(...order);
   }
   const results = [];
+  const cleanupStart = await marketplaceReviewsRepo.deleteNotNeedingReplyByProfile(profileId);
+  if ((cleanupStart.deleted ?? 0) > 0) {
+    logger.info(`[MarketplaceReviews] profile=${profileId} purged answered on sync start: ${cleanupStart.deleted}`);
+  }
   for (const mp of run) {
     try {
       let imported = 0;
-      if (mp === 'ozon') imported = await syncOzon(profileId);
-      else if (mp === 'wildberries') imported = await syncWildberries(profileId);
-      else if (mp === 'yandex') imported = await syncYandex(profileId);
-      results.push({ marketplace: mp, ok: true, imported, error: null });
-      logger.info(`[MarketplaceReviews] ${mp} profile=${profileId} imported=${imported}`);
+      let externalIds = [];
+      if (mp === 'ozon') ({ imported, externalIds } = await syncOzon(profileId));
+      else if (mp === 'wildberries') ({ imported, externalIds } = await syncWildberries(profileId));
+      else if (mp === 'yandex') ({ imported, externalIds } = await syncYandex(profileId));
+      const purgeStats = await purgeAnsweredMissingFromMarketplace(profileId, mp, externalIds);
+      const cleanup = await marketplaceReviewsRepo.deleteNotNeedingReplyByProfile(profileId);
+      results.push({
+        marketplace: mp,
+        ok: true,
+        imported,
+        purged: (purgeStats.deleted ?? 0) + (cleanup.deleted ?? 0),
+        error: null,
+      });
+      logger.info(
+        `[MarketplaceReviews] ${mp} profile=${profileId} imported=${imported} purged=${purgeStats.deleted ?? 0} cleanup=${cleanup.deleted ?? 0}`
+      );
     } catch (e) {
       const msg = e?.message || String(e);
       logger.warn(`[MarketplaceReviews] ${mp} profile=${profileId} failed: ${msg}`);
@@ -221,7 +272,10 @@ export async function syncMarketplaceReviews(profileId, opts = {}) {
 
 export async function listMarketplaceReviews(profileId, query = {}) {
   if (!repositoryFactory.isUsingPostgreSQL()) return [];
-  return await marketplaceReviewsRepo.list(profileId, query);
+  return await marketplaceReviewsRepo.list(profileId, {
+    ...query,
+    answered: parseAnsweredFilter(query),
+  });
 }
 
 export async function getMarketplaceReviewsStats(profileId, query = {}) {
@@ -361,7 +415,11 @@ export async function submitMarketplaceReviewAnswer(profileId, reviewRowId, text
     err.statusCode = 400;
     throw err;
   }
-  // Сохраняем ответ локально (не ждём, пока список маркетплейса отразит его)
-  return await marketplaceReviewsRepo.updateAnswerFields(reviewRowId, profileId, trimmed);
+  await marketplaceReviewsRepo.deleteByIdAndProfile(reviewRowId, profileId);
+  return {
+    id: String(reviewRowId),
+    deleted: true,
+    marketplace: mp,
+  };
 }
 

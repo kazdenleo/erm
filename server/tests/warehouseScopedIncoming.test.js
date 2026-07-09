@@ -2,6 +2,7 @@ import { describe, test, expect } from '@jest/globals';
 import {
   allocateWarehouseScopedIncoming,
   clampStockMetric,
+  reconcileWarehouseIncomingWithPurchasePending,
 } from '../src/constants/netReservedStockSql.js';
 
 describe('clampStockMetric', () => {
@@ -166,5 +167,47 @@ describe('allocateWarehouseScopedIncoming', () => {
         hasWarehouseIncomingJournal: true
       })
     ).toBe(0);
+  });
+});
+
+describe('reconcileWarehouseIncomingWithPurchasePending', () => {
+  test('журнал 1, закупка ожидает 10 — показываем 10', () => {
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 1,
+        purchaseDocNet: 1,
+        purchasePending: 10,
+      })
+    ).toBe(10);
+  });
+
+  test('журнал и закупка согласованы — без изменений', () => {
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 10,
+        purchaseDocNet: 10,
+        purchasePending: 10,
+      })
+    ).toBe(10);
+  });
+
+  test('прочий incoming без закупок сохраняется', () => {
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 5,
+        purchaseDocNet: 0,
+        purchasePending: 0,
+      })
+    ).toBe(5);
+  });
+
+  test('нет журнала, есть ожидание закупки', () => {
+    expect(
+      reconcileWarehouseIncomingWithPurchasePending({
+        journalIncoming: 0,
+        purchaseDocNet: 0,
+        purchasePending: 10,
+      })
+    ).toBe(10);
   });
 });

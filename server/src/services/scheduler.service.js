@@ -18,6 +18,7 @@ import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
 import categoryMarketplaceCommissionsService from './categoryMarketplaceCommissions.service.js';
 import ordersSyncService from './orders.sync.service.js';
+import { getReserveDbLimiterStats } from '../utils/reserveDbLimiter.js';
 import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
@@ -47,10 +48,10 @@ function isReviewsSyncEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
-/** Cron (node-cron, Europe/Moscow). По умолчанию каждые 10 минут; переопределение: REVIEWS_SYNC_CRON */
+/** Cron (node-cron, Europe/Moscow). По умолчанию раз в час; переопределение: REVIEWS_SYNC_CRON */
 function getReviewsSyncCronExpression() {
   const c = process.env.REVIEWS_SYNC_CRON;
-  return c && String(c).trim() ? String(c).trim() : '*/10 * * * *';
+  return c && String(c).trim() ? String(c).trim() : '0 * * * *';
 }
 
 /** Фоновая синхронизация остатков поставщиков (Mikado, Москворечье). Выкл: SUPPLIER_STOCKS_SYNC_ENABLED=0 */
@@ -77,6 +78,35 @@ function isFboSupplyStatusSyncEnabled() {
 function getFboSupplyStatusSyncCronExpression() {
   const c = process.env.FBO_SUPPLY_STATUS_SYNC_CRON;
   return c && String(c).trim() ? String(c).trim() : '*/30 * * * *';
+}
+
+/** Архивация старых завершённых заказов. Выкл: ORDERS_ARCHIVE_ENABLED=0 */
+function isOrdersArchiveEnabled() {
+  const v = process.env.ORDERS_ARCHIVE_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (Europe/Moscow). По умолчанию 3:45 МСК; переопределение: ORDERS_ARCHIVE_CRON */
+function getOrdersArchiveCronExpression() {
+  const c = process.env.ORDERS_ARCHIVE_CRON;
+  return c && String(c).trim() ? String(c).trim() : '45 3 * * *';
+}
+
+async function runOrdersArchive() {
+  const { runOrdersArchiveBlocking, getOrdersArchiveStatus } = await import('./ordersArchive.job.js');
+  if (getOrdersArchiveStatus().inProgress) {
+    logger.info('[Scheduler] Orders archive: skip (previous run still in progress)');
+    return;
+  }
+  try {
+    const result = await runOrdersArchiveBlocking();
+    if ((result?.archived ?? 0) > 0) {
+      logger.info('[Scheduler] Orders archive done', result);
+    }
+  } catch (e) {
+    logger.warn('[Scheduler] Orders archive failed:', e?.message || e);
+  }
 }
 
 async function runFboSupplyStatusSync() {
@@ -526,6 +556,13 @@ class SchedulerService {
             );
             return;
           }
+          const reserveStats = getReserveDbLimiterStats();
+          if (reserveStats.queued > 0 || reserveStats.active >= reserveStats.max) {
+            logger.info(
+              `[Scheduler] FBS orders sync: пропуск — очередь резерва (active=${reserveStats.active}, queued=${reserveStats.queued})`
+            );
+            return;
+          }
           logger.info('[Scheduler] FBS orders sync (cron, background)...');
           const out = ordersSyncService.startSyncFbsForAllProfilesInBackground({
             force: true,
@@ -574,6 +611,58 @@ class SchedulerService {
         });
       } else {
         logger.info('[Scheduler] FBO supply status sync disabled (FBO_SUPPLY_STATUS_SYNC_ENABLED)');
+      }
+
+      let ordersArchiveJob = null;
+      const ordersArchiveCron = getOrdersArchiveCronExpression();
+      if (isOrdersArchiveEnabled()) {
+        ordersArchiveJob = cron.schedule(ordersArchiveCron, async () => {
+          if (isSchedulerDbJobRunning()) {
+            logger.info('[Scheduler] Orders archive: пропуск — ночная задача БД');
+            return;
+          }
+          await runSchedulerDbJob('orders-archive', () => runOrdersArchive());
+        }, {
+          scheduled: false,
+          timezone: 'Europe/Moscow'
+        });
+      } else {
+        logger.info('[Scheduler] Orders archive disabled (ORDERS_ARCHIVE_ENABLED)');
+      }
+
+      let orphanOrderReserveJob = null;
+      const orphanOrderReserveCron =
+        process.env.ORPHAN_ORDER_RESERVE_CRON && String(process.env.ORPHAN_ORDER_RESERVE_CRON).trim()
+          ? String(process.env.ORPHAN_ORDER_RESERVE_CRON).trim()
+          : '*/30 * * * *';
+      const orphanOrderReserveEnabled = !/^(0|false|no|off)$/i.test(
+        String(process.env.ORPHAN_ORDER_RESERVE_ENABLED ?? '1').trim()
+      );
+      if (orphanOrderReserveEnabled) {
+        orphanOrderReserveJob = cron.schedule(
+          orphanOrderReserveCron,
+          async () => {
+            if (isSchedulerDbJobRunning()) {
+              logger.info('[Scheduler] Orphan order reserve cleanup: пропуск — ночная задача БД');
+              return;
+            }
+            await runSchedulerDbJob('orphan-order-reserve', async () => {
+              const { default: ordersService } = await import('./orders.service.js');
+              const out = await ordersService.releaseReservesForOrphanOrderKeysInJournal({ limit: 50 });
+              if (out.released > 0) {
+                logger.info(
+                  `[Scheduler] Orphan order reserve cleanup: released=${out.released} checked=${out.checked}`
+                );
+              }
+            });
+          },
+          {
+            scheduled: false,
+            timezone: 'Europe/Moscow'
+          }
+        );
+      } else {
+        logger.info('[Scheduler] Orphan order reserve cleanup disabled (ORPHAN_ORDER_RESERVE_ENABLED)');
       }
 
       this.jobs.push({
@@ -661,7 +750,7 @@ class SchedulerService {
           name: 'reviews-sync',
           job: reviewsSyncJob,
           schedule: reviewsCron,
-          description: 'Синхронизация отзывов (Ozon, WB, Яндекс). Интервал: REVIEWS_SYNC_CRON, по умолчанию */10 * * * *'
+          description: 'Синхронизация отзывов (Ozon, WB, Яндекс). Интервал: REVIEWS_SYNC_CRON, по умолчанию 0 * * * * (раз в час)'
         });
       }
 
@@ -695,6 +784,26 @@ class SchedulerService {
         });
       }
 
+      if (ordersArchiveJob) {
+        this.jobs.push({
+          name: 'orders-archive',
+          job: ordersArchiveJob,
+          schedule: ordersArchiveCron,
+          description:
+            'Архивация завершённых заказов старше 30 дн. (delivered/cancelled). ORDERS_ARCHIVE_CRON, ORDERS_ARCHIVE_AFTER_DAYS'
+        });
+      }
+
+      if (orphanOrderReserveJob) {
+        this.jobs.push({
+          name: 'orphan-order-reserve',
+          job: orphanOrderReserveJob,
+          schedule: orphanOrderReserveCron,
+          description:
+            'Автоочистка залипшего резерва по удалённым заказам. ORPHAN_ORDER_RESERVE_CRON, по умолчанию */30 * * * *'
+        });
+      }
+
       // Запускаем задачи
       wbUpdateJob.start();
       wbTariffsJob.start();
@@ -714,6 +823,12 @@ class SchedulerService {
       }
       if (fboSupplyStatusSyncJob) {
         fboSupplyStatusSyncJob.start();
+      }
+      if (ordersArchiveJob) {
+        ordersArchiveJob.start();
+      }
+      if (orphanOrderReserveJob) {
+        orphanOrderReserveJob.start();
       }
       this.isRunning = true;
 

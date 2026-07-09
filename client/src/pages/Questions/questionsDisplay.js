@@ -118,6 +118,46 @@ function wbSupplierArticleFromRaw(raw) {
   return '';
 }
 
+function isOzonNumericMarketSku(value) {
+  return /^\d{6,}$/.test(String(value ?? '').trim());
+}
+
+/** Артикул продавца из subject: «ART — Название» или «ART — Название · 123456». */
+function ozonSellerArticleFromSubject(subject) {
+  let subj = subject != null ? String(subject).trim() : '';
+  if (!subj) return null;
+  const dash = subj.match(/^([A-Za-z0-9][A-Za-z0-9._\-/]{2,})\s*[—–-]\s*.+$/);
+  if (dash && !isOzonNumericMarketSku(dash[1])) return dash[1].trim();
+  if (subj.includes(' · ')) {
+    const head = subj.split(' · ')[0].trim();
+    const tail = subj.split(' · ').pop().trim();
+    if (isOzonNumericMarketSku(tail) && head) {
+      const headDash = head.match(/^([A-Za-z0-9][A-Za-z0-9._\-/]{2,})\s*[—–-]\s*(.+)$/);
+      if (headDash && !isOzonNumericMarketSku(headDash[1])) return headDash[1].trim();
+    }
+  }
+  return null;
+}
+
+function ozonProductNameFromSubject(subject, sellerArticle) {
+  let subj = subject != null ? String(subject).trim() : '';
+  if (!subj) return null;
+  const art = sellerArticle != null ? String(sellerArticle).trim() : '';
+  const dash = subj.match(/^[A-Za-z0-9][A-Za-z0-9._\-/]{2,}\s*[—–-]\s*(.+)$/);
+  if (dash) return dash[1].trim();
+  if (subj.includes(' · ')) {
+    const head = subj.split(' · ')[0].trim();
+    const tail = subj.split(' · ').pop().trim();
+    if (isOzonNumericMarketSku(tail) && head) {
+      const headDash = head.match(/^[A-Za-z0-9][A-Za-z0-9._\-/]{2,}\s*[—–-]\s*(.+)$/);
+      if (headDash) return headDash[2].trim();
+      return stripArticlePrefix(art, head) || head;
+    }
+  }
+  if (art && subj.toLowerCase() !== art.toLowerCase()) return stripArticlePrefix(art, subj) || subj;
+  return subj;
+}
+
 function pickOfferSku(q) {
   const mp = String(q.marketplace || '').toLowerCase();
   const raw = q.rawPayload ?? q.raw_payload;
@@ -126,11 +166,18 @@ function pickOfferSku(q) {
     if (fromApi) return fromApi;
   }
   if (mp === 'ozon') {
+    const direct = q.skuOrOffer ?? q.sku_or_offer;
+    if (direct != null) {
+      const d = String(direct).trim();
+      if (d && !isOzonNumericMarketSku(d)) return d;
+    }
     if (raw && typeof raw === 'object') {
       const offer = pickString(raw.offer_id, raw.offerId);
       if (offer) return offer;
-      if (raw.sku != null && String(raw.sku).trim() !== '') return String(raw.sku).trim();
     }
+    const fromSubject = ozonSellerArticleFromSubject(q?.subject);
+    if (fromSubject) return fromSubject;
+    return '';
   }
   const direct = q.skuOrOffer ?? q.sku_or_offer;
   if (direct != null && String(direct).trim() !== '') return String(direct).trim();
@@ -186,7 +233,10 @@ function productNameFromRaw(q) {
     return pickString(pd.productName, pd.product_name, pd.name, raw.productName, raw.product_name);
   }
   if (mp === 'ozon') {
-    return pickString(raw.product_name, raw.product_title, raw.productName, raw.name, raw.title);
+    const fromRaw = pickString(raw.product_name, raw.product_title, raw.productName, raw.name, raw.title);
+    if (fromRaw) return fromRaw;
+    const art = ozonSellerArticleFromSubject(q?.subject);
+    return ozonProductNameFromSubject(q?.subject, art);
   }
   if (mp === 'yandex' || mp === 'ym') {
     return pickString(
@@ -207,6 +257,12 @@ function productNameFromRaw(q) {
 function parseSubjectNameAndArticle(q) {
   let subj = q?.subject != null && String(q.subject).trim() !== '' ? String(q.subject).trim() : '';
   subj = subj.replace(/^Арт\.\s*/i, '').trim();
+  const mp = String(q?.marketplace || '').toLowerCase();
+  if (mp === 'ozon') {
+    const art = ozonSellerArticleFromSubject(subj) || pickOfferSku(q) || null;
+    const name = ozonProductNameFromSubject(subj, art) || null;
+    if (art || name) return { name, article: art };
+  }
   const article = extractArticleOnly(q);
   if (subj.includes(' · ')) {
     const head = subj.split(' · ')[0].trim();
@@ -302,6 +358,20 @@ export function getQuestionProductInfo(q) {
     name: cleanName,
     line,
   };
+}
+
+/**
+ * Строка «артикул — название» для шапки модалки (без заглушки «товар»).
+ * @param {object|null|undefined} q
+ */
+export function questionModalProductLine(q) {
+  const line = formatProductArticleWithName(q);
+  if (line && line !== 'товар') return line;
+  const subj = q?.subject != null ? String(q.subject).trim() : '';
+  if (subj && !isOzonNumericMarketSku(subj)) return subj;
+  const art = getQuestionArticle(q);
+  if (art) return art;
+  return 'Вопрос';
 }
 
 /** @param {string|null|undefined} marketplace */

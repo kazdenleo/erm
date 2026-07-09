@@ -5,6 +5,7 @@
 
 import { query } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
+import { runReserveDbLimited } from '../utils/reserveDbLimiter.js';
 import stockMovementsService from './stockMovements.service.js';
 import { getProductSupplySnapshotWithClient } from './sellableQuantity.service.js';
 import { NET_RESERVED_MOVEMENT_ROW_CASE_SQL } from '../constants/netReservedStockSql.js';
@@ -45,6 +46,12 @@ const FBO_RESERVE_QUEUE_ORDER_SQL = `
   si.id ASC`;
 
 const fboSourceWarehousesCache = new Map();
+
+const stockEventDebounce = new Map();
+const STOCK_EVENT_DEBOUNCE_MS = Math.max(
+  100,
+  Math.min(5000, Number(process.env.FBO_STOCK_EVENT_DEBOUNCE_MS) || 750)
+);
 
 function normalizeWarehouseId(v) {
   const n = Number(v);
@@ -414,27 +421,55 @@ async function applyFboReserveDelta({
   });
 }
 
-/** Нетто-резерв по строке FBO в разрезе товара и склада (включая комплектующие). */
-async function getFboItemReserveNetByProductWarehouse(fboSupplyItemId, client = null) {
-  const itemId = String(fboSupplyItemId ?? '').trim();
-  if (!itemId) return [];
-  const run = client?.query ? client.query.bind(client) : query;
-  const r = await run(
-    `SELECT product_id, warehouse_id,
-            GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
-     FROM stock_movements
-     WHERE meta->>'fbo_supply_item_id' = $1
-       AND type IN ('reserve', 'unreserve')
-     GROUP BY product_id, warehouse_id`,
-    [itemId]
-  );
-  return (r.rows || [])
+function mapFboItemReserveRows(rows) {
+  return (rows || [])
     .map((row) => ({
       productId: Number(row.product_id),
       warehouseId: normalizeWarehouseId(row.warehouse_id),
       net: parseInt(row.net ?? 0, 10) || 0,
     }))
-    .filter((row) => Number.isFinite(row.productId) && row.productId > 0 && row.warehouseId != null && row.net > 0);
+    .filter(
+      (row) =>
+        Number.isFinite(row.productId) && row.productId > 0 && row.warehouseId != null && row.net > 0
+    );
+}
+
+/** Нетто-резерв по строке FBO в разрезе товара и склада (включая комплектующие). */
+async function getFboItemReserveNetByProductWarehouse(fboSupplyItemId, client = null) {
+  const itemId = String(fboSupplyItemId ?? '').trim();
+  if (!itemId) return [];
+  const batch = await batchGetFboItemReserveNetByProductWarehouse([itemId], client);
+  return batch.get(itemId) || [];
+}
+
+/** Пакет: нетто-резерв по строкам FBO → Map item_id → [{ productId, warehouseId, net }]. */
+async function batchGetFboItemReserveNetByProductWarehouse(itemIds, client = null) {
+  const ids = [...new Set((itemIds || []).map((id) => String(id)).filter(Boolean))];
+  const result = new Map();
+  if (!ids.length) return result;
+
+  const run = client?.query ? client.query.bind(client) : query;
+  const r = await run(
+    `SELECT meta->>'fbo_supply_item_id' AS supply_item_id,
+            product_id,
+            warehouse_id,
+            GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0))::int AS net
+     FROM stock_movements
+     WHERE meta->>'fbo_supply_item_id' = ANY($1::text[])
+       AND type IN ('reserve', 'unreserve')
+     GROUP BY meta->>'fbo_supply_item_id', product_id, warehouse_id
+     HAVING GREATEST(0, COALESCE(SUM(${NET_RESERVED_MOVEMENT_ROW_CASE_SQL}), 0)) > 0`,
+    [ids]
+  );
+  for (const itemId of ids) {
+    result.set(itemId, []);
+  }
+  for (const row of r.rows || []) {
+    const itemId = String(row.supply_item_id);
+    if (!result.has(itemId)) result.set(itemId, []);
+    result.get(itemId).push(...mapFboItemReserveRows([row]));
+  }
+  return result;
 }
 
 function buildWarehouseCandidates(deductionWarehouseId, stockWarehouseIds) {
@@ -978,6 +1013,12 @@ class FboSupplyReserveService {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
 
+    return runReserveDbLimited(() =>
+      this._rebalanceReservesForProductInner(pid, { profileId, skipMarketplaceSync })
+    );
+  }
+
+  async _rebalanceReservesForProductInner(pid, { profileId, skipMarketplaceSync = false } = {}) {
     const applyMeta =
       skipMarketplaceSync === true
         ? { skip_marketplace_sync: true, fbo_bulk_rebalance: true }
@@ -990,12 +1031,14 @@ class FboSupplyReserveService {
     const isKit = await isKitProductId(pid);
 
     const unreserveQueue = [...queue].sort(compareSupplyRowsForUnreserve);
+    const unreserveItemIds = unreserveQueue.map((row) => String(row.supply_item_id));
+    const unreserveNetsByItem = await batchGetFboItemReserveNetByProductWarehouse(unreserveItemIds);
     for (const row of unreserveQueue) {
       const itemId = row.supply_item_id;
       const label = row.external_shipment_number
         ? `FBO ${row.external_shipment_number}`
         : `FBO поставка №${row.fbo_supply_id}`;
-      const nets = await getFboItemReserveNetByProductWarehouse(itemId);
+      const nets = unreserveNetsByItem.get(String(itemId)) || [];
       for (const { productId, warehouseId, net } of nets) {
         if (net <= 0) continue;
         await applyFboReserveDelta({
@@ -1034,6 +1077,28 @@ class FboSupplyReserveService {
       }
     } else {
       const poolByWh = new Map();
+      const queueWhIds = [
+        ...new Set(
+          queue
+            .map((row) =>
+              resolveFboDeductionWarehouseIdForRow(profileDeductionWh, row.deduction_warehouse_id)
+            )
+            .filter((wh) => wh != null)
+        ),
+      ];
+      if (queueWhIds.length) {
+        const [onHandByProductWh, reservedOnWhByProductWh] = await Promise.all([
+          batchGetWarehouseOnHand([pid], queueWhIds),
+          batchGetNetReservedOnWarehouses([pid], queueWhIds),
+        ]);
+        const onHandByWh = onHandByProductWh.get(pid) || new Map();
+        const reservedByWh = reservedOnWhByProductWh.get(pid) || new Map();
+        for (const wh of queueWhIds) {
+          const onHand = onHandByWh.get(wh) || 0;
+          const reservedOnWh = reservedByWh.get(wh) || 0;
+          poolByWh.set(wh, Math.max(0, onHand - reservedOnWh));
+        }
+      }
 
       for (const row of queue) {
         const itemId = row.supply_item_id;
@@ -1049,9 +1114,6 @@ class FboSupplyReserveService {
           ? `FBO ${row.external_shipment_number}`
           : `FBO поставка №${supplyId}`;
 
-        if (!poolByWh.has(rowWh)) {
-          poolByWh.set(rowWh, await getWarehouseReservableUnits(pid, rowWh));
-        }
         let pool = poolByWh.get(rowWh) || 0;
         if (pool <= 0) continue;
         const add = Math.min(need, pool);
@@ -1098,9 +1160,13 @@ class FboSupplyReserveService {
              AND sm.meta->>'fbo_supply_item_id' ~ '^[0-9]+$'`,
           [pid]
         );
+    const orphanItemIds = (orphanR.rows || [])
+      .filter((or) => !allItemIds.has(String(or.item_id)))
+      .map((or) => String(or.item_id));
+    const orphanNetsByItem = await batchGetFboItemReserveNetByProductWarehouse(orphanItemIds);
     for (const or of orphanR.rows || []) {
       if (allItemIds.has(String(or.item_id))) continue;
-      const nets = await getFboItemReserveNetByProductWarehouse(or.item_id);
+      const nets = orphanNetsByItem.get(String(or.item_id)) || [];
       for (const { productId, warehouseId, net } of nets) {
         if (net <= 0) continue;
         await applyFboReserveDelta({
@@ -1260,6 +1326,25 @@ class FboSupplyReserveService {
   async onSupplyStockEvent(productId, warehouseId, { profileId } = {}) {
     const pid = Number(productId);
     if (!Number.isFinite(pid) || pid < 1) return;
+    const profKey = profileId != null ? String(profileId) : '';
+    const debounceKey = `${profKey}:${pid}`;
+
+    const run = () => {
+      this._runSupplyStockEvent(pid, warehouseId, { profileId }).catch((err) => {
+        console.warn(`[FBO reserve] stock event product ${pid}:`, err?.message || err);
+      });
+    };
+
+    const prev = stockEventDebounce.get(debounceKey);
+    if (prev?.timer) clearTimeout(prev.timer);
+    const timer = setTimeout(() => {
+      stockEventDebounce.delete(debounceKey);
+      run();
+    }, STOCK_EVENT_DEBOUNCE_MS);
+    stockEventDebounce.set(debounceKey, { timer });
+  }
+
+  async _runSupplyStockEvent(pid, warehouseId, { profileId } = {}) {
     const parentKitIds = await recalculateKitsForComponent(pid, { profileId });
     const ownFboQueue = await findFboReserveQueueByProduct(pid, profileId);
     const hasOwnFboLines = ownFboQueue.length > 0;

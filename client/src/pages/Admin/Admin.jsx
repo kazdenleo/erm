@@ -213,13 +213,14 @@ export function Admin() {
                 <th>Контакт</th>
                 <th>Пользователей</th>
                 <th>Организаций</th>
+                <th>Поставщики</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {profiles.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="empty-state">
+                  <td colSpan={6} className="empty-state">
                     Нет аккаунтов
                   </td>
                 </tr>
@@ -240,6 +241,13 @@ export function Admin() {
                     </td>
                     <td>{p.users_count ?? p.usersCount ?? 0}</td>
                     <td>{p.organizations_count ?? p.organizationsCount ?? 0}</td>
+                    <td>
+                      {p.supplier_sync_enabled !== false ? (
+                        <span className="badge bg-success">вкл</span>
+                      ) : (
+                        <span className="badge bg-secondary">выкл</span>
+                      )}
+                    </td>
                     <td className="text-nowrap">
                       <Button type="button" variant="primary" size="small" onClick={() => setCabinetId(p.id)}>
                         Открыть
@@ -331,10 +339,11 @@ export function Admin() {
                 setProfileForm((f) => ({ ...f, supplier_sync_enabled: e.target.checked }))
               }
             />
-            <span>Синхронизация остатков поставщиков (Микадо, Москворечье)</span>
+            <span>Интеграция с поставщиками</span>
           </label>
           <p className="text-muted small mb-0">
-            Если выключено: в аккаунте скрываются настройки поставщиков в «Интеграциях» и колонка «Поставщики» в остатках.
+            Если выключено: в аккаунте скрывается вкладка «Поставщики» в «Интеграциях», колонка поставщиков в остатках
+            и фоновая синхронизация остатков для этого аккаунта.
           </p>
           <div className="admin-form-actions">
             <Button variant="secondary" onClick={() => setProfileModal(false)}>
@@ -416,8 +425,11 @@ export function Admin() {
                     setCabinetForm((f) => ({ ...f, supplier_sync_enabled: e.target.checked }))
                   }
                 />
-                <span>Синхронизация остатков поставщиков</span>
+                <span>Интеграция с поставщиками</span>
               </label>
+              <p className="text-muted small mb-0">
+                Если выключено: вкладка «Поставщики» в «Интеграциях» скрыта, фоновая синхронизация для аккаунта не выполняется.
+              </p>
               <div className="admin-form-actions">
                 <Button variant="secondary" onClick={() => setCabinetId(null)}>
                   Закрыть

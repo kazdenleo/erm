@@ -123,6 +123,7 @@ function receiptStatusLabel(status) {
   if (s === 'expected') return 'Ожидается';
   if (s === 'scanning') return 'сканирование';
   if (s === 'completed') return 'завершена';
+  if (s === 'cancelled') return 'отменена';
   return status || '—';
 }
 
@@ -177,6 +178,12 @@ function normalizePurchasePrice(v) {
   if (v == null || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function purchaseHeaderId(purchase, snakeKey, camelKey) {
+  const raw = purchase?.[snakeKey] ?? purchase?.[camelKey];
+  if (raw == null || String(raw).trim() === '') return '';
+  return String(raw);
 }
 
 function formatPurchaseApiError(e, fallback) {
@@ -325,12 +332,9 @@ export function Purchases() {
   const [createSearchResults, setCreateSearchResults] = useState([]);
   const [createSelectedProducts, setCreateSelectedProducts] = useState([]);
   const [createSearchLoading, setCreateSearchLoading] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [editSourcePurchaseId, setEditSourcePurchaseId] = useState(null);
   const [editSupplierId, setEditSupplierId] = useState('');
   const [editOrganizationId, setEditOrganizationId] = useState('');
   const [editWarehouseId, setEditWarehouseId] = useState('');
-  const [editNote, setEditNote] = useState('');
   const [editItems, setEditItems] = useState([]);
   const [editOriginal, setEditOriginal] = useState(null);
   const [editProductSearch, setEditProductSearch] = useState('');
@@ -593,15 +597,88 @@ export function Purchases() {
   }, [createOpen, singleOrganizationId, singleWarehouseId, createOrganizationId, createWarehouseId]);
 
   const closeEditModal = useCallback(() => {
-    setEditOpen(false);
-    setEditSourcePurchaseId(null);
-    setEditOriginal(null);
     setEditProductSearch('');
     setEditSearchResults([]);
-    setEditSelectedProducts([]);
     setEditSearchLoading(false);
     setEditSaveBusy(false);
   }, []);
+
+  const syncPurchaseDraftFromDetail = useCallback((data) => {
+    if (!data?.purchase || String(data.purchase.status || '') === 'archived') {
+      setEditOriginal(null);
+      setEditItems([]);
+      return;
+    }
+    const p = data.purchase;
+    const items = (data.items || []).map((it) => ({
+      itemId: it.id,
+      productId: String(it.product_id),
+      quantity: Math.max(0, Math.floor(Number(it.expected_quantity) || 0)),
+      purchasePrice: it.purchase_price ?? it.product_cost ?? '',
+      receivedQuantity: Math.max(0, Math.floor(Number(it.received_quantity) || 0)),
+      productSku: it.product_sku || '',
+      productName: it.product_name || '',
+      sourceOrders: it.source_orders,
+    }));
+    setEditSupplierId(purchaseHeaderId(p, 'supplier_id', 'supplierId'));
+    setEditOrganizationId(purchaseHeaderId(p, 'organization_id', 'organizationId'));
+    setEditWarehouseId(purchaseHeaderId(p, 'warehouse_id', 'warehouseId'));
+    setEditItems(
+      items.length
+        ? items
+        : [{ itemId: null, productId: '', quantity: 1, purchasePrice: '', receivedQuantity: 0 }]
+    );
+    setEditOriginal({
+      supplierId: purchaseHeaderId(p, 'supplier_id', 'supplierId'),
+      organizationId: purchaseHeaderId(p, 'organization_id', 'organizationId'),
+      warehouseId: purchaseHeaderId(p, 'warehouse_id', 'warehouseId'),
+      items: items.map((it) => ({ ...it })),
+    });
+    setEditSelectedProducts(
+      (data.items || []).map((it) => ({
+        id: it.product_id,
+        sku: it.product_sku,
+        name: it.product_name,
+      }))
+    );
+    setEditProductSearch('');
+    setEditSearchResults([]);
+  }, []);
+
+  const normalizeDraftItems = useCallback((items) => {
+    return (items || [])
+      .map((it) => ({
+        itemId: it.itemId ?? null,
+        productId: it.productId ? String(it.productId) : '',
+        quantity: Math.max(0, Math.floor(Number(it.quantity) || 0)),
+        purchasePrice: normalizePurchasePrice(it.purchasePrice),
+        receivedQuantity: Math.max(0, Math.floor(Number(it.receivedQuantity) || 0)),
+      }))
+      .filter((it) => it.productId && it.quantity > 0);
+  }, []);
+
+  const purchaseDraftDirty = useMemo(() => {
+    if (!editOriginal || !detail?.purchase) return false;
+    if (editSupplierId !== editOriginal.supplierId) return true;
+    if (editOrganizationId !== editOriginal.organizationId) return true;
+    if (editWarehouseId !== editOriginal.warehouseId) return true;
+    const cur = JSON.stringify(normalizeDraftItems(editItems));
+    const orig = JSON.stringify(normalizeDraftItems(editOriginal.items));
+    return cur !== orig;
+  }, [
+    editOriginal,
+    detail?.purchase,
+    editSupplierId,
+    editOrganizationId,
+    editWarehouseId,
+    editItems,
+    normalizeDraftItems,
+  ]);
+
+  const isDetailEditable = useMemo(
+    () => Boolean(detail?.purchase) && String(detail.purchase.status || '') !== 'archived',
+    [detail?.purchase]
+  );
 
   const requestCloseReceipt = useCallback(() => {
     if (String(receipt?.receipt?.status) === 'scanning') {
@@ -662,19 +739,38 @@ export function Purchases() {
     setEditSelectedProducts((prev) => mergeProductLists(prev, [product]));
     const add = Math.max(1, parseInt(addQty, 10) || 1);
     const idStr = String(id);
+    const productSku = product?.sku || '';
+    const productName = product?.name || '';
     setEditItems((prev) => {
       const idx = prev.findIndex((x) => String(x.productId) === idStr);
       if (idx >= 0) {
         const cur = Number(prev[idx].quantity) || 0;
-        return prev.map((x, i) => (i === idx ? { ...x, productId: idStr, quantity: cur + add } : x));
-      }
-      const emptyIdx = prev.findIndex((x) => !x.productId);
-      if (emptyIdx >= 0) {
         return prev.map((x, i) =>
-          i === emptyIdx ? { ...x, itemId: null, productId: idStr, quantity: add, receivedQuantity: 0 } : x
+          i === idx
+            ? {
+                ...x,
+                productId: idStr,
+                quantity: cur + add,
+                productSku: x.productSku || productSku,
+                productName: x.productName || productName,
+              }
+            : x
         );
       }
-      return [...prev, { itemId: null, productId: idStr, quantity: add, purchasePrice: '', receivedQuantity: 0 }];
+      const emptyIdx = prev.findIndex((x) => !x.productId);
+      const newRow = {
+        itemId: null,
+        productId: idStr,
+        quantity: add,
+        purchasePrice: '',
+        receivedQuantity: 0,
+        productSku,
+        productName,
+      };
+      if (emptyIdx >= 0) {
+        return prev.map((x, i) => (i === emptyIdx ? { ...x, ...newRow } : x));
+      }
+      return [...prev, newRow];
     });
   }, []);
 
@@ -762,7 +858,7 @@ export function Purchases() {
   );
 
   useEffect(() => {
-    if (!editOpen) return undefined;
+    if (!isDetailEditable) return undefined;
     const q = normalizeProductSearchQuery(editProductSearch);
     if (!q) {
       setEditSearchResults([]);
@@ -788,76 +884,28 @@ export function Purchases() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [editOpen, editProductSearch, products]);
-
-  const openEditModal = useCallback(() => {
-    if (!detail?.purchase || String(detail.purchase.status || '') === 'archived') return;
-    const p = detail.purchase;
-    const items = (detail.items || []).map((it) => ({
-      itemId: it.id,
-      productId: String(it.product_id),
-      quantity: Math.max(0, Math.floor(Number(it.expected_quantity) || 0)),
-      purchasePrice: it.purchase_price ?? it.product_cost ?? '',
-      receivedQuantity: Math.max(0, Math.floor(Number(it.received_quantity) || 0)),
-    }));
-    setEditSourcePurchaseId(p.id);
-    setEditSupplierId(p.supplier_id != null ? String(p.supplier_id) : '');
-    setEditOrganizationId(p.organization_id != null ? String(p.organization_id) : '');
-    setEditWarehouseId(p.warehouse_id != null ? String(p.warehouse_id) : '');
-    setEditNote(p.note ?? '');
-    setEditItems(
-      items.length
-        ? items
-        : [{ itemId: null, productId: '', quantity: 1, purchasePrice: '', receivedQuantity: 0 }]
-    );
-    setEditOriginal({
-      supplierId: p.supplier_id != null ? String(p.supplier_id) : '',
-      organizationId: p.organization_id != null ? String(p.organization_id) : '',
-      warehouseId: p.warehouse_id != null ? String(p.warehouse_id) : '',
-      note: p.note ?? '',
-      items: items.map((it) => ({ ...it })),
-    });
-    setEditSelectedProducts(
-      (detail.items || []).map((it) => ({
-        id: it.product_id,
-        sku: it.product_sku,
-        name: it.product_name,
-      }))
-    );
-    setEditProductSearch('');
-    setEditSearchResults([]);
-    setEditOpen(true);
-    setErr(null);
-  }, [detail]);
+  }, [isDetailEditable, editProductSearch, products]);
 
   const saveEditPurchase = async () => {
-    const purchaseId = editSourcePurchaseId;
+    const purchaseId = detail?.purchase?.id;
     const orig = editOriginal;
     if (!purchaseId || !orig) return;
 
-    const normalizedItems = editItems
-      .map((it) => ({
-        itemId: it.itemId ?? null,
-        productId: it.productId ? String(it.productId) : '',
-        quantity: Math.max(0, Math.floor(Number(it.quantity) || 0)),
-        purchasePrice: it.purchasePrice,
-        receivedQuantity: Math.max(0, Math.floor(Number(it.receivedQuantity) || 0)),
-      }))
-      .filter((it) => it.productId && it.quantity > 0);
+    const normalizedItems = normalizeDraftItems(editItems);
 
     if (normalizedItems.length === 0) {
       setErr('Добавьте хотя бы одну позицию');
       return;
     }
-    if (!String(editSupplierId || '').trim()) {
+    if (!String(editSupplierId || orig?.supplierId || '').trim()) {
       setErr('Выберите поставщика');
       return;
     }
-    if (!String(editOrganizationId || '').trim()) {
+    if (!String(editOrganizationId || orig?.organizationId || '').trim()) {
       setErr('Выберите организацию');
       return;
     }
-    if (!String(editWarehouseId || '').trim()) {
+    if (!String(editWarehouseId || orig?.warehouseId || '').trim()) {
       setErr('Выберите склад назначения');
       return;
     }
@@ -873,21 +921,25 @@ export function Purchases() {
     setEditSaveBusy(true);
     setErr(null);
     try {
+      const serverDetail = await purchasesApi.getById(purchaseId);
+      const serverItemsById = new Map(
+        (serverDetail?.items || [])
+          .filter((it) => it.id != null)
+          .map((it) => [Number(it.id), it])
+      );
+
       const headerPayload = {};
-      if (editSupplierId !== orig.supplierId) {
-        headerPayload.supplierId = Number(editSupplierId);
+      const supplierToSave = String(editSupplierId || orig.supplierId || '').trim();
+      const organizationToSave = String(editOrganizationId || orig.organizationId || '').trim();
+      const warehouseToSave = String(editWarehouseId || orig.warehouseId || '').trim();
+      if (supplierToSave && supplierToSave !== orig.supplierId) {
+        headerPayload.supplierId = Number(supplierToSave);
       }
-      if (editOrganizationId !== orig.organizationId) {
-        headerPayload.organizationId = Number(editOrganizationId);
+      if (organizationToSave && organizationToSave !== orig.organizationId) {
+        headerPayload.organizationId = Number(organizationToSave);
       }
-      if (editWarehouseId !== orig.warehouseId) {
-        headerPayload.warehouseId = Number(editWarehouseId);
-      }
-      if (editNote !== orig.note) {
-        headerPayload.note = editNote;
-      }
-      if (Object.keys(headerPayload).length > 0) {
-        await purchasesApi.updatePurchase(purchaseId, headerPayload);
+      if (warehouseToSave && warehouseToSave !== orig.warehouseId) {
+        headerPayload.warehouseId = Number(warehouseToSave);
       }
 
       const origByItemId = new Map(
@@ -921,7 +973,12 @@ export function Purchases() {
           });
         }
 
-        const origQty = Math.max(0, Math.floor(Number(origItem.quantity) || 0));
+        const serverItem = serverItemsById.get(Number(editItem.itemId));
+        const serverExpected = Math.max(
+          0,
+          Math.floor(Number(serverItem?.expected_quantity) || 0)
+        );
+        const origQty = serverExpected > 0 ? serverExpected : Math.max(0, Math.floor(Number(origItem.quantity) || 0));
         const newQty = editItem.quantity;
         if (newQty > origQty) {
           const payload = {
@@ -952,9 +1009,15 @@ export function Purchases() {
         });
       }
 
+      if (Object.keys(headerPayload).length > 0) {
+        await purchasesApi.updatePurchase(purchaseId, headerPayload);
+      }
+
       closeEditModal();
       await reload();
-      await openDetail(purchaseId);
+      const data = await purchasesApi.getById(purchaseId);
+      setDetail(data);
+      syncPurchaseDraftFromDetail(data);
     } catch (e) {
       setErr(formatPurchaseApiError(e, 'Не удалось сохранить изменения закупки'));
     } finally {
@@ -972,15 +1035,30 @@ export function Purchases() {
     setErr(null);
     setDetailLoading(true);
     setDetail(null);
+    setEditOriginal(null);
     try {
       const data = await purchasesApi.getById(id);
       setDetail(data);
+      syncPurchaseDraftFromDetail(data);
     } catch (e) {
       setErr(e.response?.data?.message || e.message || 'Не удалось загрузить закупку');
     } finally {
       setDetailLoading(false);
     }
   };
+
+  const requestCloseDetail = useCallback(() => {
+    if (
+      purchaseDraftDirty &&
+      !window.confirm('Есть несохранённые изменения. Закрыть карточку без сохранения?')
+    ) {
+      return;
+    }
+    setDetail(null);
+    setEditOriginal(null);
+    setEditItems([]);
+    closeEditModal();
+  }, [purchaseDraftDirty, closeEditModal]);
 
   const startPurchaseReceipt = useCallback(
     async ({ forceNew = false } = {}) => {
@@ -1011,7 +1089,7 @@ export function Purchases() {
       if (!rid) return;
       const completed = String(receiptRow.status) === 'completed';
       const msg = completed
-        ? `Удалить приёмку №${rid}? Сторно: остатки и incoming будут откатаны новыми проводками в журнале.`
+        ? `Отменить приёмку №${rid}? Остатки и «в пути» будут откачены; приёмка останется в списке со статусом «отменена».`
         : `Удалить приёмку №${rid} (сканирование)? Черновик и строки складской приёмки будут сняты.`;
       if (!window.confirm(msg)) return;
       try {
@@ -1770,244 +1848,87 @@ export function Purchases() {
       </Modal>
 
       <Modal
-        isOpen={editOpen}
-        onClose={closeEditModal}
-        title={editSourcePurchaseId ? `Редактирование закупки №${editSourcePurchaseId}` : 'Редактирование закупки'}
-        size="xl"
-      >
-        <p className="muted">
-          Измените шапку и позиции закупки. «Принято» только для справки — уменьшить «ожидалось» ниже принятого нельзя.
-        </p>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-          <span className="muted" style={{ fontSize: 13 }}>
-            Поставщик
-          </span>
-          <select
-            className="warehouse-ops-select"
-            value={editSupplierId}
-            onChange={(e) => setEditSupplierId(e.target.value)}
-            disabled={editSaveBusy}
-          >
-            <option value="">— Выберите поставщика —</option>
-            {(suppliers || []).map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name || `Поставщик #${s.id}`}
-              </option>
-            ))}
-          </select>
-
-          <span className="muted" style={{ fontSize: 13 }}>
-            Получатель
-          </span>
-          <select
-            className="warehouse-ops-select"
-            value={editOrganizationId}
-            onChange={(e) => setEditOrganizationId(e.target.value)}
-            disabled={editSaveBusy}
-          >
-            <option value="">— Выберите организацию —</option>
-            {(organizations || []).map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name || `Организация #${o.id}`}
-              </option>
-            ))}
-          </select>
-
-          <span className="muted" style={{ fontSize: 13 }}>
-            Склад
-          </span>
-          <select
-            className="warehouse-ops-select"
-            value={editWarehouseId}
-            onChange={(e) => setEditWarehouseId(e.target.value)}
-            disabled={editSaveBusy}
-          >
-            <option value="">— Выберите склад —</option>
-            {(destWarehouses || [])
-              .map((w) => (
-                <option key={w.id} value={w.id}>
-                  {warehouseDisplayLabel(w)}
-                </option>
-              ))}
-          </select>
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <label htmlFor="purchase-edit-note" className="muted" style={{ fontSize: 13, display: 'block', marginBottom: 4 }}>
-            Комментарий
-          </label>
-          <textarea
-            id="purchase-edit-note"
-            className="warehouse-ops-select"
-            style={{ width: '100%', minHeight: 64, resize: 'vertical' }}
-            value={editNote}
-            onChange={(e) => setEditNote(e.target.value)}
-            disabled={editSaveBusy}
-            placeholder="Необязательно"
-          />
-        </div>
-        <div
-          className="warehouse-ops-list-form"
-          style={{ marginBottom: 14, borderTop: '1px solid var(--border, #e8e8e8)', paddingTop: 12 }}
-        >
-          <p className="warehouse-ops-hint" style={{ marginBottom: 8 }}>
-            Поиск товара по артикулу, названию или штрихкоду
-          </p>
-          <div style={{ marginBottom: 8 }}>
-            <label htmlFor="purchase-edit-product-search">Поиск (сканер или ввод)</label>
-            <ProductSearchInput
-              id="purchase-edit-product-search"
-              value={editProductSearch}
-              onChange={setEditProductSearch}
-              products={products}
-              organizationId={editOrganizationId}
-              placeholder="Штрихкод, артикул, название"
-              disabled={editSaveBusy}
-              onSelect={(p) => {
-                addProductToEditItems(p, 1);
-                setEditProductSearch('');
-                setEditSearchResults([]);
-                setErr(null);
-              }}
-            />
-          </div>
-          {editSearchLoading && (
-            <p className="muted" style={{ fontSize: 12, margin: '0 0 8px' }}>
-              Поиск…
-            </p>
-          )}
-          {!editSearchLoading &&
-            normalizeProductSearchQuery(editProductSearch) &&
-            editSearchResults.length > 1 && (
-              <div
-                style={{
-                  marginBottom: 8,
-                  maxHeight: 220,
-                  overflowY: 'auto',
-                  border: '1px solid var(--border, #e8e8e8)',
-                  borderRadius: 6,
-                }}
-              >
-                <div
-                  className="muted"
-                  style={{ fontSize: 12, padding: '6px 10px', borderBottom: '1px solid var(--border, #eee)' }}
-                >
-                  Выберите товар
-                </div>
-                {editSearchResults.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    style={{
-                      display: 'block',
-                      width: '100%',
-                      textAlign: 'left',
-                      padding: '8px 10px',
-                      border: 'none',
-                      borderBottom: '1px solid var(--border, #f0f0f0)',
-                      background: 'transparent',
-                      cursor: editSaveBusy ? 'default' : 'pointer',
-                    }}
-                    disabled={editSaveBusy}
-                    onClick={() => {
-                      addProductToEditItems(p, 1);
-                      setEditProductSearch('');
-                      setEditSearchResults([]);
-                      setErr(null);
-                    }}
-                  >
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.sku || '—'}</div>
-                    <div style={{ fontSize: 12, opacity: 0.85 }}>{p.name || 'Без названия'}</div>
-                  </button>
-                ))}
-              </div>
-            )}
-        </div>
-        {editItems.map((it, idx) => {
-          const received = Math.max(0, Math.floor(Number(it.receivedQuantity) || 0));
-          const minQty = received > 0 ? received : 1;
-          const canRemove = received <= 0;
-          return (
-            <div
-              key={it.itemId != null ? `line-${it.itemId}` : `new-${idx}-${it.productId || 'empty'}`}
-              style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}
-            >
-              <span className="muted" style={{ minWidth: 200, fontSize: 13 }}>
-                {it.productId
-                  ? editProductLabelById.get(String(it.productId)) || `Товар #${it.productId}`
-                  : '— добавьте через поиск выше —'}
-              </span>
-              <span className="muted" style={{ fontSize: 12 }}>
-                Принято: {received}
-              </span>
-              <span className="muted" style={{ fontSize: 12 }}>
-                Ожид.
-              </span>
-              <input
-                className="warehouse-ops-qty-input"
-                type="number"
-                min={minQty}
-                value={it.quantity}
-                disabled={editSaveBusy || !it.productId}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setEditItems((prev) => prev.map((x, i) => (i === idx ? { ...x, quantity: v } : x)));
-                }}
-              />
-              <span className="muted" style={{ fontSize: 12 }}>
-                Цена
-              </span>
-              <input
-                className="warehouse-ops-qty-input"
-                type="number"
-                min={0}
-                step="0.01"
-                style={{ width: 100 }}
-                value={it.purchasePrice ?? ''}
-                disabled={editSaveBusy || !it.productId}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setEditItems((prev) =>
-                    prev.map((x, i) => (i === idx ? { ...x, purchasePrice: v } : x))
-                  );
-                }}
-              />
-              <Button
-                variant="secondary"
-                disabled={editSaveBusy || !canRemove}
-                title={canRemove ? 'Удалить строку' : 'Нельзя удалить — уже есть принятое количество'}
-                onClick={() => setEditItems((prev) => prev.filter((_, i) => i !== idx))}
-              >
-                Удалить
-              </Button>
-            </div>
-          );
-        })}
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <Button
-            variant="secondary"
-            disabled={editSaveBusy}
-            onClick={() =>
-              setEditItems((prev) => [
-                ...prev,
-                { itemId: null, productId: '', quantity: 1, purchasePrice: '', receivedQuantity: 0 },
-              ])
-            }
-          >
-            + Позиция
-          </Button>
-          <Button disabled={editSaveBusy} onClick={saveEditPurchase}>
-            {editSaveBusy ? 'Сохраняю…' : 'Сохранить'}
-          </Button>
-          <Button variant="secondary" disabled={editSaveBusy} onClick={closeEditModal}>
-            Отмена
-          </Button>
-        </div>
-      </Modal>
-
-      <Modal
         isOpen={!!detail && !receipt?.receipt?.id}
-        onClose={() => setDetail(null)}
-        title={detail?.purchase?.id ? `Закупка №${detail.purchase.id}` : 'Закупка'}
+        onClose={requestCloseDetail}
+        title={
+          detail?.purchase?.id ? (
+            <div className="purchase-detail-modal-title">
+              <span className="purchase-detail-modal-title__heading">
+                Закупка №{detail.purchase.id}
+              </span>
+              <div className="purchase-detail-modal-title__actions">
+                <Button
+                  variant="secondary"
+                  disabled={deletePurchaseBusy}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (deletePurchaseBusy) return;
+                    if (
+                      !window.confirm(
+                        `Удалить закупку №${detail.purchase.id} со всеми приёмками? Будет выполнена отмена: в журнал добавятся обратные проводки, приёмки останутся в истории. Остатки и «в пути» будут скорректированы; заказы из «В закупке» вернутся в «Новые», резерв снимется.`
+                      )
+                    ) {
+                      return;
+                    }
+                    try {
+                      setDeletePurchaseBusy(true);
+                      setErr(null);
+                      await purchasesApi.deletePurchase(detail.purchase.id);
+                      setDetail(null);
+                      await reload();
+                    } catch (ex) {
+                      setErr(formatPurchaseApiError(ex, 'Не удалось удалить закупку'));
+                    } finally {
+                      setDeletePurchaseBusy(false);
+                    }
+                  }}
+                >
+                  {deletePurchaseBusy ? 'Удаляю…' : 'Удалить закупку'}
+                </Button>
+                <Button
+                  onClick={async () => {
+                    if (createReceiptBusy) return;
+                    if (String(detail?.purchase?.status || '') === 'archived') {
+                      setErr('Закупка в архиве — всё принято. Создайте новую закупку для следующей поставки.');
+                      return;
+                    }
+                    const scanningDraft = findScanningDraftReceipt(detail?.receipts);
+                    if (scanningDraft?.id && isReceiptSameCalendarDay(scanningDraft)) {
+                      setReceiptDraftChoice({
+                        purchaseId: detail.purchase.id,
+                        existingReceiptId: scanningDraft.id,
+                        draftDate: scanningDraft.started_at || scanningDraft.created_at,
+                      });
+                      return;
+                    }
+                    await startPurchaseReceipt({ forceNew: false });
+                  }}
+                  disabled={createReceiptBusy}
+                >
+                  {createReceiptBusy ? 'Создаю приёмку…' : 'Создать приёмку (сканирование)'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => setExpectedDraftOpen(true)}
+                  disabled={!isDetailEditable}
+                >
+                  {findExpectedReceipt(detail?.receipts) ? 'Черновик «Ожидается»' : 'Создать «Ожидается»'}
+                </Button>
+                <Button
+                  className={`purchase-detail-modal-title__save${purchaseDraftDirty ? '' : ' purchase-detail-modal-title__save--hidden'}`}
+                  disabled={!purchaseDraftDirty || editSaveBusy}
+                  onClick={saveEditPurchase}
+                  aria-hidden={!purchaseDraftDirty}
+                  tabIndex={purchaseDraftDirty ? 0 : -1}
+                >
+                  {editSaveBusy ? 'Сохраняю…' : 'Сохранить изменения'}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            'Закупка'
+          )
+        }
         size="xl"
       >
         {detailLoading ? (
@@ -2045,154 +1966,181 @@ export function Purchases() {
                 </>
               ) : null}
             </p>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
               <span className="muted" style={{ fontSize: 13 }}>Поставщик</span>
               <select
                 className="warehouse-ops-select"
-                value={detail.purchase.supplier_id != null ? String(detail.purchase.supplier_id) : ''}
-                onChange={async (e) => {
-                  const v = e.target.value;
-                  try {
-                    setErr(null);
-                    await purchasesApi.updatePurchase(detail.purchase.id, {
-                      supplierId: v === '' ? null : Number(v),
-                    });
-                    await openDetail(detail.purchase.id);
-                    await reload();
-                  } catch (ex) {
-                    setErr(ex.response?.data?.message || ex.message || 'Не удалось обновить поставщика');
-                  }
-                }}
+                value={isDetailEditable ? editSupplierId : purchaseHeaderId(detail.purchase, 'supplier_id', 'supplierId')}
+                disabled={!isDetailEditable || editSaveBusy}
+                onChange={(e) => setEditSupplierId(e.target.value)}
               >
-                <option value="">— Не указан —</option>
+                <option value="">— Выберите поставщика —</option>
                 {(suppliers || []).map((s) => (
-                  <option key={s.id} value={s.id}>
+                  <option key={s.id} value={String(s.id)}>
                     {s.name || `Поставщик #${s.id}`}
                   </option>
                 ))}
               </select>
-            </div>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
               <span className="muted" style={{ fontSize: 13 }}>Получатель</span>
               <select
                 className="warehouse-ops-select"
-                value={detail.purchase.organization_id != null ? String(detail.purchase.organization_id) : ''}
-                onChange={async (e) => {
-                  const v = e.target.value;
-                  try {
-                    setErr(null);
-                    await purchasesApi.updatePurchase(detail.purchase.id, {
-                      organizationId: v === '' ? null : Number(v),
-                    });
-                    await openDetail(detail.purchase.id);
-                    await reload();
-                  } catch (ex) {
-                    setErr(ex.response?.data?.message || ex.message || 'Не удалось обновить получателя');
-                  }
-                }}
+                value={
+                  isDetailEditable
+                    ? editOrganizationId
+                    : purchaseHeaderId(detail.purchase, 'organization_id', 'organizationId')
+                }
+                disabled={!isDetailEditable || editSaveBusy}
+                onChange={(e) => setEditOrganizationId(e.target.value)}
               >
-                <option value="">— Не указан —</option>
+                <option value="">— Выберите организацию —</option>
                 {(organizations || []).map((o) => (
-                  <option key={o.id} value={o.id}>
+                  <option key={o.id} value={String(o.id)}>
                     {o.name || `Организация #${o.id}`}
                   </option>
                 ))}
               </select>
-            </div>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
               <span className="muted" style={{ fontSize: 13 }}>Склад (назначение)</span>
               <select
                 className="warehouse-ops-select"
-                value={detail.purchase.warehouse_id != null ? String(detail.purchase.warehouse_id) : ''}
-                onChange={async (e) => {
-                  const v = e.target.value;
-                  try {
-                    setErr(null);
-                    await purchasesApi.updatePurchase(detail.purchase.id, {
-                      warehouseId: v === '' ? null : Number(v),
-                    });
-                    await openDetail(detail.purchase.id);
-                    await reload();
-                  } catch (ex) {
-                    setErr(ex.response?.data?.message || ex.message || 'Не удалось обновить склад');
-                  }
-                }}
+                value={
+                  isDetailEditable
+                    ? editWarehouseId
+                    : purchaseHeaderId(detail.purchase, 'warehouse_id', 'warehouseId')
+                }
+                disabled={!isDetailEditable || editSaveBusy}
+                onChange={(e) => setEditWarehouseId(e.target.value)}
               >
-                <option value="">— Не указан —</option>
+                <option value="">— Выберите склад —</option>
                 {(destWarehouses || []).map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {warehouseDisplayLabel(w)}
-                    </option>
-                  ))}
+                  <option key={w.id} value={String(w.id)}>
+                    {warehouseDisplayLabel(w)}
+                  </option>
+                ))}
               </select>
             </div>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
-              <Button
-                variant="secondary"
-                onClick={openEditModal}
-                disabled={String(detail?.purchase?.status || '') === 'archived'}
-              >
-                Редактировать
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => setExpectedDraftOpen(true)}
-                disabled={String(detail?.purchase?.status || '') === 'archived'}
-              >
-                {findExpectedReceipt(detail?.receipts) ? 'Черновик «Ожидается»' : 'Создать «Ожидается»'}
-              </Button>
-              <Button
-                onClick={async () => {
-                  if (createReceiptBusy) return;
-                  if (String(detail?.purchase?.status || '') === 'archived') {
-                    setErr('Закупка в архиве — всё принято. Создайте новую закупку для следующей поставки.');
-                    return;
-                  }
-                  const scanningDraft = findScanningDraftReceipt(detail?.receipts);
-                  if (scanningDraft?.id && isReceiptSameCalendarDay(scanningDraft)) {
-                    setReceiptDraftChoice({
-                      purchaseId: detail.purchase.id,
-                      existingReceiptId: scanningDraft.id,
-                      draftDate: scanningDraft.started_at || scanningDraft.created_at,
-                    });
-                    return;
-                  }
-                  await startPurchaseReceipt({ forceNew: false });
-                }}
-                disabled={createReceiptBusy}
-              >
-                {createReceiptBusy ? 'Создаю приёмку…' : 'Создать приёмку (сканирование)'}
-              </Button>
-              <Button
-                variant="secondary"
-                disabled={deletePurchaseBusy}
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  if (deletePurchaseBusy) return;
-                  if (
-                    !window.confirm(
-                      `Удалить закупку №${detail.purchase.id} со всеми приёмками? Будет выполнен откат (сторно): в журнал движений добавятся обратные проводки, старые записи не удаляются. Остатки и incoming будут скорректированы; заказы из «В закупке» вернутся в «Новые», резерв снимется.`
-                    )
-                  ) {
-                    return;
-                  }
-                  try {
-                    setDeletePurchaseBusy(true);
-                    setErr(null);
-                    await purchasesApi.deletePurchase(detail.purchase.id);
-                    setDetail(null);
-                    await reload();
-                  } catch (ex) {
-                    setErr(formatPurchaseApiError(ex, 'Не удалось удалить закупку'));
-                  } finally {
-                    setDeletePurchaseBusy(false);
-                  }
-                }}
-              >
-                {deletePurchaseBusy ? 'Удаляю…' : 'Удалить закупку'}
-              </Button>
-            </div>
             <h4>Позиции</h4>
+            {isDetailEditable ? (
+              <>
+                <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
+                  Измените количество и цену в таблице или добавьте товары через поиск. «Принято» только для
+                  справки — «ожидалось» не может быть меньше принятого.
+                </p>
+                <div className="warehouse-ops-list-form" style={{ marginBottom: 12 }}>
+                  <label htmlFor="purchase-detail-product-search">Поиск товара (сканер или ввод)</label>
+                  <ProductSearchInput
+                    id="purchase-detail-product-search"
+                    value={editProductSearch}
+                    onChange={setEditProductSearch}
+                    products={products}
+                    organizationId={editOrganizationId}
+                    placeholder="Штрихкод, артикул, название"
+                    disabled={editSaveBusy}
+                    onSelect={(p) => {
+                      addProductToEditItems(p, 1);
+                      setEditProductSearch('');
+                      setEditSearchResults([]);
+                      setErr(null);
+                    }}
+                  />
+                  {editSearchLoading && (
+                    <p className="muted" style={{ fontSize: 12, margin: '8px 0 0' }}>
+                      Поиск…
+                    </p>
+                  )}
+                </div>
+                {editItems.length > 0 ? (
+                  <div className="warehouse-ops-receipt-list-wrap">
+                    <table className="warehouse-ops-receipt-list-table table">
+                      <thead>
+                        <tr>
+                          <th>Артикул</th>
+                          <th>Товар</th>
+                          <th>Под заказы</th>
+                          <th>Закуп. цена</th>
+                          <th>Ожидалось</th>
+                          <th>Принято</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {editItems.map((it, idx) => {
+                          const received = Math.max(0, Math.floor(Number(it.receivedQuantity) || 0));
+                          const minQty = received > 0 ? received : 1;
+                          const canRemove = received <= 0;
+                          const label =
+                            it.productId &&
+                            (editProductLabelById.get(String(it.productId)) ||
+                              `${it.productSku || '—'} — ${it.productName || 'Без названия'}`);
+                          return (
+                            <tr key={it.itemId != null ? `line-${it.itemId}` : `new-${idx}-${it.productId || 'empty'}`}>
+                              <td className="sku-cell">
+                                {it.productSku || (it.productId ? '—' : '—')}
+                              </td>
+                              <td className="name-cell">
+                                {label || '— добавьте через поиск —'}
+                              </td>
+                              <td className="muted" style={{ maxWidth: 260 }}>
+                                {formatSourceOrders(it.sourceOrders)}
+                              </td>
+                              <td style={{ width: 120 }}>
+                                <input
+                                  className="warehouse-ops-qty-input"
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={it.purchasePrice ?? ''}
+                                  disabled={editSaveBusy || !it.productId}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setEditItems((prev) =>
+                                      prev.map((x, i) => (i === idx ? { ...x, purchasePrice: v } : x))
+                                    );
+                                  }}
+                                />
+                              </td>
+                              <td style={{ width: 100 }}>
+                                <input
+                                  className="warehouse-ops-qty-input"
+                                  type="number"
+                                  min={minQty}
+                                  value={it.quantity}
+                                  disabled={editSaveBusy || !it.productId}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setEditItems((prev) =>
+                                      prev.map((x, i) => (i === idx ? { ...x, quantity: v } : x))
+                                    );
+                                  }}
+                                />
+                              </td>
+                              <td>{received}</td>
+                              <td>
+                                <Button
+                                  variant="secondary"
+                                  size="small"
+                                  disabled={editSaveBusy || !canRemove || !it.productId}
+                                  title={
+                                    canRemove
+                                      ? 'Удалить строку'
+                                      : 'Нельзя удалить — уже есть принятое количество'
+                                  }
+                                  onClick={() => setEditItems((prev) => prev.filter((_, i) => i !== idx))}
+                                >
+                                  Удалить
+                                </Button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="muted">Нет строк — добавьте товар через поиск.</p>
+                )}
+              </>
+            ) : (
+              <>
             <p className="muted" style={{ marginBottom: 10, fontSize: 13 }}>
               Если «ожидалось» больше «принято», укажите в штуках, на сколько уменьшить ожидание (не обязательно на всё непринятое):
               остаток по строке можно принять позже той же закупкой. Incoming уменьшится на выбранное число; уже принятое на склад не
@@ -2251,26 +2199,8 @@ export function Purchases() {
                         <td className="muted" title={formatSourceOrders(it.source_orders)} style={{ maxWidth: 260 }}>
                           {formatSourceOrders(it.source_orders)}
                         </td>
-                        <td style={{ width: 140 }} onClick={(e) => e.stopPropagation()}>
-                          <input
-                            className="warehouse-ops-qty-input"
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            value={it.purchase_price ?? it.product_cost ?? ''}
-                            onChange={async (e) => {
-                              const v = e.target.value;
-                              try {
-                                setErr(null);
-                                await purchasesApi.updatePurchaseItem(detail.purchase.id, it.id, {
-                                  purchasePrice: v === '' ? null : Number(v),
-                                });
-                                await openDetail(detail.purchase.id);
-                              } catch (ex) {
-                                setErr(ex.response?.data?.message || ex.message || 'Не удалось сохранить цену');
-                              }
-                            }}
-                          />
+                        <td style={{ width: 140 }}>
+                          {it.purchase_price ?? it.product_cost ?? '—'}
                         </td>
                         <td>{it.expected_quantity}</td>
                         <td>{it.received_quantity}</td>
@@ -2316,6 +2246,8 @@ export function Purchases() {
             ) : (
               <p className="muted">Нет строк.</p>
             )}
+              </>
+            )}
 
             <h4 style={{ marginTop: 14 }}>Приёмки</h4>
             {Array.isArray(detail.receipts) && detail.receipts.length > 0 ? (
@@ -2335,9 +2267,10 @@ export function Purchases() {
                     {detail.receipts.map((r) => {
                       const isScanning = String(r.status) === 'scanning';
                       const isExpected = String(r.status) === 'expected';
+                      const isCancelled = String(r.status) === 'cancelled';
                       return (
                         <tr key={r.id}>
-                          <td>{fmtDt(r.started_at || r.created_at)}</td>
+                          <td>{fmtDt(r.cancelled_at || r.started_at || r.created_at)}</td>
                           <td>№{r.id}</td>
                           <td>{r.warehouse_name || warehouseDisplayLabel(null, r.warehouse_id) || '—'}</td>
                           <td>{receiptStatusLabel(r.status)}</td>
@@ -2362,14 +2295,20 @@ export function Purchases() {
                                       ? 'Редактировать'
                                       : 'Открыть'}
                               </Button>
-                              <Button
-                                variant="secondary"
-                                size="small"
-                                disabled={deleteReceiptBusy === r.id}
-                                onClick={() => handleDeletePurchaseReceipt(r)}
-                              >
-                                {deleteReceiptBusy === r.id ? 'Удаляю…' : 'Удалить'}
-                              </Button>
+                              {!isCancelled ? (
+                                <Button
+                                  variant="secondary"
+                                  size="small"
+                                  disabled={deleteReceiptBusy === r.id}
+                                  onClick={() => handleDeletePurchaseReceipt(r)}
+                                >
+                                  {deleteReceiptBusy === r.id
+                                    ? '…'
+                                    : String(r.status) === 'completed'
+                                      ? 'Отменить'
+                                      : 'Удалить'}
+                                </Button>
+                              ) : null}
                             </div>
                           </td>
                         </tr>
@@ -2409,11 +2348,13 @@ export function Purchases() {
             ) : null}
             {(() => {
               const isReceiptScanning = String(receipt.receipt.status) === 'scanning';
+              const isReceiptCancelled = String(receipt.receipt.status) === 'cancelled';
               return (
                 <>
             <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
               статус: {receiptStatusLabel(receipt.receipt.status)} · закупка №{receipt.receipt.purchase_id}
               {receipt.receipt.completed_at ? ` · завершена ${fmtDt(receipt.receipt.completed_at)}` : ''}
+              {receipt.receipt.cancelled_at ? ` · отменена ${fmtDt(receipt.receipt.cancelled_at)}` : ''}
               {receipt.hasExpectedDraft ? (
                 <>
                   {' '}
@@ -2423,7 +2364,9 @@ export function Purchases() {
             </p>
             {!isReceiptScanning ? (
               <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
-                Завершённую приёмку можно просмотреть или удалить (с откатом остатков). Редактирование количеств недоступно.
+                {isReceiptCancelled
+                  ? 'Приёмка отменена: остатки откачены. Просмотр только для истории.'
+                  : 'Завершённую приёмку можно просмотреть или отменить (с откатом остатков). Редактирование количеств недоступно.'}
               </p>
             ) : null}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
@@ -2435,10 +2378,14 @@ export function Purchases() {
                 onChange={async (e) => {
                   const v = e.target.value;
                   setReceiptSupplierId(v);
+                  if (!v) {
+                    setErr('Выберите поставщика');
+                    return;
+                  }
                   try {
                     setErr(null);
                     await purchasesApi.updatePurchase(receipt.receipt.purchase_id, {
-                      supplierId: v === '' ? null : Number(v),
+                      supplierId: Number(v),
                     });
                     if (detail?.purchase?.id) await openDetail(detail.purchase.id);
                     await openReceipt(receipt.receipt.id);
@@ -2447,9 +2394,9 @@ export function Purchases() {
                   }
                 }}
               >
-                <option value="">— Не указан —</option>
+                <option value="">— Выберите поставщика —</option>
                 {(suppliers || []).map((s) => (
-                  <option key={s.id} value={s.id}>
+                  <option key={s.id} value={String(s.id)}>
                     {s.name || `Поставщик #${s.id}`}
                   </option>
                 ))}

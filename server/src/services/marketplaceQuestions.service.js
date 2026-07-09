@@ -5,6 +5,7 @@
 import integrationsService from './integrations.service.js';
 import repositoryFactory from '../config/repository-factory.js';
 import marketplaceQuestionsRepo from '../repositories/marketplace_questions.repository.pg.js';
+import { query } from '../config/database.js';
 import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { extractYandexGoodsQuestionOfferId } from '../utils/yandex-goods-question-offer.js';
@@ -145,6 +146,115 @@ function parseIsoDate(v) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function isOzonNumericMarketSku(value) {
+  return /^\d{6,}$/.test(String(value ?? '').trim());
+}
+
+async function lookupOzonProductByMarketSku(ozonSku) {
+  const skuStr = String(ozonSku ?? '').trim();
+  if (!skuStr || !isOzonNumericMarketSku(skuStr)) return null;
+  const skuNum = Number(skuStr);
+  try {
+    const result = await query(
+      `SELECT p.name,
+              TRIM(COALESCE(ps.sku, p.sku, '')) AS offer_id,
+              TRIM(COALESCE(p.sku, '')) AS erp_sku
+       FROM product_skus ps
+       JOIN products p ON p.id = ps.product_id
+       WHERE ps.marketplace = 'ozon'
+         AND (
+           ($1::bigint IS NOT NULL AND ps.marketplace_product_id = $1::bigint)
+           OR TRIM(COALESCE(ps.mp_extra->>'ozonSku', '')) = $2
+           OR TRIM(COALESCE(ps.mp_extra->>'ozon_sku', '')) = $2
+           OR TRIM(COALESCE(ps.mp_extra->>'marketSku', '')) = $2
+         )
+       ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
+       LIMIT 1`,
+      [Number.isFinite(skuNum) ? skuNum : null, skuStr]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const offer = row.offer_id != null ? String(row.offer_id).trim() : '';
+    const erp = row.erp_sku != null ? String(row.erp_sku).trim() : '';
+    const sellerSku = offer && !isOzonNumericMarketSku(offer) ? offer : erp && !isOzonNumericMarketSku(erp) ? erp : null;
+    const name = row.name != null ? String(row.name).trim() : '';
+    if (!sellerSku && !name) return null;
+    return { offerId: sellerSku, name: name || null };
+  } catch (e) {
+    logger.warn('[MarketplaceQuestions] Ozon catalog lookup failed', { ozonSku: skuStr, error: e?.message });
+    return null;
+  }
+}
+
+async function fetchOzonProductMetaBySku(profileId, ozonSku) {
+  const fromDb = await lookupOzonProductByMarketSku(ozonSku);
+  if (fromDb?.offerId) return fromDb;
+
+  const skuStr = String(ozonSku ?? '').trim();
+  if (!skuStr || !isOzonNumericMarketSku(skuStr)) return null;
+  const skuNum = Number(skuStr);
+  if (!Number.isFinite(skuNum)) return null;
+
+  try {
+    const ozonCfg = await getQuestionsMarketplaceConfig('ozon', profileId);
+    const ozonOverride =
+      ozonCfg?.client_id && ozonCfg?.api_key
+        ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
+        : null;
+    if (!ozonOverride) return null;
+    const data = await integrationsService._ozonApiPost(
+      '/v3/product/info/list',
+      { sku: [skuNum] },
+      { profileId, ozonOverride }
+    );
+    const item = data?.result?.items?.[0] ?? data?.items?.[0];
+    if (!item || typeof item !== 'object') return null;
+    const offerRaw = item.offer_id ?? item.offerId ?? null;
+    const offerId = offerRaw != null ? String(offerRaw).trim() : null;
+    const nameRaw = item.name ?? item.title ?? item.product_name ?? null;
+    const name = nameRaw != null ? String(nameRaw).trim() : null;
+    if (!offerId && !name) return null;
+    return {
+      offerId: offerId && !isOzonNumericMarketSku(offerId) ? offerId : null,
+      name: name || null,
+    };
+  } catch (e) {
+    logger.warn('[MarketplaceQuestions] Ozon product/info/list by sku failed', {
+      ozonSku: skuStr,
+      error: e?.message || String(e),
+    });
+    return null;
+  }
+}
+
+async function enrichOzonQuestionFromCatalog(row, profileId = null) {
+  if (!row || row.marketplace !== 'ozon') return row;
+  const raw = row.raw_payload && typeof row.raw_payload === 'object' ? row.raw_payload : {};
+  const ozonSku = raw.sku ?? raw.product_sku;
+  if (ozonSku == null || String(ozonSku).trim() === '') return row;
+  if (row.sku_or_offer && !isOzonNumericMarketSku(row.sku_or_offer) && row.subject) return row;
+
+  const pid = profileId ?? row.profile_id ?? null;
+  const info = pid != null ? await fetchOzonProductMetaBySku(pid, ozonSku) : await lookupOzonProductByMarketSku(ozonSku);
+  if (!info?.offerId && !info?.name) return row;
+
+  if (info.offerId) row.sku_or_offer = info.offerId;
+  if (info.name && info.offerId) {
+    row.subject = `${info.offerId} — ${info.name}`;
+  } else if (info.name) {
+    row.subject = info.name;
+  } else if (info.offerId) {
+    row.subject = info.offerId;
+  }
+  return row;
+}
+
+async function finalizeOzonQuestionRow(q, profileId) {
+  const row = mapOzonQuestion(q, profileId);
+  if (!row) return null;
+  return enrichOzonQuestionFromCatalog(row, profileId);
+}
+
 function mapOzonQuestion(q, profileId) {
   const ext = String(q.id ?? q.question_id ?? q.questionId ?? '').trim();
   if (!ext) return null;
@@ -175,28 +285,19 @@ function mapOzonQuestion(q, profileId) {
     answerText = q.answer.text ?? q.answer.message ?? null;
   }
   const body = String(q.text ?? q.question_text ?? '').trim() || '—';
-  // Для отображения «артикул» у Ozon нужен offer_id (артикул продавца). sku может быть числовым product_id.
-  const offerOrSku =
-    q.offer_id != null && String(q.offer_id).trim() !== ''
-      ? String(q.offer_id).trim()
-      : q.sku != null && String(q.sku).trim() !== ''
-        ? String(q.sku).trim()
-        : null;
+  const offerId =
+    q.offer_id != null && String(q.offer_id).trim() !== '' ? String(q.offer_id).trim() : null;
+  const ozonMarketSku = q.sku != null && String(q.sku).trim() !== '' ? String(q.sku).trim() : null;
   const baseName = q.product_name ?? q.product_title ?? q.name ?? null;
   let subject = baseName != null && String(baseName).trim() !== '' ? String(baseName).trim() : null;
-  if (subject && offerOrSku) {
-    subject = `${subject} · ${offerOrSku}`;
-  } else if (!subject && offerOrSku) {
-    subject = String(offerOrSku);
-  } else if (!subject && q.sku != null) {
-    subject = String(q.sku).trim();
+  if (subject && offerId) {
+    subject = `${offerId} — ${subject}`;
+  } else if (!subject && offerId) {
+    subject = offerId;
+  } else if (!subject && ozonMarketSku && !isOzonNumericMarketSku(ozonMarketSku)) {
+    subject = ozonMarketSku;
   }
-  const sku =
-    q.offer_id != null && String(q.offer_id).trim() !== ''
-      ? String(q.offer_id).trim()
-      : q.sku != null && String(q.sku).trim() !== ''
-        ? String(q.sku).trim()
-        : null;
+  const sku = offerId;
   const status = q.status ?? q.question_status ?? null;
   const sourceCreatedAt =
     parseIsoDate(q.published_at) ??
@@ -463,7 +564,7 @@ async function syncOzon(profileId, _organizationId = null) {
         for (const q of items) {
           const ext = String(q.id ?? q.question_id ?? q.questionId ?? '').trim();
           if (!ext || seenIds.has(ext)) continue;
-          const row = mapOzonQuestion(q, profileId);
+          const row = await finalizeOzonQuestionRow(q, profileId);
           if (!row || !rowNeedsSellerReply(row)) continue;
           seenIds.add(ext);
           externalIds.push(row.external_id);
@@ -482,7 +583,32 @@ async function syncOzon(profileId, _organizationId = null) {
     }
     throw e;
   }
+  await reEnrichOzonQuestionsMissingProduct(profileId);
   return { imported, externalIds };
+}
+
+async function reEnrichOzonQuestionsMissingProduct(profileId) {
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) return 0;
+  const result = await query(
+    `SELECT * FROM marketplace_questions
+     WHERE profile_id = $1 AND marketplace = 'ozon'
+       AND (subject IS NULL OR TRIM(COALESCE(subject, '')) = ''
+            OR sku_or_offer IS NULL OR TRIM(COALESCE(sku_or_offer, '')) = '')`,
+    [pid]
+  );
+  let updated = 0;
+  for (const row of result.rows || []) {
+    const enriched = await enrichOzonQuestionFromCatalog({ ...row }, pid);
+    if (enriched?.subject && enriched.subject !== row.subject) {
+      await marketplaceQuestionsRepo.upsertRow(enriched);
+      updated += 1;
+    }
+  }
+  if (updated > 0) {
+    logger.info(`[MarketplaceQuestions] Ozon re-enriched product info: ${updated} questions`);
+  }
+  return updated;
 }
 
 /**
@@ -728,7 +854,7 @@ async function refreshOzonQuestionRowFromInfo(profileId, row, ozonOverride) {
       ...info,
       id: questionId,
     };
-    return mapOzonQuestion(merged, profileId);
+    return finalizeOzonQuestionRow(merged, profileId);
   } catch (e) {
     logger.warn('[MarketplaceQuestions] Ozon question/info on archive check failed', {
       profileId,
@@ -903,15 +1029,15 @@ async function refreshQuestionRowFromMarketplace(profileId, row, organizationId 
         const itemId = String(item?.id ?? item?.question_id ?? item?.questionId ?? '').trim();
         const wantId = String(qid).trim();
         if (item && itemId && itemId === wantId) {
-          return mapOzonQuestion(item, profileId);
+          return finalizeOzonQuestionRow(item, profileId);
         }
       } catch {
         /* fallback to stored raw */
       }
     }
-    const mapped = mapOzonQuestion(raw, profileId);
+    const mapped = await finalizeOzonQuestionRow(raw, profileId);
     if (mapped && String(mapped.external_id) !== String(row.external_id)) {
-      return mapOzonQuestion({ ...raw, id: row.external_id, question_id: row.external_id }, profileId);
+      return finalizeOzonQuestionRow({ ...raw, id: row.external_id, question_id: row.external_id }, profileId);
     }
     return mapped;
   }
@@ -938,6 +1064,17 @@ export async function getMarketplaceQuestionById(profileId, questionRowId, opts 
 
     if (refreshed) {
       await marketplaceQuestionsRepo.upsertRow(refreshed);
+    }
+  }
+
+  const current = await marketplaceQuestionsRepo.findRowByIdAndProfile(questionRowId, profileId);
+  if (
+    current?.marketplace === 'ozon' &&
+    (!current.subject || !current.sku_or_offer || isOzonNumericMarketSku(current.sku_or_offer))
+  ) {
+    const enriched = await enrichOzonQuestionFromCatalog({ ...current }, profileId);
+    if (enriched?.subject) {
+      await marketplaceQuestionsRepo.upsertRow(enriched);
     }
   }
 

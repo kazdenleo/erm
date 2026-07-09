@@ -54,9 +54,16 @@ import { profileIdFromDb } from '../utils/profileId.js';
 import {
   orderReserveMovementMatchOrderRowSql,
   orderReserveMovementMatchSql,
+  stockMovementMetaOrderKeySql,
   parseStockMovementWarehouseId
 } from '../constants/netReservedStockSql.js';
 import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
+
+/** Заказ был в открытой поставке: на сборке или уже собран. */
+function orderWasInOpenShipmentContext(status) {
+  const s = String(status ?? '').trim().toLowerCase();
+  return isOrderOnAssemblyStatus(s) || s === 'assembled';
+}
 import { buildAssemblyCompositionLinesForOrder, enrichOrdersAssemblyCompositionLines } from './assemblyOrderItems.service.js';
 
 function reserveSnapshotOptsFromMeta(meta = {}) {
@@ -664,6 +671,13 @@ export const ORDER_TERMINAL_NO_RESERVE_STATUSES = new Set([
   'delivered',
   'in_transit'
 ]);
+
+/** Финальные статусы для архивации (доставлен / отменён). */
+export const ORDER_ARCHIVE_TERMINAL_STATUSES = new Set(['delivered', 'cancelled', 'canceled']);
+
+export function isOrderArchiveTerminalStatus(status) {
+  return ORDER_ARCHIVE_TERMINAL_STATUSES.has(String(status || '').trim().toLowerCase());
+}
 
 export function isOrderTerminalNoReserve(status) {
   return ORDER_TERMINAL_NO_RESERVE_STATUSES.has(String(status || '').trim().toLowerCase());
@@ -2739,6 +2753,135 @@ class OrdersService {
   }
 
   /**
+   * Снять резерв по orders.id только по журналу (заказ уже удалён из orders или снятие через API не удалось).
+   */
+  async releaseReserveForOrderDbIdFromJournal(
+    orderDbId,
+    { reasonSuffix = null, orderIdLabel = null, reallocate = false } = {}
+  ) {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { releasedProductLines: 0, affected: [] };
+    }
+    const oid = Number(orderDbId);
+    if (!Number.isFinite(oid) || oid < 1) {
+      return { releasedProductLines: 0, affected: [] };
+    }
+
+    const r = await query(
+      `SELECT ${NET_RESERVED_SUM_EXPR_SQL}::int AS rv
+       FROM stock_movements
+       WHERE type IN ('reserve', 'unreserve')
+         AND ${orderReserveMovementMatchSql('', 1, 2)}`,
+      [oid, null]
+    );
+    if ((Number(r.rows?.[0]?.rv ?? 0) || 0) <= 0) {
+      return { releasedProductLines: 0, affected: [] };
+    }
+
+    const label =
+      orderIdLabel != null && String(orderIdLabel).trim() !== ''
+        ? String(orderIdLabel).trim()
+        : String(oid);
+    const reasonBase = reasonSuffix ? `Снятие резерва: ${reasonSuffix}` : 'Снятие резерва';
+    const affected = await releaseAllReservesForOrder(oid, label, async (pid, net, orderIdLabelArg, meta) => {
+      await stockMovementsService.applyChange(pid, {
+        delta: net,
+        type: 'unreserve',
+        reason: `${reasonBase} (заказ ${orderIdLabelArg})`.trim(),
+        meta: {
+          ...meta,
+          deleted_order_cleanup: true,
+          skip_auto_reserve: true,
+          terminal_status_cleanup: true
+        }
+      });
+    });
+
+    const productIds = new Set(
+      (affected || []).map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0)
+    );
+    if (reallocate && productIds.size > 0) {
+      for (const pid of productIds) {
+        await this.ensureReservesForProductIfSupplyAvailable(pid, {
+          excludeOrderDbIds: [oid]
+        }).catch(() => {});
+      }
+    }
+
+    return { releasedProductLines: affected?.length ?? 0, affected: affected || [] };
+  }
+
+  /**
+   * Снять резерв перед удалением заказа (с запасным путём через журнал).
+   */
+  async _releaseReserveBeforeOrderDelete(orderRow, { reasonSuffix = 'удаление заказа' } = {}) {
+    const dbId = orderRowDbId(orderRow);
+    if (!dbId) return { releasedProductLines: 0 };
+
+    let result = await this.releaseReserveForOrderDbId(dbId, {
+      reasonSuffix,
+      orderRow,
+      reallocate: false
+    });
+    if ((result.releasedProductLines || 0) > 0) return result;
+
+    result = await this.releaseReserveForOrderDbIdFromJournal(dbId, {
+      reasonSuffix,
+      orderIdLabel: String(orderRow.orderId ?? orderRow.order_id ?? dbId),
+      reallocate: false
+    });
+    if ((result.releasedProductLines || 0) === 0) {
+      const stillReserved = await this._getReservedQtyForOrder(dbId);
+      if (stillReserved > 0) {
+        logger.warn(
+          `[Orders] Не удалось снять резерв перед удалением заказа id=${dbId} (осталось ${stillReserved} в журнале)`
+        );
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Снять залипший резерв по orders.id, которых уже нет в таблице orders.
+   */
+  async releaseReservesForOrphanOrderKeysInJournal({ limit = 40 } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return { released: 0, checked: 0 };
+
+    const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 40));
+    const metaKey = stockMovementMetaOrderKeySql('');
+    const r = await query(
+      `WITH positive AS (
+         SELECT ${metaKey} AS meta_key,
+                ${NET_RESERVED_SUM_EXPR_SQL}::int AS net_reserved
+         FROM stock_movements
+         WHERE type IN ('reserve', 'unreserve')
+           AND (${metaKey}) ~ '^[0-9]+$'
+         GROUP BY 1
+         HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
+       )
+       SELECT p.meta_key::bigint AS order_db_id, p.net_reserved
+       FROM positive p
+       WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.id = p.meta_key::bigint)
+       ORDER BY p.net_reserved DESC
+       LIMIT $1`,
+      [lim]
+    );
+
+    let released = 0;
+    for (const row of r.rows || []) {
+      const orderDbId = Number(row.order_db_id);
+      if (!Number.isFinite(orderDbId) || orderDbId < 1) continue;
+      const { releasedProductLines } = await this.releaseReserveForOrderDbIdFromJournal(orderDbId, {
+        reasonSuffix: 'заказ удалён (автоочистка)',
+        orderIdLabel: String(orderDbId),
+        reallocate: true
+      });
+      if (releasedProductLines > 0) released += 1;
+    }
+    return { released, checked: r.rows?.length ?? 0 };
+  }
+
+  /**
    * Снять резерв по конкретной строке заказа (orders.id), включая комплектующие.
    */
   async releaseReserveForOrderDbId(
@@ -2760,7 +2903,13 @@ class OrdersService {
       orderRow && orderRowDbId(orderRow) === oid
         ? orderRow
         : await this.repository.findById(oid);
-    if (!order) return { releasedProductLines: 0, affected: [] };
+    if (!order) {
+      return this.releaseReserveForOrderDbIdFromJournal(oid, {
+        reasonSuffix: reasonSuffix || 'заказ отсутствует в базе',
+        orderIdLabel: String(oid),
+        reallocate: false
+      });
+    }
 
     const label = String(order.orderId ?? order.order_id ?? oid);
     const reasonBase = reasonSuffix ? `Снятие резерва: ${reasonSuffix}` : 'Снятие резерва';
@@ -3263,6 +3412,20 @@ class OrdersService {
       out[st] = (out[st] || 0) + 1;
     }
     return out;
+  }
+
+  /**
+   * Счётчик «Новых» заказов (групп) — лёгкий запрос для глобального звукового оповещения.
+   */
+  async getNewCount(options = {}) {
+    if (repositoryFactory.isUsingPostgreSQL()) {
+      if (typeof this.repository.countNewGroups === 'function') {
+        const count = await this.repository.countNewGroups(options);
+        return Number(count) || 0;
+      }
+    }
+    const counts = await this.getStatusCounts(options);
+    return Number(counts?.new ?? 0);
   }
 
   async getById(id) {
@@ -4322,6 +4485,15 @@ class OrdersService {
           : (mp, oid, pid) => this.repository.findByMarketplaceAndOrderId(mp, oid, pid);
       const order = await findLite(marketplace, String(orderId), profileId);
       if (!order) return null;
+      const prevStatus = String(order.status ?? '').trim().toLowerCase();
+      const detachRef = orderWasInOpenShipmentContext(prevStatus)
+        ? {
+            marketplace: order.marketplace ?? marketplace,
+            order_id: String(order.orderId ?? order.order_id ?? orderId),
+            profile_id: profileId ?? order.profile_id ?? order.profileId ?? null,
+            organization_id: order.organization_id ?? order.organizationId ?? null,
+          }
+        : null;
       if (order.orderGroupId) {
         const n = await this.repository.updateStatusByOrderGroupId(order.orderGroupId, 'new', profileId);
         if (n === 0) {
@@ -4338,11 +4510,25 @@ class OrdersService {
             profileId,
           });
         }
+        if (detachRef) {
+          if (Array.isArray(opts.shipmentDetachRefs)) {
+            opts.shipmentDetachRefs.push(detachRef);
+          } else if (!opts.skipShipmentRemoval) {
+            this._scheduleDetachOrdersFromOpenShipmentsOnAssemblyReturn([detachRef], profileId);
+          }
+        }
         return { ...order, status: 'new' };
       }
       await this.repository.updateByMarketplaceAndOrderId(marketplace, String(orderId), { status: 'new' }, profileId);
       if (!opts.skipReserveReapply) {
         this._scheduleReapplyReserveAfterReturnToNew({ marketplace, orderId, profileId });
+      }
+      if (detachRef) {
+        if (Array.isArray(opts.shipmentDetachRefs)) {
+          opts.shipmentDetachRefs.push(detachRef);
+        } else if (!opts.skipShipmentRemoval) {
+          this._scheduleDetachOrdersFromOpenShipmentsOnAssemblyReturn([detachRef], profileId);
+        }
       }
       return { ...order, status: 'new' };
     }
@@ -4427,12 +4613,21 @@ class OrdersService {
           profileId,
         });
       }
-      setImmediate(() => {
-        void this._removeProcurementOrdersFromOpenShipments(
-          [{ marketplace, order_id: String(orderId), profile_id: profileId }],
-          profileId
-        );
-      });
+      if (orderWasInOpenShipmentContext(order.status)) {
+        setImmediate(() => {
+          void this._detachOrdersFromOpenShipmentsOnAssemblyReturn(
+            [
+              {
+                marketplace: order.marketplace ?? marketplace,
+                order_id: String(order.orderId ?? order.order_id ?? orderId),
+                profile_id: profileId ?? order.profile_id ?? order.profileId ?? null,
+                organization_id: order.organization_id ?? order.organizationId ?? null,
+              },
+            ],
+            profileId
+          );
+        });
+      }
       return { ...order, status: 'in_procurement' };
     }
     const { readData, writeData } = await import('../utils/storage.js');
@@ -4590,31 +4785,49 @@ class OrdersService {
       });
     }
     if (uniqueRows.length > 0) {
-      setImmediate(() => {
-        void this._removeProcurementOrdersFromOpenShipments(uniqueRows, profileId);
-      });
+      const assemblyDetachRefs = [];
+      const seenDetach = new Set();
+      for (const row of seedRows) {
+        if (!orderWasInOpenShipmentContext(row.status)) continue;
+        const mp = String(row.marketplace ?? '').trim();
+        const oid = String(row.order_id ?? row.orderId ?? '').trim();
+        if (!mp || !oid) continue;
+        const dk = `${mp}|${oid}`;
+        if (seenDetach.has(dk)) continue;
+        seenDetach.add(dk);
+        assemblyDetachRefs.push({
+          marketplace: mp,
+          order_id: oid,
+          profile_id: profileId ?? row.profile_id ?? null,
+          organization_id: row.organization_id ?? null,
+        });
+      }
+      if (assemblyDetachRefs.length > 0) {
+        setImmediate(() => {
+          void this._detachOrdersFromOpenShipmentsOnAssemblyReturn(assemblyDetachRefs, profileId);
+        });
+      }
     }
 
     return { updated: seedRows.length, skipped, rows: uniqueRows };
   }
 
-  async _removeProcurementOrdersFromOpenShipments(orderRows, profileId = null) {
-    if (!Array.isArray(orderRows) || orderRows.length === 0) return;
+  _scheduleDetachOrdersFromOpenShipmentsOnAssemblyReturn(orderRefs, profileId = null) {
+    setImmediate(() => {
+      void this._detachOrdersFromOpenShipmentsOnAssemblyReturn(orderRefs, profileId);
+    });
+  }
+
+  async _detachOrdersFromOpenShipmentsOnAssemblyReturn(orderRefs, profileId = null) {
+    if (!Array.isArray(orderRefs) || orderRefs.length === 0) return;
     const shipmentsService = (await import('./shipments.service.js')).default;
-    const seen = new Set();
-    for (const row of orderRows) {
-      const mp = String(row.marketplace ?? row.marketplace_db ?? '').trim();
-      const oid = String(row.order_id ?? row.orderId ?? '').trim();
-      if (!mp || !oid || seen.has(`${mp}|${oid}`)) continue;
-      seen.add(`${mp}|${oid}`);
-      try {
-        await shipmentsService.removeOrderFromOpenShipments(mp, oid, {
-          profileId: profileId ?? row.profile_id ?? row.profileId ?? null,
-          organizationId: row.organization_id ?? row.organizationId ?? null,
-        });
-      } catch (e) {
-        console.warn('[Orders] remove from shipment on procurement:', oid, e?.message || e);
-      }
+    try {
+      await shipmentsService.removeOrdersFromOpenShipmentsBatch(orderRefs, {
+        profileId,
+        relocateWbToNewSupply: true,
+      });
+    } catch (e) {
+      console.warn('[Orders] detach from shipment on assembly return:', e?.message || e);
     }
   }
 
@@ -4641,6 +4854,7 @@ class OrdersService {
     }
     const seen = new Set();
     const rowsForReserve = [];
+    const shipmentDetachRefs = [];
     let updated = 0;
     let skipped = 0;
 
@@ -4655,7 +4869,11 @@ class OrdersService {
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
 
-      const order = await this.returnOrderToNew(mp, oid, profileId, { skipReserveReapply: true });
+      const order = await this.returnOrderToNew(mp, oid, profileId, {
+        skipReserveReapply: true,
+        skipShipmentRemoval: true,
+        shipmentDetachRefs,
+      });
       if (!order) {
         skipped += 1;
         continue;
@@ -4670,6 +4888,18 @@ class OrdersService {
           if (rid != null) rowsForReserve.push(r);
         }
       }
+    }
+
+    if (shipmentDetachRefs.length > 0) {
+      const dedupedDetach = [];
+      const detachSeen = new Set();
+      for (const ref of shipmentDetachRefs) {
+        const dk = `${ref.marketplace}|${ref.order_id}`;
+        if (detachSeen.has(dk)) continue;
+        detachSeen.add(dk);
+        dedupedDetach.push(ref);
+      }
+      this._scheduleDetachOrdersFromOpenShipmentsOnAssemblyReturn(dedupedDetach, profileId);
     }
 
     const reserveByDbId = new Map();
@@ -5180,22 +5410,24 @@ class OrdersService {
       const order = await this.repository.findByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       if (!order) return 0;
       if (order.orderGroupId) {
-        // Важно: при удалении ручного заказа снимаем резерв по каждой строке группы,
-        // иначе reserved_quantity и свободный остаток останутся "залипшими".
-        try {
-          const rows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
-          for (const r of rows || []) {
-            await this.releaseReserveIfExistsForOrder(r.marketplace, r.orderId ?? r.order_id);
+        const rows = await this.repository.findByOrderGroupId(order.orderGroupId, profileId);
+        for (const r of rows || []) {
+          try {
+            await this._releaseReserveBeforeOrderDelete(r);
+          } catch (e) {
+            logger.warn(
+              `[Orders] Снятие резерва перед удалением группы (order id=${orderRowDbId(r)}): ${e?.message || e}`
+            );
           }
-        } catch {
-          // ignore reserve rollback errors
         }
         return await this.repository.deleteByOrderGroupId(order.orderGroupId, profileId);
       }
       try {
-        await this.releaseReserveIfExistsForOrder(marketplace, String(orderId));
-      } catch {
-        // ignore
+        await this._releaseReserveBeforeOrderDelete(order);
+      } catch (e) {
+        logger.warn(
+          `[Orders] Снятие резерва перед удалением (order id=${orderRowDbId(order)}): ${e?.message || e}`
+        );
       }
       const deleted = await this.repository.deleteByMarketplaceAndOrderId(marketplace, String(orderId), profileId);
       return deleted ? 1 : 0;

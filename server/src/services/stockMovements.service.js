@@ -970,7 +970,22 @@ class StockMovementsService {
       const { default: ordersService, isOrderTerminalNoReserve } = await import('./orders.service.js');
       let cleaned = false;
       for (const r of res.rows || []) {
-        if (r.order_missing === true) continue;
+        if (r.order_missing === true) {
+          const movementOrderDbId = Number(r.movement_order_db_id);
+          if (Number.isFinite(movementOrderDbId) && movementOrderDbId > 0) {
+            try {
+              await ordersService.releaseReserveForOrderDbIdFromJournal(movementOrderDbId, {
+                reasonSuffix: 'заказ удалён',
+                orderIdLabel: String(movementOrderDbId),
+                reallocate: true
+              });
+              cleaned = true;
+            } catch (_) {
+              /* stale cleanup — не блокируем список */
+            }
+          }
+          continue;
+        }
         const status = String(r.status ?? '').trim().toLowerCase();
         let shouldClear = isOrderTerminalNoReserve(r.status);
         if (!shouldClear && status === 'assembled' && Number.isFinite(Number(r.id)) && Number(r.id) > 0) {
@@ -2171,13 +2186,10 @@ class StockMovementsService {
       [oid]
     );
     const orderRow = or.rows?.[0];
-    if (!orderRow) {
-      const error = new Error('Заказ не найден');
-      error.statusCode = 404;
-      throw error;
-    }
+    const label = orderRow
+      ? String(orderRow.order_id ?? '')
+      : String(oid);
 
-    const label = String(orderRow.order_id ?? '');
     const productIds = await this._productIdsForReserveRelease(idNum);
     let releasedProductLines = 0;
     for (const pid of productIds) {
