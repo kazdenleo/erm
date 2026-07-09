@@ -14,6 +14,8 @@ export function useOrders(options = {}) {
   const [error, setError] = useState(null);
   /** Счётчик запросов: в state попадает только ответ последнего (устаревшие ответы отбрасываются). */
   const loadSeqRef = useRef(0);
+  /** Сколько не-silent запросов в полёте — чтобы не залипать в loading при отменённых ответах. */
+  const visibleLoadCountRef = useRef(0);
 
   /**
    * @param {boolean | { silent?: boolean, params?: object }} [options] — при silent=true не трогаем loading
@@ -22,10 +24,11 @@ export function useOrders(options = {}) {
   const loadOrders = useCallback(async (options) => {
     const silent = options === true || Boolean(options?.silent);
     const seq = ++loadSeqRef.current;
+    if (!silent) {
+      visibleLoadCountRef.current += 1;
+      setLoading(true);
+    }
     try {
-      if (!silent) {
-        setLoading(true);
-      }
       setError(null);
       const params =
         options && typeof options === 'object' ? { ...(options.params || {}) } : {};
@@ -53,8 +56,11 @@ export function useOrders(options = {}) {
       setError(err.message || 'Ошибка загрузки заказов');
       return { data: [], meta: { total: null, limit: null, offset: 0 } };
     } finally {
-      if (seq === loadSeqRef.current && !silent) {
-        setLoading(false);
+      if (!silent) {
+        visibleLoadCountRef.current = Math.max(0, visibleLoadCountRef.current - 1);
+        if (visibleLoadCountRef.current === 0) {
+          setLoading(false);
+        }
       }
     }
   }, []);

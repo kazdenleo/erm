@@ -177,6 +177,75 @@ class StockMovementsRepositoryPG {
     const result = await query(sql, params);
     return result.rows || [];
   }
+
+  /**
+   * Список ручных списаний (type = writeoff) с фильтрами по организации и складу.
+   */
+  async findWriteoffs({
+    limit = 200,
+    offset = 0,
+    profileId = null,
+    organizationId = null,
+    warehouseId = null,
+  } = {}) {
+    const pid = normalizeProfileId(profileId);
+    const lim = Math.max(1, Math.min(500, Number(limit) || 200));
+    const off = Math.max(0, Number(offset) || 0);
+
+    const orgRaw =
+      organizationId != null && organizationId !== '' ? Number(organizationId) : null;
+    const orgId = Number.isFinite(orgRaw) && orgRaw > 0 ? orgRaw : null;
+    const whRaw = warehouseId != null && warehouseId !== '' ? Number(warehouseId) : null;
+    const whId = Number.isFinite(whRaw) && whRaw > 0 ? whRaw : null;
+
+    const params = [];
+    const where = [`LOWER(TRIM(sm.type::text)) = 'writeoff'`];
+
+    if (pid != null) {
+      params.push(pid);
+      where.push(
+        `(sm.profile_id = $${params.length} OR sm.profile_id IS NULL)`
+      );
+      where.push(`(p.profile_id = $${params.length} OR p.profile_id IS NULL)`);
+    }
+    if (whId != null) {
+      params.push(whId);
+      where.push(`sm.warehouse_id = $${params.length}`);
+    }
+    if (orgId != null) {
+      params.push(orgId);
+      where.push(`w.organization_id = $${params.length}`);
+    }
+
+    params.push(lim);
+    const limitIdx = params.length;
+    params.push(off);
+    const offsetIdx = params.length;
+
+    const sql = `
+      SELECT sm.id,
+             sm.created_at,
+             sm.quantity_change,
+             sm.reason,
+             sm.warehouse_id,
+             sm.product_id,
+             sm.meta,
+             p.sku AS product_sku,
+             p.name AS product_name,
+             w.address AS warehouse_name,
+             w.organization_id,
+             o.name AS organization_name
+      FROM stock_movements sm
+      INNER JOIN products p ON p.id = sm.product_id
+      LEFT JOIN warehouses w ON w.id = sm.warehouse_id
+      LEFT JOIN organizations o ON o.id = w.organization_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY sm.created_at DESC, sm.id DESC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+    `;
+    const result = await query(sql, params);
+    return result.rows || [];
+  }
 }
 
 export default new StockMovementsRepositoryPG();

@@ -7,30 +7,64 @@ import { query, transaction } from '../config/database.js';
 
 function normalizeReceiptDocumentType(documentType) {
   const t = String(documentType || '').trim().toLowerCase();
-  if (t === 'return' || t === 'customer_return' || t === 'receipt') return t;
+  if (t === 'return' || t === 'customer_return' || t === 'receipt' || t === 'writeoff') return t;
   return null;
 }
 
+function receiptNumberPrefix(documentType) {
+  if (documentType === 'return') return 'ВН';
+  if (documentType === 'customer_return') return 'ВК';
+  if (documentType === 'writeoff') return 'СП';
+  return 'ПТ';
+}
+
+function normalizeDocTypeForInsert(documentType) {
+  const t = String(documentType || 'receipt').trim().toLowerCase();
+  if (t === 'return' || t === 'customer_return' || t === 'writeoff') return t;
+  return 'receipt';
+}
+
 class WarehouseReceiptsRepositoryPG {
-  async create({ supplierId = null, organizationId = null, documentType = 'receipt' }) {
+  async create({
+    supplierId = null,
+    organizationId = null,
+    documentType = 'receipt',
+    warehouseId = null,
+    writeoffReason = null,
+  }) {
+    const docType = normalizeDocTypeForInsert(documentType);
     let receipt;
     try {
-      const docType = documentType === 'return' ? 'return' : (documentType === 'customer_return' ? 'customer_return' : 'receipt');
       const res = await query(
-        `INSERT INTO warehouse_receipts (supplier_id, organization_id, document_type) VALUES ($1, $2, $3) RETURNING *`,
-        [supplierId, organizationId || null, docType]
+        `INSERT INTO warehouse_receipts (supplier_id, organization_id, document_type, warehouse_id, writeoff_reason)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [supplierId, organizationId || null, docType, warehouseId || null, writeoffReason || null]
       );
       receipt = res.rows[0];
     } catch (err) {
-      if (err.message && /column.*does not exist|organization_id|document_type/i.test(err.message)) {
-        const res = await query(
-          `INSERT INTO warehouse_receipts (supplier_id) VALUES ($1) RETURNING *`,
-          [supplierId]
-        );
-        receipt = res.rows[0];
+      if (err.message && /column.*does not exist|organization_id|document_type|warehouse_id|writeoff_reason/i.test(err.message)) {
+        try {
+          const res = await query(
+            `INSERT INTO warehouse_receipts (supplier_id, organization_id, document_type) VALUES ($1, $2, $3) RETURNING *`,
+            [supplierId, organizationId || null, docType]
+          );
+          receipt = res.rows[0];
+        } catch (err2) {
+          if (err2.message && /column.*does not exist|organization_id|document_type/i.test(err2.message)) {
+            const res = await query(
+              `INSERT INTO warehouse_receipts (supplier_id) VALUES ($1) RETURNING *`,
+              [supplierId]
+            );
+            receipt = res.rows[0];
+          } else {
+            throw err2;
+          }
+        }
         if (receipt) {
-          receipt.document_type = documentType === 'return' ? 'return' : (documentType === 'customer_return' ? 'customer_return' : 'receipt');
+          receipt.document_type = docType;
           receipt.organization_id = organizationId || null;
+          receipt.warehouse_id = warehouseId || null;
+          receipt.writeoff_reason = writeoffReason || null;
         }
       } else {
         throw err;
@@ -38,7 +72,7 @@ class WarehouseReceiptsRepositoryPG {
     }
     if (receipt) {
       const num = receipt.id;
-      const prefix = receipt.document_type === 'return' ? 'ВН' : (receipt.document_type === 'customer_return' ? 'ВК' : 'ПТ');
+      const prefix = receiptNumberPrefix(receipt.document_type);
       const receiptNumber = `${prefix}-${String(num).padStart(6, '0')}`;
       await query(
         `UPDATE warehouse_receipts SET receipt_number = $1 WHERE id = $2`,
@@ -115,7 +149,14 @@ class WarehouseReceiptsRepositoryPG {
     return r.rows || [];
   }
 
-  async findAll({ limit = 100, offset = 0, profileId = null, documentType = null } = {}) {
+  async findAll({
+    limit = 100,
+    offset = 0,
+    profileId = null,
+    documentType = null,
+    organizationId = null,
+    warehouseId = null,
+  } = {}) {
     /* Цена в документе или из карточки товара (старые строки с NULL cost всё же показывают сумму). */
     const amountRub = `(
       SELECT SUM(l.quantity::numeric * COALESCE(l.cost, p.cost)::numeric)
@@ -125,6 +166,11 @@ class WarehouseReceiptsRepositoryPG {
         AND COALESCE(l.cost, p.cost) IS NOT NULL
     ) AS total_amount_rub`;
     const receiptWarehouseLabelSql = `COALESCE(
+      (
+        SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
+        FROM warehouses wh
+        WHERE wh.id = r.warehouse_id
+      ),
       (
         SELECT NULLIF(TRIM(COALESCE(wh.address, wh.wb_warehouse_name, '')), '')
         FROM purchase_receipts pr
@@ -159,9 +205,25 @@ class WarehouseReceiptsRepositoryPG {
         : null;
     const useProfile = Number.isFinite(pid) && pid > 0;
     const docType = normalizeReceiptDocumentType(documentType);
+    const orgId =
+      organizationId != null && organizationId !== ''
+        ? typeof organizationId === 'string'
+          ? parseInt(organizationId, 10)
+          : Number(organizationId)
+        : null;
+    const whId =
+      warehouseId != null && warehouseId !== ''
+        ? typeof warehouseId === 'string'
+          ? parseInt(warehouseId, 10)
+          : Number(warehouseId)
+        : null;
+    const useOrg = Number.isFinite(orgId) && orgId > 0;
+    const useWh = Number.isFinite(whId) && whId > 0;
     const params = [];
     if (useProfile) params.push(pid);
     if (docType) params.push(docType);
+    if (useOrg) params.push(orgId);
+    if (useWh) params.push(whId);
     const profileWhere = useProfile
       ? ` AND (
           (r.organization_id IS NOT NULL AND EXISTS (SELECT 1 FROM organizations o2 WHERE o2.id = r.organization_id AND o2.profile_id = $1::bigint))
@@ -173,9 +235,11 @@ class WarehouseReceiptsRepositoryPG {
           ))
         )`
       : '';
-    const docWhere = docType
-      ? ` AND r.document_type = $${useProfile ? 2 : 1}`
-      : '';
+    let paramIdx = useProfile ? 2 : 1;
+    const docWhere = docType ? ` AND r.document_type = $${useProfile ? 2 : 1}` : '';
+    if (docType) paramIdx = useProfile ? 3 : 2;
+    const orgWhere = useOrg ? ` AND r.organization_id = $${paramIdx++}` : '';
+    const whWhere = useWh ? ` AND r.warehouse_id = $${paramIdx++}` : '';
 
     try {
       const limIdx = params.length + 1;
@@ -183,6 +247,7 @@ class WarehouseReceiptsRepositoryPG {
       params.push(limit, offset);
       const r = await query(
         `SELECT r.id, r.created_at, r.receipt_number, r.supplier_id, r.organization_id, r.document_type,
+                r.warehouse_id, r.writeoff_reason,
                 s.name AS supplier_name, s.code AS supplier_code,
                 o.name AS organization_name,
                 (SELECT COUNT(*)::int FROM warehouse_receipt_lines WHERE receipt_id = r.id) AS lines_count,
@@ -196,7 +261,7 @@ class WarehouseReceiptsRepositoryPG {
          FROM warehouse_receipts r
          LEFT JOIN suppliers s ON s.id = r.supplier_id
          LEFT JOIN organizations o ON o.id = r.organization_id
-         WHERE 1=1 ${profileWhere} ${docWhere}
+         WHERE 1=1 ${profileWhere} ${docWhere} ${orgWhere} ${whWhere}
          ORDER BY r.created_at DESC, r.id DESC
          LIMIT $${limIdx} OFFSET $${offIdx}`,
         params
@@ -238,7 +303,12 @@ class WarehouseReceiptsRepositoryPG {
     }
   }
 
-  async count({ profileId = null, documentType = null } = {}) {
+  async count({
+    profileId = null,
+    documentType = null,
+    organizationId = null,
+    warehouseId = null,
+  } = {}) {
     const pid =
       profileId != null && profileId !== ''
         ? typeof profileId === 'string'
@@ -247,9 +317,25 @@ class WarehouseReceiptsRepositoryPG {
         : null;
     const useProfile = Number.isFinite(pid) && pid > 0;
     const docType = normalizeReceiptDocumentType(documentType);
+    const orgId =
+      organizationId != null && organizationId !== ''
+        ? typeof organizationId === 'string'
+          ? parseInt(organizationId, 10)
+          : Number(organizationId)
+        : null;
+    const whId =
+      warehouseId != null && warehouseId !== ''
+        ? typeof warehouseId === 'string'
+          ? parseInt(warehouseId, 10)
+          : Number(warehouseId)
+        : null;
+    const useOrg = Number.isFinite(orgId) && orgId > 0;
+    const useWh = Number.isFinite(whId) && whId > 0;
     const params = [];
     if (useProfile) params.push(pid);
     if (docType) params.push(docType);
+    if (useOrg) params.push(orgId);
+    if (useWh) params.push(whId);
     const profileWhere = useProfile
       ? ` AND (
           (r.organization_id IS NOT NULL AND EXISTS (SELECT 1 FROM organizations o2 WHERE o2.id = r.organization_id AND o2.profile_id = $1::bigint))
@@ -261,12 +347,14 @@ class WarehouseReceiptsRepositoryPG {
           ))
         )`
       : '';
-    const docWhere = docType
-      ? ` AND r.document_type = $${useProfile ? 2 : 1}`
-      : '';
+    let paramIdx = useProfile ? 2 : 1;
+    const docWhere = docType ? ` AND r.document_type = $${useProfile ? 2 : 1}` : '';
+    if (docType) paramIdx = useProfile ? 3 : 2;
+    const orgWhere = useOrg ? ` AND r.organization_id = $${paramIdx++}` : '';
+    const whWhere = useWh ? ` AND r.warehouse_id = $${paramIdx++}` : '';
     try {
       const r = await query(
-        `SELECT COUNT(*) AS total FROM warehouse_receipts r WHERE 1=1 ${profileWhere} ${docWhere}`,
+        `SELECT COUNT(*) AS total FROM warehouse_receipts r WHERE 1=1 ${profileWhere} ${docWhere} ${orgWhere} ${whWhere}`,
         params
       );
       return parseInt(r.rows[0]?.total || '0', 10);

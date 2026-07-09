@@ -91,6 +91,82 @@
   margin-bottom: 16px;
 }
 
+.warehouse-ops-scan-form-input-wrap {
+  position: relative;
+  flex: 0 1 380px;
+  min-width: 220px;
+}
+
+.warehouse-ops-scan-form-notice {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+.warehouse-ops-scan-form-notice-text {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.warehouse-ops-scan-form-notice-text--error {
+  color: var(--danger, #ef4444);
+}
+
+.warehouse-ops-scan-form-notice-text--success {
+  color: var(--success, #10b981);
+}
+
+.warehouse-ops-suggest {
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+  max-height: 320px;
+  overflow: auto;
+  z-index: 10;
+}
+
+.warehouse-ops-suggest--anchored {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+}
+
+.warehouse-ops-suggest-title {
+  padding: 8px 10px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.warehouse-ops-suggest-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.warehouse-ops-suggest-item {
+  width: 100%;
+  text-align: left;
+  padding: 10px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.warehouse-ops-suggest-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.warehouse-ops-suggest-sku {
+  font-weight: 600;
+}
+
+.warehouse-ops-suggest-name {
+  opacity: 0.85;
+}
+
 .warehouse-ops-scan-form--no-btn .warehouse-ops-scan-input {
   max-width: none;
 }

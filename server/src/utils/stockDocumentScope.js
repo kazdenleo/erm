@@ -15,7 +15,7 @@ export function requirePositiveEntityId(value, message) {
 }
 
 /**
- * @param {'receipt'|'return'|'customer_return'} documentType
+ * @param {'receipt'|'return'|'customer_return'|'writeoff'} documentType
  */
 export function requireWarehouseDocumentScope({
   documentType = 'receipt',
@@ -27,7 +27,7 @@ export function requireWarehouseDocumentScope({
   const orgId = requirePositiveEntityId(organizationId, 'Выберите организацию');
   const doc = String(documentType || 'receipt').trim().toLowerCase();
   let supplier = null;
-  if (doc !== 'customer_return') {
+  if (doc !== 'customer_return' && doc !== 'writeoff') {
     supplier = requirePositiveEntityId(supplierId, 'Выберите поставщика');
   }
   return { warehouseId: whId, organizationId: orgId, supplierId: supplier };

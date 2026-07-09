@@ -678,6 +678,43 @@ class StockMovementsService {
   }
 
   /**
+   * Реестр ручных списаний (type = writeoff).
+   */
+  async listWriteoffs({
+    limit = 200,
+    offset = 0,
+    profileId = null,
+    organizationId = null,
+    warehouseId = null,
+  } = {}) {
+    let whFilter = null;
+    if (warehouseId != null && String(warehouseId).trim() !== '') {
+      whFilter = await this.productsRepository.resolveOwnWarehouseId(warehouseId, profileId);
+    }
+    const rows = await this.repository.findWriteoffs({
+      limit,
+      offset,
+      profileId,
+      organizationId,
+      warehouseId: whFilter,
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      createdAt: row.created_at,
+      quantity: Math.abs(Number(row.quantity_change) || 0),
+      reason: row.reason || null,
+      warehouseId: row.warehouse_id,
+      warehouseName: row.warehouse_name || null,
+      organizationId: row.organization_id ?? null,
+      organizationName: row.organization_name || null,
+      productId: row.product_id,
+      productSku: row.product_sku || null,
+      productName: row.product_name || null,
+      meta: row.meta ?? null,
+    }));
+  }
+
+  /**
    * Заказы, под которые сейчас числится ненулевой резерв товара (по журналу reserve/unreserve).
    * Формула нетто-резерва совпадает с products.repository / kitStock (unreserve уменьшает резерв).
    * Для комплектов reservedQty — комплектов под заказ (validation: SKU + комплектующие без двойного счёта).

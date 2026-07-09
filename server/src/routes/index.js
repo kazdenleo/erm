@@ -56,6 +56,7 @@ import { validateProductId } from '../validators/productValidator.js';
 import marketplaceInventoryRoutes from './marketplaceInventory.routes.js';
 import marketplaceStockRoutes from './marketplaceStock.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
+import stockMovementsController from '../controllers/stockMovements.controller.js';
 import purchasesController from '../controllers/purchases.controller.js';
 import fboSuppliesController from '../controllers/fboSupplies.controller.js';
 import { createProductExcelImportUpload } from '../middleware/uploads.js';
@@ -295,6 +296,13 @@ router.use('/certificates', certificatesRoutes);
 
 // Приёмки на склад
 router.use('/receipts', warehouseReceiptsRoutes);
+
+// Реестр списаний со склада
+router.get(
+  '/stock-writeoffs',
+  requireAuth,
+  wrapAsync(stockMovementsController.listWriteoffs.bind(stockMovementsController))
+);
 
 // Закупки: DELETE на главном роутере — во вложенном Router в ряде окружений не срабатывал DELETE /:id (404).
 router.delete(

@@ -436,7 +436,8 @@ export function Orders() {
   const { warehouses, loadWarehouses } = useWarehouses();
   const { organizations } = useOrganizations();
   const { orders, meta, loading, error, loadOrders, patchOrders } = useOrders({ autoLoad: false });
-  const initialOrdersLoadedRef = useRef(false);
+  const ordersHydratedRef = useRef(false);
+  const [, setOrdersHydrateTick] = useState(0);
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncKind, setSyncKind] = useState(null);
@@ -811,10 +812,24 @@ export function Orders() {
   );
 
   useEffect(() => {
-    // После первой загрузки не “роняем” страницу в общий loader — обновляем список тихо.
-    const silent = initialOrdersLoadedRef.current;
-    void reloadOrders({ silent });
-    initialOrdersLoadedRef.current = true;
+    let cancelled = false;
+    const silent = ordersHydratedRef.current;
+    void reloadOrders({ silent })
+      .then((result) => {
+        if (cancelled || result?.stale) return;
+        if (!ordersHydratedRef.current) {
+          ordersHydratedRef.current = true;
+          setOrdersHydrateTick((n) => n + 1);
+        }
+      })
+      .catch(() => {
+        if (cancelled || ordersHydratedRef.current) return;
+        ordersHydratedRef.current = true;
+        setOrdersHydrateTick((n) => n + 1);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [reloadOrders]);
 
   const loadStatusCounts = useCallback(
@@ -844,7 +859,7 @@ export function Orders() {
 
   useEffect(() => {
     // После любых обновлений списка (смена статуса, действия по заказу, синк) — тихо обновляем счётчики.
-    if (!initialOrdersLoadedRef.current) return;
+    if (!ordersHydratedRef.current) return;
     void loadStatusCounts({ silent: true });
   }, [orders, loadStatusCounts]);
 
@@ -1515,6 +1530,10 @@ export function Orders() {
     } catch (e) {
       const msg = getApiErrorMessage(e, 'Не удалось отправить заказ поставщику');
       showSupplierOrderMessage(msg);
+      if (!ordersHydratedRef.current) {
+        ordersHydratedRef.current = true;
+        setOrdersHydrateTick((n) => n + 1);
+      }
     } finally {
       setSupplierSubmitLoadingKey(null);
     }
@@ -2253,7 +2272,7 @@ export function Orders() {
     }
   };
 
-  const isInitialLoading = loading && orders.length === 0;
+  const isInitialLoading = !ordersHydratedRef.current && loading && orders.length === 0;
   if (isInitialLoading) {
     return <div className="loading">Загрузка заказов...</div>;
   }

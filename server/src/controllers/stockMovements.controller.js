@@ -122,6 +122,31 @@ class StockMovementsController {
     }
   }
 
+  /** Реестр списаний со склада. */
+  async listWriteoffs(req, res, next) {
+    try {
+      const tid = tenantListProfileId(req);
+      if (tid === TENANT_LIST_EMPTY) {
+        return res.status(200).json({ ok: true, data: [] });
+      }
+      const limit = req.query.limit ? Number(req.query.limit) : 200;
+      const offset = req.query.offset ? Number(req.query.offset) : 0;
+      const organizationId =
+        req.query.organizationId ?? req.query.organization_id ?? null;
+      const warehouseId = req.query.warehouseId ?? req.query.warehouse_id ?? null;
+      const list = await stockMovementsService.listWriteoffs({
+        limit,
+        offset,
+        profileId: tid,
+        organizationId,
+        warehouseId,
+      });
+      return res.status(200).json({ ok: true, data: list });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   /** Заказы с ненулевым резервом по товару (для истории остатков). */
   async getReservedOrders(req, res, next) {
     try {

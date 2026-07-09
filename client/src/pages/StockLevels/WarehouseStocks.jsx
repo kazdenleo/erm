@@ -934,6 +934,34 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       }
       return out;
     }
+    if (t === 'writeoff') {
+      const meta = parseMovementMeta(m);
+      const isReversal =
+        meta.writeoff_reversal === true ||
+        meta.writeoff_reversal === 'true' ||
+        /аннулирование\s+списания/i.test(String(m.reason || ''));
+      const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
+      const moveQty = Math.abs(Number(m.quantity_change) || 0);
+      if (whBal != null) {
+        out.bal = whBal;
+      } else if (prevLineBelow?.bal != null && moveQty > 0) {
+        out.bal = isReversal
+          ? Number(prevLineBelow.bal) + moveQty
+          : Math.max(0, Number(prevLineBelow.bal) - moveQty);
+      }
+      // Списание меняет только наличие на складе — «в пути» и резерв в истории не двигаем.
+      if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+        out.inc = Number(prevLineBelow.inc);
+      } else if (out.inc == null || Number.isNaN(Number(out.inc))) {
+        out.inc = 0;
+      }
+      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        out.res = Number(prevLineBelow.res);
+      } else if (out.res == null || Number.isNaN(Number(out.res))) {
+        out.res = 0;
+      }
+      return out;
+    }
     if (t === 'return_to_supplier' || t === 'customer_return') {
       const meta = parseMovementMeta(m);
       const dbBal = movementNum(m, 'balance_after');
@@ -991,8 +1019,7 @@ function buildHistoryDisplaySnapshots(
   displayRows,
   currentNetReserved = null,
   warehouseFilterId = null,
-  kitProduct = null,
-  currentStockState = null
+  kitProduct = null
 ) {
   if (!Array.isArray(displayRows) || displayRows.length === 0) return [];
   const n = displayRows.length;
@@ -1007,25 +1034,12 @@ function buildHistoryDisplaySnapshots(
     currentNetReserved != null && Number.isFinite(Number(currentNetReserved))
       ? Math.max(0, Math.floor(Number(currentNetReserved)))
       : null;
-  // Верхняя строка — актуальный нетто-резерв с API, кроме инвентаризации (она резерв не меняет).
   if (net != null && enriched[0]) {
     const topItem = displayRows[0];
     const topType =
       topItem?.kind === 'single' && topItem.m ? movementTypeLower(topItem.m) : null;
     if (topType !== 'inventory') {
       enriched[0].res = net;
-    }
-  }
-
-  // Верхняя строка = текущие остатки как в таблице (для комплектов «в пути» включает ожидание комплектующих).
-  if (currentStockState && enriched[0]) {
-    const topItem = displayRows[0];
-    const topType =
-      topItem?.kind === 'single' && topItem.m ? movementTypeLower(topItem.m) : null;
-    enriched[0].inc = Math.max(0, Number(currentStockState.incoming) || 0);
-    enriched[0].bal = Math.max(0, Number(currentStockState.onHand) || 0);
-    if (topType !== 'inventory') {
-      enriched[0].res = Math.max(0, Number(currentStockState.reserved) || 0);
     }
   }
 
@@ -2686,10 +2700,9 @@ export function WarehouseStocks() {
         displayHistoryRows,
         historyNetReserved,
         stockWarehouseId,
-        historyProduct,
-        historyRowMetrics
+        historyProduct
       ),
-    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyProduct, historyRowMetrics]
+    [displayHistoryRows, historyNetReserved, stockWarehouseId, historyProduct]
   );
 
   const openHistoryForRow = useCallback((row) => {
@@ -3313,15 +3326,8 @@ export function WarehouseStocks() {
                 {isKitProduct(historyProduct)
                   ? ' Колонка «В пути» — только по SKU комплекта; дополнительная собираемость из комплектующих — в «Доступно» (в скобках).'
                   : null}
-                {historyRowMetrics && !isKitProduct(historyProduct)
-                  ? ' Верхняя строка — текущие остатки как в таблице.'
-                  : null}
                 {' '}
                 Возвраты показывают наличие на складе из документа (ВК/ВН), а не общий остаток по всем складам.
-              </p>
-            ) : historyRowMetrics && !isKitProduct(historyProduct) ? (
-              <p className="text-muted small mb-2" role="status">
-                Верхняя строка — текущие остатки как в таблице.
               </p>
             ) : null}
           <div className="stock-levels-history-table-wrap">

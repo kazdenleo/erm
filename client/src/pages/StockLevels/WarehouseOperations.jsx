@@ -187,12 +187,14 @@ const KNOWN_MODES = new Set([
 const RECEIPT_DOCUMENT_TYPE_BY_MODE = {
   [MODE_RECEIPTS_LIST]: 'receipt',
   [MODE_RETURN_SUPPLIER]: 'return',
-  [MODE_RETURN_CUSTOMER]: 'customer_return'
+  [MODE_RETURN_CUSTOMER]: 'customer_return',
+  [MODE_WRITEOFF]: 'writeoff',
 };
 
 function receiptDocumentTypeLabel(documentType) {
   if (documentType === 'return') return 'Возврат поставщику';
   if (documentType === 'customer_return') return 'Возврат от клиента';
+  if (documentType === 'writeoff') return 'Списание';
   return 'Приёмка';
 }
 
@@ -296,7 +298,16 @@ export function WarehouseOperations({
   /** Обязательный склад приёмки (поступление / возвраты) */
   const [receiptWarehouseId, setReceiptWarehouseId] = useState('');
   const [returnWarehouseId, setReturnWarehouseId] = useState('');
+  const [writeoffOrganizationId, setWriteoffOrganizationId] = useState('');
   const [writeoffWarehouseId, setWriteoffWarehouseId] = useState('');
+  const [writeoffReason, setWriteoffReason] = useState('Брак');
+  const [writeoffFilterOrgId, setWriteoffFilterOrgId] = useState('');
+  const [writeoffFilterWhId, setWriteoffFilterWhId] = useState('');
+  const [writeoffList, setWriteoffList] = useState([]);
+  const writeoffScanDebounceRef = useRef(null);
+  const writeoffScanInputRef = useRef(null);
+  const writeoffScanDedupRef = useRef({ key: '', at: 0 });
+  const writeoffSuppressScanRef = useRef(false);
   const [customerReturnWarehouseId, setCustomerReturnWarehouseId] = useState('');
   // Список для поступления: { productId, sku, name, quantity, cost }
   const [receiptList, setReceiptList] = useState([]);
@@ -359,6 +370,17 @@ export function WarehouseOperations({
   const customerReturnWarehouses = useMemo(
     () => warehousesForOrganization(ownWarehouses, customerReturnOrganizationId),
     [ownWarehouses, customerReturnOrganizationId]
+  );
+  const writeoffWarehouses = useMemo(
+    () => warehousesForOrganization(ownWarehouses, writeoffOrganizationId),
+    [ownWarehouses, writeoffOrganizationId]
+  );
+  const writeoffFilterWarehouses = useMemo(
+    () =>
+      writeoffFilterOrgId
+        ? warehousesForOrganization(ownWarehouses, writeoffFilterOrgId)
+        : ownWarehouses,
+    [ownWarehouses, writeoffFilterOrgId]
   );
   const [customerReturnList, setCustomerReturnList] = useState([]);
   const [customerReturnMode, setCustomerReturnMode] = useState('scan');
@@ -522,8 +544,13 @@ export function WarehouseOperations({
       const documentType = RECEIPT_DOCUMENT_TYPE_BY_MODE[forMode];
       if (!documentType) return;
       setReceiptsLoading(true);
+      const params = { limit: 200, documentType };
+      if (forMode === MODE_WRITEOFF) {
+        if (writeoffFilterOrgId) params.organizationId = writeoffFilterOrgId;
+        if (writeoffFilterWhId) params.warehouseId = writeoffFilterWhId;
+      }
       receiptsApi
-        .getList({ limit: 200, documentType })
+        .getList(params)
         .then(({ list }) => {
           setReceiptsList(Array.isArray(list) ? list : []);
         })
@@ -533,7 +560,7 @@ export function WarehouseOperations({
         })
         .finally(() => setReceiptsLoading(false));
     },
-    [mode]
+    [mode, writeoffFilterOrgId, writeoffFilterWhId]
   );
 
   const receiptRowTotalUnits = (r) => {
@@ -550,7 +577,7 @@ export function WarehouseOperations({
   }, [mode, setMode]);
 
   useEffect(() => {
-    if (mode === MODE_WRITEOFF) scanInputRef.current?.focus();
+    if (mode === MODE_WRITEOFF) writeoffScanInputRef.current?.focus();
     if (mode === MODE_RETURN_SUPPLIER) returnScanInputRef.current?.focus();
     if (mode === MODE_RETURN_CUSTOMER) customerReturnScanInputRef.current?.focus();
     if (mode === MODE_TRANSFER) transferScanInputRef.current?.focus();
@@ -600,11 +627,33 @@ export function WarehouseOperations({
 
   useEffect(() => {
     if (mode !== MODE_WRITEOFF) return;
+    if (!writeoffOrganizationId) {
+      if (defaultOrganizationId) setWriteoffOrganizationId(String(defaultOrganizationId));
+      else if (singleOrganizationId) setWriteoffOrganizationId(singleOrganizationId);
+    }
+  }, [mode, writeoffOrganizationId, defaultOrganizationId, singleOrganizationId]);
+
+  useEffect(() => {
+    if (mode !== MODE_WRITEOFF) return;
     if (!writeoffWarehouseId) {
       if (inventoryWarehouseId) setWriteoffWarehouseId(String(inventoryWarehouseId));
       else if (singleWarehouseId) setWriteoffWarehouseId(singleWarehouseId);
     }
   }, [mode, writeoffWarehouseId, inventoryWarehouseId, singleWarehouseId]);
+
+  useEffect(() => {
+    const allowed = new Set(writeoffWarehouses.map((w) => String(w.id)));
+    if (writeoffWarehouseId && !allowed.has(String(writeoffWarehouseId))) {
+      setWriteoffWarehouseId('');
+    }
+  }, [writeoffWarehouses, writeoffWarehouseId]);
+
+  useEffect(() => {
+    const allowed = new Set(writeoffFilterWarehouses.map((w) => String(w.id)));
+    if (writeoffFilterWhId && !allowed.has(String(writeoffFilterWhId))) {
+      setWriteoffFilterWhId('');
+    }
+  }, [writeoffFilterWarehouses, writeoffFilterWhId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
@@ -1236,7 +1285,8 @@ export function WarehouseOperations({
       return;
     }
     if (mode === MODE_WRITEOFF) {
-      resolveWriteoffProductSearch(readScanFieldValue(scanInputRef.current));
+      if (writeoffSuppressScanRef.current) return;
+      lookupByBarcodeOrSkuThenWriteoffOne(readScanFieldValue(writeoffScanInputRef.current));
       return;
     }
     lookupByBarcodeOrSku(readScanFieldValue(scanInputRef.current));
@@ -1635,61 +1685,71 @@ export function WarehouseOperations({
         if (suggestContext === 'writeoff_scan') closeSuggest();
         return;
       }
-      if (matches.length === 1) {
-        closeSuggest();
-        setFoundProduct(matches[0]);
-        setQtyInput(1);
-        clearScanField(scanInputRef.current);
-        scanInputRef.current?.focus();
-        return;
-      }
-      openSuggest('writeoff_scan', 'Выберите товар', matches, (p) => {
+      openSuggest('writeoff_scan', 'Выберите товар', matches, async (p) => {
         if (!p) return;
-        setFoundProduct(p);
-        setQtyInput(1);
-        clearScanField(scanInputRef.current);
-        scanInputRef.current?.focus();
+        writeoffSuppressScanRef.current = true;
+        clearScanField(writeoffScanInputRef.current);
+        const added = await addToWriteoffList(p, 1);
+        if (added > 0) {
+          setLookupError(null);
+          setOpMessage(`В список списания: ${p.name || p.sku} — 1 шт`);
+          playEventSound(SOUND_EVENTS.scan_ok);
+        } else {
+          setOpMessage(null);
+          setLookupError('Нет остатка на выбранном складе');
+        }
+        window.setTimeout(() => {
+          writeoffSuppressScanRef.current = false;
+          writeoffScanInputRef.current?.focus();
+        }, 500);
       });
     },
     [findLocalMatches, suggestContext, closeSuggest, openSuggest]
   );
 
-  const resolveWriteoffProductSearch = useCallback(
-    async (value) => {
-      const v = normalizeQuery(value);
-      if (!v) return;
+  const lookupByBarcodeOrSkuThenWriteoffOne = async (value) => {
+    const v = String(value || '').trim();
+    if (!v) {
+      setLookupError('Введите штрихкод / артикул / название');
+      playEventSound(SOUND_EVENTS.scan_error);
+      return;
+    }
+    if (shouldIgnoreDuplicateWarehouseScan(writeoffScanDedupRef, v)) return;
+    if (!writeoffWarehouseId) {
+      setLookupError('Сначала выберите склад списания');
+      playEventSound(SOUND_EVENTS.scan_error);
+      return;
+    }
+    setLookupError(null);
+    try {
+      const product = await lookupProductByAny(v, { title: 'Выберите товар для списания' });
+      const added = await addToWriteoffList(product, 1);
+      if (added < 1) {
+        setOpMessage(null);
+        setLookupError('Нет остатка на выбранном складе');
+        playEventSound(SOUND_EVENTS.scan_error);
+        return;
+      }
       setLookupError(null);
-      let matches = findLocalMatches(v);
-      const remote = await searchProductsRemote(v, { limit: 40 });
-      matches = mergeProductLists(matches, remote);
-      if (matches.length === 1) {
-        closeSuggest();
-        setFoundProduct(matches[0]);
-        setQtyInput(1);
-        clearScanField(scanInputRef.current);
-        scanInputRef.current?.focus();
-        return;
-      }
-      if (matches.length > 1) {
-        openSuggest('writeoff_scan', 'Выберите товар', matches, (p) => {
-          if (!p) return;
-          setFoundProduct(p);
-          setQtyInput(1);
-          clearScanField(scanInputRef.current);
-          scanInputRef.current?.focus();
-        });
-        return;
-      }
-      await lookupByBarcodeOrSku(v);
-    },
-    [findLocalMatches, closeSuggest, openSuggest, lookupByBarcodeOrSku]
-  );
+      setOpMessage(`В список списания: +1 шт — ${product.name || product.sku}`);
+      playEventSound(SOUND_EVENTS.scan_ok);
+      clearScanField(writeoffScanInputRef.current);
+      writeoffScanInputRef.current?.focus();
+    } catch (e) {
+      setOpMessage(null);
+      setLookupError(e.message || 'поиск не удался');
+      playEventSound(SOUND_EVENTS.scan_error);
+    }
+  };
 
-  const handleWriteoffBarcodeScan = useCallback(
+  const handleWriteoffScan = useCallback(
     (code) => {
-      resolveWriteoffProductSearch(code).catch(() => {});
+      if (writeoffSuppressScanRef.current) return;
+      setLookupError(null);
+      lookupByBarcodeOrSkuThenWriteoffOne(code);
+      writeoffScanInputRef.current?.focus();
     },
-    [resolveWriteoffProductSearch]
+    [lookupByBarcodeOrSkuThenWriteoffOne]
   );
 
   const applyWarehouseReceiptBoxQty = useCallback(
@@ -1773,38 +1833,6 @@ export function WarehouseOperations({
     [applyWarehouseReceiptBoxQty]
   );
 
-  const handleWriteOff = async () => {
-    if (!foundProduct) return;
-    if (!writeoffWarehouseId) {
-      setOpMessage('Выберите склад списания');
-      return;
-    }
-    const sub = Math.max(1, parseInt(qtyInput, 10) || 1);
-    setOpLoading(true);
-    setOpMessage(null);
-    try {
-      const whStock = await stockMovementsApi.getWarehouseStock(foundProduct.id, writeoffWarehouseId);
-      const onWh = Math.max(0, Number(whStock?.quantity) || 0);
-      if (sub > onWh) {
-        setOpMessage(`На складе только ${onWh} шт.`);
-        setOpLoading(false);
-        return;
-      }
-      await stockMovementsApi.applyChange(foundProduct.id, {
-        delta: -sub,
-        type: 'writeoff',
-        reason: 'Списание со склада',
-        meta: { warehouse_id: Number(writeoffWarehouseId) }
-      });
-      setOpMessage(`Списано ${sub} шт.`);
-      onRefresh?.();
-    } catch (e) {
-      setOpMessage('Ошибка: ' + (e.message || 'не удалось обновить'));
-    } finally {
-      setOpLoading(false);
-    }
-  };
-
   const warehouseQtyForProduct = async (product, warehouseId) => {
     if (!product?.id) return 0;
     const wid = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId) : '';
@@ -1821,6 +1849,137 @@ export function WarehouseOperations({
     } catch {
       return fromList;
     }
+  };
+
+  /** Добавить товар в список списания (qty ограничено остатком на выбранном складе). Возвращает добавленное кол-во или 0. */
+  const addToWriteoffList = async (product, add) => {
+    if (!writeoffWarehouseId) return 0;
+    const maxQty = await warehouseQtyForProduct(product, writeoffWarehouseId);
+    if (maxQty < 1) return 0;
+    const qty = Math.min(Math.max(1, parseInt(add, 10) || 1), maxQty);
+    if (qty < 1) return 0;
+    const id = product.id;
+    const pc = product?.cost;
+    const defaultCost =
+      pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : null;
+    setWriteoffList((prev) => {
+      const existing = prev.find((item) => String(item.productId) === String(id));
+      if (existing) {
+        const newQty = Math.min(existing.quantity + qty, maxQty);
+        if (newQty <= 0) return prev;
+        return prev.map((item) =>
+          String(item.productId) === String(id)
+            ? { ...item, quantity: newQty, warehouseMaxQty: maxQty }
+            : item
+        );
+      }
+      return [
+        ...prev,
+        {
+          productId: id,
+          sku: product.sku || '—',
+          name: product.name || 'Без названия',
+          quantity: qty,
+          warehouseMaxQty: maxQty,
+          cost: defaultCost,
+        },
+      ];
+    });
+    return qty;
+  };
+
+  const removeFromWriteoffList = (index) => {
+    setWriteoffList((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const updateWriteoffQuantity = (index, value) => {
+    const num = parseInt(value, 10);
+    const item = writeoffList[index];
+    if (!item) return;
+    const maxQty = Math.max(0, Number(item.warehouseMaxQty) || 0);
+    const qty = Math.min(isNaN(num) || num < 1 ? 1 : num, maxQty || 1);
+    setWriteoffList((prev) =>
+      prev.map((it, i) => (i === index ? { ...it, quantity: qty } : it))
+    );
+  };
+
+  const writeoffListTotals = useMemo(() => {
+    let units = 0;
+    let sumRub = 0;
+    for (const item of writeoffList) {
+      const q = Math.max(0, Number(item.quantity) || 0);
+      units += q;
+      const cost = item.cost != null && item.cost !== '' ? Number(item.cost) : null;
+      if (cost != null && Number.isFinite(cost)) sumRub += q * cost;
+    }
+    return { units, sumRub };
+  }, [writeoffList]);
+
+  const applyWriteoffDocument = async () => {
+    if (writeoffList.length === 0) {
+      setOpMessage('Список пуст');
+      return;
+    }
+    if (!writeoffOrganizationId) {
+      setOpMessage('Выберите организацию');
+      return;
+    }
+    if (!writeoffWarehouseId) {
+      setOpMessage('Выберите склад списания');
+      return;
+    }
+    if (!writeoffReason) {
+      setOpMessage('Выберите причину списания');
+      return;
+    }
+    setOpLoading(true);
+    setOpMessage(null);
+    try {
+      const lines = [];
+      for (const l of writeoffList) {
+        const pid = Number(l.productId);
+        if (!Number.isFinite(pid) || pid < 1) continue;
+        const product =
+          products.find((p) => Number(p.id) === pid) || {
+            id: pid,
+            sku: l.sku,
+            name: l.name,
+          };
+        const maxQty = await warehouseQtyForProduct(product, writeoffWarehouseId);
+        if (maxQty < 1) continue;
+        const qty = Math.min(Math.max(1, parseInt(l.quantity, 10) || 1), maxQty);
+        lines.push({ productId: pid, quantity: qty });
+      }
+      if (lines.length === 0) {
+        setOpMessage(
+          'Нет позиций с остатком на выбранном складе — добавьте товары по скану или из списка'
+        );
+        setOpLoading(false);
+        return;
+      }
+      const res = await receiptsApi.create({
+        documentType: 'writeoff',
+        organizationId: Number(writeoffOrganizationId),
+        warehouseId: Number(writeoffWarehouseId),
+        writeoffReason,
+        lines,
+      });
+      const receiptNumber = res?.data?.receipt?.receipt_number || '';
+      setOpMessage(receiptNumber ? `Документ списания ${receiptNumber} оформлен` : 'Списание оформлено');
+      playEventSound(SOUND_EVENTS.success);
+      setWriteoffList([]);
+      onRefresh?.();
+      loadReceiptsList(MODE_WRITEOFF);
+    } catch (e) {
+      setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось оформить'));
+    } finally {
+      setOpLoading(false);
+    }
+  };
+
+  const clearWriteoffList = () => {
+    setWriteoffList([]);
+    setOpMessage('Список очищен');
   };
 
   /** Добавить товар в список возврата поставщику (qty ограничено остатком на выбранном складе) */
@@ -2368,10 +2527,13 @@ export function WarehouseOperations({
     title,
     emptyText,
     showSupplier = true,
-    showTypeColumn = false
+    showTypeColumn = false,
+    showReasonColumn = false,
+    filterControls = null,
   }) => (
     <div className="warehouse-ops-documents-section">
       {title ? <h4 className="warehouse-ops-receipt-list-title">{title}</h4> : null}
+      {filterControls}
       {receiptsLoading ? (
         <div className="loading">Загрузка документов…</div>
       ) : receiptsList.length === 0 ? (
@@ -2384,6 +2546,7 @@ export function WarehouseOperations({
                 <th>Дата</th>
                 <th>Номер</th>
                 {showTypeColumn ? <th>Тип</th> : null}
+                {showReasonColumn ? <th>Причина</th> : null}
                 <th>Организация</th>
                 {showSupplier ? <th>Поставщик</th> : null}
                 <th>Склад</th>
@@ -2413,6 +2576,7 @@ export function WarehouseOperations({
                   {showTypeColumn ? (
                     <td>{receiptDocumentTypeLabel(r.document_type)}</td>
                   ) : null}
+                  {showReasonColumn ? <td>{r.writeoff_reason || '—'}</td> : null}
                   <td>{r.organization_name || '—'}</td>
                   {showSupplier ? <td>{r.supplier_name || r.supplier_code || '—'}</td> : null}
                   <td>{r.warehouse_name || '—'}</td>
@@ -2915,36 +3079,85 @@ export function WarehouseOperations({
 
       {mode === MODE_WRITEOFF && (
         <div className="warehouse-ops-panel writeoff-panel">
-          <p className="warehouse-ops-hint">Отсканируйте штрихкод или введите артикул, затем укажите количество к списанию.</p>
-          <label className="warehouse-ops-field-label" style={{ display: 'block', marginBottom: 12 }}>
-            Склад списания <span className="warehouse-ops-required-star">*</span>
-            <select
-              className="warehouse-ops-select"
-              value={writeoffWarehouseId}
-              onChange={(e) => {
-                setWriteoffWarehouseId(e.target.value);
-                setFoundProduct(null);
-                setOpMessage(null);
-              }}
-              style={{ display: 'block', marginTop: 6, minWidth: 280 }}
-            >
-              <option value="">— выберите склад —</option>
-              {ownWarehouses.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.address || w.name || `Склад #${w.id}`}
+          <p className="warehouse-ops-hint">
+            Укажите организацию, склад и причину списания; добавьте товары сканером или поиском в одной строке.
+            Остаток проверяется по выбранному складу. Документ оформляется одной операцией по всем позициям.
+          </p>
+          <div className="warehouse-ops-return-org-supplier">
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Организация <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={writeoffOrganizationId}
+                onChange={(e) => {
+                  setWriteoffOrganizationId(e.target.value);
+                  setWriteoffWarehouseId('');
+                  setWriteoffList([]);
+                  setOpMessage(null);
+                }}
+                className="warehouse-ops-select"
+              >
+                <option value="">— Выберите организацию —</option>
+                {(organizations || []).map((org) => (
+                  <option key={org.id} value={org.id}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Склад списания <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                className="warehouse-ops-select"
+                value={writeoffWarehouseId}
+                onChange={(e) => {
+                  setWriteoffWarehouseId(e.target.value);
+                  setWriteoffList([]);
+                  setOpMessage(null);
+                }}
+                disabled={!writeoffOrganizationId}
+              >
+                <option value="">
+                  {writeoffOrganizationId ? '— Выберите склад —' : '— Сначала выберите организацию —'}
                 </option>
-              ))}
-            </select>
-          </label>
-          <form onSubmit={handleScanSubmit} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-            <div style={{ position: 'relative', flex: 1 }}>
+                {writeoffWarehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.address || w.name || `Склад #${w.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Причина списания <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                className="warehouse-ops-select"
+                value={writeoffReason}
+                onChange={(e) => setWriteoffReason(e.target.value)}
+              >
+                <option value="Брак">Брак</option>
+                <option value="Утеря">Утеря</option>
+              </select>
+            </div>
+          </div>
+
+          <p className="warehouse-ops-hint">
+            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка. Количество укажите в таблице ниже.
+          </p>
+          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+            <div className="warehouse-ops-scan-form-input-wrap">
               <FastScanInput
-                inputRef={scanInputRef}
-                onScan={handleWriteoffBarcodeScan}
+                inputRef={writeoffScanInputRef}
+                onScan={handleWriteoffScan}
                 onManualQuery={handleWriteoffManualQuery}
-                debounceMs={120}
+                debounceMs={200}
                 manualDebounceMs={400}
-                placeholder="Штрихкод / артикул / название — сканер или Enter"
+                placeholder="Штрихкод, артикул или название"
+                disabled={!writeoffWarehouseId}
                 onBlur={() => {
                   setTimeout(() => {
                     if (suggestContext === 'writeoff_scan') closeSuggest();
@@ -2952,81 +3165,173 @@ export function WarehouseOperations({
                 }}
               />
               {suggestOpen && suggestContext === 'writeoff_scan' && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 'calc(100% + 6px)',
-                    left: 0,
-                    right: 0,
-                    background: '#fff',
-                    border: '1px solid rgba(0,0,0,0.15)',
-                    borderRadius: 8,
-                    boxShadow: '0 10px 24px rgba(0,0,0,0.14)',
-                    maxHeight: 320,
-                    overflow: 'auto',
-                    zIndex: 10
-                  }}
-                >
-                  <div style={{ padding: '8px 10px', fontSize: 12, opacity: 0.75 }}>
-                    {suggestTitle || 'Выберите товар'}
+                <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
+                  <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
+                  <div className="warehouse-ops-suggest-list">
+                    {(suggestList || []).map((p) => (
+                      <button
+                        key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
+                        type="button"
+                        className="warehouse-ops-suggest-item"
+                        onMouseDown={(ev) => {
+                          ev.preventDefault();
+                          writeoffSuppressScanRef.current = true;
+                          clearScanField(writeoffScanInputRef.current);
+                          window.setTimeout(() => {
+                            writeoffSuppressScanRef.current = false;
+                          }, 500);
+                          const fn = suggestOnPickRef.current;
+                          closeSuggest();
+                          if (typeof fn === 'function') fn(p);
+                        }}
+                      >
+                        <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
+                        <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
+                      </button>
+                    ))}
                   </div>
-                  {(suggestList || []).map((p) => (
-                    <button
-                      key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
-                      type="button"
-                      onMouseDown={(ev) => ev.preventDefault()}
-                      onClick={() => {
-                        const fn = suggestOnPickRef.current;
-                        closeSuggest();
-                        if (typeof fn === 'function') fn(p);
-                      }}
-                      style={{
-                        width: '100%',
-                        textAlign: 'left',
-                        padding: '10px 10px',
-                        border: 0,
-                        background: 'transparent',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', justifyContent: 'space-between' }}>
-                        <div style={{ fontWeight: 600 }}>{p.sku || '—'}</div>
-                        <div style={{ opacity: 0.7, fontSize: 12 }}>
-                          Нал: {p.quantity ?? 0} · Ожид: {p.incoming_quantity ?? p.incomingQuantity ?? 0} · Рез: {p.reserved_quantity ?? p.reservedQuantity ?? 0}
-                        </div>
-                      </div>
-                      <div style={{ opacity: 0.85 }}>{p.name || '—'}</div>
-                    </button>
-                  ))}
                 </div>
               )}
             </div>
-          </form>
-          {lookupError && <div className="warehouse-ops-error">{lookupError}</div>}
-          {foundProduct && (
-            <div className="warehouse-ops-product-card">
-              <div className="warehouse-ops-product-info">
-                <strong>{foundProduct.name}</strong>
-                <span className="muted">Артикул: {foundProduct.sku || '—'}</span>
-                <span>Текущий остаток: <strong>{foundProduct.quantity ?? 0}</strong></span>
-              </div>
-              <div className="warehouse-ops-qty-row">
-                <label>Количество к списанию:</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={foundProduct.quantity ?? 0}
-                  value={qtyInput}
-                  onChange={e => setQtyInput(e.target.value)}
-                  className="warehouse-ops-qty-input"
-                />
-                <Button onClick={handleWriteOff} disabled={opLoading || (foundProduct.quantity ?? 0) < 1}>
-                  {opLoading ? 'Сохранение…' : 'Списать'}
-                </Button>
-              </div>
+            <div className="warehouse-ops-scan-form-notice" aria-live="polite">
+              {lookupError ? (
+                <div className="warehouse-ops-scan-form-notice-text warehouse-ops-scan-form-notice-text--error">
+                  {lookupError}
+                </div>
+              ) : opMessage ? (
+                <div className="warehouse-ops-scan-form-notice-text warehouse-ops-scan-form-notice-text--success">
+                  {opMessage}
+                </div>
+              ) : null}
             </div>
-          )}
-          {opMessage && <div className="warehouse-ops-msg success">{opMessage}</div>}
+          </form>
+
+          <div className="warehouse-ops-receipt-list-section">
+            <h4 className="warehouse-ops-receipt-list-title">Список товаров для списания</h4>
+            {writeoffList.length === 0 ? (
+              <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или найдите по артикулу / названию.</p>
+            ) : (
+              <>
+                <div className="warehouse-ops-receipt-list-wrap">
+                  <table className="warehouse-ops-receipt-list-table warehouse-ops-receipt-list-table--line-items table">
+                    <thead>
+                      <tr>
+                        <th>Артикул</th>
+                        <th>Товар</th>
+                        <th>Кол-во</th>
+                        <th>Сумма, ₽</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {writeoffList.map((item, index) => {
+                        const maxQty = Math.max(1, Number(item.warehouseMaxQty) || 1);
+                        const unitCost =
+                          item.cost != null && item.cost !== '' ? Number(item.cost) : null;
+                        const lineSum =
+                          unitCost != null && Number.isFinite(unitCost)
+                            ? unitCost * (Number(item.quantity) || 0)
+                            : null;
+                        return (
+                          <tr key={`${item.productId}-${index}`}>
+                            <td className="sku-cell">{item.sku}</td>
+                            <td className="name-cell">{item.name}</td>
+                            <td>
+                              <input
+                                type="number"
+                                min={1}
+                                max={maxQty}
+                                value={item.quantity}
+                                onChange={(e) => updateWriteoffQuantity(index, e.target.value)}
+                                className="warehouse-ops-qty-input small"
+                              />
+                            </td>
+                            <td className="num-cell">
+                              {lineSum != null ? formatRub(lineSum) : '—'}
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="warehouse-ops-remove-btn"
+                                onClick={() => removeFromWriteoffList(index)}
+                                title="Удалить из списка"
+                              >
+                                ✕
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
+                  Итого: {writeoffListTotals.units} шт
+                  {writeoffListTotals.sumRub > 0 ? ` · ${formatRub(writeoffListTotals.sumRub)}` : ''}
+                </p>
+                <div className="warehouse-ops-receipt-list-actions">
+                  <Button
+                    onClick={applyWriteoffDocument}
+                    disabled={
+                      opLoading ||
+                      !writeoffOrganizationId ||
+                      !writeoffWarehouseId ||
+                      !writeoffReason
+                    }
+                  >
+                    {opLoading ? 'Оформление…' : 'Оформить списание'}
+                  </Button>
+                  <Button variant="secondary" onClick={clearWriteoffList} disabled={opLoading}>
+                    Очистить список
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+
+          {renderWarehouseDocumentsList({
+            title: 'Оформленные списания',
+            emptyText: 'Списаний пока нет',
+            showSupplier: false,
+            showReasonColumn: true,
+            filterControls: (
+              <div className="warehouse-ops-return-org-supplier" style={{ marginBottom: 12 }}>
+                <div className="warehouse-ops-receipt-supplier-row">
+                  <label>Фильтр: организация</label>
+                  <select
+                    value={writeoffFilterOrgId}
+                    onChange={(e) => {
+                      setWriteoffFilterOrgId(e.target.value);
+                      setWriteoffFilterWhId('');
+                    }}
+                    className="warehouse-ops-select"
+                  >
+                    <option value="">— Все организации —</option>
+                    {(organizations || []).map((org) => (
+                      <option key={org.id} value={org.id}>
+                        {org.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="warehouse-ops-receipt-supplier-row">
+                  <label>Фильтр: склад</label>
+                  <select
+                    value={writeoffFilterWhId}
+                    onChange={(e) => setWriteoffFilterWhId(e.target.value)}
+                    className="warehouse-ops-select"
+                  >
+                    <option value="">— Все склады —</option>
+                    {writeoffFilterWarehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.address || w.name || `Склад #${w.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ),
+          })}
         </div>
       )}
 

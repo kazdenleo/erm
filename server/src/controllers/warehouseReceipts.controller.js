@@ -18,10 +18,14 @@ class WarehouseReceiptsController {
       const limit = req.query.limit ? Math.min(500, parseInt(req.query.limit, 10)) : 100;
       const offset = req.query.offset ? parseInt(req.query.offset, 10) : 0;
       const documentType = req.query.documentType ?? req.query.document_type ?? null;
+      const organizationId = req.query.organizationId ?? req.query.organization_id ?? null;
+      const warehouseId = req.query.warehouseId ?? req.query.warehouse_id ?? null;
       const result = await warehouseReceiptsService.getList({
         limit,
         offset,
         documentType,
+        organizationId,
+        warehouseId,
         ...(tid != null ? { profileId: tid } : {})
       });
       return res.status(200).json({ ok: true, data: result.list, total: result.total });
@@ -44,9 +48,18 @@ class WarehouseReceiptsController {
 
   async create(req, res, next) {
     try {
-      const { documentType, organizationId, supplierId, lines, warehouseId, warehouse_id } = req.body || {};
+      const { documentType, organizationId, supplierId, lines, warehouseId, warehouse_id, writeoffReason, writeoff_reason } = req.body || {};
       const whRaw = warehouseId ?? warehouse_id ?? null;
       const linesArr = Array.isArray(lines) ? lines : [];
+      if (documentType === 'writeoff') {
+        const result = await warehouseReceiptsService.createWriteoff({
+          organizationId: organizationId || null,
+          warehouseId: whRaw,
+          writeoffReason: writeoffReason ?? writeoff_reason ?? null,
+          lines: linesArr,
+        });
+        return res.status(200).json({ ok: true, data: result });
+      }
       if (documentType === 'return') {
         const result = await warehouseReceiptsService.createReturn({
           organizationId: organizationId || null,
