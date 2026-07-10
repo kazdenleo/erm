@@ -232,10 +232,10 @@ export function Home() {
   return (
     <div>
       <PageTitle
-        iconClass="pe-7s-graph2"
+        iconClass="pe-7s-home"
         iconBgClass="bg-mean-fruit"
-        title="Analytics Dashboard"
-        subtitle="Это страница-дашборд в стиле ArchitectUI (как на демо)."
+        title="Главная"
+        subtitle="Сводка по заказам, вопросам, возвратам и остаткам"
         actions={(
           <>
             <Button className="btn-shadow me-2" variant="secondary" size="small">

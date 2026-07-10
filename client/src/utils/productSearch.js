@@ -42,9 +42,18 @@ export async function fetchProductByScanCode(code) {
       'Битый штрихкод (object). Откройте карточку товара, введите правильный код и сохраните.'
     );
   }
-  const wrap = await productsApi.getByBarcode(v);
-  const product = unwrapProductFromApiResponse(wrap);
-  if (product?.id) return product;
+  try {
+    const wrap = await productsApi.getByBarcode(v);
+    const product = unwrapProductFromApiResponse(wrap);
+    if (product?.id) return product;
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      throw new Error(`Товар со штрихкодом «${v}» не найден в базе`);
+    }
+    const msg = err?.response?.data?.message || err?.message;
+    if (msg) throw new Error(msg);
+    throw new Error('Не удалось найти товар по штрихкоду');
+  }
   throw new Error(`Товар со штрихкодом «${v}» не найден в базе`);
 }
 

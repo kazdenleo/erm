@@ -208,6 +208,25 @@
   padding: 1.15rem 1.35rem 1.35rem;
 }
 
+.modal-erm .modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.modal-erm .modal-header .modal-title {
+  flex: 1;
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.modal-erm .modal-header-extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .modal-erm .modal-header .modal-title:has(.purchase-detail-modal-title) {
   display: flex;
   flex: 1;

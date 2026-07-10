@@ -50,6 +50,202 @@ class WarehouseReceiptsService {
     return byProduct;
   }
 
+  _receiptLinesToProductMap(lines) {
+    return this._normalizeReceiptLines(
+      (lines || []).map((line) => ({
+        productId: line.product_id ?? line.productId,
+        quantity: line.quantity,
+        cost: line.cost ?? line.product_cost ?? null,
+      }))
+    );
+  }
+
+  async _editUsesLegacyKitAssembly(receiptId, oldLines, newByProduct) {
+    const rid = Number(receiptId);
+    if (!Number.isFinite(rid) || rid < 1) return false;
+    if (!(await this._isLegacyKitAssemblyReceipt(rid))) return false;
+    const ids = new Set();
+    for (const line of oldLines || []) {
+      const pid = line.product_id ?? line.productId;
+      if (pid) ids.add(Number(pid));
+    }
+    for (const row of newByProduct?.values() || []) {
+      if (row?.productId) ids.add(Number(row.productId));
+    }
+    for (const productId of ids) {
+      if (await isKitProductId(productId)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Редактирование приёмки одной записью в журнале: нетто-изменение по каждой позиции.
+   */
+  async _applyReceiptEditNetStock({
+    receipt,
+    receiptId,
+    receiptNumber,
+    warehouseId,
+    oldByProduct,
+    newByProduct,
+    documentType = 'receipt',
+  }) {
+    const isReturnToSupplier = documentType === 'return';
+    const isCustomerReturn = documentType === 'customer_return';
+    const isWriteoff = documentType === 'writeoff';
+    const docLabel = isWriteoff
+      ? 'списания'
+      : isReturnToSupplier
+        ? 'возврата'
+        : isCustomerReturn
+          ? 'возврата от клиента'
+          : 'приёмки';
+    const productIds = new Set([...oldByProduct.keys(), ...newByProduct.keys()]);
+
+    for (const productId of productIds) {
+      const oldQty = Math.max(0, parseInt(oldByProduct.get(productId)?.quantity, 10) || 0);
+      const newRow = newByProduct.get(productId);
+      const newQty = newRow ? Math.max(0, parseInt(newRow.quantity, 10) || 0) : 0;
+      const delta = newQty - oldQty;
+
+      if (newQty > 0) {
+        const cost =
+          newRow?.cost != null && newRow.cost !== ''
+            ? await this._resolveLineCost(productId, newRow.cost)
+            : !isReturnToSupplier
+              ? await this._resolveLineCost(productId, null)
+              : null;
+        await this.receiptsRepo.addLine({
+          receiptId,
+          productId,
+          quantity: newQty,
+          cost: cost != null && cost >= 0 && !isReturnToSupplier ? cost : null,
+        });
+        if (cost != null && !Number.isNaN(cost) && cost >= 0 && !isReturnToSupplier) {
+          await this.productsRepository.update(productId, { cost });
+        }
+      }
+
+      if (delta === 0) continue;
+
+      const reason = `Изменение ${docLabel} ${receiptNumber}: ${oldQty} → ${newQty}`;
+      const isKit = await isKitProductId(productId);
+
+      if (isReturnToSupplier) {
+        if (delta > 0) {
+          let onHand;
+          if (isKit) {
+            const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
+            const metrics = await computeAvailableQuantity(productId, {
+              warehouseId,
+              supplierSyncEnabled: false,
+            });
+            onHand = Math.max(0, Number(metrics.onHand) || 0);
+          } else {
+            onHand = await readProductWarehouseOnHand(productId, warehouseId);
+          }
+          if (onHand < delta) {
+            const product = await this.productsRepository.findById(productId);
+            const label = product?.sku || product?.name || `#${productId}`;
+            const err = new Error(
+              `Недостаточно товара на складе: ${label} (доступно ${onHand}, нужно ${delta})`
+            );
+            err.statusCode = 400;
+            throw err;
+          }
+        }
+        await stockMovementsService.applyChange(productId, {
+          delta: -delta,
+          type: 'return_to_supplier',
+          reason,
+          meta: {
+            receipt_id: receiptId,
+            receipt_number: receiptNumber,
+            warehouse_id: warehouseId,
+            receipt_edit: true,
+            quantity_before: oldQty,
+            quantity_after: newQty,
+          },
+        });
+        continue;
+      }
+
+      if (isCustomerReturn) {
+        await stockMovementsService.applyChange(productId, {
+          delta,
+          type: 'customer_return',
+          reason,
+          meta: {
+            receipt_id: receiptId,
+            receipt_number: receiptNumber,
+            warehouse_id: warehouseId,
+            receipt_edit: true,
+            quantity_before: oldQty,
+            quantity_after: newQty,
+            ...(isKit ? { kit_customer_return: true } : {}),
+          },
+        });
+        continue;
+      }
+
+      if (isWriteoff) {
+        if (delta > 0) {
+          let onHand;
+          if (isKit) {
+            const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
+            const metrics = await computeAvailableQuantity(productId, {
+              warehouseId,
+              supplierSyncEnabled: false,
+            });
+            onHand = Math.max(0, Number(metrics.onHand) || 0);
+          } else {
+            onHand = await readProductWarehouseOnHand(productId, warehouseId);
+          }
+          if (onHand < delta) {
+            const product = await this.productsRepository.findById(productId);
+            const label = product?.sku || product?.name || `#${productId}`;
+            const err = new Error(
+              `Недостаточно товара на складе: ${label} (доступно ${onHand}, нужно ${delta})`
+            );
+            err.statusCode = 400;
+            throw err;
+          }
+        }
+        await stockMovementsService.applyChange(productId, {
+          delta: -delta,
+          type: 'writeoff',
+          reason,
+          meta: {
+            receipt_id: receiptId,
+            receipt_number: receiptNumber,
+            warehouse_id: warehouseId,
+            organization_id: receipt.organization_id ?? receipt.organizationId ?? null,
+            receipt_edit: true,
+            quantity_before: oldQty,
+            quantity_after: newQty,
+            ...(isKit ? { kit_writeoff: true } : {}),
+          },
+        });
+        continue;
+      }
+
+      await stockMovementsService.applyChange(productId, {
+        delta,
+        type: 'receipt',
+        reason,
+        meta: {
+          receipt_id: receiptId,
+          receipt_number: receiptNumber,
+          warehouse_id: warehouseId,
+          receipt_edit: true,
+          quantity_before: oldQty,
+          quantity_after: newQty,
+          ...(isKit ? { kit_receipt: true } : {}),
+        },
+      });
+    }
+  }
+
   /** Себестоимость строки: из запроса или из карточки товара. */
   async _resolveLineCost(productId, lineCost) {
     const parsed = lineCost != null && lineCost !== '' ? parseFloat(lineCost) : null;
@@ -153,18 +349,14 @@ class WarehouseReceiptsService {
     if (!Number.isFinite(rid) || rid < 1) return false;
     const r = await query(
       `SELECT COUNT(*)::int AS total,
-              COUNT(*) FILTER (
-                WHERE COALESCE(meta->>'deleted', '') IN ('true', '1')
-                   OR COALESCE(meta->>'kit_assembly_receipt_reversal', '') IN ('true', '1')
-                   OR COALESCE(meta->>'receipt_reversal', '') IN ('true', '1')
-              )::int AS reversed
+              COALESCE(SUM(quantity_change), 0)::int AS net
        FROM stock_movements
        WHERE (meta->>'receipt_id')::bigint = $1`,
       [rid]
     );
     const total = r.rows?.[0]?.total ?? 0;
-    const reversed = r.rows?.[0]?.reversed ?? 0;
-    return total > 0 && reversed >= total;
+    const net = r.rows?.[0]?.net ?? 0;
+    return total > 0 && net === 0;
   }
 
   /** Старая приёмка «сборки»: в журнале есть списание комплектующих по этому документу. */
@@ -625,6 +817,9 @@ class WarehouseReceiptsService {
   }
 
   async getByIdWithLines(id) {
+    const purchasesService = (await import('./purchases.service.js')).default;
+    await purchasesService.ensureWarehouseReceiptNotMerged(id);
+
     const receipt = await this.receiptsRepo.findById(id);
     if (!receipt) return null;
     const lines = await this.receiptsRepo.getLinesWithProducts(id);
@@ -648,7 +843,12 @@ class WarehouseReceiptsService {
     };
   }
 
-  async _reverseReceiptLinesStock(receipt, lines, numId, { reasonSuffix = '' } = {}) {
+  async _reverseReceiptLinesStock(
+    receipt,
+    lines,
+    numId,
+    { reasonSuffix = '', skipAlreadyReversedCheck = false } = {}
+  ) {
     const isReturnToSupplier = receipt.document_type === 'return';
     const isCustomerReturn = receipt.document_type === 'customer_return';
     const isWriteoff = receipt.document_type === 'writeoff';
@@ -673,8 +873,12 @@ class WarehouseReceiptsService {
         : isCustomerReturn
           ? `Аннулирование возврата от клиента ${receiptNumber}${suffix}`
           : `Аннулирование приёмки ${receiptNumber}${suffix}`;
-    const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId);
-    if (stockAlreadyReversed) return { stockSkipped: true, reason, receiptNumber };
+    if (!skipAlreadyReversedCheck) {
+      const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId);
+      if (stockAlreadyReversed) return { stockSkipped: true, reason, receiptNumber };
+    }
+
+    const isReceiptEdit = /изменение/i.test(suffix);
 
     for (const line of lines || []) {
       const productId = line.product_id ?? line.productId;
@@ -723,6 +927,7 @@ class WarehouseReceiptsService {
           deleted: true,
           ...(isWriteoff ? { writeoff_reversal: true } : { receipt_reversal: true }),
           ...(isKit ? { kit_writeoff: true } : {}),
+          ...(isReceiptEdit ? { receipt_edit: true } : {}),
         },
       });
     }
@@ -741,6 +946,7 @@ class WarehouseReceiptsService {
     const isReturnToSupplier = documentType === 'return';
     const isCustomerReturn = documentType === 'customer_return';
     const suffix = reasonSuffix != null ? String(reasonSuffix) : '';
+    const isReceiptEdit = /изменение/i.test(suffix);
     const reason = isReturnToSupplier
       ? `Возврат поставщику ${receiptNumber}${suffix}`
       : isCustomerReturn
@@ -834,6 +1040,7 @@ class WarehouseReceiptsService {
             receipt_number: receiptNumber,
             warehouse_id: warehouseId,
             ...(isKit ? { kit_receipt: true } : {}),
+            ...(isReceiptEdit ? { receipt_edit: true } : {}),
           },
         });
         if (cost != null && !Number.isNaN(cost) && cost >= 0) {
@@ -848,7 +1055,14 @@ class WarehouseReceiptsService {
    */
   async updateReceipt(
     id,
-    { organizationId = null, supplierId = null, warehouseId = null, lines = [], profileId = null } = {}
+    {
+      organizationId = null,
+      supplierId = null,
+      warehouseId = null,
+      lines = [],
+      profileId = null,
+      purchaseReceiptId = null,
+    } = {}
   ) {
     const numId = parseInt(id, 10);
     if (!numId || Number.isNaN(numId)) {
@@ -888,6 +1102,12 @@ class WarehouseReceiptsService {
         warehouseId,
         lines,
         profileId,
+        purchaseReceiptId:
+          purchaseReceiptId != null
+            ? purchaseReceiptId
+            : receipt.purchase_receipt_id != null
+              ? receipt.purchase_receipt_id
+              : null,
       });
       return this.getByIdWithLines(numId);
     }
@@ -908,30 +1128,49 @@ class WarehouseReceiptsService {
     }
 
     const oldLines = receipt.lines || [];
+    const oldByProduct = this._receiptLinesToProductMap(oldLines);
     const warehouseChanged =
       oldWarehouseId != null &&
       whId != null &&
       Number(oldWarehouseId) > 0 &&
       Number(whId) > 0 &&
       Number(oldWarehouseId) !== Number(whId);
-    const reasonSuffix = warehouseChanged ? ' — смена склада' : '';
-    await this._reverseReceiptLinesStock(receipt, oldLines, numId, { reasonSuffix });
+    const receiptNumber = receipt.receipt_number || `ПТ-${numId}`;
+    const useNetEdit =
+      !warehouseChanged && !(await this._editUsesLegacyKitAssembly(numId, oldLines, byProduct));
+
     await this.receiptsRepo.updateHeader(numId, {
       supplierId: scope.supplierId,
       organizationId: scope.organizationId,
     });
     await this.receiptsRepo.deleteLines(numId);
 
-    const receiptNumber = receipt.receipt_number || `ПТ-${numId}`;
-    await this._applyDocumentLinesStock({
-      receipt,
-      receiptId: numId,
-      receiptNumber,
-      warehouseId: whId,
-      linesByProduct: byProduct,
-      documentType,
-      reasonSuffix,
-    });
+    if (useNetEdit) {
+      await this._applyReceiptEditNetStock({
+        receipt,
+        receiptId: numId,
+        receiptNumber,
+        warehouseId: whId,
+        oldByProduct,
+        newByProduct: byProduct,
+        documentType,
+      });
+    } else {
+      const reasonSuffix = warehouseChanged ? ' — изменение (смена склада)' : ' — изменение';
+      await this._reverseReceiptLinesStock(receipt, oldLines, numId, {
+        reasonSuffix,
+        skipAlreadyReversedCheck: true,
+      });
+      await this._applyDocumentLinesStock({
+        receipt,
+        receiptId: numId,
+        receiptNumber,
+        warehouseId: whId,
+        linesByProduct: byProduct,
+        documentType,
+        reasonSuffix,
+      });
+    }
 
     return this.getByIdWithLines(numId);
   }

@@ -11,6 +11,7 @@ export function Modal({
   isOpen,
   onClose,
   title,
+  headerExtra = null,
   children,
   size = 'medium',
   closeOnBackdropClick = true,
@@ -67,6 +68,7 @@ export function Modal({
           <div className="modal-content">
             <div className="modal-header">
               <h5 className="modal-title">{title}</h5>
+              {headerExtra ? <div className="modal-header-extra">{headerExtra}</div> : null}
               <button type="button" className="btn-close" aria-label="Close" onClick={onClose} />
             </div>
             <div className="modal-body">{children}</div>

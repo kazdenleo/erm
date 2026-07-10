@@ -1576,7 +1576,7 @@ class ProductsRepositoryPG {
     product.ym_market_sku = skuMeta.ym_market_sku ?? null;
     product.ym_product_id = skuMeta.ym_product_id ?? null;
     applyWbListingFields(product);
-    await this._reconcileReservedQuantityFromMovements([product]);
+      await this._reconcileReservedQuantityFromMovements([product]);
     const { isKitCatalogProduct, attachKitDisplayMetrics, buildKitListStockContext } =
       await import('../services/kitStock.service.js');
     if (isKitCatalogProduct(product)) {
@@ -1590,12 +1590,13 @@ class ProductsRepositoryPG {
           quantity: r.quantity
         }));
         product.is_kit_catalog = true;
-      } catch {
+        const kitCtx = await buildKitListStockContext([product], {});
+        if (kitCtx) {
+          await attachKitDisplayMetrics([product], { _kitCtx: kitCtx });
+        }
+      } catch (kitErr) {
+        console.warn('[Products Repository] findById kit metrics:', kitErr.message);
         product.kit_components = product.kit_components || [];
-      }
-      const kitCtx = await buildKitListStockContext([product], {});
-      if (kitCtx) {
-        await attachKitDisplayMetrics([product], { _kitCtx: kitCtx });
       }
     }
     return product;

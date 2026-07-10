@@ -24,6 +24,8 @@ import {
   manualWarehouseStockEditBlockedReason,
   isKitStockHistoryMovement,
   kitIncomingUnitsFromPurchaseMovements,
+  isPurchaseIncomingRemovalMovement,
+  isKitPurchaseIncomingAddMovement,
 } from '../../utils/kitStockMetrics';
 import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
 import { useSuppliers } from '../../hooks/useSuppliers';
@@ -188,6 +190,32 @@ function snapshotFromMovement(m, warehouseFilterId = null) {
   };
 }
 
+/** Наличие после возврата поставщику: предыдущая строка + quantity_change. */
+function balanceAfterSupplierReturn(prevBal, quantityChange) {
+  const qc = Number(quantityChange);
+  if (prevBal != null && !Number.isNaN(Number(prevBal)) && Number.isFinite(qc) && qc !== 0) {
+    return Math.max(0, Number(prevBal) + qc);
+  }
+  return null;
+}
+
+function supplierReturnKitQuantityChange(ms, kitProduct) {
+  const kid = kitProduct?.id != null ? String(kitProduct.id) : '';
+  if (kid) {
+    const kitLine = (ms || []).find((m) => String(m.product_id ?? m.productId) === kid);
+    if (kitLine) {
+      const qc = Number(kitLine.quantity_change);
+      if (Number.isFinite(qc) && qc !== 0) return qc;
+    }
+  }
+  const asmLost = kitAssemblableUnitsLostFromReturnMovements(ms);
+  if (asmLost > 0) return -asmLost;
+  const head = pickKitSupplierReturnHeadMovement(ms, kitProduct?.id);
+  const hq = Number(head?.quantity_change);
+  if (Number.isFinite(hq) && hq !== 0) return hq;
+  return null;
+}
+
 function formatAfterDelta(after, prev) {
   if (after == null || Number.isNaN(after)) return '—';
   if (prev == null || Number.isNaN(prev)) return String(after);
@@ -206,6 +234,12 @@ function inferPrevForDelta(after, prev, m, column, warehouseFilterId = null) {
   }
   const qc = Number(m.quantity_change);
   if (!Number.isFinite(qc)) return null;
+  if (column === 'inc' && movementTypeLower(m) === 'transfer') {
+    return after;
+  }
+  if (column === 'res' && movementTypeLower(m) === 'transfer') {
+    return after;
+  }
   if (column === 'inc' && movementTypeLower(m) === 'incoming') {
     if (warehouseFilterId != null && String(warehouseFilterId).trim() !== '') {
       const meta = parseMovementMeta(m);
@@ -280,6 +314,7 @@ function isHiddenStockHistoryMovement(m) {
   const r = String(m.reason || '').trim();
   if (/списание\s+incoming\s+по\s+при[её]мке/i.test(r)) return true;
   if (/возврат\s+ожидания\s*\(incoming\)\s+по\s+при[её]мке/i.test(r)) return true;
+  if (/—\s*изменение/i.test(r)) return true;
   return false;
 }
 
@@ -289,6 +324,178 @@ function isCancelledReceiptRollbackMovement(m) {
   return (
     /^(?:сторно:\s*)?откат\s+при[её]мки/i.test(r) ||
     /^отмена\s+при[её]мки/i.test(r)
+  );
+}
+
+/** Редактирование приёмки: откат + повторное проведение с суффиксом «— изменение». */
+function isReceiptEditMovement(m) {
+  const meta = parseMovementMeta(m);
+  if (meta.receipt_edit === true || meta.receipt_edit === 'true') return true;
+  if (/^изменение\s+(?:при[её]мки|списания|возврата)/i.test(String(m.reason || ''))) return true;
+  return /—\s*изменение/i.test(String(m.reason || ''));
+}
+
+function receiptEditDocKey(m) {
+  const meta = parseMovementMeta(m);
+  const rid = meta.receipt_id ?? meta.receiptId;
+  const prid = meta.purchase_receipt_id ?? meta.purchaseReceiptId;
+  if (rid != null && String(rid).trim() !== '') return `wr:${rid}`;
+  if (prid != null && String(prid).trim() !== '') return `pr:${prid}`;
+  const receiptNumber = meta.receipt_number ?? meta.receiptNumber;
+  if (receiptNumber != null && String(receiptNumber).trim() !== '') {
+    return `rn:${String(receiptNumber).trim()}`;
+  }
+  const fromReason = /(ПТ|ВК|ВН|СП)-\d+/i.exec(String(m.reason || ''));
+  if (fromReason) return `rn:${fromReason[0].toUpperCase()}`;
+  return null;
+}
+
+function isReceiptEditApplyMovement(m) {
+  if (!isReceiptEditMovement(m)) return false;
+  if (isReceiptEditReversalMovement(m)) return false;
+  const qc = Number(m.quantity_change);
+  return Number.isFinite(qc) && qc > 0;
+}
+
+/** Пары «откат + повторное проведение» по одному документу (не по минуте — операции могут быть в разные минуты). */
+function buildReceiptEditGroups(list) {
+  const editMs = (list || [])
+    .filter((m) => isReceiptEditMovement(m) && movementTypeLower(m) !== 'incoming')
+    .sort((a, b) => {
+      const ida = Number(a.id);
+      const idb = Number(b.id);
+      if (Number.isFinite(ida) && Number.isFinite(idb) && ida !== idb) return idb - ida;
+      return 0;
+    });
+
+  const used = new Set();
+  const movementToGroupKey = new Map();
+  const groupsByKey = new Map();
+  let groupSeq = 0;
+  const movementId = (m) => String(m?.id ?? '');
+
+  for (const apply of editMs) {
+    if (used.has(movementId(apply)) || !isReceiptEditApplyMovement(apply)) continue;
+    const docKey = receiptEditDocKey(apply);
+    if (!docKey) continue;
+    const applyId = Number(apply.id);
+    if (!Number.isFinite(applyId)) continue;
+
+    const reversal = editMs
+      .filter((r) => {
+        if (used.has(movementId(r)) || !isReceiptEditReversalMovement(r)) return false;
+        if (receiptEditDocKey(r) !== docKey) return false;
+        const rid = Number(r.id);
+        return Number.isFinite(rid) && rid < applyId;
+      })
+      .sort((a, b) => Number(b.id) - Number(a.id))[0];
+
+    if (!reversal) continue;
+
+    const block = [apply, reversal];
+    if (!canCollapseReceiptEditGroup(block)) continue;
+
+    const groupKey = `${docKey}:${groupSeq++}`;
+    const sorted = [...block].sort((a, b) => Number(b.id) - Number(a.id));
+    const minId = Math.min(Number(apply.id), Number(reversal.id));
+    const maxId = Math.max(Number(apply.id), Number(reversal.id));
+
+    for (const extra of list || []) {
+      if (used.has(movementId(extra))) continue;
+      if (!isReceiptEditMovement(extra)) continue;
+      if (receiptEditDocKey(extra) !== docKey) continue;
+      const eid = Number(extra.id);
+      if (!Number.isFinite(eid) || eid <= minId || eid >= maxId) continue;
+      sorted.push(extra);
+    }
+    sorted.sort((a, b) => Number(b.id) - Number(a.id));
+
+    groupsByKey.set(groupKey, sorted);
+    for (const x of sorted) {
+      used.add(movementId(x));
+      movementToGroupKey.set(movementId(x), groupKey);
+    }
+  }
+
+  return { groupsByKey, movementToGroupKey };
+}
+
+function receiptEditStockMovements(movements) {
+  return (movements || []).filter((m) => {
+    const t = movementTypeLower(m);
+    return t === 'receipt' || t === 'manual' || t === 'customer_return' || t === 'writeoff';
+  });
+}
+
+function isReceiptEditReversalMovement(m) {
+  const meta = parseMovementMeta(m);
+  if (meta.receipt_reversal === true || meta.receipt_reversal === 'true') return true;
+  if (meta.storno === true || meta.storno === 'true') return true;
+  if (/аннулирование/i.test(String(m.reason || ''))) return true;
+  if (/отмена\s+при[её]мки/i.test(String(m.reason || ''))) return true;
+  const qc = Number(m.quantity_change);
+  return Number.isFinite(qc) && qc < 0;
+}
+
+function receiptEditQtyPair(movements) {
+  const stockMs = receiptEditStockMovements(movements);
+  let oldQty = 0;
+  let newQty = 0;
+  for (const m of stockMs) {
+    const qc = Math.abs(Number(m.quantity_change) || 0);
+    if (!qc) continue;
+    if (isReceiptEditReversalMovement(m)) oldQty += qc;
+    else if (Number(m.quantity_change) > 0) newQty += qc;
+  }
+  return { oldQty, newQty, stockMs };
+}
+
+function pickReceiptEditHeadMovement(movements) {
+  const { stockMs } = receiptEditQtyPair(movements);
+  return (
+    stockMs.find((m) => Number(m.quantity_change) > 0) ||
+    stockMs[0] ||
+    movements?.[0] ||
+    null
+  );
+}
+
+function formatReceiptEditGroupReason(movements) {
+  const { oldQty, newQty } = receiptEditQtyPair(movements);
+  const head = pickReceiptEditHeadMovement(movements);
+  const meta = head ? parseMovementMeta(head) : {};
+  const receiptNumber = meta.receipt_number ?? meta.receiptNumber ?? null;
+  let docRef = '';
+  if (receiptNumber && String(receiptNumber).trim() !== '') {
+    docRef = String(receiptNumber).trim();
+  } else if (meta.receipt_id != null) {
+    docRef = `ПТ-${meta.receipt_id}`;
+  } else if (meta.purchase_receipt_id != null) {
+    docRef = `№${meta.purchase_receipt_id}`;
+  }
+  const qtyPart =
+    oldQty > 0 || newQty > 0 ? `: ${oldQty} → ${newQty}` : '';
+  return docRef
+    ? `Изменение приёмки ${docRef}${qtyPart}`
+    : `Изменение приёмки${qtyPart}`;
+}
+
+function canCollapseReceiptEditGroup(block) {
+  if (!Array.isArray(block) || block.length < 2) return false;
+  const { stockMs } = receiptEditQtyPair(block);
+  if (stockMs.length < 2) return false;
+  const hasRev = stockMs.some((m) => isReceiptEditReversalMovement(m));
+  const hasApply = stockMs.some((m) => Number(m.quantity_change) > 0);
+  return hasRev && hasApply;
+}
+
+function isKitAssemblyReceiptMovement(m) {
+  const meta = parseMovementMeta(m);
+  return (
+    movementTypeLower(m) === 'receipt' &&
+    (meta.kit_assembly_receipt === true ||
+      meta.kit_assembly_receipt === 'true' ||
+      /производство:\s*сборка\s+комплекта/i.test(String(m.reason || '')))
   );
 }
 
@@ -444,20 +651,7 @@ function purchaseIdFromMovement(m) {
 }
 
 function isKitPurchaseIncomingMovement(m, kitProduct = null) {
-  if (movementTypeLower(m) !== 'incoming') return false;
-  const reason = String(m.reason || '');
-  if (!/закупк/i.test(reason) || !/ожидан/i.test(reason)) return false;
-  const meta = parseMovementMeta(m);
-  if (meta.kit_component_incoming === true || meta.kit_component_incoming === 'true') return true;
-  if (!kitProduct) return false;
-  const pid = String(m.product_id ?? m.productId ?? '');
-  const kitId = String(kitProduct.id ?? '');
-  if (pid && kitId && pid === kitId) return true;
-  const comps = kitProduct.kit_components ?? kitProduct.kitComponents;
-  return (
-    Array.isArray(comps) &&
-    comps.some((c) => String(c.productId ?? c.component_product_id) === pid)
-  );
+  return isKitPurchaseIncomingAddMovement(m, kitProduct);
 }
 
 function kitPurchaseIncomingKey(m) {
@@ -468,7 +662,16 @@ function kitPurchaseIncomingKey(m) {
 }
 
 function pickKitPurchaseIncomingHeadMovement(movements) {
-  return movements.find((m) => /закупк/i.test(String(m.reason || ''))) || movements[0];
+  return (
+    movements.find(
+      (m) =>
+        /^закупка\s*№/i.test(String(m.reason || '')) &&
+        /ожидан/i.test(String(m.reason || '')) &&
+        !isPurchaseIncomingRemovalMovement(m)
+    ) ||
+    movements.find((m) => /закупк/i.test(String(m.reason || '')) && !isPurchaseIncomingRemovalMovement(m)) ||
+    movements[0]
+  );
 }
 
 /** Уникальные номера заказов в порядке появления в пачке (список уже id DESC). */
@@ -564,11 +767,15 @@ function buildHistoryDisplayRows(list, kitProduct = null) {
   for (const arr of unreserveByKey.values()) sortBlock(arr);
   for (const arr of outboundByKey.values()) sortBlock(arr);
 
+  const { groupsByKey: receiptEditGroups, movementToGroupKey: receiptEditMovementKey } =
+    buildReceiptEditGroups(list);
+
   const emittedReserve = new Set();
   const emittedUnreserve = new Set();
   const emittedOutbound = new Set();
   const emittedKitReturn = new Set();
   const emittedKitPurchaseIncoming = new Set();
+  const emittedReceiptEdit = new Set();
   const out = [];
   for (const m of list) {
     if (kitId && isKitPurchaseIncomingMovement(m, kitProduct)) {
@@ -626,6 +833,18 @@ function buildHistoryDisplayRows(list, kitProduct = null) {
     if (kitId && isKitPurchaseIncomingMovement(m, kitProduct)) {
       continue;
     }
+    if (isReceiptEditMovement(m)) {
+      const gKey = receiptEditMovementKey.get(String(m.id));
+      if (gKey) {
+        if (emittedReceiptEdit.has(gKey)) continue;
+        emittedReceiptEdit.add(gKey);
+        out.push({
+          kind: 'receiptEditGroup',
+          movements: receiptEditGroups.get(gKey) || [m],
+        });
+        continue;
+      }
+    }
     out.push({ kind: 'single', m });
   }
   return out;
@@ -638,9 +857,14 @@ function snapshotAfterDisplayItem(item, warehouseFilterId = null) {
     item.kind === 'unreserveGroup' ||
     item.kind === 'outboundGroup' ||
     item.kind === 'kitReturnGroup' ||
-    item.kind === 'kitPurchaseIncomingGroup'
+    item.kind === 'kitPurchaseIncomingGroup' ||
+    item.kind === 'receiptEditGroup'
   ) {
-    return snapshotFromMovement(item.movements[0], warehouseFilterId);
+    const head =
+      item.kind === 'receiptEditGroup'
+        ? pickReceiptEditHeadMovement(item.movements)
+        : item.movements[0];
+    return snapshotFromMovement(head, warehouseFilterId);
   }
   return snapshotFromMovement(item.m, warehouseFilterId);
 }
@@ -760,20 +984,18 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
 
   if (item.kind === 'kitReturnGroup') {
     const ms = item.movements;
-    const kitLine =
-      kitProduct?.id != null
-        ? ms.find((m) => String(m.product_id ?? m.productId) === String(kitProduct.id))
+    const head = pickKitSupplierReturnHeadMovement(ms, kitProduct?.id);
+    const whBal = warehouseBalanceFromMovement(head, warehouseFilterId);
+    const dbBal = movementNum(head, 'balance_after');
+    const kitQc = supplierReturnKitQuantityChange(ms, kitProduct);
+    const computedBal =
+      prevLineBelow?.bal != null && kitQc != null
+        ? balanceAfterSupplierReturn(prevLineBelow.bal, kitQc)
         : null;
-    const head = kitLine || ms[0];
-    const whBal = warehouseBalanceFromMovement(kitLine || head, warehouseFilterId);
-    const dbBal = kitLine ? movementNum(kitLine, 'balance_after') : movementNum(head, 'balance_after');
-    if (whBal != null) out.bal = whBal;
+    if (computedBal != null) out.bal = computedBal;
+    else if (whBal != null) out.bal = whBal;
     else if (dbBal != null) out.bal = dbBal;
-    else if (prevLineBelow?.bal != null && kitLine) {
-      out.bal = Number(prevLineBelow.bal) + (Number(kitLine.quantity_change) || 0);
-    } else if (prevLineBelow?.bal != null) {
-      out.bal = Number(prevLineBelow.bal);
-    }
+    else if (prevLineBelow?.bal != null) out.bal = Number(prevLineBelow.bal);
     if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
       out.inc = Number(prevLineBelow.inc);
     } else {
@@ -816,6 +1038,33 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
     return out;
   }
 
+  if (item.kind === 'receiptEditGroup') {
+    const head = pickReceiptEditHeadMovement(item.movements);
+    const stockMs = receiptEditStockMovements(item.movements);
+    const netQc = sumMovementsQuantityChange(stockMs);
+    const dbInc = movementNum(head, 'incoming_after');
+    const dbRes = movementNum(head, 'reserved_after');
+    const dbBal = movementNum(head, 'balance_after');
+    const whBal = warehouseBalanceFromMovement(head, warehouseFilterId);
+    if (dbInc != null) out.inc = dbInc;
+    else if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+      out.inc = Number(prevLineBelow.inc);
+    }
+    if (dbRes != null) out.res = dbRes;
+    else if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+      out.res = Number(prevLineBelow.res);
+    }
+    if (whBal != null) out.bal = whBal;
+    else if (dbBal != null) out.bal = dbBal;
+    else if (prevLineBelow?.bal != null && Number.isFinite(netQc)) {
+      out.bal = Number(prevLineBelow.bal) + netQc;
+    }
+    if (out.inc == null || Number.isNaN(Number(out.inc))) out.inc = 0;
+    if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
+    if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
+    return out;
+  }
+
   if (item.kind === 'single') {
     const m = item.m;
     const t = movementTypeLower(m);
@@ -851,6 +1100,25 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
 
     if (t === 'incoming' && /закупк/i.test(reason) && /ожидан/i.test(reason)) {
       const meta = parseMovementMeta(m);
+      if (
+        isKitProduct(kitProduct) &&
+        isPurchaseIncomingRemovalMovement(m)
+      ) {
+        const qc = Number(m.quantity_change);
+        if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
+          out.bal = Number(prevLineBelow.bal);
+        } else if (out.bal == null || Number.isNaN(Number(out.bal))) out.bal = 0;
+        if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+          out.res = Number(prevLineBelow.res);
+        } else if (out.res == null || Number.isNaN(Number(out.res))) out.res = 0;
+        if (prevLineBelow?.inc != null && Number.isFinite(qc)) {
+          out.inc = Math.max(0, Number(prevLineBelow.inc) + qc);
+        } else {
+          const dbInc = movementNum(m, 'incoming_after');
+          out.inc = dbInc != null ? dbInc : 0;
+        }
+        return out;
+      }
       if (
         isKitPurchaseIncomingMovement(m, kitProduct) ||
         meta.kit_component_incoming === true ||
@@ -934,6 +1202,54 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       }
       return out;
     }
+    if (isKitAssemblyReceiptMovement(m)) {
+      const moveQty = Math.max(0, Number(m.quantity_change) || 0);
+      const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
+      const dbBal = movementNum(m, 'balance_after');
+      if (whBal != null) out.bal = whBal;
+      else if (dbBal != null) out.bal = dbBal;
+      else if (prevLineBelow?.bal != null && moveQty > 0) {
+        out.bal = Number(prevLineBelow.bal) + moveQty;
+      }
+      // Сборка комплекта меняет только наличие SKU комплекта — не «в пути» и не резерв.
+      if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+        out.inc = Number(prevLineBelow.inc);
+      } else {
+        out.inc = 0;
+      }
+      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        out.res = Number(prevLineBelow.res);
+      } else {
+        out.res = 0;
+      }
+      return out;
+    }
+    if (t === 'transfer') {
+      const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
+      const dbBal = movementNum(m, 'balance_after');
+      const qc = Number(m.quantity_change);
+      if (whBal != null) {
+        out.bal = whBal;
+      } else if (prevLineBelow?.bal != null && Number.isFinite(qc)) {
+        out.bal = Math.max(0, Number(prevLineBelow.bal) + qc);
+      } else if (dbBal != null) {
+        out.bal = dbBal;
+      }
+      // Перемещение между складами меняет только наличие на складе.
+      if (prevLineBelow?.inc != null && !Number.isNaN(Number(prevLineBelow.inc))) {
+        out.inc = Number(prevLineBelow.inc);
+      } else {
+        const dbInc = movementNum(m, 'incoming_after');
+        out.inc = dbInc != null ? dbInc : 0;
+      }
+      if (prevLineBelow?.res != null && !Number.isNaN(Number(prevLineBelow.res))) {
+        out.res = Number(prevLineBelow.res);
+      } else {
+        const dbRes = movementNum(m, 'reserved_after');
+        out.res = dbRes != null ? dbRes : 0;
+      }
+      return out;
+    }
     if (t === 'writeoff') {
       const meta = parseMovementMeta(m);
       const isReversal =
@@ -966,16 +1282,32 @@ function enrichHistoryRowSnapshot(item, cur, prevLineBelow, kitProduct = null, w
       const meta = parseMovementMeta(m);
       const dbBal = movementNum(m, 'balance_after');
       const whBal = warehouseBalanceFromMovement(m, warehouseFilterId);
-      if (meta.kit_component_return_to_supplier === true) {
-        if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
+      const qc = Number(m.quantity_change);
+      if (
+        t === 'return_to_supplier' &&
+        prevLineBelow?.bal != null &&
+        Number.isFinite(qc) &&
+        qc !== 0
+      ) {
+        const computedBal = balanceAfterSupplierReturn(prevLineBelow.bal, qc);
+        if (computedBal != null) out.bal = computedBal;
+      } else if (meta.kit_component_return_to_supplier === true) {
+        const lost = Math.max(0, Number(meta.kit_assemblable_units_lost) || 0);
+        const kitQc = lost > 0 ? -lost : Number(m.quantity_change) || 0;
+        const computedBal =
+          prevLineBelow?.bal != null && kitQc !== 0
+            ? balanceAfterSupplierReturn(prevLineBelow.bal, kitQc)
+            : null;
+        if (computedBal != null) out.bal = computedBal;
+        else if (prevLineBelow?.bal != null && !Number.isNaN(Number(prevLineBelow.bal))) {
           out.bal = Number(prevLineBelow.bal);
         } else if (whBal != null) {
           out.bal = whBal;
         } else if (dbBal != null) {
           out.bal = dbBal;
         }
-        const lost = Math.max(0, Number(meta.kit_assemblable_units_lost) || 0);
-        out._kitAssemblableUnitsLost = lost > 0 ? lost : Math.max(0, Math.abs(Number(m.quantity_change) || 0));
+        out._kitAssemblableUnitsLost =
+          lost > 0 ? lost : Math.max(0, Math.abs(Number(m.quantity_change) || 0));
       } else if (whBal != null) {
         out.bal = whBal;
       } else if (out.bal != null && !Number.isNaN(Number(out.bal))) {
@@ -1094,7 +1426,12 @@ function movementForDeltaInference(item, column) {
     });
     if (column === 'bal') {
       if (kitLine) return kitLine;
-      return { ...ms[0], type: 'return_to_supplier', quantity_change: 0 };
+      const lost = kitAssemblableUnitsLostFromReturnMovements(ms);
+      if (lost > 0) {
+        return { ...ms[0], type: 'return_to_supplier', quantity_change: -lost };
+      }
+      const sumQc = ms.reduce((s, x) => s + Number(x.quantity_change || 0), 0);
+      return { ...ms[0], type: 'return_to_supplier', quantity_change: sumQc };
     }
     return kitLine || ms[0];
   }
@@ -1108,7 +1445,20 @@ function movementForDeltaInference(item, column) {
     }
     return head;
   }
+  if (item.kind === 'receiptEditGroup') {
+    const stockMs = receiptEditStockMovements(item.movements);
+    if (!stockMs.length) return item.movements[0] || null;
+    const head = pickReceiptEditHeadMovement(item.movements);
+    const netQc = sumMovementsQuantityChange(stockMs);
+    if (column === 'bal') {
+      return { ...head, type: 'receipt', quantity_change: netQc };
+    }
+    return head;
+  }
   if (item.kind === 'single' && item.m) {
+    if (isKitAssemblyReceiptMovement(item.m) && column === 'inc') {
+      return { ...item.m, type: 'receipt', quantity_change: 0 };
+    }
     if (isCancelledReceiptRollbackMovement(item.m)) {
       const moveQty = Math.abs(Number(item.m.quantity_change) || 0);
       if (column === 'inc' && moveQty > 0) {
@@ -2840,11 +3190,22 @@ export function WarehouseStocks() {
               </select>
             </label>
             <label className="stock-levels-filter-label">
+              <span>Артикул:</span>
+              <input
+                type="search"
+                className="stock-levels-filter-input"
+                placeholder="Поиск по артикулу"
+                value={filterSearch}
+                onChange={(e) => setFilterSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
+              />
+            </label>
+            <label className="stock-levels-filter-label stock-levels-filter-label--organization">
               <span>Организация:</span>
               <select
                 value={filterOrganizationId}
                 onChange={handleOrganizationFilterChange}
-                className="stock-levels-filter-select"
+                className="stock-levels-filter-select stock-levels-filter-select--organization"
               >
                 <option value="">Все</option>
                 {organizations.map(org => (
@@ -2915,17 +3276,6 @@ export function WarehouseStocks() {
                 {kitsEnabled ? <option value="kit">Комплект</option> : null}
               </select>
             </label>
-            <label className="stock-levels-filter-label">
-              <span>Поиск:</span>
-              <input
-                type="search"
-                className="stock-levels-filter-input"
-                placeholder="Артикул, название, штрихкод"
-                value={filterSearch}
-                onChange={(e) => setFilterSearch(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
-              />
-            </label>
             <div className="stock-levels-filters-toggles">
             <label className="stock-levels-filter-label stock-levels-filter-toggle">
               <span>Наличие:</span>
@@ -2987,7 +3337,6 @@ export function WarehouseStocks() {
                   <th>В пути</th>
                   <th>Наличие</th>
                   <th>Резерв</th>
-                  {supplierSyncEnabled ? <th>Поставщики</th> : null}
                   <th>Доступно</th>
                   {allowStockHistoryReset ? <th style={{ width: 88 }}>Сброс</th> : null}
                 </tr>
@@ -2999,7 +3348,7 @@ export function WarehouseStocks() {
                     className="stock-levels-row-clickable"
                     onClick={onNavigationClick(() => openHistoryForRow(row), {
                       ignoreClosest:
-                        'input, textarea, select, label, button, .supplier-stock-cell, .stock-levels-reserved-btn, .stock-manual-onhand-edit, .stock-history-reset-btn, [data-no-nav-click]',
+                        'input, textarea, select, label, button, .stock-levels-reserved-btn, .stock-manual-onhand-edit, .stock-history-reset-btn, [data-no-nav-click]',
                     })}
                     role="button"
                     tabIndex={0}
@@ -3054,20 +3403,6 @@ export function WarehouseStocks() {
                         row.reserved
                       )}
                     </td>
-                    {supplierSyncEnabled ? (
-                      <td className="supplier-stock-cell" onClick={(e) => e.stopPropagation()}>
-                        {row.suppliersDisplay ? (
-                          <span
-                            className="stock-main-value"
-                            title="Сколько комплектов можно собрать из остатков поставщиков по комплектующим"
-                          >
-                            {row.suppliersDisplay}
-                          </span>
-                        ) : (
-                          <SupplierStockCell total={row.suppliers} details={row.supplierDetails} />
-                        )}
-                      </td>
-                    ) : null}
                     <td
                       title={
                         isKitProduct(row.product)
@@ -3478,6 +3813,36 @@ export function WarehouseStocks() {
                     const rowKey = item.movements.map((x) => x.id).join('-');
                     return (
                       <tr key={rowKey} className="stock-levels-history-row-kit-purchase-incoming-group">
+                        <td>{formatDateTime(createdAt)}</td>
+                        <td>
+                          {link ? (
+                            <Link
+                              to={link.to}
+                              state={link.state}
+                              className="stock-levels-history-reason-link"
+                              onClick={onNavigationClick()}
+                            >
+                              {reasonText}
+                            </Link>
+                          ) : (
+                            reasonText
+                          )}
+                        </td>
+                        <td>{renderStockHistoryQtyCell(incCell)}</td>
+                        <td>{renderStockHistoryQtyCell(balCell)}</td>
+                        <td>{renderStockHistoryQtyCell(resCell)}</td>
+                      </tr>
+                    );
+                  }
+
+                  if (item.kind === 'receiptEditGroup') {
+                    const head = pickReceiptEditHeadMovement(item.movements);
+                    const link = head ? getMovementLink(head) : null;
+                    const reasonText = formatReceiptEditGroupReason(item.movements);
+                    const createdAt = movementCreatedAt(head || item.movements[0]);
+                    const rowKey = item.movements.map((x) => x.id).join('-');
+                    return (
+                      <tr key={rowKey} className="stock-levels-history-row-receipt-edit-group">
                         <td>{formatDateTime(createdAt)}</td>
                         <td>
                           {link ? (

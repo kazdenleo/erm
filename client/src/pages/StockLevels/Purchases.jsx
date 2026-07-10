@@ -1612,6 +1612,9 @@ export function Purchases() {
       )}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
         <Button onClick={openCreatePurchase}>Новая закупка</Button>
+        <Button variant="secondary" onClick={() => navigate('/stock-levels/purchases/forecast')}>
+          Прогноз закупки
+        </Button>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
           <span className="muted">Поставщик</span>
           <select

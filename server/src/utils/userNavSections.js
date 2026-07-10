@@ -5,6 +5,7 @@
 
 export const NAV_SECTION_KEYS = [
   'analytics',
+  'analytics_sales',
   'products',
   'orders',
   'assembly',
@@ -37,7 +38,8 @@ export const NAV_SECTION_KEYS = [
 ];
 
 export const NAV_SECTION_LABELS = {
-  analytics: 'Аналитика',
+  analytics: 'Главная',
+  analytics_sales: 'Аналитика — продажи',
   products: 'Товары',
   orders: 'Заказы',
   assembly: 'Сборка',
@@ -72,7 +74,7 @@ export const NAV_SECTION_LABELS = {
 export const NAV_SECTION_GROUPS = [
   {
     title: 'Основное',
-    keys: ['analytics', 'products', 'orders', 'assembly', 'shipments', 'prices'],
+    keys: ['analytics', 'analytics_sales', 'products', 'orders', 'assembly', 'shipments', 'prices'],
   },
   {
     title: 'Маркетплейс',
@@ -114,6 +116,7 @@ export const NAV_SECTION_GROUPS = [
 export const ROLE_NAV_PRESETS = {
   picker: {
     analytics: false,
+    analytics_sales: false,
     products: false,
     prices: false,
     fbo: false,
@@ -140,6 +143,7 @@ export const ROLE_NAV_PRESETS = {
   },
   warehouse_manager: {
     analytics: false,
+    analytics_sales: false,
     products: false,
     prices: false,
     fbo: false,
@@ -286,6 +290,7 @@ export function navSectionKeyForPath(pathname, search = '') {
   const path = String(pathname || '');
   const sp = new URLSearchParams(search || '');
   if (path === '/' || path === '') return 'analytics';
+  if (path.startsWith('/analytics')) return 'analytics_sales';
   if (path.startsWith('/products')) return 'products';
   if (path.startsWith('/orders')) return 'orders';
   if (path.startsWith('/shipments')) return 'shipments';

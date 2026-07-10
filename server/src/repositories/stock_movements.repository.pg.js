@@ -157,7 +157,14 @@ class StockMovementsRepositoryPG {
     const where = ['product_id = $1'];
     if (whId != null) {
       params.push(whId);
-      where.push(`warehouse_id = $${params.length}`);
+      const whIdx = params.length;
+      // Старые записи могли иметь warehouse_id только в meta — показываем их в фильтре по складу.
+      where.push(
+        `(warehouse_id = $${whIdx} OR (
+          warehouse_id IS NULL
+          AND COALESCE((meta->>'warehouse_id')::bigint, (meta->>'warehouseId')::bigint) = $${whIdx}
+        ))`
+      );
     }
     if (pid != null) {
       params.push(pid);

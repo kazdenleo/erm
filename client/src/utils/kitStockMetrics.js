@@ -233,6 +233,56 @@ export function kitComponentPerKitQty(kitProduct, componentProductId) {
   return Math.max(1, parseInt(row?.quantity, 10) || 1);
 }
 
+function movementTypeLowerSimple(m) {
+  const t = m?.type ?? m?.movement_type ?? m?.movementType;
+  return t != null ? String(t).trim().toLowerCase() : '';
+}
+
+function parseMovementMetaSimple(m) {
+  const raw = m?.meta;
+  if (raw == null) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+/** Снятие ожидания по закупке (уменьшение/удаление строки) — отдельная строка истории, не группировать с «ожидание». */
+export function isPurchaseIncomingRemovalMovement(m) {
+  if (!m || movementTypeLowerSimple(m) !== 'incoming') return false;
+  const reason = String(m.reason || '');
+  if (/снятие\s+ожидан/i.test(reason)) return true;
+  const meta = parseMovementMetaSimple(m);
+  if (meta.line_removed === true || meta.line_removed === 'true') return true;
+  const qc = Number(m.quantity_change ?? m.quantityChange);
+  return Number.isFinite(qc) && qc < 0;
+}
+
+/** Начисление «в пути» по закупке для комплекта (группировка комплектующих в одну строку). */
+export function isKitPurchaseIncomingAddMovement(m, kitProduct = null) {
+  if (!m || movementTypeLowerSimple(m) !== 'incoming') return false;
+  if (isPurchaseIncomingRemovalMovement(m)) return false;
+  const reason = String(m.reason || '');
+  if (!/закупк/i.test(reason) || !/ожидан/i.test(reason)) return false;
+  const meta = parseMovementMetaSimple(m);
+  if (meta.kit_component_incoming === true || meta.kit_component_incoming === 'true') return true;
+  if (!kitProduct) return false;
+  const pid = String(m.product_id ?? m.productId ?? '');
+  const kitId = String(kitProduct.id ?? '');
+  if (pid && kitId && pid === kitId) return true;
+  const comps = kitProduct.kit_components ?? kitProduct.kitComponents;
+  return (
+    Array.isArray(comps) &&
+    comps.some((c) => String(c.productId ?? c.component_product_id) === pid)
+  );
+}
+
 /**
  * Сколько комплектов «в пути» по одной закупке в истории:
  * целые SKU комплекта + min(⌊qty/perKit⌋) по комплектующим (сумма путей, не min по всем строкам).

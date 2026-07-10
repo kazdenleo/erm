@@ -2392,8 +2392,13 @@ class StockMovementsService {
         [pid, toId, nextTo]
       );
 
-      const insertMovement = async ({ delta, warehouseId, direction }) => {
-        const metaMove = { ...metaObj, direction };
+      const insertMovement = async ({ delta, warehouseId, direction, whBefore, whAfter }) => {
+        const metaMove = {
+          ...metaObj,
+          direction,
+          warehouse_balance_before: whBefore,
+          warehouse_balance_after: whAfter,
+        };
         return await this.repository.insertSnapshotAfterProduct(client, {
           productId: pid,
           type: 'transfer',
@@ -2405,8 +2410,20 @@ class StockMovementsService {
         });
       };
 
-      const movementOut = await insertMovement({ delta: -q, warehouseId: fromId, direction: 'out' });
-      const movementIn = await insertMovement({ delta: q, warehouseId: toId, direction: 'in' });
+      const movementOut = await insertMovement({
+        delta: -q,
+        warehouseId: fromId,
+        direction: 'out',
+        whBefore: fromQty,
+        whAfter: nextFrom,
+      });
+      const movementIn = await insertMovement({
+        delta: q,
+        warehouseId: toId,
+        direction: 'in',
+        whBefore: toQty,
+        whAfter: nextTo,
+      });
 
       await client.query('COMMIT');
 

@@ -12,7 +12,6 @@ import { receiptsApi } from '../../services/receipts.api';
 import { inventorySessionsApi } from '../../services/inventorySessions.api';
 import { fetchProductByScanCode } from '../../utils/productSearch.js';
 import { clearScanField, readScanFieldValue } from '../../utils/scanInput.js';
-import { shouldUseBarcodeDigitFallback } from '../../utils/productBarcodes.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSuppliers } from '../../hooks/useSuppliers';
 import { useOrganizations } from '../../hooks/useOrganizations';
@@ -288,11 +287,8 @@ export function WarehouseOperations({
   const [inventorySessionsLoading, setInventorySessionsLoading] = useState(false);
   const [inventoryDetailView, setInventoryDetailView] = useState(null);
   const scanInputRef = useRef(null);
-  const [receiptMode, setReceiptMode] = useState('scan');
-  const [selectedProductId, setSelectedProductId] = useState('');
-  const [receiptListSearch, setReceiptListSearch] = useState('');
-  const [receiptPickedProduct, setReceiptPickedProduct] = useState(null);
-  const [listQty, setListQty] = useState(1);
+  const receiptScanDedupRef = useRef({ key: '', at: 0 });
+  const receiptSuppressScanRef = useRef(false);
   const [receiptSupplierId, setReceiptSupplierId] = useState('');
   const [receiptOrganizationId, setReceiptOrganizationId] = useState('');
   /** Обязательный склад приёмки (поступление / возвраты) */
@@ -323,11 +319,9 @@ export function WarehouseOperations({
   const [receiptSessionEnabled, setReceiptSessionEnabled] = useState(false);
   const [receiptSessionId, setReceiptSessionId] = useState('');
   const [receiptSessionOwnerUserId, setReceiptSessionOwnerUserId] = useState(null);
-  const [boxAddCode, setBoxAddCode] = useState('');
-  const [boxAddQty, setBoxAddQty] = useState('');
   const [boxAddBusy, setBoxAddBusy] = useState(false);
   const lastReceiptScannedProductRef = useRef(null);
-  const boxQtyDebounceRef = useRef(null);
+  const rowBoxQtyDebounceRef = useRef({});
   const BOX_QTY_APPLY_MS = 2000;
   const [inviteUsers, setInviteUsers] = useState([]);
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -354,14 +348,10 @@ export function WarehouseOperations({
   const [returnOrganizationId, setReturnOrganizationId] = useState('');
   const [returnSupplierId, setReturnSupplierId] = useState('');
   const [returnList, setReturnList] = useState([]);
-  const [returnMode, setReturnMode] = useState('scan');
-  const [returnSelectedProductId, setReturnSelectedProductId] = useState('');
-  const [returnListSearch, setReturnListSearch] = useState('');
-  const [returnPickedProduct, setReturnPickedProduct] = useState(null);
-  const [returnListQty, setReturnListQty] = useState(1);
   const returnScanDebounceRef = useRef(null);
   const returnScanInputRef = useRef(null);
   const returnScanDedupRef = useRef({ key: '', at: 0 });
+  const returnSuppressScanRef = useRef(false);
   const [customerReturnOrganizationId, setCustomerReturnOrganizationId] = useState('');
   const returnWarehouses = useMemo(
     () => warehousesForOrganization(ownWarehouses, returnOrganizationId),
@@ -383,20 +373,14 @@ export function WarehouseOperations({
     [ownWarehouses, writeoffFilterOrgId]
   );
   const [customerReturnList, setCustomerReturnList] = useState([]);
-  const [customerReturnMode, setCustomerReturnMode] = useState('scan');
-  const [customerReturnSelectedProductId, setCustomerReturnSelectedProductId] = useState('');
-  const [customerReturnListSearch, setCustomerReturnListSearch] = useState('');
-  const [customerReturnPickedProduct, setCustomerReturnPickedProduct] = useState(null);
-  const [customerReturnListQty, setCustomerReturnListQty] = useState(1);
   const customerReturnScanDebounceRef = useRef(null);
   const customerReturnScanInputRef = useRef(null);
   const customerReturnScanDedupRef = useRef({ key: '', at: 0 });
+  const customerReturnSuppressScanRef = useRef(false);
   const customerReturnAcceptRef = useRef(null);
   /** Пересчёт выборочно: скан / поиск + только отмеченные позиции */
   const [inventoryNewSession, setInventoryNewSession] = useState(false);
   const [inventoryNewRows, setInventoryNewRows] = useState([]);
-  const [inventoryNewPickedProduct, setInventoryNewPickedProduct] = useState(null);
-  const [inventoryNewSearch, setInventoryNewSearch] = useState('');
   const [linkBarcodeModalOpen, setLinkBarcodeModalOpen] = useState(false);
   const [linkBarcodeScanned, setLinkBarcodeScanned] = useState('');
   const linkBarcodeContinueRef = useRef(null);
@@ -457,31 +441,25 @@ export function WarehouseOperations({
     [products]
   );
 
+  const formatWarehouseLookupError = (e) =>
+    e?.response?.data?.message || e?.message || 'поиск не удался';
+
   const lookupProductByAny = useCallback(
     async (
       value,
-      { title = 'Выберите товар', allowLinkBarcode = false, organizationId = null, useServerSearch = false } = {}
+      { title = 'Выберите товар', allowLinkBarcode = false, organizationId = null } = {}
     ) => {
       const v = normalizeQuery(value);
       if (!v) {
         throw new Error('Введите штрихкод / артикул / название');
       }
-      let barcodeProduct = null;
-      if (isLikelyBarcodeScan(v)) {
-        try {
-          barcodeProduct = await fetchProductByScanCode(v);
-        } catch (scanErr) {
-          if (!shouldUseBarcodeDigitFallback(v)) throw scanErr;
-        }
-      }
 
-      // 2) Поиск по штрихкоду / артикулу / названию (локально + сервер)
-      let matches = findLocalMatches(v);
-      const remote = await searchProductsRemote(v, { organizationId, limit: 40 });
-      matches = mergeProductLists(barcodeProduct ? [barcodeProduct] : [], matches, remote);
-      if (matches.length === 0 && useServerSearch === false) {
-        matches = remote;
-      }
+      const matches = await searchProductsCombined(v, {
+        products,
+        organizationId,
+        limit: 40,
+      });
+
       if (matches.length === 1) return matches[0];
       if (matches.length > 1) {
         return await new Promise((resolve, reject) => {
@@ -493,7 +471,6 @@ export function WarehouseOperations({
         });
       }
 
-      // 3) Если ввели штрихкод вручную и товара нет — предложим привязать штрихкод к товару (только там, где это уместно).
       if (allowLinkBarcode) {
         return await new Promise((resolve, reject) => {
           openLinkBarcode(v, (p) => {
@@ -505,7 +482,7 @@ export function WarehouseOperations({
 
       throw new Error('Товар не найден');
     },
-    [findLocalMatches, searchProductsRemote, openProductPick, closeProductPick, openLinkBarcode]
+    [products, normalizeQuery, openProductPick, closeProductPick, openLinkBarcode]
   );
 
   const handleLinkBarcodeLinked = useCallback(
@@ -525,9 +502,9 @@ export function WarehouseOperations({
     },
     [onRefresh]
   );
-  const inventoryNewScanDebounceRef = useRef(null);
   const inventoryNewScanInputRef = useRef(null);
   const inventoryScanBusyRef = useRef(false);
+  const inventorySuppressScanRef = useRef(false);
   /** Склад, по которому ведётся новая инвентаризация (обязателен до сохранения) */
   const [inventorySessionWarehouseId, setInventorySessionWarehouseId] = useState('');
   /** Обнулить остаток по позициям на складе, не попавшим в список пересчёта */
@@ -831,7 +808,6 @@ export function WarehouseOperations({
     return () => {
       if (returnScanDebounceRef.current) clearTimeout(returnScanDebounceRef.current);
       if (customerReturnScanDebounceRef.current) clearTimeout(customerReturnScanDebounceRef.current);
-      if (inventoryNewScanDebounceRef.current) clearTimeout(inventoryNewScanDebounceRef.current);
       if (scanDebounceRef.current) clearTimeout(scanDebounceRef.current);
       if (manualSearchDebounceRef.current) clearTimeout(manualSearchDebounceRef.current);
       if (transferScanDebounceRef.current) clearTimeout(transferScanDebounceRef.current);
@@ -839,12 +815,12 @@ export function WarehouseOperations({
   }, []);
 
   useEffect(() => {
-    if (addReceiptModalOpen && receiptMode === 'scan' && receiptWarehouseId) {
+    if (addReceiptModalOpen && receiptWarehouseId) {
       const t = setTimeout(() => scanInputRef.current?.focus(), 150);
       return () => clearTimeout(t);
     }
     return undefined;
-  }, [addReceiptModalOpen, receiptMode, receiptWarehouseId]);
+  }, [addReceiptModalOpen, receiptWarehouseId]);
 
   useEffect(() => {
     return () => {
@@ -872,8 +848,6 @@ export function WarehouseOperations({
       setInventoryNewSession(false);
       setInventoryNewRows([]);
       clearScanField(inventoryNewScanInputRef.current);
-      setInventoryNewSearch('');
-      setInventoryNewPickedProduct(null);
       setInventoryDetailView(null);
     }
   }, [mode]);
@@ -884,8 +858,6 @@ export function WarehouseOperations({
     return () => clearTimeout(t);
   }, [mode, inventoryNewSession]);
 
-  const returnSupplierProducts = useMemo(() => products || [], [products]);
-
   const pickListProduct = useCallback((product, { setProduct, setSearch, setId }) => {
     if (!product?.id) return;
     setProduct(product);
@@ -895,9 +867,10 @@ export function WarehouseOperations({
 
   useEffect(() => {
     if (!addReceiptModalOpen) {
-      setReceiptListSearch('');
-      setReceiptPickedProduct(null);
-      setSelectedProductId('');
+      clearScanField(scanInputRef.current);
+      lastReceiptScannedProductRef.current = null;
+      Object.values(rowBoxQtyDebounceRef.current).forEach((t) => clearTimeout(t));
+      rowBoxQtyDebounceRef.current = {};
     }
   }, [addReceiptModalOpen]);
 
@@ -912,15 +885,20 @@ export function WarehouseOperations({
       setReceiptWarehouseId(String(widRaw));
     }
     setReceiptSessionOwnerUserId(ownerId);
-    setReceiptList(
-      items.map((it) => ({
-        productId: it.productId,
-        sku: it.sku || '—',
-        name: it.name || 'Без названия',
-        quantity: Number(it.quantity) || 0,
-        cost: it.cost ?? ''
-      }))
-    );
+    setReceiptList((prev) => {
+      const byPid = new Map((prev || []).map((i) => [String(i.productId), i]));
+      return items.map((it) => {
+        const prevRow = byPid.get(String(it.productId));
+        return {
+          productId: it.productId,
+          sku: it.sku || '—',
+          name: it.name || 'Без названия',
+          quantity: Number(it.quantity) || 0,
+          cost: it.cost ?? '',
+          _boxQtyInput: prevRow?._boxQtyInput ?? '',
+        };
+      });
+    });
   }, []);
 
   const currentUserId = useMemo(() => {
@@ -1087,10 +1065,40 @@ export function WarehouseOperations({
     return warehouseDisplayLabel(w, receiptWarehouseId);
   }, [receiptWarehouseId, ownWarehouses]);
 
+  const startReceiptSession = useCallback(async () => {
+    if (receiptSessionEnabled && String(receiptSessionId || '').trim()) return;
+    setLookupError(null);
+    setOpMessage(null);
+    if (!receiptWarehouseId) {
+      setLookupError('Сначала выберите склад приёмки');
+      return;
+    }
+    try {
+      setReceiptSessionEnabled(true);
+      const created = await receiptsApi.createSession({ warehouseId: Number(receiptWarehouseId) });
+      const d = created?.data ?? created;
+      const sid = String(d?.sessionId || '').trim();
+      if (sid) {
+        setReceiptSessionId(sid);
+        applySessionStateToList(created);
+      }
+    } catch (ex) {
+      setLookupError(ex.response?.data?.message || ex.message || 'Не удалось создать общую приёмку');
+      setReceiptSessionEnabled(false);
+      setReceiptSessionId('');
+    }
+  }, [applySessionStateToList, receiptSessionEnabled, receiptSessionId, receiptWarehouseId]);
+
+  const exitReceiptSessionAndModal = useCallback(() => {
+    leaveReceiptSession();
+    setAddReceiptModalOpen(false);
+  }, [leaveReceiptSession]);
+
   const openAddReceiptModal = useCallback(() => {
     setReceiptList([]);
     setOpMessage(null);
     setLookupError(null);
+    lastReceiptScannedProductRef.current = null;
     if (!receiptWarehouseId) {
       const preferred = inventoryWarehouseId ? String(inventoryWarehouseId) : singleWarehouseId;
       if (preferred) setReceiptWarehouseId(preferred);
@@ -1116,7 +1124,6 @@ export function WarehouseOperations({
       setAddReceiptModalOpen(true);
       setReceiptSessionEnabled(true);
       setReceiptSessionId(sessionId);
-      setReceiptMode('scan');
       setLookupError(null);
       try {
         const res = await receiptsApi.getSession(sessionId);
@@ -1281,9 +1288,6 @@ export function WarehouseOperations({
 
   const handleScanSubmit = (e) => {
     e.preventDefault();
-    if (mode === MODE_RECEIPT && receiptMode === 'scan') {
-      return;
-    }
     if (mode === MODE_WRITEOFF) {
       if (writeoffSuppressScanRef.current) return;
       lookupByBarcodeOrSkuThenWriteoffOne(readScanFieldValue(writeoffScanInputRef.current));
@@ -1393,10 +1397,11 @@ export function WarehouseOperations({
       playEventSound(SOUND_EVENTS.scan_error);
       return;
     }
+    if (shouldIgnoreDuplicateWarehouseScan(receiptScanDedupRef, v)) return;
     setLookupError(null);
     try {
       const product = await lookupProductByAny(v, { title: 'Выберите товар для поступления', allowLinkBarcode: true });
-      lastReceiptScannedProductRef.current = product?.id ?? null;
+      lastReceiptScannedProductRef.current = product;
       if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
         await addToReceiptSession(product, 1);
       } else {
@@ -1412,33 +1417,6 @@ export function WarehouseOperations({
       setOpMessage('Ошибка: ' + msg);
       playEventSound(SOUND_EVENTS.scan_error);
     }
-  };
-
-  /** Добавить выбранный товар в список поступления (из списка) */
-  const handleReceiptFromList = () => {
-    if (!receiptWarehouseId) {
-      setOpMessage('Выберите склад приёмки');
-      return;
-    }
-    const product =
-      receiptPickedProduct ||
-      products.find((p) => String(p.id) === String(selectedProductId || '').trim());
-    if (!product?.id) {
-      setOpMessage('Выберите товар из подсказок поиска');
-      return;
-    }
-    const add = Math.max(1, parseInt(listQty, 10) || 1);
-    if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
-      addToReceiptSession(product, add)
-        .then(() => setOpMessage(`В список: ${product.name} — ${add} шт`))
-        .catch((ex) => setOpMessage('Ошибка: ' + (ex?.message || 'не удалось добавить')));
-    } else {
-    addToReceiptList(product, add);
-    setOpMessage(`В список: ${product.name} — ${add} шт`);
-    }
-    setReceiptPickedProduct(null);
-    setSelectedProductId('');
-    setReceiptListSearch('');
   };
 
   /** Удалить позицию из списка поступления */
@@ -1557,6 +1535,7 @@ export function WarehouseOperations({
     }
     setReceiptEditForm({
       id: receiptDetail.id,
+      purchaseReceiptId: receiptDetail.purchase_receipt_id ?? null,
       documentType: receiptDetail.document_type || 'receipt',
       organizationId: receiptDetail.organization_id != null ? String(receiptDetail.organization_id) : '',
       supplierId: receiptDetail.supplier_id != null ? String(receiptDetail.supplier_id) : '',
@@ -1631,6 +1610,9 @@ export function WarehouseOperations({
             : {}),
         })),
       };
+      if (form.purchaseReceiptId != null && String(form.purchaseReceiptId).trim() !== '') {
+        payload.purchaseReceiptId = Number(form.purchaseReceiptId);
+      }
       if (form.documentType !== 'customer_return') {
         payload.supplierId = Number(form.supplierId);
       }
@@ -1664,12 +1646,66 @@ export function WarehouseOperations({
   /** Скан поступления: только по завершённому вводу, без re-render на каждый символ */
   const handleReceiptScan = useCallback(
     (code) => {
+      if (receiptSuppressScanRef.current) return;
       setLookupError(null);
-      setOpMessage('Поиск товара…');
       lookupByBarcodeOrSkuThenReceiptOne(code);
       scanInputRef.current?.focus();
     },
     [lookupByBarcodeOrSkuThenReceiptOne]
+  );
+
+  const handleReceiptManualQuery = useCallback(
+    async (qq) => {
+      if (qq.length < 2) {
+        if (suggestContext === 'receipt_modal_scan') closeSuggest();
+        return;
+      }
+      let matches = findLocalMatches(qq);
+      const remote = await searchProductsRemote(qq, { limit: 40 });
+      matches = mergeProductLists(matches, remote);
+      if (matches.length === 0) {
+        if (suggestContext === 'receipt_modal_scan') closeSuggest();
+        return;
+      }
+      openSuggest('receipt_modal_scan', 'Выберите товар', matches, async (p) => {
+        if (!p) return;
+        receiptSuppressScanRef.current = true;
+        clearScanField(scanInputRef.current);
+        try {
+          if (!receiptWarehouseId) {
+            setLookupError('Сначала выберите склад приёмки');
+            playEventSound(SOUND_EVENTS.scan_error);
+            return;
+          }
+          lastReceiptScannedProductRef.current = p;
+          if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
+            await addToReceiptSession(p, 1);
+          } else {
+            addToReceiptList(p, 1);
+          }
+          setLookupError(null);
+          setOpMessage(`В список: +1 шт — ${p.name || p.sku}`);
+          playEventSound(SOUND_EVENTS.scan_ok);
+        } catch (ex) {
+          setOpMessage(null);
+          setLookupError(ex?.message || 'Не удалось добавить');
+          playEventSound(SOUND_EVENTS.scan_error);
+        }
+        window.setTimeout(() => {
+          receiptSuppressScanRef.current = false;
+          scanInputRef.current?.focus();
+        }, 500);
+      });
+    },
+    [
+      findLocalMatches,
+      suggestContext,
+      closeSuggest,
+      openSuggest,
+      receiptWarehouseId,
+      receiptSessionEnabled,
+      receiptSessionId,
+    ]
   );
 
   const handleWriteoffManualQuery = useCallback(
@@ -1752,8 +1788,71 @@ export function WarehouseOperations({
     [lookupByBarcodeOrSkuThenWriteoffOne]
   );
 
+
+  const receiptModalHeaderExtra = useMemo(() => {
+    if (isReceiptSessionGuest) {
+      return (
+        <Button type="button" variant="secondary" size="small" onClick={exitReceiptSessionAndModal}>
+          Выйти
+        </Button>
+      );
+    }
+    if (receiptSessionEnabled && receiptSessionId) {
+      return (
+        <div className="warehouse-ops-receipt-modal-header-actions">
+          <span className="warehouse-ops-session-badge">Общая приёмка</span>
+          <InviteUserButton
+            users={inviteUsers}
+            busy={inviteBusy}
+            excludeUserId={user?.id ?? user?.userId}
+            onInvite={async (uid) => {
+              const sid = String(receiptSessionId || '').trim();
+              if (!sid || inviteBusy) return;
+              try {
+                setInviteBusy(true);
+                setLookupError(null);
+                await receiptsApi.inviteToSession(sid, { userId: uid });
+                setOpMessage('Приглашение отправлено в уведомления.');
+              } catch (ex) {
+                setLookupError(ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение');
+              } finally {
+                setInviteBusy(false);
+              }
+            }}
+          />
+          <Button type="button" variant="secondary" size="small" onClick={exitReceiptSessionAndModal}>
+            Выйти
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <Button
+        type="button"
+        variant="secondary"
+        size="small"
+        onClick={startReceiptSession}
+        disabled={!receiptWarehouseId}
+        title={!receiptWarehouseId ? 'Сначала выберите склад приёмки' : undefined}
+      >
+        Общая приёмка
+      </Button>
+    );
+  }, [
+    exitReceiptSessionAndModal,
+    inviteBusy,
+    inviteUsers,
+    isReceiptSessionGuest,
+    receiptSessionEnabled,
+    receiptSessionId,
+    receiptWarehouseId,
+    startReceiptSession,
+    user?.id,
+    user?.userId,
+  ]);
+
   const applyWarehouseReceiptBoxQty = useCallback(
-    async ({ product = null, code = null, qty } = {}) => {
+    async ({ product = null, productId = null, qty, clearRowProductId = null } = {}) => {
       if (!receiptWarehouseId) {
         setLookupError('Сначала выберите склад приёмки');
         playEventSound(SOUND_EVENTS.scan_error);
@@ -1762,30 +1861,43 @@ export function WarehouseOperations({
       const n = Math.floor(Number(qty) || 0);
       if (n <= 0 || boxAddBusy) return;
 
+      let resolved = product?.id ? product : null;
+      const pid = productId ?? resolved?.id ?? null;
+      if (!resolved?.id && pid != null) {
+        const fromList = receiptList.find((i) => String(i.productId) === String(pid));
+        if (fromList) {
+          resolved = { id: fromList.productId, sku: fromList.sku, name: fromList.name };
+        } else {
+          const fromProducts = (products || []).find((p) => String(p.id) === String(pid));
+          if (fromProducts) resolved = fromProducts;
+        }
+      }
+      if (!resolved?.id) {
+        setLookupError('Товар не найден в списке');
+        playEventSound(SOUND_EVENTS.scan_error);
+        return;
+      }
+
       try {
         setBoxAddBusy(true);
         setLookupError(null);
-        let resolved = product;
-        if (!resolved?.id && code) {
-          const normalized = normalizeScanInput(String(code).trim());
-          if (!normalized) return;
-          resolved = await lookupProductByAny(normalized, {
-            title: 'Выберите товар для поступления',
-            allowLinkBarcode: true,
-          });
-        }
-        if (!resolved?.id) return;
-
         if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
           await setReceiptSessionProductQty(resolved, n);
         } else {
           setReceiptListProductQty(resolved, n);
         }
-        lastReceiptScannedProductRef.current = resolved.id;
+        lastReceiptScannedProductRef.current = resolved;
         setOpMessage(`В список: ${n} шт — ${resolved.name || resolved.sku}`);
         playEventSound(SOUND_EVENTS.scan_ok);
-        setBoxAddCode('');
-        setBoxAddQty('');
+        if (clearRowProductId != null) {
+          setReceiptList((prev) =>
+            prev.map((item) =>
+              String(item.productId) === String(clearRowProductId)
+                ? { ...item, _boxQtyInput: '' }
+                : item
+            )
+          );
+        }
       } catch (ex) {
         const msg = ex?.message || 'поиск не удался';
         setLookupError(msg);
@@ -1797,7 +1909,6 @@ export function WarehouseOperations({
       }
     },
     [
-      addToReceiptList,
       boxAddBusy,
       products,
       receiptList,
@@ -1809,29 +1920,36 @@ export function WarehouseOperations({
     ]
   );
 
-  const scheduleWarehouseBoxQtyApply = useCallback(
-    (qtyStr, codeStr) => {
-      if (boxQtyDebounceRef.current) clearTimeout(boxQtyDebounceRef.current);
-      boxQtyDebounceRef.current = setTimeout(() => {
-        boxQtyDebounceRef.current = null;
+  const scheduleReceiptRowBoxQtyApply = useCallback(
+    (productId, qtyStr) => {
+      const key = String(productId);
+      if (rowBoxQtyDebounceRef.current[key]) {
+        clearTimeout(rowBoxQtyDebounceRef.current[key]);
+      }
+      rowBoxQtyDebounceRef.current[key] = setTimeout(() => {
+        delete rowBoxQtyDebounceRef.current[key];
         const qty = Math.floor(Number(qtyStr) || 0);
         if (qty <= 0) return;
-        const code = normalizeScanInput(String(codeStr || '').trim());
-        if (code) {
-          void applyWarehouseReceiptBoxQty({ code, qty });
-          return;
-        }
-        const lastPid = lastReceiptScannedProductRef.current;
-        if (lastPid != null) {
-          const fromList = (products || []).find((p) => String(p.id) === String(lastPid));
-          if (fromList) {
-            void applyWarehouseReceiptBoxQty({ product: fromList, qty });
-          }
-        }
+        const row = receiptList.find((i) => String(i.productId) === key);
+        const product = row
+          ? { id: row.productId, sku: row.sku, name: row.name }
+          : { id: productId };
+        void applyWarehouseReceiptBoxQty({
+          product,
+          productId,
+          qty,
+          clearRowProductId: productId,
+        });
       }, BOX_QTY_APPLY_MS);
     },
-    [applyWarehouseReceiptBoxQty]
+    [applyWarehouseReceiptBoxQty, receiptList]
   );
+
+  const updateReceiptRowBoxInput = (index, value) => {
+    setReceiptList((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, _boxQtyInput: value } : item))
+    );
+  };
 
   const warehouseQtyForProduct = async (product, warehouseId) => {
     if (!product?.id) return 0;
@@ -2049,18 +2167,74 @@ export function WarehouseOperations({
       clearScanField(returnScanInputRef.current);
       returnScanInputRef.current?.focus();
     } catch (e) {
-      setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
+      setOpMessage(null);
+      setLookupError(formatWarehouseLookupError(e));
       playEventSound(SOUND_EVENTS.scan_error);
     }
   };
 
   const handleReturnScan = useCallback(
     (code) => {
+      if (returnSuppressScanRef.current) return;
       setLookupError(null);
       lookupByBarcodeOrSkuThenReturnOne(code);
       returnScanInputRef.current?.focus();
     },
     [lookupByBarcodeOrSkuThenReturnOne]
+  );
+
+  const handleReturnManualQuery = useCallback(
+    async (qq) => {
+      if (qq.length < 2) {
+        if (suggestContext === 'return_scan') closeSuggest();
+        return;
+      }
+      let matches = [];
+      try {
+        matches = await searchProductsCombined(qq, { products, limit: 40 });
+      } catch (e) {
+        setOpMessage(null);
+        setLookupError(formatWarehouseLookupError(e));
+        playEventSound(SOUND_EVENTS.scan_error);
+        return;
+      }
+      if (matches.length === 0) {
+        if (suggestContext === 'return_scan') closeSuggest();
+        return;
+      }
+      openSuggest('return_scan', 'Выберите товар', matches, async (p) => {
+        if (!p) return;
+        returnSuppressScanRef.current = true;
+        clearScanField(returnScanInputRef.current);
+        try {
+          if (!returnWarehouseId) {
+            setLookupError('Сначала выберите склад списания');
+            playEventSound(SOUND_EVENTS.scan_error);
+            return;
+          }
+          const available = await warehouseQtyForProduct(p, returnWarehouseId);
+          if (available < 1) {
+            setLookupError('Нет остатка на выбранном складе');
+            playEventSound(SOUND_EVENTS.scan_error);
+            return;
+          }
+          await addToReturnList(p, 1);
+          setLookupError(null);
+          setOpMessage(`В список возврата: +1 шт — ${p.name || p.sku}`);
+          playEventSound(SOUND_EVENTS.scan_ok);
+        } catch (e) {
+          setOpMessage(null);
+          setLookupError(formatWarehouseLookupError(e));
+          playEventSound(SOUND_EVENTS.scan_error);
+        } finally {
+          window.setTimeout(() => {
+            returnSuppressScanRef.current = false;
+            returnScanInputRef.current?.focus();
+          }, 500);
+        }
+      });
+    },
+    [products, suggestContext, closeSuggest, openSuggest, returnWarehouseId]
   );
 
   const handleTransferScan = useCallback(
@@ -2096,26 +2270,6 @@ export function WarehouseOperations({
     ]
   );
 
-  const handleReturnFromList = async () => {
-    if (!returnWarehouseId) {
-      setOpMessage('Выберите склад списания');
-      return;
-    }
-    const picked =
-      returnPickedProduct ||
-      products.find((p) => String(p.id) === String(returnSelectedProductId || '').trim());
-    if (!picked?.id) {
-      setOpMessage('Выберите товар из подсказок поиска');
-      return;
-    }
-    const product = products.find((p) => String(p.id) === String(picked.id)) || picked;
-    const add = Math.max(1, parseInt(returnListQty, 10) || 1);
-    await addToReturnList(product, add);
-    setOpMessage(`В список возврата: ${product.name} — до ${add} шт`);
-    setReturnPickedProduct(null);
-    setReturnSelectedProductId('');
-    setReturnListSearch('');
-  };
 
   const removeFromReturnList = (index) => {
     setReturnList(prev => prev.filter((_, i) => i !== index));
@@ -2244,18 +2398,64 @@ export function WarehouseOperations({
       clearScanField(customerReturnScanInputRef.current);
       customerReturnScanInputRef.current?.focus();
     } catch (e) {
-      setOpMessage('Ошибка: ' + (e.message || 'поиск не удался'));
+      setOpMessage(null);
+      setLookupError(formatWarehouseLookupError(e));
       playEventSound(SOUND_EVENTS.scan_error);
     }
   };
 
   const handleCustomerReturnScan = useCallback(
     (code) => {
+      if (customerReturnSuppressScanRef.current) return;
       setLookupError(null);
       lookupByBarcodeOrSkuThenCustomerReturnOne(code);
       customerReturnScanInputRef.current?.focus();
     },
     [lookupByBarcodeOrSkuThenCustomerReturnOne]
+  );
+
+  const handleCustomerReturnManualQuery = useCallback(
+    async (qq) => {
+      if (qq.length < 2) {
+        if (suggestContext === 'customer_return_scan') closeSuggest();
+        return;
+      }
+      let matches = [];
+      try {
+        matches = await searchProductsCombined(qq, { products, limit: 40 });
+      } catch (e) {
+        setOpMessage(null);
+        setLookupError(formatWarehouseLookupError(e));
+        playEventSound(SOUND_EVENTS.scan_error);
+        return;
+      }
+      if (matches.length === 0) {
+        if (suggestContext === 'customer_return_scan') closeSuggest();
+        return;
+      }
+      openSuggest('customer_return_scan', 'Выберите товар', matches, (p) => {
+        if (!p) return;
+        customerReturnSuppressScanRef.current = true;
+        clearScanField(customerReturnScanInputRef.current);
+        if (!customerReturnWarehouseId) {
+          setLookupError('Сначала выберите склад приёмки возврата');
+          window.setTimeout(() => {
+            customerReturnSuppressScanRef.current = false;
+            customerReturnScanInputRef.current?.focus();
+          }, 500);
+          return;
+        }
+        addToCustomerReturnList(p, 1);
+        setLookupError(null);
+        setOpMessage(`В список возврата от клиента: +1 шт — ${p.name || p.sku}`);
+        playEventSound(SOUND_EVENTS.scan_ok);
+        window.setTimeout(() => {
+          customerReturnSuppressScanRef.current = false;
+          customerReturnScanInputRef.current?.focus();
+        }, 500);
+      });
+    },
+    [products, suggestContext, closeSuggest, openSuggest, customerReturnWarehouseId]
   );
 
   const scrollToCustomerReturnAccept = useCallback(() => {
@@ -2357,25 +2557,6 @@ export function WarehouseOperations({
     return undefined;
   }, [mode, products]);
 
-  const handleCustomerReturnFromList = () => {
-    if (!customerReturnWarehouseId) {
-      setOpMessage('Выберите склад приёмки возврата');
-      return;
-    }
-    const product =
-      customerReturnPickedProduct ||
-      products.find((p) => String(p.id) === String(customerReturnSelectedProductId || '').trim());
-    if (!product?.id) {
-      setOpMessage('Выберите товар из подсказок поиска');
-      return;
-    }
-    const add = Math.max(1, parseInt(customerReturnListQty, 10) || 1);
-    addToCustomerReturnList(product, add);
-    setOpMessage(`В список возврата от клиента: ${product.name} — ${add} шт`);
-    setCustomerReturnPickedProduct(null);
-    setCustomerReturnSelectedProductId('');
-    setCustomerReturnListSearch('');
-  };
 
   const removeFromCustomerReturnList = (index) => {
     setCustomerReturnList(prev => prev.filter((_, i) => i !== index));
@@ -2519,6 +2700,7 @@ export function WarehouseOperations({
       .then((res) => {
         const data = res?.data ?? res;
         if (data) setReceiptDetail(data);
+        loadReceiptsList(mode);
       })
       .catch(() => {});
   };
@@ -2689,6 +2871,7 @@ export function WarehouseOperations({
 
   const handleInventoryScan = useCallback(
     (code) => {
+      if (inventorySuppressScanRef.current) return;
       if (!inventorySessionWarehouseId) {
         setLookupError('Сначала выберите склад инвентаризации');
         setOpMessage(null);
@@ -2718,10 +2901,8 @@ export function WarehouseOperations({
         await addOneToInventoryNewRow(product);
         setOpMessage(`Пересчёт: +1 шт — ${product.name || product.sku}`);
       }
-      setInventoryNewPickedProduct(null);
-      setInventoryNewSearch('');
       setLookupError(null);
-    inventoryNewScanInputRef.current?.focus();
+      inventoryNewScanInputRef.current?.focus();
       return true;
     } catch (e) {
       const msg = warehouseScanErrorMessage(e, 'Не удалось добавить');
@@ -2732,37 +2913,43 @@ export function WarehouseOperations({
     }
   };
 
-  const resolveInventoryPickedProduct = async () => {
-    if (inventoryNewPickedProduct?.id) return inventoryNewPickedProduct;
-    const q = normalizeProductSearchQuery(inventoryNewSearch);
-    if (!q) return null;
-    const matches = await searchProductsCombined(q, { products, limit: 40 });
-    if (matches.length === 1) return matches[0];
-    const ql = q.toLowerCase();
-    return (
-      matches.find((p) => {
-        const sku = String(p?.sku || '').trim().toLowerCase();
-        if (sku === ql) return true;
-        return false;
-      }) || null
-    );
-  };
-
-  const handleInventoryNewAddFromSelect = async () => {
-    let product = inventoryNewPickedProduct;
-    if (!product?.id) {
-      try {
-        product = await resolveInventoryPickedProduct();
-      } catch {
-        product = null;
+  const handleInventoryManualQuery = useCallback(
+    async (qq) => {
+      if (qq.length < 2) {
+        if (suggestContext === 'inventory_scan') closeSuggest();
+        return;
       }
-    }
-    if (!product?.id) {
-      setOpMessage('Выберите товар из списка или введите точный артикул / штрихкод');
-      return;
-    }
-    await addInventoryProductFromPick(product);
-  };
+      let matches = findLocalMatches(qq);
+      const remote = await searchProductsRemote(qq, { limit: 40 });
+      matches = mergeProductLists(matches, remote);
+      if (matches.length === 0) {
+        if (suggestContext === 'inventory_scan') closeSuggest();
+        return;
+      }
+      openSuggest('inventory_scan', 'Выберите товар', matches, async (p) => {
+        if (!p?.id) return;
+        inventorySuppressScanRef.current = true;
+        clearScanField(inventoryNewScanInputRef.current);
+        try {
+          await addInventoryProductFromPick(p);
+        } finally {
+          window.setTimeout(() => {
+            inventorySuppressScanRef.current = false;
+            inventoryNewScanInputRef.current?.focus();
+          }, 500);
+        }
+      });
+    },
+    [
+      findLocalMatches,
+      suggestContext,
+      closeSuggest,
+      openSuggest,
+      inventorySessionWarehouseId,
+      inventoryLiveEnabled,
+      inventoryLiveSessionId,
+    ]
+  );
 
   const setInventoryNewFact = (productId, value) => {
     const num = parseInt(value, 10);
@@ -3390,84 +3577,55 @@ export function WarehouseOperations({
               </select>
             </div>
           </div>
-          <div className="warehouse-ops-receipt-modes">
-            <label className="warehouse-ops-radio">
-              <input
-                type="radio"
-                name="returnMode"
-                checked={returnMode === 'scan'}
-                onChange={() => setReturnMode('scan')}
+          <p className="warehouse-ops-hint">
+            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка. Количество укажите в таблице ниже.
+          </p>
+          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+            <div className="warehouse-ops-scan-form-input-wrap">
+              <FastScanInput
+                inputRef={returnScanInputRef}
+                onScan={handleReturnScan}
+                onManualQuery={handleReturnManualQuery}
+                debounceMs={200}
+                manualDebounceMs={400}
+                placeholder="Штрихкод, артикул или название"
+                disabled={!returnWarehouseId}
+                onBlur={() => {
+                  setTimeout(() => {
+                    if (suggestContext === 'return_scan') closeSuggest();
+                  }, 150);
+                }}
               />
-              <span>По скану — 1 скан = 1 шт</span>
-            </label>
-            <label className="warehouse-ops-radio">
-              <input
-                type="radio"
-                name="returnMode"
-                checked={returnMode === 'list'}
-                onChange={() => setReturnMode('list')}
-              />
-              <span>Из списка — выбор товара и количество</span>
-            </label>
-          </div>
-
-          {returnMode === 'scan' && (
-            <>
-              <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список возврата (1 скан = 1 шт).</p>
-              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-                <FastScanInput
-                  inputRef={returnScanInputRef}
-                  onScan={handleReturnScan}
-                  debounceMs={200}
-                  placeholder="Наведите сканер сюда"
-                  disabled={!returnWarehouseId}
-                />
-              </form>
-            </>
-          )}
-
-          {returnMode === 'list' && (
-            <div className="warehouse-ops-list-form">
-              <div className="warehouse-ops-list-row warehouse-ops-list-row--search">
-                <label htmlFor="return-supplier-product-search">Товар:</label>
-                <ProductSearchInput
-                  id="return-supplier-product-search"
-                  value={returnListSearch}
-                  onChange={(v) => {
-                    setReturnListSearch(v);
-                    setReturnPickedProduct(null);
-                    setReturnSelectedProductId('');
-                  }}
-                  products={returnSupplierProducts}
-                  placeholder="Штрихкод, артикул или название"
-                  disabled={!returnWarehouseId}
-                  onSelect={(p) =>
-                    pickListProduct(p, {
-                      setProduct: setReturnPickedProduct,
-                      setSearch: setReturnListSearch,
-                      setId: setReturnSelectedProductId,
-                    })
-                  }
-                />
-              </div>
-              <div className="warehouse-ops-list-row">
-                <label>Количество:</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={returnListQty}
-                  onChange={e => setReturnListQty(e.target.value)}
-                  className="warehouse-ops-qty-input"
-                />
-                <Button
-                  onClick={handleReturnFromList}
-                  disabled={(!returnPickedProduct && !returnSelectedProductId) || !returnWarehouseId}
-                >
-                  В список
-                </Button>
-              </div>
+              {suggestOpen && suggestContext === 'return_scan' && (
+                <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
+                  <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
+                  <div className="warehouse-ops-suggest-list">
+                    {(suggestList || []).map((p) => (
+                      <button
+                        key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
+                        type="button"
+                        className="warehouse-ops-suggest-item"
+                        onMouseDown={(ev) => {
+                          ev.preventDefault();
+                          returnSuppressScanRef.current = true;
+                          clearScanField(returnScanInputRef.current);
+                          window.setTimeout(() => {
+                            returnSuppressScanRef.current = false;
+                          }, 500);
+                          const fn = suggestOnPickRef.current;
+                          closeSuggest();
+                          if (typeof fn === 'function') fn(p);
+                        }}
+                      >
+                        <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
+                        <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
+          </form>
 
           {lookupError && <div className="warehouse-ops-error">{lookupError}</div>}
           {opMessage && <div className="warehouse-ops-msg success">{opMessage}</div>}
@@ -3475,7 +3633,7 @@ export function WarehouseOperations({
           <div className="warehouse-ops-receipt-list-section">
             <h4 className="warehouse-ops-receipt-list-title">Список товаров для возврата</h4>
             {returnList.length === 0 ? (
-              <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или добавляйте из списка.</p>
+              <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или найдите по артикулу / названию.</p>
             ) : (
               <>
                 <div className="warehouse-ops-receipt-list-wrap">
@@ -3559,7 +3717,7 @@ export function WarehouseOperations({
           >
           <h4 className="warehouse-ops-subsection-title">Принять возврат на склад</h4>
           <p className="warehouse-ops-hint">
-            Сначала выберите организацию и склад приёмки, затем добавьте товары по скану или из списка. Документы сохраняются в списке ниже.
+            Сначала выберите организацию и склад приёмки, затем добавьте товары: скан (1 шт) или ввод артикула / названия. Количество укажите в таблице ниже.
           </p>
           <div className="warehouse-ops-return-org-supplier">
             <div className="warehouse-ops-receipt-supplier-row">
@@ -3598,87 +3756,55 @@ export function WarehouseOperations({
               </select>
             </div>
           </div>
-          <div className="warehouse-ops-receipt-modes">
-            <label className="warehouse-ops-radio">
-              <input
-                type="radio"
-                name="customerReturnMode"
-                checked={customerReturnMode === 'scan'}
-                onChange={() => setCustomerReturnMode('scan')}
+          <p className="warehouse-ops-hint">
+            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка.
+          </p>
+          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+            <div className="warehouse-ops-scan-form-input-wrap">
+              <FastScanInput
+                inputRef={customerReturnScanInputRef}
+                onScan={handleCustomerReturnScan}
+                onManualQuery={handleCustomerReturnManualQuery}
+                debounceMs={200}
+                manualDebounceMs={400}
+                placeholder="Штрихкод, артикул или название"
+                disabled={!customerReturnWarehouseId}
+                onBlur={() => {
+                  setTimeout(() => {
+                    if (suggestContext === 'customer_return_scan') closeSuggest();
+                  }, 150);
+                }}
               />
-              <span>По скану — 1 скан = 1 шт</span>
-            </label>
-            <label className="warehouse-ops-radio">
-              <input
-                type="radio"
-                name="customerReturnMode"
-                checked={customerReturnMode === 'list'}
-                onChange={() => setCustomerReturnMode('list')}
-              />
-              <span>Из списка — выбор товара и количество</span>
-            </label>
-          </div>
-
-          {customerReturnMode === 'scan' && (
-            <>
-              <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список (1 скан = 1 шт).</p>
-              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-                <FastScanInput
-                  inputRef={customerReturnScanInputRef}
-                  onScan={handleCustomerReturnScan}
-                  debounceMs={200}
-                  placeholder="Наведите сканер сюда"
-                  disabled={!customerReturnWarehouseId}
-                />
-              </form>
-            </>
-          )}
-
-          {customerReturnMode === 'list' && (
-            <div className="warehouse-ops-list-form">
-              <div className="warehouse-ops-list-row warehouse-ops-list-row--search">
-                <label htmlFor="customer-return-product-search">Товар:</label>
-                <ProductSearchInput
-                  id="customer-return-product-search"
-                  value={customerReturnListSearch}
-                  onChange={(v) => {
-                    setCustomerReturnListSearch(v);
-                    setCustomerReturnPickedProduct(null);
-                    setCustomerReturnSelectedProductId('');
-                  }}
-                  products={products}
-                  placeholder="Штрихкод, артикул или название"
-                  disabled={!customerReturnWarehouseId}
-                  onSelect={(p) =>
-                    pickListProduct(p, {
-                      setProduct: setCustomerReturnPickedProduct,
-                      setSearch: setCustomerReturnListSearch,
-                      setId: setCustomerReturnSelectedProductId,
-                    })
-                  }
-                />
-              </div>
-              <div className="warehouse-ops-list-row">
-                <label>Количество:</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={customerReturnListQty}
-                  onChange={e => setCustomerReturnListQty(e.target.value)}
-                  className="warehouse-ops-qty-input"
-                />
-                <Button
-                  onClick={handleCustomerReturnFromList}
-                  disabled={
-                    (!customerReturnPickedProduct && !customerReturnSelectedProductId) ||
-                    !customerReturnWarehouseId
-                  }
-                >
-                  В список
-                </Button>
-              </div>
+              {suggestOpen && suggestContext === 'customer_return_scan' && (
+                <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
+                  <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
+                  <div className="warehouse-ops-suggest-list">
+                    {(suggestList || []).map((p) => (
+                      <button
+                        key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
+                        type="button"
+                        className="warehouse-ops-suggest-item"
+                        onMouseDown={(ev) => {
+                          ev.preventDefault();
+                          customerReturnSuppressScanRef.current = true;
+                          clearScanField(customerReturnScanInputRef.current);
+                          window.setTimeout(() => {
+                            customerReturnSuppressScanRef.current = false;
+                          }, 500);
+                          const fn = suggestOnPickRef.current;
+                          closeSuggest();
+                          if (typeof fn === 'function') fn(p);
+                        }}
+                      >
+                        <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
+                        <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
+          </form>
 
           {lookupError && <div className="warehouse-ops-error">{lookupError}</div>}
           {opMessage && <div className="warehouse-ops-msg success">{opMessage}</div>}
@@ -3686,7 +3812,7 @@ export function WarehouseOperations({
           <div className="warehouse-ops-receipt-list-section">
             <h4 className="warehouse-ops-receipt-list-title">Список товаров для приёмки на склад</h4>
             {customerReturnList.length === 0 ? (
-              <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или добавляйте из списка.</p>
+              <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или найдите по артикулу / названию.</p>
             ) : (
               <>
                 <div className="warehouse-ops-receipt-list-wrap">
@@ -3771,8 +3897,6 @@ export function WarehouseOperations({
                     setOpMessage(null);
                     setLookupError(null);
                     clearScanField(inventoryNewScanInputRef.current);
-                    setInventoryNewSearch('');
-                    setInventoryNewPickedProduct(null);
                     const initWh = inventoryWarehouseId || '';
                     setInventorySessionWarehouseId(initWh);
                     if (initWh && typeof reloadProductsWithWarehouse === 'function') {
@@ -4009,19 +4133,57 @@ export function WarehouseOperations({
                 </span>
               </label>
               <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
+                Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка.
+                {' '}
                 «В системе» и суммы пересчёта считаются по выбранному складу
                 {inventoryEditingSessionId ? '' : '; при смене склада список строк очищается'}.
               </p>
 
-              <p className="warehouse-ops-hint">Скан:</p>
               <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-                <FastScanInput
-                  inputRef={inventoryNewScanInputRef}
-                  onScan={handleInventoryScan}
-                  debounceMs={160}
-                  placeholder="Наведите сканер или введите штрихкод / артикул"
-                  disabled={!inventorySessionWarehouseId}
-                />
+                <div className="warehouse-ops-scan-form-input-wrap">
+                  <FastScanInput
+                    inputRef={inventoryNewScanInputRef}
+                    onScan={handleInventoryScan}
+                    onManualQuery={handleInventoryManualQuery}
+                    debounceMs={160}
+                    manualDebounceMs={400}
+                    placeholder="Штрихкод, артикул или название"
+                    disabled={!inventorySessionWarehouseId}
+                    onBlur={() => {
+                      setTimeout(() => {
+                        if (suggestContext === 'inventory_scan') closeSuggest();
+                      }, 150);
+                    }}
+                  />
+                  {suggestOpen && suggestContext === 'inventory_scan' && (
+                    <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
+                      <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
+                      <div className="warehouse-ops-suggest-list">
+                        {(suggestList || []).map((p) => (
+                          <button
+                            key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
+                            type="button"
+                            className="warehouse-ops-suggest-item"
+                            onMouseDown={(ev) => {
+                              ev.preventDefault();
+                              inventorySuppressScanRef.current = true;
+                              clearScanField(inventoryNewScanInputRef.current);
+                              window.setTimeout(() => {
+                                inventorySuppressScanRef.current = false;
+                              }, 500);
+                              const fn = suggestOnPickRef.current;
+                              closeSuggest();
+                              if (typeof fn === 'function') fn(p);
+                            }}
+                          >
+                            <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
+                            <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </form>
               {!inventorySessionWarehouseId ? (
                 <p className="warehouse-ops-hint" style={{ color: 'var(--danger, #ef4444)', marginTop: 8 }}>
@@ -4035,51 +4197,11 @@ export function WarehouseOperations({
               ) : null}
               {opMessage ? <div className="warehouse-ops-msg success" style={{ marginTop: 8 }}>{opMessage}</div> : null}
 
-              <div className="warehouse-ops-list-form" style={{ marginTop: 16 }}>
-                <form
-                  className="warehouse-ops-list-row warehouse-ops-list-row--search"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    handleInventoryNewAddFromSelect();
-                  }}
-                >
-                  <label htmlFor="inventory-new-product-search">Товар:</label>
-                  <ProductSearchInput
-                    id="inventory-new-product-search"
-                    value={inventoryNewSearch}
-                    onChange={(v) => {
-                      setInventoryNewSearch(v);
-                      setInventoryNewPickedProduct(null);
-                    }}
-                    products={products}
-                    placeholder="Штрихкод, артикул или название"
-                    disabled={!inventorySessionWarehouseId}
-                    onSelect={(p) => {
-                      if (!p?.id) return;
-                      setInventoryNewPickedProduct(p);
-                      setInventoryNewSearch(formatProductOptionLabel(p));
-                      addInventoryProductFromPick(p);
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    onClick={handleInventoryNewAddFromSelect}
-                    disabled={
-                      (!inventoryNewPickedProduct?.id &&
-                        !normalizeProductSearchQuery(inventoryNewSearch)) ||
-                      !inventorySessionWarehouseId
-                    }
-                  >
-                    Добавить 1 шт
-                  </Button>
-                </form>
-              </div>
-
               <h4 className="warehouse-ops-receipt-list-title" style={{ marginTop: 20 }}>
                 Список пересчёта
               </h4>
               {inventoryNewRows.length === 0 ? (
-                <p className="warehouse-ops-receipt-list-empty">Пока нет позиций. Сканируйте или добавьте из списка.</p>
+                <p className="warehouse-ops-receipt-list-empty">Пока нет позиций. Сканируйте или выберите из подсказок поиска.</p>
               ) : (
                 <>
                   <div className="warehouse-ops-receipt-list-wrap">
@@ -4952,281 +5074,130 @@ export function WarehouseOperations({
         isOpen={addReceiptModalOpen}
         onClose={() => setAddReceiptModalOpen(false)}
         title="Добавить поступление"
+        headerExtra={receiptModalHeaderExtra}
         size="xl"
         closeOnBackdropClick={false}
         closeOnEscape={false}
       >
         <div className="warehouse-ops-panel receipt-panel" style={{ marginBottom: 0 }}>
-          <div className="warehouse-ops-receipt-supplier-row">
-            <label>
-              Склад приёмки <span className="warehouse-ops-required-star">*</span>
-            </label>
-            {receiptSessionEnabled && receiptSessionId ? (
-              <div className="warehouse-ops-select" style={{ padding: '8px 0', fontSize: 14 }}>
-                {receiptWarehouseLabel || (receiptWarehouseId ? `Склад #${receiptWarehouseId}` : 'Загрузка…')}
-                {isReceiptSessionGuest ? (
-                  <span className="muted" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
-                    Склад задан создателем общей приёмки
-                  </span>
-                ) : null}
-              </div>
-            ) : (
-            <select
-              value={receiptWarehouseId}
-              onChange={(e) => setReceiptWarehouseId(e.target.value)}
-              className="warehouse-ops-select"
-            >
-              <option value="">— Выберите склад —</option>
-              {ownWarehouses.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.address || w.name || `Склад #${w.id}`}
-                </option>
-              ))}
-            </select>
-            )}
-          </div>
-          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
-            <label>
-              Организация <span className="warehouse-ops-required-star">*</span>
-            </label>
-            <select
-              value={receiptOrganizationId}
-              onChange={(e) => setReceiptOrganizationId(e.target.value)}
-              className="warehouse-ops-select"
-            >
-              <option value="">— Выберите организацию —</option>
-              {(organizations || []).map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name || o.id}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
-            <label>
-              Поставщик <span className="warehouse-ops-required-star">*</span>
-            </label>
-            <select
-              value={receiptSupplierId}
-              onChange={(e) => setReceiptSupplierId(e.target.value)}
-              className="warehouse-ops-select"
-            >
-              <option value="">— Выберите поставщика —</option>
-              {(suppliers || []).map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name || s.code || s.id}
-                </option>
-              ))}
-            </select>
+          <div className="warehouse-ops-receipt-modal-settings">
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Организация <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={receiptOrganizationId}
+                onChange={(e) => setReceiptOrganizationId(e.target.value)}
+                className="warehouse-ops-select"
+              >
+                <option value="">— Выберите организацию —</option>
+                {(organizations || []).map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name || o.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Склад приёмки <span className="warehouse-ops-required-star">*</span>
+              </label>
+              {receiptSessionEnabled && receiptSessionId ? (
+                <div className="warehouse-ops-select warehouse-ops-select--readonly">
+                  {receiptWarehouseLabel || (receiptWarehouseId ? `Склад #${receiptWarehouseId}` : 'Загрузка…')}
+                  {isReceiptSessionGuest ? (
+                    <span className="muted warehouse-ops-select-hint">
+                      Склад задан создателем общей приёмки
+                    </span>
+                  ) : null}
+                </div>
+              ) : (
+                <select
+                  value={receiptWarehouseId}
+                  onChange={(e) => setReceiptWarehouseId(e.target.value)}
+                  className="warehouse-ops-select"
+                >
+                  <option value="">— Выберите склад —</option>
+                  {ownWarehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.address || w.name || `Склад #${w.id}`}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <div className="warehouse-ops-receipt-supplier-row">
+              <label>
+                Поставщик <span className="warehouse-ops-required-star">*</span>
+              </label>
+              <select
+                value={receiptSupplierId}
+                onChange={(e) => setReceiptSupplierId(e.target.value)}
+                className="warehouse-ops-select"
+              >
+                <option value="">— Выберите поставщика —</option>
+                {(suppliers || []).map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name || s.code || s.id}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           {isReceiptSessionGuest && (
             <p className="warehouse-ops-hint" style={{ marginTop: 8 }}>
               Вы приглашены в общую приёмку: сканируйте товары — они попадут в общий список. Оформить документ может только создатель.
             </p>
           )}
-          {!isReceiptSessionGuest && (
-          <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
-            <label className="warehouse-ops-radio" style={{ margin: 0 }}>
-              <input
-                type="checkbox"
-                checked={receiptSessionEnabled}
-                onChange={async (e) => {
-                  const on = !!e.target.checked;
-                  setLookupError(null);
-                  setOpMessage(null);
-                  setReceiptSessionEnabled(on);
-                  if (!on) {
-                    leaveReceiptSession();
-                    return;
-                  }
-                  if (!receiptWarehouseId) {
-                    setLookupError('Сначала выберите склад приёмки');
-                    setReceiptSessionEnabled(false);
-                    return;
-                  }
-                  try {
-                    const created = await receiptsApi.createSession({ warehouseId: Number(receiptWarehouseId) });
-                    const d = created?.data ?? created;
-                    const sid = String(d?.sessionId || '').trim();
-                    if (sid) {
-                      setReceiptSessionId(sid);
-                      applySessionStateToList(created);
-                    }
-                  } catch (ex) {
-                    setLookupError(ex.response?.data?.message || ex.message || 'Не удалось создать общую приёмку');
-                    setReceiptSessionEnabled(false);
-                    setReceiptSessionId('');
-                  }
+          <p className="warehouse-ops-hint">
+            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название. Для коробки укажите количество в колонке «Коробкой» в таблице (через 2 с).
+          </p>
+          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+            <div className="warehouse-ops-scan-form-input-wrap">
+              <FastScanInput
+                inputRef={scanInputRef}
+                onScan={handleReceiptScan}
+                onManualQuery={handleReceiptManualQuery}
+                debounceMs={160}
+                manualDebounceMs={400}
+                placeholder="Штрихкод, артикул или название"
+                disabled={!receiptWarehouseId}
+                onBlur={() => {
+                  setTimeout(() => {
+                    if (suggestContext === 'receipt_modal_scan') closeSuggest();
+                  }, 150);
                 }}
               />
-              <span>Общая приёмка (несколько устройств)</span>
-            </label>
-          </div>
-          )}
-          {receiptSessionEnabled && receiptSessionId && (
-            <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 6 }}>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => {
-                  leaveReceiptSession();
-                  setAddReceiptModalOpen(false);
-                }}
-              >
-                Выйти из общей приёмки
-              </Button>
-              <span className="muted" style={{ fontSize: 12, marginLeft: 10 }}>
-                Приглашённые пользователи могут только выйти; оформить поступление может только создатель.
-              </span>
+              {suggestOpen && suggestContext === 'receipt_modal_scan' && (
+                <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
+                  <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
+                  <div className="warehouse-ops-suggest-list">
+                    {(suggestList || []).map((p) => (
+                      <button
+                        key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
+                        type="button"
+                        className="warehouse-ops-suggest-item"
+                        onMouseDown={(ev) => {
+                          ev.preventDefault();
+                          receiptSuppressScanRef.current = true;
+                          clearScanField(scanInputRef.current);
+                          window.setTimeout(() => {
+                            receiptSuppressScanRef.current = false;
+                          }, 500);
+                          const fn = suggestOnPickRef.current;
+                          closeSuggest();
+                          if (typeof fn === 'function') fn(p);
+                        }}
+                      >
+                        <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
+                        <div className="warehouse-ops-suggest-name">{p.name || '—'}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-          {receiptSessionEnabled && receiptSessionId && !isReceiptSessionGuest && (
-            <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
-              <InviteUserButton
-                users={inviteUsers}
-                busy={inviteBusy}
-                excludeUserId={user?.id ?? user?.userId}
-                onInvite={async (uid) => {
-                  const sid = String(receiptSessionId || '').trim();
-                  if (!sid || inviteBusy) return;
-                  try {
-                    setInviteBusy(true);
-                    setLookupError(null);
-                    await receiptsApi.inviteToSession(sid, { userId: uid });
-                    setOpMessage('Приглашение отправлено в уведомления.');
-                  } catch (ex) {
-                    setLookupError(ex.response?.data?.message || ex.message || 'Не удалось отправить приглашение');
-                  } finally {
-                    setInviteBusy(false);
-                  }
-                }}
-              />
-            </div>
-          )}
-          <div className="warehouse-ops-receipt-modes">
-            <label className="warehouse-ops-radio">
-              <input
-                type="radio"
-                name="receiptModeModal"
-                checked={receiptMode === 'scan'}
-                onChange={() => setReceiptMode('scan')}
-              />
-              <span>По скану — 1 скан = 1 шт</span>
-            </label>
-            <label className="warehouse-ops-radio">
-              <input
-                type="radio"
-                name="receiptModeModal"
-                checked={receiptMode === 'list'}
-                onChange={() => setReceiptMode('list')}
-              />
-              <span>Из списка — выбор товара и количество</span>
-            </label>
-          </div>
-
-          {receiptMode === 'scan' && (
-            <>
-              <p className="warehouse-ops-hint">Отсканируйте штрихкод — товар добавится в список (1 скан = 1 шт).</p>
-              <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
-                <FastScanInput
-                  inputRef={scanInputRef}
-                  onScan={handleReceiptScan}
-                  debounceMs={160}
-                  placeholder="Наведите сканер сюда"
-                  disabled={!receiptWarehouseId}
-                />
-              </form>
-            </>
-          )}
-
-          <div style={{ marginTop: 10 }}>
-            <p className="warehouse-ops-hint" style={{ marginBottom: 6 }}>
-              Коробкой: отсканируйте товар выше (идентификация), укажите количество в коробке — через 2 с установим это количество в списке и вернём фокус в поле скана.
-            </p>
-            <form
-              onSubmit={(e) => e.preventDefault()}
-              className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn"
-            >
-              <input
-                type="text"
-                className="warehouse-ops-scan-input"
-                placeholder="ШК или артикул (необязательно после скана)"
-                value={boxAddCode}
-                onChange={(e) => {
-                  const code = e.target.value;
-                  setBoxAddCode(code);
-                  scheduleWarehouseBoxQtyApply(boxAddQty, code);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.preventDefault();
-                }}
-                disabled={!receiptWarehouseId || boxAddBusy}
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <input
-                type="number"
-                min={1}
-                step={1}
-                className="warehouse-ops-qty-input"
-                style={{ width: 120 }}
-                placeholder="Кол-во"
-                value={boxAddQty}
-                onChange={(e) => {
-                  const qty = e.target.value;
-                  setBoxAddQty(qty);
-                  scheduleWarehouseBoxQtyApply(qty, boxAddCode);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.preventDefault();
-                }}
-                disabled={!receiptWarehouseId || boxAddBusy}
-              />
-            </form>
-          </div>
-
-          {receiptMode === 'list' && (
-            <div className="warehouse-ops-list-form">
-              <div className="warehouse-ops-list-row warehouse-ops-list-row--search">
-                <label htmlFor="receipt-modal-product-search">Товар:</label>
-                <ProductSearchInput
-                  id="receipt-modal-product-search"
-                  value={receiptListSearch}
-                  onChange={(v) => {
-                    setReceiptListSearch(v);
-                    setReceiptPickedProduct(null);
-                    setSelectedProductId('');
-                  }}
-                  products={products}
-                  placeholder="Штрихкод, артикул или название"
-                  disabled={!receiptWarehouseId}
-                  onSelect={(p) =>
-                    pickListProduct(p, {
-                      setProduct: setReceiptPickedProduct,
-                      setSearch: setReceiptListSearch,
-                      setId: setSelectedProductId,
-                    })
-                  }
-                />
-              </div>
-              <div className="warehouse-ops-list-row">
-                <label>Количество:</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={listQty}
-                  onChange={e => setListQty(e.target.value)}
-                  className="warehouse-ops-qty-input"
-                />
-                <Button
-                  onClick={handleReceiptFromList}
-                  disabled={(!receiptPickedProduct && !selectedProductId) || !receiptWarehouseId}
-                >
-                  В список
-                </Button>
-              </div>
-            </div>
-          )}
+          </form>
 
           {lookupError && <div className="warehouse-ops-error">{lookupError}</div>}
           {opMessage && <div className="warehouse-ops-msg success">{opMessage}</div>}
@@ -5234,7 +5205,7 @@ export function WarehouseOperations({
           <div className="warehouse-ops-receipt-list-section">
             <h4 className="warehouse-ops-receipt-list-title">Список товаров для поступления</h4>
             {receiptList.length === 0 ? (
-              <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или добавляйте из списка выше.</p>
+              <p className="warehouse-ops-receipt-list-empty">Список пуст. Сканируйте товары или выберите из подсказок поиска.</p>
             ) : (
               <>
                 <div className="warehouse-ops-receipt-list-wrap">
@@ -5244,6 +5215,7 @@ export function WarehouseOperations({
                         <th>Артикул</th>
                         <th>Товар</th>
                         <th>Кол-во</th>
+                        <th style={{ width: 110 }}>Коробкой</th>
                         <th>Себестоимость, ₽</th>
                         <th></th>
                       </tr>
@@ -5260,6 +5232,26 @@ export function WarehouseOperations({
                               value={item.quantity}
                               onChange={e => updateReceiptQuantity(index, e.target.value)}
                               className="warehouse-ops-qty-input small"
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              className="warehouse-ops-qty-input small"
+                              style={{ width: 90 }}
+                              placeholder="Кол-во"
+                              value={item._boxQtyInput ?? ''}
+                              disabled={boxAddBusy}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                updateReceiptRowBoxInput(index, v);
+                                scheduleReceiptRowBoxQtyApply(item.productId, v);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') e.preventDefault();
+                              }}
                             />
                           </td>
                           <td>

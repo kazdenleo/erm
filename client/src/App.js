@@ -13,6 +13,9 @@ import { Login } from './pages/Login/Login';
 import { PublicRegister } from './pages/Register/PublicRegister.jsx';
 import { FirstLoginChangePassword } from './pages/FirstLoginChangePassword/FirstLoginChangePassword.jsx';
 import { Home } from './pages/Home/Home';
+import { AnalyticsLayout } from './pages/Analytics/AnalyticsLayout';
+import { SalesAnalytics } from './pages/Analytics/SalesAnalytics/SalesAnalytics';
+import { FboSalesAnalytics } from './pages/Analytics/FboSalesAnalytics/FboSalesAnalytics';
 import { Products } from './pages/Products/Products';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
 import { Warehouses } from './pages/Warehouses/Warehouses';
@@ -34,6 +37,7 @@ import { FboSupplies } from './pages/FboSupplies/FboSupplies';
 import { FboSupplyDetail } from './pages/FboSupplies/FboSupplyDetail';
 import { FboSupplyForecast } from './pages/FboSupplies/FboSupplyForecast';
 import { FboPurchaseCalculation } from './pages/FboSupplies/FboPurchaseCalculation';
+import { ProcurementForecast } from './pages/StockLevels/ProcurementForecast/ProcurementForecast';
 import { Integrations } from './pages/Integrations/Integrations';
 import { Notifications } from './pages/Notifications/Notifications';
 import { Categories } from './pages/Categories/Categories';
@@ -93,6 +97,11 @@ function App() {
             }
           />
           <Route path="/" element={<ProtectedRoute><Layout><Home /></Layout></ProtectedRoute>} />
+          <Route path="/analytics" element={<ProtectedRoute><Layout><AnalyticsLayout /></Layout></ProtectedRoute>}>
+            <Route index element={<Navigate to="/analytics/sales" replace />} />
+            <Route path="sales" element={<SalesAnalytics />} />
+            <Route path="fbo-sales" element={<FboSalesAnalytics />} />
+          </Route>
           <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
           <Route path="/accounts" element={<Navigate to="/platform/accounts" replace />} />
           <Route
@@ -118,6 +127,7 @@ function App() {
             <Route index element={<Navigate to="/stock-levels/warehouse" replace />} />
             <Route path="suppliers" element={<Navigate to="/stock-levels/warehouse" replace />} />
             <Route path="warehouse" element={<WarehouseStocks />} />
+            <Route path="purchases/forecast" element={<ProcurementForecast />} />
             <Route path="purchases" element={<Purchases />} />
             <Route path="fbo-supplies/purchase-calc" element={<FboPurchaseCalculation />} />
             <Route path="fbo-supplies/forecasting" element={<FboSupplyForecast />} />

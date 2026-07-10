@@ -17,6 +17,11 @@ import { FastScanInput } from '../../components/common/FastScanInput/FastScanInp
 import { getStoredLabelSize } from '../Settings/Labels';
 import { isAssemblyLikeStatus, orderStickerCellValue } from '../../utils/orderStickerDisplay';
 import { getAssemblyOrderCompositionLines } from '../../utils/assemblyOrderComposition';
+import {
+  orderGroupKey,
+  singleOrderListGroupKey,
+  marketplaceOrderIdForApi,
+} from '../../utils/orderListGroupKey';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import {
   isKitSkuScanForOrder,
@@ -133,12 +138,26 @@ function AssemblyCompositionCell({ rows }) {
 function assemblyOrderSessionKey(order) {
   if (!order) return '';
   const mp = normMarketplace(order);
-  const gid = order.orderGroupId ?? order.order_group_id;
-  if (gid != null && String(gid).trim() !== '') {
-    return `${mp}|g:${String(gid)}`;
+  const ogk = orderGroupKey(order);
+  if (ogk) return `${mp}|g:${ogk}`;
+  return singleOrderListGroupKey(order);
+}
+
+function groupAssemblyRowsBySessionKey(rows) {
+  const keyOrder = [];
+  const byKey = new Map();
+  for (const o of rows || []) {
+    const k = assemblyOrderSessionKey(o);
+    if (!byKey.has(k)) {
+      byKey.set(k, []);
+      keyOrder.push(k);
+    }
+    byKey.get(k).push(o);
   }
-  const oid = order.orderId ?? order.order_id;
-  return `${mp}|${oid ?? ''}`;
+  return keyOrder.map((k) => {
+    const groupRows = byKey.get(k);
+    return { key: k, rows: groupRows, primary: groupRows[0] };
+  });
 }
 
 /** Строка состава: «offerId/строка заказа, название - Nшт»; внутренний productId не показываем */
@@ -973,22 +992,10 @@ export function Assembly() {
   }, [assembledOrders, marketplaceFilter, sortByName]);
 
   /** Одна строка таблицы = один заказ (группа по session key); комплектующие в ячейках */
-  const assemblyTableGroups = useMemo(() => {
-    const keyOrder = [];
-    const byKey = new Map();
-    for (const o of filtered) {
-      const k = assemblyOrderSessionKey(o);
-      if (!byKey.has(k)) {
-        byKey.set(k, []);
-        keyOrder.push(k);
-      }
-      byKey.get(k).push(o);
-    }
-    return keyOrder.map((k) => {
-      const rows = byKey.get(k);
-      return { key: k, rows, primary: rows[0] };
-    });
-  }, [filtered]);
+  const assemblyTableGroups = useMemo(
+    () => groupAssemblyRowsBySessionKey(filtered),
+    [filtered]
+  );
 
   const collectedFiltered = useMemo(() => {
     let list = collectedOrdersSorted;
@@ -997,6 +1004,11 @@ export function Assembly() {
     }
     return list;
   }, [collectedOrdersSorted, marketplaceFilter]);
+
+  const collectedTableGroups = useMemo(
+    () => groupAssemblyRowsBySessionKey(collectedFiltered),
+    [collectedFiltered]
+  );
 
   if (loading) {
     return (
@@ -1241,8 +1253,8 @@ export function Assembly() {
               {assemblyTableGroups.map(({ key: groupKey, rows, primary }) => {
                 const rowKey = groupKey;
                 const isReturnLoading = returnToNewLoadingKey === rowKey;
-                const orderIds = [...new Set(rows.map((r) => String(r.orderId ?? r.order_id ?? '').trim()).filter(Boolean))];
                 const mp = primary.marketplace;
+                const apiOrderId = marketplaceOrderIdForApi(rows, mp);
                 const qtyCell =
                   rows.length === 1
                     ? primary.quantity ?? '—'
@@ -1251,27 +1263,12 @@ export function Assembly() {
                   <tr key={groupKey}>
                     <td>{mp}</td>
                     <td>
-                      {orderIds.length <= 1 ? (
-                        <Link
-                          to={`/orders/${encodeURIComponent(mp)}/${encodeURIComponent(primary.orderId)}`}
-                          className="assembly-order-link"
-                        >
-                          {orderIds[0] ?? primary.orderId}
-                        </Link>
-                      ) : (
-                        <div className="assembly-table-order-ids">
-                          {orderIds.map((oid) => (
-                            <div key={oid}>
-                              <Link
-                                to={`/orders/${encodeURIComponent(mp)}/${encodeURIComponent(oid)}`}
-                                className="assembly-order-link"
-                              >
-                                {oid}
-                              </Link>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      <Link
+                        to={`/orders/${encodeURIComponent(mp)}/${encodeURIComponent(apiOrderId || primary.orderId)}`}
+                        className="assembly-order-link"
+                      >
+                        {apiOrderId || primary.orderId}
+                      </Link>
                     </td>
                     <td>
                       <div className="assembly-table-lines">
@@ -1380,12 +1377,12 @@ export function Assembly() {
       )}
 
       <h2 className="assembly-section-title">
-        {`Собранные заказы (${collectedFiltered.length}${marketplaceFilter !== 'all' ? ', выбран маркетплейс' : ''})`}
+        {`Собранные заказы (${collectedTableGroups.length}${marketplaceFilter !== 'all' ? ', выбран маркетплейс' : ''})`}
       </h2>
       <p className="assembly-section-hint">
         Статус «Собран» — повторная печать стикера и просмотр этикетки.
       </p>
-      {collectedFiltered.length === 0 ? (
+      {collectedTableGroups.length === 0 ? (
         <div className="assembly-empty assembly-empty-muted">
           <p>
             {collectedOrdersSorted.length === 0
@@ -1410,59 +1407,77 @@ export function Assembly() {
               </tr>
             </thead>
             <tbody>
-              {collectedFiltered.map((o, idx) => {
-                const rowKey = `collected-${o.marketplace}|${o.orderId}|${idx}`;
-                const mpRow = mpDisplay(o.marketplace);
-                const assembledLabel = o.assembledAt
-                  ? new Date(o.assembledAt).toLocaleString('ru-RU')
+              {collectedTableGroups.map(({ key: groupKey, rows, primary }) => {
+                const mp = primary.marketplace;
+                const mpRow = mpDisplay(mp);
+                const apiOrderId = marketplaceOrderIdForApi(rows, mp);
+                const qtyCell =
+                  rows.length === 1
+                    ? primary.quantity ?? '—'
+                    : rows.map((r) => r.quantity ?? 1).join(' + ');
+                const assembledLabel = primary.assembledAt
+                  ? new Date(primary.assembledAt).toLocaleString('ru-RU')
                   : '—';
                 const who =
-                  [o.assembledByFullName, o.assembledByEmail].filter(Boolean).join(' · ') || '—';
-                const erpPidCol = assemblyLineProductId(o);
+                  [primary.assembledByFullName, primary.assembledByEmail].filter(Boolean).join(' · ') || '—';
+                const stickerOrderId = apiOrderId || String(primary.orderId ?? '');
+                const labelReady =
+                  labelReadyByOrderId?.[stickerOrderId] === true ||
+                  rows.some((r) => labelReadyByOrderId?.[String(r.orderId ?? '')] === true);
                 return (
-                  <tr key={rowKey}>
-                    <td>{mpRow ? `${mpRow.icon} ${mpRow.name}` : o.marketplace}</td>
+                  <tr key={groupKey}>
+                    <td>{mpRow ? `${mpRow.icon} ${mpRow.name}` : mp}</td>
                     <td>
                       <Link
-                        to={`/orders/${encodeURIComponent(o.marketplace)}/${encodeURIComponent(o.orderId)}`}
+                        to={`/orders/${encodeURIComponent(mp)}/${encodeURIComponent(stickerOrderId)}`}
                         className="assembly-order-link"
                       >
-                        {o.orderId}
+                        {stickerOrderId}
                       </Link>
                     </td>
                     <td>
-                      {erpPidCol ? (
-                        <button
-                          type="button"
-                          onClick={(e) => openProductCardFromClick(erpPidCol, e)}
-                          className="assembly-product-link"
-                          title="Открыть карточку товара"
-                          style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
-                        >
-                          {o.productName || o.product_name || '—'}
-                        </button>
-                      ) : (
-                        o.productName || o.product_name || '—'
-                      )}
+                      <div className="assembly-table-lines">
+                        {rows.map((o, i) => {
+                          const erpPid = assemblyLineProductId(o);
+                          const name = o.productName || o.product_name || '—';
+                          return (
+                            <div key={`${String(o.orderId)}-${i}`} className="assembly-table-line">
+                              {erpPid ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => openProductCardFromClick(erpPid, e)}
+                                  className="assembly-product-link"
+                                  title="Открыть карточку товара"
+                                  style={{ padding: 0, border: 0, background: 'transparent', cursor: 'pointer' }}
+                                >
+                                  {name}
+                                </button>
+                              ) : (
+                                name
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </td>
-                    <td>{o.quantity ?? '—'}</td>
+                    <td>{qtyCell}</td>
                     <td className="assembly-col-composition">
-                      <AssemblyCompositionCell rows={[o]} />
+                      <AssemblyCompositionCell rows={rows} />
                     </td>
                     <td>{assembledLabel}</td>
                     <td>{who}</td>
                     <td className="assembly-col-sticker">
-                      <OrderStickerDisplay order={o} />
+                      <OrderStickerDisplay order={primary} groupOrders={rows} />
                     </td>
                     <td>
                       <div className="assembly-row-actions">
-                        {labelReadyByOrderId?.[String(o.orderId)] === true && (
+                        {labelReady && (
                           <button
                             type="button"
                             className="assembly-label-link"
                             title="Печать стикера"
                             aria-label="Печать этикетки заказа"
-                            onClick={() => requestLabelPrint(o.orderId)}
+                            onClick={() => requestLabelPrint(stickerOrderId)}
                           >
                             <OrderLabelIcon size={20} />
                           </button>

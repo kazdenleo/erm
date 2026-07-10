@@ -1072,12 +1072,12 @@ class OrdersSyncService {
         }
       }
       if (rowsToAutoReserve.length > 0) {
-        const rowsCopy = rowsToAutoReserve.slice();
-        setImmediate(() => {
-          ordersService._reapplyReserveForOrderRows(rowsCopy).catch((e) => {
-            logger.warn('[Orders Sync] background reserve reapply failed:', e?.message || e);
-          });
-        });
+        try {
+          await ordersService._reapplyReserveForOrderRows(rowsToAutoReserve);
+          logger.info(`[Orders Sync] auto-reserve: ${rowsToAutoReserve.length} row(s)`);
+        } catch (e) {
+          logger.warn('[Orders Sync] auto-reserve failed:', e?.message || e);
+        }
       }
     } else {
       await writeData('orders', {

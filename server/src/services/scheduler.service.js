@@ -22,6 +22,7 @@ import { getReserveDbLimiterStats } from '../utils/reserveDbLimiter.js';
 import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
+import marketplaceFboReportsService from './marketplaceFboReports.service.js';
 import {
   getSchedulerDbJobName,
   isSchedulerDbJobRunning,
@@ -171,6 +172,18 @@ function getMarketplaceInventoryDailyCron() {
 
 function isMarketplaceInventoryDailyEnabled() {
   const v = process.env.MP_INVENTORY_DAILY_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Ежедневная загрузка финансовых отчётов FBO с маркетплейсов. По умолчанию 05:00 МСК; MP_FBO_REPORTS_DAILY_CRON */
+function getMarketplaceFboReportsDailyCron() {
+  const c = process.env.MP_FBO_REPORTS_DAILY_CRON;
+  return c && String(c).trim() ? String(c).trim() : '0 5 * * *';
+}
+
+function isMarketplaceFboReportsDailyEnabled() {
+  const v = process.env.MP_FBO_REPORTS_DAILY_ENABLED;
   if (v == null || String(v).trim() === '') return true;
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
@@ -665,6 +678,48 @@ class SchedulerService {
         logger.info('[Scheduler] Orphan order reserve cleanup disabled (ORPHAN_ORDER_RESERVE_ENABLED)');
       }
 
+      let autoOrderReserveJob = null;
+      const autoOrderReserveCron =
+        process.env.AUTO_ORDER_RESERVE_CRON && String(process.env.AUTO_ORDER_RESERVE_CRON).trim()
+          ? String(process.env.AUTO_ORDER_RESERVE_CRON).trim()
+          : '*/2 * * * *';
+      const autoOrderReserveEnabled = !/^(0|false|no|off)$/i.test(
+        String(process.env.AUTO_ORDER_RESERVE_ENABLED ?? '1').trim()
+      );
+      if (autoOrderReserveEnabled) {
+        autoOrderReserveJob = cron.schedule(
+          autoOrderReserveCron,
+          async () => {
+            if (isSchedulerDbJobRunning()) {
+              logger.info('[Scheduler] Auto order reserve: пропуск — ночная задача БД');
+              return;
+            }
+            const reserveStats = getReserveDbLimiterStats();
+            if (reserveStats.queued > 0 || reserveStats.active >= reserveStats.max) {
+              logger.info(
+                `[Scheduler] Auto order reserve: пропуск — очередь резерва (active=${reserveStats.active}, queued=${reserveStats.queued})`
+              );
+              return;
+            }
+            await runSchedulerDbJob('auto-order-reserve', async () => {
+              const { default: ordersService } = await import('./orders.service.js');
+              const out = await ordersService.runScheduledAutoReserveAllProfiles({ limitPerProfile: 50 });
+              if (out.reapplied > 0) {
+                logger.info(
+                  `[Scheduler] Auto order reserve: reapplied=${out.reapplied} checked=${out.checked} profiles=${out.profiles}`
+                );
+              }
+            });
+          },
+          {
+            scheduled: false,
+            timezone: 'Europe/Moscow'
+          }
+        );
+      } else {
+        logger.info('[Scheduler] Auto order reserve disabled (AUTO_ORDER_RESERVE_ENABLED)');
+      }
+
       this.jobs.push({
         name: 'wb-marketplace-update',
         job: wbUpdateJob,
@@ -745,6 +800,33 @@ class SchedulerService {
         logger.info('[Scheduler] Marketplace inventory daily snapshot disabled (MP_INVENTORY_DAILY_ENABLED)');
       }
 
+      if (isMarketplaceFboReportsDailyEnabled()) {
+        const fboReportsCron = getMarketplaceFboReportsDailyCron();
+        this.jobs.push({
+          name: 'marketplace-fbo-reports-daily',
+          job: async () => {
+            try {
+              const to = new Date();
+              const from = new Date(to);
+              from.setDate(from.getDate() - 7);
+              const dateFrom = from.toISOString().slice(0, 10);
+              const dateTo = to.toISOString().slice(0, 10);
+              await marketplaceFboReportsService.sync({ dateFrom, dateTo });
+            } catch (e) {
+              logger.error('[Scheduler] Marketplace FBO reports sync failed:', e?.message || e);
+              addRuntimeNotification({
+                type: 'error',
+                message: `Ошибка ежедневной загрузки FBO-отчётов: ${e?.message || e}`
+              });
+            }
+          },
+          schedule: fboReportsCron,
+          description: 'Ежедневная загрузка финансовых отчётов FBO (WB, Ozon). MP_FBO_REPORTS_DAILY_CRON'
+        });
+      } else {
+        logger.info('[Scheduler] Marketplace FBO reports daily sync disabled (MP_FBO_REPORTS_DAILY_ENABLED)');
+      }
+
       if (reviewsSyncJob) {
         this.jobs.push({
           name: 'reviews-sync',
@@ -804,6 +886,16 @@ class SchedulerService {
         });
       }
 
+      if (autoOrderReserveJob) {
+        this.jobs.push({
+          name: 'auto-order-reserve',
+          job: autoOrderReserveJob,
+          schedule: autoOrderReserveCron,
+          description:
+            'Фоновый авторезерв заказов без UI. AUTO_ORDER_RESERVE_CRON, по умолчанию */2 * * * *'
+        });
+      }
+
       // Запускаем задачи
       wbUpdateJob.start();
       wbTariffsJob.start();
@@ -829,6 +921,9 @@ class SchedulerService {
       }
       if (orphanOrderReserveJob) {
         orphanOrderReserveJob.start();
+      }
+      if (autoOrderReserveJob) {
+        autoOrderReserveJob.start();
       }
       this.isRunning = true;
 

@@ -74,8 +74,23 @@ const stockWarehouseChildren = [
   },
 ];
 
+const analyticsChildren = [
+  {
+    path: '/analytics/sales',
+    label: 'Продажи',
+    iconClass: 'pe-7s-angle-right',
+    sectionKey: 'analytics_sales',
+  },
+];
+
 const menuItems = [
-  { path: '/', label: 'Аналитика', iconClass: 'pe-7s-graph2', sectionKey: 'analytics' },
+  { path: '/', label: 'Главная', iconClass: 'pe-7s-home', sectionKey: 'analytics' },
+  {
+    path: '/analytics/sales',
+    label: 'Аналитика',
+    iconClass: 'pe-7s-graph2',
+    children: analyticsChildren,
+  },
   { path: '/products', label: 'Товары', iconClass: 'pe-7s-box2', sectionKey: 'products' },
   { path: '/orders', label: 'Заказы', iconClass: 'pe-7s-note2', sectionKey: 'orders' },
   { path: '/stock-levels/fbo-supplies', label: 'Поставки FBO', iconClass: 'pe-7s-box2', requiresFbo: true, sectionKey: 'fbo' },

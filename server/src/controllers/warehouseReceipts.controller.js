@@ -185,7 +185,8 @@ class WarehouseReceiptsController {
     try {
       const id = parseInt(req.params.id, 10);
       if (!id) return res.status(400).json({ ok: false, message: 'Некорректный ID' });
-      const { organizationId, supplierId, lines, warehouseId, warehouse_id } = req.body || {};
+      const { organizationId, supplierId, lines, warehouseId, warehouse_id, purchaseReceiptId, purchase_receipt_id } =
+        req.body || {};
       const profileId = req.user?.profileId ?? null;
       const receipt = await warehouseReceiptsService.updateReceipt(id, {
         organizationId,
@@ -193,6 +194,7 @@ class WarehouseReceiptsController {
         warehouseId: warehouseId ?? warehouse_id ?? null,
         lines: Array.isArray(lines) ? lines : [],
         profileId,
+        purchaseReceiptId: purchaseReceiptId ?? purchase_receipt_id ?? null,
       });
       return res.status(200).json({ ok: true, data: receipt });
     } catch (error) {

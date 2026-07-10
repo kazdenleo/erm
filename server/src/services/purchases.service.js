@@ -940,35 +940,141 @@ async function reassignPurchasePendingIncomingWarehouseInTx(
   }
 }
 
+async function createWarehouseReceiptHeaderInTx(
+  client,
+  { supplierId, organizationId, warehouseId = null, documentType = 'receipt' } = {}
+) {
+  let warehouseReceiptId = null;
+  try {
+    const docIns = await client.query(
+      `INSERT INTO warehouse_receipts (supplier_id, organization_id, document_type, warehouse_id)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [supplierId, organizationId, documentType, warehouseId]
+    );
+    warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
+  } catch (e) {
+    const msg = String(e?.message || '');
+    if (/column.*does not exist|organization_id|document_type|warehouse_id/i.test(msg)) {
+      try {
+        const docIns = await client.query(
+          `INSERT INTO warehouse_receipts (supplier_id, organization_id, document_type)
+           VALUES ($1, $2, $3)
+           RETURNING id`,
+          [supplierId, organizationId, documentType]
+        );
+        warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
+      } catch {
+        const docIns = await client.query(
+          `INSERT INTO warehouse_receipts (supplier_id) VALUES ($1) RETURNING id`,
+          [supplierId]
+        );
+        warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
+      }
+    } else {
+      throw e;
+    }
+  }
+
+  if (warehouseReceiptId) {
+    const prefix = documentType === 'return' ? 'ВН' : documentType === 'customer_return' ? 'ВК' : 'ПТ';
+    const receiptNumber = `${prefix}-${String(warehouseReceiptId).padStart(6, '0')}`;
+    try {
+      await client.query(`UPDATE warehouse_receipts SET receipt_number = $1 WHERE id = $2`, [
+        receiptNumber,
+        warehouseReceiptId,
+      ]);
+    } catch {
+      // ignore
+    }
+  }
+
+  return warehouseReceiptId;
+}
+
+/**
+ * Разделить складской документ, если к нему привязано несколько purchase_receipts.
+ * У каждой приёмки по закупке — свой warehouse_receipts и свои строки.
+ */
+async function splitMergedWarehouseReceiptGroupInTx(client, warehouseReceiptId) {
+  const whId = Number(warehouseReceiptId);
+  if (!Number.isFinite(whId) || whId < 1) return false;
+
+  const prs = await client.query(
+    `SELECT pr.id, pr.purchase_id, pr.status,
+            (SELECT COUNT(*)::int FROM purchase_receipt_items ri WHERE ri.receipt_id = pr.id) AS items_count
+     FROM purchase_receipts pr
+     WHERE pr.warehouse_receipt_id = $1
+     ORDER BY pr.id ASC
+     FOR UPDATE`,
+    [whId]
+  );
+  if ((prs.rows?.length ?? 0) <= 1) return false;
+
+  const head = await client.query(
+    `SELECT supplier_id, organization_id, warehouse_id, document_type
+     FROM warehouse_receipts WHERE id = $1`,
+    [whId]
+  );
+  const whHead = head.rows?.[0];
+  if (!whHead) return false;
+
+  const keepPr = prs.rows[0];
+  const keepPrId = Number(keepPr.id);
+  const keepPurchaseId = Number(keepPr.purchase_id);
+
+  for (let i = 1; i < prs.rows.length; i++) {
+    const row = prs.rows[i];
+    const prId = Number(row.id);
+    const purchaseId = Number(row.purchase_id);
+    const purWh = await client.query(`SELECT warehouse_id FROM purchases WHERE id = $1`, [purchaseId]);
+    const warehouseId = purWh.rows?.[0]?.warehouse_id ?? whHead.warehouse_id ?? null;
+
+    const newWhId = await createWarehouseReceiptHeaderInTx(client, {
+      supplierId: whHead.supplier_id,
+      organizationId: whHead.organization_id,
+      warehouseId,
+      documentType: whHead.document_type || 'receipt',
+    });
+    if (!newWhId) continue;
+
+    await client.query(
+      `UPDATE purchase_receipts
+       SET warehouse_receipt_id = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [prId, newWhId]
+    );
+
+    if (
+      String(row.status) === 'completed' ||
+      (row.items_count != null && Number(row.items_count) > 0)
+    ) {
+      await backfillWarehouseReceiptLinesFromPurchaseReceiptInTx(client, {
+        purchaseId,
+        purchaseReceiptId: prId,
+        warehouseReceiptId: newWhId,
+      });
+    }
+  }
+
+  if (
+    String(keepPr.status) === 'completed' ||
+    (keepPr.items_count != null && Number(keepPr.items_count) > 0)
+  ) {
+    await backfillWarehouseReceiptLinesFromPurchaseReceiptInTx(client, {
+      purchaseId: keepPurchaseId,
+      purchaseReceiptId: keepPrId,
+      warehouseReceiptId: whId,
+    });
+  }
+
+  return true;
+}
+
 async function ensureWarehouseReceiptForPurchaseReceiptInTx(client, { purchaseId, purchaseReceiptId } = {}) {
   const pid = Number(purchaseId);
   const rid = Number(purchaseReceiptId);
   if (!Number.isFinite(pid) || pid < 1 || !Number.isFinite(rid) || rid < 1) return null;
-
-  // Правило: ОДНА складская приёмка (warehouse_receipts) на ОДНУ закупку.
-  // Если по этой закупке уже есть связанный документ — используем его.
-  try {
-    const any = await client.query(
-      `SELECT warehouse_receipt_id
-       FROM purchase_receipts
-       WHERE purchase_id = $1 AND warehouse_receipt_id IS NOT NULL
-       ORDER BY id DESC
-       LIMIT 1`,
-      [pid]
-    );
-    const whAny = any.rows?.[0]?.warehouse_receipt_id ?? null;
-    if (whAny) {
-      await client.query(
-        `UPDATE purchase_receipts
-         SET warehouse_receipt_id = $2, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [rid, whAny]
-      );
-      return whAny;
-    }
-  } catch {
-    // ignore
-  }
 
   const cur = await client.query(
     `SELECT warehouse_receipt_id FROM purchase_receipts WHERE id = $1 FOR UPDATE`,
@@ -977,42 +1083,22 @@ async function ensureWarehouseReceiptForPurchaseReceiptInTx(client, { purchaseId
   const existing = cur.rows?.[0]?.warehouse_receipt_id ?? null;
   if (existing) return existing;
 
-  const head = await client.query(`SELECT supplier_id, organization_id FROM purchases WHERE id = $1`, [pid]);
+  const head = await client.query(
+    `SELECT supplier_id, organization_id, warehouse_id FROM purchases WHERE id = $1`,
+    [pid]
+  );
   const supplierId = head.rows?.[0]?.supplier_id ?? null;
   const organizationId = head.rows?.[0]?.organization_id ?? null;
+  const warehouseId = head.rows?.[0]?.warehouse_id ?? null;
 
-  let warehouseReceiptId = null;
-  try {
-    const docIns = await client.query(
-      `INSERT INTO warehouse_receipts (supplier_id, organization_id, document_type)
-       VALUES ($1, $2, 'receipt')
-       RETURNING id`,
-      [supplierId, organizationId]
-    );
-    warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
-  } catch (e) {
-    const msg = String(e?.message || '');
-    if (/column.*does not exist|organization_id|document_type/i.test(msg)) {
-      const docIns = await client.query(
-        `INSERT INTO warehouse_receipts (supplier_id) VALUES ($1) RETURNING id`,
-        [supplierId]
-      );
-      warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
-    } else {
-      throw e;
-    }
-  }
+  const warehouseReceiptId = await createWarehouseReceiptHeaderInTx(client, {
+    supplierId,
+    organizationId,
+    warehouseId,
+    documentType: 'receipt',
+  });
 
   if (warehouseReceiptId) {
-    const receiptNumber = `ПТ-${String(warehouseReceiptId).padStart(6, '0')}`;
-    try {
-      await client.query(
-        `UPDATE warehouse_receipts SET receipt_number = $1 WHERE id = $2`,
-        [receiptNumber, warehouseReceiptId]
-      );
-    } catch {
-      // ignore
-    }
     await client.query(
       `UPDATE purchase_receipts SET warehouse_receipt_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [rid, warehouseReceiptId]
@@ -1114,8 +1200,10 @@ async function maybeDeleteOrphanWarehouseReceiptInTx(client, whId) {
 /**
  * Откат остатков по завершённой приёмке (по stock_movements.meta.purchase_receipt_id).
  */
-async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
+async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId, { reasonSuffix = '' } = {}) {
   const touchedProducts = new Set();
+  const suffix = reasonSuffix != null ? String(reasonSuffix) : '';
+  const isReceiptEdit = /изменение/i.test(suffix);
   const purProf = await client.query('SELECT profile_id FROM purchases WHERE id = $1', [purchaseId]);
   const profileIdForMove = purProf.rows?.[0]?.profile_id ?? null;
   // Только «исходные» проводки документа; строки сторно (reversal_of) не трогаем — нельзя откатить откат.
@@ -1165,13 +1253,14 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
         productId: pid,
         type: 'receipt',
         quantityChange: -ch,
-        reason: `Отмена приёмки №${rid}`,
+        reason: `Отмена приёмки №${rid}${suffix}`,
         meta: {
           storno: true,
           cancelled: true,
           purchase_id: purchaseId,
           purchase_receipt_id: rid,
           reversal_of: m.id,
+          ...(isReceiptEdit ? { receipt_edit: true } : {}),
         },
         warehouseId: wh && Number.isFinite(wh) ? wh : null,
         profileId: profileIdForMove,
@@ -1188,12 +1277,13 @@ async function reverseCompletedPurchaseReceiptInTx(client, rid, purchaseId) {
         productId: pid,
         type: 'incoming',
         quantityChange: addBack,
-        reason: `Сторно: возврат ожидания (incoming) по приёмке №${rid}`,
+        reason: `Сторно: возврат ожидания (incoming) по приёмке №${rid}${suffix}`,
         meta: {
           storno: true,
           purchase_id: purchaseId,
           purchase_receipt_id: rid,
           reversal_of: m.id,
+          ...(isReceiptEdit ? { receipt_edit: true } : {}),
         },
         warehouseId: wh && Number.isFinite(wh) ? wh : null,
         profileId: profileIdForMove,
@@ -1541,10 +1631,12 @@ function normalizeWarehouseReceiptLinesByProduct(lines) {
  */
 async function applyPurchaseReceiptStockByProductInTx(
   client,
-  { purchaseReceiptId, purchaseId, profileId, receiptWarehouseId, byProduct }
+  { purchaseReceiptId, purchaseId, profileId, receiptWarehouseId, byProduct, reasonSuffix = '' }
 ) {
   const rid = Number(purchaseReceiptId);
   const pid = profileId;
+  const suffix = reasonSuffix != null ? String(reasonSuffix) : '';
+  const isReceiptEdit = /изменение/i.test(suffix);
   const hasPriceCol = await hasPurchasePriceColumn((sql) => client.query(sql));
   const pWh = await client.query(`SELECT warehouse_id FROM purchases WHERE id = $1`, [purchaseId]);
   const purchaseWarehouseId = pWh.rows?.[0]?.warehouse_id ?? null;
@@ -1602,12 +1694,13 @@ async function applyPurchaseReceiptStockByProductInTx(
         quantityChange: stockQty,
         reason:
           extraQty > 0
-            ? `Приёмка по закупке №${purchaseId} (в т.ч. +${extraQty} сверх заказа)`
-            : `Приёмка по закупке №${purchaseId}`,
+            ? `Приёмка по закупке №${purchaseId} (в т.ч. +${extraQty} сверх заказа)${suffix}`
+            : `Приёмка по закупке №${purchaseId}${suffix}`,
         meta: {
           purchase_id: purchaseId,
           purchase_receipt_id: rid,
           over_delivery_qty: extraQty > 0 ? extraQty : undefined,
+          ...(isReceiptEdit ? { receipt_edit: true } : {}),
         },
         warehouseId: dwId || null,
         profileId: pid,
@@ -1617,8 +1710,12 @@ async function applyPurchaseReceiptStockByProductInTx(
           productId,
           type: 'incoming',
           quantityChange: -moveFromIncoming,
-          reason: `Списание incoming по приёмке №${rid}`,
-          meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
+          reason: `Списание incoming по приёмке №${rid}${suffix}`,
+          meta: {
+            purchase_id: purchaseId,
+            purchase_receipt_id: rid,
+            ...(isReceiptEdit ? { receipt_edit: true } : {}),
+          },
           warehouseId: dwId || null,
           profileId: pid,
         });
@@ -1637,8 +1734,12 @@ async function applyPurchaseReceiptStockByProductInTx(
           productId,
           type: 'receipt',
           quantityChange: stockQty,
-          reason: `Приёмка по закупке №${purchaseId}`,
-          meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
+          reason: `Приёмка по закупке №${purchaseId}${suffix}`,
+          meta: {
+            purchase_id: purchaseId,
+            purchase_receipt_id: rid,
+            ...(isReceiptEdit ? { receipt_edit: true } : {}),
+          },
           warehouseId: purchaseWarehouseId,
           profileId: pid,
         });
@@ -1647,8 +1748,12 @@ async function applyPurchaseReceiptStockByProductInTx(
             productId,
             type: 'incoming',
             quantityChange: -moveFromIncoming,
-            reason: `Списание incoming по приёмке №${rid}`,
-            meta: { purchase_id: purchaseId, purchase_receipt_id: rid },
+            reason: `Списание incoming по приёмке №${rid}${suffix}`,
+            meta: {
+              purchase_id: purchaseId,
+              purchase_receipt_id: rid,
+              ...(isReceiptEdit ? { receipt_edit: true } : {}),
+            },
             warehouseId: purchaseWarehouseId,
             profileId: pid,
           });
@@ -3706,24 +3811,19 @@ class PurchasesService {
 
           if (!warehouseReceiptId) {
             const head = await client.query(
-              `SELECT supplier_id, organization_id FROM purchases WHERE id = $1`,
+              `SELECT supplier_id, organization_id, warehouse_id FROM purchases WHERE id = $1`,
               [purchaseId]
             );
             const supplierId = head.rows?.[0]?.supplier_id ?? null;
             const organizationId = head.rows?.[0]?.organization_id ?? null;
-            const docIns = await client.query(
-              `INSERT INTO warehouse_receipts (supplier_id, organization_id, document_type)
-               VALUES ($1, $2, 'receipt')
-               RETURNING id`,
-              [supplierId, organizationId]
-            );
-            warehouseReceiptId = docIns.rows?.[0]?.id ?? null;
+            const purchaseWarehouseId = head.rows?.[0]?.warehouse_id ?? receiptWarehouseId ?? null;
+            warehouseReceiptId = await createWarehouseReceiptHeaderInTx(client, {
+              supplierId,
+              organizationId,
+              warehouseId: purchaseWarehouseId,
+              documentType: 'receipt',
+            });
             if (warehouseReceiptId) {
-              const receiptNumber = `ПТ-${String(warehouseReceiptId).padStart(6, '0')}`;
-              await client.query(
-                `UPDATE warehouse_receipts SET receipt_number = $1 WHERE id = $2`,
-                [receiptNumber, warehouseReceiptId]
-              );
               await client.query(
                 `UPDATE purchase_receipts SET warehouse_receipt_id = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
                 [rid, warehouseReceiptId]
@@ -3732,6 +3832,9 @@ class PurchasesService {
           }
 
           if (warehouseReceiptId) {
+            await client.query(`DELETE FROM warehouse_receipt_lines WHERE receipt_id = $1`, [
+              warehouseReceiptId,
+            ]);
             const hasPrice = await hasPurchasePriceColumn((sql) => client.query(sql));
             for (const d of moved) {
               const productId = Number(d.productId);
@@ -3858,12 +3961,28 @@ class PurchasesService {
   }
 
   /**
+   * Разделить складской документ, если к нему ошибочно привязано несколько purchase_receipts.
+   */
+  async ensureWarehouseReceiptNotMerged(warehouseReceiptId) {
+    const whId = parseInt(warehouseReceiptId, 10);
+    if (!whId || Number.isNaN(whId)) return false;
+    return transaction(async (client) => splitMergedWarehouseReceiptGroupInTx(client, whId));
+  }
+
+  /**
    * Редактирование складской приёмки, связанной с закупкой (warehouse_receipts ← purchase_receipts).
    * Откатывает проводки завершённых приёмок, обновляет строки и повторно проводит остатки.
    */
   async updateWarehouseReceiptLinkedToPurchase(
     warehouseReceiptId,
-    { organizationId = null, supplierId = null, warehouseId = null, lines = [], profileId = null } = {}
+    {
+      organizationId = null,
+      supplierId = null,
+      warehouseId = null,
+      lines = [],
+      profileId = null,
+      purchaseReceiptId = null,
+    } = {}
   ) {
     const whId = parseInt(warehouseReceiptId, 10);
     if (!whId || Number.isNaN(whId)) {
@@ -3901,6 +4020,8 @@ class PurchasesService {
     const hasPrice = await hasPurchasePriceColumn();
 
     await transaction(async (client) => {
+      await splitMergedWarehouseReceiptGroupInTx(client, whId);
+
       const prs = await client.query(
         `SELECT pr.id, pr.status, pr.purchase_id
          FROM purchase_receipts pr
@@ -3916,21 +4037,35 @@ class PurchasesService {
         throw err;
       }
 
-      const scanning = (prs.rows || []).filter((r) => String(r.status) === 'scanning');
-      if (scanning.length) {
-        const err = new Error('Приёмка в процессе сканирования — редактируйте в разделе «Закупки»');
+      const targetPrId = purchaseReceiptId != null ? Number(purchaseReceiptId) : null;
+      let targetPr = null;
+      if (targetPrId != null && Number.isFinite(targetPrId) && targetPrId > 0) {
+        targetPr = (prs.rows || []).find((r) => Number(r.id) === targetPrId) || null;
+        if (!targetPr) {
+          const err = new Error('Приёмка по закупке не найдена для этого документа');
+          err.statusCode = 404;
+          throw err;
+        }
+      } else if ((prs.rows || []).length === 1) {
+        targetPr = prs.rows[0];
+      } else {
+        const err = new Error('Несколько приёмок по закупке — укажите конкретную приёмку');
         err.statusCode = 409;
         throw err;
       }
 
-      const completed = (prs.rows || []).filter((r) => String(r.status) === 'completed');
-      if (!completed.length) {
+      if (String(targetPr.status) === 'scanning') {
+        const err = new Error('Приёмка в процессе сканирования — редактируйте в разделе «Закупки»');
+        err.statusCode = 409;
+        throw err;
+      }
+      if (String(targetPr.status) !== 'completed') {
         const err = new Error('Нет завершённых приёмок для редактирования');
         err.statusCode = 400;
         throw err;
       }
 
-      const purchaseId = Number(prs.rows[0].purchase_id);
+      const purchaseId = Number(targetPr.purchase_id);
       purchaseIdOut = purchaseId;
       await assertPurchaseInProfile(client, purchaseId, pid);
       await assertPurchaseNotArchivedInTx(client, purchaseId);
@@ -3938,18 +4073,15 @@ class PurchasesService {
 
       const receiptWarehouseId = await resolveReceiptWarehouseIdForTx(client, scope.warehouseId, pid);
 
-      for (const row of completed) {
-        const rId = Number(row.id);
-        const pids = await reverseCompletedPurchaseReceiptInTx(client, rId, purchaseId);
-        for (const x of pids) trimProducts.add(x);
-      }
+      const targetReceiptId = Number(targetPr.id);
+      const editSuffix = ' — изменение';
+      const pids = await reverseCompletedPurchaseReceiptInTx(client, targetReceiptId, purchaseId, {
+        reasonSuffix: editSuffix,
+      });
+      for (const x of pids) trimProducts.add(x);
 
       await client.query(`DELETE FROM warehouse_receipt_lines WHERE receipt_id = $1`, [whId]);
-      for (const row of completed) {
-        await client.query(`DELETE FROM purchase_receipt_items WHERE receipt_id = $1`, [row.id]);
-      }
-
-      const targetReceiptId = Number(completed[completed.length - 1].id);
+      await client.query(`DELETE FROM purchase_receipt_items WHERE receipt_id = $1`, [targetReceiptId]);
       for (const [productId, entry] of byProduct.entries()) {
         await client.query(
           `INSERT INTO purchase_receipt_items (receipt_id, product_id, scanned_quantity)
@@ -3965,6 +4097,7 @@ class PurchasesService {
         profileId: pid,
         receiptWarehouseId,
         byProduct: byProductQty,
+        reasonSuffix: editSuffix,
       });
 
       try {

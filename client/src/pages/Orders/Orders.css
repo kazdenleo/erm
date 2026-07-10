@@ -52,6 +52,12 @@
 
 .orders-page .orders-list {
   margin-top: 18px;
+  position: relative;
+}
+
+.orders-page .orders-list--refreshing {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .orders-page .orders-table th,

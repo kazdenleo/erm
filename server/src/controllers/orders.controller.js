@@ -17,6 +17,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import { readData } from '../utils/storage.js';
 import { tenantListProfileId, TENANT_LIST_EMPTY } from '../utils/tenantListProfileId.js';
 import logger from '../utils/logger.js';
+import { isOrderOnAssemblyStatus } from '../constants/orderStatuses.js';
 import orderSupplierOrderService from '../services/orderSupplierOrder.service.js';
 import { processAssemblyShipmentsInBackground } from '../services/orderAssemblyBackground.service.js';
 
@@ -42,6 +43,12 @@ async function validateManualOrderWarehouseId(profileId, warehouseId) {
 /** Без limit — не отдаём весь список (риск 504 на VPS при большом каталоге заказов). */
 const ORDER_LIST_DEFAULT_LIMIT = 200;
 const ORDER_LIST_MAX_LIMIT = 500;
+
+/** Этикетка на диске нужна только на этапах сборки/собран — не для new, in_procurement и т.д. */
+function orderNeedsLabelDiskCheck(status) {
+  const s = String(status ?? '').trim();
+  return isOrderOnAssemblyStatus(s) || s === 'assembled';
+}
 
 class OrdersController {
   async getAll(req, res, next) {
@@ -94,17 +101,23 @@ class OrdersController {
       const orgHeader = req.get('x-organization-id') || req.get('X-Organization-Id');
       const organizationId =
         orgHeader != null && String(orgHeader).trim() !== '' ? String(orgHeader).trim() : null;
-      const shipmentIndex = await shipmentsService.getOrderShipmentIndex({
-        profileId: tid,
-        organizationId,
-        onlyOrders: result.items,
-      });
+      const needsShipmentEnrich =
+        !status || status === 'all' || status === 'assembled';
+      const shipmentIndex = needsShipmentEnrich
+        ? await shipmentsService.getOrderShipmentIndex({
+            profileId: tid,
+            organizationId,
+            onlyOrders: result.items,
+          })
+        : new Map();
       const itemsWithLabel = (result.items || []).map((o) => {
         const mpDb = o.marketplace === 'wb' ? 'wildberries' : o.marketplace;
         const ship = shipmentIndex.get(`${mpDb}|${String(o.orderId ?? '')}`);
         return {
           ...o,
-          hasLabel: ordersLabelsService.hasLabelCached(o),
+          hasLabel: orderNeedsLabelDiskCheck(o.status)
+            ? ordersLabelsService.hasLabelCached(o)
+            : false,
           ...(ship
             ? {
                 localShipmentId: ship.shipmentId,

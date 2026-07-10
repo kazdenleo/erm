@@ -1,0 +1,205 @@
+/**
+ * Прогноз закупки по продажам FBS: продажи за период → потребность на период закупки.
+ */
+
+import { query } from '../config/database.js';
+import repositoryFactory from '../config/repository-factory.js';
+
+const FBS_MARKETPLACES = ['ozon', 'wb', 'wildberries', 'ym', 'yandex', 'yandexmarket'];
+
+function parseDateYmd(raw) {
+  const s = String(raw || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+function defaultSalesRange() {
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - 30);
+  const fmt = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  return { salesDateFrom: fmt(from), salesDateTo: fmt(to) };
+}
+
+function toExclusiveEnd(dateToYmd) {
+  const [y, mo, d] = dateToYmd.split('-').map((x) => parseInt(x, 10));
+  return new Date(Date.UTC(y, mo - 1, d + 1, 0, 0, 0)).toISOString();
+}
+
+function toInclusiveStart(dateFromYmd) {
+  const [y, mo, d] = dateFromYmd.split('-').map((x) => parseInt(x, 10));
+  return new Date(Date.UTC(y, mo - 1, d, 0, 0, 0)).toISOString();
+}
+
+function daysInclusive(fromYmd, toYmd) {
+  const [y1, m1, d1] = fromYmd.split('-').map((x) => parseInt(x, 10));
+  const [y2, m2, d2] = toYmd.split('-').map((x) => parseInt(x, 10));
+  const start = Date.UTC(y1, m1 - 1, d1);
+  const end = Date.UTC(y2, m2 - 1, d2);
+  return Math.max(1, Math.floor((end - start) / 86400000) + 1);
+}
+
+class ProcurementForecastService {
+  async getFbsForecast({
+    profileId,
+    organizationId,
+    warehouseId,
+    salesDateFrom = null,
+    salesDateTo = null,
+    procurementDays = 30,
+  } = {}) {
+    const pid = Number(profileId);
+    const orgId = Number(organizationId);
+    const whId = Number(warehouseId);
+    if (!Number.isFinite(pid) || pid < 1) {
+      const err = new Error('Профиль не определён');
+      err.statusCode = 403;
+      throw err;
+    }
+    if (!Number.isFinite(orgId) || orgId < 1) {
+      const err = new Error('Выберите организацию');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!Number.isFinite(whId) || whId < 1) {
+      const err = new Error('Выберите склад');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      const err = new Error('Доступно только с PostgreSQL');
+      err.statusCode = 501;
+      throw err;
+    }
+
+    const defaults = defaultSalesRange();
+    const fromYmd = parseDateYmd(salesDateFrom) || defaults.salesDateFrom;
+    const toYmd = parseDateYmd(salesDateTo) || defaults.salesDateTo;
+    const salesStart = toInclusiveStart(fromYmd);
+    const salesEnd = toExclusiveEnd(toYmd);
+    const salesPeriodDays = daysInclusive(fromYmd, toYmd);
+    const procDays = Math.max(1, Math.floor(Number(procurementDays) || 30));
+
+    const sql = `
+      WITH raw_sales AS (
+        SELECT
+          o.product_id,
+          SUM(GREATEST(COALESCE(o.quantity, 1), 1))::int AS sold_qty
+        FROM orders o
+        WHERE o.profile_id = $1
+          AND o.product_id IS NOT NULL
+          AND LOWER(TRIM(o.status)) = 'delivered'
+          AND LOWER(TRIM(COALESCE(o.marketplace, ''))) = ANY($5::text[])
+          AND COALESCE(o.terminal_status_at, o.created_at) >= $3::timestamptz
+          AND COALESCE(o.terminal_status_at, o.created_at) < $4::timestamptz
+        GROUP BY o.product_id
+      ),
+      exploded_sales AS (
+        SELECT kc.component_product_id AS product_id, SUM(rs.sold_qty * kc.quantity)::int AS sold_qty
+        FROM raw_sales rs
+        INNER JOIN kit_components kc ON kc.kit_product_id = rs.product_id
+        GROUP BY kc.component_product_id
+        UNION ALL
+        SELECT rs.product_id, SUM(rs.sold_qty)::int AS sold_qty
+        FROM raw_sales rs
+        INNER JOIN products pk ON pk.id = rs.product_id AND pk.profile_id = $1
+        WHERE NOT EXISTS (
+          SELECT 1 FROM kit_components kc2 WHERE kc2.kit_product_id = rs.product_id
+        )
+        GROUP BY rs.product_id
+      ),
+      sales_by_product AS (
+        SELECT product_id, SUM(sold_qty)::int AS sold_qty
+        FROM exploded_sales
+        GROUP BY product_id
+      ),
+      eligible AS (
+        SELECT p.id AS product_id
+        FROM products p
+        WHERE p.profile_id = $1
+          AND NOT EXISTS (SELECT 1 FROM kit_components kc WHERE kc.kit_product_id = p.id)
+      )
+      SELECT
+        p.id AS product_id,
+        p.name AS product_name,
+        p.sku AS product_sku,
+        p.supplier_id,
+        s.name AS supplier_name,
+        COALESCE(sb.sold_qty, 0)::int AS sold_qty,
+        COALESCE(pws.quantity, 0)::int AS on_hand,
+        COALESCE(p.incoming_quantity, 0)::int AS incoming,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM kit_components kc WHERE kc.component_product_id = p.id)
+          THEN true ELSE false
+        END AS is_component
+      FROM eligible e
+      INNER JOIN products p ON p.id = e.product_id
+      LEFT JOIN suppliers s ON s.id = p.supplier_id
+      LEFT JOIN sales_by_product sb ON sb.product_id = p.id
+      LEFT JOIN product_warehouse_stock pws ON pws.product_id = p.id AND pws.warehouse_id = $2
+      WHERE COALESCE(sb.sold_qty, 0) > 0
+      ORDER BY COALESCE(sb.sold_qty, 0) DESC, p.name ASC
+      LIMIT 2000
+    `;
+
+    const r = await query(sql, [
+      pid,
+      whId,
+      salesStart,
+      salesEnd,
+      FBS_MARKETPLACES,
+    ]);
+
+    const items = (r.rows || []).map((row) => {
+      const soldQty = Number(row.sold_qty) || 0;
+      const onHand = Number(row.on_hand) || 0;
+      const incoming = Number(row.incoming) || 0;
+      const dailyRate = soldQty / salesPeriodDays;
+      const projectedNeed = Math.ceil(dailyRate * procDays);
+      const toPurchase = Math.max(0, projectedNeed - onHand - incoming);
+      return {
+        productId: Number(row.product_id),
+        productName: row.product_name || '',
+        productSku: row.product_sku || '',
+        supplierId: row.supplier_id != null ? Number(row.supplier_id) : null,
+        supplierName: row.supplier_name || '',
+        isComponent: Boolean(row.is_component),
+        soldQty,
+        salesPeriodDays,
+        procurementDays: procDays,
+        projectedNeed,
+        onHand,
+        incoming,
+        toPurchase,
+      };
+    });
+
+    const summary = items.reduce(
+      (acc, row) => {
+        acc.soldQty += row.soldQty;
+        acc.projectedNeed += row.projectedNeed;
+        acc.onHand += row.onHand;
+        acc.incoming += row.incoming;
+        acc.toPurchase += row.toPurchase;
+        if (row.toPurchase > 0) acc.linesToPurchase += 1;
+        return acc;
+      },
+      { soldQty: 0, projectedNeed: 0, onHand: 0, incoming: 0, toPurchase: 0, linesToPurchase: 0 }
+    );
+
+    return {
+      organizationId: orgId,
+      warehouseId: whId,
+      salesPeriod: { dateFrom: fromYmd, dateTo: toYmd, days: salesPeriodDays },
+      procurementDays: procDays,
+      summary,
+      items,
+    };
+  }
+}
+
+export default new ProcurementForecastService();

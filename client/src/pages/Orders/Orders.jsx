@@ -435,7 +435,10 @@ export function Orders() {
   const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
   const { warehouses, loadWarehouses } = useWarehouses();
   const { organizations } = useOrganizations();
-  const { orders, meta, loading, error, loadOrders, patchOrders } = useOrders({ autoLoad: false });
+  const { orders, meta, loading, error, loadOrders, patchOrders } = useOrders({
+    autoLoad: false,
+    skipAutoReserve: true,
+  });
   const ordersHydratedRef = useRef(false);
   const [, setOrdersHydrateTick] = useState(0);
   const assembledCount = useMemo(() => orders.filter(o => o.status === 'assembled').length, [orders]);
@@ -451,6 +454,8 @@ export function Orders() {
   const [ordersAutoSyncPauseError, setOrdersAutoSyncPauseError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('new');
+  const [listRefreshing, setListRefreshing] = useState(false);
+  const listFilterChangeRef = useRef(false);
   useEffect(() => {
     if (!procurementStatusEnabled && statusFilter === 'in_procurement') {
       setStatusFilter('new');
@@ -789,6 +794,30 @@ export function Orders() {
     [buildOrdersListParams, currentPage, loadOrders]
   );
 
+  const beginListFilterChange = useCallback(() => {
+    listFilterChangeRef.current = true;
+    setListRefreshing(true);
+    setCurrentPage(1);
+  }, []);
+
+  const handleMarketplaceFilterChange = useCallback(
+    (next) => {
+      if (next === marketplaceFilter) return;
+      beginListFilterChange();
+      setMarketplaceFilter(next);
+    },
+    [beginListFilterChange, marketplaceFilter]
+  );
+
+  const handleStatusFilterChange = useCallback(
+    (next) => {
+      if (next === statusFilter) return;
+      beginListFilterChange();
+      setStatusFilter(next);
+    },
+    [beginListFilterChange, statusFilter]
+  );
+
   const markOrdersProcurementLocally = useCallback(
     (orderRows) => {
       const rows = Array.isArray(orderRows) ? orderRows : [];
@@ -813,7 +842,7 @@ export function Orders() {
 
   useEffect(() => {
     let cancelled = false;
-    const silent = ordersHydratedRef.current;
+    const silent = ordersHydratedRef.current && !listFilterChangeRef.current;
     void reloadOrders({ silent })
       .then((result) => {
         if (cancelled || result?.stale) return;
@@ -826,6 +855,13 @@ export function Orders() {
         if (cancelled || ordersHydratedRef.current) return;
         ordersHydratedRef.current = true;
         setOrdersHydrateTick((n) => n + 1);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        if (listFilterChangeRef.current) {
+          listFilterChangeRef.current = false;
+          setListRefreshing(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -857,18 +893,8 @@ export function Orders() {
     return () => clearTimeout(t);
   }, [marketplaceFilter, orderSearchQuery, loadStatusCounts]);
 
-  useEffect(() => {
-    // После любых обновлений списка (смена статуса, действия по заказу, синк) — тихо обновляем счётчики.
-    if (!ordersHydratedRef.current) return;
-    void loadStatusCounts({ silent: true });
-  }, [orders, loadStatusCounts]);
-
   // Звук "Новый заказ" перенесён в глобальный опрос (Layout) — чтобы работать на любой странице
   // и не срабатывать при открытии страницы «Заказы».
-
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [marketplaceFilter, statusFilter]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -1811,12 +1837,13 @@ export function Orders() {
     const isWb = mpLower === 'wb' || mpLower === 'wildberries';
     const stNorm = isWb ? normalizeWbNewLikeStatus(o.status) : String(o.status ?? '');
     const byStatus =
+      listRefreshing ||
       statusFilter === 'all' ||
       stNorm === statusFilter ||
       (statusFilter === 'in_assembly' && o.status === 'wb_assembly') ||
       (!isWb && o.status === statusFilter);
     return byMarketplace && byStatus && bySearch;
-  }), [orders, marketplaceFilter, statusFilter, orderSearchQuery]);
+  }), [orders, marketplaceFilter, statusFilter, orderSearchQuery, listRefreshing]);
 
   const filteredKeys = useMemo(() => new Set(filteredOrders.map(orderKey)), [filteredOrders]);
 
@@ -3203,7 +3230,7 @@ export function Orders() {
           <button
             type="button"
             className={`erp-filter-btn${marketplaceFilter === 'all' ? ' erp-filter-btn--active' : ''}`}
-            onClick={() => setMarketplaceFilter('all')}
+            onClick={() => handleMarketplaceFilterChange('all')}
           >
             Все
             <span className="erp-filter-btn__count">{mpFilterRowTotal}</span>
@@ -3213,7 +3240,7 @@ export function Orders() {
               key={mp.code}
               type="button"
               className={`erp-filter-btn${marketplaceFilter === mp.code ? ' erp-filter-btn--active' : ''}`}
-              onClick={() => setMarketplaceFilter(mp.code)}
+              onClick={() => handleMarketplaceFilterChange(mp.code)}
               title={mp.name}
               aria-label={`${mp.name}, ${countsByMarketplace[mp.code] ?? 0} заказов`}
             >
@@ -3255,7 +3282,7 @@ export function Orders() {
               key={st}
               type="button"
               className={`erp-filter-btn${statusFilter === st ? ' erp-filter-btn--active' : ''}`}
-              onClick={() => setStatusFilter(st)}
+              onClick={() => handleStatusFilterChange(st)}
             >
               <span className="erp-filter-btn__label">{getOrderStatusLabel(st)}</span>
               <span className="erp-filter-btn__count">{countsByStatus[st] ?? 0}</span>
@@ -3264,7 +3291,7 @@ export function Orders() {
           <button
             type="button"
             className={`erp-filter-btn${statusFilter === 'all' ? ' erp-filter-btn--active' : ''}`}
-            onClick={() => setStatusFilter('all')}
+            onClick={() => handleStatusFilterChange('all')}
           >
             <span className="erp-filter-btn__label">Все заказы</span>
             <span className="erp-filter-btn__count">{countsByStatus.all ?? 0}</span>
@@ -3273,8 +3300,8 @@ export function Orders() {
 
         {renderOrdersListPager('top')}
 
-        <div className="orders-list">
-        {!loading && sortedGroupedDisplayRows.length === 0 ? (
+        <div className={`orders-list${listRefreshing ? ' orders-list--refreshing' : ''}`}>
+        {!loading && !listRefreshing && sortedGroupedDisplayRows.length === 0 ? (
           <div className="empty-state">
             <p>Заказы не найдены</p>
           </div>

@@ -8,6 +8,7 @@ import { ordersApi } from '../services/orders.api';
 
 export function useOrders(options = {}) {
   const autoLoad = options.autoLoad !== false;
+  const skipAutoReserveDefault = options.skipAutoReserve === true;
   const [orders, setOrders] = useState([]);
   const [meta, setMeta] = useState({ total: null, limit: null, offset: 0 });
   const [loading, setLoading] = useState(true);
@@ -32,7 +33,7 @@ export function useOrders(options = {}) {
       setError(null);
       const params =
         options && typeof options === 'object' ? { ...(options.params || {}) } : {};
-      if (silent) {
+      if (options?.skipAutoReserve ?? skipAutoReserveDefault) {
         params.skipAutoReserve = '1';
       }
       const response = await ordersApi.getAll(params);
@@ -63,7 +64,7 @@ export function useOrders(options = {}) {
         }
       }
     }
-  }, []);
+  }, [skipAutoReserveDefault]);
 
   const patchOrders = useCallback((updater) => {
     setOrders((prev) => (typeof updater === 'function' ? updater(prev) : updater));

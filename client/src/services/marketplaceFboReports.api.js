@@ -1,0 +1,33 @@
+import api from './api';
+
+export const marketplaceFboReportsApi = {
+  sync: async ({ dateFrom, dateTo, marketplace = 'all' } = {}) => {
+    const r = await api.post(
+      '/marketplace-fbo-reports/sync',
+      { dateFrom, dateTo, marketplace },
+      { timeout: 600000 }
+    );
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
+
+  getByProduct: async ({ dateFrom, dateTo, marketplace = 'all' } = {}) => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+    if (marketplace) params.set('marketplace', marketplace);
+    const qs = params.toString();
+    const r = await api.get(`/marketplace-fbo-reports/by-product${qs ? `?${qs}` : ''}`);
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
+
+  getByOrder: async ({ dateFrom, dateTo, marketplace = 'all', limit = 200 } = {}) => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+    if (marketplace) params.set('marketplace', marketplace);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    const r = await api.get(`/marketplace-fbo-reports/by-order${qs ? `?${qs}` : ''}`);
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
+};
