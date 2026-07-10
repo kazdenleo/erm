@@ -72,12 +72,9 @@ class AssemblyController {
           ? (await productsService.getByIdWithDetails(productFound.id).catch(() => null)) || productFound
           : productFound;
 
-      // 1) Основной путь: по product_id / sku-сопоставлению.
-      // 2) Fallback: по названию товара (если заказ не привязан к product_id).
-      let order = await ordersService.findFirstAssembledByProductId(product.id);
-      if (!order && product?.name) {
-        order = await ordersService.findFirstAssembledByProductName(product.name);
-      }
+      // Поиск только по product_id / SKU / комплекту — без fallback по названию:
+      // общие названия («Салонный фильтр») давали ложные совпадения с чужими заказами.
+      const order = await ordersService.findFirstAssembledByProductId(product.id);
       if (!order) {
         const { query: dbQuery } = await import('../config/database.js');
         const kitHint = await dbQuery(
@@ -90,6 +87,14 @@ class AssemblyController {
         return res.status(404).json({
           ok: false,
           message: `Заказ на сборке с этим товаром не найден.${hint}`
+        });
+      }
+
+      const orderMatchesProduct = await ordersService.assemblyOrderMatchesScannedProduct(order, product.id);
+      if (!orderMatchesProduct) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Заказ на сборке с этим товаром не найден.'
         });
       }
 

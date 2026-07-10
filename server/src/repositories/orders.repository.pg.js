@@ -1188,6 +1188,39 @@ class OrdersRepositoryPG {
   }
   
   /**
+   * Кандидаты на фоновый авторезерв (без открытия страницы заказов).
+   * Сначала строки без резерва, затем с неполным.
+   */
+  async findOrdersForAutoReserve({ profileId = null, limit = 80 } = {}) {
+    const lim = Math.min(Math.max(1, parseInt(limit, 10) || 80), 200);
+    const pid = normalizeProfileId(profileId);
+    const params = [lim];
+    let profileSql = '';
+    if (pid != null) {
+      profileSql = ` AND o.profile_id = $2`;
+      params.push(pid);
+    }
+    const result = await query(
+      `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
+        o.product_name, o.quantity, o.price, o.status, o.customer_name, o.customer_phone,
+        o.delivery_address, o.warehouse_id, o.created_at, o.in_process_at, o.shipment_date, o.updated_at,
+        o.returned_to_new_at, o.assembled_at, o.assembled_by_user_id, o.assembly_sticker_number,
+        o.profile_id,
+        (${ORDER_RESERVED_QTY_SQL})::int AS reserved_qty
+       FROM orders o
+       WHERE o.status IN ('new', 'in_procurement', 'in_assembly')
+         ${profileSql}
+       ORDER BY
+         CASE WHEN (${ORDER_RESERVED_QTY_SQL})::int = 0 THEN 0 ELSE 1 END,
+         o.created_at ASC NULLS LAST,
+         o.id ASC
+       LIMIT $1`,
+      params
+    );
+    return (result.rows || []).map((r) => rowToCamel(r));
+  }
+
+  /**
    * Заказы «Новый» и «В закупке» по товару (product_id или совпадение по SKU/МП, как у сборки).
    * FIFO по created_at — дозаполнение резерва после поступления остатка / снятия резерва.
    */
@@ -1250,6 +1283,21 @@ class OrdersRepositoryPG {
     `;
     const result = await query(sql, [pid]);
     return result.rows[0] ? rowToCamel(result.rows[0]) : null;
+  }
+
+  /** Строка заказа (orders.id) сопоставлена с товаром каталога productId. */
+  async orderLineMatchesCatalogProduct(orderRowId, productId) {
+    const oid = Number(orderRowId);
+    const pid = Number(productId);
+    if (!Number.isFinite(oid) || !Number.isFinite(pid)) return false;
+    const result = await query(
+      `SELECT EXISTS (
+         SELECT 1 FROM orders o
+         WHERE o.id = $2 AND (${orderLineMatchesCatalogProductIdSql()})
+       ) AS ok`,
+      [pid, oid]
+    );
+    return Boolean(result.rows[0]?.ok);
   }
 
   /**

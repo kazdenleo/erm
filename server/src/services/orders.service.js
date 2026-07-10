@@ -3328,28 +3328,59 @@ class OrdersService {
   }
 
   /**
-   * Фоново дозарезервировать строки списка заказов, где есть остаток, но резерв неполный.
-   * (например после ручной корректировки наличия или если заказ пришёл раньше поступления).
+   * Дозарезервировать строки списка, где есть остаток, но резерв неполный.
+   * @returns {Promise<number>} сколько строк обработано
    */
-  _scheduleEnsureReservesForUnderReservedOrders(orders) {
+  async _ensureReservesForUnderReservedOrders(orders) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders) || !orders.length) {
-      return;
+      return 0;
     }
-    const rows = orders.filter((o) => {
-      const st = String(o.status || '').trim().toLowerCase();
-      if (!['new', 'in_procurement', 'in_assembly'].includes(st)) return false;
-      const need = Math.max(
-        1,
-        Number(o.needQty ?? o.need_qty ?? o.quantity) || parseInt(o.quantity, 10) || 1
-      );
-      const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
-      return reserved < need;
-    });
-    if (!rows.length) return;
-    const copy = rows.slice();
-    setImmediate(() => {
-      this._reapplyReserveForOrderRows(copy).catch(() => {});
-    });
+    const MAX_PER_LIST = 40;
+    const rows = orders
+      .filter((o) => {
+        const st = String(o.status || '').trim().toLowerCase();
+        if (!['new', 'in_procurement', 'in_assembly'].includes(st)) return false;
+        const need = Math.max(
+          1,
+          Number(o.needQty ?? o.need_qty ?? o.quantity) || parseInt(o.quantity, 10) || 1
+        );
+        const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+        return reserved < need;
+      })
+      .slice(0, MAX_PER_LIST);
+    if (!rows.length) return 0;
+    await this._reapplyReserveForOrderRows(rows);
+    return rows.length;
+  }
+
+  /**
+   * Фоновый авторезерв по расписанию / после синка (без открытия UI).
+   */
+  async runScheduledAutoReserve({ profileId = null, limit = 80 } = {}) {
+    if (!repositoryFactory.isUsingPostgreSQL()) return { checked: 0, reapplied: 0 };
+    if (typeof this.repository.findOrdersForAutoReserve !== 'function') {
+      return { checked: 0, reapplied: 0 };
+    }
+    const rows = await this.repository.findOrdersForAutoReserve({ profileId, limit });
+    if (!rows.length) return { checked: 0, reapplied: 0 };
+    await this.enrichOrdersReserveMetrics(rows, { light: true });
+    const reapplied = await this._ensureReservesForUnderReservedOrders(rows);
+    return { checked: rows.length, reapplied };
+  }
+
+  async runScheduledAutoReserveAllProfiles({ limitPerProfile = 50 } = {}) {
+    const profilesRepo = repositoryFactory.getProfilesRepository();
+    const profiles = await profilesRepo.findAll();
+    let checked = 0;
+    let reapplied = 0;
+    for (const p of profiles || []) {
+      const pid = p?.id != null ? Number(p.id) : null;
+      if (!Number.isFinite(pid) || pid < 1) continue;
+      const out = await this.runScheduledAutoReserve({ profileId: pid, limit: limitPerProfile });
+      checked += out.checked || 0;
+      reapplied += out.reapplied || 0;
+    }
+    return { checked, reapplied, profiles: (profiles || []).length };
   }
 
   async getPage(options = {}) {
@@ -3363,7 +3394,10 @@ class OrdersService {
       await this.enrichOrdersReserveMetrics(items, { light: lightReserve });
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       if (!options.skipAutoReserve) {
-        this._scheduleEnsureReservesForUnderReservedOrders(items);
+        const reapplied = await this._ensureReservesForUnderReservedOrders(items);
+        if (reapplied > 0) {
+          await this.enrichOrdersReserveMetrics(items, { light: lightReserve });
+        }
       }
       return { items, total: total ?? items.length };
     }
@@ -4252,12 +4286,37 @@ class OrdersService {
       const list = await this.repository.findAll({ status: 'in_assembly', search: name, limit: 25 });
       if (!Array.isArray(list) || list.length === 0) return null;
       const norm = (s) => String(s || '').trim().toLowerCase();
-      const exact = list.find(o => norm(o.productName || o.product_name) === norm(name));
-      return exact || list[0] || null;
+      return list.find((o) => norm(o.productName || o.product_name) === norm(name)) || null;
     }
     const orders = await this.getAll();
     const norm = (s) => String(s || '').trim().toLowerCase();
     return orders.find(o => isOrderOnAssemblyStatus(o.status) && norm(o.productName || o.product_name) === norm(name)) || null;
+  }
+
+  /**
+   * Есть ли в заказе (или в его группе) строка, соответствующая отсканированному товару.
+   * @param {object} order
+   * @param {number|string} productId
+   */
+  async assemblyOrderMatchesScannedProduct(order, productId) {
+    if (!order || productId == null) return false;
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return String(order.productId) === String(productId);
+    }
+    const pid = Number(productId);
+    if (!Number.isFinite(pid)) return false;
+    const groupId = order.orderGroupId ?? order.order_group_id;
+    const lines =
+      groupId != null && String(groupId).trim() !== ''
+        ? await this.getByOrderGroupId(groupId)
+        : [order];
+    for (const line of lines || []) {
+      const rowId = line.id ?? line.orderRowId;
+      if (rowId == null) continue;
+      const matches = await this.repository.orderLineMatchesCatalogProduct(rowId, pid);
+      if (matches) return true;
+    }
+    return false;
   }
 
   /**
