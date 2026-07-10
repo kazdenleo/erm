@@ -120,7 +120,10 @@ export function allocateWarehouseScopedIncoming({
   if (hasIncomingJournal) {
     if (hasWarehouseIncomingJournal) {
       const strictPositive = Math.max(0, strict);
-      if (strict < 0 && snapshotInc != null) return clampStockMetric(snapshotInc);
+      if (snapshotInc != null) {
+        if (strict < 0) return clampStockMetric(snapshotInc);
+        return clampStockMetric(Math.max(strictPositive, snapshotInc));
+      }
       return strictPositive;
     }
     if (journalNetGlobal <= 0) return 0;

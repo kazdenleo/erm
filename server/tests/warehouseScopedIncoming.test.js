@@ -154,6 +154,22 @@ describe('allocateWarehouseScopedIncoming', () => {
     ).toBe(1);
   });
 
+  test('нулевой SUM incoming на складе при актуальном incoming_after — берём снимок', () => {
+    expect(
+      allocateWarehouseScopedIncoming({
+        strictRaw: 0,
+        nullRaw: 1,
+        globalJournalNet: 1,
+        whOnHand: 0,
+        totalOnHand: 0,
+        globalIncoming: 1,
+        hasIncomingJournal: true,
+        hasWarehouseIncomingJournal: true,
+        warehouseIncomingSnapshot: 1
+      })
+    ).toBe(1);
+  });
+
   test('результат никогда не отрицательный', () => {
     expect(
       allocateWarehouseScopedIncoming({
