@@ -191,8 +191,8 @@ class OrdersRepositoryPG {
         assembler.email AS assembled_by_email,
         assembler.full_name AS assembled_by_full_name,
         COALESCE(p.sku, pm.matched_product_sku) AS product_sku,
-        (${ORDER_RESERVED_QTY_SQL} > 0) AS has_reserve,
-        ${ORDER_RESERVED_QTY_SQL}::int AS reserved_qty
+        false AS has_reserve,
+        0 AS reserved_qty
       FROM orders o
       LEFT JOIN products p ON o.product_id = p.id
       LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id
@@ -220,8 +220,8 @@ class OrdersRepositoryPG {
             assembler.email AS assembled_by_email,
             assembler.full_name AS assembled_by_full_name,
             p.sku AS product_sku,
-            (${ORDER_RESERVED_QTY_SQL} > 0) AS has_reserve,
-            ${ORDER_RESERVED_QTY_SQL}::int AS reserved_qty
+            false AS has_reserve,
+            0 AS reserved_qty
           FROM orders o
           LEFT JOIN products p ON o.product_id = p.id
           LEFT JOIN users assembler ON o.assembled_by_user_id = assembler.id

@@ -1983,6 +1983,35 @@ export async function getReservedKitUnitsFromComponentsForFboItem(kitProductId, 
  * Нетто-резерв по (orders.id, product_id) для пакета заказов.
  * @returns {Promise<Map<string, number>>} ключ `${orderDbId}:${productId}`
  */
+/**
+ * Нетто-резерв по orders.id (один запрос на страницу списка вместо коррелированного подзапроса на строку).
+ * @returns {Promise<Map<number, number>>}
+ */
+export async function batchOrderReservedQtyByOrderIds(orderDbIds) {
+  const ids = [...new Set((orderDbIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const map = new Map();
+  if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
+
+  const r = await query(
+    `SELECT o.id AS order_db_id,
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS reserved_qty
+     FROM orders o
+     JOIN stock_movements sm ON sm.type IN ('reserve', 'unreserve')
+       AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+       AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+     WHERE o.id = ANY($1::bigint[])
+     GROUP BY o.id
+     HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0`,
+    [ids]
+  );
+  for (const row of r.rows || []) {
+    const oid = Number(row.order_db_id);
+    if (!Number.isFinite(oid) || oid < 1) continue;
+    map.set(oid, Number(row.reserved_qty) || 0);
+  }
+  return map;
+}
+
 export async function batchOrderNetReservedByProductMap(orderDbIds) {
   const ids = [...new Set((orderDbIds || []).map((id) => Number(id)).filter((id) => id > 0))];
   const map = new Map();
@@ -3442,6 +3471,7 @@ export default {
   getReservedKitUnitsFromComponentsForFboItem,
   getReservedKitUnitsForFboItem,
   batchGetReservedKitUnitsForFboItems,
+  batchOrderReservedQtyByOrderIds,
   batchOrderNetReservedByProductMap,
   batchGetReservedKitUnitsForOrders,
   computeAssemblableFromComponentPoolMap,

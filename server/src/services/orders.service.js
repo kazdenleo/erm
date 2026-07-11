@@ -27,6 +27,7 @@ import {
   batchPiecesPerKitUnitMap,
   batchKitIdByComponentMap,
   batchGetReservedKitUnitsForOrders,
+  batchOrderReservedQtyByOrderIds,
   batchOrderNetReservedByProductMap,
   getNetReservedForOrderProduct,
   sumKitComponentQtyPerKit,
@@ -3061,7 +3062,8 @@ class OrdersService {
       const light =
         options.lightReserveEnrich === true ||
         (options.limit != null && Number(options.limit) > 0);
-      await this.enrichOrdersReserveMetrics(items, { light });
+      const listOnly = light && options.limit != null && Number(options.limit) > 0;
+      await this.enrichOrdersReserveMetrics(items, { light, listOnly });
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       return items;
     } else {
@@ -3108,11 +3110,135 @@ class OrdersService {
   }
 
   /**
-   * @param {{ light?: boolean }} enrichOpts — light=true: только reserved_qty из SQL (список заказов, без N+1).
+   * Быстрое обогащение для пагинированного списка заказов (без коррелированного SQL и тяжёлого coverage).
+   */
+  async _enrichOrdersReserveMetricsListOnly(orders) {
+    const orderDbIds = orders.map((o) => orderRowDbId(o)).filter((id) => id > 0);
+    const reservedByOrder =
+      orderDbIds.length > 0 ? await batchOrderReservedQtyByOrderIds(orderDbIds) : new Map();
+
+    for (const o of orders) {
+      const oid = orderRowDbId(o);
+      const reserved = oid ? reservedByOrder.get(oid) ?? 0 : 0;
+      o.reservedQty = reserved;
+      o.reserved_qty = reserved;
+      o.hasReserve = reserved > 0;
+      o.has_reserve = reserved > 0;
+    }
+
+    const pids = orders
+      .map((o) => Number(o.productId ?? o.product_id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    const kitPiecesMap = pids.length ? await batchPiecesPerKitUnitMap(pids) : new Map();
+    const hasKitProducts = kitPiecesMap.size > 0;
+
+    let kitReservedMap = new Map();
+    let netByOrderProduct = new Map();
+    if (hasKitProducts) {
+      const componentOnlyPids = pids.filter((pid) => !kitPiecesMap.has(pid));
+      const componentKitMap = componentOnlyPids.length
+        ? await batchKitIdByComponentMap(componentOnlyPids)
+        : new Map();
+      const kitBatchEntries = [];
+      for (const o of orders) {
+        const oid = orderRowDbId(o);
+        if (!oid) continue;
+        const pid = Number(o.productId ?? o.product_id);
+        if (Number.isFinite(pid) && pid > 0 && kitPiecesMap.has(pid)) {
+          kitBatchEntries.push({ orderDbId: oid, kitProductId: pid, orderQty: o.quantity });
+        } else if (Number.isFinite(pid) && pid > 0 && componentKitMap.has(pid)) {
+          kitBatchEntries.push({
+            orderDbId: oid,
+            kitProductId: componentKitMap.get(pid),
+            orderQty: o.quantity,
+          });
+        }
+      }
+      if (kitBatchEntries.length) {
+        kitReservedMap = await batchGetReservedKitUnitsForOrders(kitBatchEntries);
+      }
+      if (orderDbIds.length) {
+        netByOrderProduct = await batchOrderNetReservedByProductMap(orderDbIds);
+      }
+    }
+
+    const supplyPids = [];
+    for (const o of orders) {
+      const pid = Number(o.productId ?? o.product_id);
+      const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+      if (Number.isFinite(pid) && pid > 0 && reserved > 0) supplyPids.push(pid);
+    }
+    const supplyMap = supplyPids.length
+      ? await batchProductReserveSupplyMap(supplyPids)
+      : new Map();
+
+    for (const o of orders) {
+      const oid = orderRowDbId(o);
+      let reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
+      const pid = Number(o.productId ?? o.product_id);
+      if (hasKitProducts && oid && kitReservedMap.has(oid)) {
+        reserved = Number(kitReservedMap.get(oid)) || reserved;
+        o.reservedQty = reserved;
+        o.reserved_qty = reserved;
+        o.hasReserve = reserved > 0;
+        o.has_reserve = reserved > 0;
+      } else if (
+        hasKitProducts &&
+        oid &&
+        Number.isFinite(pid) &&
+        pid > 0 &&
+        netByOrderProduct.has(`${oid}:${pid}`)
+      ) {
+        reserved = Math.max(reserved, netByOrderProduct.get(`${oid}:${pid}`) || 0);
+        o.reservedQty = reserved;
+        o.reserved_qty = reserved;
+        o.hasReserve = reserved > 0;
+        o.has_reserve = reserved > 0;
+      }
+
+      let need = Math.max(1, parseInt(o.quantity, 10) || 1);
+      if (hasKitProducts && Number.isFinite(pid) && pid > 0) {
+        const piecesPerKit = kitPiecesMap.get(pid) || 0;
+        if (piecesPerKit > 0) {
+          need = need * piecesPerKit;
+        }
+      }
+
+      o.needQty = need;
+      o.need_qty = need;
+      o.fullyReserved = need > 0 && reserved >= need;
+
+      if (reserved <= 0) {
+        o.reserveCoverage = 'none';
+        o.reserve_coverage = 'none';
+      } else {
+        const sup = Number.isFinite(pid) && pid > 0 ? supplyMap.get(pid) : null;
+        const kind = sup
+          ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved })
+          : 'incoming';
+        o.reserveCoverage = kind;
+        o.reserve_coverage = kind;
+      }
+    }
+
+    if (orders.some((o) => o?.status === 'in_assembly')) {
+      await enrichOrdersAssemblyCompositionLines(orders, this);
+    }
+    return orders;
+  }
+
+  /**
+   * @param {{ light?: boolean, listOnly?: boolean }} enrichOpts — light=true: только reserved_qty (список заказов).
    */
   async enrichOrdersReserveMetrics(orders, enrichOpts = {}) {
     if (!repositoryFactory.isUsingPostgreSQL() || !Array.isArray(orders)) return orders;
     const light = enrichOpts.light === true;
+    const listOnly = enrichOpts.listOnly === true;
+
+    if (light && listOnly) {
+      return this._enrichOrdersReserveMetricsListOnly(orders);
+    }
+
     const supplyPids = [];
     for (const o of orders) {
       const pid = Number(o.productId ?? o.product_id);
@@ -3391,12 +3517,12 @@ class OrdersService {
           ? this.repository.countAll(options)
           : Promise.resolve(null);
       const [items, total] = await Promise.all([this.repository.findAll(options), countPromise]);
-      await this.enrichOrdersReserveMetrics(items, { light: lightReserve });
+      await this.enrichOrdersReserveMetrics(items, { light: lightReserve, listOnly: true });
       await this.enrichOrdersProcurementSuppliers(items, options.profileId);
       if (!options.skipAutoReserve) {
         const reapplied = await this._ensureReservesForUnderReservedOrders(items);
         if (reapplied > 0) {
-          await this.enrichOrdersReserveMetrics(items, { light: lightReserve });
+          await this.enrichOrdersReserveMetrics(items, { light: lightReserve, listOnly: true });
         }
       }
       return { items, total: total ?? items.length };

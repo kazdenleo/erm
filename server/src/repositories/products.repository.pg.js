@@ -1518,9 +1518,14 @@ class ProductsRepositoryPG {
         product.cost = costFromSuppliers;
         product.avg_cost = stockData.avg_cost != null ? parseFloat(stockData.avg_cost) : null;
         product.max_cost = stockData.max_cost != null ? parseFloat(stockData.max_cost) : null;
-        this.updateCostFromSupplierStocks(numericId).catch(err => {
-          console.error(`[Products Repository] Error updating cost in DB for product ${numericId}:`, err.message);
-        });
+        if (costFromDb === null || Math.abs(costFromSuppliers - costFromDb) > 0.009) {
+          this.updateCostFromSupplierStocks(numericId).catch((err) => {
+            console.error(
+              `[Products Repository] Error updating cost in DB for product ${numericId}:`,
+              err.message
+            );
+          });
+        }
       } else if (costFromDb !== null) {
         product.cost = costFromDb;
       } else {

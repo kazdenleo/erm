@@ -146,6 +146,9 @@ export async function searchProductsCombined(
   if (isLikelyBarcodeScan(q)) {
     try {
       barcodeHit = await fetchProductByScanCode(q);
+      if (barcodeHit?.id) {
+        return [barcodeHit].slice(0, limit);
+      }
     } catch {
       /* не точный ШК — продолжаем поиск по артикулу и названию */
     }
