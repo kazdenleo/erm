@@ -885,6 +885,15 @@ export function Orders() {
     [marketplaceFilter, orderSearchQuery]
   );
 
+  /** Список + кнопки статусов (после «В закупку», «На сборку» и т.п.). */
+  const refreshOrdersAndStatusCounts = useCallback(
+    async ({ silent = true } = {}) => {
+      await reloadOrders({ silent });
+      void loadStatusCounts({ silent: true });
+    },
+    [reloadOrders, loadStatusCounts]
+  );
+
   useEffect(() => {
     // Обновляем счётчики при смене marketplace и (с debounce) поиска.
     const t = setTimeout(() => {
@@ -1184,7 +1193,7 @@ export function Orders() {
       setMarkShippedLoadingKey(rowKey);
       setRefreshError(null);
       await ordersApi.markShipped(marketplace, orderId);
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
     } catch (e) {
       console.error('Ошибка смены статуса на «Отгружен»:', e);
       setRefreshError(e.response?.data?.message || e.message || 'Не удалось изменить статус');
@@ -1198,7 +1207,7 @@ export function Orders() {
       setReturnToNewLoadingKey(rowKey);
       setRefreshError(null);
       await ordersApi.returnToNew(marketplace, orderId);
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
     } catch (e) {
       console.error('Ошибка возврата в «Новый»:', e);
       setRefreshError(e.response?.data?.message || e.message || 'Не удалось вернуть заказ в статус «Новый»');
@@ -1396,7 +1405,7 @@ export function Orders() {
           markOrdersProcurementLocally(ordersArrayForPurchaseRow(r));
         }
       }
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
       setSelectedKeys((prev) => {
         const next = new Set(prev);
         for (const r of sourceRows) {
@@ -1456,7 +1465,7 @@ export function Orders() {
       msg = appendAssemblyWarnings(msg, result?.warnings);
       msg = appendShipmentsPendingHint(msg, result);
       setAssemblyMessage(appendLocalWbOnlyAssemblyHint(msg, result?.shipments));
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
     } catch (e) {
       setAssemblyMessage(e.response?.data?.message || e.message || 'Ошибка отправки на сборку');
     } finally {
@@ -1516,7 +1525,7 @@ export function Orders() {
       if (shouldMarkProcurement) {
         markOrdersProcurementLocally(toSend);
       }
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
     } catch (e) {
       const details = e.response?.data?.details;
       let msg = getApiErrorMessage(e, 'Не удалось отправить заказ в закупку');
@@ -1552,7 +1561,7 @@ export function Orders() {
       const result = await ordersApi.submitToSupplier(marketplace, orderId);
       showSupplierOrderMessage(result?.message || 'Заказ отправлен поставщику');
       markOrdersProcurementLocally(toSend);
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
     } catch (e) {
       const msg = getApiErrorMessage(e, 'Не удалось отправить заказ поставщику');
       showSupplierOrderMessage(msg);
@@ -1773,7 +1782,7 @@ export function Orders() {
       } else {
         await ordersApi.createManual({ items, customerName, customerPhone, warehouseId });
       }
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
       handleManualOrderModalClose();
     } catch (err) {
       setAddOrderError(
@@ -2134,7 +2143,7 @@ export function Orders() {
         });
         return n;
       });
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
     } catch (e) {
       setAssemblyMessage(e.response?.data?.message || e.message || 'Ошибка отправки на сборку');
     } finally {
@@ -2218,7 +2227,7 @@ export function Orders() {
         });
         return n;
       });
-      await reloadOrders({ silent: true });
+      await refreshOrdersAndStatusCounts();
     } catch (e) {
       const msg = e.response?.data?.message || e.message || 'Не удалось изменить статус';
       setAssemblyMessage(msg);
@@ -3094,7 +3103,7 @@ export function Orders() {
                   openManualProcurement(mp, oid);
                 }
                 setSupplierOrderMessage(msg);
-                reloadOrders({ silent: true });
+                void refreshOrdersAndStatusCounts();
                 const mp = detailModalRow.first.marketplace;
                 const oid = marketplaceOrderIdForApi(
                   detailModalRow.orders ?? [detailModalRow.first],
