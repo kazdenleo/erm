@@ -1322,53 +1322,6 @@ export function WarehouseOperations({
     });
   };
 
-  /** Установить количество в списке поступления (режим «коробкой»). */
-  const setReceiptListProductQty = (product, qty) => {
-    const n = Math.max(1, parseInt(qty, 10) || 1);
-    const id = product.id;
-    setReceiptList((prev) => {
-      const existing = prev.find((item) => String(item.productId) === String(id));
-      if (existing) {
-        return prev.map((item) =>
-          String(item.productId) === String(id) ? { ...item, quantity: n } : item
-        );
-      }
-      const pc = product?.cost;
-      const defaultCost =
-        pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : '';
-      return [
-        ...prev,
-        {
-          productId: id,
-          sku: product.sku || '—',
-          name: product.name || 'Без названия',
-          quantity: n,
-          cost: defaultCost,
-        },
-      ];
-    });
-  };
-
-  const setReceiptSessionProductQty = async (product, qty) => {
-    const sid = String(receiptSessionId || '').trim();
-    if (!sid) return;
-    const n = Math.max(1, parseInt(qty, 10) || 1);
-    const pid = Number(product?.id);
-    const existing = receiptList.find((item) => String(item.productId) === String(pid));
-    const current = existing ? Math.max(0, parseInt(existing.quantity, 10) || 0) : 0;
-    const delta = n - current;
-    if (delta === 0) return;
-    const pc = product?.cost;
-    const defaultCost =
-      pc != null && pc !== '' && Number.isFinite(Number(pc)) ? Number(pc) : null;
-    const res = await receiptsApi.addSessionQuantity(sid, {
-      code: String(product?.id || ''),
-      quantity: delta,
-      cost: defaultCost,
-    });
-    applySessionStateToList(res);
-  };
-
   const addToReceiptSession = async (product, qty) => {
     const sid = String(receiptSessionId || '').trim();
     if (!sid) return;
@@ -1882,12 +1835,12 @@ export function WarehouseOperations({
         setBoxAddBusy(true);
         setLookupError(null);
         if (receiptSessionEnabled && String(receiptSessionId || '').trim()) {
-          await setReceiptSessionProductQty(resolved, n);
+          await addToReceiptSession(resolved, n);
         } else {
-          setReceiptListProductQty(resolved, n);
+          addToReceiptList(resolved, n);
         }
         lastReceiptScannedProductRef.current = resolved;
-        setOpMessage(`В список: ${n} шт — ${resolved.name || resolved.sku}`);
+        setOpMessage(`В список: +${n} шт — ${resolved.name || resolved.sku}`);
         playEventSound(SOUND_EVENTS.scan_ok);
         if (clearRowProductId != null) {
           setReceiptList((prev) =>
@@ -1915,8 +1868,8 @@ export function WarehouseOperations({
       receiptSessionEnabled,
       receiptSessionId,
       receiptWarehouseId,
-      setReceiptListProductQty,
-      setReceiptSessionProductQty,
+      addToReceiptList,
+      addToReceiptSession,
     ]
   );
 
@@ -5150,7 +5103,7 @@ export function WarehouseOperations({
             </p>
           )}
           <p className="warehouse-ops-hint">
-            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название. Для коробки укажите количество в колонке «Коробкой» в таблице (через 2 с).
+            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название. Для коробки укажите количество в колонке «Коробкой» в таблице — оно прибавится к уже принятому (через 2 с).
           </p>
           <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
             <div className="warehouse-ops-scan-form-input-wrap">
