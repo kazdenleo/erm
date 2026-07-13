@@ -8,7 +8,7 @@ import { query } from '../config/database.js';
 import stockMovementsService from './stockMovements.service.js';
 import { isKitProductId } from './kitStock.service.js';
 import { readProductWarehouseOnHand } from './productWarehouseQuantity.service.js';
-import { requireWarehouseDocumentScope, assertWarehouseBelongsToOrganization } from '../utils/stockDocumentScope.js';
+import { requireWarehouseDocumentScope, requireTransferDocumentScope, assertWarehouseBelongsToOrganization } from '../utils/stockDocumentScope.js';
 
 class WarehouseReceiptsService {
   constructor() {
@@ -58,6 +58,42 @@ class WarehouseReceiptsService {
         cost: line.cost ?? line.product_cost ?? null,
       }))
     );
+  }
+
+  _resolveReceiptDocumentType(receipt) {
+    const raw = String(receipt?.document_type || receipt?.documentType || '').trim().toLowerCase();
+    if (raw && raw !== 'receipt') {
+      return raw;
+    }
+    const num = String(receipt?.receipt_number || receipt?.receiptNumber || '').trim().toUpperCase();
+    if (num.startsWith('ПМ-')) return 'transfer';
+    if (num.startsWith('СП-')) return 'writeoff';
+    if (num.startsWith('ВН-')) return 'return';
+    if (num.startsWith('ВК-')) return 'customer_return';
+    return raw || 'receipt';
+  }
+
+  async _resolveReceiptToWarehouseId(receiptId, receipt = null) {
+    const r = receipt || (await this.receiptsRepo.findById(receiptId));
+    const direct = r?.to_warehouse_id ?? r?.toWarehouseId ?? null;
+    if (direct != null && direct !== '') {
+      const n = Number(direct);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+    const numId = typeof receiptId === 'string' ? parseInt(receiptId, 10) : Number(receiptId);
+    if (!Number.isFinite(numId) || numId < 1) return null;
+    const result = await query(
+      `SELECT NULLIF(sm.meta->>'to_warehouse_id', '')::bigint AS warehouse_id
+       FROM stock_movements sm
+       WHERE sm.type = 'transfer'
+         AND (sm.meta->>'receipt_id')::bigint = $1
+         AND NULLIF(sm.meta->>'to_warehouse_id', '') IS NOT NULL
+       ORDER BY sm.id DESC
+       LIMIT 1`,
+      [numId]
+    );
+    const wh = result.rows?.[0]?.warehouse_id;
+    return wh != null ? Number(wh) : null;
   }
 
   async _editUsesLegacyKitAssembly(receiptId, oldLines, newByProduct) {
@@ -344,9 +380,29 @@ class WarehouseReceiptsService {
   }
 
   /** Остатки по документу уже откатаны (повторное удаление — только снять запись). */
-  async _isReceiptStockAlreadyReversed(receiptId) {
+  async _isReceiptStockAlreadyReversed(receiptId, receipt = null) {
     const rid = Number(receiptId);
     if (!Number.isFinite(rid) || rid < 1) return false;
+
+    const docType = receipt
+      ? this._resolveReceiptDocumentType(receipt)
+      : await this._loadReceiptDocumentType(rid);
+
+    if (docType === 'transfer') {
+      const r = await query(
+        `SELECT 1
+         FROM stock_movements
+         WHERE (meta->>'receipt_id')::bigint = $1
+           AND (
+             meta->>'transfer_reversal' = 'true'
+             OR (meta->>'deleted' = 'true' AND type = 'transfer')
+           )
+         LIMIT 1`,
+        [rid]
+      );
+      return (r.rows?.length ?? 0) > 0;
+    }
+
     const r = await query(
       `SELECT COUNT(*)::int AS total,
               COALESCE(SUM(quantity_change), 0)::int AS net
@@ -357,6 +413,20 @@ class WarehouseReceiptsService {
     const total = r.rows?.[0]?.total ?? 0;
     const net = r.rows?.[0]?.net ?? 0;
     return total > 0 && net === 0;
+  }
+
+  async _loadReceiptDocumentType(receiptId) {
+    const rid = Number(receiptId);
+    if (!Number.isFinite(rid) || rid < 1) return 'receipt';
+    try {
+      const r = await query(
+        `SELECT document_type, receipt_number FROM warehouse_receipts WHERE id = $1`,
+        [rid]
+      );
+      return this._resolveReceiptDocumentType(r.rows?.[0] || {});
+    } catch {
+      return 'receipt';
+    }
   }
 
   /** Старая приёмка «сборки»: в журнале есть списание комплектующих по этому документу. */
@@ -791,6 +861,115 @@ class WarehouseReceiptsService {
     };
   }
 
+  /**
+   * Создать документ перемещения: warehouse_receipts document_type transfer (ПМ-xxx), строки, движения transfer
+   * @param {object} params
+   * @param {number|null} params.organizationId
+   * @param {number|string|null} params.fromWarehouseId — склад-источник
+   * @param {number|string|null} params.toWarehouseId — склад-получатель
+   * @param {Array<{productId: number, quantity: number}>} params.lines
+   */
+  async createTransfer({
+    organizationId = null,
+    fromWarehouseId = null,
+    toWarehouseId = null,
+    lines = [],
+  }) {
+    if (!lines.length) {
+      const err = new Error('Добавьте хотя бы одну позицию в перемещение');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const scope = requireTransferDocumentScope({
+      organizationId,
+      fromWarehouseId,
+      toWarehouseId,
+    });
+    await assertWarehouseBelongsToOrganization(scope.fromWarehouseId, scope.organizationId);
+    await assertWarehouseBelongsToOrganization(scope.toWarehouseId, scope.organizationId);
+    const fromWhId = await this._requireReceiptWarehouseId(scope.fromWarehouseId);
+    const toWhId = await this._requireReceiptWarehouseId(scope.toWarehouseId);
+
+    const byProduct = this._normalizeReceiptLines(lines);
+    if (!byProduct.size) {
+      const err = new Error('Не удалось определить товары в позициях перемещения (productId)');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    for (const [, row] of byProduct) {
+      const { productId, quantity } = row;
+      const isKit = await isKitProductId(productId);
+      let onHand;
+      if (isKit) {
+        const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
+        const metrics = await computeAvailableQuantity(productId, {
+          warehouseId: fromWhId,
+          supplierSyncEnabled: false,
+        });
+        onHand = Math.max(0, Number(metrics.onHand) || 0);
+      } else {
+        onHand = await readProductWarehouseOnHand(productId, fromWhId);
+      }
+      if (onHand < quantity) {
+        const product = await this.productsRepository.findById(productId);
+        const label = product?.sku || product?.name || `#${productId}`;
+        const err = new Error(
+          isKit
+            ? `Недостаточно комплектов на складе-источнике (${label}): нужно ${quantity}, на складе ${onHand}`
+            : `Недостаточно товара на складе-источнике (${label}): нужно ${quantity}, доступно ${onHand}`
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+    }
+
+    const receipt = await this.receiptsRepo.create({
+      supplierId: null,
+      organizationId: scope.organizationId,
+      documentType: 'transfer',
+      warehouseId: fromWhId,
+      toWarehouseId: toWhId,
+    });
+    if (!receipt) throw new Error('Не удалось создать документ перемещения');
+
+    const receiptNumber = receipt.receipt_number || `ПМ-${receipt.id}`;
+    const movementReason = `Перемещение ${receiptNumber}`;
+    const transferId = `tr_doc_${receipt.id}_${Date.now()}`;
+
+    for (const [, row] of byProduct) {
+      const { productId, quantity } = row;
+      const cost = await this._resolveLineCost(productId, row.cost);
+
+      await this.receiptsRepo.addLine({
+        receiptId: receipt.id,
+        productId,
+        quantity,
+        cost: cost != null && cost >= 0 ? cost : null,
+      });
+
+      await stockMovementsService.transfer(productId, {
+        fromWarehouseId: fromWhId,
+        toWarehouseId: toWhId,
+        quantity,
+        reason: movementReason,
+        meta: {
+          receipt_id: receipt.id,
+          receipt_number: receiptNumber,
+          transfer_id: transferId,
+          organization_id: scope.organizationId,
+          ui: 'warehouse_transfer',
+        },
+      });
+    }
+
+    return {
+      receipt,
+      linesCount: byProduct.size,
+    };
+  }
+
   async getList({
     limit = 100,
     offset = 0,
@@ -833,10 +1012,14 @@ class WarehouseReceiptsService {
     );
     const link = linkedPr.rows?.[0] || null;
     const warehouseId = await this._resolveReceiptWarehouseId(id);
+    const documentType = this._resolveReceiptDocumentType(receipt);
+    const toWarehouseId = await this._resolveReceiptToWarehouseId(id, receipt);
     return {
       ...receipt,
+      document_type: documentType,
       lines,
       warehouse_id: warehouseId,
+      to_warehouse_id: toWarehouseId,
       purchase_receipt_id: link?.id != null ? Number(link.id) : null,
       purchase_receipt_status: link?.status ?? null,
       purchase_id: link?.purchase_id != null ? Number(link.purchase_id) : null,
@@ -849,9 +1032,10 @@ class WarehouseReceiptsService {
     numId,
     { reasonSuffix = '', skipAlreadyReversedCheck = false } = {}
   ) {
-    const isReturnToSupplier = receipt.document_type === 'return';
-    const isCustomerReturn = receipt.document_type === 'customer_return';
-    const isWriteoff = receipt.document_type === 'writeoff';
+    const isReturnToSupplier = this._resolveReceiptDocumentType(receipt) === 'return';
+    const isCustomerReturn = this._resolveReceiptDocumentType(receipt) === 'customer_return';
+    const isWriteoff = this._resolveReceiptDocumentType(receipt) === 'writeoff';
+    const isTransfer = this._resolveReceiptDocumentType(receipt) === 'transfer';
     const receiptNumber =
       receipt.receipt_number ||
       (isReturnToSupplier
@@ -860,7 +1044,9 @@ class WarehouseReceiptsService {
           ? `ВК-${numId}`
           : isWriteoff
             ? `СП-${numId}`
-            : `ПТ-${numId}`);
+            : isTransfer
+              ? `ПМ-${numId}`
+              : `ПТ-${numId}`);
     const suffix = reasonSuffix != null ? String(reasonSuffix) : '';
     const writeoffReasonLabel =
       receipt.writeoff_reason != null && String(receipt.writeoff_reason).trim() !== ''
@@ -868,13 +1054,15 @@ class WarehouseReceiptsService {
         : '';
     const reason = isWriteoff
       ? `Аннулирование списания ${receiptNumber}${writeoffReasonLabel ? `: ${writeoffReasonLabel}` : ''}${suffix}`
+      : isTransfer
+        ? `Аннулирование перемещения ${receiptNumber}${suffix}`
       : isReturnToSupplier
         ? `Аннулирование возврата ${receiptNumber}${suffix}`
         : isCustomerReturn
           ? `Аннулирование возврата от клиента ${receiptNumber}${suffix}`
           : `Аннулирование приёмки ${receiptNumber}${suffix}`;
     if (!skipAlreadyReversedCheck) {
-      const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId);
+      const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId, receipt);
       if (stockAlreadyReversed) return { stockSkipped: true, reason, receiptNumber };
     }
 
@@ -884,6 +1072,33 @@ class WarehouseReceiptsService {
       const productId = line.product_id ?? line.productId;
       const quantity = Math.max(0, parseInt(line.quantity, 10) || 0);
       if (!productId || quantity < 1) continue;
+
+      if (isTransfer) {
+        const fromWhId =
+          receipt.warehouse_id != null
+            ? Number(receipt.warehouse_id)
+            : await this._resolveReceiptWarehouseId(numId);
+        const toWhId = await this._resolveReceiptToWarehouseId(numId, receipt);
+        if (!fromWhId || !toWhId) {
+          const err = new Error('Не удалось определить склады для аннулирования перемещения');
+          err.statusCode = 400;
+          throw err;
+        }
+        await stockMovementsService.transfer(productId, {
+          fromWarehouseId: toWhId,
+          toWarehouseId: fromWhId,
+          quantity,
+          reason,
+          meta: {
+            receipt_id: numId,
+            receipt_number: receiptNumber,
+            organization_id: receipt.organization_id ?? receipt.organizationId ?? null,
+            transfer_reversal: true,
+            deleted: true,
+          },
+        });
+        continue;
+      }
 
       if (
         !isReturnToSupplier &&
@@ -904,8 +1119,10 @@ class WarehouseReceiptsService {
         continue;
       }
 
+      // Возврат поставщику и списание уменьшали остаток (−) — откат добавляет (+).
+      // Возврат от клиента и приёмка увеличивали остаток (+) — откат уменьшает (−).
       const reverseDelta =
-        isReturnToSupplier || isCustomerReturn || isWriteoff ? quantity : -quantity;
+        isReturnToSupplier || isWriteoff ? quantity : -quantity;
       const reverseType = isWriteoff
         ? 'writeoff'
         : isCustomerReturn
@@ -1112,7 +1329,12 @@ class WarehouseReceiptsService {
       return this.getByIdWithLines(numId);
     }
 
-    const documentType = receipt.document_type || 'receipt';
+    const documentType = this._resolveReceiptDocumentType(receipt);
+    if (documentType === 'transfer') {
+      const err = new Error('Перемещение редактируется отдельным API (укажите склады-источник и получатель)');
+      err.statusCode = 400;
+      throw err;
+    }
     const scope = requireWarehouseDocumentScope({
       documentType,
       organizationId,
@@ -1176,6 +1398,152 @@ class WarehouseReceiptsService {
   }
 
   /**
+   * Редактирование перемещения: откат старых движений, обновление маршрута и строк, повторное проведение.
+   */
+  async updateTransfer(
+    id,
+    {
+      organizationId = null,
+      fromWarehouseId = null,
+      toWarehouseId = null,
+      lines = [],
+    } = {}
+  ) {
+    const numId = parseInt(id, 10);
+    if (!numId || Number.isNaN(numId)) {
+      const err = new Error('Некорректный ID документа');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!Array.isArray(lines) || !lines.length) {
+      const err = new Error('Добавьте хотя бы одну позицию');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const receipt = await this.getByIdWithLines(numId);
+    if (!receipt) {
+      const err = new Error('Документ не найден');
+      err.statusCode = 404;
+      throw err;
+    }
+    if (this._resolveReceiptDocumentType(receipt) !== 'transfer') {
+      const err = new Error('Документ не является перемещением');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const scope = requireTransferDocumentScope({
+      organizationId,
+      fromWarehouseId,
+      toWarehouseId,
+    });
+    await assertWarehouseBelongsToOrganization(scope.fromWarehouseId, scope.organizationId);
+    await assertWarehouseBelongsToOrganization(scope.toWarehouseId, scope.organizationId);
+    const fromWhId = await this._requireReceiptWarehouseId(scope.fromWarehouseId);
+    const toWhId = await this._requireReceiptWarehouseId(scope.toWarehouseId);
+
+    const oldFromWhId =
+      receipt.warehouse_id != null
+        ? Number(receipt.warehouse_id)
+        : await this._resolveReceiptWarehouseId(numId);
+    const oldToWhId = await this._resolveReceiptToWarehouseId(numId, receipt);
+    if (!oldFromWhId || !oldToWhId) {
+      const err = new Error('Не удалось определить склады исходного перемещения');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const byProduct = this._normalizeReceiptLines(lines);
+    if (!byProduct.size) {
+      const err = new Error('Добавьте хотя бы одну позицию');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const oldLines = receipt.lines || [];
+    const receiptForReverse = {
+      ...receipt,
+      document_type: 'transfer',
+      warehouse_id: oldFromWhId,
+      to_warehouse_id: oldToWhId,
+    };
+    await this._reverseReceiptLinesStock(receiptForReverse, oldLines, numId, {
+      reasonSuffix: ' — изменение',
+      skipAlreadyReversedCheck: true,
+    });
+
+    for (const [, row] of byProduct) {
+      const { productId, quantity } = row;
+      const isKit = await isKitProductId(productId);
+      let onHand;
+      if (isKit) {
+        const { computeAvailableQuantity } = await import('./sellableQuantity.service.js');
+        const metrics = await computeAvailableQuantity(productId, {
+          warehouseId: fromWhId,
+          supplierSyncEnabled: false,
+        });
+        onHand = Math.max(0, Number(metrics.onHand) || 0);
+      } else {
+        onHand = await readProductWarehouseOnHand(productId, fromWhId);
+      }
+      if (onHand < quantity) {
+        const product = await this.productsRepository.findById(productId);
+        const label = product?.sku || product?.name || `#${productId}`;
+        const err = new Error(
+          isKit
+            ? `Недостаточно комплектов на складе-источнике (${label}): нужно ${quantity}, на складе ${onHand}`
+            : `Недостаточно товара на складе-источнике (${label}): нужно ${quantity}, доступно ${onHand}`
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+    }
+
+    await this.receiptsRepo.updateHeader(numId, {
+      supplierId: null,
+      organizationId: scope.organizationId,
+      warehouseId: fromWhId,
+      toWarehouseId: toWhId,
+      documentType: 'transfer',
+    });
+    await this.receiptsRepo.deleteLines(numId);
+
+    const receiptNumber = receipt.receipt_number || `ПМ-${numId}`;
+    const movementReason = `Перемещение ${receiptNumber} — изменение`;
+    const transferId = `tr_doc_${numId}_edit_${Date.now()}`;
+
+    for (const [, row] of byProduct) {
+      const { productId, quantity } = row;
+      const cost = await this._resolveLineCost(productId, row.cost);
+
+      await this.receiptsRepo.addLine({
+        receiptId: numId,
+        productId,
+        quantity,
+        cost: cost != null && cost >= 0 ? cost : null,
+      });
+
+      await stockMovementsService.transfer(productId, {
+        fromWarehouseId: fromWhId,
+        toWarehouseId: toWhId,
+        quantity,
+        reason: movementReason,
+        meta: {
+          receipt_id: numId,
+          receipt_number: receiptNumber,
+          transfer_id: transferId,
+          organization_id: scope.organizationId,
+          receipt_edit: true,
+          ui: 'warehouse_transfer',
+        },
+      });
+    }
+
+    return this.getByIdWithLines(numId);
+  }
+
+  /**
    * Удалить приёмку или возврат: отменить движения остатков, затем удалить документ.
    * Приёмка: остаток уменьшается на количество по строкам.
    * Возврат: остаток увеличивается на количество по строкам.
@@ -1208,7 +1576,7 @@ class WarehouseReceiptsService {
     const receipt = await this.getByIdWithLines(numId);
     if (!receipt) return null;
     const lines = receipt.lines || (await this.receiptsRepo.getLinesWithProducts(numId));
-    const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId);
+    const stockAlreadyReversed = await this._isReceiptStockAlreadyReversed(numId, receipt);
     if (!stockAlreadyReversed) {
       await this._reverseReceiptLinesStock(receipt, lines, numId);
     }
