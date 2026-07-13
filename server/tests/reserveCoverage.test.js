@@ -163,9 +163,9 @@ describe('classifyOrderReserveCoverage', () => {
 });
 
 describe('resolveReserveCoverageKind', () => {
-  test('собранный заказ: meta on_hand важнее FIFO incoming', async () => {
+  test('собранный заказ с резервом — всегда on_hand, даже если meta «в пути»', async () => {
     const { resolveReserveCoverageKind } = await import('../src/services/orders.service.js');
-    const metaMap = new Map([['100:5', 'on_hand']]);
+    const metaMap = new Map([['100:5', 'incoming']]);
     const fifoMap = new Map([['100:5', 'incoming']]);
     expect(
       resolveReserveCoverageKind('100:5', {

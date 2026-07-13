@@ -305,8 +305,9 @@ export function resolveReserveCoverageKind(
   fifoKey,
   { metaMap, fifoMap, supplyMap, pid, reserved, orderStatus = null } = {}
 ) {
-  if (isAssembledOrderReserveStatus(orderStatus) && fifoKey && metaMap?.has(fifoKey)) {
-    return metaMap.get(fifoKey);
+  const reservedQty = Math.max(0, Math.floor(Number(reserved) || 0));
+  if (isAssembledOrderReserveStatus(orderStatus) && reservedQty > 0) {
+    return 'on_hand';
   }
   if (fifoKey && fifoMap?.has(fifoKey)) return fifoMap.get(fifoKey);
   const sup = supplyMap?.get(pid);
@@ -374,10 +375,11 @@ function mergeOrderCoverage(existing, addition) {
   return 'on_hand';
 }
 
-function mergeOrderCoverageFromMetaMap(map, orderDbIds, metaMap) {
+function mergeOrderCoverageFromMetaMap(map, orderDbIds, metaMap, orderStatusById = null) {
   for (const rawId of orderDbIds || []) {
     const oid = Number(rawId);
     if (!Number.isFinite(oid) || oid < 1) continue;
+    if (orderStatusById && isAssembledOrderReserveStatus(orderStatusById.get(oid))) continue;
     const fromMeta = aggregateCoverageKinds(coverageKindsForOrderFromMetaMap(oid, metaMap));
     if (!fromMeta) continue;
     map.set(oid, mergeOrderCoverage(map.get(oid), fromMeta));
@@ -520,7 +522,7 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
     metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
   }
   if (!byOrder.size) {
-    if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap);
+    if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap, orderStatusById);
     return map;
   }
 
@@ -546,7 +548,7 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
     }
     map.set(oid, anyIncoming ? 'incoming' : anyOnHand ? 'on_hand' : 'incoming');
   }
-  if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap);
+  if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap, orderStatusById);
   return map;
 }
 
