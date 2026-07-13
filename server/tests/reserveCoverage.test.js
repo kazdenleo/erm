@@ -163,6 +163,15 @@ describe('classifyOrderReserveCoverage', () => {
 });
 
 describe('allocateCoverageKindFromPools (FIFO)', () => {
+  test('сборка: общий резерв > остатка — ранние заказы всё равно on_hand', async () => {
+    const { allocateCoverageKindFromPools } = await import('../src/services/orders.service.js');
+    const pools = { onHand: 3, incoming: 0 };
+    expect(allocateCoverageKindFromPools(1, pools)).toBe('on_hand');
+    expect(allocateCoverageKindFromPools(1, pools)).toBe('on_hand');
+    expect(allocateCoverageKindFromPools(1, pools)).toBe('on_hand');
+    expect(allocateCoverageKindFromPools(1, pools)).toBe('incoming');
+  });
+
   test('первые заказы забирают on_hand — зелёные, затем серый', async () => {
     const { allocateCoverageKindFromPools } = await import('../src/services/orders.service.js');
     const pools = { onHand: 3, incoming: 5 };

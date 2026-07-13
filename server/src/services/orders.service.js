@@ -834,10 +834,8 @@ class OrdersService {
   /**
    * Проверка перед «На сборку»: можно ли собирать заказ по правилу "есть фактически зарезервированный товар".
    *
-   * Требование интерпретируем строго:
    * - по заказу должен быть резерв в stock_movements (reserved_qty >= quantity)
-   * - общий резерв товара должен быть покрыт фактическим остатком (products.quantity >= products.reserved_quantity),
-   *   т.е. резерв не опирается на incoming_quantity.
+   * - резерв этой строки покрыт наличием на складе (on_hand), а не только «в пути» (FIFO по товару)
    *
    * @param {Array<{ marketplace: string, orderId: string }>} orderIds
    * @returns {Promise<{ ok: Array, blocked: Array<{ marketplace: string, orderId: string, reason: string }> }>}
@@ -933,6 +931,7 @@ class OrdersService {
     const blocked = [];
     const productCache = new Map(); // productId -> { qty, reserved }
     const kitCache = new Map(); // productId -> boolean
+    const pendingOnHandCoverage = [];
     const fastBatch = refs.length > 50;
     for (const o of refs) {
       const mp = this._marketplaceToOrdersDb(o?.marketplace);
@@ -1075,15 +1074,38 @@ class OrdersService {
           continue;
         }
       }
-      if (!isKit && prodQty < prodRes) {
-        blocked.push({
+      if (!isKit && orderDbId) {
+        pendingOnHandCoverage.push({
+          ref: o,
+          orderDbId,
           marketplace: o.marketplace,
           orderId: oid,
-          reason: `резерв товара не покрыт фактическим остатком (факт: ${prodQty}, общий резерв: ${prodRes})`
         });
         continue;
       }
       ok.push(o);
+    }
+
+    if (pendingOnHandCoverage.length) {
+      const coverageMap = await buildReserveCoverageByOrderIds(
+        pendingOnHandCoverage.map((x) => x.orderDbId),
+        { skipMeta: true }
+      );
+      for (const item of pendingOnHandCoverage) {
+        const coverage = coverageMap.get(item.orderDbId);
+        if (coverage !== 'on_hand') {
+          blocked.push({
+            marketplace: item.marketplace,
+            orderId: item.orderId,
+            reason:
+              coverage === 'incoming'
+                ? 'резерв под заказ ещё с «в пути» — дождитесь прихода на склад'
+                : 'резерв не покрыт наличием на складе',
+          });
+          continue;
+        }
+        ok.push(item.ref);
+      }
     }
 
     return { ok, blocked };
