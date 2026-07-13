@@ -15,7 +15,7 @@ export function requirePositiveEntityId(value, message) {
 }
 
 /**
- * @param {'receipt'|'return'|'customer_return'|'writeoff'} documentType
+ * @param {'receipt'|'return'|'customer_return'|'writeoff'|'transfer'} documentType
  */
 export function requireWarehouseDocumentScope({
   documentType = 'receipt',
@@ -27,10 +27,26 @@ export function requireWarehouseDocumentScope({
   const orgId = requirePositiveEntityId(organizationId, 'Выберите организацию');
   const doc = String(documentType || 'receipt').trim().toLowerCase();
   let supplier = null;
-  if (doc !== 'customer_return' && doc !== 'writeoff') {
+  if (doc !== 'customer_return' && doc !== 'writeoff' && doc !== 'transfer') {
     supplier = requirePositiveEntityId(supplierId, 'Выберите поставщика');
   }
   return { warehouseId: whId, organizationId: orgId, supplierId: supplier };
+}
+
+export function requireTransferDocumentScope({
+  organizationId,
+  fromWarehouseId,
+  toWarehouseId,
+}) {
+  const orgId = requirePositiveEntityId(organizationId, 'Выберите организацию');
+  const fromId = requirePositiveEntityId(fromWarehouseId, 'Выберите склад-источник');
+  const toId = requirePositiveEntityId(toWarehouseId, 'Выберите склад-получатель');
+  if (fromId === toId) {
+    const err = new Error('Склад-источник и склад-получатель должны отличаться');
+    err.statusCode = 400;
+    throw err;
+  }
+  return { organizationId: orgId, fromWarehouseId: fromId, toWarehouseId: toId };
 }
 
 /**
