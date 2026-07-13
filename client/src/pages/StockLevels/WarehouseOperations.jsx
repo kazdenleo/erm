@@ -5,7 +5,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { LinkBarcodeToProductModal } from '../../components/common/LinkBarcodeToProductModal/LinkBarcodeToProductModal';
-import { ProductSearchInput } from '../../components/common/ProductSearchInput/ProductSearchInput';
 import { productsApi } from '../../services/products.api';
 import { stockMovementsApi } from '../../services/stockMovements.api';
 import { receiptsApi } from '../../services/receipts.api';
@@ -188,13 +187,61 @@ const RECEIPT_DOCUMENT_TYPE_BY_MODE = {
   [MODE_RETURN_SUPPLIER]: 'return',
   [MODE_RETURN_CUSTOMER]: 'customer_return',
   [MODE_WRITEOFF]: 'writeoff',
+  [MODE_TRANSFER]: 'transfer',
 };
 
 function receiptDocumentTypeLabel(documentType) {
   if (documentType === 'return') return 'Возврат поставщику';
   if (documentType === 'customer_return') return 'Возврат от клиента';
   if (documentType === 'writeoff') return 'Списание';
+  if (documentType === 'transfer') return 'Перемещение';
   return 'Приёмка';
+}
+
+function receiptDocumentTypeLabelGenitive(documentType) {
+  if (documentType === 'return') return 'возврата поставщику';
+  if (documentType === 'customer_return') return 'возврата от клиента';
+  if (documentType === 'writeoff') return 'списания';
+  if (documentType === 'transfer') return 'перемещения';
+  return 'приёмки';
+}
+
+function receiptDocumentTypeDeleteLabel(documentType) {
+  if (documentType === 'return') return 'возврат';
+  if (documentType === 'customer_return') return 'возврат от клиента';
+  if (documentType === 'writeoff') return 'списание';
+  if (documentType === 'transfer') return 'перемещение';
+  return 'приёмку';
+}
+
+function receiptDocumentTypeNeedsSupplier(documentType) {
+  const dt = String(documentType || 'receipt').toLowerCase();
+  return dt !== 'customer_return' && dt !== 'writeoff' && dt !== 'transfer';
+}
+
+function receiptDocumentTypeShowsCost(documentType) {
+  const dt = String(documentType || 'receipt').toLowerCase();
+  return dt !== 'return' && dt !== 'writeoff' && dt !== 'transfer';
+}
+
+function formatDocumentWarehouseCell(r) {
+  if (resolveReceiptDocumentType(r) === 'transfer') {
+    const from = r.warehouse_name || '—';
+    const to = r.to_warehouse_name || '—';
+    return `${from} → ${to}`;
+  }
+  return r.warehouse_name || '—';
+}
+
+function resolveReceiptDocumentType(receipt) {
+  const raw = String(receipt?.document_type || receipt?.documentType || '').trim().toLowerCase();
+  if (raw && raw !== 'receipt') return raw;
+  const num = String(receipt?.receipt_number || receipt?.receiptNumber || '').trim().toUpperCase();
+  if (num.startsWith('ПМ-')) return 'transfer';
+  if (num.startsWith('СП-')) return 'writeoff';
+  if (num.startsWith('ВН-')) return 'return';
+  if (num.startsWith('ВК-')) return 'customer_return';
+  return raw || 'receipt';
 }
 
 function warehousesForOrganization(ownWarehouses, organizationId) {
@@ -227,10 +274,20 @@ export function WarehouseOperations({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, selectedOrganizationId } = useAuth();
   const { suppliers } = useSuppliers();
   const { organizations } = useOrganizations();
   const { warehouses } = useWarehouses();
+  const organizationOptions = useMemo(() => {
+    const list = Array.isArray(organizations) ? [...organizations] : [];
+    const fallbackId =
+      String(defaultOrganizationId || '').trim() ||
+      String(selectedOrganizationId || '').trim();
+    if (fallbackId && !list.some((o) => o && String(o.id) === fallbackId)) {
+      list.unshift({ id: fallbackId, name: `Организация #${fallbackId}` });
+    }
+    return list;
+  }, [organizations, defaultOrganizationId, selectedOrganizationId]);
   const { singleOrganizationId, singleWarehouseId } = useStockDestinationDefaults(
     organizations,
     warehouses,
@@ -256,13 +313,11 @@ export function WarehouseOperations({
   const [transferOrganizationId, setTransferOrganizationId] = useState('');
   const [transferFromWarehouseId, setTransferFromWarehouseId] = useState('');
   const [transferToWarehouseId, setTransferToWarehouseId] = useState('');
-  const [transferManualSearch, setTransferManualSearch] = useState('');
   const transferScanInputRef = useRef(null);
   const transferScanDebounceRef = useRef(null);
-  const [transferSelectedProductId, setTransferSelectedProductId] = useState('');
-  const [transferQty, setTransferQty] = useState(1);
-  const [transferQuickMode, setTransferQuickMode] = useState(true);
   const [transferList, setTransferList] = useState([]);
+  const [transferFilterOrgId, setTransferFilterOrgId] = useState('');
+  const [transferFilterWhId, setTransferFilterWhId] = useState('');
   const transferWarehouses = useMemo(() => {
     const orgId = String(transferOrganizationId || '').trim();
     if (!orgId) return [];
@@ -315,6 +370,7 @@ export function WarehouseOperations({
   const [receiptEditOpen, setReceiptEditOpen] = useState(false);
   const [receiptEditSaving, setReceiptEditSaving] = useState(false);
   const [receiptEditForm, setReceiptEditForm] = useState(null);
+  const [receiptEditError, setReceiptEditError] = useState(null);
   const [addReceiptModalOpen, setAddReceiptModalOpen] = useState(false);
   const [receiptSessionEnabled, setReceiptSessionEnabled] = useState(false);
   const [receiptSessionId, setReceiptSessionId] = useState('');
@@ -371,6 +427,20 @@ export function WarehouseOperations({
         ? warehousesForOrganization(ownWarehouses, writeoffFilterOrgId)
         : ownWarehouses,
     [ownWarehouses, writeoffFilterOrgId]
+  );
+  const transferFilterWarehouses = useMemo(
+    () =>
+      transferFilterOrgId
+        ? warehousesForOrganization(ownWarehouses, transferFilterOrgId)
+        : ownWarehouses,
+    [ownWarehouses, transferFilterOrgId]
+  );
+  const receiptEditWarehouses = useMemo(
+    () =>
+      receiptEditForm?.organizationId
+        ? warehousesForOrganization(ownWarehouses, receiptEditForm.organizationId)
+        : ownWarehouses,
+    [ownWarehouses, receiptEditForm?.organizationId]
   );
   const [customerReturnList, setCustomerReturnList] = useState([]);
   const customerReturnScanDebounceRef = useRef(null);
@@ -526,6 +596,10 @@ export function WarehouseOperations({
         if (writeoffFilterOrgId) params.organizationId = writeoffFilterOrgId;
         if (writeoffFilterWhId) params.warehouseId = writeoffFilterWhId;
       }
+      if (forMode === MODE_TRANSFER) {
+        if (transferFilterOrgId) params.organizationId = transferFilterOrgId;
+        if (transferFilterWhId) params.warehouseId = transferFilterWhId;
+      }
       receiptsApi
         .getList(params)
         .then(({ list }) => {
@@ -537,7 +611,7 @@ export function WarehouseOperations({
         })
         .finally(() => setReceiptsLoading(false));
     },
-    [mode, writeoffFilterOrgId, writeoffFilterWhId]
+    [mode, writeoffFilterOrgId, writeoffFilterWhId, transferFilterOrgId, transferFilterWhId]
   );
 
   const receiptRowTotalUnits = (r) => {
@@ -619,6 +693,99 @@ export function WarehouseOperations({
   }, [mode, writeoffWarehouseId, inventoryWarehouseId, singleWarehouseId]);
 
   useEffect(() => {
+    if (mode !== MODE_RETURN_CUSTOMER) return;
+    if (!customerReturnOrganizationId) {
+      if (defaultOrganizationId) setCustomerReturnOrganizationId(String(defaultOrganizationId));
+      else if (selectedOrganizationId) setCustomerReturnOrganizationId(String(selectedOrganizationId));
+      else if (singleOrganizationId) setCustomerReturnOrganizationId(singleOrganizationId);
+    }
+  }, [
+    mode,
+    customerReturnOrganizationId,
+    defaultOrganizationId,
+    selectedOrganizationId,
+    singleOrganizationId,
+  ]);
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_CUSTOMER) return;
+    applySingleOrgWarehouseDefaults({
+      singleOrganizationId,
+      organizationId: customerReturnOrganizationId,
+      setOrganizationId: setCustomerReturnOrganizationId,
+    });
+  }, [mode, singleOrganizationId, customerReturnOrganizationId, organizationOptions.length]);
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_CUSTOMER) return;
+    if (customerReturnWarehouseId || !customerReturnOrganizationId) return;
+    const whList = customerReturnWarehouses;
+    if (whList.length === 1) {
+      setCustomerReturnWarehouseId(String(whList[0].id));
+      return;
+    }
+    const inv = String(inventoryWarehouseId || '').trim();
+    if (inv && whList.some((w) => String(w.id) === inv)) {
+      setCustomerReturnWarehouseId(inv);
+      return;
+    }
+    if (singleWarehouseId && whList.some((w) => String(w.id) === String(singleWarehouseId))) {
+      setCustomerReturnWarehouseId(singleWarehouseId);
+    }
+  }, [
+    mode,
+    customerReturnOrganizationId,
+    customerReturnWarehouseId,
+    customerReturnWarehouses,
+    inventoryWarehouseId,
+    singleWarehouseId,
+  ]);
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_SUPPLIER) return;
+    if (!returnOrganizationId) {
+      if (defaultOrganizationId) setReturnOrganizationId(String(defaultOrganizationId));
+      else if (selectedOrganizationId) setReturnOrganizationId(String(selectedOrganizationId));
+      else if (singleOrganizationId) setReturnOrganizationId(singleOrganizationId);
+    }
+  }, [
+    mode,
+    returnOrganizationId,
+    defaultOrganizationId,
+    selectedOrganizationId,
+    singleOrganizationId,
+  ]);
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_SUPPLIER) return;
+    applySingleOrgWarehouseDefaults({
+      singleOrganizationId,
+      organizationId: returnOrganizationId,
+      setOrganizationId: setReturnOrganizationId,
+    });
+  }, [mode, singleOrganizationId, returnOrganizationId, organizationOptions.length]);
+
+  useEffect(() => {
+    if (mode !== MODE_RETURN_SUPPLIER) return;
+    if (returnWarehouseId || !returnOrganizationId) return;
+    const whList = returnWarehouses;
+    if (whList.length === 1) {
+      setReturnWarehouseId(String(whList[0].id));
+      return;
+    }
+    const inv = String(inventoryWarehouseId || '').trim();
+    if (inv && whList.some((w) => String(w.id) === inv)) {
+      setReturnWarehouseId(inv);
+    }
+  }, [
+    mode,
+    returnOrganizationId,
+    returnWarehouseId,
+    returnWarehouses,
+    inventoryWarehouseId,
+  ]);
+
+  useEffect(() => {
     const allowed = new Set(writeoffWarehouses.map((w) => String(w.id)));
     if (writeoffWarehouseId && !allowed.has(String(writeoffWarehouseId))) {
       setWriteoffWarehouseId('');
@@ -631,6 +798,13 @@ export function WarehouseOperations({
       setWriteoffFilterWhId('');
     }
   }, [writeoffFilterWarehouses, writeoffFilterWhId]);
+
+  useEffect(() => {
+    const allowed = new Set(transferFilterWarehouses.map((w) => String(w.id)));
+    if (transferFilterWhId && !allowed.has(String(transferFilterWhId))) {
+      setTransferFilterWhId('');
+    }
+  }, [transferFilterWarehouses, transferFilterWhId]);
 
   useEffect(() => {
     if (mode !== MODE_TRANSFER) return;
@@ -653,58 +827,68 @@ export function WarehouseOperations({
     [findLocalMatches, searchProductsRemote, transferOrganizationId]
   );
 
-  const transferCandidates = useMemo(() => {
-    const orgId = String(transferOrganizationId || '').trim();
-    const list = (Array.isArray(products) ? products : []).filter((p) => {
-      if (!p?.id) return false;
-      if (!orgId) return false;
-      const pOrg = p.organizationId ?? p.organization_id;
-      return pOrg == null || String(pOrg) === orgId;
-    });
-    return list.map((p) => ({
-      id: String(p.id),
-      sku: (p.sku || p.article || p.vendorCode || '').toString(),
-      name: (p.name || p.title || '—').toString()
-    }));
-  }, [products, transferOrganizationId]);
-
-  const addTransferItem = () => {
-    const pid = String(transferSelectedProductId || '').trim();
-    const qty = Number(transferQty);
-    if (!pid) return;
-    if (!Number.isFinite(qty) || qty <= 0) return;
-    const p = transferCandidates.find((x) => x.id === pid);
-    const sku = p?.sku || '';
-    const name = p?.name || '—';
-    setTransferList((prev) => {
-      const out = Array.isArray(prev) ? [...prev] : [];
-      const idx = out.findIndex((x) => String(x.productId) === pid);
-      if (idx >= 0) out[idx] = { ...out[idx], quantity: Number(out[idx].quantity || 0) + qty };
-      else out.push({ productId: pid, sku, name, quantity: qty });
-      return out;
-    });
-    setTransferSelectedProductId('');
-    setTransferQty(1);
+  const warehouseQtyForProduct = async (product, warehouseId) => {
+    if (!product?.id) return 0;
+    const wid = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId) : '';
+    if (!wid) return 0;
+    const fromList =
+      product?.quantity != null &&
+      String(product.quantity_warehouse_id ?? product.quantityWarehouseId ?? '') === wid
+        ? Math.max(0, Number(product.quantity) || 0)
+        : 0;
+    try {
+      const data = await stockMovementsApi.getWarehouseStock(product.id, wid);
+      const apiQty = Math.max(0, Number(data?.quantity) || 0);
+      return Math.max(apiQty, fromList);
+    } catch {
+      return fromList;
+    }
   };
 
-  const addTransferItemFromProduct = useCallback((product, qtyRaw) => {
-    if (!product?.id) return;
-    const pid = String(product.id);
-    const qty = Number(qtyRaw);
-    if (!Number.isFinite(qty) || qty <= 0) return;
-    const sku = String(product.sku || product.article || product.vendorCode || '').trim();
-    const name = String(product.name || product.title || '—').trim();
-    setTransferList((prev) => {
-      const out = Array.isArray(prev) ? [...prev] : [];
-      const idx = out.findIndex((x) => String(x.productId) === pid);
-      if (idx >= 0) out[idx] = { ...out[idx], quantity: Number(out[idx].quantity || 0) + qty };
-      else out.push({ productId: pid, sku, name, quantity: qty });
-      return out;
-    });
-    if (transferQuickMode) {
-      setTransferQty(1);
-    }
-  }, [transferQuickMode]);
+  const addTransferItemFromProduct = useCallback(
+    async (product) => {
+      if (!product?.id) return 0;
+      const fromId = String(transferFromWarehouseId || '').trim();
+      if (!fromId) {
+        setOpMessage('Сначала выберите склад-источник');
+        return 0;
+      }
+      const maxQty = await warehouseQtyForProduct(product, fromId);
+      if (maxQty < 1) {
+        setOpMessage('Нет свободного остатка на складе-источнике');
+        return 0;
+      }
+      const pid = String(product.id);
+      const sku = String(product.sku || product.article || product.vendorCode || '').trim();
+      const name = String(product.name || product.title || '—').trim();
+      let added = 0;
+      setTransferList((prev) => {
+        const out = Array.isArray(prev) ? [...prev] : [];
+        const idx = out.findIndex((x) => String(x.productId) === pid);
+        if (idx >= 0) {
+          const nextQty = Math.min(Number(out[idx].quantity || 0) + 1, maxQty);
+          if (nextQty <= Number(out[idx].quantity || 0)) return prev;
+          added = 1;
+          out[idx] = { ...out[idx], quantity: nextQty, warehouseMaxQty: maxQty };
+        } else {
+          added = 1;
+          out.push({ productId: pid, sku, name, quantity: 1, warehouseMaxQty: maxQty });
+        }
+        return out;
+      });
+      return added;
+    },
+    [transferFromWarehouseId]
+  );
+
+  const updateTransferQuantity = (index, value) => {
+    const num = parseInt(value, 10);
+    const item = transferList[index];
+    if (!item) return;
+    const maxQty = Math.max(1, Number(item.warehouseMaxQty) || 0);
+    const qty = Math.min(isNaN(num) || num < 1 ? 1 : num, maxQty || 1);
+    setTransferList((prev) => prev.map((it, i) => (i === index ? { ...it, quantity: qty } : it)));
+  };
 
   const removeTransferItem = (pid) => {
     const id = String(pid);
@@ -737,26 +921,33 @@ export function WarehouseOperations({
     setOpLoading(true);
     setOpMessage(null);
     try {
-      for (const it of items) {
-        // eslint-disable-next-line no-await-in-loop
-        await stockMovementsApi.transfer(it.productId, {
-          fromWarehouseId: fromId,
-          toWarehouseId: toId,
+      const res = await receiptsApi.create({
+        documentType: 'transfer',
+        organizationId: Number(transferOrganizationId),
+        warehouseId: Number(fromId),
+        toWarehouseId: Number(toId),
+        lines: items.map((it) => ({
+          productId: it.productId,
           quantity: Number(it.quantity),
-          reason: 'Перемещение между складами',
-          meta: { ui: 'warehouse_transfer' }
-        });
-      }
+        })),
+      });
+      const receiptNo =
+        res?.data?.receipt?.receipt_number ||
+        res?.receipt?.receipt_number ||
+        null;
       setTransferList([]);
       const fromLbl = transferWarehouseLabel(transferFromWarehouse);
       const toLbl = transferWarehouseLabel(transferToWarehouse);
       const route =
         fromLbl && toLbl ? `${fromLbl} → ${toLbl}` : '';
       setOpMessage(
-        route
-          ? `Перемещение выполнено (${items.length} поз.): ${route}`
-          : `Перемещение выполнено (${items.length} поз.)`
+        receiptNo
+          ? `Перемещение ${receiptNo} оформлено (${items.length} поз.)${route ? `: ${route}` : ''}`
+          : route
+            ? `Перемещение выполнено (${items.length} поз.): ${route}`
+            : `Перемещение выполнено (${items.length} поз.)`
       );
+      loadReceiptsList(MODE_TRANSFER);
       onRefresh?.();
     } catch (e) {
       const msg = e?.response?.data?.message || e?.message || 'Не удалось выполнить перемещение';
@@ -777,16 +968,21 @@ export function WarehouseOperations({
           setOpMessage('Сначала выберите организацию');
           return;
         }
+        if (!transferFromWarehouseId || !transferToWarehouseId) {
+          setOpMessage('Укажите склад-источник и склад-получатель');
+          return;
+        }
         const p = await lookupProductByAny(raw, {
           title: 'Выберите товар для перемещения',
           allowLinkBarcode: true,
           organizationId: transferOrganizationId,
           useServerSearch: true
         });
-        addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
+        const added = await addTransferItemFromProduct(p);
         clearScanField(transferScanInputRef.current);
-        setOpMessage(null);
-        if (transferQuickMode) setTransferQty(1);
+        if (added > 0) {
+          setOpMessage(`В список перемещения: ${p.name || p.sku} — +${added} шт`);
+        }
         window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
       } catch (err) {
         const msg = err?.message || 'Товар не найден';
@@ -797,10 +993,10 @@ export function WarehouseOperations({
     [
       opLoading,
       transferOrganizationId,
+      transferFromWarehouseId,
+      transferToWarehouseId,
       lookupProductByAny,
       addTransferItemFromProduct,
-      transferQty,
-      transferQuickMode
     ]
   );
 
@@ -1489,13 +1685,16 @@ export function WarehouseOperations({
     setReceiptEditForm({
       id: receiptDetail.id,
       purchaseReceiptId: receiptDetail.purchase_receipt_id ?? null,
-      documentType: receiptDetail.document_type || 'receipt',
+      receiptNumber: receiptDetail.receipt_number || '',
+      documentType: resolveReceiptDocumentType(receiptDetail),
       organizationId: receiptDetail.organization_id != null ? String(receiptDetail.organization_id) : '',
       supplierId: receiptDetail.supplier_id != null ? String(receiptDetail.supplier_id) : '',
       warehouseId:
         receiptDetail.warehouse_id != null
           ? String(receiptDetail.warehouse_id)
           : String(receiptWarehouseId || singleWarehouseId || ''),
+      toWarehouseId:
+        receiptDetail.to_warehouse_id != null ? String(receiptDetail.to_warehouse_id) : '',
       lines: (receiptDetail.lines || []).map((line) => ({
         lineId: line.id,
         productId: line.product_id,
@@ -1505,6 +1704,7 @@ export function WarehouseOperations({
         cost: line.cost != null ? String(line.cost) : '',
       })),
     });
+    setReceiptEditError(null);
     setReceiptEditOpen(true);
   };
 
@@ -1533,23 +1733,35 @@ export function WarehouseOperations({
   const saveReceiptEdit = async () => {
     const form = receiptEditForm;
     if (!form?.id) return;
+    const docType = resolveReceiptDocumentType(form);
     if (!String(form.warehouseId || '').trim()) {
-      setOpMessage('Выберите склад');
+      setReceiptEditError(docType === 'transfer' ? 'Выберите склад-источник' : 'Выберите склад');
       return;
+    }
+    if (docType === 'transfer') {
+      if (!String(form.toWarehouseId || '').trim()) {
+        setReceiptEditError('Выберите склад-получатель');
+        return;
+      }
+      if (String(form.warehouseId) === String(form.toWarehouseId)) {
+        setReceiptEditError('Склады должны отличаться');
+        return;
+      }
     }
     if (!String(form.organizationId || '').trim()) {
-      setOpMessage('Выберите организацию');
+      setReceiptEditError('Выберите организацию');
       return;
     }
-    if (form.documentType !== 'customer_return' && !String(form.supplierId || '').trim()) {
-      setOpMessage('Выберите поставщика');
+    if (receiptDocumentTypeNeedsSupplier(docType) && !String(form.supplierId || '').trim()) {
+      setReceiptEditError('Выберите поставщика');
       return;
     }
     if (!form.lines?.length) {
-      setOpMessage('Добавьте хотя бы одну позицию');
+      setReceiptEditError('Добавьте хотя бы одну позицию');
       return;
     }
     setReceiptEditSaving(true);
+    setReceiptEditError(null);
     setOpMessage(null);
     try {
       const payload = {
@@ -1558,27 +1770,33 @@ export function WarehouseOperations({
         lines: form.lines.map((line) => ({
           productId: line.productId,
           quantity: line.quantity,
-          ...(form.documentType !== 'return' && line.cost !== ''
+          ...(receiptDocumentTypeShowsCost(docType) && line.cost !== ''
             ? { cost: parseFloat(String(line.cost).replace(',', '.')) }
             : {}),
         })),
       };
+      if (docType === 'transfer') {
+        payload.toWarehouseId = Number(form.toWarehouseId);
+      }
       if (form.purchaseReceiptId != null && String(form.purchaseReceiptId).trim() !== '') {
         payload.purchaseReceiptId = Number(form.purchaseReceiptId);
       }
-      if (form.documentType !== 'customer_return') {
+      if (receiptDocumentTypeNeedsSupplier(docType)) {
         payload.supplierId = Number(form.supplierId);
       }
       const res = await receiptsApi.update(form.id, payload);
       const updated = res?.data ?? res;
       setReceiptEditOpen(false);
       setReceiptEditForm(null);
+      setReceiptEditError(null);
       setReceiptDetail(updated);
       setOpMessage('Документ сохранён');
       loadReceiptsList();
       onRefresh?.();
     } catch (e) {
-      setOpMessage('Ошибка: ' + (e.response?.data?.message || e.message || 'не удалось сохранить'));
+      const msg = e.response?.data?.message || e.message || 'не удалось сохранить';
+      setReceiptEditError(msg);
+      setOpMessage('Ошибка: ' + msg);
     } finally {
       setReceiptEditSaving(false);
     }
@@ -1904,24 +2122,6 @@ export function WarehouseOperations({
     );
   };
 
-  const warehouseQtyForProduct = async (product, warehouseId) => {
-    if (!product?.id) return 0;
-    const wid = warehouseId != null && String(warehouseId).trim() !== '' ? String(warehouseId) : '';
-    if (!wid) return 0;
-    const fromList =
-      product?.quantity != null &&
-      String(product.quantity_warehouse_id ?? product.quantityWarehouseId ?? '') === wid
-        ? Math.max(0, Number(product.quantity) || 0)
-        : 0;
-    try {
-      const data = await stockMovementsApi.getWarehouseStock(product.id, wid);
-      const apiQty = Math.max(0, Number(data?.quantity) || 0);
-      return Math.max(apiQty, fromList);
-    } catch {
-      return fromList;
-    }
-  };
-
   /** Добавить товар в список списания (qty ограничено остатком на выбранном складе). Возвращает добавленное кол-во или 0. */
   const addToWriteoffList = async (product, add) => {
     if (!writeoffWarehouseId) return 0;
@@ -2205,10 +2405,13 @@ export function WarehouseOperations({
         if (suggestContext === 'transfer_scan') closeSuggest();
         return;
       }
-      openSuggest('transfer_scan', 'Выберите товар', matches, (p) => {
+      openSuggest('transfer_scan', 'Выберите товар', matches, async (p) => {
         if (!p) return;
-        addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
+        const added = await addTransferItemFromProduct(p);
         clearScanField(transferScanInputRef.current);
+        if (added > 0) {
+          setOpMessage(`В список перемещения: ${p.name || p.sku} — +${added} шт`);
+        }
         window.setTimeout(() => transferScanInputRef.current?.focus(), 0);
       });
     },
@@ -2218,8 +2421,6 @@ export function WarehouseOperations({
       closeSuggest,
       openSuggest,
       addTransferItemFromProduct,
-      transferQuickMode,
-      transferQty,
     ]
   );
 
@@ -2714,7 +2915,7 @@ export function WarehouseOperations({
                   {showReasonColumn ? <td>{r.writeoff_reason || '—'}</td> : null}
                   <td>{r.organization_name || '—'}</td>
                   {showSupplier ? <td>{r.supplier_name || r.supplier_code || '—'}</td> : null}
-                  <td>{r.warehouse_name || '—'}</td>
+                  <td>{formatDocumentWarehouseCell(r)}</td>
                   <td>{receiptRowTotalUnits(r)}</td>
                   <td>{formatReceiptListAmountRub(r.total_amount_rub ?? r.totalAmountRub)}</td>
                 </tr>
@@ -3239,7 +3440,7 @@ export function WarehouseOperations({
                 className="warehouse-ops-select"
               >
                 <option value="">— Выберите организацию —</option>
-                {(organizations || []).map((org) => (
+                {(organizationOptions || []).map((org) => (
                   <option key={org.id} value={org.id}>
                     {org.name}
                   </option>
@@ -3447,7 +3648,7 @@ export function WarehouseOperations({
                     className="warehouse-ops-select"
                   >
                     <option value="">— Все организации —</option>
-                    {(organizations || []).map((org) => (
+                    {(organizationOptions || []).map((org) => (
                       <option key={org.id} value={org.id}>
                         {org.name}
                       </option>
@@ -3489,7 +3690,7 @@ export function WarehouseOperations({
                 className="warehouse-ops-select"
               >
                 <option value="">— Выберите организацию —</option>
-                {(organizations || []).map(org => (
+                {(organizationOptions || []).map(org => (
                   <option key={org.id} value={org.id}>{org.name}</option>
                 ))}
               </select>
@@ -3683,7 +3884,7 @@ export function WarehouseOperations({
                 className="warehouse-ops-select"
               >
                 <option value="">— Выберите организацию —</option>
-                {(organizations || []).map(org => (
+                {(organizationOptions || []).map(org => (
                   <option key={org.id} value={org.id}>{org.name}</option>
                 ))}
               </select>
@@ -3973,7 +4174,7 @@ export function WarehouseOperations({
                       ? `Редактирование инвентаризации №${inventoryEditingSessionId}`
             : 'Новая инвентаризация'
         }
-        size="full"
+        size="xl"
         closeOnEscape={false}
         closeOnBackdropClick={false}
       >
@@ -4266,7 +4467,7 @@ export function WarehouseOperations({
         <div className="warehouse-ops-panel transfer-panel">
           <p className="warehouse-ops-hint">
             Перенос свободного остатка между складами одной организации. Поиск товара: штрихкод, артикул или название.
-            В журнале движений — две записи (списание со склада-источника и поступление на склад-получатель).
+            После оформления документ сохраняется в списке ниже (номер ПМ-…); в журнале движений — две записи на каждую позицию.
           </p>
 
           <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 12 }}>
@@ -4284,7 +4485,7 @@ export function WarehouseOperations({
                 }}
               >
                 <option value="">— выберите организацию —</option>
-                {(organizations || []).map((org) => (
+                {(organizationOptions || []).map((org) => (
                   <option key={org.id} value={String(org.id)}>
                     {org.name}
                   </option>
@@ -4359,37 +4560,43 @@ export function WarehouseOperations({
             </div>
           )}
 
-          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn" style={{ marginTop: 10 }}>
-            <div style={{ position: 'relative', flex: 1 }}>
+          <p className="warehouse-ops-hint" style={{ marginTop: 10 }}>
+            Сканируйте штрихкод (1 скан = 1 шт) или введите артикул / название для выбора из списка.
+            Количество измените в таблице ниже.
+          </p>
+
+          <form onSubmit={(e) => e.preventDefault()} className="warehouse-ops-scan-form warehouse-ops-scan-form--no-btn">
+            <div className="warehouse-ops-scan-form-input-wrap">
               <FastScanInput
                 inputRef={transferScanInputRef}
                 onScan={handleTransferScan}
                 onManualQuery={handleTransferManualQuery}
-                debounceMs={120}
-                manualDebounceMs={250}
-                placeholder="Скан: штрихкод / артикул / название"
-                disabled={!transferOrganizationId}
+                debounceMs={200}
+                manualDebounceMs={400}
+                placeholder="Штрихкод, артикул или название"
+                disabled={
+                  !transferOrganizationId || !transferFromWarehouseId || !transferToWarehouseId
+                }
                 onBlur={() => {
                   setTimeout(() => {
                     if (suggestContext === 'transfer_scan') closeSuggest();
-                  }, 120);
+                  }, 150);
                 }}
               />
               {suggestOpen && suggestContext === 'transfer_scan' && (
-                <div className="warehouse-ops-suggest">
+                <div className="warehouse-ops-suggest warehouse-ops-suggest--anchored">
                   <div className="warehouse-ops-suggest-title">{suggestTitle || 'Выберите товар'}</div>
                   <div className="warehouse-ops-suggest-list">
-                    {suggestList.map((p) => (
+                    {(suggestList || []).map((p) => (
                       <button
-                        key={p.id}
+                        key={p.id ?? `${p.sku || ''}-${p.name || ''}`}
                         type="button"
                         className="warehouse-ops-suggest-item"
                         onMouseDown={(ev) => {
-                          // onMouseDown чтобы input не потерял фокус до выбора
                           ev.preventDefault();
                           const fn = suggestOnPickRef.current;
-                          if (fn) fn(p);
                           closeSuggest();
+                          if (typeof fn === 'function') fn(p);
                         }}
                       >
                         <div className="warehouse-ops-suggest-sku">{p.sku || '—'}</div>
@@ -4400,53 +4607,7 @@ export function WarehouseOperations({
                 </div>
               )}
             </div>
-            <div style={{ width: 140 }}>
-              <label>Кол-во:</label>
-              <input
-                type="number"
-                className="form-control"
-                min={1}
-                value={transferQty}
-                onChange={(e) => setTransferQty(e.target.value)}
-              />
-              <label style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#667085' }}>
-                <input
-                  type="checkbox"
-                  checked={transferQuickMode}
-                  onChange={(e) => setTransferQuickMode(Boolean(e.target.checked))}
-                />
-                Быстрый режим (по скану всегда 1 шт)
-              </label>
-            </div>
           </form>
-
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14, alignItems: 'flex-end' }}>
-            <div style={{ minWidth: 280, flex: 1 }}>
-              <label>Товар (поиск):</label>
-              <ProductSearchInput
-                value={transferManualSearch}
-                onChange={setTransferManualSearch}
-                products={products}
-                organizationId={transferOrganizationId}
-                placeholder="Штрихкод, артикул, название"
-                onSelect={(p) => {
-                  if (!p) return;
-                  addTransferItemFromProduct(p, transferQuickMode ? 1 : transferQty);
-                  setTransferManualSearch('');
-                }}
-              />
-            </div>
-            <div style={{ width: 140 }}>
-              <label>Кол-во (ручной выбор):</label>
-              <input
-                type="number"
-                className="form-control"
-                min={1}
-                value={transferQty}
-                onChange={(e) => setTransferQty(e.target.value)}
-              />
-            </div>
-          </div>
 
           {transferList.length > 0 ? (
             <div className="warehouse-ops-receipts-list-wrap" style={{ marginTop: 12 }}>
@@ -4468,23 +4629,36 @@ export function WarehouseOperations({
                   </tr>
                 </thead>
                 <tbody>
-                  {transferList.map((row) => (
-                    <tr key={row.productId}>
-                      <td>{row.sku || '—'}</td>
-                      <td>{row.name || '—'}</td>
-                      <td className="text-end">{row.quantity}</td>
-                      <td className="text-end">
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          onClick={() => removeTransferItem(row.productId)}
-                          disabled={opLoading}
-                        >
-                          Удалить
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
+                  {transferList.map((row, index) => {
+                    const maxQty = Math.max(1, Number(row.warehouseMaxQty) || 1);
+                    return (
+                      <tr key={row.productId}>
+                        <td>{row.sku || '—'}</td>
+                        <td>{row.name || '—'}</td>
+                        <td className="text-end">
+                          <input
+                            type="number"
+                            min={1}
+                            max={maxQty}
+                            value={row.quantity}
+                            onChange={(e) => updateTransferQuantity(index, e.target.value)}
+                            className="warehouse-ops-qty-input small"
+                            disabled={opLoading}
+                          />
+                        </td>
+                        <td className="text-end">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() => removeTransferItem(row.productId)}
+                            disabled={opLoading}
+                          >
+                            Удалить
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -4527,6 +4701,49 @@ export function WarehouseOperations({
               Очистить список
             </Button>
           </div>
+
+          {renderWarehouseDocumentsList({
+            title: 'Оформленные перемещения',
+            emptyText: 'Перемещений пока нет',
+            showSupplier: false,
+            filterControls: (
+              <div className="warehouse-ops-return-org-supplier" style={{ marginBottom: 12 }}>
+                <div className="warehouse-ops-receipt-supplier-row">
+                  <label>Фильтр: организация</label>
+                  <select
+                    value={transferFilterOrgId}
+                    onChange={(e) => {
+                      setTransferFilterOrgId(e.target.value);
+                      setTransferFilterWhId('');
+                    }}
+                    className="warehouse-ops-select"
+                  >
+                    <option value="">— Все организации —</option>
+                    {(organizationOptions || []).map((org) => (
+                      <option key={org.id} value={org.id}>
+                        {org.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="warehouse-ops-receipt-supplier-row">
+                  <label>Фильтр: склад-источник</label>
+                  <select
+                    value={transferFilterWhId}
+                    onChange={(e) => setTransferFilterWhId(e.target.value)}
+                    className="warehouse-ops-select"
+                  >
+                    <option value="">— Все склады —</option>
+                    {transferFilterWarehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.address || w.name || `Склад #${w.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ),
+          })}
         </div>
       )}
 
@@ -4553,7 +4770,7 @@ export function WarehouseOperations({
         isOpen={!!receiptDetail}
         onClose={() => setReceiptDetail(null)}
         title={receiptDetail
-          ? (receiptDetail.document_type === 'return' ? 'Возврат ' : (receiptDetail.document_type === 'customer_return' ? 'Возврат от клиента ' : 'Приёмка ')) + (receiptDetail.receipt_number || receiptDetail.id)
+          ? `${receiptDocumentTypeLabel(resolveReceiptDocumentType(receiptDetail))} ${receiptDetail.receipt_number || receiptDetail.id}`
           : 'Документ'}
         size="xl"
       >
@@ -4563,6 +4780,9 @@ export function WarehouseOperations({
               {receiptDetail.created_at ? new Date(receiptDetail.created_at).toLocaleString('ru-RU') : ''}
               {receiptDetail.organization_name ? ` · Организация: ${receiptDetail.organization_name}` : ''}
               {receiptDetail.supplier_name ? ` · Поставщик: ${receiptDetail.supplier_name}` : ''}
+              {resolveReceiptDocumentType(receiptDetail) === 'transfer'
+                ? ` · Маршрут: ${formatDocumentWarehouseCell(receiptDetail)}`
+                : ''}
             </p>
             {receiptDetail.lines && receiptDetail.lines.length > 0 ? (
               <div className="warehouse-ops-receipt-list-wrap">
@@ -4572,7 +4792,7 @@ export function WarehouseOperations({
                       <th>Артикул</th>
                       <th>Товар</th>
                       <th>Кол-во</th>
-                      {receiptDetail.document_type !== 'return' && <th>Себестоимость, ₽</th>}
+                      {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? <th>Себестоимость, ₽</th> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -4581,9 +4801,9 @@ export function WarehouseOperations({
                         <td className="sku-cell">{line.product_sku || '—'}</td>
                         <td className="name-cell">{line.product_name || '—'}</td>
                         <td>{line.quantity}</td>
-                        {receiptDetail.document_type !== 'return' && (
+                        {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptDetail)) ? (
                           <td>{line.cost != null ? Number(line.cost) : '—'}</td>
-                        )}
+                        ) : null}
                       </tr>
                     ))}
                   </tbody>
@@ -4639,7 +4859,7 @@ export function WarehouseOperations({
                 variant="danger"
                 onClick={async () => {
                   if (!receiptDetail?.id) return;
-                  const docLabel = receiptDetail.document_type === 'return' ? 'возврат' : (receiptDetail.document_type === 'customer_return' ? 'возврат от клиента' : 'приёмку');
+                  const docLabel = receiptDocumentTypeDeleteLabel(resolveReceiptDocumentType(receiptDetail));
                   if (!window.confirm(`Удалить ${docLabel} ${receiptDetail.receipt_number || receiptDetail.id}? Остатки будут пересчитаны.`)) return;
                   setReceiptDeleteLoading(true);
                   try {
@@ -4671,10 +4891,11 @@ export function WarehouseOperations({
           if (receiptEditSaving) return;
           setReceiptEditOpen(false);
           setReceiptEditForm(null);
+          setReceiptEditError(null);
         }}
         title={
           receiptEditForm
-            ? `Редактирование ${receiptEditForm.documentType === 'return' ? 'возврата' : receiptEditForm.documentType === 'customer_return' ? 'возврата от клиента' : 'приёмки'}`
+            ? `Редактирование ${receiptDocumentTypeLabelGenitive(resolveReceiptDocumentType(receiptEditForm))}`
             : 'Редактирование'
         }
         size="xl"
@@ -4683,12 +4904,22 @@ export function WarehouseOperations({
       >
         {receiptEditForm && (
           <>
+            {receiptEditError ? (
+              <div className="alert alert-danger py-2" role="alert" style={{ marginBottom: 12 }}>
+                {receiptEditError}
+              </div>
+            ) : null}
             <p className="warehouse-ops-hint" style={{ marginBottom: 12 }}>
-              Изменения пересчитают остатки на складе: старые движения отменяются, затем проводятся новые.
+              {resolveReceiptDocumentType(receiptEditForm) === 'transfer'
+                ? 'Изменения отменят старое перемещение и проведут новое между выбранными складами.'
+                : 'Изменения пересчитают остатки на складе: старые движения отменяются, затем проводятся новые.'}
             </p>
             <div className="warehouse-ops-receipt-supplier-row">
               <label>
-                Склад <span className="warehouse-ops-required-star">*</span>
+                {resolveReceiptDocumentType(receiptEditForm) === 'transfer'
+                  ? 'Склад-источник'
+                  : 'Склад'}{' '}
+                <span className="warehouse-ops-required-star">*</span>
               </label>
               <select
                 value={receiptEditForm.warehouseId}
@@ -4697,32 +4928,59 @@ export function WarehouseOperations({
                 disabled={receiptEditSaving}
               >
                 <option value="">— Выберите склад —</option>
-                {ownWarehouses.map((w) => (
+                {receiptEditWarehouses.map((w) => (
                   <option key={w.id} value={w.id}>
                     {w.address || w.name || `Склад #${w.id}`}
                   </option>
                 ))}
               </select>
             </div>
+            {resolveReceiptDocumentType(receiptEditForm) === 'transfer' ? (
+              <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
+                <label>
+                  Склад-получатель <span className="warehouse-ops-required-star">*</span>
+                </label>
+                <select
+                  value={receiptEditForm.toWarehouseId || ''}
+                  onChange={(e) => setReceiptEditForm((f) => ({ ...f, toWarehouseId: e.target.value }))}
+                  className="warehouse-ops-select"
+                  disabled={receiptEditSaving || !receiptEditForm.organizationId}
+                >
+                  <option value="">— Выберите склад —</option>
+                  {receiptEditWarehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.address || w.name || `Склад #${w.id}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
             <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
               <label>
                 Организация <span className="warehouse-ops-required-star">*</span>
               </label>
               <select
                 value={receiptEditForm.organizationId}
-                onChange={(e) => setReceiptEditForm((f) => ({ ...f, organizationId: e.target.value }))}
+                onChange={(e) =>
+                  setReceiptEditForm((f) => ({
+                    ...f,
+                    organizationId: e.target.value,
+                    warehouseId: '',
+                    toWarehouseId: '',
+                  }))
+                }
                 className="warehouse-ops-select"
                 disabled={receiptEditSaving}
               >
                 <option value="">— Выберите организацию —</option>
-                {(organizations || []).map((o) => (
+                {(organizationOptions || []).map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name || o.id}
                   </option>
                 ))}
               </select>
             </div>
-            {receiptEditForm.documentType !== 'customer_return' ? (
+            {receiptDocumentTypeNeedsSupplier(resolveReceiptDocumentType(receiptEditForm)) ? (
               <div className="warehouse-ops-receipt-supplier-row" style={{ marginTop: 8 }}>
                 <label>
                   Поставщик <span className="warehouse-ops-required-star">*</span>
@@ -4749,7 +5007,7 @@ export function WarehouseOperations({
                     <th>Артикул</th>
                     <th>Товар</th>
                     <th>Кол-во</th>
-                    {receiptEditForm.documentType !== 'return' ? <th>Себестоимость, ₽</th> : null}
+                    {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptEditForm)) ? <th>Себестоимость, ₽</th> : null}
                     <th></th>
                   </tr>
                 </thead>
@@ -4768,7 +5026,7 @@ export function WarehouseOperations({
                           disabled={receiptEditSaving}
                         />
                       </td>
-                      {receiptEditForm.documentType !== 'return' ? (
+                      {receiptDocumentTypeShowsCost(resolveReceiptDocumentType(receiptEditForm)) ? (
                         <td>
                           <input
                             type="number"
@@ -4806,6 +5064,7 @@ export function WarehouseOperations({
                 onClick={() => {
                   setReceiptEditOpen(false);
                   setReceiptEditForm(null);
+                  setReceiptEditError(null);
                 }}
                 disabled={receiptEditSaving}
               >
@@ -5044,7 +5303,7 @@ export function WarehouseOperations({
                 className="warehouse-ops-select"
               >
                 <option value="">— Выберите организацию —</option>
-                {(organizations || []).map((o) => (
+                {(organizationOptions || []).map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name || o.id}
                   </option>
