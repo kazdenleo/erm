@@ -285,7 +285,29 @@ async function buildReserveCoverageMetaMap({ orderDbIds = null, productIds = nul
   return map;
 }
 
-function resolveReserveCoverageKind(fifoKey, { metaMap, fifoMap, supplyMap, pid, reserved }) {
+export function isAssembledOrderReserveStatus(status) {
+  const st = String(status ?? '').trim().toLowerCase();
+  return st === 'assembled' || st === 'wb_assembly';
+}
+
+/** Статусы с активным резервом, участвующие в FIFO-пуле on_hand/incoming. */
+export const ORDER_RESERVE_FIFO_STATUSES = [
+  'new',
+  'in_procurement',
+  'in_assembly',
+  'wb_assembly',
+  'assembled',
+];
+
+const ORDER_RESERVE_FIFO_STATUSES_SQL = ORDER_RESERVE_FIFO_STATUSES.map((s) => `'${s}'`).join(', ');
+
+export function resolveReserveCoverageKind(
+  fifoKey,
+  { metaMap, fifoMap, supplyMap, pid, reserved, orderStatus = null } = {}
+) {
+  if (isAssembledOrderReserveStatus(orderStatus) && fifoKey && metaMap?.has(fifoKey)) {
+    return metaMap.get(fifoKey);
+  }
   if (fifoKey && fifoMap?.has(fifoKey)) return fifoMap.get(fifoKey);
   const sup = supplyMap?.get(pid);
   if (sup) {
@@ -293,6 +315,17 @@ function resolveReserveCoverageKind(fifoKey, { metaMap, fifoMap, supplyMap, pid,
   }
   if (fifoKey && metaMap?.has(fifoKey)) return metaMap.get(fifoKey);
   return 'incoming';
+}
+
+async function batchOrderStatusMap(orderDbIds) {
+  const ids = [...new Set((orderDbIds || []).map((id) => Number(id)).filter((id) => id > 0))];
+  const map = new Map();
+  if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
+  const r = await query(`SELECT id, status FROM orders WHERE id = ANY($1::bigint[])`, [ids]);
+  for (const row of r.rows || []) {
+    map.set(Number(row.id), String(row.status || '').trim().toLowerCase());
+  }
+  return map;
 }
 
 /** FIFO: выделить покрытие резерва из пулов on_hand / incoming (уменьшает пулы). */
@@ -407,7 +440,7 @@ async function buildReserveCoverageFifoMap(productIds) {
        AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
        AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
      WHERE sm.product_id = ANY($1::int[])
-       AND o.status IN ('new', 'in_procurement', 'in_assembly')
+       AND o.status IN (${ORDER_RESERVE_FIFO_STATUSES_SQL})
      GROUP BY o.id, sm.product_id, o.created_at
      HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
      ORDER BY sm.product_id ASC, o.created_at ASC NULLS LAST, o.id ASC`,
@@ -474,8 +507,18 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
     byOrder.get(oid).push({ pid, reserved });
   }
 
-  const metaMap =
-    opts.skipMeta === true ? null : await buildReserveCoverageMetaMap({ orderDbIds: ids });
+  const orderStatusById = await batchOrderStatusMap(ids);
+  let metaMap = null;
+  if (opts.skipMeta === true) {
+    const assembledIds = ids.filter((id) =>
+      isAssembledOrderReserveStatus(orderStatusById.get(id))
+    );
+    if (assembledIds.length) {
+      metaMap = await buildReserveCoverageMetaMap({ orderDbIds: assembledIds });
+    }
+  } else {
+    metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
+  }
   if (!byOrder.size) {
     if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap);
     return map;
@@ -487,6 +530,7 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
   for (const [oid, lines] of byOrder) {
     let anyIncoming = false;
     let anyOnHand = false;
+    const orderStatus = orderStatusById.get(oid) ?? null;
     for (const { pid, reserved } of lines) {
       const fifoKey = `${oid}:${pid}`;
       const kind = resolveReserveCoverageKind(fifoKey, {
@@ -494,7 +538,8 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
         fifoMap,
         supplyMap,
         pid,
-        reserved
+        reserved,
+        orderStatus,
       });
       if (kind === 'on_hand') anyOnHand = true;
       if (kind === 'incoming') anyIncoming = true;
@@ -581,12 +626,14 @@ function enrichReserveLinesCoverage(lines, supplyMap, coverageFifoMap = null, me
         continue;
       }
     }
+    const orderStatus = line.orderStatus ?? line.order_status ?? null;
     line.reserveCoverage = resolveReserveCoverageKind(fifoKey, {
       metaMap,
       fifoMap: coverageFifoMap,
       supplyMap,
       pid,
-      reserved: r
+      reserved: r,
+      orderStatus,
     });
   }
 }

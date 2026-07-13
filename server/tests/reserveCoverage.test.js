@@ -162,6 +162,45 @@ describe('classifyOrderReserveCoverage', () => {
   });
 });
 
+describe('resolveReserveCoverageKind', () => {
+  test('собранный заказ: meta on_hand важнее FIFO incoming', async () => {
+    const { resolveReserveCoverageKind } = await import('../src/services/orders.service.js');
+    const metaMap = new Map([['100:5', 'on_hand']]);
+    const fifoMap = new Map([['100:5', 'incoming']]);
+    expect(
+      resolveReserveCoverageKind('100:5', {
+        metaMap,
+        fifoMap,
+        orderStatus: 'assembled',
+        pid: 5,
+        reserved: 1,
+      })
+    ).toBe('on_hand');
+  });
+
+  test('в закупке без meta: FIFO incoming — серая плашка', async () => {
+    const { resolveReserveCoverageKind } = await import('../src/services/orders.service.js');
+    const fifoMap = new Map([['200:5', 'incoming']]);
+    expect(
+      resolveReserveCoverageKind('200:5', {
+        fifoMap,
+        orderStatus: 'in_procurement',
+        pid: 5,
+        reserved: 1,
+      })
+    ).toBe('incoming');
+  });
+});
+
+describe('isAssembledOrderReserveStatus', () => {
+  test('assembled и wb_assembly', async () => {
+    const { isAssembledOrderReserveStatus } = await import('../src/services/orders.service.js');
+    expect(isAssembledOrderReserveStatus('assembled')).toBe(true);
+    expect(isAssembledOrderReserveStatus('wb_assembly')).toBe(true);
+    expect(isAssembledOrderReserveStatus('in_procurement')).toBe(false);
+  });
+});
+
 describe('allocateCoverageKindFromPools (FIFO)', () => {
   test('сборка: общий резерв > остатка — ранние заказы всё равно on_hand', async () => {
     const { allocateCoverageKindFromPools } = await import('../src/services/orders.service.js');
