@@ -161,3 +161,16 @@ describe('classifyOrderReserveCoverage', () => {
     ).toBe('incoming');
   });
 });
+
+describe('allocateCoverageKindFromPools (FIFO)', () => {
+  test('первые заказы забирают on_hand — зелёные, затем серый', async () => {
+    const { allocateCoverageKindFromPools } = await import('../src/services/orders.service.js');
+    const pools = { onHand: 3, incoming: 5 };
+    expect(allocateCoverageKindFromPools(1, pools)).toBe('on_hand');
+    expect(allocateCoverageKindFromPools(1, pools)).toBe('on_hand');
+    expect(allocateCoverageKindFromPools(1, pools)).toBe('on_hand');
+    expect(allocateCoverageKindFromPools(1, pools)).toBe('incoming');
+    expect(pools.onHand).toBe(0);
+    expect(pools.incoming).toBe(4);
+  });
+});

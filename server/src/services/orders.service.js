@@ -286,10 +286,26 @@ async function buildReserveCoverageMetaMap({ orderDbIds = null, productIds = nul
 }
 
 function resolveReserveCoverageKind(fifoKey, { metaMap, fifoMap, supplyMap, pid, reserved }) {
-  if (fifoKey && metaMap?.has(fifoKey)) return metaMap.get(fifoKey);
   if (fifoKey && fifoMap?.has(fifoKey)) return fifoMap.get(fifoKey);
   const sup = supplyMap?.get(pid);
-  return sup ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved }) : 'incoming';
+  if (sup) {
+    return classifyOrderReserveCoverage({ ...sup, orderReserved: reserved });
+  }
+  if (fifoKey && metaMap?.has(fifoKey)) return metaMap.get(fifoKey);
+  return 'incoming';
+}
+
+/** FIFO: выделить покрытие резерва из пулов on_hand / incoming (уменьшает пулы). */
+export function allocateCoverageKindFromPools(reserved, pools) {
+  const R = Math.max(0, Math.floor(Number(reserved) || 0));
+  if (R <= 0) return 'none';
+  const fromOnHand = Math.min(R, Math.max(0, pools.onHand || 0));
+  pools.onHand = Math.max(0, (pools.onHand || 0) - fromOnHand);
+  if (fromOnHand >= R) return 'on_hand';
+  const remaining = R - fromOnHand;
+  const fromIncoming = Math.min(remaining, Math.max(0, pools.incoming || 0));
+  pools.incoming = Math.max(0, (pools.incoming || 0) - fromIncoming);
+  return 'incoming';
 }
 
 function aggregateCoverageKinds(kinds) {
@@ -382,22 +398,19 @@ async function buildReserveCoverageFifoMap(productIds) {
   if (!ids.length || !repositoryFactory.isUsingPostgreSQL()) return map;
 
   const supplyMap = await batchProductReserveSupplyMap(ids);
-  const metaMap = await buildReserveCoverageMetaMap({ productIds: ids });
   const r = await query(
     `SELECT o.id AS order_db_id,
-            o.product_id,
-            GREATEST(0, COALESCE((
-              SELECT ${NET_RESERVED_SUM_EXPR_SQL}::bigint
-              FROM stock_movements sm
-              WHERE sm.product_id = o.product_id
-                AND sm.type IN ('reserve', 'unreserve')
-                AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
-                AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
-            ), 0))::int AS reserved_qty
+            sm.product_id,
+            ${NET_RESERVED_SUM_EXPR_SQL}::int AS reserved_qty
      FROM orders o
-     WHERE o.product_id = ANY($1::int[])
+     JOIN stock_movements sm ON sm.type IN ('reserve', 'unreserve')
+       AND (sm.meta ? 'order_id' OR sm.meta ? 'orderId')
+       AND ${orderReserveMovementMatchOrderRowSql('sm.', 'o.')}
+     WHERE sm.product_id = ANY($1::int[])
        AND o.status IN ('new', 'in_procurement', 'in_assembly')
-     ORDER BY o.product_id ASC, o.created_at ASC NULLS LAST, o.id ASC`,
+     GROUP BY o.id, sm.product_id, o.created_at
+     HAVING ${NET_RESERVED_SUM_EXPR_SQL} > 0
+     ORDER BY sm.product_id ASC, o.created_at ASC NULLS LAST, o.id ASC`,
     [ids]
   );
 
@@ -413,12 +426,14 @@ async function buildReserveCoverageFifoMap(productIds) {
   }
 
   for (const [pid, list] of byPid) {
+    const sup = supplyMap.get(pid) || { onHand: 0, incoming: 0, reservedRaw: 0 };
+    const pools = {
+      onHand: Math.max(0, Number(sup.onHand) || 0),
+      incoming: Math.max(0, Number(sup.incoming) || 0),
+    };
     for (const { oid, reserved } of list) {
       const fifoKey = `${oid}:${pid}`;
-      map.set(
-        fifoKey,
-        resolveReserveCoverageKind(fifoKey, { metaMap, supplyMap, pid, reserved })
-      );
+      map.set(fifoKey, allocateCoverageKindFromPools(reserved, pools));
     }
   }
   return map;
@@ -459,14 +474,15 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
     byOrder.get(oid).push({ pid, reserved });
   }
 
-  const metaMap = await buildReserveCoverageMetaMap({ orderDbIds: ids });
+  const metaMap =
+    opts.skipMeta === true ? null : await buildReserveCoverageMetaMap({ orderDbIds: ids });
   if (!byOrder.size) {
-    mergeOrderCoverageFromMetaMap(map, ids, metaMap);
+    if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap);
     return map;
   }
 
   const supplyMap = await batchProductReserveSupplyMap(movementPids);
-  const fifoMap = opts.skipFifo === true ? null : await buildReserveCoverageFifoMap(movementPids);
+  const fifoMap = await buildReserveCoverageFifoMap(movementPids);
 
   for (const [oid, lines] of byOrder) {
     let anyIncoming = false;
@@ -485,7 +501,7 @@ async function buildReserveCoverageByOrderIds(orderDbIds, opts = {}) {
     }
     map.set(oid, anyIncoming ? 'incoming' : anyOnHand ? 'on_hand' : 'incoming');
   }
-  mergeOrderCoverageFromMetaMap(map, ids, metaMap);
+  if (metaMap) mergeOrderCoverageFromMetaMap(map, ids, metaMap);
   return map;
 }
 
@@ -3110,7 +3126,8 @@ class OrdersService {
   }
 
   /**
-   * Быстрое обогащение для пагинированного списка заказов (без коррелированного SQL и тяжёлого coverage).
+   * Быстрое обогащение для пагинированного списка заказов.
+   * Coverage — по meta движений резерва (как light path), без FIFO.
    */
   async _enrichOrdersReserveMetricsListOnly(orders) {
     const orderDbIds = orders.map((o) => orderRowDbId(o)).filter((id) => id > 0);
@@ -3134,11 +3151,17 @@ class OrdersService {
 
     let kitReservedMap = new Map();
     let netByOrderProduct = new Map();
+    let componentKitMap = new Map();
     if (hasKitProducts) {
       const componentOnlyPids = pids.filter((pid) => !kitPiecesMap.has(pid));
-      const componentKitMap = componentOnlyPids.length
+      componentKitMap = componentOnlyPids.length
         ? await batchKitIdByComponentMap(componentOnlyPids)
         : new Map();
+      const extraKitIds = [...new Set(componentKitMap.values())].filter((kid) => !kitPiecesMap.has(kid));
+      if (extraKitIds.length) {
+        const extra = await batchPiecesPerKitUnitMap(extraKitIds);
+        for (const [kid, pieces] of extra) kitPiecesMap.set(kid, pieces);
+      }
       const kitBatchEntries = [];
       for (const o of orders) {
         const oid = orderRowDbId(o);
@@ -3162,26 +3185,44 @@ class OrdersService {
       }
     }
 
-    const supplyPids = [];
-    for (const o of orders) {
-      const pid = Number(o.productId ?? o.product_id);
-      const reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
-      if (Number.isFinite(pid) && pid > 0 && reserved > 0) supplyPids.push(pid);
-    }
-    const supplyMap = supplyPids.length
-      ? await batchProductReserveSupplyMap(supplyPids)
-      : new Map();
+    const orderReserveNeedQty = (row) => {
+      const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
+      const pid = Number(row.productId ?? row.product_id);
+      if (!Number.isFinite(pid) || pid < 1) return qty;
+      let piecesPerKit = kitPiecesMap.get(pid) || 0;
+      if (piecesPerKit < 1 && componentKitMap.has(pid)) {
+        piecesPerKit = kitPiecesMap.get(componentKitMap.get(pid)) || 0;
+      }
+      return piecesPerKit > 0 ? qty * piecesPerKit : qty;
+    };
 
+    const supplyPids = [];
+    const correctedRows = [];
     for (const o of orders) {
       const oid = orderRowDbId(o);
       let reserved = Number(o.reservedQty ?? o.reserved_qty) || 0;
       const pid = Number(o.productId ?? o.product_id);
-      if (hasKitProducts && oid && kitReservedMap.has(oid)) {
+      const sqlReserved = reserved;
+      const kitId =
+        oid && Number.isFinite(pid) && pid > 0 && kitPiecesMap.has(pid)
+          ? pid
+          : oid && Number.isFinite(pid) && pid > 0 && componentKitMap.has(pid)
+            ? componentKitMap.get(pid)
+            : null;
+
+      if (oid && kitId && Number.isFinite(pid) && pid > 0 && kitPiecesMap.has(pid)) {
+        reserved = kitReservedMap.has(oid) ? Number(kitReservedMap.get(oid)) || 0 : reserved;
+      } else if (oid && kitId && (!Number.isFinite(pid) || pid < 1)) {
+        reserved = kitReservedMap.has(oid) ? Number(kitReservedMap.get(oid)) || 0 : reserved;
+      } else if (
+        hasKitProducts &&
+        oid &&
+        kitReservedMap.has(oid) &&
+        Number.isFinite(pid) &&
+        pid > 0 &&
+        kitPiecesMap.has(pid)
+      ) {
         reserved = Number(kitReservedMap.get(oid)) || reserved;
-        o.reservedQty = reserved;
-        o.reserved_qty = reserved;
-        o.hasReserve = reserved > 0;
-        o.has_reserve = reserved > 0;
       } else if (
         hasKitProducts &&
         oid &&
@@ -3189,29 +3230,64 @@ class OrdersService {
         pid > 0 &&
         netByOrderProduct.has(`${oid}:${pid}`)
       ) {
-        reserved = Math.max(reserved, netByOrderProduct.get(`${oid}:${pid}`) || 0);
-        o.reservedQty = reserved;
-        o.reserved_qty = reserved;
-        o.hasReserve = reserved > 0;
-        o.has_reserve = reserved > 0;
+        reserved = Math.max(sqlReserved, netByOrderProduct.get(`${oid}:${pid}`) || 0);
       }
 
       let need = Math.max(1, parseInt(o.quantity, 10) || 1);
-      if (hasKitProducts && Number.isFinite(pid) && pid > 0) {
-        const piecesPerKit = kitPiecesMap.get(pid) || 0;
-        if (piecesPerKit > 0) {
-          need = need * piecesPerKit;
+      if (oid && kitId && Number.isFinite(pid) && pid > 0 && kitPiecesMap.has(pid)) {
+        need = Math.max(1, parseInt(o.quantity, 10) || 1);
+      } else if (oid && kitId && (!Number.isFinite(pid) || pid < 1)) {
+        need = Math.max(1, parseInt(o.quantity, 10) || 1);
+      } else if (
+        oid &&
+        Number.isFinite(pid) &&
+        pid > 0 &&
+        (componentKitMap.has(pid) || (kitId && !kitPiecesMap.has(pid)))
+      ) {
+        const productReserved = netByOrderProduct.get(`${oid}:${pid}`) || 0;
+        if (componentKitMap.has(pid)) {
+          need = Math.max(1, parseInt(o.quantity, 10) || 1);
+        } else if (productReserved > need) {
+          need = orderReserveNeedQty(o);
         }
+      } else if (reserved > need) {
+        need = orderReserveNeedQty(o);
+      } else if (hasKitProducts && Number.isFinite(pid) && pid > 0 && !kitReservedMap.has(oid)) {
+        need = orderReserveNeedQty(o);
       }
 
+      if (Number.isFinite(pid) && pid > 0 && reserved > 0) supplyPids.push(pid);
+      correctedRows.push({ o, reserved, need, oid });
+    }
+
+    const supplyMap = supplyPids.length
+      ? await batchProductReserveSupplyMap([...new Set(supplyPids)])
+      : new Map();
+
+    const orderIdsWithReserve = correctedRows
+      .filter((x) => x.reserved > 0 && x.oid)
+      .map((x) => x.oid);
+    const coverageByOrderId = await buildReserveCoverageByOrderIds(orderIdsWithReserve, {
+      skipMeta: true,
+    });
+
+    for (const { o, reserved, need, oid } of correctedRows) {
+      o.reservedQty = reserved;
+      o.reserved_qty = reserved;
       o.needQty = need;
       o.need_qty = need;
+      o.hasReserve = reserved > 0;
+      o.has_reserve = reserved > 0;
       o.fullyReserved = need > 0 && reserved >= need;
 
       if (reserved <= 0) {
         o.reserveCoverage = 'none';
         o.reserve_coverage = 'none';
+      } else if (oid && coverageByOrderId.has(oid)) {
+        o.reserveCoverage = coverageByOrderId.get(oid);
+        o.reserve_coverage = o.reserveCoverage;
       } else {
+        const pid = Number(o.productId ?? o.product_id);
         const sup = Number.isFinite(pid) && pid > 0 ? supplyMap.get(pid) : null;
         const kind = sup
           ? classifyOrderReserveCoverage({ ...sup, orderReserved: reserved })
@@ -3355,7 +3431,7 @@ class OrdersService {
         .filter((x) => x.reserved > 0 && x.oid)
         .map((x) => x.oid);
       const coverageByOrderId = await buildReserveCoverageByOrderIds(orderIdsWithReserve, {
-        skipFifo: true,
+        skipMeta: true,
       });
 
       for (const { o, reserved, need, oid } of correctedRows) {
@@ -6764,11 +6840,50 @@ class OrdersService {
     return one?.status != null ? String(one.status).trim().toLowerCase() : null;
   }
 
-  async getLocalLinesForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
-    let rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
-    if (!rows.length) {
-      rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+  _assemblyInfoFromOrderRows(rows) {
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const assemblyStatuses = new Set(['in_assembly', 'assembled', 'wb_assembly']);
+    let assemblyStickerNumber = null;
+    let assembledAt = null;
+    let assembledByUserId = null;
+    let assembledByEmail = null;
+    let assembledByFullName = null;
+    let onAssembly = false;
+
+    for (const r of rows) {
+      if (assemblyStatuses.has(String(r.status ?? '').trim())) onAssembly = true;
+      const sn = String(r.assemblyStickerNumber ?? r.assembly_sticker_number ?? '').trim();
+      if (sn && !assemblyStickerNumber) assemblyStickerNumber = sn;
+      const at = r.assembledAt ?? r.assembled_at;
+      if (at && (!assembledAt || new Date(at) > new Date(assembledAt))) {
+        assembledAt = at;
+        assembledByUserId = r.assembledByUserId ?? r.assembled_by_user_id ?? null;
+        assembledByEmail = r.assembledByEmail ?? r.assembled_by_email ?? null;
+        assembledByFullName = r.assembledByFullName ?? r.assembled_by_full_name ?? null;
+      }
     }
+
+    if (
+      !onAssembly &&
+      !assembledAt &&
+      !assemblyStickerNumber &&
+      !assembledByEmail &&
+      !assembledByFullName
+    ) {
+      return null;
+    }
+
+    return {
+      assembledAt,
+      assembledByUserId,
+      assembledByEmail,
+      assembledByFullName,
+      assemblyStickerNumber,
+      onAssembly,
+    };
+  }
+
+  async _localLinesFromOrderRows(rows) {
     const mapRow = (o) => ({
       orderLineId: o.orderId ?? o.order_id,
       productId: o.productId ?? o.product_id ?? null,
@@ -6780,13 +6895,66 @@ class OrdersService {
       orderGroupId: o.orderGroupId ?? o.order_group_id ?? null,
     });
     const mapped = (rows || []).map(mapRow);
-    for (let i = 0; i < mapped.length; i++) {
-      const p = mapped[i].productId;
-      if (p != null && String(p).trim() !== '') continue;
-      const resolved = await this.resolveProductIdForAssemblyLine(rows[i]);
-      if (resolved != null) mapped[i].productId = resolved;
+    const unresolved = mapped
+      .map((line, idx) => ({ line, idx, row: rows[idx] }))
+      .filter(({ line }) => line.productId == null || String(line.productId).trim() === '');
+    if (unresolved.length) {
+      await Promise.all(
+        unresolved.map(async ({ idx, row }) => {
+          const resolved = await this.resolveProductIdForAssemblyLine(row);
+          if (resolved != null) mapped[idx].productId = resolved;
+        })
+      );
     }
     return mapped;
+  }
+
+  /**
+   * Быстрый набор данных карточки заказа: один проход по строкам БД, без reconcile резерва.
+   * Детальные lines резерва подгружаются отдельно GET /orders/.../reserve?fast=1.
+   */
+  async getOrderDetailBundleFast(marketplace, orderId, { profileId = null } = {}) {
+    let rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
+    if (!rows.length) {
+      rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    }
+    if (!rows.length) {
+      return {
+        ermStatus: null,
+        assembly: null,
+        localLines: [],
+        reserve: null,
+      };
+    }
+
+    const st = rows[0]?.status ?? rows[0]?.order_status;
+    const ermStatus =
+      st != null && String(st).trim() !== ''
+        ? String(st).trim().toLowerCase()
+        : null;
+
+    const [assembly, localLines, snap] = await Promise.all([
+      Promise.resolve(this._assemblyInfoFromOrderRows(rows)),
+      this._localLinesFromOrderRows(rows),
+      this._lightOrderReserveSnapshot(rows),
+    ]);
+
+    const reserve = snap
+      ? {
+          ...snap,
+          lines: [],
+        }
+      : null;
+
+    return { ermStatus, assembly, localLines, reserve };
+  }
+
+  async getLocalLinesForOrderDetail(marketplace, orderId, { profileId = null } = {}) {
+    let rows = await this._collectOrderRowsForReserve(marketplace, orderId, { profileId });
+    if (!rows.length) {
+      rows = await this._findOrderGroupRows(marketplace, orderId, { profileId });
+    }
+    return this._localLinesFromOrderRows(rows);
   }
 }
 
