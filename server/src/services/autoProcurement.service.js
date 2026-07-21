@@ -191,7 +191,7 @@ async function loadOrderRowsForSupplierOrder(profileId, marketplace, orderId) {
 
 async function procureGroupForSupplierOrder(
   g,
-  { profileId, userId, organizationId, warehouseId, manualTest = false, now = new Date() }
+  { profileId, userId, organizationId, warehouseId, manualTest = false, now = new Date(), warehouseWeekendDays = null }
 ) {
   if (!g?.items?.length) {
     return { ok: false, error: 'no_items', message: 'Нет позиций для закупки' };
@@ -203,6 +203,7 @@ async function procureGroupForSupplierOrder(
       supplierId: g.supplierId,
       arrivalBucket: g.arrivalBucket,
       now,
+      warehouseWeekendDays,
     })
   );
 
@@ -375,6 +376,7 @@ class AutoProcurementService {
           supplierId: g.supplierId,
           arrivalBucket: g.arrivalBucket,
           now,
+          warehouseWeekendDays,
         })
       );
 
@@ -607,7 +609,7 @@ class AutoProcurementService {
         items,
         procurementItems,
       },
-      { profileId: pid, userId, organizationId, warehouseId, manualTest, now }
+      { profileId: pid, userId, organizationId, warehouseId, manualTest, now, warehouseWeekendDays }
     );
 
     if (!procResult.ok) return { ok: false, ...procResult };

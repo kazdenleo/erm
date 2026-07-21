@@ -13,10 +13,12 @@ import {
 } from './supplierWarehouseArrival.js';
 import {
   findWorkingDayOffset,
+  findLastConsecutiveWeekendDay,
   getMoscowDateParts,
   isWeekendWeekday,
   normalizeWeekendDays,
   resolveShipDayOffsetFromNaiveBucket,
+  weekdayForYmd,
 } from './warehouseWorkingCalendar.js';
 
 export { SUPPLIER_ARRIVAL_TODAY, SUPPLIER_ARRIVAL_TOMORROW };
@@ -138,7 +140,12 @@ export function isProcurementBucketOpenForNewOrders(bucket, now = new Date()) {
  * Закупка создана в текущем окне bucket (после предыдущей отсечки).
  * Отсекает старые закупки, которым ошибочно проставили метку нового окна.
  */
-export function isPurchaseCreatedInProcurementWindow(createdAt, bucket, now = new Date()) {
+export function isPurchaseCreatedInProcurementWindow(
+  createdAt,
+  bucket,
+  now = new Date(),
+  warehouseWeekendDays = null
+) {
   const normalized = normalizeArrivalBucket(bucket);
   const cutoff = parseCutoffBucket(normalized);
   if (!cutoff || createdAt == null) return true;
@@ -146,8 +153,11 @@ export function isPurchaseCreatedInProcurementWindow(createdAt, bucket, now = ne
   const created = new Date(createdAt);
   if (Number.isNaN(created.getTime())) return true;
 
-  const windowStartYmd = addDaysToYmd(cutoff.date, -1);
-  const windowStartMins = timeToMinutes(cutoff.time);
+  const windowStart = getProcurementWindowStart(cutoff, warehouseWeekendDays, now);
+  if (!windowStart) return true;
+
+  const windowStartYmd = windowStart.date;
+  const windowStartMins = timeToMinutes(windowStart.time);
   const createdYmd = getMoscowDateParts(created, 0).ymd;
   const createdMins = getMoscowMinutesOfDay(created);
 
@@ -212,23 +222,25 @@ function addDaysToYmd(ymd, days) {
   return `${yy}-${mm}-${dd}`;
 }
 
-function weekdayForYmd(ymd, now = new Date()) {
-  for (let off = -3; off <= 21; off += 1) {
-    const parts = getMoscowDateParts(now, off);
-    if (parts.ymd === ymd) return parts.weekday;
+/** Начало окна накопления заказов для bucket с отсечкой. */
+function getProcurementWindowStart(cutoff, weekends, now = new Date()) {
+  if (!cutoff) return null;
+  const normalizedWeekends = normalizeWeekendDays(weekends);
+  if (!normalizedWeekends.length) {
+    return { date: addDaysToYmd(cutoff.date, -1), time: cutoff.time };
   }
-  return getMoscowDateParts(now, 0).weekday;
-}
 
-function shiftCloseDateToWorkingDay(closeYmd, weekends, now = new Date()) {
-  if (!weekends.length) return closeYmd;
-  let ymd = closeYmd;
-  for (let guard = 0; guard < 14; guard += 1) {
-    const wd = weekdayForYmd(ymd, now);
-    if (!isWeekendWeekday(wd, weekends)) return ymd;
-    ymd = addDaysToYmd(ymd, 1);
+  if (isWeekendWeekday(weekdayForYmd(cutoff.date, now), normalizedWeekends)) {
+    let prev = addDaysToYmd(cutoff.date, -1);
+    for (let guard = 0; guard < 14; guard += 1) {
+      if (!isWeekendWeekday(weekdayForYmd(prev, now), normalizedWeekends)) {
+        return { date: prev, time: cutoff.time };
+      }
+      prev = addDaysToYmd(prev, -1);
+    }
   }
-  return closeYmd;
+
+  return { date: addDaysToYmd(cutoff.date, -1), time: cutoff.time };
 }
 
 /**
@@ -372,9 +384,12 @@ export function resolveProcurementArrivalBucketWithCalendar(
   const weekends = normalizeWeekendDays(warehouseWeekendDays);
 
   if (parsed && weekends.length) {
-    const shifted = shiftCloseDateToWorkingDay(parsed.date, weekends, now);
-    if (shifted !== parsed.date) {
-      bucket = cutoffBucketFromParts(shifted, parsed.time);
+    const closeWd = weekdayForYmd(parsed.date, now);
+    if (isWeekendWeekday(closeWd, weekends)) {
+      const extended = findLastConsecutiveWeekendDay(parsed.date, weekends, now);
+      if (extended !== parsed.date) {
+        bucket = cutoffBucketFromParts(extended, parsed.time);
+      }
     }
   }
 

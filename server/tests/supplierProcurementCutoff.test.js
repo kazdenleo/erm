@@ -113,6 +113,39 @@ describe('resolveProcurementArrivalBucketFromApiConfig', () => {
   });
 });
 
+describe('Mikado procurement buckets with warehouse weekends', () => {
+  const WEEKENDS = [6, 0];
+
+  test('Friday after 21:00, Sat/Sun before 21:00 — одна закупка; Sun after 21:00 — новая', () => {
+    const friLate = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 5, 29, 22, 0),
+      warehouseWeekendDays: WEEKENDS,
+      supplierCode: 'mikado',
+    });
+    const sat = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 5, 30, 12, 0),
+      warehouseWeekendDays: WEEKENDS,
+      supplierCode: 'mikado',
+    });
+    const sun = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 5, 31, 20, 0),
+      warehouseWeekendDays: WEEKENDS,
+      supplierCode: 'mikado',
+    });
+    const sunLate = resolveProcurementArrivalBucketWithCalendar(mikadoWarehouses, {
+      now: moscowDate(2026, 5, 31, 22, 0),
+      warehouseWeekendDays: WEEKENDS,
+      supplierCode: 'mikado',
+    });
+
+    expect(friLate).toBe('cutoff:2026-05-31:21:00');
+    expect(sat).toBe(friLate);
+    expect(sun).toBe(friLate);
+    expect(sunLate).toBe('cutoff:2026-06-01:21:00');
+    expect(sunLate).not.toBe(friLate);
+  });
+});
+
 describe('procurement window guards', () => {
   test('после отсечки bucket закрыт для новых заказов', () => {
     const bucket = 'cutoff:2026-06-29:21:00';

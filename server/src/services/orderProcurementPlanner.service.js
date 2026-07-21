@@ -738,6 +738,7 @@ async function pickSupplierForDeficit(
         supplierId: cand.id,
         arrivalBucket: bucket,
         now,
+        warehouseWeekendDays,
       });
       if (openPurchaseId) {
         openTotal = await sumOpenPurchaseTotal(client, openPurchaseId, cand.id);
@@ -1732,8 +1733,13 @@ class OrderProcurementPlannerService {
       });
     }
 
-    if (anySubmitted) {
-      await ensureOrdersMarkedInProcurement(pid, marketplace, oid, []);
+    let procurementStatus = null;
+    const shouldMarkProcurement =
+      anySubmitted ||
+      anyAlreadySubmitted ||
+      Boolean(autoProcure?.purchases?.some((p) => p.purchaseId));
+    if (shouldMarkProcurement) {
+      procurementStatus = await ensureOrdersMarkedInProcurement(pid, marketplace, oid, []);
     }
 
     if (!anySubmitted && !anyAlreadySubmitted && anyFailed) {
@@ -1775,8 +1781,11 @@ class OrderProcurementPlannerService {
     if (submitMsg && !message.includes(submitMsg)) {
       message += `. ${submitMsg}`;
     }
+    if (procurementStatus?.updated > 0) {
+      message += '. Статус заказа: В закупке';
+    }
 
-    return { ok: true, message, purchases };
+    return { ok: true, message, purchases, procurementStatus };
   }
 }
 
