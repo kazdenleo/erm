@@ -15,7 +15,6 @@ html {
 
 body.erm-mobile-menu-open {
   overflow: hidden;
-  touch-action: none;
 }
 
 .app-container {
@@ -23,7 +22,7 @@ body.erm-mobile-menu-open {
   overflow-x: clip;
 }
 
-/* Затемнение при открытом боковом меню */
+/* Затемнение при открытом боковом меню (не перекрывает сам drawer) */
 .sidebar-mobile-overlay {
   position: fixed;
   inset: 0;
@@ -37,6 +36,62 @@ body.erm-mobile-menu-open {
 }
 
 @media (max-width: 991.98px) {
+  .sidebar-mobile-open .app-sidebar {
+    z-index: 20 !important;
+    width: var(--erm-sidebar-width, 280px) !important;
+    min-width: var(--erm-sidebar-width, 280px) !important;
+    flex: 0 0 var(--erm-sidebar-width, 280px) !important;
+    pointer-events: auto;
+    touch-action: manipulation;
+  }
+
+  .sidebar-mobile-open .sidebar-mobile-overlay {
+    left: var(--erm-sidebar-width, 280px);
+    width: auto;
+    right: 0;
+    z-index: 15;
+  }
+
+  /* Сброс «свёрнутого» desktop-sidebar на мобильном drawer */
+  .sidebar-mobile-open.closed-sidebar .app-sidebar .app-sidebar__inner .app-sidebar__heading {
+    text-indent: initial !important;
+  }
+
+  .sidebar-mobile-open.closed-sidebar .app-sidebar .app-sidebar__inner .app-sidebar__heading::before {
+    display: none !important;
+  }
+
+  .sidebar-mobile-open.closed-sidebar .app-sidebar .app-sidebar__inner ul li a,
+  .sidebar-mobile-open.closed-sidebar .app-sidebar .app-sidebar__inner ul li button.metismenu-link--toggle {
+    text-indent: initial !important;
+    visibility: visible !important;
+    height: auto !important;
+    min-height: 2.4rem !important;
+    line-height: 1.25 !important;
+    pointer-events: auto !important;
+    touch-action: manipulation;
+  }
+
+  .sidebar-mobile-open.closed-sidebar .app-sidebar .app-sidebar__inner .metismenu-state-icon {
+    visibility: visible !important;
+  }
+
+  .sidebar-mobile-open.closed-sidebar .app-sidebar .app-sidebar__inner ul.mm-show > li > a {
+    height: auto !important;
+    min-height: 2rem !important;
+    line-height: 1.25 !important;
+  }
+
+  .sidebar-mobile-open .app-sidebar .vertical-nav-menu::after {
+    display: none !important;
+  }
+
+  .sidebar-mobile-open .app-sidebar .vertical-nav-menu a,
+  .sidebar-mobile-open .app-sidebar .vertical-nav-menu button.metismenu-link--toggle {
+    touch-action: manipulation;
+    cursor: pointer;
+  }
+
   /* ArchitectUI скрывает .app-header__content на md — показываем снова */
   .fixed-header .app-header {
     display: flex;

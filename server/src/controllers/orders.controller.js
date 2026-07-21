@@ -871,6 +871,29 @@ class OrdersController {
         req.query.fast === 'true' ||
         req.query.quick === '1';
 
+      if (fast) {
+        const [bundle, localPack] = await Promise.all([
+          ordersService.getOrderDetailBundleFast(marketplace, orderId, { profileId }),
+          ordersSyncService.getOrderDetailLocalOnly(marketplace, orderId, { profileId }).catch(() => null),
+        ]);
+        const pack = localPack || {
+          marketplace: String(marketplace || '').toLowerCase() === 'wb' ? 'wildberries' : marketplace,
+          detail: null,
+          fromLocal: true,
+        };
+        return res.status(200).json({
+          ok: true,
+          data: {
+            ...pack,
+            orderId: String(orderId),
+            ermStatus: bundle?.ermStatus ?? null,
+            assembly: bundle?.assembly ?? null,
+            localLines: bundle?.localLines ?? [],
+            reserve: bundle?.reserve ?? null,
+          },
+        });
+      }
+
       let assembly = null;
       let localLines = [];
       let reserve = null;
@@ -897,30 +920,10 @@ class OrdersController {
       try {
         reserve = await ordersService.getOrderReserveSummary(marketplace, orderId, {
           profileId,
-          skipDetailAugment: true
+          skipDetailAugment: true,
         });
       } catch {
         reserve = null;
-      }
-
-      if (fast) {
-        const localPack =
-          (await ordersSyncService.getOrderDetailLocalOnly(marketplace, orderId, { profileId })) || {
-            marketplace: String(marketplace || '').toLowerCase() === 'wb' ? 'wildberries' : marketplace,
-            detail: null,
-            fromLocal: true
-          };
-        return res.status(200).json({
-          ok: true,
-          data: {
-            ...localPack,
-            orderId: String(orderId),
-            ermStatus,
-            assembly,
-            localLines,
-            reserve
-          }
-        });
       }
 
       const mpTimeoutMs = Number(process.env.ORDER_DETAIL_MP_TIMEOUT_MS) || 25000;

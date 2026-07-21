@@ -181,6 +181,132 @@ async function applyInventoryLine(client, {
   return { applied: true, productId, counted: true };
 }
 
+/**
+ * Редактирование инвентаризации: нетто-изменение от текущего остатка, одна запись в журнале на позицию.
+ */
+async function applyInventoryEditLine(client, {
+  sessionId,
+  productId,
+  quantityAfter,
+  whId,
+  profileId,
+  sessionIdLabel,
+  previousFactAfter = null,
+}) {
+  await assertProductAllowedInProfile(client, productId, profileId);
+
+  const { isKitProductId } = await import('./kitStock.service.js');
+  const isKit = await isKitProductId(productId);
+
+  const currentPws = await getPwsQuantity(client, productId, whId);
+  const newAfter = Math.max(0, parseInt(quantityAfter, 10) || 0);
+  const prevFact =
+    previousFactAfter != null && previousFactAfter !== ''
+      ? Math.max(0, Number(previousFactAfter) || 0)
+      : currentPws;
+
+  await client.query(
+    `INSERT INTO inventory_session_lines (session_id, product_id, quantity_before, quantity_after)
+     VALUES ($1, $2, $3, $4)`,
+    [sessionId, productId, currentPws, newAfter]
+  );
+
+  if (currentPws === newAfter) {
+    return { applied: false, productId, counted: true };
+  }
+
+  await setPwsQuantity(client, productId, whId, newAfter);
+
+  const delta = newAfter - currentPws;
+  const reason = `Изменение инвентаризации №${sessionIdLabel}: ${prevFact} → ${newAfter}`;
+  await stockMovementsRepositoryPG.insertSnapshotAfterProduct(client, {
+    productId,
+    type: 'inventory',
+    quantityChange: delta,
+    reason,
+    meta: {
+      inventory_session_id: sessionId,
+      inventory_edit: true,
+      warehouse_id: whId,
+      quantity_before: prevFact,
+      quantity_after: newAfter,
+      ...(isKit ? { kit_inventory: true } : {}),
+    },
+    warehouseId: whId,
+    profileId: null,
+    skipReservedQtySync: true,
+  });
+
+  return { applied: true, productId, counted: true };
+}
+
+async function runInventoryUpdateLines(client, {
+  sessionId,
+  whId,
+  profileId,
+  linesInput,
+  zeroUnlisted,
+  oldLines,
+}) {
+  const mergedLines = mergeInventoryLinesInput(linesInput);
+  const oldFactByProduct = new Map();
+  for (const line of oldLines || []) {
+    const productId = parseInt(line.product_id, 10);
+    if (!productId || Number.isNaN(productId)) continue;
+    oldFactByProduct.set(productId, Math.max(0, Number(line.quantity_after) || 0));
+  }
+
+  const listedIds = new Set();
+  let applied = 0;
+  const affectedProductIds = new Set();
+
+  const sortedLines = [...mergedLines].sort((a, b) => a.productId - b.productId);
+  for (const { productId, quantityAfter } of sortedLines) {
+    listedIds.add(productId);
+    const { applied: lineApplied, productId: pid } = await applyInventoryEditLine(client, {
+      sessionId,
+      productId,
+      quantityAfter,
+      whId,
+      profileId,
+      sessionIdLabel: sessionId,
+      previousFactAfter: oldFactByProduct.has(productId)
+        ? oldFactByProduct.get(productId)
+        : null,
+    });
+    if (lineApplied) applied++;
+    if (pid) affectedProductIds.add(pid);
+  }
+
+  if (zeroUnlisted && listedIds.size > 0) {
+    const unlisted = (await findUnlistedWithStock(client, whId, profileId, listedIds)).sort(
+      (a, b) => Number(a.product_id) - Number(b.product_id)
+    );
+    for (const row of unlisted) {
+      const productId = parseInt(row.product_id, 10);
+      if (!productId || Number.isNaN(productId)) continue;
+      const { applied: lineApplied, productId: pid } = await applyInventoryEditLine(client, {
+        sessionId,
+        productId,
+        quantityAfter: 0,
+        whId,
+        profileId,
+        sessionIdLabel: sessionId,
+        previousFactAfter: oldFactByProduct.has(productId)
+          ? oldFactByProduct.get(productId)
+          : Math.max(0, Number(row.quantity) || 0),
+      });
+      if (lineApplied) applied++;
+      if (pid) affectedProductIds.add(pid);
+    }
+  }
+
+  return {
+    applied,
+    productIds: [...affectedProductIds],
+  };
+}
+
 async function runInventoryLines(client, {
   sessionId,
   whId,
@@ -565,31 +691,23 @@ class InventorySessionsService {
       if (Number.isFinite(whNum) && whNum > 0) {
         await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [inventoryWarehouseLockKey(whNum)]);
       }
-      const oldSorted = [...(oldLines || [])].sort(
-        (a, b) => Number(a.product_id) - Number(b.product_id)
-      );
-      for (const line of oldSorted) {
-        const productId = parseInt(line.product_id, 10);
-        if (!productId || Number.isNaN(productId)) continue;
-        if (pid != null) {
-          await assertProductAllowedInProfile(client, productId, pid);
-        }
-        const qb = line.quantity_before != null ? Number(line.quantity_before) : 0;
-        await setPwsQuantity(client, productId, whId, qb);
-        revertProductIds.add(productId);
-      }
 
       await client.query('DELETE FROM inventory_session_lines WHERE session_id = $1', [sid]);
 
-      const reasonBase = `Инвентаризация №${sid}`;
-      const { applied, productIds } = await runInventoryLines(client, {
+      const { applied, productIds } = await runInventoryUpdateLines(client, {
         sessionId: sid,
         whId,
         profileId: pid,
         linesInput,
         zeroUnlisted: zeroUnlistedFlag,
-        reasonBase,
+        oldLines: oldLines || [],
       });
+
+      for (const line of oldLines || []) {
+        const productId = parseInt(line.product_id, 10);
+        if (productId && !Number.isNaN(productId)) revertProductIds.add(productId);
+      }
+      for (const x of productIds) revertProductIds.add(x);
 
       const linesRecorded = await client.query(
         `SELECT COUNT(*)::int AS c FROM inventory_session_lines WHERE session_id = $1`,
@@ -610,7 +728,7 @@ class InventorySessionsService {
       return {
         sessionId: sid,
         linesApplied: applied,
-        productIds: [...new Set([...revertProductIds, ...productIds])],
+        productIds: [...revertProductIds],
       };
     }, INVENTORY_TX_OPTS),
       { label: 'inventory-update' }

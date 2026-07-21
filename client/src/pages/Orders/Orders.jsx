@@ -818,28 +818,6 @@ export function Orders() {
     [beginListFilterChange, statusFilter]
   );
 
-  const markOrdersProcurementLocally = useCallback(
-    (orderRows) => {
-      const rows = Array.isArray(orderRows) ? orderRows : [];
-      if (!rows.length) return;
-      const keys = new Set(
-        rows.map((o) => {
-          const mp = String(o.marketplace || '').toLowerCase();
-          const id = String(o.orderId ?? o.order_id ?? '');
-          return `${mp}|${id}`;
-        })
-      );
-      patchOrders((prev) =>
-        prev.map((o) => {
-          const mp = String(o.marketplace || '').toLowerCase();
-          const id = String(o.orderId ?? o.order_id ?? '');
-          return keys.has(`${mp}|${id}`) ? { ...o, status: 'in_procurement' } : o;
-        })
-      );
-    },
-    [patchOrders]
-  );
-
   useEffect(() => {
     let cancelled = false;
     const silent = ordersHydratedRef.current && !listFilterChangeRef.current;
@@ -892,6 +870,48 @@ export function Orders() {
       void loadStatusCounts({ silent: true });
     },
     [reloadOrders, loadStatusCounts]
+  );
+
+  /** Обновление списка и счётчиков без блокировки UI (после отправки поставщику). */
+  const refreshOrdersInBackground = useCallback(() => {
+    void reloadOrders({ silent: true });
+    void loadStatusCounts({ silent: true });
+  }, [reloadOrders, loadStatusCounts]);
+
+  const orderRowProcurementKey = useCallback((o) => {
+    const mp = String(o?.marketplace || '').toLowerCase();
+    const id = String(o?.orderId ?? o?.order_id ?? '');
+    return `${mp}|${id}`;
+  }, []);
+
+  const markOrdersProcurementLocally = useCallback(
+    (orderRows) => {
+      const rows = Array.isArray(orderRows) ? orderRows : [];
+      if (!rows.length) return;
+      const keys = new Set(rows.map(orderRowProcurementKey).filter((k) => k !== '|'));
+      patchOrders((prev) => {
+        if (statusFilter === 'new' && procurementStatusEnabled) {
+          return prev.filter((o) => !keys.has(orderRowProcurementKey(o)));
+        }
+        return prev.map((o) =>
+          keys.has(orderRowProcurementKey(o)) ? { ...o, status: 'in_procurement' } : o
+        );
+      });
+    },
+    [patchOrders, statusFilter, procurementStatusEnabled, orderRowProcurementKey]
+  );
+
+  const applyProcurementListUi = useCallback(
+    (orderRows, { procurementUpdated = 0, hasPurchase = false } = {}) => {
+      const shouldMark =
+        procurementStatusEnabled &&
+        (procurementUpdated > 0 || hasPurchase);
+      if (shouldMark) {
+        markOrdersProcurementLocally(orderRows);
+      }
+      refreshOrdersInBackground();
+    },
+    [procurementStatusEnabled, markOrdersProcurementLocally, refreshOrdersInBackground]
   );
 
   useEffect(() => {
@@ -1405,7 +1425,7 @@ export function Orders() {
           markOrdersProcurementLocally(ordersArrayForPurchaseRow(r));
         }
       }
-      await refreshOrdersAndStatusCounts();
+      refreshOrdersInBackground();
       setSelectedKeys((prev) => {
         const next = new Set(prev);
         for (const r of sourceRows) {
@@ -1519,13 +1539,9 @@ export function Orders() {
         openManualProcurement(marketplace, orderId);
       }
       showSupplierOrderMessage(msg);
-      const shouldMarkProcurement =
-        (result?.procurementStatus?.updated ?? 0) > 0 ||
-        (Array.isArray(result?.purchases) && result.purchases.some((p) => p.purchaseId));
-      if (shouldMarkProcurement) {
-        markOrdersProcurementLocally(toSend);
-      }
-      await refreshOrdersAndStatusCounts();
+      const procUpdated = result?.procurementStatus?.updated ?? 0;
+      const hasPurchase = Array.isArray(result?.purchases) && result.purchases.some((p) => p.purchaseId);
+      applyProcurementListUi(toSend, { procurementUpdated: procUpdated, hasPurchase });
     } catch (e) {
       const details = e.response?.data?.details;
       let msg = getApiErrorMessage(e, 'Не удалось отправить заказ в закупку');
@@ -1560,8 +1576,12 @@ export function Orders() {
       setRefreshError(null);
       const result = await ordersApi.submitToSupplier(marketplace, orderId);
       showSupplierOrderMessage(result?.message || 'Заказ отправлен поставщику');
-      markOrdersProcurementLocally(toSend);
-      await refreshOrdersAndStatusCounts();
+      const procUpdated = result?.procurementStatus?.updated ?? 0;
+      const hasPurchase = Array.isArray(result?.purchases) && result.purchases.some((p) => p.purchaseId);
+      applyProcurementListUi(toSend, {
+        procurementUpdated: procUpdated,
+        hasPurchase,
+      });
     } catch (e) {
       const msg = getApiErrorMessage(e, 'Не удалось отправить заказ поставщику');
       showSupplierOrderMessage(msg);
@@ -3103,7 +3123,11 @@ export function Orders() {
                   openManualProcurement(mp, oid);
                 }
                 setSupplierOrderMessage(msg);
-                void refreshOrdersAndStatusCounts();
+                const toSend = detailModalRow.orders ?? [detailModalRow.first];
+                const procUpdated = result?.procurementStatus?.updated ?? 0;
+                const hasPurchase =
+                  Array.isArray(result?.purchases) && result.purchases.some((p) => p.purchaseId);
+                applyProcurementListUi(toSend, { procurementUpdated: procUpdated, hasPurchase });
                 const mp = detailModalRow.first.marketplace;
                 const oid = marketplaceOrderIdForApi(
                   detailModalRow.orders ?? [detailModalRow.first],
@@ -3118,14 +3142,15 @@ export function Orders() {
                   .catch(() => {});
               }}
             />
-            {detailModalLoading && (
-              <div className="loading">Загрузка деталей заказа...</div>
+            {detailModalLoading && !detailModalData && (
+              <div className="loading" style={{ marginBottom: 12 }}>
+                Загрузка деталей…
+              </div>
             )}
-            {!detailModalLoading && detailModalError && (
+            {detailModalError && (
               <div className="error" style={{ marginBottom: 16 }}>{detailModalError}</div>
             )}
-            {!detailModalLoading &&
-              detailModalData &&
+            {detailModalData &&
               ['ozon', 'wildberries', 'wb', 'yandex', 'manual'].includes(detailModalData.marketplace) && (
                 <OrderDetailContent
                   data={detailModalData}
@@ -3139,10 +3164,11 @@ export function Orders() {
                   }}
                 />
               )}
-            {!detailModalLoading &&
-              (!detailModalData ||
-                detailModalError ||
-                !['ozon', 'wildberries', 'wb', 'yandex', 'manual'].includes(detailModalRow.first.marketplace)) && (
+            {(!detailModalData ||
+              detailModalError ||
+              !['ozon', 'wildberries', 'wb', 'yandex', 'manual'].includes(
+                detailModalData?.marketplace ?? detailModalRow.first.marketplace
+              )) && (
                 <>
                   {isManualMarketplaceOrder(detailModalRow.first.marketplace) ? (
                     <ManualOrderWarehouseReturnButton
