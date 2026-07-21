@@ -12,8 +12,26 @@ import { useNewOrdersSound } from '../../../hooks/useNewOrdersSound';
 import { ProductCardModalProvider } from '../../../context/ProductCardModalContext.jsx';
 import { NavSectionGuard } from '../../NavSectionGuard.jsx';
 
+const MOBILE_LAYOUT_MQ = '(max-width: 991.98px)';
+
+function useMobileViewport() {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia(MOBILE_LAYOUT_MQ).matches : false
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_LAYOUT_MQ);
+    const onChange = () => setIsMobile(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  return isMobile;
+}
+
 export function Layout({ children }) {
   const location = useLocation();
+  const isMobileViewport = useMobileViewport();
   const [isSidebarClosed, setIsSidebarClosed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const { user, profileId, hasOrganizations, loading: authLoading } = useAuth();
@@ -60,7 +78,7 @@ export function Layout({ children }) {
           'body-tabs-shadow',
           'fixed-sidebar',
           'fixed-header',
-          isSidebarClosed ? 'closed-sidebar' : '',
+          isSidebarClosed && !isMobileViewport ? 'closed-sidebar' : '',
           isMobileSidebarOpen ? 'sidebar-mobile-open' : '',
         ].filter(Boolean).join(' ')}
       >
@@ -80,7 +98,7 @@ export function Layout({ children }) {
           onCloseMobileSidebar={closeMobileSidebar}
         />
         <div className="app-main">
-          <Sidebar />
+          <Sidebar onNavigate={closeMobileSidebar} />
           <div className="app-main__outer">
             <div className="app-main__inner">
               {!authLoading && user && profileId != null && hasOrganizations === false && (

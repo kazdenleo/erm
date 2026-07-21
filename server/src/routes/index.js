@@ -56,6 +56,7 @@ import { validateProductId } from '../validators/productValidator.js';
 import marketplaceInventoryRoutes from './marketplaceInventory.routes.js';
 import salesAnalyticsRoutes from './salesAnalytics.routes.js';
 import marketplaceFboReportsRoutes from './marketplaceFboReports.routes.js';
+import marketplaceFbsReportsRoutes from './marketplaceFbsReports.routes.js';
 import procurementForecastRoutes from './procurementForecast.routes.js';
 import marketplaceStockRoutes from './marketplaceStock.routes.js';
 import inventorySessionsController from '../controllers/inventorySessions.controller.js';
@@ -199,6 +200,7 @@ router.use('/downloads', downloadsRoutes);
 router.use('/marketplace-inventory', marketplaceInventoryRoutes);
 router.use('/sales-analytics', salesAnalyticsRoutes);
 router.use('/marketplace-fbo-reports', marketplaceFboReportsRoutes);
+router.use('/marketplace-fbs-reports', marketplaceFbsReportsRoutes);
 router.use('/procurement-forecast', procurementForecastRoutes);
 router.use('/marketplace-stock', marketplaceStockRoutes);
 

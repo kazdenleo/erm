@@ -8,6 +8,7 @@ import { Button } from '../../../components/common/Button/Button';
 import { marketplaceFboReportsApi } from '../../../services/marketplaceFboReports.api';
 import '../SalesAnalytics/SalesAnalytics.css';
 import './FboSalesAnalytics.css';
+import { AmountCell, otherDeductionsTotal } from '../shared/AmountCell';
 
 function formatYmd(d) {
   const y = d.getFullYear();
@@ -113,6 +114,7 @@ export function FboSalesAnalytics() {
   const summary = data?.summary || {};
   const items = Array.isArray(data?.items) ? data.items : [];
   const recentSyncs = Array.isArray(data?.recentSyncs) ? data.recentSyncs : [];
+  const taxMeta = data?.taxMeta || null;
 
   return (
     <div className="sales-analytics fbo-sales-analytics">
@@ -203,12 +205,14 @@ export function FboSalesAnalytics() {
                 <th className="sales-analytics__num">Хранение</th>
                 <th className="sales-analytics__num">Прочее</th>
                 <th className="sales-analytics__num">К выплате</th>
+                <th className="sales-analytics__num">Налоги</th>
+                <th className="sales-analytics__num">Чистый доход</th>
               </tr>
             </thead>
             <tbody>
               {!loading && items.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="sales-analytics__empty">
+                  <td colSpan={12} className="sales-analytics__empty">
                     Нет данных. Нажмите «Загрузить с маркетплейсов» для импорта отчёта за период.
                   </td>
                 </tr>
@@ -237,6 +241,8 @@ export function FboSalesAnalytics() {
                     )}
                   </td>
                   <td className="sales-analytics__num">{formatRub(row.payoutAmount)}</td>
+                  <AmountCell value={row.taxAmount} format={formatRub} tooltip={row.taxTooltip} />
+                  <td className="sales-analytics__num">{formatRub(row.netIncome)}</td>
                 </tr>
               ))}
             </tbody>
@@ -252,18 +258,21 @@ export function FboSalesAnalytics() {
                 <th>Заказ / отправление</th>
                 <th>Товар</th>
                 <th className="sales-analytics__num">Кол-во</th>
+                <th className="sales-analytics__num">Себестоимость</th>
                 <th className="sales-analytics__num">Выручка</th>
                 <th className="sales-analytics__num">Комиссия</th>
                 <th className="sales-analytics__num">Логистика</th>
                 <th className="sales-analytics__num">Хранение</th>
                 <th className="sales-analytics__num">Прочее</th>
                 <th className="sales-analytics__num">К выплате</th>
+                <th className="sales-analytics__num">Налоги</th>
+                <th className="sales-analytics__num">Чистый доход</th>
               </tr>
             </thead>
             <tbody>
               {!loading && orders.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="sales-analytics__empty">
+                  <td colSpan={14} className="sales-analytics__empty">
                     Нет данных по заказам за выбранный период.
                   </td>
                 </tr>
@@ -283,18 +292,19 @@ export function FboSalesAnalytics() {
                     ) : null}
                   </td>
                   <td className="sales-analytics__num">{formatQty(row.quantity)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.retailAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.commissionAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.logisticsAmount)}</td>
-                  <td className="sales-analytics__num">{formatRub(row.storageAmount)}</td>
-                  <td className="sales-analytics__num">
-                    {formatRub(
-                      (row.penaltyAmount || 0) +
-                        (row.acquiringAmount || 0) +
-                        (row.otherDeductions || 0)
-                    )}
-                  </td>
+                  <td className="sales-analytics__num">{formatRub(row.costAmount)}</td>
+                  <AmountCell value={row.retailAmount} format={formatRub} tooltip={row.amountTooltips?.retail} />
+                  <AmountCell value={row.commissionAmount} format={formatRub} tooltip={row.amountTooltips?.commission} />
+                  <AmountCell value={row.logisticsAmount} format={formatRub} tooltip={row.amountTooltips?.logistics} />
+                  <AmountCell value={row.storageAmount} format={formatRub} tooltip={row.amountTooltips?.storage} />
+                  <AmountCell
+                    value={otherDeductionsTotal(row)}
+                    format={formatRub}
+                    tooltip={row.amountTooltips?.other}
+                  />
                   <td className="sales-analytics__num">{formatRub(row.payoutAmount)}</td>
+                  <AmountCell value={row.taxAmount} format={formatRub} tooltip={row.taxTooltip} />
+                  <td className="sales-analytics__num">{formatRub(row.netIncome)}</td>
                 </tr>
               ))}
             </tbody>
@@ -322,6 +332,16 @@ export function FboSalesAnalytics() {
         finance/transaction/list (FBO), Яндекс — united-netting (FBY). Вкладка «По заказам» — одна строка на
         продажу WB (затраты из других операций отчёта подтягиваются по заказу/штрихкоду). В сводке число
         заказов = только операции «Продажа», не служебные строки отчёта.
+        {taxMeta?.taxSystemLabel ? (
+          <>
+            {' '}
+            Налоги: схема «{taxMeta.taxSystemLabel}»
+            {taxMeta.organizationName ? ` (${taxMeta.organizationName})` : ''}; база — выручка минус
+            себестоимость и удержания МП.
+          </>
+        ) : (
+          <> Укажите систему налогообложения в карточке организации для расчёта налогов.</>
+        )}
       </p>
     </div>
   );

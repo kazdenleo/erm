@@ -107,6 +107,12 @@
   white-space: nowrap;
 }
 
+.sales-analytics__num--hint {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
 .sales-analytics__empty {
   text-align: center;
   color: #64748b;

@@ -1,5 +1,5 @@
 /**
- * Финансовые отчёты FBO: загрузка с маркетплейсов (WB, Ozon, Яндекс) и аналитика.
+ * Финансовые отчёты FBS: загрузка с маркетплейсов (WB, Ozon, Яндекс) и аналитика.
  */
 
 import ExcelJS from 'exceljs';
@@ -120,7 +120,7 @@ function mpFilterValues(mpFilter) {
   return mpFilter.map((m) => (m === 'wildberries' ? 'wb' : m === 'yandex' || m === 'yandexmarket' ? 'ym' : m));
 }
 
-function buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit = null } = {}) {
+function buildFbsReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit = null } = {}) {
   const params = [pid, fromYmd, toYmd];
   let mpClause = '';
   if (mpFilter) {
@@ -133,6 +133,55 @@ function buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit = null
     limitClause = `LIMIT $${params.length}`;
   }
   return { params, mpClause, limitClause };
+}
+
+/** SQL: строка отчёта — продажа (для подсчёта заказов и количества). */
+const SQL_SALE_LINE_L = `(
+  (LOWER(TRIM(l.marketplace)) IN ('wb', 'wildberries') AND l.operation_type = 'Продажа')
+  OR (LOWER(TRIM(l.marketplace)) = 'ozon' AND l.operation_type = 'OperationAgentDeliveredToCustomer')
+  OR (LOWER(TRIM(l.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+    l.operation_type ILIKE '%Плат%покупателя%'
+    OR l.operation_type ILIKE '%платеж покупателя%'
+  ))
+)`;
+
+const SQL_SALE_LINE_F = `(
+  (LOWER(TRIM(f.marketplace)) IN ('wb', 'wildberries') AND f.operation_type = 'Продажа')
+  OR (LOWER(TRIM(f.marketplace)) = 'ozon' AND f.operation_type = 'OperationAgentDeliveredToCustomer')
+  OR (LOWER(TRIM(f.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+    f.operation_type ILIKE '%Плат%покупателя%'
+    OR f.operation_type ILIKE '%платеж покупателя%'
+  ))
+)`;
+
+const SQL_SALE_LINE_M = `(
+  (LOWER(TRIM(m.marketplace)) IN ('wb', 'wildberries') AND m.operation_type = 'Продажа')
+  OR (LOWER(TRIM(m.marketplace)) = 'ozon' AND m.operation_type = 'OperationAgentDeliveredToCustomer')
+  OR (LOWER(TRIM(m.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
+    m.operation_type ILIKE '%Плат%покупателя%'
+    OR m.operation_type ILIKE '%платеж покупателя%'
+  ))
+)`;
+
+function wbOrderKey(row) {
+  const k = String(row?.srid ?? row?.rid ?? '').trim();
+  return k || null;
+}
+
+function collectWbFbsOrderKeys(rows) {
+  const keys = new Set();
+  for (const row of rows) {
+    if (!isWbFbsReportRow(row)) continue;
+    const k = wbOrderKey(row);
+    if (k) keys.add(k);
+  }
+  return keys;
+}
+
+function isWbFbsRowForImport(row, fbsOrderKeys) {
+  if (isWbFbsReportRow(row)) return true;
+  const k = wbOrderKey(row);
+  return k != null && fbsOrderKeys.has(k);
 }
 
 function normMpForDb(mp) {
@@ -212,6 +261,23 @@ function isWbFboReportRow(row) {
   return false;
 }
 
+/** WB reportDetailByPeriod: FBS — доставка продавца, ПВЗ; не FBW/FBO. */
+function isWbFbsReportRow(row) {
+  const dm = String(row?.delivery_method_name || row?.delivery_method || '').toLowerCase();
+  const office = String(row?.office_name || '').toLowerCase();
+  const oper = String(row?.supplier_oper_name || row?.doc_type_name || '').toLowerCase();
+
+  if (oper.includes('пвз')) return true;
+  if (dm.includes('fbs') || dm.includes('доставка продавца') || dm.includes('самовывоз продавца')) return true;
+  if (dm.includes('dbs') || dm.includes('доставка силами продавца')) return true;
+
+  if (isWbFboReportRow(row)) return false;
+
+  if (office.includes('пвз')) return true;
+
+  return false;
+}
+
 function mapWbSku(row) {
   const raw =
     row?.sa_name ??
@@ -238,6 +304,7 @@ function mapWbProductName(row) {
 
 function mapWbReportRow(row, profileId, syncId) {
   const amounts = extractWbFinanceAmounts(row);
+  const saleDt = row?.sale_dt || row?.order_dt || row?.rr_dt;
   const operationDate = mapWbOperationDate(row);
 
   return {
@@ -264,14 +331,14 @@ function mapWbReportRow(row, profileId, syncId) {
   };
 }
 
-/** Ozon: операция относится к FBO. */
-function isOzonFboOperation(op) {
+/** Ozon: операция относится к FBS. */
+function isOzonFbsOperation(op) {
   const posting = String(op?.posting?.posting_number || op?.posting_number || '').toLowerCase();
   const schema = String(op?.posting?.delivery_schema || op?.delivery_schema || '').toLowerCase();
-  if (schema === 'fbo') return true;
-  if (posting.includes('fbo')) return true;
+  if (schema === 'fbs') return true;
+  if (posting.includes('fbs')) return true;
   const type = String(op?.operation_type || op?.type || '').toLowerCase();
-  if (type.includes('fbo')) return true;
+  if (type.includes('fbs')) return true;
   return false;
 }
 
@@ -331,12 +398,10 @@ function mpToProductSkusMarketplace(mp) {
   return m;
 }
 
-/** Яндекс: операция относится к FBY (FBO). */
-function isYmFbyRow(row) {
+/** Яндекс: операция относится к FBS. */
+function isYmFbsRow(row) {
   const model = String(row?.model || row?.MODEL || '').toUpperCase();
-  if (model === 'FBY') return true;
-  if (model === 'FBS' || model === 'DBS' || model === 'LAAS') return false;
-  return true;
+  return model === 'FBS';
 }
 
 function mapYmNettingRow(row, profileId, syncId) {
@@ -472,7 +537,7 @@ async function fetchYmUnitedNettingReport(apiKey, businessId, dateFrom, dateTo) 
         businessId: Number(businessId),
         dateFrom,
         dateTo,
-        placementPrograms: ['FBY'],
+        placementPrograms: ['FBS'],
       }),
       ...(agent ? { agent } : {}),
     });
@@ -589,7 +654,7 @@ async function recategorizeOzonReportLines(profileId, syncId = null) {
 
   const res = await query(
     `SELECT id, raw_json
-     FROM marketplace_fbo_report_lines
+     FROM marketplace_fbs_report_lines
      WHERE profile_id = $1
        AND marketplace = 'ozon'
        AND raw_json IS NOT NULL
@@ -624,7 +689,7 @@ async function recategorizeOzonReportLines(profileId, syncId = null) {
       );
     }
     await query(
-      `UPDATE marketplace_fbo_report_lines AS l
+      `UPDATE marketplace_fbs_report_lines AS l
        SET
          retail_amount = v.retail_amount,
          commission_amount = v.commission_amount,
@@ -653,7 +718,7 @@ async function recategorizeYmReportLines(profileId, syncId = null) {
 
   const res = await query(
     `SELECT id, raw_json
-     FROM marketplace_fbo_report_lines
+     FROM marketplace_fbs_report_lines
      WHERE profile_id = $1
        AND marketplace IN ('ym', 'yandex', 'yandexmarket')
        AND raw_json IS NOT NULL
@@ -688,7 +753,7 @@ async function recategorizeYmReportLines(profileId, syncId = null) {
       );
     }
     await query(
-      `UPDATE marketplace_fbo_report_lines AS l
+      `UPDATE marketplace_fbs_report_lines AS l
        SET
          retail_amount = v.retail_amount,
          commission_amount = v.commission_amount,
@@ -717,7 +782,7 @@ async function recategorizeWbReportLines(profileId, syncId = null) {
 
   const res = await query(
     `SELECT id, raw_json
-     FROM marketplace_fbo_report_lines
+     FROM marketplace_fbs_report_lines
      WHERE profile_id = $1
        AND marketplace IN ('wb', 'wildberries')
        AND raw_json IS NOT NULL
@@ -752,7 +817,7 @@ async function recategorizeWbReportLines(profileId, syncId = null) {
       );
     }
     await query(
-      `UPDATE marketplace_fbo_report_lines AS l
+      `UPDATE marketplace_fbs_report_lines AS l
        SET
          retail_amount = v.retail_amount,
          commission_amount = v.commission_amount,
@@ -782,13 +847,13 @@ async function linkReportLinesToProducts(profileId, syncId = null) {
   const syncClause = syncId != null ? ' AND l.sync_id = $2' : '';
 
   await query(
-    `UPDATE marketplace_fbo_report_lines l
+    `UPDATE marketplace_fbs_report_lines l
      SET product_id = matched.product_id
      FROM (
        SELECT DISTINCT ON (line_id) line_id, product_id
        FROM (
          SELECT l2.id AS line_id, ps.product_id
-         FROM marketplace_fbo_report_lines l2
+         FROM marketplace_fbs_report_lines l2
          JOIN products p ON p.profile_id = l2.profile_id
          JOIN product_skus ps ON ps.product_id = p.id
            AND ps.marketplace = CASE l2.marketplace
@@ -806,7 +871,7 @@ async function linkReportLinesToProducts(profileId, syncId = null) {
            ${syncFilter}
          UNION ALL
          SELECT l2.id, p.id
-         FROM marketplace_fbo_report_lines l2
+         FROM marketplace_fbs_report_lines l2
          JOIN products p ON p.profile_id = l2.profile_id
          WHERE l2.profile_id = $1
            AND l2.product_id IS NULL
@@ -817,7 +882,7 @@ async function linkReportLinesToProducts(profileId, syncId = null) {
            ${syncFilter}
          UNION ALL
          SELECT l2.id, b.product_id
-         FROM marketplace_fbo_report_lines l2
+         FROM marketplace_fbs_report_lines l2
          JOIN barcodes b ON TRIM(b.barcode) = TRIM(l2.barcode)
          JOIN products p ON p.id = b.product_id AND p.profile_id = l2.profile_id
          WHERE l2.profile_id = $1
@@ -827,7 +892,7 @@ async function linkReportLinesToProducts(profileId, syncId = null) {
            ${syncFilter}
          UNION ALL
          SELECT l2.id, ps.product_id
-         FROM marketplace_fbo_report_lines l2
+         FROM marketplace_fbs_report_lines l2
          JOIN product_skus ps ON ps.marketplace = 'ozon'
            AND ps.marketplace_product_id IS NOT NULL
            AND TRIM(CAST(ps.marketplace_product_id AS TEXT)) = TRIM(l2.sku)
@@ -840,7 +905,7 @@ async function linkReportLinesToProducts(profileId, syncId = null) {
            ${syncFilter}
          UNION ALL
          SELECT l2.id, ps.product_id
-         FROM marketplace_fbo_report_lines l2
+         FROM marketplace_fbs_report_lines l2
          JOIN orders o ON o.profile_id = l2.profile_id
            AND LOWER(o.marketplace) = 'ozon'
            AND TRIM(o.order_id) = TRIM(l2.posting_number)
@@ -930,7 +995,7 @@ async function insertReportLines(lines, productLookup = null) {
       );
     }
     await query(
-      `INSERT INTO marketplace_fbo_report_lines (${cols.join(', ')}) VALUES ${values.join(', ')}`,
+      `INSERT INTO marketplace_fbs_report_lines (${cols.join(', ')}) VALUES ${values.join(', ')}`,
       params
     );
     inserted += batch.length;
@@ -940,7 +1005,7 @@ async function insertReportLines(lines, productLookup = null) {
 
 async function createSyncRun({ profileId, marketplace, dateFrom, dateTo }) {
   const res = await query(
-    `INSERT INTO marketplace_fbo_report_syncs (profile_id, marketplace, date_from, date_to, status)
+    `INSERT INTO marketplace_fbs_report_syncs (profile_id, marketplace, date_from, date_to, status)
      VALUES ($1, $2, $3, $4, 'running') RETURNING id`,
     [profileId, marketplace, dateFrom, dateTo]
   );
@@ -949,7 +1014,7 @@ async function createSyncRun({ profileId, marketplace, dateFrom, dateTo }) {
 
 async function finishSyncRun(syncId, { status, rowsImported = 0, errorMessage = null }) {
   await query(
-    `UPDATE marketplace_fbo_report_syncs
+    `UPDATE marketplace_fbs_report_syncs
      SET status = $2, rows_imported = $3, error_message = $4, finished_at = CURRENT_TIMESTAMP
      WHERE id = $1`,
     [syncId, status, rowsImported, errorMessage]
@@ -958,7 +1023,7 @@ async function finishSyncRun(syncId, { status, rowsImported = 0, errorMessage = 
 
 async function enrichWbLinesFromOrderSale(profileId) {
   await query(
-    `UPDATE marketplace_fbo_report_lines child
+    `UPDATE marketplace_fbs_report_lines child
      SET
        sku = sale.sku,
        product_name = sale.product_name,
@@ -970,7 +1035,7 @@ async function enrichWbLinesFromOrderSale(profileId) {
          sku,
          product_name,
          product_id
-       FROM marketplace_fbo_report_lines
+       FROM marketplace_fbs_report_lines
        WHERE marketplace = 'wb'
          AND profile_id = $1
          AND operation_type = 'Продажа'
@@ -996,7 +1061,7 @@ async function enrichWbLinesFromOrderSale(profileId) {
 
 async function backfillWbLineIdentity(profileId) {
   await query(
-    `UPDATE marketplace_fbo_report_lines
+    `UPDATE marketplace_fbs_report_lines
      SET sku = COALESCE(
            NULLIF(TRIM(raw_json->>'sa_name'), ''),
            NULLIF(TRIM(raw_json->>'sa'), ''),
@@ -1025,13 +1090,13 @@ async function backfillWbLineIdentity(profileId) {
   try {
     await linkReportLinesToProducts(profileId);
   } catch (e) {
-    logger.warn('[FBO Reports] WB backfill product link failed:', e?.message || e);
+    logger.warn('[FBS Reports] WB backfill product link failed:', e?.message || e);
   }
 }
 
-async function deleteFboLinesForPeriod(profileId, marketplace, dateFrom, dateTo) {
+async function deleteFbsLinesForPeriod(profileId, marketplace, dateFrom, dateTo) {
   await query(
-    `DELETE FROM marketplace_fbo_report_lines
+    `DELETE FROM marketplace_fbs_report_lines
      WHERE profile_id = $1
        AND marketplace = $2
        AND operation_date >= $3::date
@@ -1145,7 +1210,7 @@ async function fetchOzonFinanceTransactions({ clientId, apiKey, dateFrom, dateTo
   return allOps;
 }
 
-class MarketplaceFboReportsService {
+class MarketplaceFbsReportsService {
   async syncWb({ profileId, dateFrom, dateTo }) {
     const cfg = await integrationsService.getMarketplaceConfig('wildberries', { profileId });
     const apiKey = cfg?.api_key || cfg?.apiKey;
@@ -1158,21 +1223,22 @@ class MarketplaceFboReportsService {
 
     try {
       const productLookup = await buildProductSkuLookup(profileId);
-      await deleteFboLinesForPeriod(profileId, 'wb', dateFrom, dateTo);
+      await deleteFbsLinesForPeriod(profileId, 'wb', dateFrom, dateTo);
       const rawRows = await fetchWbReportDetailByPeriod(apiKey, dateFrom, dateTo);
-      const fboRows = rawRows.filter(isWbFboReportRow);
-      const mapped = fboRows
+      const fbsOrderKeys = collectWbFbsOrderKeys(rawRows);
+      const fbsRows = rawRows.filter((row) => isWbFbsRowForImport(row, fbsOrderKeys));
+      const mapped = fbsRows
         .map((row) => mapWbReportRow(row, profileId, syncId))
         .filter((row) => isDateInRangeYmd(row.operation_date, dateFrom, dateTo));
       const inserted = await insertReportLines(mapped, productLookup);
       try {
         await linkReportLinesToProducts(profileId, syncId);
       } catch (linkErr) {
-        logger.warn('[FBO Reports] product link failed (wb):', linkErr?.message || linkErr);
+        logger.warn('[FBS Reports] product link failed (wb):', linkErr?.message || linkErr);
       }
       await backfillWbLineIdentity(profileId);
       await finishSyncRun(syncId, { status: 'done', rowsImported: inserted });
-      return { syncId, marketplace: 'wb', rowsImported: inserted, totalFetched: rawRows.length, fboFiltered: fboRows.length };
+      return { syncId, marketplace: 'wb', rowsImported: inserted, totalFetched: rawRows.length, fbsFiltered: fbsRows.length };
     } catch (e) {
       await finishSyncRun(syncId, { status: 'error', errorMessage: e.message || String(e) });
       throw e;
@@ -1192,20 +1258,20 @@ class MarketplaceFboReportsService {
 
     try {
       const productLookup = await buildProductSkuLookup(profileId);
-      await deleteFboLinesForPeriod(profileId, 'ozon', dateFrom, dateTo);
+      await deleteFbsLinesForPeriod(profileId, 'ozon', dateFrom, dateTo);
       const ops = await fetchOzonFinanceTransactions({ clientId, apiKey, dateFrom, dateTo });
-      const fboOps = ops.filter(isOzonFboOperation);
-      const mapped = fboOps
+      const fbsOps = ops.filter(isOzonFbsOperation);
+      const mapped = fbsOps
         .map((op) => mapOzonTransactionRow(op, profileId, syncId))
         .filter((row) => isDateInRangeYmd(row.operation_date, dateFrom, dateTo));
       const inserted = await insertReportLines(mapped, productLookup);
       try {
         await linkReportLinesToProducts(profileId, syncId);
       } catch (linkErr) {
-        logger.warn('[FBO Reports] product link failed (ozon):', linkErr?.message || linkErr);
+        logger.warn('[FBS Reports] product link failed (ozon):', linkErr?.message || linkErr);
       }
       await finishSyncRun(syncId, { status: 'done', rowsImported: inserted });
-      return { syncId, marketplace: 'ozon', rowsImported: inserted, totalFetched: ops.length, fboFiltered: fboOps.length };
+      return { syncId, marketplace: 'ozon', rowsImported: inserted, totalFetched: ops.length, fbsFiltered: fbsOps.length };
     } catch (e) {
       await finishSyncRun(syncId, { status: 'error', errorMessage: e.message || String(e) });
       throw e;
@@ -1227,20 +1293,20 @@ class MarketplaceFboReportsService {
 
     try {
       const productLookup = await buildProductSkuLookup(profileId);
-      await deleteFboLinesForPeriod(profileId, 'ym', dateFrom, dateTo);
+      await deleteFbsLinesForPeriod(profileId, 'ym', dateFrom, dateTo);
       const rawRows = await fetchYmUnitedNettingReport(apiKey, businessId, dateFrom, dateTo);
-      const fbyRows = rawRows.filter(isYmFbyRow);
-      const mapped = fbyRows
+      const fbsRows = rawRows.filter(isYmFbsRow);
+      const mapped = fbsRows
         .map((row) => mapYmNettingRow(row, profileId, syncId))
         .filter((row) => isDateInRangeYmd(row.operation_date, dateFrom, dateTo));
       const inserted = await insertReportLines(mapped, productLookup);
       try {
         await linkReportLinesToProducts(profileId, syncId);
       } catch (linkErr) {
-        logger.warn('[FBO Reports] product link failed (ym):', linkErr?.message || linkErr);
+        logger.warn('[FBS Reports] product link failed (ym):', linkErr?.message || linkErr);
       }
       await finishSyncRun(syncId, { status: 'done', rowsImported: inserted });
-      return { syncId, marketplace: 'ym', rowsImported: inserted, totalFetched: rawRows.length, fboFiltered: fbyRows.length };
+      return { syncId, marketplace: 'ym', rowsImported: inserted, totalFetched: rawRows.length, fbsFiltered: fbsRows.length };
     } catch (e) {
       await finishSyncRun(syncId, { status: 'error', errorMessage: e.message || String(e) });
       throw e;
@@ -1248,7 +1314,7 @@ class MarketplaceFboReportsService {
   }
 
   /**
-   * Синхронизация FBO-отчётов с маркетплейсов за период.
+   * Синхронизация FBS-отчётов с маркетплейсов за период.
    */
   async sync({ profileId, dateFrom = null, dateTo = null, marketplace = 'all' } = {}) {
     const pid = profileId != null ? Number(profileId) : null;
@@ -1275,7 +1341,7 @@ class MarketplaceFboReportsService {
       try {
         return { ok: true, code, data: await fn() };
       } catch (e) {
-        logger.warn(`[FBO Reports] sync ${code} failed:`, e.message);
+        logger.warn(`[FBS Reports] sync ${code} failed:`, e.message);
         return { ok: false, code, message: e.message || String(e) };
       }
     };
@@ -1306,9 +1372,9 @@ class MarketplaceFboReportsService {
   }
 
   /**
-   * Аналитика FBO по товарам из загруженных финансовых строк.
+   * Аналитика FBS по товарам из загруженных финансовых строк.
    */
-  async getFboByProduct({ profileId, dateFrom = null, dateTo = null, marketplace = 'all', limit = 500 } = {}) {
+  async getFbsByProduct({ profileId, dateFrom = null, dateTo = null, marketplace = 'all', limit = 500 } = {}) {
     const pid = profileId != null ? Number(profileId) : null;
     if (!Number.isFinite(pid) || pid < 1) {
       const err = new Error('Профиль не определён');
@@ -1327,8 +1393,8 @@ class MarketplaceFboReportsService {
     const mpFilter = normalizeMarketplaceFilter(marketplace);
     const rowLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 500));
 
-    const itemsQuery = buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit: rowLimit });
-    const summaryQuery = buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter);
+    const itemsQuery = buildFbsReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit: rowLimit });
+    const summaryQuery = buildFbsReportQueryParams(pid, fromYmd, toYmd, mpFilter);
 
     if (!mpFilter || mpFilter.includes('wb') || mpFilter.includes('wildberries')) {
       await backfillWbLineIdentity(pid);
@@ -1347,14 +1413,8 @@ class MarketplaceFboReportsService {
         COALESCE(NULLIF(TRIM(l.sku), ''), '—') AS sku,
         MAX(COALESCE(p.name, l.product_name)) AS product_name,
         MAX(p.sku) AS erp_sku,
-        SUM(
-          CASE
-            WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа' THEN GREATEST(l.quantity, 0)
-            WHEN l.marketplace NOT IN ('wb', 'wildberries') THEN GREATEST(l.quantity, 0)
-            ELSE 0
-          END
-        )::int AS sold_qty,
-        SUM(l.retail_amount)::numeric AS sold_amount,
+        SUM(CASE WHEN ${SQL_SALE_LINE_L} THEN GREATEST(l.quantity, 0) ELSE 0 END)::int AS sold_qty,
+        SUM(CASE WHEN ${SQL_SALE_LINE_L} THEN l.retail_amount ELSE 0 END)::numeric AS sold_amount,
         SUM(l.commission_amount)::numeric AS commission_amount,
         SUM(l.logistics_amount)::numeric AS logistics_amount,
         SUM(l.storage_amount)::numeric AS storage_amount,
@@ -1363,15 +1423,12 @@ class MarketplaceFboReportsService {
         SUM(l.other_deductions)::numeric AS other_deductions,
         SUM(l.payout_amount)::numeric AS payout_amount,
         SUM(
-          CASE
-            WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа'
-              THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
-            WHEN l.marketplace NOT IN ('wb', 'wildberries')
-              THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
+          CASE WHEN ${SQL_SALE_LINE_L}
+            THEN GREATEST(l.quantity, 0) * COALESCE(p.cost, 0)
             ELSE 0
           END
         )::numeric AS cost_amount
-      FROM marketplace_fbo_report_lines l
+      FROM marketplace_fbs_report_lines l
       LEFT JOIN products p ON p.id = l.product_id
       WHERE l.profile_id = $1
         AND l.operation_date >= $2::date AND l.operation_date <= $3::date
@@ -1383,14 +1440,8 @@ class MarketplaceFboReportsService {
 
     const summarySql = `
       SELECT
-        SUM(
-          CASE
-            WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа' THEN GREATEST(l.quantity, 0)
-            WHEN l.marketplace NOT IN ('wb', 'wildberries') THEN GREATEST(l.quantity, 0)
-            ELSE 0
-          END
-        )::int AS sold_qty,
-        SUM(l.retail_amount)::numeric AS sold_amount,
+        SUM(CASE WHEN ${SQL_SALE_LINE_L} THEN GREATEST(l.quantity, 0) ELSE 0 END)::int AS sold_qty,
+        SUM(CASE WHEN ${SQL_SALE_LINE_L} THEN l.retail_amount ELSE 0 END)::numeric AS sold_amount,
         SUM(l.commission_amount)::numeric AS commission_amount,
         SUM(l.logistics_amount)::numeric AS logistics_amount,
         SUM(l.storage_amount)::numeric AS storage_amount,
@@ -1400,13 +1451,11 @@ class MarketplaceFboReportsService {
         SUM(l.payout_amount)::numeric AS payout_amount,
         COUNT(
           DISTINCT CASE
-            WHEN l.marketplace IN ('wb', 'wildberries') AND l.operation_type = 'Продажа'
-              THEN NULLIF(TRIM(l.order_id), '')
-            WHEN l.marketplace NOT IN ('wb', 'wildberries')
-              THEN COALESCE(NULLIF(TRIM(l.posting_number), ''), NULLIF(TRIM(l.order_id), ''))
+            WHEN ${SQL_SALE_LINE_L}
+              THEN COALESCE(NULLIF(TRIM(l.order_id), ''), NULLIF(TRIM(l.posting_number), ''))
           END
         )::int AS orders_count
-      FROM marketplace_fbo_report_lines l
+      FROM marketplace_fbs_report_lines l
       WHERE l.profile_id = $1
         AND l.operation_date >= $2::date AND l.operation_date <= $3::date
         ${summaryQuery.mpClause}
@@ -1417,7 +1466,7 @@ class MarketplaceFboReportsService {
       query(summarySql, summaryQuery.params),
       query(
         `SELECT marketplace, status, rows_imported, finished_at, error_message
-         FROM marketplace_fbo_report_syncs
+         FROM marketplace_fbs_report_syncs
          WHERE profile_id = $1
          ORDER BY created_at DESC
          LIMIT 10`,
@@ -1489,9 +1538,9 @@ class MarketplaceFboReportsService {
   }
 
   /**
-   * Детализация FBO по заказам: одна строка на отправление, все операции отчёта свёрнуты.
+   * Детализация FBS по заказам: одна строка на отправление, все операции отчёта свёрнуты.
    */
-  async getFboByOrder({ profileId, dateFrom = null, dateTo = null, marketplace = 'all', limit = 500 } = {}) {
+  async getFbsByOrder({ profileId, dateFrom = null, dateTo = null, marketplace = 'all', limit = 500 } = {}) {
     const pid = profileId != null ? Number(profileId) : null;
     if (!Number.isFinite(pid) || pid < 1) {
       const err = new Error('Профиль не определён');
@@ -1517,7 +1566,7 @@ class MarketplaceFboReportsService {
     }
     await linkReportLinesToProducts(pid);
 
-    const orderQuery = buildFboReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit: rowLimit });
+    const orderQuery = buildFbsReportQueryParams(pid, fromYmd, toYmd, mpFilter, { limit: rowLimit });
 
     const sql = `
       WITH filtered AS (
@@ -1528,7 +1577,7 @@ class MarketplaceFboReportsService {
               THEN COALESCE(NULLIF(TRIM(l.posting_number), ''), NULLIF(TRIM(l.order_id), ''))
             ELSE COALESCE(NULLIF(TRIM(l.order_id), ''), NULLIF(TRIM(l.posting_number), ''))
           END AS order_key
-        FROM marketplace_fbo_report_lines l
+        FROM marketplace_fbs_report_lines l
         WHERE l.profile_id = $1
           AND l.operation_date >= $2::date AND l.operation_date <= $3::date
           ${orderQuery.mpClause}
@@ -1545,11 +1594,7 @@ class MarketplaceFboReportsService {
           f.barcode,
           f.operation_date
         FROM filtered f
-        WHERE f.order_key IS NOT NULL
-          AND (
-            (f.marketplace IN ('wb', 'wildberries') AND f.operation_type = 'Продажа')
-            OR f.marketplace NOT IN ('wb', 'wildberries')
-          )
+        WHERE f.order_key IS NOT NULL AND ${SQL_SALE_LINE_F}
         ORDER BY f.marketplace, f.order_key, f.id DESC
       ),
       barcode_to_sale AS (
@@ -1574,10 +1619,7 @@ class MarketplaceFboReportsService {
         SELECT
           f.*,
           COALESCE(
-            CASE
-              WHEN f.marketplace IN ('wb', 'wildberries') AND f.operation_type = 'Продажа' THEN f.order_key
-              WHEN f.marketplace NOT IN ('wb', 'wildberries') THEN f.order_key
-            END,
+            CASE WHEN ${SQL_SALE_LINE_F} THEN f.order_key END,
             s_same.canonical_key,
             pts.canonical_key,
             bts.canonical_key
@@ -1648,11 +1690,11 @@ class MarketplaceFboReportsService {
             WHERE NULLIF(TRIM(m.posting_number), '') IS NOT NULL AND TRIM(m.posting_number) <> '0'
           ) AS posting_number,
           COALESCE(
-            MAX(m.operation_date) FILTER (WHERE m.operation_type = 'Продажа'),
+            MAX(m.operation_date) FILTER (WHERE ${SQL_SALE_LINE_M}),
             MAX(m.operation_date),
             MIN(m.operation_date)
           ) AS operation_date,
-          SUM(CASE WHEN m.operation_type = 'Продажа' THEN GREATEST(m.quantity, 0) ELSE 0 END)::int AS quantity,
+          SUM(CASE WHEN ${SQL_SALE_LINE_M} THEN GREATEST(m.quantity, 0) ELSE 0 END)::int AS quantity,
           SUM(m.retail_amount)::numeric AS retail_amount,
           SUM(m.commission_amount)::numeric AS commission_amount,
           SUM(m.logistics_amount)::numeric AS logistics_amount,
@@ -1662,13 +1704,7 @@ class MarketplaceFboReportsService {
           SUM(m.other_deductions)::numeric AS other_deductions,
           SUM(m.payout_amount)::numeric AS payout_amount,
           SUM(
-            CASE
-              WHEN (LOWER(TRIM(m.marketplace)) IN ('wb', 'wildberries') AND m.operation_type = 'Продажа')
-                OR (LOWER(TRIM(m.marketplace)) = 'ozon' AND m.operation_type = 'OperationAgentDeliveredToCustomer')
-                OR (LOWER(TRIM(m.marketplace)) IN ('ym', 'yandex', 'yandexmarket') AND (
-                  m.operation_type ILIKE '%Плат%покупателя%'
-                  OR m.operation_type ILIKE '%платеж покупателя%'
-                ))
+            CASE WHEN ${SQL_SALE_LINE_M}
               THEN GREATEST(m.quantity, 0) * COALESCE(pc.cost, 0)
               ELSE 0
             END
@@ -1776,4 +1812,4 @@ class MarketplaceFboReportsService {
   }
 }
 
-export default new MarketplaceFboReportsService();
+export default new MarketplaceFbsReportsService();

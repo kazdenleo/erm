@@ -122,7 +122,7 @@ const menuItems = [
   }
 ];
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }) {
   const location = useLocation();
   const { user, isAdmin, isProfileAdmin, isAccountAdmin, isTenantAccountAdmin, profile, features } = useAuth();
   const canManageUsers = isAccountAdmin;
@@ -300,7 +300,14 @@ export function Sidebar() {
                 const badgeText = questionsNewCount > 99 ? '99+' : String(questionsNewCount);
                 return (
                   <li key={item.path}>
-                    <Link to={item.path} className={active ? 'mm-active' : ''} onClick={() => onLeafClick(item)}>
+                    <Link
+                      to={item.path}
+                      className={active ? 'mm-active' : ''}
+                      onClick={() => {
+                        onLeafClick(item);
+                        onNavigate?.();
+                      }}
+                    >
                       <i className={`metismenu-icon ${item.iconClass}`} />
                       <span className="sidebar-nav-label">{item.label}</span>
                       {showQBadge ? (
@@ -338,7 +345,11 @@ export function Sidebar() {
                         returnsWaitingCount > 99 ? '99+' : String(returnsWaitingCount);
                       return (
                         <li key={sub.warehouseOp ?? sub.path}>
-                          <Link to={sub.path} className={subActive ? 'mm-active' : ''}>
+                          <Link
+                            to={sub.path}
+                            className={subActive ? 'mm-active' : ''}
+                            onClick={() => onNavigate?.()}
+                          >
                             <i className={`metismenu-icon ${sub.iconClass || ''}`} />
                             <span className="sidebar-nav-label">{sub.label}</span>
                             {showReturnsBadge ? (
