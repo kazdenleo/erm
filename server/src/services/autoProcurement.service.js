@@ -1,10 +1,12 @@
 /**
- * Автозакупка: позиции в открытые закупки по поставщику и bucket приезда (сегодня / завтра).
+ * Автозакупка: позиции в открытые закупки по поставщику и bucket приезда,
+ * затем реальная отправка в API поставщика (если настроен).
  */
 
 import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import purchasesService from './purchases.service.js';
+import ordersService from './orders.service.js';
 import logger from '../utils/logger.js';
 import { autoOrderSettingsFromApiConfig } from '../utils/supplierAutoOrderSettings.js';
 import {
@@ -13,6 +15,13 @@ import {
 } from '../utils/supplierProcurementArrival.js';
 import { findOpenAutoPurchaseId } from '../utils/openPurchaseLookup.js';
 import { loadWarehouseWeekendDays } from '../utils/warehouseProcurementCalendar.js';
+import { computeProcurementDeficit } from '../utils/orderProcurementCoverage.js';
+import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
+import { isKitProductId, getKitComponents } from './kitStock.service.js';
+import {
+  supplierPreSubmitRequired,
+  trySubmitPurchaseToSupplier,
+} from './supplierOrderPlacement.service.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -132,6 +141,101 @@ async function pickSupplierForProduct(productId, autoSuppliers, qty = 1) {
   return autoSuppliers.find((s) => s.id === sid) || { id: sid };
 }
 
+/** Развернуть заказ в позиции спроса (комплект → комплектующие, если нет целого кита у поставщика). */
+async function expandDemandForOrderRow(row, autoSuppliers) {
+  const productId = Number(row.product_id);
+  const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
+  if (!Number.isFinite(productId) || productId < 1) return [];
+
+  const base = {
+    orderDbId: Number(row.id),
+    marketplace: row.marketplace,
+    orderId: row.order_id,
+    orderRow: row,
+  };
+
+  if (await isKitProductId(productId)) {
+    const whole = await pickSupplierForProduct(productId, autoSuppliers, qty);
+    if (whole) {
+      return [{ ...base, productId, quantityNeeded: qty }];
+    }
+    const components = await getKitComponents(productId);
+    if (components.length) {
+      return components
+        .map((c) => {
+          const compId = Number(c.component_product_id);
+          const perKit = Math.max(1, parseInt(c.quantity, 10) || 1);
+          if (!Number.isFinite(compId) || compId < 1) return null;
+          return { ...base, productId: compId, quantityNeeded: perKit * qty };
+        })
+        .filter(Boolean);
+    }
+  }
+
+  return [{ ...base, productId, quantityNeeded: qty }];
+}
+
+async function deficitQtyForDemandLine(line) {
+  const reserved = await ordersService._getReservedQtyForOrderProduct(line.orderDbId, line.productId);
+  const coverage = computeProcurementDeficit({
+    quantityNeeded: line.quantityNeeded,
+    quantityReserved: reserved,
+    quantityPurchased: 0,
+  });
+  return coverage.deficit;
+}
+
+async function retryPendingAutoSubmits(profileId, autoSuppliers) {
+  const ids = autoSuppliers.map((s) => s.id).filter((id) => Number.isFinite(id) && id > 0);
+  if (!ids.length) return { checked: 0, submitted: 0 };
+
+  const r = await query(
+    `SELECT p.id, p.supplier_id
+     FROM purchases p
+     WHERE p.profile_id = $1
+       AND p.status = 'open'
+       AND p.supplier_id = ANY($2::bigint[])
+     ORDER BY p.id ASC
+     LIMIT 80`,
+    [profileId, ids]
+  );
+
+  let submitted = 0;
+  for (const row of r.rows || []) {
+    const purchaseId = Number(row.id);
+    const supplierId = Number(row.supplier_id);
+    if (!Number.isFinite(purchaseId) || !Number.isFinite(supplierId)) continue;
+    const pre = await supplierPreSubmitRequired(supplierId, profileId);
+    if (!pre.required) continue;
+    const out = await trySubmitPurchaseToSupplier({
+      purchaseId,
+      supplierId,
+      profileId,
+    }).catch((e) => ({
+      submitted: false,
+      reason: 'submit_error',
+      message: e?.message || String(e),
+    }));
+    if (out?.submitted) {
+      submitted += 1;
+      logger.info('[AutoProcurement] retry submit ok', {
+        profileId,
+        purchaseId,
+        supplierId,
+      });
+    } else if (out?.reason && out.reason !== 'already_submitted' && !out?.skipped) {
+      logger.warn('[AutoProcurement] retry submit failed', {
+        profileId,
+        purchaseId,
+        supplierId,
+        reason: out.reason,
+        message: out.message,
+      });
+    }
+  }
+  return { checked: r.rows?.length || 0, submitted };
+}
+
 async function resolveDefaultOrgAndWarehouse(profileId) {
   const orgRes = await query(
     `SELECT id FROM organizations WHERE profile_id = $1 ORDER BY id ASC LIMIT 1`,
@@ -191,7 +295,16 @@ async function loadOrderRowsForSupplierOrder(profileId, marketplace, orderId) {
 
 async function procureGroupForSupplierOrder(
   g,
-  { profileId, userId, organizationId, warehouseId, manualTest = false, now = new Date(), warehouseWeekendDays = null }
+  {
+    profileId,
+    userId,
+    organizationId,
+    warehouseId,
+    manualTest = false,
+    now = new Date(),
+    warehouseWeekendDays = null,
+    submitToSupplier = false,
+  }
 ) {
   if (!g?.items?.length) {
     return { ok: false, error: 'no_items', message: 'Нет позиций для закупки' };
@@ -255,13 +368,14 @@ async function procureGroupForSupplierOrder(
   const result = await purchasesService.procureFromOrders(payload, {
     userId,
     profileId,
-    submitToSupplier: false,
+    submitToSupplier: Boolean(submitToSupplier),
   });
 
   return {
     ok: true,
     purchaseId: result?.purchaseId ?? purchaseId ?? null,
     procurement: result?.procurement ?? null,
+    supplierSubmit: result?.supplierSubmit ?? null,
     appendedToExisting: Boolean(purchaseId),
     arrivalBucket: g.arrivalBucket,
   };
@@ -269,58 +383,99 @@ async function procureGroupForSupplierOrder(
 
 class AutoProcurementService {
   /**
-   * Прогон автозакупки для одного профиля.
-   * @returns {Promise<{ groups: number, purchases: number, items: number, skipped: number }>}
+   * Прогон автозакупки для одного профиля: дефицит → открытая закупка → API поставщика.
+   * @returns {Promise<{ groups: number, purchases: number, items: number, skipped: number, submitted: number }>}
    */
   async runForProfile(profileId, { userId = null, now = new Date() } = {}) {
     const pid = normalizeProfileId(profileId);
     if (pid == null) {
-      return { groups: 0, purchases: 0, items: 0, skipped: 0, error: 'no_profile' };
+      return { groups: 0, purchases: 0, items: 0, skipped: 0, submitted: 0, error: 'no_profile' };
     }
     if (!repositoryFactory.isUsingPostgreSQL()) {
-      return { groups: 0, purchases: 0, items: 0, skipped: 0, error: 'not_pg' };
+      return { groups: 0, purchases: 0, items: 0, skipped: 0, submitted: 0, error: 'not_pg' };
+    }
+
+    const profilesRepo = repositoryFactory.getProfilesRepository?.();
+    const profileRow =
+      profilesRepo && typeof profilesRepo.findById === 'function'
+        ? await profilesRepo.findById(pid)
+        : null;
+    if (!isProfileSupplierSyncEnabled(profileRow)) {
+      return {
+        groups: 0,
+        purchases: 0,
+        items: 0,
+        skipped: 0,
+        submitted: 0,
+        error: 'supplier_sync_disabled',
+      };
     }
 
     const autoSuppliers = await loadAutoSuppliers(pid);
     if (!autoSuppliers.length) {
-      return { groups: 0, purchases: 0, items: 0, skipped: 0, suppliers: 0 };
+      return { groups: 0, purchases: 0, items: 0, skipped: 0, submitted: 0, suppliers: 0 };
     }
 
     const { organizationId, warehouseId } = await resolveDefaultOrgAndWarehouse(pid);
     if (!organizationId || !warehouseId) {
       logger.warn('[AutoProcurement] skip profile: no org/warehouse', { profileId: pid });
-      return { groups: 0, purchases: 0, items: 0, skipped: 0, error: 'no_org_warehouse' };
+      return { groups: 0, purchases: 0, items: 0, skipped: 0, submitted: 0, error: 'no_org_warehouse' };
     }
     const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
 
     const ordersRes = await query(
-      `SELECT o.id, o.marketplace, o.order_id, o.product_id, o.quantity, o.status
+      `SELECT o.id, o.marketplace, o.order_id, o.product_id, o.quantity, o.status,
+              o.offer_id, o.marketplace_sku, o.product_name, o.profile_id, o.warehouse_id
        FROM orders o
        WHERE o.profile_id = $1
          AND o.product_id IS NOT NULL
          AND ${ELIGIBLE_STATUS_SQL}
-       ORDER BY o.created_at ASC NULLS LAST, o.id ASC`,
+       ORDER BY o.created_at ASC NULLS LAST, o.id ASC
+       LIMIT 300`,
       [pid]
     );
 
     const groups = new Map();
     let skipped = 0;
 
-    await transaction(async (client) => {
-      for (const row of ordersRes.rows || []) {
-        const productId = Number(row.product_id);
-        if (!Number.isFinite(productId) || productId < 1) {
-          skipped += 1;
-          continue;
-        }
-        const mp = row.marketplace;
-        const orderId = row.order_id;
-        if (await orderAlreadyInOpenPurchase(client, pid, mp, orderId)) {
-          skipped += 1;
-          continue;
-        }
+    for (const row of ordersRes.rows || []) {
+      const productId = Number(row.product_id);
+      if (!Number.isFinite(productId) || productId < 1) {
+        skipped += 1;
+        continue;
+      }
+      const mp = row.marketplace;
+      const orderId = row.order_id;
 
-        const supplier = await pickSupplierForProduct(productId, autoSuppliers, qty);
+      const already = await transaction(async (client) =>
+        orderAlreadyInOpenPurchase(client, pid, mp, orderId)
+      );
+      if (already) {
+        skipped += 1;
+        continue;
+      }
+
+      try {
+        await ordersService._applyReserveForOrderIfAbsent(row);
+      } catch (e) {
+        logger.warn('[AutoProcurement] reserve failed', {
+          orderId,
+          message: e?.message || String(e),
+        });
+      }
+
+      const demandLines = await expandDemandForOrderRow(row, autoSuppliers);
+      if (!demandLines.length) {
+        skipped += 1;
+        continue;
+      }
+
+      let anyAdded = false;
+      for (const line of demandLines) {
+        const deficit = await deficitQtyForDemandLine(line);
+        if (deficit <= 0) continue;
+
+        const supplier = await pickSupplierForProduct(line.productId, autoSuppliers, deficit);
         if (!supplier) {
           skipped += 1;
           continue;
@@ -344,28 +499,30 @@ class AutoProcurementService {
           });
         }
         const g = groups.get(key);
-        const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
         const procKey = `${mp}|${orderId}`;
         if (!g.seenProc.has(procKey)) {
           g.seenProc.add(procKey);
           g.procurementItems.push({ marketplace: mp, orderId });
         }
-        const existing = g.items.find((it) => it.productId === productId);
+        const existing = g.items.find((it) => it.productId === line.productId);
         if (existing) {
-          existing.quantity += qty;
+          existing.quantity += deficit;
           existing.sourceOrders.push({ marketplace: mp, orderId });
         } else {
           g.items.push({
-            productId,
-            quantity: qty,
+            productId: line.productId,
+            quantity: deficit,
             sourceOrders: [{ marketplace: mp, orderId }],
           });
         }
+        anyAdded = true;
       }
-    });
+      if (!anyAdded) skipped += 1;
+    }
 
     let purchasesTouched = 0;
     let itemsAdded = 0;
+    let submitted = 0;
 
     for (const g of groups.values()) {
       if (!g.items.length) continue;
@@ -428,10 +585,24 @@ class AutoProcurementService {
         const result = await purchasesService.procureFromOrders(payload, {
           userId,
           profileId: pid,
-          submitToSupplier: false,
+          submitToSupplier: true,
         });
         if (result?.purchaseId) purchasesTouched += 1;
         itemsAdded += g.items.length;
+        if (result?.supplierSubmit?.submitted) submitted += 1;
+        else if (
+          result?.supplierSubmit &&
+          !result.supplierSubmit.skipped &&
+          result.supplierSubmit.reason !== 'already_submitted'
+        ) {
+          logger.warn('[AutoProcurement] supplier submit not completed', {
+            profileId: pid,
+            supplierId: g.supplierId,
+            purchaseId: result?.purchaseId,
+            reason: result.supplierSubmit.reason,
+            message: result.supplierSubmit.message,
+          });
+        }
       } catch (e) {
         logger.warn('[AutoProcurement] procure failed', {
           profileId: pid,
@@ -443,12 +614,17 @@ class AutoProcurementService {
       }
     }
 
+    const retry = await retryPendingAutoSubmits(pid, autoSuppliers);
+    submitted += retry.submitted || 0;
+
     return {
       groups: groups.size,
       purchases: purchasesTouched,
       items: itemsAdded,
       skipped,
+      submitted,
       suppliers: autoSuppliers.length,
+      retryChecked: retry.checked,
     };
   }
 

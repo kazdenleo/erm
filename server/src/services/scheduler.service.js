@@ -94,6 +94,19 @@ function getOrdersArchiveCronExpression() {
   return c && String(c).trim() ? String(c).trim() : '45 3 * * *';
 }
 
+/** Фоновая автозакупка и отправка в API поставщиков. Выкл: AUTO_PROCUREMENT_ENABLED=0 */
+function isAutoProcurementEnabled() {
+  const v = process.env.AUTO_PROCUREMENT_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (Europe/Moscow). По умолчанию каждые 5 мин; переопределение: AUTO_PROCUREMENT_CRON */
+function getAutoProcurementCronExpression() {
+  const c = process.env.AUTO_PROCUREMENT_CRON;
+  return c && String(c).trim() ? String(c).trim() : '*/5 * * * *';
+}
+
 async function runOrdersArchive() {
   const { runOrdersArchiveBlocking, getOrdersArchiveStatus } = await import('./ordersArchive.job.js');
   if (getOrdersArchiveStatus().inProgress) {
@@ -720,6 +733,41 @@ class SchedulerService {
         logger.info('[Scheduler] Auto order reserve disabled (AUTO_ORDER_RESERVE_ENABLED)');
       }
 
+      let autoProcurementJob = null;
+      const autoProcurementCron = getAutoProcurementCronExpression();
+      if (isAutoProcurementEnabled()) {
+        autoProcurementJob = cron.schedule(
+          autoProcurementCron,
+          async () => {
+            if (isSchedulerDbJobRunning()) {
+              logger.info('[AutoProcurement] пропуск — ночная задача БД');
+              return;
+            }
+            await runSchedulerDbJob('auto-procurement', async () => {
+              const { default: autoProcurementService } = await import('./autoProcurement.service.js');
+              const out = await autoProcurementService.runForAllProfiles();
+              if (out?.skipped && out.reason === 'in_progress') {
+                logger.info('[AutoProcurement] пропуск — предыдущий прогон ещё выполняется');
+                return;
+              }
+              const purchased = (out.results || []).reduce((s, r) => s + (r.purchases || 0), 0);
+              const submitted = (out.results || []).reduce((s, r) => s + (r.submitted || 0), 0);
+              if (purchased > 0 || submitted > 0) {
+                logger.info(
+                  `[AutoProcurement] profiles=${out.profiles || 0} purchases=${purchased} submitted=${submitted}`
+                );
+              }
+            });
+          },
+          {
+            scheduled: false,
+            timezone: 'Europe/Moscow'
+          }
+        );
+      } else {
+        logger.info('[Scheduler] Auto procurement disabled (AUTO_PROCUREMENT_ENABLED)');
+      }
+
       this.jobs.push({
         name: 'wb-marketplace-update',
         job: wbUpdateJob,
@@ -896,6 +944,16 @@ class SchedulerService {
         });
       }
 
+      if (autoProcurementJob) {
+        this.jobs.push({
+          name: 'auto-procurement',
+          job: autoProcurementJob,
+          schedule: autoProcurementCron,
+          description:
+            'Автозакупка и отправка в API поставщиков (autoOrdersEnabled). AUTO_PROCUREMENT_CRON, по умолчанию */5 * * * *'
+        });
+      }
+
       // Запускаем задачи
       wbUpdateJob.start();
       wbTariffsJob.start();
@@ -924,6 +982,9 @@ class SchedulerService {
       }
       if (autoOrderReserveJob) {
         autoOrderReserveJob.start();
+      }
+      if (autoProcurementJob) {
+        autoProcurementJob.start();
       }
       this.isRunning = true;
 

@@ -261,7 +261,8 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
       <div className="col-12">
         <h6 className="mb-2 mt-1">Автоматические заказы</h6>
         <p className="text-muted small mb-2">
-          Параметры для автоматической отправки заказов поставщику (по расписанию или при накоплении позиций).
+          По расписанию (каждые ~5 мин): дефицит по заказам → открытая закупка в ERP → отправка в API
+          поставщика (Микадо / Москворечье), если API настроен. Без API создаётся только закупка в ERP.
         </p>
         <div className="form-check mb-3">
           <input
@@ -292,7 +293,10 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
               disabled={!formData.autoOrdersEnabled}
             />
             {errors.minOrderAmount && <div className="error">{errors.minOrderAmount}</div>}
-            <div className="form-text">Заказ уйдёт поставщику, когда сумма позиций достигнет этого порога.</div>
+            <div className="form-text">
+              Новая закупка и отправка поставщику — когда сумма накопленных позиций достигнет порога
+              (или сразу, если порог не задан). Дозаполнение уже открытой закупки не ждёт порог.
+            </div>
           </div>
         </div>
       </div>
