@@ -165,11 +165,10 @@ function isTerminalMarketplaceStatus(status) {
   return s === 'cancelled' || s === 'delivered';
 }
 
-/** Статусы МП, при которых «В закупке» может перейти вперёд по синку (не откат в «Новый»). */
+/** Статусы МП, при которых «В закупке» может перейти вперёд по синку (не откат в «Новый»).
+ * Сборку/«собран» с МП не подтягиваем — «На сборке» только вручную в ERM
+ * (иначе Ozon awaiting_deliver сразу выкидывает заказ из ручной закупки). */
 const PROCUREMENT_ADVANCE_MP_STATUSES = new Set([
-  'in_assembly',
-  'wb_assembly',
-  'assembled',
   'shipped',
   'in_transit',
   'delivered',
@@ -180,7 +179,7 @@ export function shouldAdvanceFromProcurement(incomingStatus) {
   const s = String(incomingStatus ?? '').toLowerCase();
   if (!s) return false;
   if (PROCUREMENT_ADVANCE_MP_STATUSES.has(s)) return true;
-  return localStatusPriority(s) > LOCAL_STATUS_PRIORITY.in_procurement;
+  return false;
 }
 
 /** Локально «В закупке»: держим статус, пока МП не ушёл дальше по цепочке. */
@@ -270,18 +269,14 @@ function shouldForceMpStatusOnRefresh(existing, incomingStatus, refreshStatuses)
 }
 
 /**
- * Правило по требованию: «На сборке» задаётся ТОЛЬКО вручную (кнопкой / сменой статуса в ERM).
- * Поэтому статус от маркетплейса "in_assembly" не должен автоматически переводить заказ из "new".
+ * Правило: «На сборке» задаётся ТОЛЬКО вручную (кнопкой / сменой статуса в ERM).
+ * Статус от маркетплейса "in_assembly" не переводит заказ из "new" и не выкидывает из "in_procurement".
  */
 function preventAutoInAssembly(existing, incomingStatus) {
   if (incomingStatus == null || incomingStatus === '') return incomingStatus;
   if (incomingStatus !== 'in_assembly') return incomingStatus;
   // Если пользователь уже отправил в сборку в ERM — оставляем.
   if (existing?.status === 'in_assembly') return 'in_assembly';
-  // С МП «На сборке» при локальной «В закупке» — разрешаем синхронизацию вперёд.
-  if (existing?.status === 'in_procurement' && shouldAdvanceFromProcurement('in_assembly')) {
-    return 'in_assembly';
-  }
   // Иначе держим локальный статус (или new для впервые увиденного заказа).
   if (existing?.status) return existing.status;
   return 'new';
