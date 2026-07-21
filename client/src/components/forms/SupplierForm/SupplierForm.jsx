@@ -261,7 +261,7 @@ export function SupplierForm({ supplier, onSubmit, onCancel }) {
       <div className="col-12">
         <h6 className="mb-2 mt-1">Автоматические заказы</h6>
         <p className="text-muted small mb-2">
-          По расписанию (каждые ~5 мин): дефицит по заказам → открытая закупка в ERP → отправка в API
+          По расписанию (каждые ~2 мин): дефицит по заказам → открытая закупка в ERP → отправка в API
           поставщика (Микадо / Москворечье), если API настроен. Без API создаётся только закупка в ERP.
         </p>
         <div className="form-check mb-3">

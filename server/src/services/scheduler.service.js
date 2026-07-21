@@ -101,10 +101,10 @@ function isAutoProcurementEnabled() {
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
-/** Cron (Europe/Moscow). По умолчанию каждые 5 мин; переопределение: AUTO_PROCUREMENT_CRON */
+/** Cron (Europe/Moscow). По умолчанию каждые 2 мин; переопределение: AUTO_PROCUREMENT_CRON */
 function getAutoProcurementCronExpression() {
   const c = process.env.AUTO_PROCUREMENT_CRON;
-  return c && String(c).trim() ? String(c).trim() : '*/5 * * * *';
+  return c && String(c).trim() ? String(c).trim() : '*/2 * * * *';
 }
 
 async function runOrdersArchive() {
@@ -950,7 +950,7 @@ class SchedulerService {
           job: autoProcurementJob,
           schedule: autoProcurementCron,
           description:
-            'Автозакупка и отправка в API поставщиков (autoOrdersEnabled). AUTO_PROCUREMENT_CRON, по умолчанию */5 * * * *'
+            'Автозакупка и отправка в API поставщиков (autoOrdersEnabled). AUTO_PROCUREMENT_CRON, по умолчанию */2 * * * *'
         });
       }
 
