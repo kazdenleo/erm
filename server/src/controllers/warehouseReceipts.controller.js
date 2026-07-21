@@ -60,6 +60,15 @@ class WarehouseReceiptsController {
         });
         return res.status(200).json({ ok: true, data: result });
       }
+      if (documentType === 'transfer') {
+        const result = await warehouseReceiptsService.createTransfer({
+          organizationId: organizationId || null,
+          fromWarehouseId: whRaw,
+          toWarehouseId: req.body.toWarehouseId ?? req.body.to_warehouse_id ?? null,
+          lines: linesArr,
+        });
+        return res.status(200).json({ ok: true, data: result });
+      }
       if (documentType === 'return') {
         const result = await warehouseReceiptsService.createReturn({
           organizationId: organizationId || null,
@@ -185,9 +194,21 @@ class WarehouseReceiptsController {
     try {
       const id = parseInt(req.params.id, 10);
       if (!id) return res.status(400).json({ ok: false, message: 'Некорректный ID' });
-      const { organizationId, supplierId, lines, warehouseId, warehouse_id, purchaseReceiptId, purchase_receipt_id } =
+      const { organizationId, supplierId, lines, warehouseId, warehouse_id, purchaseReceiptId, purchase_receipt_id, toWarehouseId, to_warehouse_id } =
         req.body || {};
       const profileId = req.user?.profileId ?? null;
+      const existing = await warehouseReceiptsService.getByIdWithLines(id);
+      if (!existing) return res.status(404).json({ ok: false, message: 'Документ не найден' });
+      const documentType = warehouseReceiptsService._resolveReceiptDocumentType(existing);
+      if (documentType === 'transfer') {
+        const receipt = await warehouseReceiptsService.updateTransfer(id, {
+          organizationId,
+          fromWarehouseId: warehouseId ?? warehouse_id ?? null,
+          toWarehouseId: toWarehouseId ?? to_warehouse_id ?? null,
+          lines: Array.isArray(lines) ? lines : [],
+        });
+        return res.status(200).json({ ok: true, data: receipt });
+      }
       const receipt = await warehouseReceiptsService.updateReceipt(id, {
         organizationId,
         supplierId,

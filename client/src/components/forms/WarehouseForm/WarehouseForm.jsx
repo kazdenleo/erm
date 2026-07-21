@@ -519,8 +519,8 @@ export function WarehouseForm({
         <div className="col-12 mt-2">
           <label className="form-label d-block">Выходные дни склада</label>
           <div className="text-muted small mb-2">
-            Заказы после cutoff поставщика в пятницу (и в выходные) будут собираться в одну закупку до
-            следующего рабочего дня, когда снова возможна отправка «день в день».
+            Заказы после cutoff поставщика в пятницу и в выходные собираются в одну закупку до
+            отсечки в последний выходной день; после неё — новая закупка.
           </div>
           <div className="d-flex flex-wrap gap-3">
             {WEEKDAY_OPTIONS.map((opt) => (
