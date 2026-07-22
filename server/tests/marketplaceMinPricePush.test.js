@@ -1,5 +1,6 @@
 import {
   floorRub,
+  normalizeMpOfferId,
   pricesRoughlyEqual,
   wbEffectivePrice,
   wbPriceToMeetFloor,
@@ -17,6 +18,12 @@ describe('marketplaceMinPricePush helpers', () => {
     expect(floorRub(0)).toBe(1);
     expect(floorRub(-5)).toBeNull();
     expect(floorRub(null)).toBeNull();
+  });
+
+  test('normalizeMpOfferId strips trailing semicolons', () => {
+    expect(normalizeMpOfferId('AN1048;')).toBe('AN1048');
+    expect(normalizeMpOfferId(' AN1003;; ')).toBe('AN1003');
+    expect(normalizeMpOfferId('')).toBeNull();
   });
 
   test('pricesRoughlyEqual within ±1 ₽', () => {

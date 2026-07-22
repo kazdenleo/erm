@@ -30,6 +30,15 @@ export function floorRub(minPrice) {
   return Math.max(1, Math.ceil(n));
 }
 
+/** Артикулы в product_skus иногда с хвостом «;» — API YM/Ozon его не принимают. */
+export function normalizeMpOfferId(raw) {
+  if (raw == null) return null;
+  let s = String(raw).trim();
+  if (!s) return null;
+  while (s.endsWith(';')) s = s.slice(0, -1).trim();
+  return s || null;
+}
+
 export function pricesRoughlyEqual(a, b, eps = 1) {
   const x = Number(a);
   const y = Number(b);
@@ -165,14 +174,14 @@ function resolveOzonIds(productSkus, product) {
     row?.marketplace_product_id != null && String(row.marketplace_product_id).trim() !== ''
       ? Number(row.marketplace_product_id)
       : null;
-  const offerId = (row?.sku || product?.sku || '').trim() || null;
+  const offerId = normalizeMpOfferId(row?.sku || product?.sku || null);
   return {
     ozonProductId: Number.isFinite(productId) && productId > 0 ? productId : null,
     offerId,
   };
 }
 
-function resolveWbNmId(productSkus, product) {
+function resolveWbNmIdSync(productSkus, product) {
   const row = productSkus.find((s) => String(s.marketplace).toLowerCase() === 'wb');
   let draft = product?.wb_draft;
   if (typeof draft === 'string') {
@@ -191,12 +200,42 @@ function resolveWbNmId(productSkus, product) {
   return null;
 }
 
+function resolveWbVendorCode(productSkus, product) {
+  const row = productSkus.find((s) => String(s.marketplace).toLowerCase() === 'wb');
+  return (
+    normalizeMpOfferId(product?.mp_wb_vendor_code) ||
+    normalizeMpOfferId(row?.sku) ||
+    normalizeMpOfferId(product?.sku)
+  );
+}
+
+async function resolveWbNmId(productSkus, product, orgId, profileId) {
+  const sync = resolveWbNmIdSync(productSkus, product);
+  if (sync) return sync;
+  const vendorCode = resolveWbVendorCode(productSkus, product);
+  if (!vendorCode) return null;
+  try {
+    const card = await integrationsService.getWildberriesProductByVendorCode(vendorCode, {
+      organizationId: orgId,
+      profileId,
+    });
+    const nm = Number(card?.nmId ?? card?.nmID);
+    return Number.isFinite(nm) && nm > 0 ? nm : null;
+  } catch (e) {
+    logger.warn('[MP MinPrice Push] WB nmId by vendorCode failed', {
+      vendorCode,
+      message: e?.message || String(e),
+    });
+    return null;
+  }
+}
+
 function resolveYmOfferId(productSkus, product) {
   const row = productSkus.find((s) => {
     const m = String(s.marketplace).toLowerCase();
     return m === 'ym' || m === 'yandex' || m === 'yandexmarket';
   });
-  return (row?.sku || product?.sku || '').trim() || null;
+  return normalizeMpOfferId(row?.sku || product?.sku || null);
 }
 
 async function pushOzonForProduct(ctx, floor, orgId, profileId) {
@@ -280,7 +319,7 @@ async function pushWbForProduct(ctx, floor, orgId, profileId) {
   if (!token) {
     return { marketplace: 'wb', skipped: true, reason: 'no_credentials' };
   }
-  const nmID = resolveWbNmId(ctx.productSkus, ctx.product);
+  const nmID = await resolveWbNmId(ctx.productSkus, ctx.product, orgId, profileId);
   if (!nmID) {
     return { marketplace: 'wb', skipped: true, reason: 'not_linked' };
   }
@@ -386,7 +425,7 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
   let currentPrice = null;
   try {
     const agent = getYandexHttpsAgent();
-    // Partner API: POST /v2/campaigns/{id}/offer-prices (filter by offerIds)
+    // Partner API: POST /v2/campaigns/{id}/offer-prices (по offerIds без limit/pageToken)
     const { response, text } = await fetchWithRetry(
       `https://api.partner.market.yandex.ru/v2/campaigns/${encodeURIComponent(campaignId)}/offer-prices`,
       {
@@ -397,7 +436,7 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
           'Content-Type': 'application/json',
         },
         agent,
-        body: JSON.stringify({ offerIds: [offerId], limit: 20 }),
+        body: JSON.stringify({ offerIds: [offerId] }),
       },
       { label: 'YM offer-prices get' }
     );
@@ -566,6 +605,7 @@ export async function pushForAllProfiles({ limit = null } = {}) {
 export default {
   isMinPricePushEnabled,
   floorRub,
+  normalizeMpOfferId,
   pricesRoughlyEqual,
   wbEffectivePrice,
   wbPriceToMeetFloor,
