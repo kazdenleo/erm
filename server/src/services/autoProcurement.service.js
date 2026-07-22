@@ -174,7 +174,53 @@ async function pickSupplierForProduct(productId, autoSuppliers, qty = 1) {
   return autoSuppliers.find((s) => s.id === sid) || { id: sid };
 }
 
-/** Развернуть заказ в позиции спроса (комплект → комплектующие, если нет целого кита у поставщика). */
+/** Сопоставить product_id по offer_id / SKU (как ручная «В закупку» / «Отправить поставщику»). */
+async function resolveOrderProductForAuto(row) {
+  const raw = row?.product_id ?? row?.productId;
+  const existing = raw != null && String(raw).trim() !== '' ? Number(raw) : null;
+  if (Number.isFinite(existing) && existing > 0) {
+    return { ...row, product_id: existing, productId: existing };
+  }
+
+  const orderRowForResolve = {
+    id: row.id,
+    marketplace: row.marketplace,
+    offerId: row.offer_id,
+    offer_id: row.offer_id,
+    sku: row.marketplace_sku,
+    marketplace_sku: row.marketplace_sku,
+    productName: row.product_name,
+    product_name: row.product_name,
+    productId: row.product_id,
+    product_id: row.product_id,
+    quantity: row.quantity,
+    status: row.status,
+    profile_id: row.profile_id,
+    profileId: row.profile_id,
+  };
+
+  const resolved = await ordersService._resolveProductIdForOrderStock(orderRowForResolve);
+  const pid = resolved != null ? Number(resolved) : null;
+  if (!Number.isFinite(pid) || pid < 1) return null;
+
+  // Записать привязку в заказ, чтобы следующие прогоны и UI видели товар.
+  const orderDbId = Number(row.id);
+  if (Number.isFinite(orderDbId) && orderDbId > 0) {
+    query(
+      `UPDATE orders SET product_id = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2 AND product_id IS NULL`,
+      [pid, orderDbId]
+    ).catch((e) => {
+      logger.warn('[AutoProcurement] persist product_id failed', {
+        orderId: row.order_id,
+        productId: pid,
+        message: e?.message || String(e),
+      });
+    });
+  }
+
+  return { ...row, product_id: pid, productId: pid };
+}
 async function expandDemandForOrderRow(row, autoSuppliers) {
   const productId = Number(row.product_id);
   const qty = Math.max(1, parseInt(row.quantity, 10) || 1);
@@ -462,7 +508,11 @@ class AutoProcurementService {
               o.offer_id, o.marketplace_sku, o.product_name, o.profile_id, o.warehouse_id
        FROM orders o
        WHERE o.profile_id = $1
-         AND o.product_id IS NOT NULL
+         AND (
+           o.product_id IS NOT NULL
+           OR NULLIF(BTRIM(COALESCE(o.offer_id, '')), '') IS NOT NULL
+           OR NULLIF(BTRIM(COALESCE(o.marketplace_sku, '')), '') IS NOT NULL
+         )
          AND ${ELIGIBLE_STATUS_SQL}
        ORDER BY o.created_at ASC NULLS LAST, o.id ASC
        LIMIT 300`,
@@ -473,16 +523,21 @@ class AutoProcurementService {
     let skipped = 0;
 
     for (const row of ordersRes.rows || []) {
-      const productId = Number(row.product_id);
+      const resolvedRow = await resolveOrderProductForAuto(row);
+      if (!resolvedRow) {
+        skipped += 1;
+        continue;
+      }
+      const productId = Number(resolvedRow.product_id);
       if (!Number.isFinite(productId) || productId < 1) {
         skipped += 1;
         continue;
       }
-      const mp = row.marketplace;
-      const orderId = row.order_id;
+      const mp = resolvedRow.marketplace;
+      const orderId = resolvedRow.order_id;
 
       const already = await transaction(async (client) =>
-        orderAlreadyInOpenPurchase(client, pid, mp, orderId, row.order_group_id)
+        orderAlreadyInOpenPurchase(client, pid, mp, orderId, resolvedRow.order_group_id)
       );
       if (already) {
         skipped += 1;
@@ -490,7 +545,7 @@ class AutoProcurementService {
       }
 
       try {
-        await ordersService._applyReserveForOrderIfAbsent(row);
+        await ordersService._applyReserveForOrderIfAbsent(resolvedRow);
       } catch (e) {
         logger.warn('[AutoProcurement] reserve failed', {
           orderId,
@@ -498,7 +553,7 @@ class AutoProcurementService {
         });
       }
 
-      const demandLines = await expandDemandForOrderRow(row, autoSuppliers);
+      const demandLines = await expandDemandForOrderRow(resolvedRow, autoSuppliers);
       if (!demandLines.length) {
         skipped += 1;
         continue;
