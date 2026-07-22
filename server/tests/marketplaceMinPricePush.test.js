@@ -9,6 +9,7 @@ import {
   needsYmFloorPush,
   pushForProduct,
   pushForAllProfiles,
+  reconcileBelowFloor,
 } from '../src/services/marketplaceMinPricePush.service.js';
 
 describe('marketplaceMinPricePush helpers', () => {
@@ -58,8 +59,9 @@ describe('marketplaceMinPricePush helpers', () => {
 });
 
 describe('marketplaceMinPricePush exports', () => {
-  test('exports pushForProduct and pushForAllProfiles', () => {
+  test('exports pushForProduct, pushForAllProfiles, reconcileBelowFloor', () => {
     expect(typeof pushForProduct).toBe('function');
     expect(typeof pushForAllProfiles).toBe('function');
+    expect(typeof reconcileBelowFloor).toBe('function');
   });
 });

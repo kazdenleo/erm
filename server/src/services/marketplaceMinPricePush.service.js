@@ -565,6 +565,246 @@ export async function pushForProduct(productId) {
 
 let _fullRunInProgress = false;
 
+function normVendorKey(s) {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '');
+}
+
+async function fetchAllWbGoodsPrices(token) {
+  const byNm = new Map();
+  const byVendor = new Map();
+  const limit = 1000;
+  let offset = 0;
+  for (let page = 0; page < 200; page++) {
+    const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    const { response, text } = await fetchWithRetry(
+      `https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter?${qs}`,
+      {
+        method: 'GET',
+        headers: { Authorization: String(token), Accept: 'application/json' },
+      },
+      { label: 'WB list/goods page' }
+    );
+    if (!response.ok) {
+      throw new Error(`WB list/goods ${response.status}: ${text.substring(0, 200)}`);
+    }
+    const data = JSON.parse(text || '{}');
+    const list = data?.data?.listGoods || [];
+    if (!Array.isArray(list) || list.length === 0) break;
+    for (const g of list) {
+      const nm = Number(g.nmID ?? g.nmId);
+      if (Number.isFinite(nm) && nm > 0) byNm.set(nm, g);
+      const vc = normVendorKey(g.vendorCode);
+      if (vc) byVendor.set(vc, g);
+    }
+    if (list.length < limit) break;
+    offset += limit;
+    await sleep(650);
+  }
+  return { byNm, byVendor };
+}
+
+async function uploadWbPriceBatch(token, items) {
+  let uploaded = 0;
+  for (let i = 0; i < items.length; i += 1000) {
+    const chunk = items.slice(i, i + 1000);
+    const { response, text } = await fetchWithRetry(
+      'https://discounts-prices-api.wildberries.ru/api/v2/upload/task',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: String(token),
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ data: chunk }),
+      },
+      { label: 'WB upload/task batch' }
+    );
+    if (!response.ok) {
+      throw new Error(`WB upload/task ${response.status}: ${text.substring(0, 200)}`);
+    }
+    uploaded += chunk.length;
+    if (i + 1000 < items.length) await sleep(700);
+  }
+  return uploaded;
+}
+
+/**
+ * Дневная сверка: батч-чтение цен WB → поднять только effective &lt; пола;
+ * для затронутых SKU дополнительно точечный пуш Ozon/YM.
+ * Полный каталог по всем МП остаётся на ночном cron.
+ */
+export async function reconcileBelowFloor() {
+  if (!isMinPricePushEnabled()) {
+    return { skipped: true, reason: 'disabled' };
+  }
+  if (_fullRunInProgress) {
+    return { skipped: true, reason: 'in_progress' };
+  }
+  _fullRunInProgress = true;
+  try {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { skipped: true, reason: 'not_pg' };
+    }
+
+    const floorsRes = await query(
+      `SELECT p.id AS product_id, p.profile_id, p.organization_id, p.sku, p.wb_draft, p.mp_wb_vendor_code,
+              pmp.marketplace, pmp.min_price
+       FROM product_marketplace_prices pmp
+       JOIN products p ON p.id = pmp.product_id
+       WHERE pmp.min_price IS NOT NULL AND pmp.min_price > 0`
+    );
+
+    /** @type {Map<number, { product: object, floors: Record<string, number>, productSkus: object[] }>} */
+    const byProduct = new Map();
+    for (const row of floorsRes.rows || []) {
+      const pid = Number(row.product_id);
+      if (!Number.isFinite(pid)) continue;
+      let entry = byProduct.get(pid);
+      if (!entry) {
+        entry = {
+          product: {
+            id: pid,
+            profile_id: row.profile_id,
+            organization_id: row.organization_id,
+            sku: row.sku,
+            wb_draft: row.wb_draft,
+            mp_wb_vendor_code: row.mp_wb_vendor_code,
+          },
+          floors: {},
+          productSkus: [],
+        };
+        byProduct.set(pid, entry);
+      }
+      const mp = String(row.marketplace || '').toLowerCase();
+      const f = floorRub(row.min_price);
+      if (f != null) entry.floors[mp] = f;
+    }
+
+    const productIds = [...byProduct.keys()];
+    if (productIds.length) {
+      const skusRes = await query(
+        `SELECT product_id, marketplace, sku, marketplace_product_id, mp_extra
+         FROM product_skus WHERE product_id = ANY($1::bigint[])`,
+        [productIds]
+      );
+      for (const s of skusRes.rows || []) {
+        const entry = byProduct.get(Number(s.product_id));
+        if (entry) entry.productSkus.push(s);
+      }
+    }
+
+    /** org|profile → [{ctx, floor}] */
+    const wbGroups = new Map();
+    for (const entry of byProduct.values()) {
+      if (entry.floors.wb == null) continue;
+      const orgId = entry.product.organization_id != null ? Number(entry.product.organization_id) : null;
+      const profileId = entry.product.profile_id != null ? Number(entry.product.profile_id) : null;
+      const key = `${orgId ?? 'x'}|${profileId ?? 'x'}`;
+      if (!wbGroups.has(key)) wbGroups.set(key, { orgId, profileId, items: [] });
+      wbGroups.get(key).items.push(entry);
+    }
+
+    let wbScanned = 0;
+    let wbBelow = 0;
+    let wbUploaded = 0;
+    const touchedProductIds = new Set();
+
+    for (const group of wbGroups.values()) {
+      const cfg = await integrationsService.getMarketplaceConfig('wildberries', {
+        organizationId: group.orgId,
+        profileId: group.profileId,
+      });
+      const token = integrationsService._normalizeWbToken(cfg?.api_key ?? cfg?.apiKey);
+      if (!token) continue;
+
+      let catalog;
+      try {
+        catalog = await fetchAllWbGoodsPrices(token);
+      } catch (e) {
+        logger.warn('[MP MinPrice Push] reconcile WB catalog failed', {
+          message: e?.message || String(e),
+        });
+        continue;
+      }
+      wbScanned += catalog.byNm.size;
+
+      const uploads = [];
+      for (const entry of group.items) {
+        const nmSync = resolveWbNmIdSync(entry.productSkus, entry.product);
+        const vendor = resolveWbVendorCode(entry.productSkus, entry.product);
+        const hit =
+          (nmSync && catalog.byNm.get(nmSync)) ||
+          (vendor && catalog.byVendor.get(normVendorKey(vendor))) ||
+          null;
+        if (!hit) continue;
+        const size0 = Array.isArray(hit.sizes) ? hit.sizes[0] : null;
+        const price =
+          hit.price != null
+            ? Number(hit.price)
+            : size0?.price != null
+              ? Number(size0.price)
+              : null;
+        const discount = hit.discount != null ? Number(hit.discount) : 0;
+        if (!needsWbFloorPush({ erpFloor: entry.floors.wb, price, discount })) continue;
+        const newPrice = wbPriceToMeetFloor(entry.floors.wb, discount);
+        const nmID = Number(hit.nmID ?? hit.nmId);
+        if (newPrice == null || !Number.isFinite(nmID)) continue;
+        uploads.push({
+          nmID,
+          price: newPrice,
+          ...(Number.isFinite(discount) ? { discount: Math.round(discount) } : {}),
+        });
+        touchedProductIds.add(Number(entry.product.id));
+        wbBelow += 1;
+      }
+
+      if (uploads.length) {
+        try {
+          wbUploaded += await uploadWbPriceBatch(token, uploads);
+        } catch (e) {
+          logger.warn('[MP MinPrice Push] reconcile WB upload failed', {
+            message: e?.message || String(e),
+            count: uploads.length,
+          });
+        }
+      }
+    }
+
+    // Точечно Ozon/YM для SKU, где на WB ушли ниже пола (часто те же карточки).
+    let sidePushed = 0;
+    let sideFailed = 0;
+    const sideIds = [...touchedProductIds];
+    for (let i = 0; i < sideIds.length; i++) {
+      const out = await pushForProduct(sideIds[i]).catch((e) => ({
+        failed: 1,
+        error: e?.message || String(e),
+      }));
+      sidePushed += out.pushed || 0;
+      sideFailed += out.failed || 0;
+      if (i > 0 && i % 10 === 0) await sleep(300);
+    }
+
+    const result = {
+      mode: 'reconcile',
+      products: byProduct.size,
+      wbScanned,
+      wbBelow,
+      wbUploaded,
+      sideProducts: sideIds.length,
+      sidePushed,
+      sideFailed,
+    };
+    logger.info('[MP MinPrice Push] reconcile done', result);
+    return result;
+  } finally {
+    _fullRunInProgress = false;
+  }
+}
+
 /**
  * Полный прогон: все товары с сохранёнными мин. ценами.
  */
@@ -632,4 +872,5 @@ export default {
   schedulePushForProduct,
   pushForProduct,
   pushForAllProfiles,
+  reconcileBelowFloor,
 };

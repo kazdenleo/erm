@@ -7,6 +7,7 @@
  * После этого один раз за сутки выполняется полный прогон: синхронизация кэша калькулятора из API
  * и пересчёт мин. цен по всему каталогу из БД (см. MIN_PRICES_NIGHTLY_CRON),
  * затем пуш полов на МП (MARKETPLACE_MIN_PRICE_PUSH_ENABLED, по умолчанию вкл.).
+ * Днём — сверка каждые 2 ч (MARKETPLACE_MIN_PRICE_RECONCILE_CRON): WB батчем, только ниже пола.
  * В течение дня при изменении карточки (себестоимость, габариты, категория и т.д.) достаточно
  * точечного пересчёта — POST .../recalculate-one (по умолчанию live API для затронутого товара)
  * с отложенным пушем мин. цены на МП.
@@ -18,11 +19,12 @@ import repositoryFactory from '../config/repository-factory.js';
 import wbMarketplaceService from './wbMarketplace.service.js';
 import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
-import { pushForAllProfiles as pushMinPricesForAllProfiles } from './marketplaceMinPricePush.service.js';
+import { pushForAllProfiles as pushMinPricesForAllProfiles, reconcileBelowFloor as reconcileMinPricesBelowFloor } from './marketplaceMinPricePush.service.js';
 import categoryMarketplaceCommissionsService from './categoryMarketplaceCommissions.service.js';
 import ordersSyncService from './orders.sync.service.js';
 import { getReserveDbLimiterStats } from '../utils/reserveDbLimiter.js';
 import { syncMarketplaceReviews } from './marketplaceReviews.service.js';
+import productCompetitorsService from './productCompetitors.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
 import marketplaceFboReportsService from './marketplaceFboReports.service.js';
@@ -56,6 +58,19 @@ function isReviewsSyncEnabled() {
 function getReviewsSyncCronExpression() {
   const c = process.env.REVIEWS_SYNC_CRON;
   return c && String(c).trim() ? String(c).trim() : '0 * * * *';
+}
+
+/** Мониторинг цен конкурентов. Выкл: COMPETITORS_SYNC_ENABLED=0 */
+function isCompetitorsSyncEnabled() {
+  const v = process.env.COMPETITORS_SYNC_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron конкурентов. По умолчанию каждый час; COMPETITORS_SYNC_CRON */
+function getCompetitorsSyncCronExpression() {
+  const c = process.env.COMPETITORS_SYNC_CRON;
+  return c && String(c).trim() ? String(c).trim() : '15 * * * *';
 }
 
 /** Фоновая синхронизация остатков поставщиков (Mikado, Москворечье). Выкл: SUPPLIER_STOCKS_SYNC_ENABLED=0 */
@@ -178,6 +193,21 @@ async function runSupplierStocksSync() {
 function getMinPricesNightlyCron() {
   const c = process.env.MIN_PRICES_NIGHTLY_CRON;
   return c && String(c).trim() ? String(c).trim() : '15 4 * * *';
+}
+
+/**
+ * Дневная сверка полов с МП (батч WB + точечный Ozon/YM для затронутых).
+ * По умолчанию каждые 2 часа в :20 МСК. MARKETPLACE_MIN_PRICE_RECONCILE_CRON.
+ */
+function getMinPriceReconcileCron() {
+  const c = process.env.MARKETPLACE_MIN_PRICE_RECONCILE_CRON;
+  return c && String(c).trim() ? String(c).trim() : '20 */2 * * *';
+}
+
+function isMinPriceReconcileEnabled() {
+  const v = process.env.MARKETPLACE_MIN_PRICE_RECONCILE_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
 
 /** Ежедневный импорт остатков МП + "в пути"/возвраты. По умолчанию 04:30 МСК; переопределение: MP_INVENTORY_DAILY_CRON */
@@ -505,6 +535,51 @@ class SchedulerService {
         timezone: 'Europe/Moscow'
       });
 
+      // Дневная сверка мин. цен с МП (лёгкий батч WB, только ниже пола).
+      let minPriceReconcileJob = null;
+      const minPriceReconcileCron = getMinPriceReconcileCron();
+      if (isMinPriceReconcileEnabled()) {
+        minPriceReconcileJob = cron.schedule(minPriceReconcileCron, async () => {
+          if (isSchedulerDbJobRunning()) {
+            logger.info('[Scheduler] Min price reconcile: пропуск — занята ночная задача БД');
+            return;
+          }
+          const hour = Number(
+            new Intl.DateTimeFormat('en-GB', {
+              timeZone: 'Europe/Moscow',
+              hour: 'numeric',
+              hour12: false,
+            }).format(new Date())
+          );
+          // Окно ночного пересчёта мин. цен (по умолчанию 4:15) — не дублируем.
+          if (hour >= 3 && hour <= 5) {
+            logger.info('[Scheduler] Min price reconcile: пропуск — ночное окно 3–5 МСК');
+            return;
+          }
+          await runSchedulerDbJob('min-prices-reconcile', async () => {
+            logger.info('[Scheduler] Min price reconcile (below floor)...');
+            try {
+              const res = await reconcileMinPricesBelowFloor();
+              logger.info('[Scheduler] Min price reconcile done', res);
+            } catch (error) {
+              logger.error('[Scheduler] Min price reconcile failed:', error);
+              await addRuntimeNotification({
+                type: 'job_failed',
+                severity: 'error',
+                source: 'scheduler',
+                title: 'Сбой сверки мин. цен с МП',
+                message: `reconcileBelowFloor failed: ${error?.message || String(error)}`,
+              });
+            }
+          });
+        }, {
+          scheduled: false,
+          timezone: 'Europe/Moscow',
+        });
+      } else {
+        logger.info('[Scheduler] Min price reconcile disabled (MARKETPLACE_MIN_PRICE_RECONCILE_ENABLED)');
+      }
+
       // Ежедневная проверка API всех интеграций (Ozon, WB, Yandex) — по каждому профилю (аккаунту)
       const apiCheckJob = cron.schedule('0 6 * * *', async () => {
         logger.info('[Scheduler] Starting daily marketplace API check...');
@@ -588,6 +663,35 @@ class SchedulerService {
         });
       } else {
         logger.info('[Scheduler] Reviews background sync disabled (REVIEWS_SYNC_ENABLED)');
+      }
+
+      let competitorsSyncJob = null;
+      const competitorsCron = getCompetitorsSyncCronExpression();
+      if (isCompetitorsSyncEnabled()) {
+        competitorsSyncJob = cron.schedule(
+          competitorsCron,
+          async () => {
+            logger.info('[Scheduler] Competitors sync (cron)...');
+            try {
+              const out = await productCompetitorsService.refreshAll({ limit: 800, delayMs: 600 });
+              logger.info('[Scheduler] Competitors sync done', out);
+            } catch (error) {
+              logger.warn('[Scheduler] Competitors sync failed', {
+                message: error?.message || String(error),
+              });
+              await addRuntimeNotification({
+                type: 'job_failed',
+                severity: 'warn',
+                source: 'scheduler',
+                title: 'Сбой мониторинга конкурентов',
+                message: `Competitors sync failed: ${error?.message || String(error)}`,
+              });
+            }
+          },
+          { scheduled: false, timezone: 'Europe/Moscow' }
+        );
+      } else {
+        logger.info('[Scheduler] Competitors sync disabled (COMPETITORS_SYNC_ENABLED)');
       }
 
       let ordersFbsSyncJob = null;
@@ -839,8 +943,18 @@ class SchedulerService {
         schedule: minPricesNightlyCron,
         description: isMinPricesLegacyLiveRecalc()
           ? 'LEGACY: пересчёт мин. цен через live API (MIN_PRICES_NIGHTLY_LEGACY_LIVE). Расписание: MIN_PRICES_NIGHTLY_CRON'
-          : 'Ночной полный прогон: sync кэша калькулятора + пересчёт всех мин. цен из БД (MIN_PRICES_NIGHTLY_CRON, по умолчанию 3:15 МСК)'
+          : 'Ночной полный прогон: sync кэша калькулятора + пересчёт всех мин. цен из БД (MIN_PRICES_NIGHTLY_CRON, по умолчанию 4:15 МСК)'
       });
+
+      if (minPriceReconcileJob) {
+        this.jobs.push({
+          name: 'min-prices-reconcile',
+          job: minPriceReconcileJob,
+          schedule: minPriceReconcileCron,
+          description:
+            'Сверка полов с МП каждые 2 ч (WB батчем, только ниже пола). MARKETPLACE_MIN_PRICE_RECONCILE_CRON',
+        });
+      }
 
       this.jobs.push({
         name: 'marketplace-api-check',
@@ -904,6 +1018,16 @@ class SchedulerService {
           job: reviewsSyncJob,
           schedule: reviewsCron,
           description: 'Синхронизация отзывов (Ozon, WB, Яндекс). Интервал: REVIEWS_SYNC_CRON, по умолчанию 0 * * * * (раз в час)'
+        });
+      }
+
+      if (competitorsSyncJob) {
+        this.jobs.push({
+          name: 'competitors-sync',
+          job: competitorsSyncJob,
+          schedule: competitorsCron,
+          description:
+            'Мониторинг цен/рейтинга конкурентов. Интервал: COMPETITORS_SYNC_CRON, по умолчанию 15 * * * * (каждый час)'
         });
       }
 
@@ -984,9 +1108,13 @@ class SchedulerService {
       ozonCategoriesJob.start();
       ymCategoriesJob.start();
       minPricesRecalcJob.start();
+      if (minPriceReconcileJob) minPriceReconcileJob.start();
       apiCheckJob.start();
       if (reviewsSyncJob) {
         reviewsSyncJob.start();
+      }
+      if (competitorsSyncJob) {
+        competitorsSyncJob.start();
       }
       if (ordersFbsSyncJob) {
         ordersFbsSyncJob.start();
