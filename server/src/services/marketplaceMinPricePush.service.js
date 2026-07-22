@@ -327,16 +327,19 @@ async function pushWbForProduct(ctx, floor, orgId, profileId) {
   let price = null;
   let discount = 0;
   try {
+    const qs = new URLSearchParams({
+      limit: '10',
+      offset: '0',
+      filterNmID: String(nmID),
+    });
     const { response, text } = await fetchWithRetry(
-      'https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter',
+      `https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter?${qs}`,
       {
-        method: 'POST',
+        method: 'GET',
         headers: {
           Authorization: String(token),
-          'Content-Type': 'application/json',
           Accept: 'application/json',
         },
-        body: JSON.stringify({ limit: 10, offset: 0, filterNmID: [nmID] }),
       },
       { label: 'WB list/goods' }
     );
@@ -346,9 +349,13 @@ async function pushWbForProduct(ctx, floor, orgId, profileId) {
       const list = Array.isArray(goods) ? goods : [];
       const hit = list.find((g) => Number(g.nmID ?? g.nmId) === nmID) || list[0];
       if (hit) {
-        price = hit.price != null ? Number(hit.price) : hit.sizes?.[0]?.price != null
-          ? Number(hit.sizes[0].price)
-          : null;
+        const size0 = Array.isArray(hit.sizes) ? hit.sizes[0] : null;
+        price =
+          hit.price != null
+            ? Number(hit.price)
+            : size0?.price != null
+              ? Number(size0.price)
+              : null;
         discount = hit.discount != null ? Number(hit.discount) : 0;
       }
     }
@@ -414,7 +421,12 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
   });
   const apiKey = integrationsService._normalizeYandexApiKey(cfg?.api_key ?? cfg?.apiKey);
   const campaignId = String(cfg?.campaign_id ?? cfg?.campaignId ?? '').trim();
-  if (!apiKey || !campaignId) {
+  const businessIdRaw = cfg?.business_id ?? cfg?.businessId;
+  const businessId =
+    businessIdRaw != null && String(businessIdRaw).trim() !== ''
+      ? String(businessIdRaw).trim()
+      : '';
+  if (!apiKey || (!campaignId && !businessId)) {
     return { marketplace: 'ym', skipped: true, reason: 'no_credentials' };
   }
   const offerId = resolveYmOfferId(ctx.productSkus, ctx.product);
@@ -422,12 +434,20 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
     return { marketplace: 'ym', skipped: true, reason: 'not_linked' };
   }
 
+  // Кабинеты с onlyDefaultPrice правятся через businesses/*, не campaigns/*.
+  const useBusiness = Boolean(businessId);
+  const pricesPath = useBusiness
+    ? `/v2/businesses/${encodeURIComponent(businessId)}/offer-prices`
+    : `/v2/campaigns/${encodeURIComponent(campaignId)}/offer-prices`;
+  const updatesPath = useBusiness
+    ? `/v2/businesses/${encodeURIComponent(businessId)}/offer-prices/updates`
+    : `/v2/campaigns/${encodeURIComponent(campaignId)}/offer-prices/updates`;
+
   let currentPrice = null;
   try {
     const agent = getYandexHttpsAgent();
-    // Partner API: POST /v2/campaigns/{id}/offer-prices (по offerIds без limit/pageToken)
     const { response, text } = await fetchWithRetry(
-      `https://api.partner.market.yandex.ru/v2/campaigns/${encodeURIComponent(campaignId)}/offer-prices`,
+      `https://api.partner.market.yandex.ru${pricesPath}`,
       {
         method: 'POST',
         headers: {
@@ -461,8 +481,11 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
 
   const newValue = Math.max(floor, Math.ceil(currentPrice));
   const agent = getYandexHttpsAgent();
+  const offerPayload = useBusiness
+    ? { offerId, price: { value: newValue, currencyId: 'RUR' } }
+    : { id: offerId, price: { value: newValue, currencyId: 'RUR' } };
   const { response, text } = await fetchWithRetry(
-    `https://api.partner.market.yandex.ru/v2/campaigns/${encodeURIComponent(campaignId)}/offer-prices/updates`,
+    `https://api.partner.market.yandex.ru${updatesPath}`,
     {
       method: 'POST',
       headers: {
@@ -471,14 +494,7 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
         Accept: 'application/json',
       },
       agent,
-      body: JSON.stringify({
-        offers: [
-          {
-            id: offerId,
-            price: { value: newValue, currencyId: 'RUR' },
-          },
-        ],
-      }),
+      body: JSON.stringify({ offers: [offerPayload] }),
     },
     { label: 'YM offer-prices updates' }
   );
@@ -494,6 +510,7 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
     offerId,
     floor,
     previous: currentPrice,
+    via: useBusiness ? 'business' : 'campaign',
   });
   return { marketplace: 'ym', ok: true, floor, newValue };
 }
