@@ -54,6 +54,29 @@ describe('filterPendingSupplierSubmitLines', () => {
     expect(pending).toHaveLength(1);
     expect(pending[0].product_id).toBe(2);
   });
+
+  test('после отправки — доотправка новых source_orders в старой строке', () => {
+    const purchase = { supplier_submitted_at: '2026-07-22T18:42:09.194Z' };
+    const lines = [
+      {
+        product_id: 57,
+        created_at: '2026-07-22T18:42:06.913Z',
+        expected_quantity: 2,
+        source_orders: [
+          {
+            orderId: '59436699330',
+            marketplace: 'ym',
+            supplierSubmittedAt: '2026-07-22T18:42:09.463Z',
+          },
+          { orderId: '47539748-0323-2', marketplace: 'ozon' },
+        ],
+      },
+    ];
+    const pending = filterPendingSupplierSubmitLines(purchase, lines);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].product_id).toBe(57);
+    expect(pending[0].expected_quantity).toBe(1);
+  });
 });
 
 describe('mergeProcurementItemsByProductId', () => {

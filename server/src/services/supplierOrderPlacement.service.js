@@ -14,6 +14,8 @@ import {
   markOrderSourceOrdersSubmitted,
   markPurchaseLinesSourceOrdersSubmitted,
   selectLinesForOrderSupplierSubmit,
+  parseSourceOrdersEntries,
+  isSourceEntrySupplierSubmitted,
 } from '../utils/orderSupplierSubmitScope.js';
 
 function parseApiConfig(raw) {
@@ -94,7 +96,7 @@ export function shouldMarkPurchaseSupplierSubmitted(result) {
   return false;
 }
 
-/** Позиции, добавленные в закупку после последней отправки поставщику. */
+/** Позиции, добавленные в закупку после последней отправки поставщику (или с новыми source_orders). */
 export function filterPendingSupplierSubmitLines(purchase, lines) {
   const list = Array.isArray(lines) ? lines : [];
   const submittedAt = purchase?.supplier_submitted_at ?? purchase?.supplierSubmittedAt;
@@ -102,15 +104,36 @@ export function filterPendingSupplierSubmitLines(purchase, lines) {
     return list;
   }
   const cutoff = new Date(submittedAt);
-  if (Number.isNaN(cutoff.getTime())) {
-    return list;
-  }
-  return list.filter((line) => {
+  const cutoffOk = !Number.isNaN(cutoff.getTime());
+
+  const out = [];
+  for (const line of list) {
+    const entries = parseSourceOrdersEntries(line?.source_orders);
+    const pendingEntries = entries.filter((e) => !isSourceEntrySupplierSubmitted(e));
+
+    // Дописали заказ в уже существующую строку (created_at строки старый) — шлём только pending qty.
+    if (pendingEntries.length > 0) {
+      const expected = Math.max(1, parseInt(line?.expected_quantity, 10) || 1);
+      const qty =
+        pendingEntries.length >= entries.length && entries.length > 0
+          ? expected
+          : Math.max(1, pendingEntries.length);
+      out.push({
+        ...line,
+        expected_quantity: qty,
+      });
+      continue;
+    }
+
+    if (!cutoffOk) continue;
     const created = line.created_at ?? line.createdAt;
-    if (!created) return false;
+    if (!created) continue;
     const t = new Date(created);
-    return !Number.isNaN(t.getTime()) && t.getTime() > cutoff.getTime();
-  });
+    if (!Number.isNaN(t.getTime()) && t.getTime() > cutoff.getTime()) {
+      out.push(line);
+    }
+  }
+  return out;
 }
 
 async function claimPurchaseForSupplierSubmit(
