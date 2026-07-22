@@ -540,10 +540,6 @@ class SchedulerService {
       const minPriceReconcileCron = getMinPriceReconcileCron();
       if (isMinPriceReconcileEnabled()) {
         minPriceReconcileJob = cron.schedule(minPriceReconcileCron, async () => {
-          if (isSchedulerDbJobRunning()) {
-            logger.info('[Scheduler] Min price reconcile: пропуск — занята ночная задача БД');
-            return;
-          }
           const hour = Number(
             new Intl.DateTimeFormat('en-GB', {
               timeZone: 'Europe/Moscow',
@@ -556,22 +552,21 @@ class SchedulerService {
             logger.info('[Scheduler] Min price reconcile: пропуск — ночное окно 3–5 МСК');
             return;
           }
-          await runSchedulerDbJob('min-prices-reconcile', async () => {
-            logger.info('[Scheduler] Min price reconcile (below floor)...');
-            try {
-              const res = await reconcileMinPricesBelowFloor();
-              logger.info('[Scheduler] Min price reconcile done', res);
-            } catch (error) {
-              logger.error('[Scheduler] Min price reconcile failed:', error);
-              await addRuntimeNotification({
-                type: 'job_failed',
-                severity: 'error',
-                source: 'scheduler',
-                title: 'Сбой сверки мин. цен с МП',
-                message: `reconcileBelowFloor failed: ${error?.message || String(error)}`,
-              });
-            }
-          });
+          // Без runSchedulerDbJob: иначе каждые 2 ч блокируется автозакупка заказов.
+          logger.info('[Scheduler] Min price reconcile (below floor)...');
+          try {
+            const res = await reconcileMinPricesBelowFloor();
+            logger.info('[Scheduler] Min price reconcile done', res);
+          } catch (error) {
+            logger.error('[Scheduler] Min price reconcile failed:', error);
+            await addRuntimeNotification({
+              type: 'job_failed',
+              severity: 'error',
+              source: 'scheduler',
+              title: 'Сбой сверки мин. цен с МП',
+              message: `reconcileBelowFloor failed: ${error?.message || String(error)}`,
+            });
+          }
         }, {
           scheduled: false,
           timezone: 'Europe/Moscow',
