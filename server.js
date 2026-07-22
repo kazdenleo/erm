@@ -4712,7 +4712,8 @@ async function fetchWildberriesFBSOrders(config) {
         sku: order.skus?.[0] || '',
         productName: `Артикул ${order.nmId}`,
         quantity: 1,
-        price: order.convertedPrice || order.price || 0,
+        // WB API: цены в копейках
+        price: Math.round(Number(order.convertedPrice || order.price || 0)) / 100 || 0,
         status: mappedStatus,
         createdAt: order.createdAt || '',
         inProcessAt: order.createdAt || '',

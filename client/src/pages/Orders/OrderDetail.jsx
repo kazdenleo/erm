@@ -1560,7 +1560,7 @@ export function WildberriesDetail({ detail, localLines, assemblyStickerNumber = 
           ) : null}
           <dt>Артикул</dt><dd>{detail.article}</dd>
           <dt>Время появления на маркетплейсе</dt><dd>{detail.createdAt ? new Date(detail.createdAt).toLocaleString('ru-RU') : '—'}</dd>
-          <dt>Цена</dt><dd>{detail.price} {detail.convertedPrice != null && `(${detail.convertedPrice} коп.)`}</dd>
+          <dt>Цена</dt><dd>{detail.priceRub != null ? detail.priceRub : detail.price} ₽</dd>
           <dt>Тип доставки</dt><dd>{detail.deliveryType || '—'}</dd>
           {detail.supplyId && <><dt>Поставка</dt><dd>{detail.supplyId}</dd></>}
         </dl>

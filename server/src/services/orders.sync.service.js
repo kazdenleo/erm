@@ -26,6 +26,40 @@ const SYNC_BACKGROUND_MAX_MS = 25 * 60 * 1000;
 export const MANUAL_ORDER_SYNC_DAYS = [7, 14, 28, 90];
 const AUTO_ORDER_SYNC_DAYS = 7;
 
+/**
+ * WB Orders FBS API: price / convertedPrice / finalPrice — в копейках (×100).
+ * @see https://dev.wildberries.ru/docs/openapi/orders-fbs
+ */
+export function wbOrderPriceToRub(order) {
+  if (order == null) return 0;
+  const raw =
+    order.convertedFinalPrice ??
+    order.convertedPrice ??
+    order.finalPrice ??
+    order.price ??
+    0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(n) / 100;
+}
+
+/** Поля цен в сыром ответе WB → рубли (для карточки заказа). */
+export function normalizeWbOrderDetailPrices(detail) {
+  if (!detail || typeof detail !== 'object') return detail;
+  const out = { ...detail };
+  const fields = ['price', 'convertedPrice', 'finalPrice', 'convertedFinalPrice'];
+  for (const f of fields) {
+    if (out[f] == null || out[f] === '') continue;
+    const n = Number(out[f]);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    // Уже рубли (после синка/бэкфилла) обычно < 1e6; сырые копейки — целые ×100.
+    // Надёжнее: всегда делим поля из live API (они всегда в копейках).
+    out[f] = Math.round(n) / 100;
+  }
+  out.priceRub = out.convertedFinalPrice ?? out.convertedPrice ?? out.finalPrice ?? out.price ?? 0;
+  return out;
+}
+
 function normalizeManualSyncDaysBack(raw) {
   const n = typeof raw === 'string' ? parseInt(raw, 10) : Number(raw);
   if (!Number.isFinite(n)) return null;
@@ -1461,7 +1495,7 @@ class OrdersSyncService {
       }
       try {
         const result = await fetchWBOrderById(wbConfig, orderId);
-        return { marketplace: 'wildberries', detail: result };
+        return { marketplace: 'wildberries', detail: normalizeWbOrderDetailPrices(result) };
       } catch (e) {
         if (e.statusCode !== 404) throw e;
         const localOrder = await getLocalOrderByMarketplaceAndOrderId('wildberries', orderId, profileId);
@@ -2297,7 +2331,7 @@ async function fetchWildberriesFBSOrders(config) {
         sku: nmId || '',
         productName,
         quantity: 1,
-        price: order.convertedPrice || order.price || 0,
+        price: wbOrderPriceToRub(order),
         status: mappedStatus,
         createdAt: order.createdAt || '',
         inProcessAt: order.createdAt || '',
@@ -2397,7 +2431,7 @@ async function fetchWildberriesFBSOrdersByPeriod(config, daysBack = 90) {
       sku: nmId || '',
       productName: sellerArticle || sellerSku || (nmId ? `Артикул ${nmId}` : ''),
       quantity: 1,
-      price: order.convertedPrice || order.price || 0,
+      price: wbOrderPriceToRub(order),
       // До ответа /orders/status — не «Новый»: иначе годовая выгрузка даёт сотни ложных «Новых».
       status: WB_STATUS_PENDING,
       createdAt: order.createdAt || order.sellerDate || '',
@@ -2556,6 +2590,7 @@ function buildWBDetailFromLocalOrder(order, orderId) {
     quantity: Number.isNaN(quantity) ? null : quantity,
     createdAt: order.createdAt ?? order.created_at ?? null,
     price: order.price ?? 0,
+    priceRub: order.price != null ? Number(order.price) : 0,
     convertedPrice: order.convertedPrice ?? order.converted_price ?? null,
     deliveryType: order.deliveryType ?? order.delivery_type ?? null,
     supplyId: order.supplyId ?? order.supply_id ?? null,
