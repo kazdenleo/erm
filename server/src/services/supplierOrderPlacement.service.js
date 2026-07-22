@@ -12,6 +12,7 @@ import {
 } from './supplierOrderAdapters/index.js';
 import {
   markOrderSourceOrdersSubmitted,
+  markPurchaseLinesSourceOrdersSubmitted,
   selectLinesForOrderSupplierSubmit,
 } from '../utils/orderSupplierSubmitScope.js';
 
@@ -651,6 +652,7 @@ export async function trySubmitPurchaseToSupplier({
           force: Boolean(force),
           append: appendOnly,
         });
+        await markPurchaseLinesSourceOrdersSubmitted(pid, linesToSubmit, result.lines);
       }
       claimedWithoutForce = false;
     } else if (claimedWithoutForce) {

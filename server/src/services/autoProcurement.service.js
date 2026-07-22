@@ -60,9 +60,10 @@ const ELIGIBLE_STATUS_SQL = `(
   )
 )`;
 
-async function orderAlreadyInOpenPurchase(client, profileId, marketplace, orderId) {
+async function orderAlreadyInOpenPurchase(client, profileId, marketplace, orderId, orderGroupId = null) {
   const dbMp = orderMarketplaceToDb(marketplace);
   const oid = String(orderId ?? '').trim();
+  const gid = orderGroupId != null ? String(orderGroupId).trim() : '';
   if (!dbMp || !oid) return false;
   const r = await client.query(
     `SELECT 1
@@ -71,7 +72,13 @@ async function orderAlreadyInOpenPurchase(client, profileId, marketplace, orderI
      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
      WHERE p.profile_id = $1
        AND p.status = 'open'
-       AND elem->>'orderId' = $3
+       AND (
+         LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM($3))
+         OR (
+           $4::text <> ''
+           AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM($4))
+         )
+       )
        AND (
          CASE
            WHEN LOWER(COALESCE(elem->>'marketplace', '')) IN ('wb', 'wildberries') THEN 'wb'
@@ -81,9 +88,35 @@ async function orderAlreadyInOpenPurchase(client, profileId, marketplace, orderI
          END
        ) = $2
      LIMIT 1`,
-    [profileId, dbMp, oid]
+    [profileId, dbMp, oid, gid]
   );
   return (r.rows?.length ?? 0) > 0;
+}
+
+/** Сколько уже в открытых закупках по заказу и товару (антидубль автозакупки). */
+async function purchasedQtyInOpenPurchases(profileId, orderDbId, productId) {
+  const oid = Number(orderDbId);
+  const pid = Number(productId);
+  if (!Number.isFinite(oid) || oid < 1 || !Number.isFinite(pid) || pid < 1) return 0;
+  const r = await query(
+    `SELECT COALESCE(SUM(GREATEST(0, pi.expected_quantity - pi.received_quantity)), 0)::int AS qty
+     FROM purchase_items pi
+     INNER JOIN purchases p ON p.id = pi.purchase_id
+     CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pi.source_orders, '[]'::jsonb)) AS elem
+     INNER JOIN orders o ON o.id = $2
+     WHERE p.profile_id = $1
+       AND pi.product_id = $3
+       AND p.status = 'open'
+       AND (
+         LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_id))
+         OR (
+           o.order_group_id IS NOT NULL
+           AND LOWER(TRIM(elem->>'orderId')) = LOWER(TRIM(o.order_group_id))
+         )
+       )`,
+    [profileId, oid, pid]
+  );
+  return Math.max(0, Number(r.rows?.[0]?.qty) || 0);
 }
 
 async function loadActiveSuppliers(profileId, { requireAutoOrdersEnabled = false } = {}) {
@@ -175,12 +208,13 @@ async function expandDemandForOrderRow(row, autoSuppliers) {
   return [{ ...base, productId, quantityNeeded: qty }];
 }
 
-async function deficitQtyForDemandLine(line) {
+async function deficitQtyForDemandLine(line, profileId) {
   const reserved = await ordersService._getReservedQtyForOrderProduct(line.orderDbId, line.productId);
+  const purchased = await purchasedQtyInOpenPurchases(profileId, line.orderDbId, line.productId);
   const coverage = computeProcurementDeficit({
     quantityNeeded: line.quantityNeeded,
     quantityReserved: reserved,
-    quantityPurchased: 0,
+    quantityPurchased: purchased,
   });
   return coverage.deficit;
 }
@@ -424,7 +458,7 @@ class AutoProcurementService {
     const warehouseWeekendDays = await loadWarehouseWeekendDays(warehouseId, pid);
 
     const ordersRes = await query(
-      `SELECT o.id, o.marketplace, o.order_id, o.product_id, o.quantity, o.status,
+      `SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.quantity, o.status,
               o.offer_id, o.marketplace_sku, o.product_name, o.profile_id, o.warehouse_id
        FROM orders o
        WHERE o.profile_id = $1
@@ -448,7 +482,7 @@ class AutoProcurementService {
       const orderId = row.order_id;
 
       const already = await transaction(async (client) =>
-        orderAlreadyInOpenPurchase(client, pid, mp, orderId)
+        orderAlreadyInOpenPurchase(client, pid, mp, orderId, row.order_group_id)
       );
       if (already) {
         skipped += 1;
@@ -472,7 +506,7 @@ class AutoProcurementService {
 
       let anyAdded = false;
       for (const line of demandLines) {
-        const deficit = await deficitQtyForDemandLine(line);
+        const deficit = await deficitQtyForDemandLine(line, pid);
         if (deficit <= 0) continue;
 
         const supplier = await pickSupplierForProduct(line.productId, autoSuppliers, deficit);
@@ -711,7 +745,7 @@ class AutoProcurementService {
         }
         const mp = row.marketplace;
         const oid = row.order_id;
-        if (await orderAlreadyInOpenPurchase(client, pid, mp, oid)) {
+        if (await orderAlreadyInOpenPurchase(client, pid, mp, oid, row.order_group_id)) {
           skippedAlreadyInPurchase += 1;
           continue;
         }

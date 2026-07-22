@@ -140,3 +140,65 @@ export async function markOrderSourceOrdersSubmitted(purchaseId, scope, submitte
     }
   }
 }
+
+/** Пометить source_orders отправленными для строк, ушедших в API (отправка всей закупки). */
+export async function markPurchaseLinesSourceOrdersSubmitted(purchaseId, lines = [], submittedResults = []) {
+  const pid = Number(purchaseId);
+  if (!Number.isFinite(pid) || pid < 1) return;
+
+  const byProduct = new Map();
+  for (const sl of submittedResults || []) {
+    const productId = Number(sl.productId ?? sl.product_id);
+    if (!Number.isFinite(productId) || productId < 1) continue;
+    const basketId = sl.basketItemId ?? sl.supplierBasketItemId ?? sl.supplierOrderId ?? null;
+    byProduct.set(productId, basketId);
+  }
+
+  const lineIds = new Set();
+  const productIds = new Set();
+  for (const line of lines || []) {
+    const itemId = Number(line.purchase_item_id ?? line.purchaseItemId ?? line.id);
+    if (Number.isFinite(itemId) && itemId > 0) lineIds.add(itemId);
+    const productId = Number(line.product_id ?? line.productId);
+    if (Number.isFinite(productId) && productId > 0) productIds.add(productId);
+  }
+
+  const items = await query(
+    `SELECT id, product_id, source_orders FROM purchase_items WHERE purchase_id = $1`,
+    [pid]
+  );
+  const now = new Date().toISOString();
+
+  for (const row of items.rows || []) {
+    const itemId = Number(row.id);
+    const productId = Number(row.product_id);
+    const match =
+      (lineIds.size > 0 && lineIds.has(itemId)) ||
+      (productIds.size > 0 && productIds.has(productId)) ||
+      (lineIds.size === 0 && productIds.size === 0);
+    if (!match) continue;
+
+    const sources = parseSourceOrdersEntries(row.source_orders);
+    if (!sources.length) continue;
+    const basketId = byProduct.get(productId);
+    let changed = false;
+    const next = sources.map((ent) => {
+      if (isSourceEntrySupplierSubmitted(ent)) return ent;
+      changed = true;
+      return {
+        marketplace: ent.marketplace,
+        orderId: ent.orderId,
+        supplierSubmittedAt: now,
+        ...(basketId != null ? { supplierBasketItemId: basketId } : {}),
+      };
+    });
+    if (changed) {
+      await query(
+        `UPDATE purchase_items
+         SET source_orders = $2::jsonb, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [row.id, JSON.stringify(next)]
+      );
+    }
+  }
+}

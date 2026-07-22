@@ -374,7 +374,16 @@ function normalizeSourceOrderList(arr) {
     const marketplace = String(x.marketplace).trim();
     const orderId = String(x.orderId).trim();
     if (!marketplace || !orderId) continue;
-    out.push({ marketplace, orderId });
+    const entry = { marketplace, orderId };
+    const submittedAt = x.supplierSubmittedAt ?? x.supplier_submitted_at ?? null;
+    if (submittedAt != null && String(submittedAt).trim() !== '') {
+      entry.supplierSubmittedAt = submittedAt;
+    }
+    const basketId = x.supplierBasketItemId ?? x.supplier_basket_item_id ?? null;
+    if (basketId != null && String(basketId).trim() !== '') {
+      entry.supplierBasketItemId = basketId;
+    }
+    out.push(entry);
   }
   return out;
 }
@@ -535,14 +544,37 @@ async function mergeSourceOrdersInTx(client, purchaseId, productId, newOrders) {
   );
   if (!r.rows?.length) return;
   const existing = parseSourceOrdersJson(r.rows[0].source_orders);
-  const key = (o) => `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '')}`;
+  const key = (o) => `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '').toLowerCase()}`;
   const map = new Map();
   for (const o of existing) {
     const k = key(o);
-    if (!k.endsWith('|')) map.set(k, { marketplace: o.marketplace, orderId: String(o.orderId) });
+    if (!k.endsWith('|')) map.set(k, { ...o, orderId: String(o.orderId) });
   }
-  for (const o of norm) map.set(key(o), { marketplace: o.marketplace, orderId: o.orderId });
-  const merged = [...map.values()];
+  for (const o of norm) {
+    const k = key(o);
+    const prev = map.get(k);
+    if (prev) {
+      map.set(k, {
+        ...prev,
+        ...o,
+        // Не затираем факт отправки поставщику при дозаполнении закупки
+        supplierSubmittedAt: prev.supplierSubmittedAt ?? o.supplierSubmittedAt ?? null,
+        supplierBasketItemId: prev.supplierBasketItemId ?? o.supplierBasketItemId ?? null,
+      });
+    } else {
+      map.set(k, { ...o });
+    }
+  }
+  const merged = [...map.values()].map((o) => {
+    const entry = { marketplace: o.marketplace, orderId: String(o.orderId) };
+    if (o.supplierSubmittedAt != null && String(o.supplierSubmittedAt).trim() !== '') {
+      entry.supplierSubmittedAt = o.supplierSubmittedAt;
+    }
+    if (o.supplierBasketItemId != null && String(o.supplierBasketItemId).trim() !== '') {
+      entry.supplierBasketItemId = o.supplierBasketItemId;
+    }
+    return entry;
+  });
   await client.query(
     `UPDATE purchase_items SET source_orders = $3::jsonb, updated_at = CURRENT_TIMESTAMP WHERE purchase_id = $1 AND product_id = $2`,
     [purchaseId, productId, JSON.stringify(merged)]
@@ -756,20 +788,61 @@ async function applyPurchaseLineItemsInTx(
   const incomingDeltas = new Map();
 
   for (const it of normalized) {
-    const sourceJson = JSON.stringify(normalizeSourceOrderList(it.sourceOrders));
+    const incomingSources = normalizeSourceOrderList(it.sourceOrders);
+    let qtyToAdd = Math.max(0, Math.floor(Number(it.qty) || 0));
+
+    // Уже есть все source_orders на этой строке — не раздуваем expected_quantity (антидубль).
+    if (!insertOnly && qtyToAdd > 0 && incomingSources.length > 0) {
+      const prev = await client.query(
+        `SELECT expected_quantity, source_orders
+         FROM purchase_items
+         WHERE purchase_id = $1 AND product_id = $2
+         LIMIT 1`,
+        [purchaseId, it.productId]
+      );
+      if (prev.rows?.length) {
+        const existing = parseSourceOrdersJson(prev.rows[0].source_orders);
+        const existingKeys = new Set(
+          existing.map(
+            (o) =>
+              `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '').toLowerCase()}`
+          )
+        );
+        const allLinked = incomingSources.every((o) =>
+          existingKeys.has(
+            `${String(o.marketplace || '').toLowerCase()}|${String(o.orderId ?? '').toLowerCase()}`
+          )
+        );
+        if (allLinked) {
+          qtyToAdd = 0;
+          await mergeSourceOrdersInTx(client, purchaseId, it.productId, incomingSources);
+          continue;
+        }
+      }
+    }
+
+    if (qtyToAdd <= 0 && !insertOnly) {
+      if (incomingSources.length) {
+        await mergeSourceOrdersInTx(client, purchaseId, it.productId, incomingSources);
+      }
+      continue;
+    }
+
+    const sourceJson = JSON.stringify(incomingSources);
+    const qty = qtyToAdd > 0 ? qtyToAdd : Math.max(1, Math.floor(Number(it.qty) || 1));
     if (insertOnly) {
       if (hasPrice) {
         const pp = normalizePurchasePrice(it.purchasePrice);
         await client.query(
           `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders, purchase_price)
            VALUES ($1, $2, $3, 0, $4::jsonb, COALESCE($5::numeric, (SELECT cost FROM products WHERE id = $2)))`,
-          [purchaseId, it.productId, it.qty, sourceJson, pp]
+          [purchaseId, it.productId, qty, sourceJson, pp]
         );
       } else {
         await client.query(
           `INSERT INTO purchase_items (purchase_id, product_id, expected_quantity, received_quantity, source_orders)
            VALUES ($1, $2, $3, 0, $4::jsonb)`,
-          [purchaseId, it.productId, it.qty, sourceJson]
+          [purchaseId, it.productId, qty, sourceJson]
         );
       }
     } else if (hasPrice) {
@@ -782,7 +855,7 @@ async function applyPurchaseLineItemsInTx(
            expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
            purchase_price = COALESCE(EXCLUDED.purchase_price, purchase_items.purchase_price),
            updated_at = CURRENT_TIMESTAMP`,
-        [purchaseId, it.productId, it.qty, sourceJson, pp]
+        [purchaseId, it.productId, qty, sourceJson, pp]
       );
       await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
     } else {
@@ -793,14 +866,14 @@ async function applyPurchaseLineItemsInTx(
          DO UPDATE SET
            expected_quantity = purchase_items.expected_quantity + EXCLUDED.expected_quantity,
            updated_at = CURRENT_TIMESTAMP`,
-        [purchaseId, it.productId, it.qty, sourceJson]
+        [purchaseId, it.productId, qty, sourceJson]
       );
       await mergeSourceOrdersInTx(client, purchaseId, it.productId, it.sourceOrders);
     }
     if (lightIncoming) {
-      incomingDeltas.set(it.productId, (incomingDeltas.get(it.productId) || 0) + it.qty);
+      incomingDeltas.set(it.productId, (incomingDeltas.get(it.productId) || 0) + qty);
     } else {
-      await addIncomingDeltaForPurchaseInTx(client, purchaseId, it.productId, it.qty, profileId, {
+      await addIncomingDeltaForPurchaseInTx(client, purchaseId, it.productId, qty, profileId, {
         lightIncoming: false,
         skipProductAssert: true,
       });
