@@ -22,6 +22,7 @@ import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js'
 import { extractWbWarehouseList, findWbTariffWarehouse } from '../utils/wbTariffs.js';
 import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
 import { resolveProductVolumeLiters } from '../utils/productVolume.js';
+import { schedulePushForProduct } from './marketplaceMinPricePush.service.js';
 
 // Временная функция для получения кэшированных данных WB
 function getWBCachedData() {
@@ -2871,6 +2872,16 @@ class PricesService {
     }
 
     logger.info(`[Prices Service] Recalculated and saved min prices for product ${productId}`);
+    if (!options.skipMinPricePush) {
+      try {
+        schedulePushForProduct(productId);
+      } catch (e) {
+        logger.warn('[Prices Service] schedule min-price push failed', {
+          productId,
+          message: e?.message || String(e),
+        });
+      }
+    }
     return { errors };
   }
 
@@ -2890,7 +2901,7 @@ class PricesService {
       if (!products.length) break;
 
       for (let i = 0; i < products.length; i++) {
-        await this.recalculateAndSaveForProduct(products[i].id);
+        await this.recalculateAndSaveForProduct(products[i].id, { skipMinPricePush: true });
         totalProcessed++;
         if (i < products.length - 1) await new Promise(r => setTimeout(r, delayMs));
       }
@@ -2916,7 +2927,10 @@ class PricesService {
       if (!products.length) break;
 
       for (let i = 0; i < products.length; i++) {
-        await this.recalculateAndSaveForProduct(products[i].id, { useCalculatorCache: true });
+        await this.recalculateAndSaveForProduct(products[i].id, {
+          useCalculatorCache: true,
+          skipMinPricePush: true,
+        });
         totalProcessed++;
       }
       logger.info(`[Prices Service] Recalculated from cache batch: ${totalProcessed} products so far`);

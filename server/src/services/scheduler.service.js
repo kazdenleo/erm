@@ -5,9 +5,11 @@
  * Минимальные цены по маркетплейсам:
  * Комиссии и справочники MP обновляются примерно раз в сутки (ночные задачи 1:00–2:00 МСК).
  * После этого один раз за сутки выполняется полный прогон: синхронизация кэша калькулятора из API
- * и пересчёт мин. цен по всему каталогу из БД (см. MIN_PRICES_NIGHTLY_CRON).
+ * и пересчёт мин. цен по всему каталогу из БД (см. MIN_PRICES_NIGHTLY_CRON),
+ * затем пуш полов на МП (MARKETPLACE_MIN_PRICE_PUSH_ENABLED, по умолчанию вкл.).
  * В течение дня при изменении карточки (себестоимость, габариты, категория и т.д.) достаточно
- * точечного пересчёта — POST .../recalculate-one (по умолчанию live API для затронутого товара).
+ * точечного пересчёта — POST .../recalculate-one (по умолчанию live API для затронутого товара)
+ * с отложенным пушем мин. цены на МП.
  */
 
 import logger from '../utils/logger.js';
@@ -16,6 +18,7 @@ import repositoryFactory from '../config/repository-factory.js';
 import wbMarketplaceService from './wbMarketplace.service.js';
 import integrationsService from './integrations.service.js';
 import pricesService from './prices.service.js';
+import { pushForAllProfiles as pushMinPricesForAllProfiles } from './marketplaceMinPricePush.service.js';
 import categoryMarketplaceCommissionsService from './categoryMarketplaceCommissions.service.js';
 import ordersSyncService from './orders.sync.service.js';
 import { getReserveDbLimiterStats } from '../utils/reserveDbLimiter.js';
@@ -440,6 +443,12 @@ class SchedulerService {
               message: `Legacy recalculateAndSaveAll failed: ${error?.message || String(error)}`
             });
           }
+          try {
+            const pushRes = await pushMinPricesForAllProfiles();
+            logger.info('[Scheduler] Legacy min price push completed', pushRes);
+          } catch (error) {
+            logger.error('[Scheduler] Legacy min price push failed:', error);
+          }
           return;
         }
         logger.info('[Scheduler] Nightly: sync MP calculator cache from APIs...');
@@ -474,6 +483,20 @@ class SchedulerService {
             source: 'scheduler',
             title: 'Сбой ночного пересчёта мин. цен из кэша',
             message: `recalculateAndSaveAllFromCache failed: ${error?.message || String(error)}`
+          });
+        }
+        logger.info('[Scheduler] Nightly: push min prices to marketplaces...');
+        try {
+          const pushRes = await pushMinPricesForAllProfiles();
+          logger.info('[Scheduler] Min price push completed', pushRes);
+        } catch (error) {
+          logger.error('[Scheduler] Min price push failed:', error);
+          await addRuntimeNotification({
+            type: 'job_failed',
+            severity: 'error',
+            source: 'scheduler',
+            title: 'Сбой ночного пуша мин. цен на МП',
+            message: `pushForAllProfiles failed: ${error?.message || String(error)}`
           });
         }
         });
@@ -1145,6 +1168,11 @@ class SchedulerService {
             }
             await pricesService.syncCalculatorCacheFromApi({ delayMs: getCalculatorCacheSyncDelayMs() });
             await pricesService.recalculateAndSaveAllFromCache();
+            try {
+              await pushMinPricesForAllProfiles();
+            } catch (error) {
+              logger.error('[Scheduler] Min price push (fallback) failed:', error);
+            }
           }).catch((error) => logger.error('[Scheduler] Min prices nightly failed:', error));
         }, FALLBACK_MIN_PRICES_MINUTES_AFTER_1AM * 60 * 1000);
 
