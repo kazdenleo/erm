@@ -510,8 +510,8 @@ class AutoProcurementService {
        WHERE o.profile_id = $1
          AND (
            o.product_id IS NOT NULL
-           OR NULLIF(BTRIM(COALESCE(o.offer_id, '')), '') IS NOT NULL
-           OR NULLIF(BTRIM(COALESCE(o.marketplace_sku, '')), '') IS NOT NULL
+           OR NULLIF(BTRIM(COALESCE(o.offer_id::text, '')), '') IS NOT NULL
+           OR NULLIF(BTRIM(COALESCE(o.marketplace_sku::text, '')), '') IS NOT NULL
          )
          AND ${ELIGIBLE_STATUS_SQL}
        ORDER BY o.created_at ASC NULLS LAST, o.id ASC
