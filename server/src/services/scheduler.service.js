@@ -6,8 +6,8 @@
  * Комиссии и справочники MP обновляются примерно раз в сутки (ночные задачи 1:00–2:00 МСК).
  * После этого один раз за сутки выполняется полный прогон: синхронизация кэша калькулятора из API
  * и пересчёт мин. цен по всему каталогу из БД (см. MIN_PRICES_NIGHTLY_CRON),
- * затем пуш полов на МП (MARKETPLACE_MIN_PRICE_PUSH_ENABLED, по умолчанию вкл.).
- * Днём — сверка каждые 2 ч (MARKETPLACE_MIN_PRICE_RECONCILE_CRON): WB батчем, только ниже пола.
+ * затем пуш цен на МП (MARKETPLACE_MIN_PRICE_PUSH_ENABLED; только org с auto_push_marketplace_prices).
+ * Днём — сверка каждые 2 ч (MARKETPLACE_MIN_PRICE_RECONCILE_CRON): WB батчем + Ozon/YM для затронутых.
  * В течение дня при изменении карточки (себестоимость, габариты, категория и т.д.) достаточно
  * точечного пересчёта — POST .../recalculate-one (по умолчанию live API для затронутого товара)
  * с отложенным пушем мин. цены на МП.
@@ -196,7 +196,7 @@ function getMinPricesNightlyCron() {
 }
 
 /**
- * Дневная сверка полов с МП (батч WB + точечный Ozon/YM для затронутых).
+ * Дневная сверка цен с МП (батч WB + точечный Ozon/YM для затронутых).
  * По умолчанию каждые 2 часа в :20 МСК. MARKETPLACE_MIN_PRICE_RECONCILE_CRON.
  */
 function getMinPriceReconcileCron() {
@@ -861,25 +861,27 @@ class SchedulerService {
         autoProcurementJob = cron.schedule(
           autoProcurementCron,
           async () => {
-            if (isSchedulerDbJobRunning()) {
-              logger.info('[AutoProcurement] пропуск — ночная задача БД');
-              return;
-            }
-            await runSchedulerDbJob('auto-procurement', async () => {
-              const { default: autoProcurementService } = await import('./autoProcurement.service.js');
-              const out = await autoProcurementService.runForAllProfiles();
-              if (out?.skipped && out.reason === 'in_progress') {
-                logger.info('[AutoProcurement] пропуск — предыдущий прогон ещё выполняется');
-                return;
-              }
-              const purchased = (out.results || []).reduce((s, r) => s + (r.purchases || 0), 0);
-              const submitted = (out.results || []).reduce((s, r) => s + (r.submitted || 0), 0);
-              if (purchased > 0 || submitted > 0) {
-                logger.info(
-                  `[AutoProcurement] profiles=${out.profiles || 0} purchases=${purchased} submitted=${submitted}`
-                );
-              }
-            });
+            // Не пропускаем тик при занятом мьютексе — ставим в очередь (priority+coalesce),
+            // иначе заказы часами не уходят поставщику.
+            await runSchedulerDbJob(
+              'auto-procurement',
+              async () => {
+                const { default: autoProcurementService } = await import('./autoProcurement.service.js');
+                const out = await autoProcurementService.runForAllProfiles();
+                if (out?.skipped && out.reason === 'in_progress') {
+                  logger.info('[AutoProcurement] пропуск — предыдущий прогон ещё выполняется');
+                  return;
+                }
+                const purchased = (out.results || []).reduce((s, r) => s + (r.purchases || 0), 0);
+                const submitted = (out.results || []).reduce((s, r) => s + (r.submitted || 0), 0);
+                if (purchased > 0 || submitted > 0) {
+                  logger.info(
+                    `[AutoProcurement] profiles=${out.profiles || 0} purchases=${purchased} submitted=${submitted}`
+                  );
+                }
+              },
+              { coalesce: true, priority: true }
+            );
           },
           {
             scheduled: false,
@@ -947,7 +949,7 @@ class SchedulerService {
           job: minPriceReconcileJob,
           schedule: minPriceReconcileCron,
           description:
-            'Сверка полов с МП каждые 2 ч (WB батчем, только ниже пола). MARKETPLACE_MIN_PRICE_RECONCILE_CRON',
+            'Сверка цен с МП каждые 2 ч (WB батчем). MARKETPLACE_MIN_PRICE_RECONCILE_CRON; sync-to-min по умолчанию',
         });
       }
 
@@ -1092,7 +1094,7 @@ class SchedulerService {
           job: autoProcurementJob,
           schedule: autoProcurementCron,
           description:
-            'Автозакупка и отправка в API поставщиков (autoOrdersEnabled). AUTO_PROCUREMENT_CRON, по умолчанию */2 * * * *'
+            'Автозакупка и отправка в API поставщиков (autoOrdersEnabled). AUTO_PROCUREMENT_CRON, по умолчанию */2 * * * *. Не отбрасывается при занятом мьютексе — ставится в приоритетную очередь.'
         });
       }
 

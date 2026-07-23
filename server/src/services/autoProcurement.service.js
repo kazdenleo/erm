@@ -6,7 +6,7 @@
 import { query, transaction } from '../config/database.js';
 import repositoryFactory from '../config/repository-factory.js';
 import purchasesService from './purchases.service.js';
-import ordersService from './orders.service.js';
+import ordersService, { queryOrderProductReserveMetaMap } from './orders.service.js';
 import logger from '../utils/logger.js';
 import { autoOrderSettingsFromApiConfig } from '../utils/supplierAutoOrderSettings.js';
 import {
@@ -22,6 +22,7 @@ import {
   supplierPreSubmitRequired,
   trySubmitPurchaseToSupplier,
 } from './supplierOrderPlacement.service.js';
+import { runSchedulerDbJob } from '../utils/schedulerDbMutex.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -254,12 +255,19 @@ async function expandDemandForOrderRow(row, autoSuppliers) {
   return [{ ...base, productId, quantityNeeded: qty }];
 }
 
+/**
+ * Для автозакупки учитываем только резерв со склада (on_hand).
+ * Резерв «с входящего» не закрывает дефицит: иначе второй заказ на тот же SKU
+ * «закрывается» ожиданием чужой поставки и не уходит поставщику.
+ */
 async function deficitQtyForDemandLine(line, profileId) {
-  const reserved = await ordersService._getReservedQtyForOrderProduct(line.orderDbId, line.productId);
+  const metaMap = await queryOrderProductReserveMetaMap(line.productId, [line.orderDbId]);
+  const meta = metaMap.get(Number(line.orderDbId)) || { fromOnHand: 0 };
+  const reservedOnHand = Math.max(0, Math.floor(Number(meta.fromOnHand) || 0));
   const purchased = await purchasedQtyInOpenPurchases(profileId, line.orderDbId, line.productId);
   const coverage = computeProcurementDeficit({
     quantityNeeded: line.quantityNeeded,
-    quantityReserved: reserved,
+    quantityReserved: reservedOnHand,
     quantityPurchased: purchased,
   });
   return coverage.deficit;
@@ -903,6 +911,38 @@ class AutoProcurementService {
     } finally {
       _runInProgress = false;
     }
+  }
+
+  /**
+   * Поставить автозакупку+отправку поставщику в очередь планировщика сразу
+   * (после синка заказов / по крону). coalesce — не копить дубликаты.
+   */
+  scheduleImmediateRun({ reason = 'manual' } = {}) {
+    return runSchedulerDbJob(
+      'auto-procurement',
+      async () => {
+        const out = await this.runForAllProfiles();
+        if (out?.skipped && out.reason === 'in_progress') {
+          logger.info('[AutoProcurement] scheduleImmediateRun: already in progress', { reason });
+          return out;
+        }
+        const purchased = (out.results || []).reduce((s, r) => s + (r.purchases || 0), 0);
+        const submitted = (out.results || []).reduce((s, r) => s + (r.submitted || 0), 0);
+        if (purchased > 0 || submitted > 0) {
+          logger.info(
+            `[AutoProcurement] immediate(${reason}): profiles=${out.profiles || 0} purchases=${purchased} submitted=${submitted}`
+          );
+        }
+        return out;
+      },
+      { coalesce: true, priority: true }
+    ).catch((e) => {
+      logger.warn('[AutoProcurement] scheduleImmediateRun failed', {
+        reason,
+        message: e?.message || String(e),
+      });
+      return { error: e?.message || String(e) };
+    });
   }
 
   async _runForAllProfilesInner({ userId = null } = {}) {

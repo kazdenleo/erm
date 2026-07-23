@@ -1,11 +1,13 @@
 /**
- * Очередь тяжёлых ночных задач планировщика — одна за раз, чтобы не исчерпывать пул PostgreSQL.
+ * Очередь тяжёлых задач планировщика — одна за раз, чтобы не исчерпывать пул PostgreSQL.
+ * Поддержка coalesce (не копить дубликаты) и priority (срочно в голову очереди).
  */
 
 import logger from './logger.js';
 
 let running = false;
 let currentJobName = null;
+/** @type {{ name: string, execute: () => void }[]} */
 const waitQueue = [];
 
 function sleep(ms) {
@@ -28,18 +30,34 @@ export function getSchedulerDbJobName() {
   return currentJobName;
 }
 
+function hasJobNamed(name) {
+  const n = String(name || '');
+  if (!n) return false;
+  if (currentJobName === n) return true;
+  return waitQueue.some((q) => q.name === n);
+}
+
 /**
  * @param {string} name — для логов
  * @param {() => Promise<unknown>} fn
- * @param {{ retries?: number }} [opts]
+ * @param {{ retries?: number, coalesce?: boolean, priority?: boolean }} [opts]
+ *   coalesce — если такая задача уже выполняется/в очереди, не ставить ещё одну
+ *   priority — поставить в голову очереди (для автозакупки/отправки поставщику)
  */
-export function runSchedulerDbJob(name, fn, { retries = 3 } = {}) {
+export function runSchedulerDbJob(name, fn, { retries = 3, coalesce = false, priority = false } = {}) {
+  const jobName = String(name || 'job');
+
+  if (coalesce && hasJobNamed(jobName)) {
+    logger.info(`[Scheduler] DB job coalesced: ${jobName} (running/queued: ${currentJobName || 'queue'})`);
+    return Promise.resolve({ skipped: true, reason: 'coalesced' });
+  }
+
   return new Promise((resolve, reject) => {
     const execute = () => {
       running = true;
-      currentJobName = name;
+      currentJobName = jobName;
       (async () => {
-        logger.info(`[Scheduler] DB job start: ${name}`);
+        logger.info(`[Scheduler] DB job start: ${jobName}`);
         let lastErr;
         for (let attempt = 1; attempt <= retries; attempt += 1) {
           try {
@@ -54,7 +72,7 @@ export function runSchedulerDbJob(name, fn, { retries = 3 } = {}) {
             }
             const waitSec = 20 * attempt;
             logger.warn(
-              `[Scheduler] ${name}: пул БД занят, повтор ${attempt}/${retries} через ${waitSec} с`
+              `[Scheduler] ${jobName}: пул БД занят, повтор ${attempt}/${retries} через ${waitSec} с`
             );
             await sleep(waitSec * 1000);
           }
@@ -66,15 +84,17 @@ export function runSchedulerDbJob(name, fn, { retries = 3 } = {}) {
           running = false;
           currentJobName = null;
           const next = waitQueue.shift();
-          if (next) next();
+          if (next) next.execute();
         });
     };
 
     if (!running) {
       execute();
     } else {
-      logger.info(`[Scheduler] DB job queued: ${name} (running: ${currentJobName})`);
-      waitQueue.push(execute);
+      logger.info(`[Scheduler] DB job queued: ${jobName} (running: ${currentJobName})`);
+      const entry = { name: jobName, execute };
+      if (priority) waitQueue.unshift(entry);
+      else waitQueue.push(entry);
     }
   });
 }

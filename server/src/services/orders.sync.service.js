@@ -1107,6 +1107,13 @@ class OrdersSyncService {
         } catch (e) {
           logger.warn('[Orders Sync] auto-reserve failed:', e?.message || e);
         }
+        // Сразу после новых FBS-заказов — в закупку и к поставщику (не ждать крона */2).
+        try {
+          const { default: autoProcurementService } = await import('./autoProcurement.service.js');
+          void autoProcurementService.scheduleImmediateRun({ reason: 'orders-fbs-sync' });
+        } catch (e) {
+          logger.warn('[Orders Sync] auto-procurement kick failed:', e?.message || e);
+        }
       }
     } else {
       await writeData('orders', {
