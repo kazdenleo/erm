@@ -9,6 +9,8 @@ export const WEEKDAY_OPTIONS = [
   { value: 0, label: 'Вс' },
 ];
 
+export const ALL_WEEKDAYS = WEEKDAY_OPTIONS.map((o) => o.value);
+
 export function normalizeWeekendDays(value) {
   if (value == null) return [];
   const list = Array.isArray(value) ? value : [];
@@ -18,6 +20,18 @@ export function normalizeWeekendDays(value) {
     if (Number.isFinite(n) && n >= 0 && n <= 6) out.add(n);
   }
   return [...out].sort((a, b) => a - b);
+}
+
+/** Рабочие дни = все дни минус выходные из БД (null/[] → все дни рабочие). */
+export function weekendDaysToWorkDays(weekendDays) {
+  const weekends = new Set(normalizeWeekendDays(weekendDays));
+  return ALL_WEEKDAYS.filter((d) => !weekends.has(d));
+}
+
+/** Выходные для API = все дни минус выбранные рабочие. */
+export function workDaysToWeekendDays(workDays) {
+  const work = new Set(normalizeWeekendDays(workDays));
+  return ALL_WEEKDAYS.filter((d) => !work.has(d)).sort((a, b) => a - b);
 }
 
 export function formatWeekendDaysLabel(days) {

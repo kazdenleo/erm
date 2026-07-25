@@ -7,7 +7,13 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '../../common/Button/Button';
 import { integrationsApi } from '../../../services/integrations.api';
 import { warehouseMappingsApi } from '../../../services/warehouseMappings.api';
-import { WEEKDAY_OPTIONS, normalizeWeekendDays } from '../../../utils/warehouseWeekendDays.js';
+import {
+  WEEKDAY_OPTIONS,
+  ALL_WEEKDAYS,
+  weekendDaysToWorkDays,
+  workDaysToWeekendDays,
+  normalizeWeekendDays,
+} from '../../../utils/warehouseWeekendDays.js';
 
 export function WarehouseForm({
   warehouse,
@@ -26,7 +32,8 @@ export function WarehouseForm({
     mainWarehouseId: '',
     wbWarehouseName: '',
     isFboStock: false,
-    weekendDays: [],
+    // UI: отмеченные = рабочие дни; в API уходит weekend_days = дополнение
+    workDays: [...ALL_WEEKDAYS],
   });
   
   const [errors, setErrors] = useState({});
@@ -253,7 +260,7 @@ export function WarehouseForm({
         mainWarehouseId: warehouse.mainWarehouseId ? String(warehouse.mainWarehouseId) : '',
         wbWarehouseName: warehouse.wbWarehouseName || '',
         isFboStock: warehouse.isFboStock === true || warehouse.is_fbo_stock === true,
-        weekendDays: normalizeWeekendDays(warehouse.weekendDays ?? warehouse.weekend_days),
+        workDays: weekendDaysToWorkDays(warehouse.weekendDays ?? warehouse.weekend_days),
       });
       setOzonWarehouseName('');
       setWbWarehouseToBind('');
@@ -269,7 +276,7 @@ export function WarehouseForm({
         mainWarehouseId: '',
         wbWarehouseName: '',
         isFboStock: false,
-        weekendDays: [],
+        workDays: [...ALL_WEEKDAYS],
       });
       setOzonWarehouseName('');
       setWbWarehouseToBind('');
@@ -402,12 +409,12 @@ export function WarehouseForm({
     return Object.keys(newErrors).length === 0;
   };
 
-  const toggleWeekendDay = (dayValue) => {
+  const toggleWorkDay = (dayValue) => {
     setFormData((prev) => {
-      const set = new Set(normalizeWeekendDays(prev.weekendDays));
+      const set = new Set(normalizeWeekendDays(prev.workDays));
       if (set.has(dayValue)) set.delete(dayValue);
       else set.add(dayValue);
-      return { ...prev, weekendDays: [...set].sort((a, b) => a - b) };
+      return { ...prev, workDays: [...set].sort((a, b) => a - b) };
     });
   };
 
@@ -440,7 +447,9 @@ export function WarehouseForm({
           : null,
       isFboStock: formData.type === 'warehouse' ? !!formData.isFboStock : false,
       weekendDays:
-        formData.type === 'warehouse' ? normalizeWeekendDays(formData.weekendDays) : [],
+        formData.type === 'warehouse'
+          ? workDaysToWeekendDays(formData.workDays)
+          : [],
     };
 
     setMappingBusy(true);
@@ -517,10 +526,11 @@ export function WarehouseForm({
 
       {formData.type === 'warehouse' && (
         <div className="col-12 mt-2">
-          <label className="form-label d-block">Выходные дни склада</label>
+          <label className="form-label d-block">Рабочие дни склада</label>
           <div className="text-muted small mb-2">
-            Заказы после cutoff поставщика в пятницу и в выходные собираются в одну закупку до
-            отсечки в последний выходной день; после неё — новая закупка.
+            Отметьте рабочие дни. Снятая галочка = выходной. Заказы после cutoff поставщика
+            в пятницу и в выходные собираются в одну закупку до отсечки в последний выходной;
+            после неё — новая закупка.
           </div>
           <div className="d-flex flex-wrap gap-3">
             {WEEKDAY_OPTIONS.map((opt) => (
@@ -528,8 +538,8 @@ export function WarehouseForm({
                 <input
                   className="form-check-input"
                   type="checkbox"
-                  checked={formData.weekendDays.includes(opt.value)}
-                  onChange={() => toggleWeekendDay(opt.value)}
+                  checked={formData.workDays.includes(opt.value)}
+                  onChange={() => toggleWorkDay(opt.value)}
                 />
                 <span className="form-check-label">{opt.label}</span>
               </label>

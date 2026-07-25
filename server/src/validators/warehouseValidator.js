@@ -19,6 +19,9 @@ const baseWarehouseSchema = z.object({
   wbWarehouseName: z.string().optional().nullable(),
   isFboStock: z.boolean().optional(),
   is_fbo_stock: z.boolean().optional(),
+  // Иначе Zod.strip удаляет weekendDays и выходные не сохраняются
+  weekendDays: z.array(z.coerce.number().int().min(0).max(6)).optional().nullable(),
+  weekend_days: z.array(z.coerce.number().int().min(0).max(6)).optional().nullable(),
 });
 
 /**
