@@ -1629,6 +1629,10 @@ function pickWbOverflowShipment(shipments, sourceShip, { profileId = null, organ
   candidates.sort((a, b) => {
     const ca = Array.isArray(a.orderIds) ? a.orderIds.length : 0;
     const cb = Array.isArray(b.orderIds) ? b.orderIds.length : 0;
+    // Непустые overflow раньше пустых (пустая GI после слияния не перехватывает следующие снятия).
+    const aEmpty = ca === 0 ? 1 : 0;
+    const bEmpty = cb === 0 ? 1 : 0;
+    if (aEmpty !== bEmpty) return aEmpty - bEmpty;
     if (ca !== cb) return ca - cb;
     return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
   });

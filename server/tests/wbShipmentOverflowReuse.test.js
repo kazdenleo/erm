@@ -51,6 +51,24 @@ describe('pickWbOverflowShipment', () => {
     expect(picked?.id).toBe('ship-overflow-a');
   });
 
+  test('prefers smaller non-empty overflow over empty leftover GI', () => {
+    const emptyLeftover = {
+      id: 'ship-empty',
+      marketplace: 'wildberries',
+      closed: false,
+      profileId: 1,
+      organizationId: '10',
+      createdAt: '2026-07-27T11:40:00.000Z',
+      orderIds: [],
+      externalId: 'WB-GI-EMPTY',
+    };
+    const picked = pickWbOverflowShipment([main, overflowA, emptyLeftover], main, {
+      profileId: 1,
+      organizationId: '10',
+    });
+    expect(picked?.id).toBe('ship-overflow-a');
+  });
+
   test('ignores closed and other profile/org', () => {
     const closed = { ...overflowA, id: 'ship-closed', closed: true };
     const otherOrg = { ...overflowA, id: 'ship-other-org', organizationId: '99' };
