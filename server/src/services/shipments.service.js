@@ -1609,7 +1609,34 @@ async function getShipmentById(shipmentId, { profileId = null, organizationId = 
 }
 
 /**
- * Перенести заказы WB в новую отгрузку (новая supply в ЛК WB).
+ * Открытая WB-поставка того же scope для переноса снятых заказов (overflow).
+ * Исключает source; при нескольких — с наименьшим числом заказов, затем самая ранняя.
+ * Так повторные снятия попадают во вторую поставку, а не создают 3-ю/4-ю GI.
+ */
+function pickWbOverflowShipment(shipments, sourceShip, { profileId = null, organizationId = null } = {}) {
+  const sourceId = sourceShip?.id != null ? String(sourceShip.id) : '';
+  const prof = sourceShip?.profileId ?? profileId;
+  const org = sourceShip?.organizationId ?? organizationId;
+  const candidates = [];
+  for (const s of shipments || []) {
+    if (!s || s.closed === true || s.stickerArchiveOnly === true) continue;
+    if (sourceId && String(s.id) === sourceId) continue;
+    const m = s.marketplace === 'wb' ? 'wildberries' : s.marketplace;
+    if (m !== 'wildberries') continue;
+    if (!shipmentVisibleForScope(s, prof, org)) continue;
+    candidates.push(s);
+  }
+  candidates.sort((a, b) => {
+    const ca = Array.isArray(a.orderIds) ? a.orderIds.length : 0;
+    const cb = Array.isArray(b.orderIds) ? b.orderIds.length : 0;
+    if (ca !== cb) return ca - cb;
+    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+  });
+  return candidates[0] || null;
+}
+
+/**
+ * Перенести заказы WB в overflow-отгрузку: существующую открытую того же scope или новую supply в ЛК WB.
  */
 async function relocateWildberriesOrdersToNewShipment(sourceShip, orderIds, { profileId = null, organizationId = null } = {}) {
   const ids = [...new Set((orderIds || []).map((id) => String(id).trim()).filter(Boolean))];
@@ -1617,19 +1644,36 @@ async function relocateWildberriesOrdersToNewShipment(sourceShip, orderIds, { pr
 
   const prof = sourceShip.profileId ?? profileId;
   const org = sourceShip.organizationId ?? organizationId;
-  const newShip = await createShipment({
-    marketplace: 'wildberries',
-    name: formatWbShipmentDisplayName(null, `Сборка ${new Date().toLocaleDateString('ru-RU')}`),
+  const shipments = await getLocalShipments();
+  const existingOverflow = pickWbOverflowShipment(shipments, sourceShip, {
     profileId: prof,
     organizationId: org,
   });
 
-  return addOrdersToShipment(newShip.id, ids, { profileId: prof, organizationId: org });
+  let targetShip;
+  if (existingOverflow) {
+    targetShip = normalizeShipment(existingOverflow);
+    logger.info(
+      `[Shipments WB] Reusing overflow shipment ${targetShip.id} (${targetShip.externalId || 'local'}) for relocate from ${sourceShip.id}`
+    );
+  } else {
+    targetShip = await createShipment({
+      marketplace: 'wildberries',
+      name: formatWbShipmentDisplayName(null, `Сборка ${new Date().toLocaleDateString('ru-RU')}`),
+      profileId: prof,
+      organizationId: org,
+    });
+    logger.info(
+      `[Shipments WB] Created overflow shipment ${targetShip.id} (${targetShip.externalId || 'local'}) for relocate from ${sourceShip.id}`
+    );
+  }
+
+  return addOrdersToShipment(targetShip.id, ids, { profileId: prof, organizationId: org });
 }
 
 /**
  * Удалить заказы из поставки.
- * Ozon/Яндекс — только локально. WB: убрать из текущей supply; при relocateWbToNewSupply — новая поставка.
+ * Ozon/Яндекс — только локально. WB: убрать из текущей supply; при relocateWbToNewSupply — в overflow (reuse/create).
  */
 async function removeOrdersFromShipment(
   shipmentId,
@@ -1705,7 +1749,8 @@ function normalizeShipmentMarketplaceCode(marketplace) {
 
 /**
  * Убрать заказы из открытых поставок пакетом.
- * Для WB при relocateWbToNewSupply все затронутые заказы попадают в одну новую поставку.
+ * Для WB при relocateWbToNewSupply все затронутые заказы попадают в одну overflow-поставку
+ * (существующую открытую того же scope или новую, если её ещё нет).
  * @param {{ marketplace: string, orderId?: string, order_id?: string, profileId?: *, profile_id?: *, organizationId?: *, organization_id?: * }[]} orderRefs
  */
 async function removeOrdersFromOpenShipmentsBatch(
@@ -1829,6 +1874,7 @@ const shipmentsService = {
   removeOrdersFromOpenShipmentsBatch,
   removeOrderFromOpenShipments,
   getOrCreateOpenShipment,
+  pickWbOverflowShipment,
   getOrderShipmentIndex,
   findLocalShipmentContainingOrder,
   getShipmentClosePreview,
@@ -1840,3 +1886,4 @@ const shipmentsService = {
 };
 
 export default shipmentsService;
+export { pickWbOverflowShipment };
