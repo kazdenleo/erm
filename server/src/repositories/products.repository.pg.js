@@ -25,12 +25,21 @@ async function insertProductBarcodes(client, productId, barcodes) {
   const rows = normalizeBarcodeRows(barcodes);
   for (const row of rows) {
     if (!row.barcode || isCorruptBarcodeString(row.barcode)) continue;
+    // SAVEPOINT: UNIQUE violation (23505) aborts the whole PG transaction otherwise,
+    // and the follow-up SELECT would fail with "current transaction is aborted".
+    await client.query('SAVEPOINT barcode_insert');
     try {
       await client.query(
         'INSERT INTO barcodes (product_id, barcode, marketplaces) VALUES ($1, $2, $3::jsonb)',
         [productId, row.barcode, JSON.stringify(row.marketplaces || [])]
       );
+      await client.query('RELEASE SAVEPOINT barcode_insert');
     } catch (e) {
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT barcode_insert');
+      } catch (_) {
+        /* ignore */
+      }
       if (e?.code === '23505') {
         const dup = await client.query(
           'SELECT product_id FROM barcodes WHERE TRIM(barcode) = TRIM($1) LIMIT 1',
@@ -1094,16 +1103,30 @@ class ProductsRepositoryPG {
         let pricesResult;
         try {
           pricesResult = await query(
-            'SELECT product_id, marketplace, min_price, calculation_details, updated_at FROM product_marketplace_prices WHERE product_id = ANY($1)',
+            `SELECT product_id, marketplace, min_price, calculation_details, updated_at,
+                    selling_price, price_before_discount, discount_percent,
+                    pricing_strategy_id, COALESCE(selling_price_manual, false) AS selling_price_manual
+             FROM product_marketplace_prices WHERE product_id = ANY($1)`,
             [productIds]
           );
         } catch (colErr) {
-          if (colErr.message && colErr.message.includes('calculation_details')) {
-            pricesResult = await query(
-              'SELECT product_id, marketplace, min_price, updated_at FROM product_marketplace_prices WHERE product_id = ANY($1)',
-              [productIds]
-            );
-            console.warn('[Products Repository] Column calculation_details missing — run migration 025. Loaded min prices only.');
+          if (colErr.message && (colErr.message.includes('calculation_details') || colErr.message.includes('selling_price') || colErr.message.includes('price_before_discount') || colErr.message.includes('selling_price_manual'))) {
+            try {
+              pricesResult = await query(
+                'SELECT product_id, marketplace, min_price, calculation_details, updated_at FROM product_marketplace_prices WHERE product_id = ANY($1)',
+                [productIds]
+              );
+            } catch (colErr2) {
+              if (colErr2.message && colErr2.message.includes('calculation_details')) {
+                pricesResult = await query(
+                  'SELECT product_id, marketplace, min_price, updated_at FROM product_marketplace_prices WHERE product_id = ANY($1)',
+                  [productIds]
+                );
+              } else {
+                throw colErr2;
+              }
+            }
+            console.warn('[Products Repository] Extended marketplace price columns missing — run migration 152. Loaded basic min prices.');
           } else {
             throw colErr;
           }
@@ -1116,15 +1139,32 @@ class ProductsRepositoryPG {
           const details = row.calculation_details != null
             ? (typeof row.calculation_details === 'object' ? row.calculation_details : (typeof row.calculation_details === 'string' ? (() => { try { return JSON.parse(row.calculation_details); } catch (e) { return null; } })() : null))
             : null;
+          const selling = row.selling_price != null ? parseFloat(row.selling_price) : null;
+          const before = row.price_before_discount != null ? parseFloat(row.price_before_discount) : null;
+          const discount = row.discount_percent != null ? parseFloat(row.discount_percent) : null;
+          const mpStrategyId = row.pricing_strategy_id != null ? Number(row.pricing_strategy_id) : null;
+          const sellingManual = row.selling_price_manual === true;
+          const pack = {
+            min: price,
+            details,
+            selling,
+            before,
+            discount,
+            strategyId: mpStrategyId,
+            sellingManual,
+          };
           if (row.marketplace === 'ozon') {
             pricesByProduct[key].ozon = price;
             pricesByProduct[key].ozonDetails = details;
+            pricesByProduct[key].ozonPack = pack;
           } else if (row.marketplace === 'wb') {
             pricesByProduct[key].wb = price;
             pricesByProduct[key].wbDetails = details;
+            pricesByProduct[key].wbPack = pack;
           } else if (row.marketplace === 'ym') {
             pricesByProduct[key].ym = price;
             pricesByProduct[key].ymDetails = details;
+            pricesByProduct[key].ymPack = pack;
           }
           if (row.updated_at && (!pricesByProduct[key].updated_at || new Date(row.updated_at) > new Date(pricesByProduct[key].updated_at))) {
             pricesByProduct[key].updated_at = row.updated_at;
@@ -1230,7 +1270,139 @@ class ProductsRepositoryPG {
         product.storedCalculationDetailsWb = stored.wbDetails ?? null;
         product.storedCalculationDetailsYm = stored.ymDetails ?? null;
         if (stored.updated_at) product.storedMinPriceUpdatedAt = stored.updated_at;
+
+        const mapPack = (pack) => {
+          if (!pack) {
+            return {
+              sellingPrice: null,
+              priceBeforeDiscount: null,
+              discountPercent: null,
+              strategyId: null,
+              sellingPriceManual: false,
+            };
+          }
+          return {
+            sellingPrice: pack.selling != null && Number.isFinite(pack.selling) ? pack.selling : null,
+            priceBeforeDiscount: pack.before != null && Number.isFinite(pack.before) ? pack.before : null,
+            discountPercent: pack.discount != null && Number.isFinite(pack.discount) ? pack.discount : null,
+            strategyId: pack.strategyId ?? null,
+            sellingPriceManual: pack.sellingManual === true,
+          };
+        };
+        product.marketplacePrices = {
+          ozon: mapPack(stored.ozonPack),
+          wb: mapPack(stored.wbPack),
+          ym: mapPack(stored.ymPack),
+        };
+        product.pricingStrategyId =
+          product.pricing_strategy_id != null && !isNaN(Number(product.pricing_strategy_id))
+            ? Number(product.pricing_strategy_id)
+            : null;
       });
+
+      // Эффективная стратегия (товар → организация → default), с учётом выключателя профиля
+      try {
+        const strategyFlags = await query(
+          `SELECT p.id,
+                  CASE
+                    WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
+                    ELSE COALESCE(
+                      (
+                        SELECT ps.id FROM pricing_strategies ps
+                        WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
+                        LIMIT 1
+                      ),
+                      (
+                        SELECT ps.id FROM pricing_strategies ps
+                        WHERE ps.id = o.pricing_strategy_id AND ps.is_active = true
+                        LIMIT 1
+                      ),
+                      (
+                        SELECT ps.id FROM pricing_strategies ps
+                        WHERE ps.profile_id = p.profile_id
+                          AND ps.is_default = true
+                          AND ps.is_active = true
+                        LIMIT 1
+                      )
+                    )
+                  END AS effective_strategy_id,
+                  CASE
+                    WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
+                    WHEN EXISTS (
+                      SELECT 1 FROM pricing_strategies ps
+                      WHERE ps.id = p.pricing_strategy_id AND ps.is_active = true
+                    ) THEN 'product'
+                    WHEN EXISTS (
+                      SELECT 1 FROM pricing_strategies ps
+                      WHERE ps.id = o.pricing_strategy_id AND ps.is_active = true
+                    ) THEN 'organization'
+                    WHEN EXISTS (
+                      SELECT 1 FROM pricing_strategies ps
+                      WHERE ps.profile_id = p.profile_id
+                        AND ps.is_default = true
+                        AND ps.is_active = true
+                    ) THEN 'default'
+                    ELSE NULL
+                  END AS effective_strategy_source,
+                  (
+                    SELECT ps.name FROM pricing_strategies ps
+                    WHERE ps.id = CASE
+                      WHEN COALESCE(pr.pricing_strategies_enabled, true) = false THEN NULL
+                      ELSE COALESCE(
+                        (
+                          SELECT x.id FROM pricing_strategies x
+                          WHERE x.id = p.pricing_strategy_id AND x.is_active = true LIMIT 1
+                        ),
+                        (
+                          SELECT x.id FROM pricing_strategies x
+                          WHERE x.id = o.pricing_strategy_id AND x.is_active = true LIMIT 1
+                        ),
+                        (
+                          SELECT x.id FROM pricing_strategies x
+                          WHERE x.profile_id = p.profile_id
+                            AND x.is_default = true AND x.is_active = true LIMIT 1
+                        )
+                      )
+                    END
+                  ) AS effective_strategy_name
+           FROM products p
+           LEFT JOIN organizations o ON o.id = p.organization_id
+           LEFT JOIN profiles pr ON pr.id = p.profile_id
+           WHERE p.id = ANY($1::bigint[])`,
+          [productIds]
+        );
+        const byId = new Map(
+          (strategyFlags.rows || []).map((r) => [
+            String(r.id),
+            {
+              has: r.effective_strategy_id != null,
+              id: r.effective_strategy_id != null ? Number(r.effective_strategy_id) : null,
+              name: r.effective_strategy_name || null,
+              source: r.effective_strategy_source || null,
+            },
+          ])
+        );
+        for (const product of products) {
+          const info = byId.get(String(product.id)) || {
+            has: false,
+            id: null,
+            name: null,
+            source: null,
+          };
+          product.hasPricingStrategy = info.has;
+          product.effectivePricingStrategyId = info.id;
+          product.effectivePricingStrategyName = info.name;
+          product.effectivePricingStrategySource = info.source;
+        }
+      } catch (e) {
+        console.warn('[Products Repository] pricing strategy flags:', e.message);
+        for (const product of products) {
+          product.hasPricingStrategy = false;
+          product.effectivePricingStrategyId = null;
+          product.effectivePricingStrategyName = null;
+          product.effectivePricingStrategySource = null;
+        }
+      }
 
       if (forExport) {
         try {
