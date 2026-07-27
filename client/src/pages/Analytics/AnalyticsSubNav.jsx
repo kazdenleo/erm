@@ -9,8 +9,8 @@ import './AnalyticsSubNav.css';
 const TABS = [
   { to: '/analytics/sales', label: 'Продажи FBS', end: true },
   { to: '/analytics/fbo-sales', label: 'Продажи FBO' },
+  { to: '/analytics/categories', label: 'По категориям' },
 ];
-
 export function AnalyticsSubNav() {
   return (
     <nav className="analytics-subnav" aria-label="Раздел аналитики">

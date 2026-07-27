@@ -28,6 +28,7 @@ import productCompetitorsService from './productCompetitors.service.js';
 import { addRuntimeNotification } from '../utils/runtime-notifications.js';
 import { runMarketplaceInventoryDailySnapshot } from './marketplaceInventorySnapshots.service.js';
 import marketplaceFboReportsService from './marketplaceFboReports.service.js';
+import marketplaceFbsReportsService from './marketplaceFbsReports.service.js';
 import {
   getSchedulerDbJobName,
   isSchedulerDbJobRunning,
@@ -45,6 +46,24 @@ function isOrdersFbsSyncEnabled() {
 function getOrdersFbsSyncCronExpression() {
   const c = process.env.ORDERS_FBS_SYNC_CRON;
   return c && String(c).trim() ? String(c).trim() : '*/5 * * * *';
+}
+
+/**
+ * Быстрый опрос только WB /orders/new (не ждёт auto-procurement / полный sync mutex).
+ * Выкл: ORDERS_WB_NEW_POLL_ENABLED=0
+ */
+function isOrdersWbNewPollEnabled() {
+  // По умолчанию включён вместе с FBS sync; явный OFF отключает.
+  if (!isOrdersFbsSyncEnabled()) return false;
+  const v = process.env.ORDERS_WB_NEW_POLL_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Cron (Europe/Moscow). По умолчанию каждую минуту; ORDERS_WB_NEW_POLL_CRON */
+function getOrdersWbNewPollCronExpression() {
+  const c = process.env.ORDERS_WB_NEW_POLL_CRON;
+  return c && String(c).trim() ? String(c).trim() : '*/1 * * * *';
 }
 
 /** Фоновая синхронизация отзывов (Ozon/WB/Яндекс). Выкл: REVIEWS_SYNC_ENABLED=0 */
@@ -232,6 +251,77 @@ function isMarketplaceFboReportsDailyEnabled() {
   const v = process.env.MP_FBO_REPORTS_DAILY_ENABLED;
   if (v == null || String(v).trim() === '') return true;
   return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/** Ежедневная загрузка финансовых отчётов FBS. По умолчанию 05:20 МСК; MP_FBS_REPORTS_DAILY_CRON */
+function getMarketplaceFbsReportsDailyCron() {
+  const c = process.env.MP_FBS_REPORTS_DAILY_CRON;
+  return c && String(c).trim() ? String(c).trim() : '20 5 * * *';
+}
+
+function isMarketplaceFbsReportsDailyEnabled() {
+  const v = process.env.MP_FBS_REPORTS_DAILY_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+function reportsDailyDateRangeYmd(daysBack = 7) {
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - daysBack);
+  const fmt = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  return { dateFrom: fmt(from), dateTo: fmt(to) };
+}
+
+async function loadSchedulerProfileIds() {
+  if (!repositoryFactory.isUsingPostgreSQL()) return [];
+  const rows = await repositoryFactory.getProfilesRepository().findAll();
+  return (rows || []).map((r) => Number(r.id)).filter((id) => Number.isFinite(id) && id > 0);
+}
+
+async function syncMarketplaceReportsForAllProfiles(service, label) {
+  const { dateFrom, dateTo } = reportsDailyDateRangeYmd(7);
+  let profiles = [];
+  try {
+    profiles = await loadSchedulerProfileIds();
+  } catch (e) {
+    logger.warn(`[Scheduler] ${label}: could not load profiles:`, e?.message || e);
+    return;
+  }
+  if (!profiles.length) {
+    logger.warn(`[Scheduler] ${label}: skip — no profiles`);
+    return;
+  }
+  for (const profileId of profiles) {
+    try {
+      const out = await service.sync({ profileId, dateFrom, dateTo, marketplace: 'all' });
+      const imported = (out?.results || []).reduce((s, r) => s + (Number(r.rowsImported) || 0), 0);
+      logger.info(`[Scheduler] ${label} done`, {
+        profileId,
+        dateFrom,
+        dateTo,
+        imported,
+        errors: out?.errors?.length || 0,
+      });
+      if (out?.errors?.length) {
+        await addRuntimeNotification({
+          type: 'error',
+          message: `${label} profile=${profileId}: ${out.errors.map((e) => `${e.marketplace}: ${e.message}`).join('; ')}`,
+        });
+      }
+    } catch (e) {
+      logger.error(`[Scheduler] ${label} failed profile=${profileId}:`, e?.message || e);
+      await addRuntimeNotification({
+        type: 'error',
+        message: `Ошибка ${label} (profile=${profileId}): ${e?.message || e}`,
+      });
+    }
+  }
 }
 
 /** Для fallback-планировщика: минут от 01:00 МСК до запуска полного пересчёта (должно совпадать с дефолтным cron). */
@@ -727,6 +817,38 @@ class SchedulerService {
         logger.info('[Scheduler] FBS orders background sync disabled (ORDERS_FBS_SYNC_ENABLED)');
       }
 
+      let ordersWbNewPollJob = null;
+      const ordersWbNewPollCron = getOrdersWbNewPollCronExpression();
+      if (isOrdersWbNewPollEnabled()) {
+        ordersWbNewPollJob = cron.schedule(
+          ordersWbNewPollCron,
+          async () => {
+            try {
+              const out = await ordersSyncService.pollWbNewOrdersForAllProfiles({ scheduler: true });
+              if (out?.skipped && out.reason && out.reason !== 'poll_in_progress') {
+                // тихий skip при полном sync / pause — без шума каждую минуту
+                if (out.reason === 'full_sync_in_progress' || out.reason === 'paused') return;
+              }
+              if (out?.inserted > 0 || out?.error) {
+                logger.info('[Scheduler] WB new-orders poll', {
+                  inserted: out.inserted || 0,
+                  feedTotal: out.feedTotal || 0,
+                  skipped: out.skipped || false,
+                  reason: out.reason || null,
+                  error: out.error || null,
+                  durationMs: out.durationMs || null,
+                });
+              }
+            } catch (e) {
+              logger.warn('[Scheduler] WB new-orders poll failed:', e?.message || e);
+            }
+          },
+          { scheduled: false, timezone: 'Europe/Moscow' }
+        );
+      } else {
+        logger.info('[Scheduler] WB new-orders poll disabled (ORDERS_WB_NEW_POLL_ENABLED)');
+      }
+
       let supplierStocksSyncJob = null;
       const supplierStocksCron = getSupplierStocksSyncCronExpression();
       if (isSupplierStocksSyncEnabled()) {
@@ -982,31 +1104,62 @@ class SchedulerService {
         logger.info('[Scheduler] Marketplace inventory daily snapshot disabled (MP_INVENTORY_DAILY_ENABLED)');
       }
 
+      let marketplaceFboReportsDailyJob = null;
       if (isMarketplaceFboReportsDailyEnabled()) {
         const fboReportsCron = getMarketplaceFboReportsDailyCron();
-        this.jobs.push({
-          name: 'marketplace-fbo-reports-daily',
-          job: async () => {
+        marketplaceFboReportsDailyJob = cron.schedule(
+          fboReportsCron,
+          async () => {
             try {
-              const to = new Date();
-              const from = new Date(to);
-              from.setDate(from.getDate() - 7);
-              const dateFrom = from.toISOString().slice(0, 10);
-              const dateTo = to.toISOString().slice(0, 10);
-              await marketplaceFboReportsService.sync({ dateFrom, dateTo });
+              await syncMarketplaceReportsForAllProfiles(marketplaceFboReportsService, 'Marketplace FBO reports');
             } catch (e) {
               logger.error('[Scheduler] Marketplace FBO reports sync failed:', e?.message || e);
               addRuntimeNotification({
                 type: 'error',
-                message: `Ошибка ежедневной загрузки FBO-отчётов: ${e?.message || e}`
+                message: `Ошибка ежедневной загрузки FBO-отчётов: ${e?.message || e}`,
               });
             }
           },
+          { scheduled: false, timezone: 'Europe/Moscow' }
+        );
+        this.jobs.push({
+          name: 'marketplace-fbo-reports-daily',
+          job: marketplaceFboReportsDailyJob,
           schedule: fboReportsCron,
-          description: 'Ежедневная загрузка финансовых отчётов FBO (WB, Ozon). MP_FBO_REPORTS_DAILY_CRON'
+          description:
+            'Ежедневная загрузка финансовых отчётов FBO (WB, Ozon, YM) по всем профилям. MP_FBO_REPORTS_DAILY_CRON',
         });
       } else {
         logger.info('[Scheduler] Marketplace FBO reports daily sync disabled (MP_FBO_REPORTS_DAILY_ENABLED)');
+      }
+
+      let marketplaceFbsReportsDailyJob = null;
+      if (isMarketplaceFbsReportsDailyEnabled()) {
+        const fbsReportsCron = getMarketplaceFbsReportsDailyCron();
+        marketplaceFbsReportsDailyJob = cron.schedule(
+          fbsReportsCron,
+          async () => {
+            try {
+              await syncMarketplaceReportsForAllProfiles(marketplaceFbsReportsService, 'Marketplace FBS reports');
+            } catch (e) {
+              logger.error('[Scheduler] Marketplace FBS reports sync failed:', e?.message || e);
+              addRuntimeNotification({
+                type: 'error',
+                message: `Ошибка ежедневной загрузки FBS-отчётов: ${e?.message || e}`,
+              });
+            }
+          },
+          { scheduled: false, timezone: 'Europe/Moscow' }
+        );
+        this.jobs.push({
+          name: 'marketplace-fbs-reports-daily',
+          job: marketplaceFbsReportsDailyJob,
+          schedule: fbsReportsCron,
+          description:
+            'Ежедневная загрузка финансовых отчётов FBS (WB, Ozon, YM) по всем профилям. MP_FBS_REPORTS_DAILY_CRON',
+        });
+      } else {
+        logger.info('[Scheduler] Marketplace FBS reports daily sync disabled (MP_FBS_REPORTS_DAILY_ENABLED)');
       }
 
       if (reviewsSyncJob) {
@@ -1035,6 +1188,16 @@ class SchedulerService {
           schedule: ordersFbsCron,
           description:
             'Синхронизация FBS-заказов (Ozon, WB, Яндекс). Интервал: ORDERS_FBS_SYNC_CRON, по умолчанию */5 * * * *'
+        });
+      }
+
+      if (ordersWbNewPollJob) {
+        this.jobs.push({
+          name: 'orders-wb-new-poll',
+          job: ordersWbNewPollJob,
+          schedule: ordersWbNewPollCron,
+          description:
+            'Быстрый опрос WB /orders/new (только новые). ORDERS_WB_NEW_POLL_CRON, по умолчанию */1 * * * *. Не блокируется auto-procurement.'
         });
       }
 
@@ -1116,6 +1279,9 @@ class SchedulerService {
       if (ordersFbsSyncJob) {
         ordersFbsSyncJob.start();
       }
+      if (ordersWbNewPollJob) {
+        ordersWbNewPollJob.start();
+      }
       if (supplierStocksSyncJob) {
         supplierStocksSyncJob.start();
       }
@@ -1134,6 +1300,12 @@ class SchedulerService {
       if (autoProcurementJob) {
         autoProcurementJob.start();
       }
+      if (marketplaceFboReportsDailyJob) {
+        marketplaceFboReportsDailyJob.start();
+      }
+      if (marketplaceFbsReportsDailyJob) {
+        marketplaceFbsReportsDailyJob.start();
+      }
       this.isRunning = true;
 
       if (isOrdersFbsSyncEnabled()) {
@@ -1147,6 +1319,25 @@ class SchedulerService {
             }
           })();
         }, 90 * 1000);
+      }
+
+      if (isOrdersWbNewPollEnabled()) {
+        setTimeout(() => {
+          (async () => {
+            try {
+              logger.info('[Scheduler] Deferred WB new-orders poll (~25s after startup)...');
+              const out = await ordersSyncService.pollWbNewOrdersForAllProfiles({ scheduler: true });
+              logger.info('[Scheduler] Deferred WB new-orders poll done', {
+                inserted: out?.inserted || 0,
+                feedTotal: out?.feedTotal || 0,
+                skipped: out?.skipped || false,
+                reason: out?.reason || null,
+              });
+            } catch (e) {
+              logger.warn('[Scheduler] Deferred WB new-orders poll:', e?.message || e);
+            }
+          })();
+        }, 25 * 1000);
       }
 
       if (supplierStocksSyncJob && isSupplierStocksSyncEnabled()) {

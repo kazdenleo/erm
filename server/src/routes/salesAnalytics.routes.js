@@ -8,5 +8,6 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get('/fbs-by-product', wrapAsync(controller.getFbsByProduct));
+router.get('/by-category', wrapAsync(controller.getByCategory));
 
 export default router;

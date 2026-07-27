@@ -1,0 +1,38 @@
+.category-sales-analytics__table tbody tr.category-sales-analytics__cat-row {
+  cursor: pointer;
+  background: #f8fafc;
+}
+
+.category-sales-analytics__table tbody tr.category-sales-analytics__cat-row:hover {
+  background: #f1f5f9;
+}
+
+.category-sales-analytics__table tbody tr.category-sales-analytics__cat-row.is-open {
+  background: #eff6ff;
+}
+
+.category-sales-analytics__col-toggle {
+  width: 28px;
+  text-align: center;
+}
+
+.category-sales-analytics__chevron {
+  display: inline-block;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.category-sales-analytics__meta {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.category-sales-analytics__product-row td {
+  background: #fff;
+  border-top: none;
+}
+
+.category-sales-analytics__product-cell {
+  padding-left: 28px;
+}

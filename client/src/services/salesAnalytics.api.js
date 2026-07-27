@@ -11,4 +11,16 @@ export const salesAnalyticsApi = {
     const r = await api.get(`/sales-analytics/fbs-by-product${qs ? `?${qs}` : ''}`);
     return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
   },
+
+  /** @returns {Promise<{ ok?: boolean, data?: { summary, categories, period, marketplace, scheme } }>} */
+  getByCategory: async ({ dateFrom, dateTo, marketplace = 'all', scheme = 'all' } = {}) => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+    if (marketplace) params.set('marketplace', marketplace);
+    if (scheme) params.set('scheme', scheme);
+    const qs = params.toString();
+    const r = await api.get(`/sales-analytics/by-category${qs ? `?${qs}` : ''}`);
+    return r.data && typeof r.data === 'object' ? r.data : { data: r.data };
+  },
 };

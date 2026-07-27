@@ -16,6 +16,7 @@ import { Home } from './pages/Home/Home';
 import { AnalyticsLayout } from './pages/Analytics/AnalyticsLayout';
 import { SalesAnalytics } from './pages/Analytics/SalesAnalytics/SalesAnalytics';
 import { FboSalesAnalytics } from './pages/Analytics/FboSalesAnalytics/FboSalesAnalytics';
+import { CategorySalesAnalytics } from './pages/Analytics/CategorySalesAnalytics/CategorySalesAnalytics';
 import { Products } from './pages/Products/Products';
 import { ProductsBulkEdit } from './pages/Products/ProductsBulkEdit';
 import { Warehouses } from './pages/Warehouses/Warehouses';
@@ -43,6 +44,8 @@ import { Notifications } from './pages/Notifications/Notifications';
 import { Categories } from './pages/Categories/Categories';
 import { Brands } from './pages/Brands/Brands';
 import { Prices } from './pages/Prices/Prices';
+import { PricingStrategies } from './pages/Prices/PricingStrategies';
+import { PricePromotions } from './pages/Prices/PricePromotions';
 import { Settings } from './pages/Settings/Settings';
 import { Attributes } from './pages/Settings/Attributes';
 import { Labels } from './pages/Settings/Labels';
@@ -101,6 +104,7 @@ function App() {
             <Route index element={<Navigate to="/analytics/sales" replace />} />
             <Route path="sales" element={<SalesAnalytics />} />
             <Route path="fbo-sales" element={<FboSalesAnalytics />} />
+            <Route path="categories" element={<CategorySalesAnalytics />} />
           </Route>
           <Route path="/admin" element={<Navigate to="/platform-login" replace />} />
           <Route path="/accounts" element={<Navigate to="/platform/accounts" replace />} />
@@ -153,6 +157,8 @@ function App() {
           <Route path="/categories" element={<ProtectedRoute><Layout><Categories /></Layout></ProtectedRoute>} />
           <Route path="/brands" element={<ProtectedRoute><Layout><Brands /></Layout></ProtectedRoute>} />
           <Route path="/prices" element={<ProtectedRoute><Layout><Prices /></Layout></ProtectedRoute>} />
+          <Route path="/prices/strategies" element={<ProtectedRoute><Layout><PricingStrategies /></Layout></ProtectedRoute>} />
+          <Route path="/prices/promotions" element={<ProtectedRoute><Layout><PricePromotions /></Layout></ProtectedRoute>} />
           <Route path="/integrations" element={<ProtectedRoute><Layout><Integrations /></Layout></ProtectedRoute>} />
           <Route path="/notifications" element={<ProtectedRoute><Layout><Notifications /></Layout></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><Layout><Settings /></Layout></ProtectedRoute>} />
