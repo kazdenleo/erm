@@ -44,8 +44,6 @@ import { Notifications } from './pages/Notifications/Notifications';
 import { Categories } from './pages/Categories/Categories';
 import { Brands } from './pages/Brands/Brands';
 import { Prices } from './pages/Prices/Prices';
-import { PricingStrategies } from './pages/Prices/PricingStrategies';
-import { PricePromotions } from './pages/Prices/PricePromotions';
 import { Settings } from './pages/Settings/Settings';
 import { Attributes } from './pages/Settings/Attributes';
 import { Labels } from './pages/Settings/Labels';
@@ -157,8 +155,6 @@ function App() {
           <Route path="/categories" element={<ProtectedRoute><Layout><Categories /></Layout></ProtectedRoute>} />
           <Route path="/brands" element={<ProtectedRoute><Layout><Brands /></Layout></ProtectedRoute>} />
           <Route path="/prices" element={<ProtectedRoute><Layout><Prices /></Layout></ProtectedRoute>} />
-          <Route path="/prices/strategies" element={<ProtectedRoute><Layout><PricingStrategies /></Layout></ProtectedRoute>} />
-          <Route path="/prices/promotions" element={<ProtectedRoute><Layout><PricePromotions /></Layout></ProtectedRoute>} />
           <Route path="/integrations" element={<ProtectedRoute><Layout><Integrations /></Layout></ProtectedRoute>} />
           <Route path="/notifications" element={<ProtectedRoute><Layout><Notifications /></Layout></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><Layout><Settings /></Layout></ProtectedRoute>} />
