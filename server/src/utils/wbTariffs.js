@@ -33,10 +33,22 @@ export function wbTariffWarehouseLabel(row) {
   return (row?.warehouseName ?? row?.geoName ?? '').toString().trim();
 }
 
-/** Поиск строки тарифа WB по имени склада (с учётом префикса «Маркетплейс:»). */
+/** Поиск строки тарифа WB по имени склада или warehouseId (с учётом префикса «Маркетплейс:»). */
 export function findWbTariffWarehouse(warehouseList, requestedName) {
   if (!requestedName || !Array.isArray(warehouseList) || !warehouseList.length) return null;
   const req = String(requestedName).trim();
+  if (!req) return null;
+
+  // Маппинг часто хранит numeric warehouseId WB, а не geoName из тарифов.
+  const reqId = /^\d+$/.test(req) ? req : null;
+  if (reqId) {
+    const byId = warehouseList.find((w) => {
+      const id = w?.warehouseId ?? w?.warehouse_id ?? w?.id ?? null;
+      return id != null && String(id).trim() === reqId;
+    });
+    if (byId) return byId;
+  }
+
   const normalizedName = req.replace(/^Маркетплейс:\s*/i, '').trim();
   return (
     warehouseList.find((w) => {

@@ -726,7 +726,7 @@ export function PriceDetailsModal({
               </span>
             </div>
             
-            {profile.vatRate > 0 ? (
+            {profile.vatRate > 0 && (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">НДС ({vatPctLabel}):</span>
                 <span className="price-breakdown-value negative">
@@ -736,39 +736,26 @@ export function PriceDetailsModal({
                   </div>
                 </span>
               </div>
-            ) : (
+            )}
+
+            {profile.incomeTaxRate > 0 && (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">НДС:</span>
-                <span className="price-breakdown-value" style={{ color: 'var(--muted)' }}>
-                  0 ₽ (не указан в организации)
+                <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
+                <span className="price-breakdown-value negative">
+                  -{incomeTaxAmount.toFixed(2)} ₽
+                  {incomeTaxFormulaHint && (
+                    <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
+                      {incomeTaxFormulaHint}
+                    </div>
+                  )}
                 </span>
               </div>
             )}
 
-            <div className="price-breakdown-item">
-              <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
-              <span className="price-breakdown-value negative">
-                -{incomeTaxAmount.toFixed(2)} ₽
-                {incomeTaxFormulaHint && (
-                  <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
-                    {incomeTaxFormulaHint}
-                  </div>
-                )}
-                {profile.incomeTaxRate <= 0 && (
-                  <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
-                    укажите систему налогообложения в карточке организации
-                  </div>
-                )}
-              </span>
-            </div>
-
             <div className="price-breakdown-item price-breakdown-total">
               <span className="price-breakdown-label">Чистая прибыль:</span>
-              <span className="price-breakdown-value positive large">
+              <span className={`price-breakdown-value large ${netProfit >= 0 ? 'positive' : 'negative'}`}>
                 {netProfit.toFixed(2)} ₽ ({netProfitPercent.toFixed(2)}%)
-                <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {profitBeforeIncomeTax.toFixed(2)} − {incomeTaxAmount.toFixed(2)} (налог) = {netProfit.toFixed(2)} ₽
-                </div>
               </span>
             </div>
           </div>

@@ -21,7 +21,7 @@ import { applyOzonV5ItemToCalculator } from './ozon-v5-item-calculator.js';
 import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js';
 import { applyOzonAdsPromotion } from '../utils/ozonAdsPromotion.js';
 import ozonPerformanceAdsService from './ozonPerformanceAds.service.js';
-import { extractWbWarehouseList, findWbTariffWarehouse } from '../utils/wbTariffs.js';
+import { extractWbWarehouseList, findWbTariffWarehouse, wbTariffWarehouseLabel } from '../utils/wbTariffs.js';
 import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
 import { resolveProductVolumeLiters } from '../utils/productVolume.js';
 import { schedulePushForProduct } from './marketplaceMinPricePush.service.js';
@@ -2197,16 +2197,20 @@ class PricesService {
         };
       }
 
-      // Находим тарифы для конкретного склада
+      // Находим тарифы для конкретного склада (id из маппинга или имя)
       let selectedBoxTariffs = findWbTariffWarehouse(warehouseList, finalWbWarehouseName);
 
-      if (!selectedBoxTariffs && mainWarehouseWbName && mainWarehouseWbName !== finalWbWarehouseName) {
-        selectedBoxTariffs = findWbTariffWarehouse(warehouseList, mainWarehouseWbName);
+      const fallbackNames = [mainWarehouseWbName, wbWarehouseName].filter(
+        (n) => n && String(n).trim() !== '' && String(n).trim() !== String(finalWbWarehouseName).trim()
+      );
+      for (const fb of fallbackNames) {
+        if (selectedBoxTariffs) break;
+        selectedBoxTariffs = findWbTariffWarehouse(warehouseList, fb);
         if (selectedBoxTariffs) {
           logger.warn(
-            `[Prices Service] WB mapping "${finalWbWarehouseName}" not in tariffs; using main warehouse "${mainWarehouseWbName}"`
+            `[Prices Service] WB warehouse "${finalWbWarehouseName}" not in tariffs; using fallback "${fb}" → "${wbTariffWarehouseLabel(selectedBoxTariffs) || fb}"`
           );
-          finalWbWarehouseName = mainWarehouseWbName;
+          finalWbWarehouseName = wbTariffWarehouseLabel(selectedBoxTariffs) || fb;
         }
       }
 
