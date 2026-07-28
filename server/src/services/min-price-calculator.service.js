@@ -5,6 +5,11 @@
 
 import { resolveEffectiveVolumeLiters } from '../utils/productVolume.js';
 import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile } from '../utils/organizationTaxRates.js';
+import {
+  extractMinPriceCommissionPercent,
+  hasUsableCommissionPercent,
+  MIN_USABLE_COMMISSION_PERCENT,
+} from '../utils/commissionGuards.js';
 
 function safeExpenseNum(value) {
   const n = Number(value);
@@ -17,10 +22,25 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
   if (minProfitNum == null || minProfitNum < 0) return null;
   if (!calculator || !calculator.commissions) return null;
 
+  // Не считаем мин. цену с 0%/пустой комиссией — это занижает цену для покупателя.
+  // Нет «дефолта 40%»: либо валидный % из кэша/API, либо null (оставляем прежнюю мин. цену).
+  if (!hasUsableCommissionPercent(calculator, marketplace)) {
+    return null;
+  }
+
   const commissions = calculator.commissions;
-  const commission = marketplace === 'wb'
-    ? (commissions.FBS || { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 })
-    : (commissions.FBS || commissions.FBO || { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 });
+  // WB: мин. цена по схеме FBO/FBW (paidStorageKgvp). Логистика уже в logistics_base/liter —
+  // delivery_amount из комиссии не добавляем, иначе будет двойной учёт boxDeliveryMarketplace*.
+  let commission;
+  if (marketplace === 'wb') {
+    const wbBase = commissions.FBO || commissions.FBS;
+    commission = { ...wbBase, delivery_amount: 0 };
+  } else {
+    commission = commissions.FBS || commissions.FBO;
+  }
+  if (!commission || Number(commission.percent) < MIN_USABLE_COMMISSION_PERCENT) {
+    return null;
+  }
 
   let acquiring = 0;
   if (marketplace === 'wb') {
@@ -89,11 +109,13 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
     }
   }
 
-  const marketplaceCommissionPercent = (Number(commission.percent) || 0) / 100;
+  const marketplaceCommissionPercent = (extractMinPriceCommissionPercent(calculator, marketplace) || 0) / 100;
+  if (marketplaceCommissionPercent < MIN_USABLE_COMMISSION_PERCENT / 100) return null;
   const acquiringPercent = (Number(acquiring) || 0) / 100;
   let gemServicesPercent = 0;
   if (marketplace === 'wb' && wbGemServicesPercent != null) gemServicesPercent = (Number(wbGemServicesPercent) || 0) / 100;
   const brandPromotionPercent = (calculator.brand_promotion_percent != null && !isNaN(Number(calculator.brand_promotion_percent))) ? Number(calculator.brand_promotion_percent) / 100 : 0;
+  const adsPromotionPercent = (calculator.ads_promotion_percent != null && !isNaN(Number(calculator.ads_promotion_percent))) ? Number(calculator.ads_promotion_percent) / 100 : 0;
 
   const profile = taxProfile || resolveOrganizationTaxProfile(
     product?.organization ||
@@ -124,6 +146,7 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
       acquiringAmount +
       deliveryAmountAtPrice +
       priceNum * brandPromotionPercent +
+      priceNum * adsPromotionPercent +
       priceNum * gemServicesPercent;
     const { netProfit } = computeTaxesAndNetProfit({
       price: priceNum,
@@ -133,7 +156,7 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
     return netProfit;
   };
 
-  const denominator = 1 - marketplaceCommissionPercent - acquiringPercent - brandPromotionPercent - gemServicesPercent - (marketplace === 'ym' ? ymDeliveryPercent : 0);
+  const denominator = 1 - marketplaceCommissionPercent - acquiringPercent - brandPromotionPercent - adsPromotionPercent - gemServicesPercent - (marketplace === 'ym' ? ymDeliveryPercent : 0);
   if (denominator <= 0) return null;
 
   let recommendedPrice = Math.round((basePriceNum + fixedExpenses + Number(minProfitNum)) / denominator);

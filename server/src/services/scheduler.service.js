@@ -526,11 +526,35 @@ class SchedulerService {
           logger.info('[Scheduler] Starting MP category commissions cache refresh...');
           try {
             const result = await categoryMarketplaceCommissionsService.refreshAllCommissions({}, 'nightly');
-            logger.info('[Scheduler] MP category commissions cache refresh completed', result);
+            logger.info('[Scheduler] MP category commissions cache refresh completed', {
+              filled: result?.filled,
+              empty: result?.empty,
+              skippedEmptyOverwrite: result?.skippedEmptyOverwrite,
+              before: result?.before,
+              health: result?.health,
+            });
+            if (result?.health?.unhealthy) {
+              await addRuntimeNotification({
+                type: 'commission_refresh_degraded',
+                severity: 'error',
+                source: 'scheduler',
+                title: 'Ночное обновление комиссий ухудшило кэш',
+                message:
+                  `Заполнено ${result.filled} (было ${result.before?.filled}), ` +
+                  `пустых ${result.empty} (было ${result.before?.empty}), ` +
+                  `пропусков пустой перезаписи: ${result.skippedEmptyOverwrite || 0}.`,
+                meta: result.health,
+              });
+            }
+            try {
+              await categoryMarketplaceCommissionsService.checkAndNotifyStaleCache();
+            } catch (staleErr) {
+              logger.warn('[Scheduler] commission stale check failed:', staleErr?.message || staleErr);
+            }
           } catch (error) {
             logger.error('[Scheduler] MP category commissions cache refresh failed:', error);
             await addRuntimeNotification({
-              type: 'job_failed',
+              type: 'commission_refresh_failed',
               severity: 'error',
               source: 'scheduler',
               title: 'Сбой ночного обновления комиссий Ozon/YM',
@@ -570,6 +594,14 @@ class SchedulerService {
             logger.error('[Scheduler] Legacy min price push failed:', error);
           }
           return;
+        }
+        logger.info('[Scheduler] Nightly: sync Ozon Performance ads (ДРР)...');
+        try {
+          const ozonPerformanceAdsService = (await import('./ozonPerformanceAds.service.js')).default;
+          const adsRes = await ozonPerformanceAdsService.syncAllConfiguredScopes({ days: 14 });
+          logger.info('[Scheduler] Ozon ads sync finished', adsRes);
+        } catch (error) {
+          logger.warn('[Scheduler] Ozon ads sync failed (продолжаем пересчёт):', error?.message || error);
         }
         logger.info('[Scheduler] Nightly: sync MP calculator cache from APIs...');
         try {
@@ -1471,8 +1503,23 @@ class SchedulerService {
         setTimeout(() => {
           void runSchedulerDbJob('mp-category-commissions', async () => {
             logger.info('[Scheduler] Starting MP category commissions cache refresh...');
-            await categoryMarketplaceCommissionsService.refreshAllCommissions({}, 'nightly');
-            logger.info('[Scheduler] MP category commissions cache refresh completed');
+            try {
+              const result = await categoryMarketplaceCommissionsService.refreshAllCommissions({}, 'nightly');
+              logger.info('[Scheduler] MP category commissions cache refresh completed', {
+                filled: result?.filled,
+                empty: result?.empty,
+              });
+            } catch (error) {
+              logger.error('[Scheduler] MP category commissions refresh failed:', error);
+              await addRuntimeNotification({
+                type: 'commission_refresh_failed',
+                severity: 'error',
+                source: 'scheduler',
+                title: 'Сбой обновления комиссий Ozon/YM',
+                message: `MP category commissions refresh failed: ${error?.message || String(error)}`,
+              });
+              throw error;
+            }
           }).catch((error) => logger.error('[Scheduler] MP category commissions refresh failed:', error));
         }, 105 * 60 * 1000);
 

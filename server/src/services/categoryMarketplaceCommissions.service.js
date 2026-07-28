@@ -9,6 +9,13 @@ import { query } from '../config/database.js';
 import pricesService from './prices.service.js';
 import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
+import {
+  shouldSkipEmptyCategoryOverwrite,
+  evaluateCommissionRefreshHealth,
+  isCommissionCacheStale,
+  notifyCommissionIssue,
+  COMMISSION_CACHE_STALE_DAYS,
+} from '../utils/commissionGuards.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -114,21 +121,34 @@ async function readCommissionsFromDb(marketplace, categoryIds) {
   return out;
 }
 
+/**
+ * @returns {'skipped_empty'|'written'}
+ */
 async function upsertCommissionToDb(marketplace, categoryId, data, source = 'manual') {
   const mp = String(marketplace || '').toLowerCase();
   const id = mp === 'ozon' ? normalizeOzonCategoryId(categoryId) : normalizeYmCategoryId(categoryId);
-  if (!id) return;
+  if (!id) return 'written';
   const schemes = Array.isArray(data?.schemes) ? data.schemes : [];
   // Не затираем уже хорошие комиссии пустым ответом (сбой API / нет габаритов у образца)
   if (schemes.length === 0) {
     const existing = await readCommissionsFromDb(mp, [id]);
-    if (existing[id]?.schemes?.length) {
+    if (shouldSkipEmptyCategoryOverwrite(existing[id]?.schemes, schemes)) {
       logger.warn('[categoryMpCommissions] skip empty overwrite', {
         marketplace: mp,
         categoryId: id,
         note: data?.note,
       });
-      return;
+      await notifyCommissionIssue({
+        type: 'commission_empty_overwrite_blocked',
+        severity: 'warn',
+        marketplace: mp,
+        source: 'category_mp_commissions',
+        dedupeKey: `${mp}:${id}`,
+        title: 'Пустой ответ комиссий отклонён',
+        message: `Категория ${mp}/${id}: API вернул пустые схемы, сохранённые комиссии не затёрты. ${data?.note || ''}`.trim(),
+        meta: { categoryId: id, note: data?.note || null },
+      });
+      return 'skipped_empty';
     }
   }
   await query(
@@ -143,24 +163,73 @@ async function upsertCommissionToDb(marketplace, categoryId, data, source = 'man
        updated_at = CURRENT_TIMESTAMP`,
     [mp, id, JSON.stringify(schemes), data?.note ?? null, data?.sampleOfferId ?? null, source]
   );
+  return 'written';
 }
 
 async function getCacheMeta() {
   try {
     const res = await query(
-      `SELECT MAX(updated_at) AS updated_at, COUNT(*)::int AS count
+      `SELECT
+         MAX(updated_at) AS updated_at,
+         COUNT(*)::int AS count,
+         COUNT(*) FILTER (
+           WHERE schemes IS NOT NULL
+             AND jsonb_typeof(schemes) = 'array'
+             AND jsonb_array_length(schemes) > 0
+         )::int AS filled,
+         COUNT(*) FILTER (
+           WHERE schemes IS NULL
+             OR jsonb_typeof(schemes) <> 'array'
+             OR jsonb_array_length(schemes) = 0
+         )::int AS empty
        FROM marketplace_category_commission_cache`
     );
+    const row = res.rows[0] || {};
     return {
-      updatedAt: res.rows[0]?.updated_at ?? null,
-      count: res.rows[0]?.count ?? 0,
+      updatedAt: row.updated_at ?? null,
+      count: row.count ?? 0,
+      filled: row.filled ?? 0,
+      empty: row.empty ?? 0,
+      stale: isCommissionCacheStale(row.updated_at, COMMISSION_CACHE_STALE_DAYS),
+      staleDays: COMMISSION_CACHE_STALE_DAYS,
     };
   } catch (e) {
     if (String(e.message || '').includes('marketplace_category_commission_cache')) {
-      return { updatedAt: null, count: 0 };
+      return {
+        updatedAt: null,
+        count: 0,
+        filled: 0,
+        empty: 0,
+        stale: true,
+        staleDays: COMMISSION_CACHE_STALE_DAYS,
+      };
     }
     throw e;
   }
+}
+
+/**
+ * Уведомление, если кэш комиссий старше N дней.
+ * @returns {Promise<{ stale: boolean, meta: object, notified: boolean }>}
+ */
+async function checkAndNotifyStaleCache() {
+  const meta = await getCacheMeta();
+  if (!meta.stale) {
+    return { stale: false, meta, notified: false };
+  }
+  const ageHint = meta.updatedAt
+    ? `Последнее обновление: ${meta.updatedAt}`
+    : 'Кэш пуст или никогда не обновлялся';
+  const n = await notifyCommissionIssue({
+    type: 'commission_cache_stale',
+    severity: 'warn',
+    source: 'category_mp_commissions',
+    dedupeKey: 'global',
+    title: 'Комиссии маркетплейсов устарели',
+    message: `Кэш комиссий Ozon/YM старше ${COMMISSION_CACHE_STALE_DAYS} дн. Обновите комиссии (кнопка в категории или дождитесь ночного задания). ${ageHint}. Заполнено: ${meta.filled}, пустых: ${meta.empty}.`,
+    meta: { ...meta },
+  });
+  return { stale: true, meta, notified: Boolean(n) };
 }
 
 /**
@@ -815,33 +884,107 @@ async function getPreview(body, scope, options = {}) {
 
 async function refreshAllCommissions(scope, source = 'manual') {
   const { ozon, ym } = await collectDistinctMappedCategoryIds();
+  const beforeMeta = await getCacheMeta();
   logger.info('[categoryMpCommissions] refreshAll start', {
     ozon: ozon.length,
     ym: ym.length,
     source,
+    before: { filled: beforeMeta.filled, empty: beforeMeta.empty },
   });
 
   let updated = 0;
+  let filledNow = 0;
+  let emptyNow = 0;
+  let skippedEmptyOverwrite = 0;
+
   for (const item of ozon) {
     const data = await getOzonCategoryCommissionsLive(item.id, scope, item.userCategoryId);
-    await upsertCommissionToDb('ozon', item.id, data, source);
-    updated += 1;
+    const writeResult = await upsertCommissionToDb('ozon', item.id, data, source);
+    if (writeResult === 'skipped_empty') skippedEmptyOverwrite += 1;
+    else updated += 1;
+    if (Array.isArray(data?.schemes) && data.schemes.length > 0) filledNow += 1;
+    else emptyNow += 1;
   }
   for (const item of ym) {
     const data = await getYmCategoryCommissionsLive(item.id, scope, item.userCategoryId);
-    await upsertCommissionToDb('ym', item.id, data, source);
-    updated += 1;
+    const writeResult = await upsertCommissionToDb('ym', item.id, data, source);
+    if (writeResult === 'skipped_empty') skippedEmptyOverwrite += 1;
+    else updated += 1;
+    if (Array.isArray(data?.schemes) && data.schemes.length > 0) filledNow += 1;
+    else emptyNow += 1;
   }
 
   const meta = await getCacheMeta();
-  logger.info('[categoryMpCommissions] refreshAll done', { updated, meta });
-  return { updated, ozon: ozon.length, ym: ym.length, meta };
+  const health = evaluateCommissionRefreshHealth({
+    beforeFilled: beforeMeta.filled,
+    beforeEmpty: beforeMeta.empty,
+    afterFilled: meta.filled,
+    afterEmpty: meta.empty,
+    skippedEmptyOverwrite,
+  });
+
+  logger.info('[categoryMpCommissions] refreshAll done', {
+    updated,
+    filledNow,
+    emptyNow,
+    skippedEmptyOverwrite,
+    meta,
+    health,
+  });
+
+  if (health.unhealthy) {
+    await notifyCommissionIssue({
+      type: 'commission_refresh_degraded',
+      severity: 'error',
+      source: source === 'nightly' ? 'scheduler' : 'category_mp_commissions',
+      dedupeKey: `refresh:${source}`,
+      force: source === 'nightly',
+      title: 'Обновление комиссий ухудшило кэш',
+      message:
+        `После обновления (${source}): заполнено ${meta.filled} (было ${beforeMeta.filled}), ` +
+        `пустых ${meta.empty} (было ${beforeMeta.empty}), пропусков пустой перезаписи: ${skippedEmptyOverwrite}. ` +
+        `Проверьте интеграции Ozon/YM и образцы товаров в категориях.`,
+      meta: { ...health, source },
+    });
+  } else if (meta.empty > 0) {
+    await notifyCommissionIssue({
+      type: 'commission_cache_missing',
+      severity: 'warn',
+      source: source === 'nightly' ? 'scheduler' : 'category_mp_commissions',
+      dedupeKey: `empty_after_refresh:${source}`,
+      force: source === 'nightly',
+      title: 'Часть категорий без комиссий',
+      message:
+        `После обновления комиссий (${source}): заполнено ${meta.filled}, пустых ${meta.empty} ` +
+        `(Ozon ${ozon.length}, YM ${ym.length}). Мин. цены для пустых категорий не будут занижены — прежние значения сохраняются.`,
+      meta: { filled: meta.filled, empty: meta.empty, source },
+    });
+  }
+
+  if (meta.stale) {
+    await checkAndNotifyStaleCache();
+  }
+
+  return {
+    updated,
+    ozon: ozon.length,
+    ym: ym.length,
+    filled: meta.filled,
+    empty: meta.empty,
+    skippedEmptyOverwrite,
+    filledNow,
+    emptyNow,
+    before: { filled: beforeMeta.filled, empty: beforeMeta.empty },
+    health,
+    meta,
+  };
 }
 
 export default {
   getPreview,
   refreshAllCommissions,
   getCacheMeta,
+  checkAndNotifyStaleCache,
   getOzonCategoryCommissions: getOzonCategoryCommissionsLive,
   getYmCategoryCommissions: getYmCategoryCommissionsLive,
   ozonCategoryIdVariants,

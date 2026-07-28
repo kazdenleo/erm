@@ -25,6 +25,12 @@ import { extractWbWarehouseList, findWbTariffWarehouse } from '../utils/wbTariff
 import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
 import { resolveProductVolumeLiters } from '../utils/productVolume.js';
 import { schedulePushForProduct } from './marketplaceMinPricePush.service.js';
+import {
+  hasUsableCommissionPercent,
+  shouldSkipEmptyCalculatorOverwrite,
+  notifyCommissionIssue,
+  ymWeightGramsToKg,
+} from '../utils/commissionGuards.js';
 
 // Временная функция для получения кэшированных данных WB
 function getWBCachedData() {
@@ -1300,23 +1306,60 @@ class PricesService {
     return applyOzonBrandPromotionFallback(calculator, brandPercent);
   }
 
+  /**
+   * Ozon Performance отчёт отдаёт sku = marketplace_product_id, а не артикул продавца.
+   */
+  async _getOzonMarketplaceProductId(productId) {
+    if (productId == null || productId === '') return null;
+    try {
+      const r = await query(
+        `SELECT marketplace_product_id
+         FROM product_skus
+         WHERE product_id = $1
+           AND marketplace = 'ozon'
+           AND marketplace_product_id IS NOT NULL
+         LIMIT 1`,
+        [productId]
+      );
+      const v = r.rows?.[0]?.marketplace_product_id;
+      if (v == null || String(v).trim() === '') return null;
+      return String(v).trim();
+    } catch {
+      return null;
+    }
+  }
+
   async _enrichOzonCalculatorAdsPromotion(
     calculator,
-    { offerId = null, integrationScope = null } = {}
+    { offerId = null, productId = null, integrationScope = null } = {}
   ) {
     if (!calculator || typeof calculator !== 'object') return calculator;
-    const oid =
-      offerId != null && String(offerId).trim() !== ''
-        ? String(offerId).trim()
-        : calculator.offer_id != null
-          ? String(calculator.offer_id).trim()
-          : null;
-    if (!oid) return calculator;
+    const candidates = [];
+    const push = (v) => {
+      const s = v != null ? String(v).trim() : '';
+      if (s && !candidates.includes(s)) candidates.push(s);
+    };
+    push(offerId);
+    push(calculator.offer_id);
+    push(calculator.sku);
+    push(calculator.ozon_sku);
+    push(calculator.marketplace_product_id);
+    // Числовой product_id в калькуляторе Ozon часто = SKU маркетплейса
+    if (calculator.product_id != null && /^\d{5,}$/.test(String(calculator.product_id).trim())) {
+      push(calculator.product_id);
+    }
+    if (productId != null) {
+      push(await this._getOzonMarketplaceProductId(productId));
+    }
+    if (!candidates.length) return calculator;
 
     let drr = null;
     let source = 'ads';
     try {
-      drr = await ozonPerformanceAdsService.getDrrPercentForOffer(oid, integrationScope || {});
+      for (const key of candidates) {
+        drr = await ozonPerformanceAdsService.getDrrPercentForOffer(key, integrationScope || {});
+        if (drr != null) break;
+      }
     } catch (e) {
       logger.warn('[Prices Service] Ozon ads DRR lookup failed:', e?.message || e);
     }
@@ -1349,12 +1392,58 @@ class PricesService {
   ) {
     let calc = calculator;
     calc = await this._enrichOzonCalculatorBrandPromotion(calc, { productId, brandId });
-    calc = await this._enrichOzonCalculatorAdsPromotion(calc, { offerId, integrationScope });
+    calc = await this._enrichOzonCalculatorAdsPromotion(calc, {
+      offerId,
+      productId,
+      integrationScope,
+    });
     return calc;
   }
 
   async _upsertMpCalculatorCache(productId, marketplace, calculator, source = 'api') {
     const sanitized = this._sanitizeCalculatorForStorage(calculator, marketplace) || calculator;
+    if (!hasUsableCommissionPercent(sanitized, marketplace)) {
+      try {
+        const existing = await this._getMpCalculatorCacheRow(productId, marketplace);
+        if (shouldSkipEmptyCalculatorOverwrite(existing?.calculator, sanitized, marketplace)) {
+          logger.warn('[Prices Service] skip empty calculator overwrite', {
+            productId,
+            marketplace,
+            source,
+          });
+          await notifyCommissionIssue({
+            type: 'commission_empty_overwrite_blocked',
+            severity: 'warn',
+            marketplace,
+            source: 'product_mp_calculator_cache',
+            dedupeKey: `${marketplace}:${productId}`,
+            title: 'Пустой калькулятор не записан',
+            message: `Товар ${productId} (${marketplace}): API/sync вернул калькулятор без комиссии — прежний кэш с комиссией сохранён. Источник: ${source}.`,
+            meta: { productId, marketplace, source },
+          });
+          return { skipped: true, reason: 'empty_overwrite_blocked' };
+        }
+      } catch (e) {
+        logger.warn('[Prices Service] empty-overwrite check failed', { error: e?.message });
+      }
+      // Нет существующего хорошего кэша — не пишем заведомо бесполезный 0%/пустой калькулятор
+      logger.warn('[Prices Service] refuse to cache calculator without usable commission', {
+        productId,
+        marketplace,
+        source,
+      });
+      await notifyCommissionIssue({
+        type: 'commission_cache_missing',
+        severity: 'error',
+        marketplace,
+        source: 'product_mp_calculator_cache',
+        dedupeKey: `missing:${marketplace}`,
+        title: 'Нет комиссии в калькуляторе МП',
+        message: `Товар ${productId} (${marketplace}): калькулятор без usable комиссии не сохранён (источник ${source}). Мин. цена не будет занижена нулевым %.`,
+        meta: { productId, marketplace, source },
+      });
+      return { skipped: true, reason: 'no_usable_commission' };
+    }
     try {
       await query(
         `INSERT INTO product_mp_calculator_cache (product_id, marketplace, calculator, source, updated_at)
@@ -1362,11 +1451,12 @@ class PricesService {
          ON CONFLICT (product_id, marketplace) DO UPDATE SET calculator = EXCLUDED.calculator, source = EXCLUDED.source, updated_at = CURRENT_TIMESTAMP`,
         [productId, marketplace, JSON.stringify(sanitized), source]
       );
+      return { skipped: false };
     } catch (e) {
       // В некоторых инсталляциях таблица кэша может отсутствовать (миграции не применены).
       // Live-расчёты должны работать и без кэша — просто пропускаем запись.
       if (String(e.message || '').includes('product_mp_calculator_cache') && String(e.message || '').includes('does not exist')) {
-        return;
+        return { skipped: true, reason: 'table_missing' };
       }
       throw e;
     }
@@ -2476,7 +2566,13 @@ class PricesService {
       const lengthCm = length / 10;
       const widthCm = width / 10;
       const heightCm = height / 10;
-      const weightKg = Math.round((weightRaw / 1000) * 1000) / 1000;
+      const weightKg = ymWeightGramsToKg(weightRaw);
+      if (weightKg == null) {
+        return {
+          found: false,
+          error: `У товара ${offer_id} некорректный вес (г) в карточке`
+        };
+      }
 
       const body = {
         offers: [{
@@ -2917,8 +3013,23 @@ class PricesService {
             offerId: skuOzon,
             integrationScope,
           });
-          const price = calculateMinPrice(basePrice, calculator, 'ozon', minProfit, product);
-          if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, calculator);
+          if (!hasUsableCommissionPercent(calculator, 'ozon')) {
+            errors.ozon = 'Нет комиссии Ozon в калькуляторе — прежняя мин. цена сохранена';
+            logger.error(`[Prices Service] commission_cache_missing ozon product ${productId}`);
+            await notifyCommissionIssue({
+              type: 'commission_cache_missing',
+              severity: 'error',
+              marketplace: 'ozon',
+              source: 'min_price_recalc',
+              dedupeKey: 'ozon',
+              message: `Товар ${productId} (${skuOzon}): нет usable комиссии Ozon. Мин. цена не пересчитана (прежняя сохранена), push не занижает цену.`,
+              meta: { productId, offerId: skuOzon },
+            });
+          } else {
+            const price = calculateMinPrice(basePrice, calculator, 'ozon', minProfit, product);
+            if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, calculator);
+            else errors.ozon = 'Не удалось рассчитать минимальную цену Ozon';
+          }
         } else if (data?.error) {
           errors.ozon = data.error;
           logger.warn(`[Prices Service] recalc Ozon for product ${productId}:`, data.error);
@@ -2943,14 +3054,28 @@ class PricesService {
         const data = wbResult?.data ?? wbResult;
         console.log(`[Prices Service] getWBPrices result product ${productId}: found=${!!data?.found}, hasCalculator=${!!data?.calculator}, error=${data?.error ? String(data.error).slice(0, 80) : 'none'}`);
         if (data?.found && data?.calculator) {
-          const price = calculateMinPrice(basePrice, data.calculator, 'wb', minProfit, product, wbAcquiringPercent, wbGemServicesPercent);
-          console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: price=${price}`);
-          if (price != null) {
-            await this.saveProductMarketplacePrice(productId, 'wb', price, data.calculator);
-            console.log(`[Prices Service] *** Saved WB min price for product ${productId}: ${price} ₽ ***`);
+          if (!hasUsableCommissionPercent(data.calculator, 'wb')) {
+            errors.wb = 'Нет комиссии WB в калькуляторе — прежняя мин. цена сохранена';
+            logger.error(`[Prices Service] commission_cache_missing wb product ${productId}`);
+            await notifyCommissionIssue({
+              type: 'commission_cache_missing',
+              severity: 'error',
+              marketplace: 'wb',
+              source: 'min_price_recalc',
+              dedupeKey: 'wb',
+              message: `Товар ${productId} (${skuWb}): нет usable комиссии WB (FBO). Мин. цена не пересчитана.`,
+              meta: { productId, offerId: skuWb },
+            });
           } else {
-            console.log(`[Prices Service] WB price is NULL for product ${productId}, not saving`);
-            errors.wb = 'Не удалось рассчитать минимальную цену WB (формула вернула пусто).';
+            const price = calculateMinPrice(basePrice, data.calculator, 'wb', minProfit, product, wbAcquiringPercent, wbGemServicesPercent);
+            console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: price=${price}`);
+            if (price != null) {
+              await this.saveProductMarketplacePrice(productId, 'wb', price, data.calculator);
+              console.log(`[Prices Service] *** Saved WB min price for product ${productId}: ${price} ₽ ***`);
+            } else {
+              console.log(`[Prices Service] WB price is NULL for product ${productId}, not saving`);
+              errors.wb = 'Не удалось рассчитать минимальную цену WB (формула вернула пусто).';
+            }
           }
         } else {
           errors.wb = data?.error || data?.message || 'Не удалось рассчитать цену WB. Проверьте категорию, комиссии и привязку склада WB в настройках.';
@@ -2974,8 +3099,23 @@ class PricesService {
         const ymResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, mpOpts);
         const data = ymResult?.data ?? ymResult;
         if (data?.found && data?.calculator) {
-          const price = calculateMinPrice(basePrice, data.calculator, 'ym', minProfit, product);
-          if (price != null) await this.saveProductMarketplacePrice(productId, 'ym', price, data.calculator);
+          if (!hasUsableCommissionPercent(data.calculator, 'ym')) {
+            errors.ym = 'Нет комиссии YM в калькуляторе — прежняя мин. цена сохранена';
+            logger.error(`[Prices Service] commission_cache_missing ym product ${productId}`);
+            await notifyCommissionIssue({
+              type: 'commission_cache_missing',
+              severity: 'error',
+              marketplace: 'ym',
+              source: 'min_price_recalc',
+              dedupeKey: 'ym',
+              message: `Товар ${productId} (${skuYm}): нет usable комиссии YM. Мин. цена не пересчитана.`,
+              meta: { productId, offerId: skuYm },
+            });
+          } else {
+            const price = calculateMinPrice(basePrice, data.calculator, 'ym', minProfit, product);
+            if (price != null) await this.saveProductMarketplacePrice(productId, 'ym', price, data.calculator);
+            else errors.ym = 'Не удалось рассчитать минимальную цену YM';
+          }
         } else if (data?.error) {
           errors.ym = data.error;
           logger.warn(`[Prices Service] recalc YM for product ${productId}:`, data.error);
