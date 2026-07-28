@@ -136,6 +136,52 @@ class PricesService {
     };
   }
 
+  async _getWbApiCredentials(options = {}) {
+    const scope = this._integrationScopeFromOptions(options);
+    const cfg = await integrationsService.getMarketplaceConfig('wildberries', scope);
+    return {
+      scope,
+      api_key: cfg?.api_key ?? cfg?.apiKey ?? null,
+    };
+  }
+
+  /** Ключ кэша акций: только текущий аккаунт (и орг., если выбрана). */
+  _actionsScopeKey(scope = {}) {
+    const p =
+      scope.profileId != null && String(scope.profileId).trim() !== ''
+        ? String(scope.profileId).trim()
+        : 'none';
+    const o =
+      scope.organizationId != null && String(scope.organizationId).trim() !== ''
+        ? String(scope.organizationId).trim()
+        : 'all';
+    return `p:${p}|o:${o}`;
+  }
+
+  async _readScopedActionsCache(cacheName, scope) {
+    const key = this._actionsScopeKey(scope);
+    const raw = await readData(cacheName);
+    if (raw?.byScope && typeof raw.byScope === 'object' && raw.byScope[key]) {
+      return raw.byScope[key];
+    }
+    // Старый глобальный кэш без byScope — не отдаём (иначе утечка между аккаунтами).
+    return null;
+  }
+
+  async _writeScopedActionsCache(cacheName, scope, entry) {
+    const key = this._actionsScopeKey(scope);
+    let raw = null;
+    try {
+      raw = await readData(cacheName);
+    } catch {
+      raw = null;
+    }
+    const byScope =
+      raw?.byScope && typeof raw.byScope === 'object' ? { ...raw.byScope } : {};
+    byScope[key] = entry;
+    await writeData(cacheName, { byScope, lastUpdate: new Date().toISOString() });
+  }
+
   async _getYandexApiCredentials(options = {}) {
     const scope = this._integrationScopeFromOptions(options);
     const cfg = await integrationsService.getMarketplaceConfig('yandex', scope);
@@ -214,46 +260,35 @@ class PricesService {
   }
 
   /**
-   * Загрузить акции Ozon из API и товары по каждой акции, сохранить в кэш (cron раз в сутки в 01:00)
+   * Загрузить акции Ozon из API и товары по каждой акции, сохранить в кэш (cron раз в сутки в 01:00).
+   * Кэш пишется отдельно по каждому аккаунту (profile).
    */
   async updateAndCacheOzonActions() {
     try {
-      const apiResult = await this._fetchOzonActionsFromApi();
-      if (!apiResult.ok) {
-        logger.warn('[Prices Service] Ozon actions update failed:', apiResult.error);
-        return;
+      let profileIds = [];
+      try {
+        if (repositoryFactory.isUsingPostgreSQL()) {
+          const rows = await repositoryFactory.getProfilesRepository().findAll();
+          profileIds = (rows || [])
+            .map((r) => Number(r.id))
+            .filter((id) => Number.isFinite(id) && id > 0);
+        }
+      } catch (e) {
+        logger.warn('[Prices Service] updateAndCacheOzonActions: profiles load failed:', e?.message || e);
       }
-      const actions = apiResult.result || [];
-      const cache = {
-        result: actions,
-        lastUpdate: new Date().toISOString()
-      };
-      await writeData('ozonActionsCache', cache);
-      logger.info(`[Prices Service] Ozon actions cached: ${actions.length} items`);
+      if (!profileIds.length) profileIds = [null];
 
-      const productsByAction = {};
-      for (const action of actions) {
-        const actionId = action.id;
-        if (actionId == null) continue;
+      for (const profileId of profileIds) {
+        const scope = { profileId, organizationId: null };
         try {
-          const productsResult = await this._fetchAllOzonActionProducts(actionId);
-          if (productsResult.ok && Array.isArray(productsResult.products)) {
-            productsByAction[String(actionId)] = {
-              products: productsResult.products,
-              total: productsResult.total ?? productsResult.products.length,
-              lastUpdate: new Date().toISOString()
-            };
-            logger.info(`[Prices Service] Ozon action ${actionId} products cached: ${productsResult.products.length} (total: ${productsResult.total ?? productsResult.products.length})`);
-          }
+          await this.updateAndCacheOzonActionsForScope(scope);
         } catch (err) {
-          logger.warn(`[Prices Service] Failed to fetch products for action ${actionId}:`, err.message);
+          logger.warn(
+            `[Prices Service] Ozon actions update failed for profile=${profileId ?? 'none'}:`,
+            err?.message || err
+          );
         }
       }
-      const productsCache = {
-        lastUpdate: new Date().toISOString(),
-        actions: productsByAction
-      };
-      await writeData('ozonActionProductsCache', productsCache);
 
       try {
         await this.enforceOzonAutoPromotionsForAllEnabledConfigs();
@@ -263,6 +298,64 @@ class PricesService {
     } catch (error) {
       logger.error('[Prices Service] Error updating Ozon actions cache:', error);
     }
+  }
+
+  async updateAndCacheOzonActionsForScope(scope = {}) {
+    const { client_id, api_key } = await this._getOzonApiCredentials({ integrationScope: scope });
+    if (!client_id || !api_key) {
+      logger.info(
+        `[Prices Service] Ozon actions skip profile=${scope.profileId ?? 'none'}: no credentials`
+      );
+      return;
+    }
+    const apiResult = await this._fetchOzonActionsFromApiWithCreds(client_id, api_key);
+    if (!apiResult.ok) {
+      logger.warn(
+        `[Prices Service] Ozon actions update failed profile=${scope.profileId ?? 'none'}:`,
+        apiResult.error
+      );
+      return;
+    }
+    const actions = apiResult.result || [];
+    await this._writeScopedActionsCache('ozonActionsCache', scope, {
+      result: actions,
+      lastUpdate: new Date().toISOString(),
+    });
+    logger.info(
+      `[Prices Service] Ozon actions cached profile=${scope.profileId ?? 'none'}: ${actions.length} items`
+    );
+
+    const productsByAction = {};
+    for (const action of actions) {
+      const actionId = action.id;
+      if (actionId == null) continue;
+      try {
+        const productsResult = await this._fetchAllOzonActionProductsWithCreds(
+          actionId,
+          client_id,
+          api_key
+        );
+        if (productsResult.ok && Array.isArray(productsResult.products)) {
+          productsByAction[String(actionId)] = {
+            products: productsResult.products,
+            total: productsResult.total ?? productsResult.products.length,
+            lastUpdate: new Date().toISOString(),
+          };
+          logger.info(
+            `[Prices Service] Ozon action ${actionId} products cached profile=${scope.profileId ?? 'none'}: ${productsResult.products.length}`
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          `[Prices Service] Failed to fetch products for action ${actionId} profile=${scope.profileId ?? 'none'}:`,
+          err.message
+        );
+      }
+    }
+    await this._writeScopedActionsCache('ozonActionProductsCache', scope, {
+      lastUpdate: new Date().toISOString(),
+      actions: productsByAction,
+    });
   }
 
   _ozonApiHeaders(client_id, api_key) {
@@ -525,15 +618,23 @@ class PricesService {
   /**
    * Товары, доступные к добавлению в акцию (candidates) — запрос к API по требованию
    * @param {number|string} actionId
-   * @returns {Promise<{ ok: boolean, products?: Array, total?: number, error?: string }>}
+   * @param {{ integrationScope?: { profileId?: *, organizationId?: * } }} [options]
    */
-  async getOzonActionCandidates(actionId) {
+  async getOzonActionCandidates(actionId, options = {}) {
     try {
+      const scope = this._integrationScopeFromOptions(options);
+      const { client_id, api_key } = await this._getOzonApiCredentials(options);
+      if (!client_id || !api_key) {
+        return { ok: true, products: [], total: 0, error: 'Настройте интеграцию Ozon для этого аккаунта' };
+      }
       const all = [];
       let lastId = '';
       const limit = 100;
       for (;;) {
-        const page = await this._fetchOzonActionCandidatesFromApi(actionId, limit, lastId);
+        const page = await this._fetchOzonActionCandidatesFromApi(actionId, limit, lastId, {
+          client_id,
+          api_key,
+        });
         if (!page.ok) {
           logger.warn('[Prices Service] getOzonActionCandidates API error:', page.error);
           return { ok: true, products: [], total: 0, error: page.error };
@@ -545,16 +646,16 @@ class PricesService {
       if (all.length === 0) {
         return { ok: true, products: [], total: 0 };
       }
-      const ourOzonProductIds = await this._getOurOzonProductIdsFromDb();
-      const { set: ourOfferIdsSet, list: ourOfferList } = await this._getOurOzonOfferIds();
+      const ourOzonProductIds = await this._getOurOzonProductIdsFromDb(scope);
+      const { set: ourOfferIdsSet, list: ourOfferList } = await this._getOurOzonOfferIds(scope);
       if (ourOzonProductIds.size === 0 && ourOfferIdsSet.size === 0) {
         return { ok: true, products: [], total: 0 };
       }
       const ozonIds = [...ourOzonProductIds];
-      const ourByOzonId = ourOzonProductIds.size > 0 ? await this._getOurProductsByOzonProductIds(ozonIds) : {};
+      const ourByOzonId = ourOzonProductIds.size > 0 ? await this._getOurProductsByOzonProductIds(ozonIds, scope) : {};
       const productIds = all.map(p => p.id).filter(id => id != null);
-      const idToOffer = await this._fetchOzonProductIdToOfferId(productIds);
-      const ourProductsByOffer = ourOfferIdsSet.size > 0 ? await this._getOurProductsByOzonOfferIds(ourOfferList) : {};
+      const idToOffer = await this._fetchOzonProductIdToOfferId(productIds, { client_id, api_key });
+      const ourProductsByOffer = ourOfferIdsSet.size > 0 ? await this._getOurProductsByOzonOfferIds(ourOfferList, scope) : {};
       const filtered = [];
       for (const p of all) {
         const matchByProductId = ourOzonProductIds.has(Number(p.id));
@@ -574,7 +675,7 @@ class PricesService {
           our_sku: our?.sku ?? null
         });
       }
-      logger.info(`[Prices Service] getOzonActionCandidates: ourProductIds=${ourOzonProductIds.size}, ourOfferIds=${ourOfferList.length}, candidates=${all.length}, filtered(our)=${filtered.length}`);
+      logger.info(`[Prices Service] getOzonActionCandidates profile=${scope.profileId ?? 'none'}: ourProductIds=${ourOzonProductIds.size}, ourOfferIds=${ourOfferList.length}, candidates=${all.length}, filtered(our)=${filtered.length}`);
       const enriched = await this._enrichActionProductsWithMinPrice(filtered, 'ozon');
       return { ok: true, products: enriched, total: enriched.length };
     } catch (error) {
@@ -583,11 +684,14 @@ class PricesService {
     }
   }
 
-  async _fetchOzonActionCandidatesFromApi(actionId, limit = 100, lastId = '') {
-    const integrations = await integrationsService.getAll();
-    const ozonIntegration = integrations.find(i => i.code === 'ozon');
-    const client_id = ozonIntegration?.config?.client_id;
-    const api_key = ozonIntegration?.config?.api_key;
+  async _fetchOzonActionCandidatesFromApi(actionId, limit = 100, lastId = '', creds = {}) {
+    let client_id = creds.client_id;
+    let api_key = creds.api_key;
+    if (!client_id || !api_key) {
+      const c = await this._getOzonApiCredentials({ integrationScope: creds.scope || {} });
+      client_id = c.client_id;
+      api_key = c.api_key;
+    }
     if (!client_id || !api_key) {
       return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
     }
@@ -622,14 +726,27 @@ class PricesService {
   }
 
   /**
-   * Получить множество offer_id (артикулов Ozon), которые есть в нашей системе.
-   * Возвращает { set: Set (normalized lowercase для сравнения), list: string[] (для запроса к БД) }
+   * Получить множество offer_id (артикулов Ozon) текущего аккаунта.
+   * @param {{ profileId?: *, organizationId?: * }} [scope]
    */
-  async _getOurOzonOfferIds() {
+  async _getOurOzonOfferIds(scope = {}) {
     try {
-      const result = await query(
-        `SELECT sku FROM product_skus WHERE marketplace = 'ozon' AND sku IS NOT NULL AND TRIM(sku) <> ''`
-      );
+      const params = [];
+      let sql = `
+        SELECT ps.sku
+        FROM product_skus ps
+        JOIN products p ON p.id = ps.product_id
+        WHERE ps.marketplace = 'ozon' AND ps.sku IS NOT NULL AND TRIM(ps.sku) <> ''
+      `;
+      if (scope.profileId != null && String(scope.profileId).trim() !== '') {
+        params.push(Number(scope.profileId));
+        sql += ` AND p.profile_id = $${params.length}`;
+      }
+      if (scope.organizationId != null && String(scope.organizationId).trim() !== '') {
+        params.push(Number(scope.organizationId));
+        sql += ` AND p.organization_id = $${params.length}`;
+      }
+      const result = await query(sql, params);
       const list = [];
       const set = new Set();
       (result.rows || []).forEach(row => {
@@ -649,12 +766,15 @@ class PricesService {
   /**
    * Получить маппинг Ozon product_id -> offer_id через API (батчами по 100)
    */
-  async _fetchOzonProductIdToOfferId(productIds) {
+  async _fetchOzonProductIdToOfferId(productIds, creds = {}) {
     if (!productIds || productIds.length === 0) return {};
-    const integrations = await integrationsService.getAll();
-    const ozon = integrations.find(i => i.code === 'ozon');
-    const client_id = ozon?.config?.client_id;
-    const api_key = ozon?.config?.api_key;
+    let client_id = creds.client_id;
+    let api_key = creds.api_key;
+    if (!client_id || !api_key) {
+      const c = await this._getOzonApiCredentials({ integrationScope: creds.scope || {} });
+      client_id = c.client_id;
+      api_key = c.api_key;
+    }
     if (!client_id || !api_key) return {};
     const map = {};
     const batchSize = 100;
@@ -722,14 +842,27 @@ class PricesService {
   }
 
   /**
-   * Получить множество Ozon product_id, которые есть в нашей системе (по полю marketplace_product_id)
+   * Получить множество Ozon product_id текущего аккаунта (по полю marketplace_product_id)
+   * @param {{ profileId?: *, organizationId?: * }} [scope]
    */
-  async _getOurOzonProductIdsFromDb() {
+  async _getOurOzonProductIdsFromDb(scope = {}) {
     try {
-      const result = await query(
-        `SELECT marketplace_product_id FROM product_skus
-         WHERE marketplace = 'ozon' AND marketplace_product_id IS NOT NULL`
-      );
+      const params = [];
+      let sql = `
+        SELECT ps.marketplace_product_id
+        FROM product_skus ps
+        JOIN products p ON p.id = ps.product_id
+        WHERE ps.marketplace = 'ozon' AND ps.marketplace_product_id IS NOT NULL
+      `;
+      if (scope.profileId != null && String(scope.profileId).trim() !== '') {
+        params.push(Number(scope.profileId));
+        sql += ` AND p.profile_id = $${params.length}`;
+      }
+      if (scope.organizationId != null && String(scope.organizationId).trim() !== '') {
+        params.push(Number(scope.organizationId));
+        sql += ` AND p.organization_id = $${params.length}`;
+      }
+      const result = await query(sql, params);
       const set = new Set();
       (result.rows || []).forEach(row => set.add(Number(row.marketplace_product_id)));
       return set;
@@ -740,18 +873,28 @@ class PricesService {
   }
 
   /**
-   * Получить наши товары по Ozon product_id (из поля marketplace_product_id)
+   * @param {number[]} ozonProductIds
+   * @param {{ profileId?: *, organizationId?: * }} [scope]
    */
-  async _getOurProductsByOzonProductIds(ozonProductIds) {
+  async _getOurProductsByOzonProductIds(ozonProductIds, scope = {}) {
     if (!ozonProductIds || ozonProductIds.length === 0) return {};
     try {
-      const result = await query(
-        `SELECT p.id, p.name, p.sku, ps.sku AS ozon_offer_id, ps.marketplace_product_id AS ozon_product_id
+      const params = [ozonProductIds.map(Number).filter(n => !isNaN(n))];
+      let sql = `
+         SELECT p.id, p.name, p.sku, ps.marketplace_product_id AS ozon_product_id, ps.sku AS ozon_offer_id
          FROM products p
          JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
-         WHERE ps.marketplace_product_id = ANY($1)`,
-        [ozonProductIds.map(Number).filter(n => !isNaN(n))]
-      );
+         WHERE ps.marketplace_product_id = ANY($1)
+      `;
+      if (scope.profileId != null && String(scope.profileId).trim() !== '') {
+        params.push(Number(scope.profileId));
+        sql += ` AND p.profile_id = $${params.length}`;
+      }
+      if (scope.organizationId != null && String(scope.organizationId).trim() !== '') {
+        params.push(Number(scope.organizationId));
+        sql += ` AND p.organization_id = $${params.length}`;
+      }
+      const result = await query(sql, params);
       const byOzonId = {};
       (result.rows || []).forEach(row => {
         byOzonId[Number(row.ozon_product_id)] = { id: row.id, name: row.name, sku: row.sku, offer_id: row.ozon_offer_id };
@@ -815,17 +958,28 @@ class PricesService {
 
   /**
    * Получить наши товары по offer_id (product_id, name, sku) для списка offer_ids
+   * @param {string[]} offerIds
+   * @param {{ profileId?: *, organizationId?: * }} [scope]
    */
-  async _getOurProductsByOzonOfferIds(offerIds) {
+  async _getOurProductsByOzonOfferIds(offerIds, scope = {}) {
     if (!offerIds || offerIds.length === 0) return {};
     try {
-      const result = await query(
-        `SELECT p.id, p.name, p.sku, ps.sku AS ozon_offer_id
+      const params = [offerIds];
+      let sql = `
+         SELECT p.id, p.name, p.sku, ps.sku AS ozon_offer_id
          FROM products p
          JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
-         WHERE ps.sku = ANY($1)`,
-        [offerIds]
-      );
+         WHERE ps.sku = ANY($1)
+      `;
+      if (scope.profileId != null && String(scope.profileId).trim() !== '') {
+        params.push(Number(scope.profileId));
+        sql += ` AND p.profile_id = $${params.length}`;
+      }
+      if (scope.organizationId != null && String(scope.organizationId).trim() !== '') {
+        params.push(Number(scope.organizationId));
+        sql += ` AND p.organization_id = $${params.length}`;
+      }
+      const result = await query(sql, params);
       const byOffer = {};
       (result.rows || []).forEach(row => {
         const key = String(row.ozon_offer_id).trim();
@@ -841,24 +995,32 @@ class PricesService {
   }
 
   /**
-   * Получить товары акции Ozon из кэша — только те, что есть в нашей системе; с полями our_product_id, our_product_name, offer_id
+   * Получить товары акции Ozon из кэша — только товары текущего аккаунта
    * @param {number|string} actionId
-   * @returns {Promise<{ ok: boolean, products?: Array, total?: number, error?: string }>}
+   * @param {{ integrationScope?: { profileId?: *, organizationId?: * } }} [options]
    */
-  async getOzonActionProducts(actionId) {
+  async getOzonActionProducts(actionId, options = {}) {
     try {
-      const cache = await readData('ozonActionProductsCache');
-      const actions = cache?.actions || {};
+      const scope = this._integrationScopeFromOptions(options);
+      const { client_id, api_key } = await this._getOzonApiCredentials(options);
+      const cacheEntry = await this._readScopedActionsCache('ozonActionProductsCache', scope);
+      const actions = cacheEntry?.actions || {};
       const key = String(actionId);
       let rawProducts = actions[key]?.products || [];
       // Если в кэше нет товаров по акции — подгружаем из API (кэш мог быть пуст или ещё не обновлён)
       if (rawProducts.length === 0) {
-        const fetched = await this._fetchAllOzonActionProducts(actionId);
+        if (!client_id || !api_key) {
+          return { ok: true, products: [], total: 0 };
+        }
+        const fetched = await this._fetchAllOzonActionProductsWithCreds(actionId, client_id, api_key);
         if (fetched.ok && fetched.products && fetched.products.length > 0) {
           rawProducts = fetched.products;
           try {
-            const updated = { ...(cache || {}), actions: { ...(cache?.actions || {}), [key]: { products: rawProducts, total: fetched.total ?? rawProducts.length, lastUpdate: new Date().toISOString() } } };
-            await writeData('ozonActionProductsCache', updated);
+            const updatedActions = { ...(actions || {}), [key]: { products: rawProducts, total: fetched.total ?? rawProducts.length, lastUpdate: new Date().toISOString() } };
+            await this._writeScopedActionsCache('ozonActionProductsCache', scope, {
+              lastUpdate: new Date().toISOString(),
+              actions: updatedActions,
+            });
           } catch (e) {
             logger.warn('[Prices Service] Could not update action products cache:', e.message);
           }
@@ -866,17 +1028,17 @@ class PricesService {
           return { ok: true, products: [], total: 0 };
         }
       }
-      const ourOzonProductIds = await this._getOurOzonProductIdsFromDb();
-      const { set: ourOfferIdsSet, list: ourOfferList } = await this._getOurOzonOfferIds();
+      const ourOzonProductIds = await this._getOurOzonProductIdsFromDb(scope);
+      const { set: ourOfferIdsSet, list: ourOfferList } = await this._getOurOzonOfferIds(scope);
       if (ourOzonProductIds.size === 0 && ourOfferIdsSet.size === 0) {
-        logger.info('[Prices Service] getOzonActionProducts: no Ozon product_skus, returning empty');
+        logger.info(`[Prices Service] getOzonActionProducts profile=${scope.profileId ?? 'none'}: no Ozon product_skus, returning empty`);
         return { ok: true, products: [], total: 0 };
       }
       const ozonIds = [...ourOzonProductIds];
-      const ourByOzonId = ourOzonProductIds.size > 0 ? await this._getOurProductsByOzonProductIds(ozonIds) : {};
+      const ourByOzonId = ourOzonProductIds.size > 0 ? await this._getOurProductsByOzonProductIds(ozonIds, scope) : {};
       const productIds = rawProducts.map(p => p.id).filter(id => id != null);
-      const idToOffer = await this._fetchOzonProductIdToOfferId(productIds);
-      const ourProductsByOffer = ourOfferIdsSet.size > 0 ? await this._getOurProductsByOzonOfferIds(ourOfferList) : {};
+      const idToOffer = await this._fetchOzonProductIdToOfferId(productIds, { client_id, api_key });
+      const ourProductsByOffer = ourOfferIdsSet.size > 0 ? await this._getOurProductsByOzonOfferIds(ourOfferList, scope) : {};
       const filtered = [];
       for (const p of rawProducts) {
         const matchByProductId = ourOzonProductIds.has(Number(p.id));
@@ -896,7 +1058,7 @@ class PricesService {
           our_sku: our?.sku ?? null
         });
       }
-      logger.info(`[Prices Service] getOzonActionProducts: ourProductIds=${ourOzonProductIds.size}, ourOfferIds=${ourOfferList.length}, raw=${rawProducts.length}, filtered=${filtered.length}`);
+      logger.info(`[Prices Service] getOzonActionProducts profile=${scope.profileId ?? 'none'}: ourProductIds=${ourOzonProductIds.size}, ourOfferIds=${ourOfferList.length}, raw=${rawProducts.length}, filtered=${filtered.length}`);
       const enriched = await this._enrichActionProductsWithMinPrice(filtered, 'ozon');
       return { ok: true, products: enriched, total: enriched.length };
     } catch (error) {
@@ -906,29 +1068,29 @@ class PricesService {
   }
 
   /**
-   * Получить список акций Ozon (из кэша; при первом обращении — запрос к API)
-   * @returns {Promise<{ ok: boolean, result?: Array, error?: string }>}
+   * Получить список акций Ozon (из кэша аккаунта; при первом обращении — запрос к API)
+   * @param {{ integrationScope?: { profileId?: *, organizationId?: * } }} [options]
    */
-  async getOzonActions() {
+  async getOzonActions(options = {}) {
     try {
-      const cache = await readData('ozonActionsCache');
-      if (cache && Array.isArray(cache.result)) {
-        return { ok: true, result: cache.result };
+      const scope = this._integrationScopeFromOptions(options);
+      const cached = await this._readScopedActionsCache('ozonActionsCache', scope);
+      if (cached && Array.isArray(cached.result)) {
+        return { ok: true, result: cached.result };
       }
-      const integrations = await integrationsService.getAll();
-      const ozonIntegration = integrations.find(i => i.code === 'ozon');
-      const client_id = ozonIntegration?.config?.client_id;
-      const api_key = ozonIntegration?.config?.api_key;
+      const { client_id, api_key } = await this._getOzonApiCredentials(options);
       if (!client_id || !api_key) {
         return {
           ok: false,
           error: 'Настройте интеграцию Ozon: укажите Client ID и API Key в разделе «Интеграции»'
         };
       }
-      const apiResult = await this._fetchOzonActionsFromApi();
+      const apiResult = await this._fetchOzonActionsFromApiWithCreds(client_id, api_key);
       if (apiResult.ok && Array.isArray(apiResult.result)) {
-        const cache = { result: apiResult.result, lastUpdate: new Date().toISOString() };
-        await writeData('ozonActionsCache', cache).catch(() => {});
+        await this._writeScopedActionsCache('ozonActionsCache', scope, {
+          result: apiResult.result,
+          lastUpdate: new Date().toISOString(),
+        }).catch(() => {});
       }
       return apiResult;
     } catch (error) {
@@ -939,17 +1101,16 @@ class PricesService {
 
   /**
    * Список акций Wildberries (календарь акций) + детали по каждой
-   * GET dp-calendar-api.wildberries.ru/api/v1/calendar/promotions → затем details по promotionIDs
+   * @param {{ integrationScope?: { profileId?: *, organizationId?: * } }} [options]
    */
-  async getWBActions() {
+  async getWBActions(options = {}) {
     try {
-      const cache = await readData('wbPromotionsCache');
-      if (cache && Array.isArray(cache.promotions) && cache.promotions.length > 0) {
-        return { ok: true, data: cache.promotions, lastUpdate: cache.lastUpdate };
+      const scope = this._integrationScopeFromOptions(options);
+      const cached = await this._readScopedActionsCache('wbPromotionsCache', scope);
+      if (cached && Array.isArray(cached.promotions) && cached.promotions.length > 0) {
+        return { ok: true, data: cached.promotions, lastUpdate: cached.lastUpdate };
       }
-      const integrations = await integrationsService.getAll();
-      const wb = integrations.find(i => i.code === 'wildberries' || i.code === 'wb');
-      const api_key = wb?.config?.api_key;
+      const { api_key } = await this._getWbApiCredentials(options);
       if (!api_key) {
         return { ok: false, error: 'Настройте интеграцию Wildberries: укажите API Key в разделе «Интеграции»' };
       }
@@ -959,7 +1120,10 @@ class PricesService {
       }
       const promotions = listResult.promotions;
       if (promotions.length === 0) {
-        await writeData('wbPromotionsCache', { promotions: [], lastUpdate: new Date().toISOString() }).catch(() => {});
+        await this._writeScopedActionsCache('wbPromotionsCache', scope, {
+          promotions: [],
+          lastUpdate: new Date().toISOString(),
+        }).catch(() => {});
         return { ok: true, data: [], lastUpdate: new Date().toISOString() };
       }
       const detailsResult = await this._fetchWBPromotionsDetailsFromApi(api_key, promotions.map(p => p.id));
@@ -969,7 +1133,7 @@ class PricesService {
       }
       const merged = promotions.map(p => ({ ...p, ...(detailsById[p.id] || {}) }));
       const cacheData = { promotions: merged, lastUpdate: new Date().toISOString() };
-      await writeData('wbPromotionsCache', cacheData).catch(() => {});
+      await this._writeScopedActionsCache('wbPromotionsCache', scope, cacheData).catch(() => {});
       return { ok: true, data: merged, lastUpdate: cacheData.lastUpdate };
     } catch (error) {
       logger.warn('[Prices Service] getWBActions error:', error.message);
@@ -1044,15 +1208,13 @@ class PricesService {
   }
 
   /**
-   * Детальная информация по одной акции WB (GET .../promotions/details?promotionIDs=id)
+   * Детальная информация по одной акции WB
    * @param {number|string} promotionId
-   * @returns {Promise<{ ok: boolean, promotion?: object, error?: string }>}
+   * @param {{ integrationScope?: { profileId?: *, organizationId?: * } }} [options]
    */
-  async getWBPromotionDetails(promotionId) {
+  async getWBPromotionDetails(promotionId, options = {}) {
     try {
-      const integrations = await integrationsService.getAll();
-      const wb = integrations.find(i => i.code === 'wildberries' || i.code === 'wb');
-      const api_key = wb?.config?.api_key;
+      const { api_key } = await this._getWbApiCredentials(options);
       if (!api_key) {
         return { ok: false, error: 'Настройте интеграцию Wildberries: укажите API Key' };
       }
@@ -1074,18 +1236,15 @@ class PricesService {
 
   /**
    * Список товаров по акции WB: участвующие (inAction=true) или доступные (inAction=false)
-   * GET .../promotions/nomenclatures?promotionID=&inAction=&limit=&offset=
    * @param {number|string} promotionId
-   * @param {boolean} inAction true — в акции, false — не в акции (доступные к добавлению)
-   * @param {number} limit 1..1000
-   * @param {number} offset >= 0
-   * @returns {Promise<{ ok: boolean, nomenclatures?: Array, total?: number, error?: string }>}
+   * @param {boolean} inAction
+   * @param {number} limit
+   * @param {number} offset
+   * @param {{ integrationScope?: { profileId?: *, organizationId?: * } }} [options]
    */
-  async getWBPromotionNomenclatures(promotionId, inAction = false, limit = 1000, offset = 0) {
+  async getWBPromotionNomenclatures(promotionId, inAction = false, limit = 1000, offset = 0, options = {}) {
     try {
-      const integrations = await integrationsService.getAll();
-      const wb = integrations.find(i => i.code === 'wildberries' || i.code === 'wb');
-      const api_key = wb?.config?.api_key;
+      const { api_key } = await this._getWbApiCredentials(options);
       if (!api_key) {
         return { ok: false, error: 'Настройте интеграцию Wildberries: укажите API Key' };
       }
@@ -1135,94 +1294,28 @@ class PricesService {
     }
   }
 
-  async _fetchOzonActionsFromApi() {
-    const integrations = await integrationsService.getAll();
-    const ozonIntegration = integrations.find(i => i.code === 'ozon');
-    const client_id = ozonIntegration?.config?.client_id;
-    const api_key = ozonIntegration?.config?.api_key;
-    if (!client_id || !api_key) {
-      return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
-    }
-    const response = await fetch('https://api-seller.ozon.ru/v1/actions', {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'Client-Id': String(client_id),
-        'Api-Key': String(api_key)
-      }
-    });
-    if (!response.ok) {
-      const errorText = await response.text();
-      return { ok: false, error: `Ошибка API Ozon: ${errorText.substring(0, 150)}` };
-    }
-    const data = await response.json();
-    const result = data.result || [];
-    return { ok: true, result: Array.isArray(result) ? result : [] };
+  async _fetchOzonActionsFromApi(options = {}) {
+    const { client_id, api_key } = await this._getOzonApiCredentials(options);
+    return this._fetchOzonActionsFromApiWithCreds(client_id, api_key);
   }
 
   /**
    * Один запрос товаров акции: POST /v1/actions/products
-   * @param {number} actionId
-   * @param {number} [limit=100]
-   * @param {string} [lastId='']
    */
-  async _fetchOzonActionProductsFromApi(actionId, limit = 100, lastId = '') {
-    const integrations = await integrationsService.getAll();
-    const ozonIntegration = integrations.find(i => i.code === 'ozon');
-    const client_id = ozonIntegration?.config?.client_id;
-    const api_key = ozonIntegration?.config?.api_key;
-    if (!client_id || !api_key) {
-      return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
-    }
-    const response = await fetch('https://api-seller.ozon.ru/v1/actions/products', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Client-Id': String(client_id),
-        'Api-Key': String(api_key)
-      },
-      body: JSON.stringify({
-        action_id: Number(actionId),
-        limit: Math.min(Number(limit) || 100, 100),
-        offset: 0,
-        last_id: lastId || ''
-      })
-    });
-    if (!response.ok) {
-      const errorText = await response.text();
-      return { ok: false, error: `Ошибка API Ozon: ${errorText.substring(0, 150)}` };
-    }
-    const data = await response.json();
-    const result = data.result || {};
-    const products = Array.isArray(result.products) ? result.products : [];
-    return {
-      ok: true,
-      products,
-      total: result.total != null ? result.total : products.length,
-      last_id: result.last_id || ''
-    };
+  async _fetchOzonActionProductsFromApi(actionId, limit = 100, lastId = '', options = {}) {
+    const { client_id, api_key } = await this._getOzonApiCredentials(options);
+    return this._fetchOzonActionProductsFromApiWithCreds(actionId, client_id, api_key, limit, lastId);
   }
 
   /**
    * Загрузить все страницы товаров по акции (по last_id)
    */
-  async _fetchAllOzonActionProducts(actionId) {
-    const all = [];
-    let lastId = '';
-    let total = 0;
-    const limit = 100;
-    for (;;) {
-      const page = await this._fetchOzonActionProductsFromApi(actionId, limit, lastId);
-      if (!page.ok) return page;
-      if (page.products && page.products.length > 0) {
-        all.push(...page.products);
-      }
-      if (page.total != null) total = page.total;
-      if (!page.last_id || page.products.length === 0) break;
-      lastId = page.last_id;
+  async _fetchAllOzonActionProducts(actionId, options = {}) {
+    const { client_id, api_key } = await this._getOzonApiCredentials(options);
+    if (!client_id || !api_key) {
+      return { ok: false, error: 'Необходимы Client ID и API Key для Ozon' };
     }
-    return { ok: true, products: all, total: total || all.length };
+    return this._fetchAllOzonActionProductsWithCreds(actionId, client_id, api_key);
   }
 
   _mpDbMarketplace(code) {

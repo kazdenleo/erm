@@ -5,6 +5,66 @@
 
 import pricesService from '../services/prices.service.js';
 import logger from '../utils/logger.js';
+import {
+  pushForProduct,
+  pushForAllProfiles,
+  pushForOrganization,
+} from '../services/marketplaceMinPricePush.service.js';
+import { isMarketplacePricePushEnabledForOrg } from '../utils/organizationMarketplacePricePushPolicy.js';
+
+function formatPushSkipReason(reason) {
+  switch (reason) {
+    case 'disabled':
+      return 'Отправка цен на маркетплейсы отключена на сервере';
+    case 'in_progress':
+      return 'Уже выполняется другая отправка цен. Подождите и попробуйте снова';
+    case 'org_price_push_disabled':
+      return 'У организации выключена «Автоматически отправлять цены на маркетплейсы». Включите в настройках организации.';
+    case 'no_organization':
+      return 'У товара не указана организация';
+    case 'no_stored_min_prices':
+      return 'Нет сохранённых минимальных цен — сначала пересчитайте цены';
+    case 'product_not_found':
+      return 'Товар не найден';
+    case 'invalid_organization':
+      return 'Некорректная организация';
+    default:
+      return reason ? `Пропущено: ${reason}` : 'Отправка пропущена';
+  }
+}
+
+function summarizeProductPush(result) {
+  if (!result) return { ok: false, message: 'Пустой ответ' };
+  if (result.skipped && result.reason && !result.results) {
+    return { ok: false, skipped: true, reason: result.reason, message: formatPushSkipReason(result.reason) };
+  }
+  const results = Array.isArray(result.results) ? result.results : [];
+  const okMp = results.filter((r) => r.ok).map((r) => r.marketplace);
+  const failMp = results.filter((r) => r.ok === false);
+  const skipMp = results.filter((r) => r.skipped);
+  if (failMp.length && !okMp.length) {
+    return {
+      ok: false,
+      message: failMp.map((r) => `${r.marketplace}: ${r.error || 'ошибка'}`).join('; '),
+      data: result,
+    };
+  }
+  const parts = [];
+  if (okMp.length) parts.push(`обновлено: ${okMp.join(', ').toUpperCase()}`);
+  if (skipMp.length) {
+    parts.push(
+      `без изменений: ${skipMp.map((r) => `${String(r.marketplace).toUpperCase()} (${r.reason || 'ok'})`).join(', ')}`
+    );
+  }
+  if (failMp.length) {
+    parts.push(`ошибки: ${failMp.map((r) => `${r.marketplace}: ${r.error}`).join('; ')}`);
+  }
+  return {
+    ok: true,
+    message: parts.length ? parts.join('. ') : 'Цены на маркетплейсах актуальны',
+    data: result,
+  };
+}
 
 class PricesController {
   async getOzonPrices(req, res, next) {
@@ -53,9 +113,18 @@ class PricesController {
     }
   }
 
+  _integrationScopeFromReq(req) {
+    return {
+      profileId: req.user?.profileId ?? null,
+      organizationId: req.headers['x-organization-id'] ?? req.query.organizationId ?? null,
+    };
+  }
+
   async getOzonActions(req, res, next) {
     try {
-      const result = await pricesService.getOzonActions();
+      const result = await pricesService.getOzonActions({
+        integrationScope: this._integrationScopeFromReq(req),
+      });
       if (!result.ok) {
         return res.status(400).json({ ok: false, error: result.error });
       }
@@ -68,7 +137,9 @@ class PricesController {
 
   async getWBActions(req, res, next) {
     try {
-      const result = await pricesService.getWBActions();
+      const result = await pricesService.getWBActions({
+        integrationScope: this._integrationScopeFromReq(req),
+      });
       if (!result.ok) {
         return res.status(400).json({ ok: false, error: result.error });
       }
@@ -82,7 +153,9 @@ class PricesController {
   async getWBPromotionDetails(req, res, next) {
     try {
       const promotionId = req.params.promotionId;
-      const result = await pricesService.getWBPromotionDetails(promotionId);
+      const result = await pricesService.getWBPromotionDetails(promotionId, {
+        integrationScope: this._integrationScopeFromReq(req),
+      });
       if (!result.ok) {
         return res.status(400).json({ ok: false, error: result.error });
       }
@@ -99,7 +172,13 @@ class PricesController {
       const inAction = req.query.inAction === 'true';
       const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit, 10) || 1000));
       const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
-      const result = await pricesService.getWBPromotionNomenclatures(promotionId, inAction, limit, offset);
+      const result = await pricesService.getWBPromotionNomenclatures(
+        promotionId,
+        inAction,
+        limit,
+        offset,
+        { integrationScope: this._integrationScopeFromReq(req) }
+      );
       if (!result.ok) {
         return res.status(400).json({ ok: false, error: result.error });
       }
@@ -118,7 +197,9 @@ class PricesController {
   async getOzonActionProducts(req, res, next) {
     try {
       const actionId = req.params.actionId || req.query.action_id || '';
-      const result = await pricesService.getOzonActionProducts(actionId);
+      const result = await pricesService.getOzonActionProducts(actionId, {
+        integrationScope: this._integrationScopeFromReq(req),
+      });
       // Минимальная цена берётся из БД при каждом запросе — не кэшировать ответ (иначе 304 отдаёт старые данные без min_price_ozon)
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.set('Pragma', 'no-cache');
@@ -137,7 +218,9 @@ class PricesController {
   async getOzonActionCandidates(req, res, next) {
     try {
       const actionId = req.params.actionId || req.query.action_id || '';
-      const result = await pricesService.getOzonActionCandidates(actionId);
+      const result = await pricesService.getOzonActionCandidates(actionId, {
+        integrationScope: this._integrationScopeFromReq(req),
+      });
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.set('Pragma', 'no-cache');
       res.set('ETag', '');
@@ -295,6 +378,102 @@ class PricesController {
     }
   }
 
+  /**
+   * POST /api/product/prices/save-commercial
+   * Body: { items: [{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent? }] }
+   */
+  async saveCommercial(req, res, next) {
+    try {
+      const { items } = req.body || {};
+      if (!Array.isArray(items)) {
+        return res.status(400).json({ ok: false, message: 'Необходим массив items' });
+      }
+      const result = await pricesService.saveCommercialPrices(items);
+      return res.status(200).json({ ok: true, ...result });
+    } catch (error) {
+      console.error('[Prices Controller] saveCommercial error:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/product/prices/push-one — отправить сохранённые мин. цены товара на МП.
+   * Body: { productId }
+   */
+  async pushOne(req, res, next) {
+    try {
+      const productId = req.params.productId ?? req.body?.productId;
+      const id = parseInt(productId, 10);
+      if (isNaN(id) || id <= 0) {
+        return res.status(400).json({ ok: false, message: 'Некорректный ID товара (передайте productId)' });
+      }
+      const result = await pushForProduct(id);
+      const summary = summarizeProductPush(result);
+      if (!summary.ok) {
+        const status = summary.reason === 'product_not_found' ? 404 : 400;
+        return res.status(status).json({ ok: false, message: summary.message, reason: summary.reason, data: result });
+      }
+      return res.status(200).json({ ok: true, message: summary.message, data: result });
+    } catch (error) {
+      logger.error('[Prices Controller] pushOne error:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/product/prices/push-all — отправить мин. цены на МП (фон).
+   * Body: { organizationId? } — если указан, только эта организация (нужен флаг auto_push).
+   */
+  async pushAll(req, res, next) {
+    try {
+      const rawOrg = req.body?.organizationId ?? req.query?.organizationId ?? null;
+      const organizationId =
+        rawOrg != null && String(rawOrg).trim() !== '' ? parseInt(rawOrg, 10) : null;
+
+      if (organizationId != null) {
+        if (isNaN(organizationId) || organizationId <= 0) {
+          return res.status(400).json({ ok: false, message: 'Некорректный organizationId' });
+        }
+        const allowed = await isMarketplacePricePushEnabledForOrg(organizationId);
+        if (!allowed) {
+          return res.status(400).json({
+            ok: false,
+            message: formatPushSkipReason('org_price_push_disabled'),
+            reason: 'org_price_push_disabled',
+          });
+        }
+        pushForOrganization(organizationId)
+          .then((data) => {
+            logger.info('[Prices Controller] push-all (org) завершён', data);
+          })
+          .catch((err) => {
+            logger.error('[Prices Controller] push-all (org) ошибка:', err);
+          });
+        return res.status(202).json({
+          ok: true,
+          message:
+            'Отправка цен на маркетплейсы запущена в фоне для выбранной организации. Обычно занимает несколько минут.',
+        });
+      }
+
+      pushForAllProfiles()
+        .then((data) => {
+          logger.info('[Prices Controller] push-all завершён', data);
+        })
+        .catch((err) => {
+          logger.error('[Prices Controller] push-all ошибка:', err);
+        });
+      return res.status(202).json({
+        ok: true,
+        message:
+          'Отправка цен на маркетплейсы запущена в фоне (организации с включённой автоотправкой). Обычно занимает несколько минут.',
+      });
+    } catch (error) {
+      logger.error('[Prices Controller] pushAll error:', error);
+      next(error);
+    }
+  }
+
   /** POST /api/product/prices/ozon/block-auto-promotions/enforce */
   async enforceOzonBlockAutoPromotions(req, res, next) {
     try {
@@ -309,6 +488,32 @@ class PricesController {
       return res.status(200).json({ ok: true, ...result });
     } catch (error) {
       logger.error('[Prices Controller] enforceOzonBlockAutoPromotions error:', error);
+      next(error);
+    }
+  }
+
+  /** POST /api/product/prices/ozon/ads-stats/sync — выгрузить ДРР из Performance API */
+  async syncOzonAdsStats(req, res, next) {
+    try {
+      const ozonPerformanceAdsService = (await import('../services/ozonPerformanceAds.service.js'))
+        .default;
+      const integrationScope = {
+        profileId: req.user?.profileId ?? null,
+        organizationId: req.headers['x-organization-id'] ?? req.query.organizationId ?? null,
+      };
+      const days = req.body?.days != null ? Number(req.body.days) : 14;
+      const result = await ozonPerformanceAdsService.syncAdsStats(integrationScope, { days });
+      if (result?.skipped) {
+        return res.status(400).json({
+          ok: false,
+          error:
+            'Не заданы Performance Client ID / Secret в настройках интеграции Ozon (рекламный кабинет).',
+          ...result,
+        });
+      }
+      return res.status(200).json({ ok: true, ...result });
+    } catch (error) {
+      logger.error('[Prices Controller] syncOzonAdsStats error:', error);
       next(error);
     }
   }
