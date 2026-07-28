@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { Modal } from '../common/Modal/Modal';
-import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile } from '../../utils/organizationTaxRates.js';
+import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters } from '../../utils/productVolume.js';
 import './PriceDetailsModal.css';
@@ -19,6 +19,7 @@ export function PriceDetailsModal({
   calculatorData,
   wbAcquiringPercent = null,
   wbGemServicesPercent = null,
+  ozonAcquiringPercent = null,
   taxProfile = null,
 }) {
   if (!isOpen || !product || !marketplace) {
@@ -98,33 +99,20 @@ export function PriceDetailsModal({
     return null;
   }
 
-  // Извлекаем данные из калькулятора. Расчёт по схеме FBS: для WB — только комиссия FBS (Маркетплейс).
+  // Извлекаем данные из калькулятора. WB — схема FBO/FBW (paidStorageKgvp); логистика отдельно.
   const commissions = resolvedCalculatorData.commissions || {};
   const emptyCommission = { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 };
   
-  // ВАЖНО: Для WB используем ТОЛЬКО FBS комиссию (kgvpMarketplace), НЕ FBO!
-  const commission = marketplace === 'wb'
-    ? (commissions.FBS || emptyCommission)
-    : (commissions.FBS || commissions.FBO || emptyCommission);
-  
-  // Логируем для диагностики
+  let commission;
   if (marketplace === 'wb') {
-    console.log(`[PriceDetailsModal] WB commission selection:`, {
-      hasFBS: !!commissions.FBS,
-      fbsPercent: commissions.FBS?.percent,
-      hasFBO: !!commissions.FBO,
-      fboPercent: commissions.FBO?.percent,
-      selectedCommission: commission.percent,
-      allCommissions: commissions
-    });
-    
-    // Предупреждение, если используется FBO вместо FBS
-    if (commissions.FBO && !commissions.FBS) {
-      console.error(`[PriceDetailsModal] ⚠ ERROR: FBS commission missing, but FBO exists! This should not happen.`);
-    }
-    if (commissions.FBS && commissions.FBO && commissions.FBS.percent !== commissions.FBO.percent) {
-      console.log(`[PriceDetailsModal] ✓ FBS (${commissions.FBS.percent}%) and FBO (${commissions.FBO.percent}%) differ - using FBS for WB`);
-    }
+    const wbBase = commissions.FBO || commissions.FBS || emptyCommission;
+    commission = { ...wbBase, delivery_amount: 0 };
+  } else {
+    commission = commissions.FBS || commissions.FBO || emptyCommission;
+  }
+  
+  if (marketplace === 'wb') {
+    console.log(`[PriceDetailsModal] WB commission: FBO=${commissions.FBO?.percent}% FBS=${commissions.FBS?.percent}% → using ${commission.percent}%`);
   }
   
   // Преобразуем все значения в числа для безопасных вычислений
@@ -136,14 +124,15 @@ export function PriceDetailsModal({
   const calculatedPrice = Number(priceData) || 0;
   
   // Фиксированные расходы (преобразуем в числа)
-  // Для Wildberries используем процент эквайринга из настроек
+  // WB / Ozon: процент эквайринга из настроек интеграции, если задан; иначе из API/калькулятора
   let acquiring = 0;
   if (marketplace === 'wb' && wbAcquiringPercent !== null && wbAcquiringPercent !== undefined) {
-    // Для WB: используем процент эквайринга из настроек
     acquiring = Number(wbAcquiringPercent) || 0;
     console.log(`[PriceDetailsModal] WB acquiring percent from settings: ${acquiring}%`);
+  } else if (marketplace === 'ozon' && ozonAcquiringPercent !== null && ozonAcquiringPercent !== undefined) {
+    acquiring = Number(ozonAcquiringPercent) || 0;
+    console.log(`[PriceDetailsModal] Ozon acquiring percent from settings: ${acquiring}%`);
   } else {
-    // Для других маркетплейсов используем значение из API
     acquiring = Number(resolvedCalculatorData.acquiring) || 0;
   }
   // Обработка заказа: используем значение из API
@@ -271,6 +260,9 @@ export function PriceDetailsModal({
   const brandPromotionPercent = (resolvedCalculatorData.brand_promotion_percent != null && !isNaN(Number(resolvedCalculatorData.brand_promotion_percent)))
     ? Number(resolvedCalculatorData.brand_promotion_percent) / 100
     : 0;
+  const adsPromotionPercent = (resolvedCalculatorData.ads_promotion_percent != null && !isNaN(Number(resolvedCalculatorData.ads_promotion_percent)))
+    ? Number(resolvedCalculatorData.ads_promotion_percent) / 100
+    : 0;
   
   const productVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product) || 0;
   
@@ -322,6 +314,7 @@ export function PriceDetailsModal({
     console.log(`[PriceDetailsModal] Ozon acquiring amount rounded: ${acquiringAmountBefore.toFixed(2)} → ${acquiringAmount}`);
   }
   const brandPromotionAmount = calculatedPrice * brandPromotionPercent;
+  const adsPromotionAmount = calculatedPrice * adsPromotionPercent;
   const gemServicesAmount = calculatedPrice * gemServicesPercent;
   const fixedExpenses = processingCost + logisticsCost + deliveryToCustomer + returnCost + returnProcessingCost + returnLossCost;
 
@@ -351,7 +344,7 @@ export function PriceDetailsModal({
   const effectiveAcquiringAmount = marketplace === 'ym' ? ymAcquiringTotal : acquiringAmount;
 
   // Расчет прибыли
-  const totalExpenses = commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + gemServicesAmount + fixedExpenses + basePrice;
+  const totalExpenses = commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses + basePrice;
   const profit = calculatedPrice - totalExpenses;
   const profitPercent = calculatedPrice > 0 ? (profit / calculatedPrice) * 100 : 0;
   
@@ -369,11 +362,12 @@ export function PriceDetailsModal({
     totalExpenses: totalExpenses.toFixed(2)
   });
   
-  const profile = taxProfile || resolveOrganizationTaxProfile(null);
+  const profile = taxProfile || taxProfileForProduct(null, product) || resolveOrganizationTaxProfile(null);
   const mpExpensesWithoutBase =
     commissionAmount +
     effectiveAcquiringAmount +
     brandPromotionAmount +
+    adsPromotionAmount +
     gemServicesAmount +
     fixedExpenses;
   const taxBreakdown = computeTaxesAndNetProfit({
@@ -569,7 +563,7 @@ export function PriceDetailsModal({
             
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">
-                Комиссия {marketplaceName}{marketplace === 'wb' ? ' (FBS)' : ''} ({commission.percent || 0}%):
+                Комиссия {marketplaceName}{marketplace === 'wb' ? ' (FBO)' : ''} ({commission.percent || 0}%):
               </span>
               <span className="price-breakdown-value negative">
                 -{commissionAmount.toFixed(2)} ₽
@@ -577,13 +571,13 @@ export function PriceDetailsModal({
                   = {calculatedPrice.toFixed(2)} × {(marketplaceCommissionPercent * 100).toFixed(2)}% = {commissionAmount.toFixed(2)} ₽
                   {marketplace === 'wb' && (
                     <span style={{color: '#10b981', fontWeight: 600}}>
-                      {' '}— схема FBS (Маркетплейс, kgvpMarketplace), по категории из API WB
+                      {' '}— схема FBO/FBW (Склад WB, paidStorageKgvp), по категории из API WB
                     </span>
                   )}
                 </div>
-                {marketplace === 'wb' && commissions.FBO && commissions.FBO.percent !== commission.percent && (
-                  <div style={{fontSize: '9px', color: '#f59e0b', marginTop: '2px', fontStyle: 'italic'}}>
-                    ⚠ FBO комиссия ({commissions.FBO.percent}%) не используется для WB
+                {marketplace === 'wb' && commissions.FBS && commissions.FBS.percent !== commission.percent && (
+                  <div style={{fontSize: '9px', color: '#64748b', marginTop: '2px', fontStyle: 'italic'}}>
+                    FBS комиссия ({commissions.FBS.percent}%) справочно, в расчёт мин. цены не входит
                   </div>
                 )}
               </span>
@@ -649,16 +643,45 @@ export function PriceDetailsModal({
               </div>
             )}
             
-            {brandPromotionAmount > 0 && (
+            {marketplace === 'ozon' && (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">
                   Продвижение бренда ({(brandPromotionPercent * 100).toFixed(2)}%)
-                  {resolvedCalculatorData.brand_promotion_source === 'brand' ? ' — из настроек бренда' : ''}:
+                  {resolvedCalculatorData.brand_promotion_source === 'brand'
+                    ? ' — из настроек бренда'
+                    : resolvedCalculatorData.brand_promotion_source === 'api'
+                      ? ' — из API Ozon'
+                      : ''}
+                  :
                 </span>
-                <span className="price-breakdown-value negative">
-                  -{brandPromotionAmount.toFixed(2)} ₽
+                <span className={`price-breakdown-value${brandPromotionAmount > 0 ? ' negative' : ''}`}>
+                  {brandPromotionAmount > 0 ? `-${brandPromotionAmount.toFixed(2)} ₽` : '0.00 ₽'}
                   <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {calculatedPrice.toFixed(2)} × {(brandPromotionPercent * 100).toFixed(2)}% = {brandPromotionAmount.toFixed(2)} ₽
+                    {brandPromotionPercent > 0
+                      ? `= ${calculatedPrice.toFixed(2)} × ${(brandPromotionPercent * 100).toFixed(2)}% = ${brandPromotionAmount.toFixed(2)} ₽`
+                      : 'нет данных API / настроек бренда — в формуле 0%'}
+                  </div>
+                </span>
+              </div>
+            )}
+
+            {marketplace === 'ozon' && (
+              <div className="price-breakdown-item">
+                <span className="price-breakdown-label">
+                  Реклама / ДРР ({(adsPromotionPercent * 100).toFixed(2)}%)
+                  {resolvedCalculatorData.ads_promotion_source === 'config'
+                    ? ' — из настроек интеграции'
+                    : resolvedCalculatorData.ads_promotion_source === 'ads'
+                      ? ' — Performance API'
+                      : ''}
+                  :
+                </span>
+                <span className={`price-breakdown-value${adsPromotionAmount > 0 ? ' negative' : ''}`}>
+                  {adsPromotionAmount > 0 ? `-${adsPromotionAmount.toFixed(2)} ₽` : '0.00 ₽'}
+                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
+                    {adsPromotionPercent > 0
+                      ? `= ${calculatedPrice.toFixed(2)} × ${(adsPromotionPercent * 100).toFixed(2)}% = ${adsPromotionAmount.toFixed(2)} ₽`
+                      : 'нет статистики Performance по SKU — в формуле 0% (или задайте ДРР по умолчанию в интеграциях)'}
                   </div>
                 </span>
               </div>
@@ -667,9 +690,9 @@ export function PriceDetailsModal({
             <div className="price-breakdown-item price-breakdown-subtotal">
               <span className="price-breakdown-label">Всего расходов:</span>
               <span className="price-breakdown-value negative">
-                {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
+                {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
                 <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {commissionAmount.toFixed(2)} + {effectiveAcquiringAmount.toFixed(2)}{marketplace === 'ym' ? ` (${ymAgencyDisplay.toFixed(2)} + ${ymPaymentTransferDisplay.toFixed(2)})` : ''} + {brandPromotionAmount.toFixed(2)}{gemServicesAmount > 0 ? ' + ' + gemServicesAmount.toFixed(2) : ''} + {fixedExpenses.toFixed(2)} = {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
+                  = {commissionAmount.toFixed(2)} + {effectiveAcquiringAmount.toFixed(2)}{marketplace === 'ym' ? ` (${ymAgencyDisplay.toFixed(2)} + ${ymPaymentTransferDisplay.toFixed(2)})` : ''} + {brandPromotionAmount.toFixed(2)}{adsPromotionAmount > 0 ? ` + ${adsPromotionAmount.toFixed(2)}` : ''}{gemServicesAmount > 0 ? ' + ' + gemServicesAmount.toFixed(2) : ''} + {fixedExpenses.toFixed(2)} = {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
                 </div>
               </span>
             </div>
@@ -703,7 +726,7 @@ export function PriceDetailsModal({
               </span>
             </div>
             
-            {vatAmount > 0 && (
+            {profile.vatRate > 0 ? (
               <div className="price-breakdown-item">
                 <span className="price-breakdown-label">НДС ({vatPctLabel}):</span>
                 <span className="price-breakdown-value negative">
@@ -713,21 +736,31 @@ export function PriceDetailsModal({
                   </div>
                 </span>
               </div>
-            )}
-
-            {profile.incomeTaxRate > 0 && (
+            ) : (
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
-                <span className="price-breakdown-value negative">
-                  -{incomeTaxAmount.toFixed(2)} ₽
-                  {incomeTaxFormulaHint && (
-                    <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
-                      {incomeTaxFormulaHint}
-                    </div>
-                  )}
+                <span className="price-breakdown-label">НДС:</span>
+                <span className="price-breakdown-value" style={{ color: 'var(--muted)' }}>
+                  0 ₽ (не указан в организации)
                 </span>
               </div>
             )}
+
+            <div className="price-breakdown-item">
+              <span className="price-breakdown-label">Налог ({incomeTaxPctLabel}):</span>
+              <span className="price-breakdown-value negative">
+                -{incomeTaxAmount.toFixed(2)} ₽
+                {incomeTaxFormulaHint && (
+                  <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
+                    {incomeTaxFormulaHint}
+                  </div>
+                )}
+                {profile.incomeTaxRate <= 0 && (
+                  <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
+                    укажите систему налогообложения в карточке организации
+                  </div>
+                )}
+              </span>
+            </div>
 
             <div className="price-breakdown-item price-breakdown-total">
               <span className="price-breakdown-label">Чистая прибыль:</span>
@@ -747,7 +780,7 @@ export function PriceDetailsModal({
             <span className="price-details-final-value">
               {calculatedPrice.toFixed(2)} ₽
               <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px', fontStyle: 'italic'}}>
-                Рассчитана по формуле: себестоимость + расходы + целевая чистая прибыль (после налогов), с учётом комиссий и тарифов маркетплейса
+                Цена для маркетплейса. Рассчитана по формуле: себестоимость + расходы + целевая чистая прибыль (после налогов), с учётом комиссий и тарифов маркетплейса
               </div>
             </span>
           </div>

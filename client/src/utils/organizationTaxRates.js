@@ -86,13 +86,44 @@ export function computeTaxesAndNetProfit({ price, totalExpenses, taxProfile }) {
   return { vat, incomeTax, netProfit, profitBeforeIncomeTax };
 }
 
-export function taxProfileForProduct(organizations, product) {
-  const orgId = product?.organizationId ?? product?.organization_id;
-  if (orgId == null || orgId === '' || !Array.isArray(organizations)) {
-    return resolveOrganizationTaxProfile(null);
+export function taxProfileForProduct(organizations, product, fallbackOrganizationId = null) {
+  // Поля с join организаций в списке/карточке товара — приоритетнее списка orgs
+  if (
+    product?.organization_tax_system != null ||
+    product?.organization_vat != null ||
+    product?.organizationTaxSystem != null ||
+    product?.organizationVat != null
+  ) {
+    return resolveOrganizationTaxProfile({
+      tax_system: product.organization_tax_system ?? product.organizationTaxSystem,
+      vat: product.organization_vat ?? product.organizationVat,
+    });
   }
-  const org = organizations.find((o) => String(o.id) === String(orgId));
-  return resolveOrganizationTaxProfile(org);
+  if (product?.organization && typeof product.organization === 'object') {
+    const fromNested = resolveOrganizationTaxProfile(product.organization);
+    if (fromNested.incomeTaxRate > 0 || fromNested.vatRate > 0 || fromNested.taxSystemCode) {
+      return fromNested;
+    }
+  }
+  const list = Array.isArray(organizations)
+    ? organizations
+    : Array.isArray(organizations?.data)
+      ? organizations.data
+      : [];
+  const orgId =
+    product?.organizationId ??
+    product?.organization_id ??
+    fallbackOrganizationId ??
+    null;
+  if (orgId != null && orgId !== '' && list.length > 0) {
+    const org = list.find((o) => String(o.id) === String(orgId));
+    if (org) return resolveOrganizationTaxProfile(org);
+  }
+  // Один кабинет / одна организация — берём её налог, даже если у товара organization_id пустой
+  if (list.length === 1) {
+    return resolveOrganizationTaxProfile(list[0]);
+  }
+  return resolveOrganizationTaxProfile(null);
 }
 
 export function formatVatLabel(vatCode) {

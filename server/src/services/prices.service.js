@@ -1307,25 +1307,50 @@ class PricesService {
   }
 
   /**
-   * Ozon Performance отчёт отдаёт sku = marketplace_product_id, а не артикул продавца.
+   * Ключи для поиска ДРР: Performance API отдаёт finance/ads sku (часто mp_extra.ozon_sku),
+   * не всегда совпадает с marketplace_product_id / артикулом продавца.
    */
-  async _getOzonMarketplaceProductId(productId) {
-    if (productId == null || productId === '') return null;
+  async _getOzonAdsLookupKeys(productId) {
+    if (productId == null || productId === '') return [];
     try {
       const r = await query(
-        `SELECT marketplace_product_id
+        `SELECT marketplace_product_id, mp_extra
          FROM product_skus
          WHERE product_id = $1
            AND marketplace = 'ozon'
-           AND marketplace_product_id IS NOT NULL
          LIMIT 1`,
         [productId]
       );
-      const v = r.rows?.[0]?.marketplace_product_id;
-      if (v == null || String(v).trim() === '') return null;
-      return String(v).trim();
+      const row = r.rows?.[0];
+      if (!row) return [];
+      const keys = [];
+      const push = (v) => {
+        const s = v != null ? String(v).trim() : '';
+        if (s && !keys.includes(s)) keys.push(s);
+      };
+      push(row.marketplace_product_id);
+      const extra =
+        row.mp_extra && typeof row.mp_extra === 'object'
+          ? row.mp_extra
+          : typeof row.mp_extra === 'string'
+            ? (() => {
+                try {
+                  return JSON.parse(row.mp_extra);
+                } catch {
+                  return null;
+                }
+              })()
+            : null;
+      if (extra) {
+        push(extra.ozon_sku);
+        push(extra.ozonSku);
+        push(extra.sku);
+        push(extra.finance_sku);
+        push(extra.financeSku);
+      }
+      return keys;
     } catch {
-      return null;
+      return [];
     }
   }
 
@@ -1349,7 +1374,7 @@ class PricesService {
       push(calculator.product_id);
     }
     if (productId != null) {
-      push(await this._getOzonMarketplaceProductId(productId));
+      for (const k of await this._getOzonAdsLookupKeys(productId)) push(k);
     }
     if (!candidates.length) return calculator;
 
@@ -2944,6 +2969,45 @@ class PricesService {
     const product = await productsRepo.findById(productId);
     if (!product) return { errors: {} };
 
+    // Налог/НДС: организация товара → scope (X-Organization-Id) → единственная org профиля
+    const scopeOrgId = options.integrationScope?.organizationId;
+    let taxOrgId =
+      product.organization_id ??
+      product.organizationId ??
+      (scopeOrgId != null && String(scopeOrgId).trim() !== '' ? scopeOrgId : null);
+    try {
+      const orgsRepo = repositoryFactory.getOrganizationsRepository();
+      let org = null;
+      if (taxOrgId) {
+        org = await orgsRepo.findById(taxOrgId);
+      }
+      if (!org) {
+        const profileId = product.profile_id ?? product.profileId ?? options.integrationScope?.profileId ?? null;
+        const list = await orgsRepo.findAll(profileId != null && profileId !== '' ? { profileId } : {});
+        if (Array.isArray(list) && list.length === 1) {
+          org = list[0];
+          taxOrgId = org.id;
+        }
+      }
+      if (org) {
+        product.organization_tax_system = org.tax_system ?? product.organization_tax_system ?? null;
+        product.organization_vat = org.vat ?? product.organization_vat ?? null;
+        if (!product.organization_id && !product.organizationId && taxOrgId) {
+          product.organization_id = taxOrgId;
+          product.organizationId = taxOrgId;
+        }
+        logger.info(
+          `[Prices Service] tax profile for product ${productId}: org=${taxOrgId}, tax_system=${product.organization_tax_system || 'null'}, vat=${product.organization_vat || 'null'}`
+        );
+      } else {
+        logger.warn(
+          `[Prices Service] no org tax profile for product ${productId} (organization_id=${product.organization_id ?? 'null'}, scopeOrg=${scopeOrgId ?? 'null'})`
+        );
+      }
+    } catch (e) {
+      logger.warn('[Prices Service] org tax profile for recalc:', e.message);
+    }
+
     const costPart = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
     const addExp = Number(product.additional_expenses ?? product.additionalExpenses ?? 0) || 0;
     const basePrice = costPart + addExp;
@@ -2975,6 +3039,17 @@ class PricesService {
       wbGemServicesPercent = wb?.gem_services_percent != null ? Number(wb.gem_services_percent) : null;
     } catch (e) {
       logger.warn('[Prices Service] WB settings for recalc:', e.message);
+    }
+
+    let ozonAcquiringPercent = null;
+    try {
+      const ozonCfg = await integrationsService.getMarketplaceConfig('ozon', integrationScope);
+      if (ozonCfg?.acquiring_percent != null && ozonCfg.acquiring_percent !== '') {
+        const n = Number(ozonCfg.acquiring_percent);
+        if (Number.isFinite(n) && n >= 0) ozonAcquiringPercent = n;
+      }
+    } catch (e) {
+      logger.warn('[Prices Service] Ozon settings for recalc:', e.message);
     }
 
     const mappings = await categoryMappingsRepo.findAll({ productId });
@@ -3026,6 +3101,12 @@ class PricesService {
               meta: { productId, offerId: skuOzon },
             });
           } else {
+            if (ozonAcquiringPercent != null) {
+              logger.info(
+                `[Prices Service] Ozon acquiring override from settings: ${ozonAcquiringPercent}% (API was ${calculator.acquiring ?? 'n/a'}%)`
+              );
+              calculator.acquiring = ozonAcquiringPercent;
+            }
             const price = calculateMinPrice(basePrice, calculator, 'ozon', minProfit, product);
             if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, calculator);
             else errors.ozon = 'Не удалось рассчитать минимальную цену Ozon';

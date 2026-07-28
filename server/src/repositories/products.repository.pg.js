@@ -100,6 +100,8 @@ const STOCK_LIST_SELECT = `
   b.name AS brand_name,
   uc.name AS category_name,
   o.name AS organization_name,
+  o.tax_system AS organization_tax_system,
+  o.vat AS organization_vat,
   NULL AS category_marketplace
 `;
 
@@ -885,6 +887,8 @@ class ProductsRepositoryPG {
         b.name as brand_name,
         uc.name as category_name,
         o.name as organization_name,
+        o.tax_system as organization_tax_system,
+        o.vat as organization_vat,
         NULL as category_marketplace
       `;
     let sql = `
@@ -1216,6 +1220,9 @@ class ProductsRepositoryPG {
         product.barcodes = barcodesByProduct[String(product.id)] || [];
         if (product.user_category_id) product.categoryId = product.user_category_id;
         if (product.brand_name) product.brand = product.brand_name;
+        if (product.organization_id != null && product.organization_id !== '') {
+          product.organizationId = product.organization_id;
+        }
         if (product.supplier_id != null) {
           product.supplierId = Number(product.supplier_id);
         }
@@ -1620,6 +1627,8 @@ class ProductsRepositoryPG {
         b.name as brand_name,
         uc.name as category_name,
         o.name as organization_name,
+        o.tax_system as organization_tax_system,
+        o.vat as organization_vat,
         s.name as supplier_name
       FROM products p
       LEFT JOIN brands b ON p.brand_id = b.id
@@ -1645,6 +1654,9 @@ class ProductsRepositoryPG {
     // Маппим user_category_id в categoryId для совместимости с фронтендом
     if (product.user_category_id) {
       product.categoryId = product.user_category_id;
+    }
+    if (product.organization_id != null && product.organization_id !== '') {
+      product.organizationId = product.organization_id;
     }
     if (product.supplier_id != null) {
       product.supplierId = Number(product.supplier_id);

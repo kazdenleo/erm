@@ -757,6 +757,25 @@ class IntegrationsService {
           config.api_key = config.apiKey;
         }
       }
+      if (config.performance_client_id == null && config.performanceClientId != null) {
+        config.performance_client_id = config.performanceClientId;
+      }
+      if (config.performance_client_secret == null && config.performanceClientSecret != null) {
+        config.performance_client_secret = config.performanceClientSecret;
+      }
+      if (config.ozon_ads_percent == null && config.ozonAdsPercent != null) {
+        config.ozon_ads_percent = config.ozonAdsPercent;
+      }
+      if (config.ozon_ads_percent != null && config.ozon_ads_percent !== '') {
+        const n = Number(config.ozon_ads_percent);
+        config.ozon_ads_percent = Number.isFinite(n) ? n : null;
+      }
+      if (config.acquiring_percent != null && config.acquiring_percent !== '') {
+        const n = Number(config.acquiring_percent);
+        config.acquiring_percent = Number.isFinite(n) ? n : null;
+      } else if (config.acquiring_percent === '') {
+        config.acquiring_percent = null;
+      }
     }
     if (type === 'wildberries') {
       if (config.api_key == null || String(config.api_key).trim() === '') {

@@ -475,6 +475,61 @@ function MarketplacesTab({
             />
           </div>
           <div className="field">
+            <label className="label">Performance Client ID (реклама)</label>
+            <input
+              type="text"
+              className="input"
+              value={formData.performance_client_id || ''}
+              onChange={(e) => handleChange('performance_client_id', e.target.value)}
+              placeholder="Client ID из рекламного кабинета Ozon"
+            />
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+              Для автозагрузки ДРР в расчёт мин. цены. Отдельные ключи Performance API (не Seller API).
+            </div>
+          </div>
+          <div className="field">
+            <label className="label">Performance Client Secret (реклама)</label>
+            <input
+              type="password"
+              className="input"
+              value={formData.performance_client_secret || ''}
+              onChange={(e) => handleChange('performance_client_secret', e.target.value)}
+              placeholder="Client Secret из рекламного кабинета"
+            />
+          </div>
+          <div className="field">
+            <label className="label">ДРР по умолчанию, % (если нет статистики)</label>
+            <input
+              type="number"
+              className="input"
+              min="0"
+              max="100"
+              step="0.1"
+              value={formData.ozon_ads_percent ?? ''}
+              onChange={(e) => handleChange('ozon_ads_percent', e.target.value)}
+              placeholder="например 8"
+            />
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+              Используется, пока нет данных Performance по SKU. Продвижение бренда подтягивается из API цен / настроек бренда.
+            </div>
+          </div>
+          <div className="field">
+            <label className="label">% Эквайринга (необязательно)</label>
+            <input
+              type="number"
+              className="input"
+              value={formData.acquiring_percent || ''}
+              onChange={(e) => handleChange('acquiring_percent', e.target.value)}
+              placeholder="оставьте пустым — из API"
+              min="0"
+              max="100"
+              step="0.01"
+            />
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+              По умолчанию % считается из ответа Ozon при пересчёте цен. Заполняйте только если нужно принудительно заменить значение API.
+            </div>
+          </div>
+          <div className="field">
             <label className="label">Дата окончания токена (опционально)</label>
             <input
               type="date"
