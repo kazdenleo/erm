@@ -2889,6 +2889,9 @@ class PurchasesService {
         }
         ordersToRelease = revertSlice;
       }
+
+      // После уменьшения/удаления строки: если всё принято — в архив (как после приёмки).
+      await recalcPurchaseStatusAfterReceiptChangeInTx(client, purId);
     });
 
     schedulePurchaseReserveCleanup({
