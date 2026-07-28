@@ -6,6 +6,56 @@
 import api from './api.js';
 import { coerceBarcodeString, isCorruptBarcodeString, normalizeBarcodeRows } from '../utils/productBarcodes.js';
 
+/** Массовый push/pull карточек МП: axios default 90s мало для каталога. */
+const MARKETPLACE_CARD_BULK_TIMEOUT_MS = 600000; // 10 мин на чанк
+/** Чанк меньше лимита сервера (pull ≤500) и укладывается в nginx proxy_read_timeout. */
+const MARKETPLACE_CARD_BULK_CHUNK = 25;
+
+/**
+ * POST /products/push-card|pull-card с разбиением productIds на чанки.
+ * @param {string} url
+ * @param {{ productIds?: Array<number|string>, marketplaces?: string|string[], marketplace?: string }} payload
+ */
+async function postMarketplaceCardBulk(url, payload = {}) {
+  const ids = Array.isArray(payload?.productIds) ? payload.productIds : [];
+  if (ids.length === 0) {
+    const response = await api.post(url, payload, { timeout: MARKETPLACE_CARD_BULK_TIMEOUT_MS });
+    return response.data;
+  }
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += MARKETPLACE_CARD_BULK_CHUNK) {
+    chunks.push(ids.slice(i, i + MARKETPLACE_CARD_BULK_CHUNK));
+  }
+  if (chunks.length === 1) {
+    const response = await api.post(url, payload, { timeout: MARKETPLACE_CARD_BULK_TIMEOUT_MS });
+    return response.data;
+  }
+  const allItems = [];
+  let success = 0;
+  let failed = 0;
+  for (const chunk of chunks) {
+    const response = await api.post(
+      url,
+      { ...payload, productIds: chunk },
+      { timeout: MARKETPLACE_CARD_BULK_TIMEOUT_MS }
+    );
+    const body = response.data;
+    const data = body?.data ?? body;
+    if (Array.isArray(data?.items)) allItems.push(...data.items);
+    success += Number(data?.success) || 0;
+    failed += Number(data?.failed) || 0;
+  }
+  return {
+    ok: true,
+    data: {
+      total: allItems.length,
+      success,
+      failed,
+      items: allItems,
+    },
+  };
+}
+
 export const productsApi = {
   /** Сводка остатков по категориям для главной (лёгкий SQL на сервере). */
   getHomeStockSummary: async () => {
@@ -251,7 +301,7 @@ export const productsApi = {
   },
 
   /**
-   * Связать товар с карточкой маркетплейса по артикулу ERP (кабинет организации).
+   * Связать товар с карточкой маркетплейса по артикулу (кабинет организации).
    * @param {number|string} productId
    * @param {'ozon'|'wb'|'ym'} marketplace
    */
@@ -291,12 +341,10 @@ export const productsApi = {
 
   /**
    * Массовая отправка карточек на маркетплейсы.
+   * Длинный timeout + чанки — иначе axios 90s / nginx рвут большой каталог.
    * @param {{ productIds: number[], marketplaces: string|string[] }} payload
    */
-  pushCardBulk: async (payload) => {
-    const response = await api.post('/products/push-card', payload);
-    return response.data;
-  },
+  pushCardBulk: async (payload) => postMarketplaceCardBulk('/products/push-card', payload),
 
   /**
    * Обновить карточку ERP данными с маркетплейса (ozon | wb | ym | all).
@@ -312,10 +360,7 @@ export const productsApi = {
    * Массовое обновление карточек ERP данными с маркетплейсов.
    * @param {{ productIds: number[], marketplaces: string|string[] }} payload
    */
-  pullCardBulk: async (payload) => {
-    const response = await api.post('/products/pull-card', payload);
-    return response.data;
-  },
+  pullCardBulk: async (payload) => postMarketplaceCardBulk('/products/pull-card', payload),
 
   /**
    * Добавить штрихкод к товару, не удаляя существующие. Возвращает актуальную карточку (getById).

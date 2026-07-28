@@ -38,7 +38,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json'
   },
-  // 30s часто не хватает для синхронизации маркетплейсов и операций с поставками WB
+  // Обычные запросы. Долгие bulk МП (push/pull-card) задают timeout локально (см. products.api).
   timeout: 90000
 });
 

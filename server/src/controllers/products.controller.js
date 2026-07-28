@@ -16,7 +16,7 @@ import { isProfileSupplierSyncEnabled } from '../utils/profileSupplierSync.js';
 const STOCK_LIST_DEFAULT_LIMIT = 50;
 /** Без limit в запросе — не отдаём весь каталог (риск 504 на VPS). Исключение: forExport=1 */
 const PRODUCT_LIST_DEFAULT_LIMIT = 200;
-const PRODUCT_LIST_MAX_LIMIT = 500;
+const PRODUCT_LIST_MAX_LIMIT = 1000;
 const STOCK_LIST_MAX_LIMIT = 200;
 
 /** Запрос со страницы «Остатки» (старый фронт без listView=stock). */

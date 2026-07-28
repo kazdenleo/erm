@@ -24,13 +24,23 @@ import { useSuppliers } from '../../hooks/useSuppliers';
 import './ProductsBulkEdit.css';
 import './Products.css';
 
-const LOAD_LIMIT_SELECTED = 500;
-const LOAD_LIMIT_ALL = 200;
+const BULK_PAGE_SIZES = [100, 200, 300, 500, 1000];
+const BULK_PAGE_SIZE_LS = 'productsBulkEditPageSize';
 const SESSION_MP_OZON = 'productsBulkShowMpOzon';
 const SESSION_MP_WB = 'productsBulkShowMpWb';
 const SESSION_MP_YM = 'productsBulkShowMpYm';
 /** Старый один тумблер — мигрируем в три флага по МП */
 const SESSION_SHOW_MP_ATTRS_LEGACY = 'productsBulkShowMpAttrs';
+
+function readBulkPageSize() {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(BULK_PAGE_SIZE_LS) : null;
+    const n = parseInt(raw, 10);
+    return BULK_PAGE_SIZES.includes(n) ? n : 100;
+  } catch {
+    return 100;
+  }
+}
 
 function readMpBucketVisibility() {
   try {
@@ -651,6 +661,9 @@ export function ProductsBulkEdit() {
   const [pushMpMessage, setPushMpMessage] = useState(null);
   const [pullMpLoading, setPullMpLoading] = useState(null);
   const [pullMpMessage, setPullMpMessage] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(readBulkPageSize);
+  const [totalProducts, setTotalProducts] = useState(0);
 
   const [filterOrganizationId, setFilterOrganizationId] = useState(() => {
     const f = location.state?.filters;
@@ -683,6 +696,10 @@ export function ProductsBulkEdit() {
 
   const listSearchDebounceRef = useRef(null);
   const loadGenRef = useRef(0);
+  const currentPageRef = useRef(1);
+  const pageSizeRef = useRef(pageSize);
+  currentPageRef.current = currentPage;
+  pageSizeRef.current = pageSize;
 
   const [bulkModal, setBulkModal] = useState({ open: false, column: null });
   const [bulkDraft, setBulkDraft] = useState('');
@@ -763,6 +780,7 @@ export function ProductsBulkEdit() {
     setFilterCategoryId('');
     setFilterProductType('');
     setListSearch('');
+    setCurrentPage(1);
   };
 
   const loadProducts = useCallback(async (partial = {}) => {
@@ -780,6 +798,11 @@ export function ProductsBulkEdit() {
       const searchRaw = partial.search !== undefined ? partial.search : listSearch;
       const search = typeof searchRaw === 'string' ? searchRaw.trim() : '';
       const ptTrim = typeof pt === 'string' ? pt.trim() : '';
+      const page = partial.page !== undefined ? Number(partial.page) : currentPageRef.current;
+      const limitCandidate = partial.limit !== undefined ? Number(partial.limit) : pageSizeRef.current;
+      const limit = BULK_PAGE_SIZES.includes(limitCandidate) ? limitCandidate : 100;
+      const safePage = Math.max(1, Number.isFinite(page) ? page : 1);
+      const offset = Math.max(0, (safePage - 1) * limit);
 
       const baseParams = {
         organizationId: org || undefined,
@@ -793,19 +816,11 @@ export function ProductsBulkEdit() {
       const selectedIds = [...new Set((appliedSelectedIds || []).map((x) => str(x)).filter(Boolean))];
 
       let list = [];
+      let total = 0;
       if (selectedIds.length > 0) {
-        const res = await productsApi.getAll({
-          ...baseParams,
-          limit: LOAD_LIMIT_SELECTED,
-          offset: 0,
-        });
-        if (gen !== loadGenRef.current) return;
-        const all = Array.isArray(res?.data) ? res.data : [];
-        const setSel = new Set(selectedIds);
-        list = all.filter((p) => p && setSel.has(str(p.id)));
-        const have = new Set(list.map((p) => str(p.id)));
-        const missing = selectedIds.filter((id) => !have.has(str(id)));
-        for (const id of missing) {
+        total = selectedIds.length;
+        const pageIds = selectedIds.slice(offset, offset + limit);
+        for (const id of pageIds) {
           if (gen !== loadGenRef.current) return;
           try {
             const wrap = await productsApi.getById(id);
@@ -818,11 +833,13 @@ export function ProductsBulkEdit() {
       } else {
         const res = await productsApi.getAll({
           ...baseParams,
-          limit: LOAD_LIMIT_ALL,
-          offset: 0,
+          limit,
+          offset,
         });
         if (gen !== loadGenRef.current) return;
         list = Array.isArray(res?.data) ? res.data : [];
+        const metaTotal = Number(res?.meta?.total);
+        total = Number.isFinite(metaTotal) ? metaTotal : list.length;
       }
 
       let showUncat = false;
@@ -835,7 +852,7 @@ export function ProductsBulkEdit() {
             productType: ptTrim || undefined,
             search: search || undefined,
             cacheBust: true,
-            limit: LOAD_LIMIT_SELECTED,
+            limit: Math.min(selectedIds.length, 1000),
             offset: 0,
           });
           if (gen !== loadGenRef.current) return;
@@ -856,6 +873,8 @@ export function ProductsBulkEdit() {
       }
       if (gen !== loadGenRef.current) return;
       setShowUncategorizedCategoryOption(showUncat);
+      setTotalProducts(total);
+      if (partial.page !== undefined) setCurrentPage(safePage);
 
       const mpColsInitial = buildMpAttrColumnDefs(list, { ozon: {}, wb: {}, ym: {} });
       if (gen !== loadGenRef.current) return;
@@ -886,6 +905,7 @@ export function ProductsBulkEdit() {
       setOriginals({});
       setMpAttrColumnDefs([]);
       setShowUncategorizedCategoryOption(false);
+      setTotalProducts(0);
     } finally {
       if (gen === loadGenRef.current) {
         setLoading(false);
@@ -916,25 +936,29 @@ export function ProductsBulkEdit() {
   const handleFilterOrganizationChange = (e) => {
     const v = e.target.value;
     setFilterOrganizationId(v);
-    void loadProducts({ organizationId: v });
+    setCurrentPage(1);
+    void loadProducts({ organizationId: v, page: 1 });
   };
 
   const handleFilterBrandChange = (e) => {
     const v = e.target.value;
     setFilterBrandId(v);
-    void loadProducts({ brandId: v });
+    setCurrentPage(1);
+    void loadProducts({ brandId: v, page: 1 });
   };
 
   const handleFilterCategoryChange = (e) => {
     const v = e.target.value;
     setFilterCategoryId(v);
-    void loadProducts({ categoryId: v });
+    setCurrentPage(1);
+    void loadProducts({ categoryId: v, page: 1 });
   };
 
   const handleFilterProductTypeChange = (e) => {
     const v = e.target.value;
     setFilterProductType(v);
-    void loadProducts({ productType: v });
+    setCurrentPage(1);
+    void loadProducts({ productType: v, page: 1 });
   };
 
   const handleListSearchChange = (e) => {
@@ -942,7 +966,8 @@ export function ProductsBulkEdit() {
     setListSearch(v);
     if (listSearchDebounceRef.current) clearTimeout(listSearchDebounceRef.current);
     listSearchDebounceRef.current = setTimeout(() => {
-      void loadProducts({ search: v });
+      setCurrentPage(1);
+      void loadProducts({ search: v, page: 1 });
     }, 400);
   };
 
@@ -954,7 +979,88 @@ export function ProductsBulkEdit() {
       categoryId: '',
       productType: '',
       search: '',
+      page: 1,
     });
+  };
+
+  const totalPages = Math.max(1, Math.ceil(Math.max(0, totalProducts) / Math.max(1, pageSize)));
+
+  const goToPage = (page) => {
+    const next = Math.min(Math.max(1, page), totalPages);
+    if (next === currentPage) return;
+    setCurrentPage(next);
+    void loadProducts({ page: next });
+  };
+
+  const handlePageSizeChange = (e) => {
+    const next = parseInt(e.target.value, 10);
+    if (!BULK_PAGE_SIZES.includes(next)) return;
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(BULK_PAGE_SIZE_LS, String(next));
+    } catch {
+      /* ignore */
+    }
+    setPageSize(next);
+    setCurrentPage(1);
+    void loadProducts({ page: 1, limit: next });
+  };
+
+  const renderBulkListPager = (placement) => {
+    const idSuffix = placement === 'top' ? 'top' : 'bottom';
+    return (
+      <div
+        className={`d-flex justify-content-between align-items-center px-3 py-2 flex-wrap gap-2 ${
+          placement === 'top' ? 'border-bottom' : 'border-top'
+        }`}
+      >
+        <div className="d-flex flex-wrap align-items-center gap-3 text-muted small">
+          <span>
+            Страница <strong>{currentPage}</strong> из <strong>{totalPages}</strong>
+            {totalProducts > 0 ? (
+              <>
+                {' '}
+                · всего <strong>{totalProducts}</strong>
+              </>
+            ) : null}
+          </span>
+          <label className="d-inline-flex align-items-center gap-2 mb-0" htmlFor={`bulk-edit-page-size-${idSuffix}`}>
+            <span>На странице</span>
+            <select
+              id={`bulk-edit-page-size-${idSuffix}`}
+              className="form-select form-select-sm"
+              style={{ width: 'auto', minWidth: '4.5rem' }}
+              value={pageSize}
+              onChange={handlePageSizeChange}
+              disabled={loading}
+            >
+              {BULK_PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="d-flex gap-2">
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={currentPage <= 1 || loading}
+          >
+            Назад
+          </Button>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={currentPage >= totalPages || loading}
+          >
+            Вперёд
+          </Button>
+        </div>
+      </div>
+    );
   };
 
   const openBulk = (col) => {
@@ -1119,9 +1225,11 @@ export function ProductsBulkEdit() {
   const subtitle = useMemo(() => {
     const n = rows.length;
     const sel = appliedSelectedIds.length;
-    if (sel > 0) return `Редактирование выбранных товаров (${n} шт.). Фильтры ниже сужают выборку; выбранные id с «Товаров» по-прежнему ограничивают список.`;
-    return `До ${LOAD_LIMIT_ALL} товаров по фильтрам ниже. Отметьте строки на странице «Товары» и откройте массовое редактирование, чтобы править только выбранные.`;
-  }, [rows.length, appliedSelectedIds.length]);
+    if (sel > 0) {
+      return `Редактирование выбранных товаров (${n} на странице из ${sel}). Фильтры ниже сужают выборку; выбранные id с «Товаров» по-прежнему ограничивают список.`;
+    }
+    return `До ${pageSize} товаров на странице по фильтрам ниже. Отметьте строки на странице «Товары» и откройте массовое редактирование, чтобы править только выбранные.`;
+  }, [rows.length, appliedSelectedIds.length, pageSize]);
 
   const renderInput = (col, row) => {
     if (col.readonly) {
@@ -1508,6 +1616,8 @@ export function ProductsBulkEdit() {
             </div>
           </div>
 
+      {renderBulkListPager('top')}
+
       <div className="products-bulk-scroll-region">
 
           {loading ? (
@@ -1690,6 +1800,8 @@ export function ProductsBulkEdit() {
           </div>
         ) : null}
       </Modal>
+
+      {!loading && (rows.length > 0 || totalProducts > 0) ? renderBulkListPager('bottom') : null}
 
       {!loading && rows.length > 0 ? (
         <div className="products-bulk-floating-save">

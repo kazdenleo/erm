@@ -4,7 +4,7 @@
 
 const NGINX_504_HINT =
   'Сервер не успел ответить (504 Gateway Time-out). Обычно nginx обрывает запрос через ~60 с, пока API ещё работает. ' +
-  'Подождите 1–2 минуты и повторите. Администратору: в nginx для location /api/ задайте proxy_read_timeout 300s и перезапустите pm2 restart erm-api.';
+  'Подождите и повторите. Администратору: в nginx для location /api/ задайте proxy_read_timeout 600s и перезапустите pm2 restart erm-api.';
 
 const NGINX_502_HINT =
   'Сервер временно недоступен (502 Bad Gateway). API мог перезапускаться — подождите 30–60 с и повторите. ' +

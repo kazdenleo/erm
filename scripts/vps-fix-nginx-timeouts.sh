@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Прописать proxy_read_timeout для /api/ (иначе nginx отдаёт 504 через ~60 с).
+# Прописать / обновить proxy_*_timeout для /api/ (иначе nginx отдаёт 504 через ~60 с).
 # Запуск на VPS: sudo bash /opt/erm/scripts/vps-fix-nginx-timeouts.sh
 set -euo pipefail
 
-TIMEOUT="${NGINX_API_TIMEOUT:-300s}"
+TIMEOUT="${NGINX_API_TIMEOUT:-600s}"
 MARKER="# erm-api-timeouts"
 
 if ! command -v nginx >/dev/null 2>&1; then
@@ -22,15 +22,29 @@ fi
 
 patch_file() {
   local f="$1"
-  if grep -q "$MARKER" "$f" 2>/dev/null; then
-    echo "already patched: $f"
-    return 0
-  fi
   if ! grep -q "location /api" "$f"; then
     return 0
   fi
   local tmp
   tmp="$(mktemp)"
+
+  if grep -q "$MARKER" "$f" 2>/dev/null; then
+    # Уже помечено — обновить значения timeout до текущего TIMEOUT
+    sed -E \
+      -e "s/(proxy_read_timeout)[[:space:]]+[0-9]+s;/\1 ${TIMEOUT};/g" \
+      -e "s/(proxy_connect_timeout)[[:space:]]+[0-9]+s;/\1 ${TIMEOUT};/g" \
+      -e "s/(proxy_send_timeout)[[:space:]]+[0-9]+s;/\1 ${TIMEOUT};/g" \
+      "$f" > "$tmp"
+    if ! cmp -s "$f" "$tmp"; then
+      cp "$tmp" "$f"
+      echo "updated timeouts to ${TIMEOUT}: $f"
+    else
+      echo "already at ${TIMEOUT}: $f"
+    fi
+    rm -f "$tmp"
+    return 0
+  fi
+
   awk -v marker="$MARKER" -v t="$TIMEOUT" '
     /location[[:space:]]+\/api/ { in_api=1 }
     in_api && /proxy_pass/ && !added {
