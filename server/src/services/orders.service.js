@@ -4515,15 +4515,36 @@ class OrdersService {
   }
 
   /**
+   * Нормализовать фильтр МП со страницы сборки в значения orders.marketplace.
+   * @param {string|null|undefined} marketplaceFilter
+   * @returns {string[]|null} null = без фильтра
+   */
+  normalizeAssemblyMarketplaceFilter(marketplaceFilter) {
+    const raw = String(marketplaceFilter || '')
+      .trim()
+      .toLowerCase();
+    if (!raw || raw === 'all') return null;
+    if (raw === 'ozon') return ['ozon'];
+    if (raw === 'wb' || raw === 'wildberries') return ['wb', 'wildberries'];
+    if (raw === 'ym' || raw === 'yandex' || raw === 'yandexmarket') {
+      return ['ym', 'yandex', 'yandexmarket'];
+    }
+    return [raw];
+  }
+
+  /**
    * Найти первый по списку заказ на сборке (status in_assembly), содержащий товар с productId.
    * При PostgreSQL учитывает и совпадение по product_skus (для заказов WB без product_id — по nmId/offer_id/product_name).
    * @param {number|string} productId
+   * @param {{ marketplace?: string|null }} [options] marketplace — фильтр UI (ozon|wildberries|yandex|all)
    * @returns {Promise<object|null>} заказ или null
    */
-  async findFirstAssembledByProductId(productId) {
+  async findFirstAssembledByProductId(productId, options = {}) {
     if (productId == null) return null;
+    const marketplaces = this.normalizeAssemblyMarketplaceFilter(options.marketplace);
+    const repoOpts = marketplaces ? { marketplaces } : {};
     if (repositoryFactory.isUsingPostgreSQL()) {
-      let order = await this.repository.findFirstAssembledByProductIdOrSku(productId);
+      let order = await this.repository.findFirstAssembledByProductIdOrSku(productId, repoOpts);
       if (order) return order;
       const pid = Number(productId);
       if (Number.isFinite(pid) && pid > 0) {
@@ -4534,16 +4555,23 @@ class OrdersService {
         for (const row of kitsRes.rows || []) {
           const kitId = row.kit_product_id;
           if (kitId == null) continue;
-          order = await this.repository.findFirstAssembledByProductIdOrSku(kitId);
+          order = await this.repository.findFirstAssembledByProductIdOrSku(kitId, repoOpts);
           if (order) return order;
         }
       }
       return null;
     }
     const orders = await this.getAll();
-    const found = orders.find(
-      o => isOrderOnAssemblyStatus(o.status) && String(o.productId) === String(productId)
-    );
+    const found = orders.find((o) => {
+      if (!isOrderOnAssemblyStatus(o.status) || String(o.productId) !== String(productId)) {
+        return false;
+      }
+      if (!marketplaces) return true;
+      const mp = String(o.marketplace || '')
+        .trim()
+        .toLowerCase();
+      return marketplaces.includes(mp);
+    });
     return found || null;
   }
 

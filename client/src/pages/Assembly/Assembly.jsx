@@ -24,11 +24,11 @@ import {
 } from '../../utils/orderListGroupKey';
 import { OrderStickerDisplay } from '../../components/orders/OrderStickerDisplay';
 import {
-  isKitSkuScanForOrder,
-  assemblyLinesToCompleteOnKitScan,
-  isRootKitSkuScanForOrder,
-  assemblyLinesToCompleteOnRootKitScan,
-  orderItemMatchesScannedProduct,
+  assemblyLineScanKey,
+  scannedQtyForAssemblyLine,
+  applyAssemblyBarcodeScan,
+  isAssemblyCompositionComplete,
+  shouldPreferCurrentAssemblyOrder,
 } from '../../utils/assemblyKitScan.js';
 import './Assembly.css';
 
@@ -84,10 +84,26 @@ function openLabelPrintFallbackPage(url) {
 }
 
 function normMarketplace(o) {
-  const m = (o.marketplace || '').toLowerCase();
+  const m = (o?.marketplace || '').toLowerCase();
   if (m === 'wb') return 'wildberries';
   if (m === 'ym' || m === 'yandexmarket') return 'yandex';
   return m;
+}
+
+const ARTICLE_SORT_LOCALE_OPTS = { sensitivity: 'base', numeric: true };
+
+/** Артикул для сортировки списка сборки (SKU каталога → offerId МП). */
+function assemblyOrderArticleKey(o) {
+  if (!o) return '';
+  const v =
+    o.productSku ??
+    o.product_sku ??
+    o.offerId ??
+    o.offer_id ??
+    o.marketplaceSku ??
+    o.marketplace_sku ??
+    '';
+  return String(v).trim();
 }
 
 /** Ручные заказы — без этикетки МП; остальные маркетплейсы требуют стикер до завершения сборки. */
@@ -192,26 +208,6 @@ function assemblyCompositionParts(item, quantityOverride) {
   };
 }
 
-/** Уникальный ключ строки состава (всегда с idx — защита от дублей productId / orderLineId). */
-function assemblyLineScanKey(item, idx) {
-  const orderLineId = item.orderLineId != null ? String(item.orderLineId).trim() : '';
-  const pid = item.productId ?? item.product_id ?? '';
-  return `asm:${idx}:${orderLineId}:${pid}`;
-}
-
-function scannedQtyForAssemblyLine(item, idx, scannedQuantities, itemsLength = 1) {
-  const key = assemblyLineScanKey(item, idx);
-  const fromKey = scannedQuantities[key];
-  if (fromKey != null) return fromKey;
-  if (itemsLength === 1) {
-    const pid = item.productId ?? item.product_id;
-    if (pid != null && pid !== '') {
-      return scannedQuantities[pid] ?? scannedQuantities[Number(pid)] ?? 0;
-    }
-  }
-  return 0;
-}
-
 export function Assembly() {
   const { openProductCardFromClick } = useProductCardModal();
   const [assemblyOrders, setAssemblyOrders] = useState([]);
@@ -219,7 +215,8 @@ export function Assembly() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
-  const [sortByName, setSortByName] = useState('asc'); // 'asc' | 'desc'
+  const [sortField, setSortField] = useState('name'); // 'name' | 'article'
+  const [sortDir, setSortDir] = useState('asc'); // 'asc' | 'desc'
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState(null);
   const [currentOrderData, setCurrentOrderData] = useState(null); // { order, product, orderItems }
@@ -237,12 +234,16 @@ export function Assembly() {
   const barcodeInputRef = useRef(null);
   const doSearchRef = useRef(async () => {});
   const orderKeyRef = useRef('');
+  const currentOrderDataRef = useRef(null);
+  const scannedQuantitiesRef = useRef({});
   const markedCollectedKeyRef = useRef('');
   const autoFinishKeyRef = useRef('');
   /** Пока идёт markCollected + печать — игнорируем сканы (иначе сканер шлёт второй ввод и открывается чужой заказ с тем же товаром → вторая этикетка). */
   const printingFlowRef = useRef(false);
   const scanLoadingRef = useRef(false);
   orderKeyRef.current = currentOrderKey;
+  currentOrderDataRef.current = currentOrderData;
+  scannedQuantitiesRef.current = scannedQuantities;
   scanLoadingRef.current = scanLoading;
 
   const loadOrders = useCallback(async ({ silent = false } = {}) => {
@@ -665,6 +666,20 @@ export function Assembly() {
     setFinishScanSubmitting(false);
   }, [currentOrderKey]);
 
+  /** Смена фильтра МП сбрасывает текущую сессию скана, если заказ не подходит. */
+  useEffect(() => {
+    if (!currentOrderData?.order) return;
+    if (marketplaceFilter === 'all') return;
+    if (normMarketplace(currentOrderData.order) === marketplaceFilter) return;
+    setCurrentOrderData(null);
+    setCurrentOrderKey('');
+    setScannedQuantities({});
+    markedCollectedKeyRef.current = '';
+    autoFinishKeyRef.current = '';
+    setScanError('Фильтр маркетплейса изменён — текущая сборка сброшена');
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- реагируем на смену фильтра и ключа заказа
+  }, [marketplaceFilter, currentOrderKey]);
+
   const doSearch = async (barcode) => {
     const trimmed = (barcode || '').trim();
     if (trimmed.length < 2) return;
@@ -672,78 +687,73 @@ export function Assembly() {
     setScanError(null);
     setScanLoading(true);
     try {
-      const data = await assemblyApi.findOrderByBarcode(trimmed);
+      const cur = currentOrderDataRef.current;
+      const qty = scannedQuantitiesRef.current || {};
+      const curItems = cur?.orderItems || [];
+      const preferIncomplete =
+        !!cur?.order?.orderId &&
+        ((curItems.length > 0 && !isAssemblyCompositionComplete(curItems, qty)) ||
+          (curItems.length === 0 &&
+            String(cur.order?.status ?? '').toLowerCase() !== 'assembled'));
+
+      const data = await assemblyApi.findOrderByBarcode(trimmed, {
+        marketplace: marketplaceFilter,
+        ...(preferIncomplete
+          ? {
+              preferOrderId: String(cur.order.orderId),
+              preferMarketplace: normMarketplace(cur.order) || undefined
+            }
+          : {})
+      });
       if (data?.order && data?.product) {
+        if (
+          marketplaceFilter !== 'all' &&
+          normMarketplace(data.order) !== marketplaceFilter
+        ) {
+          clearScanField(barcodeInputRef.current);
+          setScanError(
+            'Заказ относится к другому маркетплейсу. Сбросьте фильтр или выберите нужный МП.'
+          );
+          playEventSound(SOUND_EVENTS.scan_error);
+          return;
+        }
         playEventSound(SOUND_EVENTS.scan_ok);
-        const newKey = assemblyOrderSessionKey(data.order);
+        let order = data.order;
+        let orderItems = data.orderItems || [];
+        const apiKey = assemblyOrderSessionKey(order);
         const prevKey = orderKeyRef.current;
+
+        // Страховка: API мог вернуть другой заказ с тем же SKU — не бросаем незавершённый текущий.
+        // Если штрихкод ещё нужен на текущем — остаёмся. Если текущий незакрыт, а SKU к нему
+        // не относится — тоже не переключаемся (иначе общие комплектующие «прыгают» между заказами).
+        if (prevKey && apiKey !== prevKey && cur?.order && preferIncomplete) {
+          const stillNeeded = shouldPreferCurrentAssemblyOrder(data.product, curItems, qty);
+          const currentOpen =
+            curItems.length > 0 && !isAssemblyCompositionComplete(curItems, qty);
+          if (stillNeeded || currentOpen) {
+            order = cur.order;
+            orderItems = curItems;
+            if (!stillNeeded && currentOpen) {
+              clearScanField(barcodeInputRef.current);
+              setScanError(
+                'Этот штрихкод не нужен в текущем заказе. Дособерите текущий или сбросьте сессию.'
+              );
+              playEventSound(SOUND_EVENTS.scan_error);
+              return;
+            }
+          }
+        }
+
+        const newKey = assemblyOrderSessionKey(order);
         if (newKey !== prevKey) {
           markedCollectedKeyRef.current = '';
         }
         const isSameOrder = newKey === prevKey;
-        setCurrentOrderData({ order: data.order, product: data.product, orderItems: data.orderItems || [] });
+        setCurrentOrderData({ order, product: data.product, orderItems });
         setCurrentOrderKey(newKey);
         setScannedQuantities((prev) => {
-          const next = isSameOrder ? { ...prev } : {};
-          const items = data.orderItems || [];
-          const product = data.product;
-
-          if (items.length === 0) {
-            return next;
-          }
-
-          if (isKitSkuScanForOrder(product, items)) {
-            const lineIdxs = assemblyLinesToCompleteOnKitScan(product, items);
-            for (const idx of lineIdxs) {
-              const item = items[idx];
-              const need = item.quantity ?? 1;
-              next[assemblyLineScanKey(item, idx)] = need;
-            }
-            return next;
-          }
-
-          if (isRootKitSkuScanForOrder(product, items)) {
-            const lineIdxs = assemblyLinesToCompleteOnRootKitScan(product, items);
-            for (const idx of lineIdxs) {
-              const item = items[idx];
-              const need = item.quantity ?? 1;
-              next[assemblyLineScanKey(item, idx)] = need;
-            }
-            return next;
-          }
-
-          const candidates = items
-            .map((item, idx) => ({ item, idx }))
-            .filter(({ item }) => orderItemMatchesScannedProduct(item, product));
-
-          const bumpLine = (item, idx) => {
-            const key = assemblyLineScanKey(item, idx);
-            next[key] = (next[key] || 0) + 1;
-          };
-
-          if (candidates.length === 0) {
-            // Без совпадения product_id не засчитываем скан (важно для комплектов:
-            // строка «целый комплект» vs штрихкод комплектующей).
-            const legacySingleLine =
-              items.length === 1 && assemblyLineProductId(items[0]) == null;
-            if (legacySingleLine) {
-              bumpLine(items[0], 0);
-            }
-            return next;
-          }
-
-          for (const { item, idx } of candidates) {
-            const need = item.quantity ?? 1;
-            const key = assemblyLineScanKey(item, idx);
-            const got = next[key] ?? 0;
-            if (got < need) {
-              bumpLine(item, idx);
-              return next;
-            }
-          }
-          const { item, idx } = candidates[candidates.length - 1];
-          bumpLine(item, idx);
-          return next;
+          const base = isSameOrder ? prev : {};
+          return applyAssemblyBarcodeScan(base, data.product, orderItems);
         });
         clearScanField(barcodeInputRef.current);
       } else {
@@ -770,11 +780,11 @@ export function Assembly() {
   // Позиции, по которым ещё не добрано: нужное количество минус отсканировано
   const remainingItems = useMemo(() => {
     if (!currentOrderData?.orderItems?.length) return [];
+    const items = currentOrderData.orderItems;
     const result = [];
-    currentOrderData.orderItems.forEach((item, idx) => {
+    items.forEach((item, idx) => {
       const need = item.quantity ?? 1;
-      const itemsLen = currentOrderData.orderItems.length;
-      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities, itemsLen);
+      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities, items);
       const remaining = Math.max(0, need - scanned);
       if (remaining > 0) {
         result.push({ ...item, need, scanned, remaining });
@@ -786,14 +796,14 @@ export function Assembly() {
   /** Все позиции состава с полями для отображения */
   const compositionLines = useMemo(() => {
     if (!currentOrderData?.orderItems?.length) return [];
-    const itemsLen = currentOrderData.orderItems.length;
-    return currentOrderData.orderItems.map((item, idx) => {
+    const items = currentOrderData.orderItems;
+    return items.map((item, idx) => {
       const need = item.quantity ?? 1;
-      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities, itemsLen);
+      const scanned = scannedQtyForAssemblyLine(item, idx, scannedQuantities, items);
       const remaining = Math.max(0, need - scanned);
       const parts = assemblyCompositionParts({ ...item, quantity: need }, need);
       return {
-        key: `${item.orderLineId ?? item.offerId ?? item.productId ?? idx}`,
+        key: assemblyLineScanKey(item, idx, items),
         ...parts,
         remaining,
         scanned
@@ -888,6 +898,16 @@ export function Assembly() {
 
   const handleFinishScanAssembly = async () => {
     if (!currentOrderData?.order || !currentOrderKey || finishScanSubmitting) return;
+    if (
+      marketplaceFilter !== 'all' &&
+      normMarketplace(currentOrderData.order) !== marketplaceFilter
+    ) {
+      setScanError(
+        'Заказ относится к другому маркетплейсу. Сбросьте фильтр или выберите нужный МП.'
+      );
+      playEventSound(SOUND_EVENTS.scan_error);
+      return;
+    }
     const { marketplace, orderId } = currentOrderData.order;
     setFinishScanSubmitting(true);
     try {
@@ -944,6 +964,13 @@ export function Assembly() {
     const orderId = String(o.orderId ?? o.order_id ?? '').trim();
     if (!marketplace || !orderId) return;
     if (printingFlowRef.current) return;
+    if (marketplaceFilter !== 'all' && normMarketplace(o) !== marketplaceFilter) {
+      setLabelPrintError(
+        'Сейчас выбран фильтр другого маркетплейса — этот заказ собрать нельзя.'
+      );
+      setTimeout(() => setLabelPrintError(null), 8000);
+      return;
+    }
     if (orderRequiresMarketplaceLabel(o) && labelReadyByOrderId?.[orderId] !== true) {
       setLabelPrintError(labelNotReadyAssemblyMessage(o.marketplace));
       setTimeout(() => setLabelPrintError(null), 12000);
@@ -982,14 +1009,23 @@ export function Assembly() {
     if (marketplaceFilter !== 'all') {
       list = list.filter(o => normMarketplace(o) === marketplaceFilter);
     }
+    const dir = sortDir === 'asc' ? 1 : -1;
     const byName = (a, b) => {
       const na = (a.productName || a.product_name || a.orderId || '').toLowerCase();
       const nb = (b.productName || b.product_name || b.orderId || '').toLowerCase();
-      if (sortByName === 'asc') return na.localeCompare(nb);
-      return nb.localeCompare(na);
+      return na.localeCompare(nb, 'ru') * dir;
     };
-    return [...list].sort(byName);
-  }, [assembledOrders, marketplaceFilter, sortByName]);
+    const byArticle = (a, b) => {
+      const ka = assemblyOrderArticleKey(a);
+      const kb = assemblyOrderArticleKey(b);
+      if (!ka && !kb) return byName(a, b);
+      if (!ka) return 1;
+      if (!kb) return -1;
+      const cmp = ka.localeCompare(kb, 'ru', ARTICLE_SORT_LOCALE_OPTS);
+      return cmp !== 0 ? cmp * dir : byName(a, b);
+    };
+    return [...list].sort(sortField === 'article' ? byArticle : byName);
+  }, [assembledOrders, marketplaceFilter, sortField, sortDir]);
 
   /** Одна строка таблицы = один заказ (группа по session key); комплектующие в ячейках */
   const assemblyTableGroups = useMemo(
@@ -1048,8 +1084,9 @@ export function Assembly() {
       <h1 className="title">🔧 Сборка заказов</h1>
       <p className="subtitle">
         Заказы, отправленные на сборку ({assemblyTableGroups.length}). У каждого заказа в таблице — кнопка «Собрать»
-        без сканера: статус «Собран» и печать этикетки. При скан‑сборке (включая комплекты по комплектующим)
-        после последнего штрихкода этикетка печатается автоматически; кнопка «Завершить сборку» — запасной вариант.
+        без сканера: статус «Собран» и печать этикетки. При активном фильтре маркетплейса сканер собирает только
+        заказы этого МП; без фильтра — любой. После последнего штрихкода этикетка печатается автоматически;
+        кнопка «Завершить сборку» — запасной вариант.
       </p>
 
       <div className="assembly-scan-block">
@@ -1218,11 +1255,32 @@ export function Assembly() {
         <div className="assembly-sort">
           <span className="assembly-filter-label">Сортировка:</span>
           <Button
-            variant="secondary"
+            variant={sortField === 'name' ? 'primary' : 'secondary'}
             size="small"
-            onClick={() => setSortByName(sortByName === 'asc' ? 'desc' : 'asc')}
+            onClick={() => {
+              if (sortField === 'name') {
+                setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+              } else {
+                setSortField('name');
+                setSortDir('asc');
+              }
+            }}
           >
-            По имени {sortByName === 'asc' ? 'А→Я' : 'Я→А'}
+            По имени {sortField === 'name' ? (sortDir === 'asc' ? 'А→Я' : 'Я→А') : ''}
+          </Button>
+          <Button
+            variant={sortField === 'article' ? 'primary' : 'secondary'}
+            size="small"
+            onClick={() => {
+              if (sortField === 'article') {
+                setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+              } else {
+                setSortField('article');
+                setSortDir('asc');
+              }
+            }}
+          >
+            По артикулу {sortField === 'article' ? (sortDir === 'asc' ? 'А→Я' : 'Я→А') : ''}
           </Button>
         </div>
       </div>

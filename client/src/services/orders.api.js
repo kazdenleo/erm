@@ -12,7 +12,7 @@ export const ordersApi = {
    * а новый может вернуть массив напрямую.
    */
   getAll: async (params = {}) => {
-    const response = await api.get('/orders', { params });
+    const response = await api.get('/orders', { params, timeout: 60000 });
     const payload = response.data;
     const meta = payload?.meta ?? payload?.data?.meta ?? null;
 
@@ -295,10 +295,27 @@ export const ordersApi = {
  * API сборки: поиск заказа по штрихкоду товара
  */
 export const assemblyApi = {
-  findOrderByBarcode: async (barcode) => {
-    const response = await api.get('/assembly/find-by-barcode', {
-      params: { barcode: String(barcode).trim() }
-    });
+  /**
+   * @param {string} barcode
+   * @param {{ marketplace?: string|null, preferOrderId?: string|null, preferMarketplace?: string|null }} [options]
+   *   marketplace — ozon|wildberries|yandex; при 'all'/пусто — без фильтра
+   *   preferOrderId — не переключать с текущего незавершённого заказа, если он ещё нуждается в SKU
+   */
+  findOrderByBarcode: async (barcode, options = {}) => {
+    const params = { barcode: String(barcode).trim() };
+    const mp = String(options.marketplace || '')
+      .trim()
+      .toLowerCase();
+    if (mp && mp !== 'all') params.marketplace = mp;
+    const preferOrderId = String(options.preferOrderId || '').trim();
+    if (preferOrderId) {
+      params.preferOrderId = preferOrderId;
+      const preferMp = String(options.preferMarketplace || '')
+        .trim()
+        .toLowerCase();
+      if (preferMp && preferMp !== 'all') params.preferMarketplace = preferMp;
+    }
+    const response = await api.get('/assembly/find-by-barcode', { params });
     return response.data?.data ?? response.data;
   },
 

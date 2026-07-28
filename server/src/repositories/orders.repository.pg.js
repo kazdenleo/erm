@@ -1256,11 +1256,23 @@ class OrdersRepositoryPG {
    * Учитывает как прямую связь (orders.product_id), так и совпадение по product_skus
    * (offer_id, marketplace_sku, для WB — nmId из product_name/offer_id).
    * Нужно для сборки по штрихкоду: заказы WB часто без product_id, но товар совпадает по nmId.
+   * @param {number|string} productId
+   * @param {{ marketplaces?: string[]|null }} [options]
+   *   marketplaces — если задан, ищем только среди этих значений orders.marketplace
    */
-  async findFirstAssembledByProductIdOrSku(productId) {
+  async findFirstAssembledByProductIdOrSku(productId, options = {}) {
     if (productId == null) return null;
     const pid = Number(productId);
     if (Number.isNaN(pid)) return null;
+    const marketplaces = Array.isArray(options.marketplaces)
+      ? options.marketplaces.map((m) => String(m || '').trim().toLowerCase()).filter(Boolean)
+      : [];
+    const params = [pid];
+    let mpClause = '';
+    if (marketplaces.length > 0) {
+      params.push(marketplaces);
+      mpClause = ` AND LOWER(TRIM(o.marketplace)) = ANY($${params.length}::text[])`;
+    }
     const sql = `
       SELECT o.id, o.marketplace, o.order_id, o.order_group_id, o.product_id, o.offer_id, o.marketplace_sku,
         COALESCE(p.name, pm.matched_product_name, o.product_name) AS product_name,
@@ -1278,10 +1290,11 @@ class OrdersRepositoryPG {
       ) pm ON true
       WHERE (o.status = 'in_assembly' OR (o.marketplace = 'wb' AND o.status = 'wb_assembly'))
         AND ${orderLineMatchesCatalogProductIdSql()}
+        ${mpClause}
       ORDER BY o.created_at DESC, o.in_process_at DESC
       LIMIT 1
     `;
-    const result = await query(sql, [pid]);
+    const result = await query(sql, params);
     return result.rows[0] ? rowToCamel(result.rows[0]) : null;
   }
 

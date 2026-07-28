@@ -40,18 +40,24 @@ function orderRowToAssemblyItem(order, productId, productName, quantity, extra =
   };
 }
 
-/** Можно ли собрать этот уровень комплекта одним сканом SKU (целый комплект на полке). */
+/**
+ * Можно ли собрать этот уровень комплекта одним сканом SKU (целый комплект на полке).
+ *
+ * Важно: при скане штрихкода комплектующей (scannedProductId ≠ kitId) всегда разворачиваем
+ * состав на всех уровнях. Иначе скан A даёт листья [A,B], а скан B может свернуть соседний
+ * подкомплект в «целый SKU» → другой shape orderItems → на клиенте сбрасывается прогресс
+ * и сборка зацикливается («отсканируйте первую снова»).
+ */
 async function canUseWholeKitAssemblyLine(kitId, kitsNeeded, order, opts = {}) {
-  const aggregated = aggregateKitComponents(await getKitComponents(kitId));
-
   const scannedId = opts.scannedProductId != null ? Number(opts.scannedProductId) : NaN;
   const kitNum = Number(kitId);
-  // Физический скан штрихкода целого комплекта — одна строка сборки, даже если резерв на комплектующих.
+  // Физический скан штрихкода этого SKU — одна строка сборки, даже если резерв на комплектующих.
   if (Number.isFinite(scannedId) && scannedId > 0 && Number.isFinite(kitNum) && scannedId === kitNum) {
     return true;
   }
+  // Любой другой штрихкод в сессии скана — только разворот (стабильный состав между сканами).
   if (Number.isFinite(scannedId) && scannedId > 0) {
-    if (aggregated.some((c) => Number(c.component_product_id) === scannedId)) return false;
+    return false;
   }
 
   const oid = Number(order?.id ?? order?.db_id);

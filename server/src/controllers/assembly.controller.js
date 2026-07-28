@@ -44,8 +44,13 @@ function productIdFromScannedProductLine(product, orderRow) {
 
 class AssemblyController {
   /**
-   * GET /api/assembly/find-by-barcode?barcode=xxx
-   * Найти первый по списку заказ на сборке, содержащий товар с данным штрихкодом.
+   * GET /api/assembly/find-by-barcode?barcode=xxx&marketplace=ozon|wildberries|yandex
+   *   &preferOrderId=...&preferMarketplace=...
+   * Найти заказ на сборке с данным штрихкодом.
+   * Если передан preferOrderId и этот заказ ещё на сборке и содержит товар — вернуть его
+   * (не переключать сборщика на другой заказ с тем же SKU при частичном прогрессе).
+   * Иначе — первый по списку (created_at DESC).
+   * marketplace (опционально) — только заказы выбранного МП (как фильтр на странице сборки).
    * Возвращает заказ, товар и список позиций заказа (для отображения «осталось дособрать»).
    */
   async findOrderByBarcode(req, res, next) {
@@ -60,6 +65,22 @@ class AssemblyController {
         });
       }
 
+      const marketplaceFilterRaw = String(req.query.marketplace ?? '')
+        .trim()
+        .toLowerCase();
+      const marketplaceFilter =
+        !marketplaceFilterRaw || marketplaceFilterRaw === 'all' ? null : marketplaceFilterRaw;
+
+      const preferOrderId = String(req.query.preferOrderId ?? req.query.prefer_order_id ?? '')
+        .trim();
+      const preferMarketplaceRaw = String(
+        req.query.preferMarketplace ?? req.query.prefer_marketplace ?? ''
+      )
+        .trim()
+        .toLowerCase();
+      const preferMarketplace =
+        !preferMarketplaceRaw || preferMarketplaceRaw === 'all' ? null : preferMarketplaceRaw;
+
       const productFound = await productsService.getByBarcode(barcode);
       if (!productFound) {
         return res.status(404).json({
@@ -72,10 +93,61 @@ class AssemblyController {
           ? (await productsService.getByIdWithDetails(productFound.id).catch(() => null)) || productFound
           : productFound;
 
+      const profileId = req.user?.profileId ?? null;
+
+      // Предпочесть текущий незавершённый заказ (клиент шлёт preferOrderId, пока состав не закрыт).
+      // Нельзя «перепрыгивать» на другой заказ с тем же SKU комплектующей — иначе сборка зацикливается.
+      let order = null;
+      let preferStickyReject = false;
+      if (preferOrderId) {
+        let preferred = null;
+        const mpHint = preferMarketplace || marketplaceFilter;
+        if (mpHint) {
+          preferred = await ordersService.getByMarketplaceAndOrderId(mpHint, preferOrderId, {
+            profileId
+          });
+        }
+        if (!preferred) {
+          preferred = await ordersService.getByOrderId(preferOrderId, { profileId });
+        }
+        if (preferred && isOrderOnAssemblyStatus(preferred.status)) {
+          const matches = await ordersService.assemblyOrderMatchesScannedProduct(
+            preferred,
+            product.id
+          );
+          if (matches) {
+            order = preferred;
+          } else {
+            preferStickyReject = true;
+          }
+        }
+      }
+
       // Поиск только по product_id / SKU / комплекту — без fallback по названию:
       // общие названия («Салонный фильтр») давали ложные совпадения с чужими заказами.
-      const order = await ordersService.findFirstAssembledByProductId(product.id);
+      if (!order && preferStickyReject) {
+        return res.status(409).json({
+          ok: false,
+          message:
+            'Этот штрихкод не относится к текущему заказу на сборке. Дособерите текущий заказ или сбросьте сессию скана.'
+        });
+      }
       if (!order) {
+        order = await ordersService.findFirstAssembledByProductId(product.id, {
+          marketplace: marketplaceFilter
+        });
+      }
+      if (!order) {
+        if (marketplaceFilter) {
+          const anyMp = await ordersService.findFirstAssembledByProductId(product.id);
+          if (anyMp) {
+            return res.status(404).json({
+              ok: false,
+              message:
+                'Заказ с этим товаром на сборке есть, но на другом маркетплейсе. Сбросьте фильтр или выберите нужный МП.'
+            });
+          }
+        }
         const { query: dbQuery } = await import('../config/database.js');
         const kitHint = await dbQuery(
           `SELECT 1 FROM kit_components WHERE component_product_id = $1 LIMIT 1`,
