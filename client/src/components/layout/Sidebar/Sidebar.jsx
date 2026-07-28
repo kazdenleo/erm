@@ -102,7 +102,11 @@ const menuItems = [
     iconClass: 'pe-7s-display2',
     children: stockWarehouseChildren,
   },
-  { path: '/prices', label: 'Цены', iconClass: 'pe-7s-cash', sectionKey: 'prices' },
+  { path: '/prices', label: 'Цены', iconClass: 'pe-7s-cash', sectionKey: 'prices', children: [
+    { path: '/prices', label: 'Минимальные цены', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
+    { path: '/prices/strategies', label: 'Стратегии', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
+    { path: '/prices/promotions', label: 'Акции', iconClass: 'pe-7s-angle-right', sectionKey: 'prices' },
+  ]},
   {
     path: '/settings',
     label: 'Настройки',
@@ -217,8 +221,8 @@ export function Sidebar({ onNavigate }) {
     if (location.pathname === '/questions') loadQuestionsStats();
   }, [location.pathname, loadQuestionsStats]);
 
-  /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse) */
-  const childMatchesLocation = useCallback((sub, loc) => {
+  /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse; без ложного highlight родителя вроде /prices на /prices/strategies) */
+  const childMatchesLocation = useCallback((sub, loc, siblings = []) => {
     const pathname = loc.pathname;
     const sp = new URLSearchParams(loc.search || '');
     if (sub.warehouseOp != null) {
@@ -227,7 +231,17 @@ export function Sidebar({ onNavigate }) {
     }
     const base = String(sub.path || '').split('?')[0];
     if (!base) return false;
-    return pathname === base || pathname.startsWith(`${base}/`);
+    if (pathname === base) return true;
+    if (!pathname.startsWith(`${base}/`)) return false;
+    // Если есть более длинный sibling, который тоже подходит — активен он, не короткий родитель.
+    const hasMoreSpecificSibling = siblings.some((other) => {
+      if (other === sub) return false;
+      if (other.warehouseOp != null) return false;
+      const otherBase = String(other.path || '').split('?')[0];
+      if (!otherBase || otherBase.length <= base.length) return false;
+      return pathname === otherBase || pathname.startsWith(`${otherBase}/`);
+    });
+    return !hasMoreSpecificSibling;
   }, []);
 
   const findActiveGroup = useCallback((loc) => {
@@ -235,7 +249,7 @@ export function Sidebar({ onNavigate }) {
     const group = menuItems.find((it) => {
       if (!Array.isArray(it.children) || it.children.length === 0) return false;
       if (path === it.path || (it.path !== '/' && path.startsWith(it.path))) return true;
-      return it.children.some((sub) => childMatchesLocation(sub, loc));
+      return it.children.some((sub) => childMatchesLocation(sub, loc, it.children));
     });
     return group?.path ?? null;
   }, [childMatchesLocation]);
@@ -291,7 +305,7 @@ export function Sidebar({ onNavigate }) {
             {visibleMenu.map((item) => {
               const hasChildren = Array.isArray(item.children) && item.children.length > 0;
               const active = hasChildren
-                ? item.children.some((sub) => childMatchesLocation(sub, location))
+                ? item.children.some((sub) => childMatchesLocation(sub, location, item.children))
                 : isActive(item.path);
               const isOpen = hasChildren && openGroup === item.path;
 
@@ -338,7 +352,7 @@ export function Sidebar({ onNavigate }) {
                   </button>
                   <ul className={isOpen ? 'mm-show' : ''}>
                     {item.children.map((sub) => {
-                      const subActive = childMatchesLocation(sub, location);
+                      const subActive = childMatchesLocation(sub, location, item.children);
                       const showReturnsBadge =
                         sub.warehouseOp === 'return_customer' && returnsWaitingCount > 0;
                       const returnsBadgeText =

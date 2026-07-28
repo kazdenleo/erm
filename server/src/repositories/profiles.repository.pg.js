@@ -147,6 +147,13 @@ class ProfilesRepositoryPG {
       const v = updates.kits_enabled ?? updates.kitsEnabled;
       set('kits_enabled', v === true || v === '1' || v === 'true');
     }
+    if (
+      updates.pricing_strategies_enabled !== undefined ||
+      updates.pricingStrategiesEnabled !== undefined
+    ) {
+      const v = updates.pricing_strategies_enabled ?? updates.pricingStrategiesEnabled;
+      set('pricing_strategies_enabled', v === true || v === '1' || v === 'true');
+    }
     if (updates.production_enabled !== undefined || updates.productionEnabled !== undefined) {
       const v = updates.production_enabled ?? updates.productionEnabled;
       set('production_enabled', v === true || v === '1' || v === 'true');

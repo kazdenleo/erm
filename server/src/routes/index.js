@@ -27,6 +27,7 @@ import integrationsRoutes from './integrations.routes.js';
 import { categoriesRoutes } from './categories.routes.js';
 import { brandsRoutes } from './brands.routes.js';
 import pricesRoutes from './prices.routes.js';
+import pricingStrategiesRoutes from './pricingStrategies.routes.js';
 import userCategoriesRoutes from './user_categories.routes.js';
 import categoryMappingsRoutes from './category_mappings.routes.js';
 import buyoutRateRoutes from './buyout-rate.routes.js';
@@ -273,6 +274,9 @@ router.use('/brands', brandsRoutes);
 
 // Prices API (расчет цен для маркетплейсов)
 router.use('/product/prices', pricesRoutes);
+
+// Стратегии ценообразования
+router.use('/pricing-strategies', pricingStrategiesRoutes);
 
 // User Categories API (пользовательские категории)
 router.use('/user-categories', userCategoriesRoutes);
