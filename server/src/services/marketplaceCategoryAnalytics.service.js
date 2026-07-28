@@ -259,6 +259,12 @@ class MarketplaceCategoryAnalyticsService {
         soldQty: p.soldQty,
         soldAmount: p.soldAmount,
         costAmount: p.costAmount,
+        commissionAmount: p.commissionAmount,
+        logisticsAmount: p.logisticsAmount,
+        storageAmount: p.storageAmount,
+        penaltyAmount: p.penaltyAmount,
+        acquiringAmount: p.acquiringAmount,
+        otherDeductions: p.otherDeductions,
         expensesTotal: p.expensesTotal,
         costsTotal: p.costsTotal,
         payoutAmount: p.payoutAmount,
@@ -272,6 +278,12 @@ class MarketplaceCategoryAnalyticsService {
       .map((cat) => {
         const soldAmount = sumField(cat.products, 'soldAmount');
         const costAmount = sumField(cat.products, 'costAmount');
+        const commissionAmount = sumField(cat.products, 'commissionAmount');
+        const logisticsAmount = sumField(cat.products, 'logisticsAmount');
+        const storageAmount = sumField(cat.products, 'storageAmount');
+        const penaltyAmount = sumField(cat.products, 'penaltyAmount');
+        const acquiringAmount = sumField(cat.products, 'acquiringAmount');
+        const otherDeductions = sumField(cat.products, 'otherDeductions');
         const expensesTotal = sumField(cat.products, 'expensesTotal');
         const costsTotal = costAmount + expensesTotal;
         const netIncome = sumField(cat.products, 'netIncome');
@@ -284,6 +296,12 @@ class MarketplaceCategoryAnalyticsService {
           soldQty,
           soldAmount,
           costAmount,
+          commissionAmount,
+          logisticsAmount,
+          storageAmount,
+          penaltyAmount,
+          acquiringAmount,
+          otherDeductions,
           expensesTotal,
           costsTotal,
           payoutAmount,
@@ -304,6 +322,12 @@ class MarketplaceCategoryAnalyticsService {
         soldQty: sumField(categories, 'soldQty'),
         soldAmount: sumField(categories, 'soldAmount'),
         costAmount: sumField(categories, 'costAmount'),
+        commissionAmount: sumField(categories, 'commissionAmount'),
+        logisticsAmount: sumField(categories, 'logisticsAmount'),
+        storageAmount: sumField(categories, 'storageAmount'),
+        penaltyAmount: sumField(categories, 'penaltyAmount'),
+        acquiringAmount: sumField(categories, 'acquiringAmount'),
+        otherDeductions: sumField(categories, 'otherDeductions'),
         expensesTotal: sumField(categories, 'expensesTotal'),
         costsTotal: sumField(categories, 'costsTotal'),
         payoutAmount: sumField(categories, 'payoutAmount'),

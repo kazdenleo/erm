@@ -50,6 +50,26 @@ const SCHEME_OPTIONS = [
   { value: 'fbs', label: 'Только FBS' },
 ];
 
+/** Детализация «Затрат» — показывается при раскрытии колонки. */
+const COST_BREAKDOWN_COLS = [
+  { key: 'costAmount', label: 'Себестоимость', title: 'qty × себестоимость товара в ERP' },
+  { key: 'commissionAmount', label: 'Комиссия', title: 'Комиссия / вознаграждение МП' },
+  { key: 'logisticsAmount', label: 'Логистика', title: 'Доставка, ПВЗ, возвратная логистика' },
+  { key: 'storageAmount', label: 'Хранение', title: 'Хранение на складе МП' },
+  { key: 'penaltyAmount', label: 'Штрафы', title: 'Штрафы и удержания за нарушения' },
+  { key: 'acquiringAmount', label: 'Эквайринг', title: 'Эквайринг / приём платежа' },
+  { key: 'otherDeductions', label: 'Прочее', title: 'Прочие удержания и списания' },
+];
+
+function CostCells({ row, costsExpanded }) {
+  if (!costsExpanded) return null;
+  return COST_BREAKDOWN_COLS.map((col) => (
+    <td key={col.key} className="sales-analytics__num category-sales-analytics__cost-detail">
+      {formatRub(Number(row[col.key]) || 0)}
+    </td>
+  ));
+}
+
 export function CategorySalesAnalytics() {
   const initial = useMemo(() => defaultRange(), []);
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
@@ -60,6 +80,7 @@ export function CategorySalesAnalytics() {
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
+  const [costsExpanded, setCostsExpanded] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -87,6 +108,7 @@ export function CategorySalesAnalytics() {
   const summary = data?.summary || {};
   const categories = Array.isArray(data?.categories) ? data.categories : [];
   const taxMeta = data?.taxMeta || null;
+  const colCount = 6 + (costsExpanded ? COST_BREAKDOWN_COLS.length : 0);
 
   const toggleCategory = (categoryId) => {
     const key = String(categoryId ?? 0);
@@ -183,14 +205,43 @@ export function CategorySalesAnalytics() {
               <th>Категория / товар</th>
               <th className="sales-analytics__num">Продано</th>
               <th className="sales-analytics__num">Сумма продаж</th>
-              <th className="sales-analytics__num">Затраты</th>
+              {costsExpanded &&
+                COST_BREAKDOWN_COLS.map((col) => (
+                  <th
+                    key={col.key}
+                    className="sales-analytics__num category-sales-analytics__cost-detail-th"
+                    title={col.title}
+                  >
+                    {col.label}
+                  </th>
+                ))}
+              <th className="sales-analytics__num">
+                <button
+                  type="button"
+                  className={`category-sales-analytics__col-expand${
+                    costsExpanded ? ' is-open' : ''
+                  }`}
+                  onClick={() => setCostsExpanded((v) => !v)}
+                  title={
+                    costsExpanded
+                      ? 'Скрыть разбивку затрат'
+                      : 'Показать разбивку: себестоимость, комиссия, логистика…'
+                  }
+                  aria-expanded={costsExpanded}
+                >
+                  <span>Затраты</span>
+                  <span className="category-sales-analytics__chevron" aria-hidden>
+                    {costsExpanded ? '▾' : '▸'}
+                  </span>
+                </button>
+              </th>
               <th className="sales-analytics__num">Чистая прибыль</th>
             </tr>
           </thead>
           <tbody>
             {!loading && categories.length === 0 && (
               <tr>
-                <td colSpan={6} className="sales-analytics__empty">
+                <td colSpan={colCount} className="sales-analytics__empty">
                   Нет данных. Сначала загрузите отчёты на вкладках «Продажи FBO» / «Продажи FBS».
                 </td>
               </tr>
@@ -218,6 +269,7 @@ export function CategorySalesAnalytics() {
                     </td>
                     <td className="sales-analytics__num">{formatQty(cat.soldQty)}</td>
                     <td className="sales-analytics__num">{formatRub(cat.soldAmount)}</td>
+                    <CostCells row={cat} costsExpanded={costsExpanded} />
                     <td className="sales-analytics__num">{formatRub(cat.costsTotal)}</td>
                     <td className="sales-analytics__num">{formatRub(cat.netIncome)}</td>
                   </tr>
@@ -237,6 +289,7 @@ export function CategorySalesAnalytics() {
                         </td>
                         <td className="sales-analytics__num">{formatQty(p.soldQty)}</td>
                         <td className="sales-analytics__num">{formatRub(p.soldAmount)}</td>
+                        <CostCells row={p} costsExpanded={costsExpanded} />
                         <td className="sales-analytics__num">{formatRub(p.costsTotal)}</td>
                         <td className="sales-analytics__num" title={p.taxTooltip || undefined}>
                           {formatRub(p.netIncome)}
@@ -251,8 +304,9 @@ export function CategorySalesAnalytics() {
       </div>
 
       <p className="sales-analytics__hint">
-        Затраты = себестоимость + удержания маркетплейса (комиссия, логистика, хранение и др.). Чистая
-        прибыль — после налогов по схеме организации.
+        Затраты = себестоимость + удержания маркетплейса (комиссия, логистика, хранение и др.). Нажмите
+        на заголовок «Затраты», чтобы раскрыть статьи. Чистая прибыль — после налогов по схеме
+        организации.
         {taxMeta?.taxSystemLabel ? (
           <>
             {' '}

@@ -36,3 +36,37 @@
 .category-sales-analytics__product-cell {
   padding-left: 28px;
 }
+
+.category-sales-analytics__col-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.category-sales-analytics__col-expand:hover {
+  color: #1d4ed8;
+}
+
+.category-sales-analytics__col-expand.is-open {
+  color: #1d4ed8;
+}
+
+.category-sales-analytics__cost-detail-th {
+  white-space: nowrap;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.category-sales-analytics__cost-detail {
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
