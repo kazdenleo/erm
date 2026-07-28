@@ -1,7 +1,9 @@
 /**
- * Пуш минимальных цен ERP → маркетплейсы.
- * Ozon: поле min_price (+ price, если ниже пола).
- * WB / Яндекс: поднять цену продажи, если effective < пола.
+ * Пуш цен ERP → маркетплейсы.
+ *
+ * Временный режим (по умолчанию): цена продажи = рассчитанный минимум.
+ * Позже: отдельная цена продажи + min_price / пол как нижний порог
+ * (MARKETPLACE_SYNC_PRICE_TO_MIN=0 → только не давать продавать ниже пола).
  */
 
 import fetch from 'node-fetch';
@@ -11,6 +13,7 @@ import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { assertMarketplacePricePushAllowed } from '../utils/organizationMarketplacePricePushPolicy.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -18,6 +21,16 @@ function sleep(ms) {
 
 export function isMinPricePushEnabled() {
   const v = process.env.MARKETPLACE_MIN_PRICE_PUSH_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+/**
+ * true — ставить текущую цену продажи равной ERP-минимуму (временный режим).
+ * false — только поднимать цену/пол, если на МП ниже рассчитанного минимума.
+ */
+export function isSyncSellingPriceToMinEnabled() {
+  const v = process.env.MARKETPLACE_SYNC_PRICE_TO_MIN;
   if (v == null || String(v).trim() === '') return true;
   return !/^(0|false|no|off)$/i.test(String(v).trim());
 }
@@ -67,6 +80,13 @@ export function needsOzonMinPricePush({ erpFloor, mpMinPrice, mpPrice }) {
   const floor = floorRub(erpFloor);
   if (floor == null) return false;
   const minOk = pricesRoughlyEqual(mpMinPrice, floor);
+  if (isSyncSellingPriceToMinEnabled()) {
+    // Цена продажи и min_price на Ozon = ERP-минимум.
+    const priceOk =
+      mpPrice != null && Number.isFinite(Number(mpPrice)) && pricesRoughlyEqual(mpPrice, floor);
+    return !(minOk && priceOk);
+  }
+  // Режим порога: min_price = пол; price не ниже пола.
   const priceOk = mpPrice == null || !Number.isFinite(Number(mpPrice)) || Number(mpPrice) >= floor - 0.5;
   return !(minOk && priceOk);
 }
@@ -76,6 +96,9 @@ export function needsWbFloorPush({ erpFloor, price, discount }) {
   if (floor == null) return false;
   const eff = wbEffectivePrice(price, discount);
   if (eff == null) return false;
+  if (isSyncSellingPriceToMinEnabled()) {
+    return !pricesRoughlyEqual(eff, floor);
+  }
   return eff < floor - 0.5;
 }
 
@@ -84,6 +107,9 @@ export function needsYmFloorPush({ erpFloor, currentPrice }) {
   if (floor == null) return false;
   const cur = Number(currentPrice);
   if (!Number.isFinite(cur) || cur <= 0) return false;
+  if (isSyncSellingPriceToMinEnabled()) {
+    return !pricesRoughlyEqual(cur, floor);
+  }
   return cur < floor - 0.5;
 }
 
@@ -146,16 +172,19 @@ async function loadProductPushContext(productId) {
   if (!product) return null;
 
   const pricesRes = await query(
-    `SELECT marketplace, min_price
+    `SELECT marketplace, min_price, selling_price
      FROM product_marketplace_prices
      WHERE product_id = $1 AND min_price IS NOT NULL AND min_price > 0`,
     [pid]
   );
   const floors = {};
+  const selling = {};
   for (const row of pricesRes.rows || []) {
     const mp = String(row.marketplace || '').toLowerCase();
     const f = floorRub(row.min_price);
     if (f != null) floors[mp] = f;
+    const s = row.selling_price != null ? floorRub(row.selling_price) : null;
+    if (s != null) selling[mp] = s;
   }
 
   const skusRes = await query(
@@ -165,7 +194,7 @@ async function loadProductPushContext(productId) {
   );
   const productSkus = skusRes.rows || [];
 
-  return { product, floors, productSkus };
+  return { product, floors, selling, productSkus };
 }
 
 function resolveOzonIds(productSkus, product) {
@@ -238,7 +267,7 @@ function resolveYmOfferId(productSkus, product) {
   return normalizeMpOfferId(row?.sku || product?.sku || null);
 }
 
-async function pushOzonForProduct(ctx, floor, orgId, profileId) {
+async function pushOzonForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   const cfg = await integrationsService.getMarketplaceConfig('ozon', {
     organizationId: orgId,
     profileId,
@@ -253,6 +282,7 @@ async function pushOzonForProduct(ctx, floor, orgId, profileId) {
     return { marketplace: 'ozon', skipped: true, reason: 'not_linked' };
   }
 
+  const targetPrice = floorRub(sellingTarget) ?? floor;
   const ozonApiOpts = { ozonOverride: { client_id: clientId, api_key: apiKey } };
   let mpMin = null;
   let mpPrice = null;
@@ -274,22 +304,22 @@ async function pushOzonForProduct(ctx, floor, orgId, profileId) {
     logger.warn('[MP MinPrice Push] Ozon read failed', { message: e?.message || String(e) });
   }
 
-  if (!needsOzonMinPricePush({ erpFloor: floor, mpMinPrice: mpMin, mpPrice })) {
-    return { marketplace: 'ozon', skipped: true, reason: 'already_ok', floor };
+  const minOk = pricesRoughlyEqual(mpMin, floor);
+  const priceOk =
+    mpPrice != null && Number.isFinite(Number(mpPrice)) && pricesRoughlyEqual(mpPrice, targetPrice);
+  if (minOk && priceOk) {
+    return { marketplace: 'ozon', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
   const entry = {
     min_price: String(floor),
+    price: String(targetPrice),
     currency_code: 'RUB',
     auto_action_enabled: 'DISABLED',
     auto_add_to_ozon_actions_list_enabled: 'DISABLED',
   };
   if (ozonProductId) entry.product_id = ozonProductId;
   else entry.offer_id = offerId;
-  // Не занижаем цену: поднимаем только если знаем текущую и она ниже пола.
-  if (Number.isFinite(mpPrice) && mpPrice < floor) {
-    entry.price = String(floor);
-  }
 
   try {
     await ozonApiPostWithRetry('/v1/product/import/prices', { prices: [entry] }, ozonApiOpts);
@@ -303,14 +333,14 @@ async function pushOzonForProduct(ctx, floor, orgId, profileId) {
   logger.info('[MP MinPrice Push] Ozon OK', {
     productId: ctx.product.id,
     floor,
+    selling: targetPrice,
     ozonProductId,
     offerId,
-    raisedPrice: Boolean(entry.price),
   });
-  return { marketplace: 'ozon', ok: true, floor, raisedPrice: Boolean(entry.price) };
+  return { marketplace: 'ozon', ok: true, floor, selling: targetPrice, raisedPrice: true };
 }
 
-async function pushWbForProduct(ctx, floor, orgId, profileId) {
+async function pushWbForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   const cfg = await integrationsService.getMarketplaceConfig('wildberries', {
     organizationId: orgId,
     profileId,
@@ -324,6 +354,7 @@ async function pushWbForProduct(ctx, floor, orgId, profileId) {
     return { marketplace: 'wb', skipped: true, reason: 'not_linked' };
   }
 
+  const targetEff = floorRub(sellingTarget) ?? floor;
   let price = null;
   let discount = 0;
   try {
@@ -366,11 +397,12 @@ async function pushWbForProduct(ctx, floor, orgId, profileId) {
   if (price == null || !Number.isFinite(price)) {
     return { marketplace: 'wb', skipped: true, reason: 'unknown_current' };
   }
-  if (!needsWbFloorPush({ erpFloor: floor, price, discount })) {
-    return { marketplace: 'wb', skipped: true, reason: 'already_ok', floor };
+  const eff = wbEffectivePrice(price, discount);
+  if (eff != null && pricesRoughlyEqual(eff, targetEff)) {
+    return { marketplace: 'wb', skipped: true, reason: 'already_ok', floor, selling: targetEff };
   }
 
-  const newPrice = wbPriceToMeetFloor(floor, discount);
+  const newPrice = wbPriceToMeetFloor(targetEff, discount);
   if (newPrice == null) {
     return { marketplace: 'wb', skipped: true, reason: 'invalid_floor' };
   }
@@ -408,13 +440,14 @@ async function pushWbForProduct(ctx, floor, orgId, profileId) {
     productId: ctx.product.id,
     nmID,
     floor,
+    selling: targetEff,
     newPrice,
     discount,
   });
-  return { marketplace: 'wb', ok: true, floor, newPrice };
+  return { marketplace: 'wb', ok: true, floor, selling: targetEff, newPrice };
 }
 
-async function pushYmForProduct(ctx, floor, orgId, profileId) {
+async function pushYmForProduct(ctx, floor, sellingTarget, orgId, profileId) {
   const cfg = await integrationsService.getMarketplaceConfig('yandex', {
     organizationId: orgId,
     profileId,
@@ -434,7 +467,7 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
     return { marketplace: 'ym', skipped: true, reason: 'not_linked' };
   }
 
-  // Кабинеты с onlyDefaultPrice правятся через businesses/*, не campaigns/*.
+  const targetPrice = floorRub(sellingTarget) ?? floor;
   const useBusiness = Boolean(businessId);
   const pricesPath = useBusiness
     ? `/v2/businesses/${encodeURIComponent(businessId)}/offer-prices`
@@ -475,11 +508,11 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
   if (currentPrice == null || !Number.isFinite(currentPrice)) {
     return { marketplace: 'ym', skipped: true, reason: 'unknown_current' };
   }
-  if (!needsYmFloorPush({ erpFloor: floor, currentPrice })) {
-    return { marketplace: 'ym', skipped: true, reason: 'already_ok', floor };
+  if (pricesRoughlyEqual(currentPrice, targetPrice)) {
+    return { marketplace: 'ym', skipped: true, reason: 'already_ok', floor, selling: targetPrice };
   }
 
-  const newValue = Math.max(floor, Math.ceil(currentPrice));
+  const newValue = targetPrice;
   const agent = getYandexHttpsAgent();
   const offerPayload = useBusiness
     ? { offerId, price: { value: newValue, currencyId: 'RUR' } }
@@ -509,20 +542,22 @@ async function pushYmForProduct(ctx, floor, orgId, profileId) {
     productId: ctx.product.id,
     offerId,
     floor,
+    selling: targetPrice,
     previous: currentPrice,
     via: useBusiness ? 'business' : 'campaign',
   });
-  return { marketplace: 'ym', ok: true, floor, newValue };
+  return { marketplace: 'ym', ok: true, floor, selling: targetPrice, newValue };
 }
 
 /**
  * Пуш мин. цен для одного товара ERP.
+ * Только если у организации включено auto_push_marketplace_prices.
  */
 export async function pushForProduct(productId) {
   if (!isMinPricePushEnabled()) {
     return { skipped: true, reason: 'disabled' };
   }
-  const ctx = await loadProductPushContext(productId);
+  let ctx = await loadProductPushContext(productId);
   if (!ctx) return { skipped: true, reason: 'product_not_found' };
   if (!Object.keys(ctx.floors).length) {
     return { skipped: true, reason: 'no_stored_min_prices' };
@@ -530,25 +565,49 @@ export async function pushForProduct(productId) {
 
   const orgId = ctx.product.organization_id != null ? Number(ctx.product.organization_id) : null;
   const profileId = ctx.product.profile_id != null ? Number(ctx.product.profile_id) : null;
+
+  const gate = await assertMarketplacePricePushAllowed({
+    organizationId: orgId,
+    productId: ctx.product.id,
+    source: 'pushForProduct',
+  });
+  if (!gate.allowed) {
+    return { skipped: true, reason: gate.reason || 'org_price_push_disabled', productId: Number(productId) };
+  }
+
+  try {
+    const { recalculateSellingPricesForProduct } = await import('./pricingStrategy.service.js');
+    await recalculateSellingPricesForProduct(productId);
+    ctx = (await loadProductPushContext(productId)) || ctx;
+  } catch (e) {
+    logger.warn('[MP MinPrice Push] strategy recalc failed', {
+      productId,
+      message: e?.message || String(e),
+    });
+  }
+
   const results = [];
 
   if (ctx.floors.ozon != null) {
     try {
-      results.push(await pushOzonForProduct(ctx, ctx.floors.ozon, orgId, profileId));
+      const selling = ctx.selling?.ozon ?? ctx.floors.ozon;
+      results.push(await pushOzonForProduct(ctx, ctx.floors.ozon, selling, orgId, profileId));
     } catch (e) {
       results.push({ marketplace: 'ozon', ok: false, error: e?.message || String(e) });
     }
   }
   if (ctx.floors.wb != null) {
     try {
-      results.push(await pushWbForProduct(ctx, ctx.floors.wb, orgId, profileId));
+      const selling = ctx.selling?.wb ?? ctx.floors.wb;
+      results.push(await pushWbForProduct(ctx, ctx.floors.wb, selling, orgId, profileId));
     } catch (e) {
       results.push({ marketplace: 'wb', ok: false, error: e?.message || String(e) });
     }
   }
   if (ctx.floors.ym != null) {
     try {
-      results.push(await pushYmForProduct(ctx, ctx.floors.ym, orgId, profileId));
+      const selling = ctx.selling?.ym ?? ctx.floors.ym;
+      results.push(await pushYmForProduct(ctx, ctx.floors.ym, selling, orgId, profileId));
     } catch (e) {
       results.push({ marketplace: 'ym', ok: false, error: e?.message || String(e) });
     }
@@ -633,9 +692,9 @@ async function uploadWbPriceBatch(token, items) {
 }
 
 /**
- * Дневная сверка: батч-чтение цен WB → поднять только effective &lt; пола;
- * для затронутых SKU дополнительно точечный пуш Ozon/YM.
- * Полный каталог по всем МП остаётся на ночном cron.
+ * Дневная сверка WB (батч) + точечный пуш Ozon/YM для затронутых SKU.
+ * В режиме sync-to-min: effective = пол; иначе — только effective &lt; пола.
+ * Полный каталог по всем МП — ночной cron.
  */
 export async function reconcileBelowFloor() {
   if (!isMinPricePushEnabled()) {
@@ -655,7 +714,9 @@ export async function reconcileBelowFloor() {
               pmp.marketplace, pmp.min_price
        FROM product_marketplace_prices pmp
        JOIN products p ON p.id = pmp.product_id
-       WHERE pmp.min_price IS NOT NULL AND pmp.min_price > 0`
+       JOIN organizations o ON o.id = p.organization_id
+       WHERE pmp.min_price IS NOT NULL AND pmp.min_price > 0
+         AND o.auto_push_marketplace_prices = true`
     );
 
     /** @type {Map<number, { product: object, floors: Record<string, number>, productSkus: object[] }>} */
@@ -774,7 +835,7 @@ export async function reconcileBelowFloor() {
       }
     }
 
-    // Точечно Ozon/YM для SKU, где на WB ушли ниже пола (часто те же карточки).
+    // Точечно Ozon/YM для SKU, где на WB нужна сверка цены (часто те же карточки).
     let sidePushed = 0;
     let sideFailed = 0;
     const sideIds = [...touchedProductIds];
@@ -806,7 +867,7 @@ export async function reconcileBelowFloor() {
 }
 
 /**
- * Полный прогон: все товары с сохранёнными мин. ценами.
+ * Полный прогон: все товары с сохранёнными мин. ценами (только org с auto_push).
  */
 export async function pushForAllProfiles({ limit = null } = {}) {
   if (!isMinPricePushEnabled()) {
@@ -823,10 +884,13 @@ export async function pushForAllProfiles({ limit = null } = {}) {
 
     const lim = limit != null && Number.isFinite(Number(limit)) ? Number(limit) : null;
     const r = await query(
-      `SELECT DISTINCT product_id
-       FROM product_marketplace_prices
-       WHERE min_price IS NOT NULL AND min_price > 0
-       ORDER BY product_id ASC
+      `SELECT DISTINCT pmp.product_id
+       FROM product_marketplace_prices pmp
+       JOIN products p ON p.id = pmp.product_id
+       JOIN organizations o ON o.id = p.organization_id
+       WHERE pmp.min_price IS NOT NULL AND pmp.min_price > 0
+         AND o.auto_push_marketplace_prices = true
+       ORDER BY pmp.product_id ASC
        ${lim != null ? `LIMIT ${Math.max(1, Math.floor(lim))}` : ''}`
     );
     const ids = (r.rows || [])
@@ -859,8 +923,81 @@ export async function pushForAllProfiles({ limit = null } = {}) {
   }
 }
 
+/**
+ * Пуш сохранённых мин. цен на МП для товаров одной организации.
+ * Требует organizations.auto_push_marketplace_prices = true.
+ */
+export async function pushForOrganization(organizationId, { limit = null } = {}) {
+  if (!isMinPricePushEnabled()) {
+    return { skipped: true, reason: 'disabled' };
+  }
+  const orgId = Number(organizationId);
+  if (!Number.isFinite(orgId) || orgId < 1) {
+    return { skipped: true, reason: 'invalid_organization' };
+  }
+
+  const gate = await assertMarketplacePricePushAllowed({
+    organizationId: orgId,
+    source: 'pushForOrganization',
+  });
+  if (!gate.allowed) {
+    return { skipped: true, reason: gate.reason || 'org_price_push_disabled', organizationId: orgId };
+  }
+
+  if (_fullRunInProgress) {
+    return { skipped: true, reason: 'in_progress' };
+  }
+  _fullRunInProgress = true;
+  try {
+    if (!repositoryFactory.isUsingPostgreSQL()) {
+      return { skipped: true, reason: 'not_pg' };
+    }
+
+    const lim = limit != null && Number.isFinite(Number(limit)) ? Number(limit) : null;
+    const r = await query(
+      `SELECT DISTINCT pmp.product_id
+       FROM product_marketplace_prices pmp
+       JOIN products p ON p.id = pmp.product_id
+       WHERE p.organization_id = $1
+         AND pmp.min_price IS NOT NULL AND pmp.min_price > 0
+       ORDER BY pmp.product_id ASC
+       ${lim != null ? `LIMIT ${Math.max(1, Math.floor(lim))}` : ''}`,
+      [orgId]
+    );
+    const ids = (r.rows || [])
+      .map((row) => Number(row.product_id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+
+    let pushed = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (let i = 0; i < ids.length; i++) {
+      const out = await pushForProduct(ids[i]).catch((e) => ({
+        failed: 1,
+        error: e?.message || String(e),
+      }));
+      pushed += out.pushed || 0;
+      failed += out.failed || 0;
+      skipped += out.skipped || (out.reason ? 1 : 0);
+      if (i > 0 && i % 20 === 0) await sleep(200);
+    }
+
+    logger.info('[MP MinPrice Push] org run done', {
+      organizationId: orgId,
+      products: ids.length,
+      pushed,
+      failed,
+      skipped,
+    });
+    return { organizationId: orgId, products: ids.length, pushed, failed, skipped };
+  } finally {
+    _fullRunInProgress = false;
+  }
+}
+
 export default {
   isMinPricePushEnabled,
+  isSyncSellingPriceToMinEnabled,
   floorRub,
   normalizeMpOfferId,
   pricesRoughlyEqual,
@@ -872,5 +1009,6 @@ export default {
   schedulePushForProduct,
   pushForProduct,
   pushForAllProfiles,
+  pushForOrganization,
   reconcileBelowFloor,
 };
