@@ -6,6 +6,7 @@
 import express from 'express';
 import productsController from '../controllers/products.controller.js';
 import stockMovementsController from '../controllers/stockMovements.controller.js';
+import productCompetitorsController from '../controllers/productCompetitors.controller.js';
 import { wrapAsync } from '../middleware/errorHandler.js';
 import { requireAuth, requireProfileAdmin } from '../middleware/auth.js';
 import { createProductImageUpload, createProductExcelImportUpload } from '../middleware/uploads.js';
@@ -156,6 +157,9 @@ router.post(
 // Массовая отправка карточек на маркетплейсы (до /:id)
 router.post('/push-card', wrapAsync(productsController.pushCardBulk.bind(productsController)));
 
+// Массовое обновление карточек ERP данными с маркетплейсов (до /:id)
+router.post('/pull-card', wrapAsync(productsController.pullCardBulk.bind(productsController)));
+
 // Связать товар с карточкой маркетплейса по артикулу ERP (до PUT /:id)
 router.post(
   '/:id/link-marketplace/:marketplace',
@@ -170,6 +174,13 @@ router.post(
   wrapAsync(productsController.pushCard.bind(productsController))
 );
 
+// Обновить карточку ERP данными с маркетплейса (до PUT /:id)
+router.post(
+  '/:id/pull-card/:marketplace',
+  validateProductId,
+  wrapAsync(productsController.pullCard.bind(productsController))
+);
+
 router.get(
   '/:id/participation',
   validateProductId,
@@ -180,6 +191,33 @@ router.get(
   '/:id/marketplace-number',
   validateProductId,
   wrapAsync(productsController.getMarketplaceNumber.bind(productsController))
+);
+
+// Конкуренты (ссылки на карточки МП)
+router.get(
+  '/:id/competitors',
+  validateProductId,
+  wrapAsync(productCompetitorsController.list.bind(productCompetitorsController))
+);
+router.post(
+  '/:id/competitors',
+  validateProductId,
+  wrapAsync(productCompetitorsController.add.bind(productCompetitorsController))
+);
+router.delete(
+  '/:id/competitors/:competitorId',
+  validateProductId,
+  wrapAsync(productCompetitorsController.remove.bind(productCompetitorsController))
+);
+router.post(
+  '/:id/competitors/refresh',
+  validateProductId,
+  wrapAsync(productCompetitorsController.refresh.bind(productCompetitorsController))
+);
+router.post(
+  '/:id/competitors/:competitorId/refresh',
+  validateProductId,
+  wrapAsync(productCompetitorsController.refresh.bind(productCompetitorsController))
 );
 
 router.post(

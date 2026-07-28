@@ -162,6 +162,37 @@ export const productsApi = {
     return response.data;
   },
 
+  listCompetitors: async (productId) => {
+    const response = await api.get(`/products/${productId}/competitors`);
+    return response.data;
+  },
+
+  addCompetitor: async (productId, url) => {
+    const response = await api.post(`/products/${productId}/competitors`, { url }, { timeout: 90000 });
+    return response.data;
+  },
+
+  removeCompetitor: async (productId, competitorId) => {
+    const response = await api.delete(`/products/${productId}/competitors/${competitorId}`);
+    return response.data;
+  },
+
+  refreshCompetitors: async (productId) => {
+    const response = await api.post(`/products/${productId}/competitors/refresh`, null, {
+      timeout: 120000,
+    });
+    return response.data;
+  },
+
+  refreshCompetitor: async (productId, competitorId) => {
+    const response = await api.post(
+      `/products/${productId}/competitors/${competitorId}/refresh`,
+      null,
+      { timeout: 60000 }
+    );
+    return response.data;
+  },
+
   /**
    * Номер карточки на МП (из БД или через API кабинета организации).
    * @param {number|string} productId
@@ -264,6 +295,25 @@ export const productsApi = {
    */
   pushCardBulk: async (payload) => {
     const response = await api.post('/products/push-card', payload);
+    return response.data;
+  },
+
+  /**
+   * Обновить карточку ERP данными с маркетплейса (ozon | wb | ym | all).
+   */
+  pullCard: async (productId, marketplace) => {
+    const id = encodeURIComponent(String(productId));
+    const mp = encodeURIComponent(String(marketplace).trim());
+    const response = await api.post(`/products/${id}/pull-card/${mp}`);
+    return response.data;
+  },
+
+  /**
+   * Массовое обновление карточек ERP данными с маркетплейсов.
+   * @param {{ productIds: number[], marketplaces: string|string[] }} payload
+   */
+  pullCardBulk: async (payload) => {
+    const response = await api.post('/products/pull-card', payload);
     return response.data;
   },
 

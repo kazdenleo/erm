@@ -1286,7 +1286,7 @@ class ProductsService {
     }
   }
 
-  async update(id, updates) {
+  async update(id, updates, opts = {}) {
     normalizeMarketplaceCardTextFields(updates);
     const existingForKits = await this.repository.findById(id);
     await assertKitsFeatureAllowed(updates, null, { existingProduct: existingForKits });
@@ -1424,6 +1424,10 @@ class ProductsService {
         console.error('[Products Service] Recalc min prices after update failed:', err?.message || err);
       });
     }
+
+    // Автопуш карточки на МП отключён: UI подсвечивает dirty-поля и пушит только
+    // подтверждённые маркетплейсы через POST /products/:id/push-card/:marketplace
+    void opts.skipMarketplaceCardPush;
 
     if (repositoryFactory.isUsingPostgreSQL()) {
       return await this.getByIdWithDetails(id);
@@ -1929,6 +1933,29 @@ class ProductsService {
    */
   async pushProductCardsBulk(payload, options = {}) {
     return marketplaceProductCardPush.pushProductCardsBulk(payload, {
+      profileId: options.profileId ?? null
+    });
+  }
+
+  /**
+   * Обновить карточку в ERP данными с маркетплейса.
+   * @param {number|string} productId
+   * @param {'ozon'|'wb'|'ym'|'all'|string} marketplace
+   */
+  async pullProductCardFromMarketplace(productId, marketplace, options = {}) {
+    const marketplaceProductCardPull = (await import('./marketplaceProductCardPull.service.js')).default;
+    return marketplaceProductCardPull.pullProductCard(productId, marketplace, {
+      profileId: options.profileId ?? null
+    });
+  }
+
+  /**
+   * Массовое обновление карточек ERP данными с маркетплейсов.
+   * @param {{ productIds: Array<number|string>, marketplaces: string|string[] }} payload
+   */
+  async pullProductCardsBulk(payload, options = {}) {
+    const marketplaceProductCardPull = (await import('./marketplaceProductCardPull.service.js')).default;
+    return marketplaceProductCardPull.pullProductCardsBulk(payload, {
       profileId: options.profileId ?? null
     });
   }

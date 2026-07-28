@@ -19,7 +19,8 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileProductSupplierBindingEnabled } from '../../utils/profileFlags.js';
+import { useSuppliers } from '../../hooks/useSuppliers';
 import './ProductsBulkEdit.css';
 import './Products.css';
 
@@ -84,6 +85,7 @@ const COLUMNS = [
   { key: 'product_type', label: 'Тип', input: 'select_type', minW: 88 },
   { key: 'categoryId', label: 'Категория', input: 'select_category', minW: 140 },
   { key: 'organizationId', label: 'Организация', input: 'select_org', minW: 140 },
+  { key: 'supplierId', label: 'Поставщик', input: 'select_supplier', minW: 140 },
   { key: 'cost', label: 'Себестоимость', input: 'number', minW: 88 },
   { key: 'additionalExpenses', label: 'Доп. расходы', input: 'number', minW: 88 },
   { key: 'minPrice', label: 'Мин. цена', input: 'number', minW: 80 },
@@ -427,6 +429,7 @@ function volumeLitersFromMmDims(rowOrProduct) {
 
 function productToRow(p, mpAttrColDefs = []) {
   const orgRaw = p.organization_id ?? p.organizationId;
+  const supplierRaw = p.supplier_id ?? p.supplierId;
   const barcodes = barcodeStringsFromProduct(p.barcodes);
   const oz = normalizeJsonAttrs(p.ozon_attributes);
   const wb = normalizeJsonAttrs(p.wb_attributes);
@@ -438,6 +441,7 @@ function productToRow(p, mpAttrColDefs = []) {
     product_type: p.product_type === 'kit' ? 'kit' : 'product',
     categoryId: p.categoryId != null && p.categoryId !== '' ? str(p.categoryId) : '',
     organizationId: orgRaw != null && orgRaw !== '' ? str(orgRaw) : '',
+    supplierId: supplierRaw != null && supplierRaw !== '' ? str(supplierRaw) : '',
     brand: str(p.brand ?? p.brand_name ?? ''),
     cost: p.cost != null && p.cost !== '' && !Number.isNaN(Number(p.cost)) ? str(p.cost) : '',
     additionalExpenses:
@@ -537,6 +541,9 @@ function buildUpdatePayload(original, current, mpAttrColDefs = []) {
   if (!eq(original.organizationId, current.organizationId)) {
     touch('organizationId', str(current.organizationId).trim() === '' ? null : str(current.organizationId).trim());
   }
+  if (!eq(original.supplierId, current.supplierId)) {
+    touch('supplierId', str(current.supplierId).trim() === '' ? null : str(current.supplierId).trim());
+  }
 
   if (!eq(original.brand, current.brand)) touch('brand', normTextOrNull(current.brand));
 
@@ -620,9 +627,19 @@ export function ProductsBulkEdit() {
   const navigate = useNavigate();
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
+  const supplierBindingEnabled = isProfileProductSupplierBindingEnabled(profile);
   const { categories, loadCategories } = useCategories();
   const { organizations } = useOrganizations();
   const { brands } = useBrands();
+  const { suppliers } = useSuppliers();
+
+  const activeSuppliers = useMemo(
+    () =>
+      [...(suppliers || [])]
+        .filter((s) => s && s.isActive !== false && s.active !== false)
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru')),
+    [suppliers]
+  );
 
   const [rows, setRows] = useState([]);
   const [originals, setOriginals] = useState({});
@@ -632,6 +649,8 @@ export function ProductsBulkEdit() {
   const [saveMessage, setSaveMessage] = useState(null);
   const [pushMpLoading, setPushMpLoading] = useState(null);
   const [pushMpMessage, setPushMpMessage] = useState(null);
+  const [pullMpLoading, setPullMpLoading] = useState(null);
+  const [pullMpMessage, setPullMpMessage] = useState(null);
 
   const [filterOrganizationId, setFilterOrganizationId] = useState(() => {
     const f = location.state?.filters;
@@ -715,6 +734,7 @@ export function ProductsBulkEdit() {
 
   const visibleColumns = useMemo(() => {
     const base = COLUMNS.filter((c) => {
+      if (c.key === 'supplierId' && !supplierBindingEnabled) return false;
       const b = c.mpBucket;
       if (b == null) return true;
       if (b === 'ozon') return showMpOzon;
@@ -723,7 +743,7 @@ export function ProductsBulkEdit() {
       return false;
     });
     return [...base, ...visibleMpAttrColumnDefs];
-  }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm]);
+  }, [visibleMpAttrColumnDefs, showMpOzon, showMpWb, showMpYm, supplierBindingEnabled]);
 
   const activeFiltersCount =
     (filterOrganizationId ? 1 : 0) +
@@ -1002,19 +1022,97 @@ export function ProductsBulkEdit() {
       setPushMpMessage('Нет товаров в таблице');
       return;
     }
+    const mpLabel =
+      marketplaces === 'all'
+        ? 'все маркетплейсы'
+        : marketplaces === 'ozon'
+          ? 'Ozon'
+          : marketplaces === 'wb'
+            ? 'Wildberries'
+            : 'Яндекс.Маркет';
+    const okConfirm = window.confirm(
+      `Отправить карточки ${productIds.length} товар(ов) на ${mpLabel}?\n\n` +
+        'На маркетплейсы уходят данные из базы ERP. Сначала сохраните правки в таблице, если они ещё не сохранены.'
+    );
+    if (!okConfirm) return;
     setPushMpLoading(marketplaces);
     setPushMpMessage(null);
+    setPullMpMessage(null);
     try {
       const body = await productsApi.pushCardBulk({ productIds, marketplaces });
       const data = body?.data ?? body;
+      const failedItems = Array.isArray(data?.items)
+        ? data.items.filter((it) => !it?.ok).slice(0, 5)
+        : [];
+      const failHint =
+        failedItems.length > 0
+          ? ` Примеры ошибок: ${failedItems
+              .map((it) => {
+                const err =
+                  (it.results || []).find((r) => !r.ok)?.error || 'ошибка';
+                return `#${it.productId}: ${err}`;
+              })
+              .join('; ')}`
+          : '';
       setPushMpMessage(
-        `Отправка: успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}. ` +
-          'Сначала сохраните изменения в ERP, на маркетплейсы уходят данные из базы.'
+        `Отправка на МП: успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.${failHint}`
       );
     } catch (e) {
       setPushMpMessage(e?.response?.data?.message || e?.message || 'Ошибка отправки на маркетплейсы');
     } finally {
       setPushMpLoading(null);
+    }
+  };
+
+  const handlePullFromMarketplaces = async (marketplaces) => {
+    const productIds = rows.map((r) => r.id).filter(Boolean);
+    if (productIds.length === 0) {
+      setPullMpMessage('Нет товаров в таблице');
+      return;
+    }
+    const mpLabel =
+      marketplaces === 'all'
+        ? 'всех маркетплейсов'
+        : marketplaces === 'ozon'
+          ? 'Ozon'
+          : marketplaces === 'wb'
+            ? 'Wildberries'
+            : 'Яндекс.Маркет';
+    const okConfirm = window.confirm(
+      `Обновить в ERP карточки ${productIds.length} товар(ов) данными с ${mpLabel}?\n\n` +
+        'Поля маркетплейса (названия, описания, атрибуты, артикулы МП) будут перезаписаны из кабинета. ' +
+        'Несохранённые правки в таблице по этим полям могут быть потеряны после обновления списка.'
+    );
+    if (!okConfirm) return;
+    setPullMpLoading(marketplaces);
+    setPullMpMessage(null);
+    setPushMpMessage(null);
+    try {
+      const body = await productsApi.pullCardBulk({ productIds, marketplaces });
+      const data = body?.data ?? body;
+      const failedItems = Array.isArray(data?.items)
+        ? data.items.filter((it) => !it?.ok).slice(0, 5)
+        : [];
+      const failHint =
+        failedItems.length > 0
+          ? ` Примеры ошибок: ${failedItems
+              .map((it) => {
+                const err =
+                  (it.results || []).find((r) => !r.ok)?.error || 'ошибка';
+                return `#${it.productId}: ${err}`;
+              })
+              .join('; ')}`
+          : '';
+      setPullMpMessage(
+        `Обновление из МП: успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.${failHint}`
+      );
+      await loadProducts();
+    } catch (e) {
+      setPullMpMessage(
+        e?.response?.data?.message || e?.message || 'Ошибка обновления карточек из маркетплейсов'
+      );
+    } finally {
+      setPullMpLoading(null);
     }
   };
 
@@ -1088,6 +1186,23 @@ export function ProductsBulkEdit() {
           {organizations.map((o) => (
             <option key={o.id} value={o.id}>
               {o.name}
+            </option>
+          ))}
+        </select>
+      );
+    }
+    if (col.input === 'select_supplier') {
+      return (
+        <select
+          className="products-bulk-cell-input"
+          value={v}
+          onChange={(e) => updateCell(row.id, col.key, e.target.value)}
+          style={{ maxWidth: 220 }}
+        >
+          <option value="">— Не привязан —</option>
+          {activeSuppliers.map((s) => (
+            <option key={s.id} value={String(s.id)}>
+              {s.name || `Поставщик #${s.id}`}
             </option>
           ))}
         </select>
@@ -1303,11 +1418,14 @@ export function ProductsBulkEdit() {
                     )}
                   </div>
                   <div className="d-flex flex-wrap align-items-center gap-2 ms-md-auto">
+                    <span className="text-muted small text-nowrap me-1" title="Отправить данные карточек из ERP на маркетплейсы">
+                      На МП:
+                    </span>
                     <Button
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
                       onClick={() => handlePushToMarketplaces('ozon')}
                     >
                       {pushMpLoading === 'ozon' ? '…' : 'На Ozon'}
@@ -1316,7 +1434,7 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
                       onClick={() => handlePushToMarketplaces('wb')}
                     >
                       {pushMpLoading === 'wb' ? '…' : 'На WB'}
@@ -1325,7 +1443,7 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="secondary"
                       size="small"
-                      disabled={!!pushMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
                       onClick={() => handlePushToMarketplaces('ym')}
                     >
                       {pushMpLoading === 'ym' ? '…' : 'На Я.Маркет'}
@@ -1334,14 +1452,56 @@ export function ProductsBulkEdit() {
                       type="button"
                       variant="primary"
                       size="small"
-                      disabled={!!pushMpLoading || rows.length === 0}
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
                       onClick={() => handlePushToMarketplaces('all')}
                     >
                       {pushMpLoading === 'all' ? 'Отправка…' : 'На все МП'}
                     </Button>
+                    <span className="text-muted small text-nowrap ms-2 me-1" title="Загрузить данные карточек из кабинетов МП в ERP">
+                      Из МП:
+                    </span>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      onClick={() => handlePullFromMarketplaces('ozon')}
+                    >
+                      {pullMpLoading === 'ozon' ? '…' : 'С Ozon'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      onClick={() => handlePullFromMarketplaces('wb')}
+                    >
+                      {pullMpLoading === 'wb' ? '…' : 'С WB'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="small"
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      onClick={() => handlePullFromMarketplaces('ym')}
+                    >
+                      {pullMpLoading === 'ym' ? '…' : 'С Я.Маркет'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="small"
+                      disabled={!!pushMpLoading || !!pullMpLoading || rows.length === 0}
+                      onClick={() => handlePullFromMarketplaces('all')}
+                    >
+                      {pullMpLoading === 'all' ? 'Загрузка…' : 'Со всех МП'}
+                    </Button>
                   </div>
                   {pushMpMessage ? (
                     <div className="text-muted small w-100 mt-1">{pushMpMessage}</div>
+                  ) : null}
+                  {pullMpMessage ? (
+                    <div className="text-muted small w-100 mt-1">{pullMpMessage}</div>
                   ) : null}
                 </div>
               </div>
@@ -1492,6 +1652,15 @@ export function ProductsBulkEdit() {
                 {organizations.map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.name}
+                  </option>
+                ))}
+              </select>
+            ) : bulkModalCol.input === 'select_supplier' ? (
+              <select className="form-control" value={bulkDraft} onChange={(e) => setBulkDraft(e.target.value)} autoFocus>
+                <option value="">— Не привязан —</option>
+                {activeSuppliers.map((s) => (
+                  <option key={s.id} value={String(s.id)}>
+                    {s.name || `Поставщик #${s.id}`}
                   </option>
                 ))}
               </select>
