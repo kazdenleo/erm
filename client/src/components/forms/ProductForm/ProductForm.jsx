@@ -297,6 +297,9 @@ const EMPTY_PRODUCT_FORM_DATA = {
     cost: '',
   additionalExpenses: '',
     minPrice: '',
+    minProfitOzon: '',
+    minProfitWb: '',
+    minProfitYm: '',
     description: '',
     sku_ozon: '',
     /** Редактируемое поле числового product_id Ozon (сохраняется как marketplace_ozon_product_id) */
@@ -573,6 +576,18 @@ export function ProductForm({
         minPrice: (currentProduct.minPrice != null && currentProduct.minPrice !== '' && !isNaN(Number(currentProduct.minPrice)))
           ? String(currentProduct.minPrice)
           : '',
+        minProfitOzon: (() => {
+          const v = currentProduct.minProfitOzon ?? currentProduct.min_profit_ozon;
+          return v != null && v !== '' && !isNaN(Number(v)) ? String(v) : '';
+        })(),
+        minProfitWb: (() => {
+          const v = currentProduct.minProfitWb ?? currentProduct.min_profit_wb;
+          return v != null && v !== '' && !isNaN(Number(v)) ? String(v) : '';
+        })(),
+        minProfitYm: (() => {
+          const v = currentProduct.minProfitYm ?? currentProduct.min_profit_ym;
+          return v != null && v !== '' && !isNaN(Number(v)) ? String(v) : '';
+        })(),
         description: currentProduct.description || '',
         sku_ozon: currentProduct.sku_ozon || '',
         ozon_product_id:
@@ -2613,6 +2628,18 @@ export function ProductForm({
       minPrice: (formData.minPrice !== '' && formData.minPrice != null && !isNaN(parseFloat(formData.minPrice)))
         ? parseFloat(formData.minPrice)
         : 50,
+      minProfitOzon:
+        formData.minProfitOzon !== '' && formData.minProfitOzon != null && !isNaN(parseFloat(formData.minProfitOzon))
+          ? parseFloat(formData.minProfitOzon)
+          : null,
+      minProfitWb:
+        formData.minProfitWb !== '' && formData.minProfitWb != null && !isNaN(parseFloat(formData.minProfitWb))
+          ? parseFloat(formData.minProfitWb)
+          : null,
+      minProfitYm:
+        formData.minProfitYm !== '' && formData.minProfitYm != null && !isNaN(parseFloat(formData.minProfitYm))
+          ? parseFloat(formData.minProfitYm)
+          : null,
       unit: 'шт',
       description: formData.description.trim() || null,
       sku_ozon: toSku(formData.sku_ozon),
@@ -3609,8 +3636,8 @@ export function ProductForm({
           {errors.additionalExpenses && <div className="error">{errors.additionalExpenses}</div>}
         </div>
 
-        <div className="col-md-4">
-          <label className="form-label" htmlFor="minPrice">Мин. чистая прибыль</label>
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="minPrice">Мин. наценка (частные), ₽</label>
         <input
           id="minPrice"
           type="number"
@@ -3623,7 +3650,61 @@ export function ProductForm({
           onChange={(e) => handleChange('minPrice', e.target.value)}
         />
         <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px'}}>
-            Целевая прибыль в рублях (по умолчанию 50 ₽)
+            Целевая прибыль для частных (ручных) заказов
+          </div>
+        </div>
+
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="minProfitOzon">Мин. наценка Ozon, ₽</label>
+          <input
+            id="minProfitOzon"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 200 }}
+            step="0.01"
+            min="0"
+            placeholder="как общая"
+            value={formData.minProfitOzon}
+            onChange={(e) => handleChange('minProfitOzon', e.target.value)}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            Для расчёта мин. цены Ozon (пусто — общая)
+          </div>
+        </div>
+
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="minProfitWb">Мин. наценка WB, ₽</label>
+          <input
+            id="minProfitWb"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 200 }}
+            step="0.01"
+            min="0"
+            placeholder="как общая"
+            value={formData.minProfitWb}
+            onChange={(e) => handleChange('minProfitWb', e.target.value)}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            Для расчёта мин. цены Wildberries (пусто — общая)
+          </div>
+        </div>
+
+        <div className="col-md-3">
+          <label className="form-label" htmlFor="minProfitYm">Мин. наценка Я.Маркет, ₽</label>
+          <input
+            id="minProfitYm"
+            type="number"
+            className="form-control form-control-sm"
+            style={{ maxWidth: 200 }}
+            step="0.01"
+            min="0"
+            placeholder="как общая"
+            value={formData.minProfitYm}
+            onChange={(e) => handleChange('minProfitYm', e.target.value)}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+            Для расчёта мин. цены Яндекс.Маркет (пусто — общая)
           </div>
         </div>
       </div>

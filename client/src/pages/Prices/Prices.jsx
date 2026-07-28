@@ -24,7 +24,7 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileKitsEnabled } from '../../utils/profileFlags.js';
+import { isProfileBoolFlag, isProfileKitsEnabled } from '../../utils/profileFlags.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters, resolveProductVolumeLiters } from '../../utils/productVolume.js';
 
@@ -358,6 +358,7 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
 export function Prices() {
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
+  const allowPrivateOrders = isProfileBoolFlag(profile?.allow_private_orders);
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
   const { categories } = useCategories();
   const { brands } = useBrands();
@@ -1618,6 +1619,7 @@ export function Prices() {
         })()}
         wbAcquiringPercent={wbAcquiringPercent}
         wbGemServicesPercent={wbGemServicesPercent}
+        allowPrivateOrders={allowPrivateOrders}
       />
 
       {/* Модалка: товары акции Ozon — участвующие и доступные к акции */}

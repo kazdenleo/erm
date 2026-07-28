@@ -1263,6 +1263,18 @@ class ProductsRepositoryPG {
         product.cost = product.cost != null && !isNaN(Number(product.cost)) ? Number(product.cost) : null;
         // Маппинг min_price -> minPrice для фронтенда
         product.minPrice = product.min_price != null && !isNaN(Number(product.min_price)) ? Number(product.min_price) : 50;
+        product.minProfitOzon =
+          product.min_profit_ozon != null && !isNaN(Number(product.min_profit_ozon))
+            ? Number(product.min_profit_ozon)
+            : null;
+        product.minProfitWb =
+          product.min_profit_wb != null && !isNaN(Number(product.min_profit_wb))
+            ? Number(product.min_profit_wb)
+            : null;
+        product.minProfitYm =
+          product.min_profit_ym != null && !isNaN(Number(product.min_profit_ym))
+            ? Number(product.min_profit_ym)
+            : null;
         product.additionalExpenses =
           product.additional_expenses != null && !isNaN(Number(product.additional_expenses))
             ? Number(product.additional_expenses)
@@ -1724,6 +1736,18 @@ class ProductsRepositoryPG {
     product.sku_wb = null;
     product.sku_ym = null;
     product.minPrice = product.min_price != null && !isNaN(Number(product.min_price)) ? Number(product.min_price) : 50;
+    product.minProfitOzon =
+      product.min_profit_ozon != null && !isNaN(Number(product.min_profit_ozon))
+        ? Number(product.min_profit_ozon)
+        : null;
+    product.minProfitWb =
+      product.min_profit_wb != null && !isNaN(Number(product.min_profit_wb))
+        ? Number(product.min_profit_wb)
+        : null;
+    product.minProfitYm =
+      product.min_profit_ym != null && !isNaN(Number(product.min_profit_ym))
+        ? Number(product.min_profit_ym)
+        : null;
     product.additionalExpenses =
       product.additional_expenses != null && !isNaN(Number(product.additional_expenses))
         ? Number(product.additional_expenses)
@@ -2286,6 +2310,25 @@ class ProductsRepositoryPG {
         throw new Error('INSERT INTO products не вернул строку (RETURNING *). Проверьте наличие колонки product_type и миграции.');
       }
 
+      const profitOrNull = (v) =>
+        v != null && v !== '' && !isNaN(Number(v)) ? Number(v) : null;
+      const minProfitOzon = profitOrNull(productData.minProfitOzon ?? productData.min_profit_ozon);
+      const minProfitWb = profitOrNull(productData.minProfitWb ?? productData.min_profit_wb);
+      const minProfitYm = profitOrNull(productData.minProfitYm ?? productData.min_profit_ym);
+      if (minProfitOzon != null || minProfitWb != null || minProfitYm != null) {
+        await client.query(
+          `UPDATE products
+           SET min_profit_ozon = COALESCE($2, min_profit_ozon),
+               min_profit_wb = COALESCE($3, min_profit_wb),
+               min_profit_ym = COALESCE($4, min_profit_ym)
+           WHERE id = $1`,
+          [product.id, minProfitOzon, minProfitWb, minProfitYm]
+        );
+        if (minProfitOzon != null) product.min_profit_ozon = minProfitOzon;
+        if (minProfitWb != null) product.min_profit_wb = minProfitWb;
+        if (minProfitYm != null) product.min_profit_ym = minProfitYm;
+      }
+
       await client.query(
         `INSERT INTO product_warehouse_stock (product_id, warehouse_id, quantity)
          SELECT $1, w.id, 0
@@ -2492,6 +2535,16 @@ class ProductsRepositoryPG {
           ? Number(updates.minPrice)
           : 50);
       }
+
+      const mapNullableProfit = (camel, snake) => {
+        if (!updates.hasOwnProperty(camel) && !updates.hasOwnProperty(snake)) return;
+        const raw = updates.hasOwnProperty(camel) ? updates[camel] : updates[snake];
+        updateFields.push(`${snake} = $${paramIndex++}`);
+        params.push(raw != null && raw !== '' && !isNaN(Number(raw)) ? Number(raw) : null);
+      };
+      mapNullableProfit('minProfitOzon', 'min_profit_ozon');
+      mapNullableProfit('minProfitWb', 'min_profit_wb');
+      mapNullableProfit('minProfitYm', 'min_profit_ym');
 
       if (updates.hasOwnProperty('additionalExpenses') || updates.hasOwnProperty('additional_expenses')) {
         updateFields.push(`additional_expenses = $${paramIndex++}`);

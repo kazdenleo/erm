@@ -18,6 +18,7 @@ import path from 'path';
 import repositoryFactory from '../config/repository-factory.js';
 import { calculateMinPrice } from './min-price-calculator.service.js';
 import { applyOzonV5ItemToCalculator } from './ozon-v5-item-calculator.js';
+import { resolveMarketplaceMinProfit } from '../utils/marketplaceMinProfit.js';
 import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js';
 import { applyOzonAdsPromotion } from '../utils/ozonAdsPromotion.js';
 import ozonPerformanceAdsService from './ozonPerformanceAds.service.js';
@@ -3121,8 +3122,7 @@ class PricesService {
       ...(options.useCalculatorCache ? { source: 'cache' } : {}),
       integrationScope,
     };
-    const minProfitRaw = (product.min_price != null && product.min_price !== '' && !isNaN(Number(product.min_price))) ? Number(product.min_price) : null;
-    const minProfit = minProfitRaw != null ? minProfitRaw : 50;
+    const minProfitDefault = resolveMarketplaceMinProfit(product, null, 50);
     if (basePrice <= 0) {
       errors.wb = 'Нет себестоимости для расчёта минимальной цены WB.';
       return { errors };
@@ -3204,7 +3204,13 @@ class PricesService {
               );
               calculator.acquiring = ozonAcquiringPercent;
             }
-            const price = calculateMinPrice(basePrice, calculator, 'ozon', minProfit, product);
+            const price = calculateMinPrice(
+              basePrice,
+              calculator,
+              'ozon',
+              resolveMarketplaceMinProfit(product, 'ozon', minProfitDefault),
+              product
+            );
             if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, calculator);
             else errors.ozon = 'Не удалось рассчитать минимальную цену Ozon';
           }
@@ -3245,7 +3251,15 @@ class PricesService {
               meta: { productId, offerId: skuWb },
             });
           } else {
-            const price = calculateMinPrice(basePrice, data.calculator, 'wb', minProfit, product, wbAcquiringPercent, wbGemServicesPercent);
+            const price = calculateMinPrice(
+              basePrice,
+              data.calculator,
+              'wb',
+              resolveMarketplaceMinProfit(product, 'wb', minProfitDefault),
+              product,
+              wbAcquiringPercent,
+              wbGemServicesPercent
+            );
             console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: price=${price}`);
             if (price != null) {
               await this.saveProductMarketplacePrice(productId, 'wb', price, data.calculator);
@@ -3290,7 +3304,13 @@ class PricesService {
               meta: { productId, offerId: skuYm },
             });
           } else {
-            const price = calculateMinPrice(basePrice, data.calculator, 'ym', minProfit, product);
+            const price = calculateMinPrice(
+              basePrice,
+              data.calculator,
+              'ym',
+              resolveMarketplaceMinProfit(product, 'ym', minProfitDefault),
+              product
+            );
             if (price != null) await this.saveProductMarketplacePrice(productId, 'ym', price, data.calculator);
             else errors.ym = 'Не удалось рассчитать минимальную цену YM';
           }

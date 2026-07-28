@@ -8,6 +8,7 @@ import { Modal } from '../common/Modal/Modal';
 import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters } from '../../utils/productVolume.js';
+import { privateClientMinPrice, resolveMarketplaceMinProfit } from '../../utils/marketplaceMinProfit.js';
 import './PriceDetailsModal.css';
 
 export function PriceDetailsModal({
@@ -21,6 +22,7 @@ export function PriceDetailsModal({
   wbGemServicesPercent = null,
   ozonAcquiringPercent = null,
   taxProfile = null,
+  allowPrivateOrders = false,
 }) {
   if (!isOpen || !product || !marketplace) {
     return null;
@@ -700,14 +702,30 @@ export function PriceDetailsModal({
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">Минимальная чистая прибыль:</span>
               <span className="price-breakdown-value" style={{color: '#10b981'}}>
-                {product?.minPrice != null && product.minPrice !== '' && !isNaN(Number(product.minPrice))
-                  ? `+${Number(product.minPrice).toFixed(2)} ₽`
-                  : '— не указана'}
-                {product?.minPrice != null && product.minPrice !== '' && !isNaN(Number(product.minPrice)) && (
-                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                    = {Number(product.minPrice).toFixed(2)} ₽ (целевая чистая прибыль после налогов, из карточки товара)
-                  </div>
-                )}
+                {(() => {
+                  const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
+                  if (targetProfit == null) return '— не указана';
+                  return `+${Number(targetProfit).toFixed(2)} ₽`;
+                })()}
+                {(() => {
+                  const targetProfit = resolveMarketplaceMinProfit(product, marketplace, null);
+                  if (targetProfit == null) return null;
+                  const mpLabel =
+                    marketplace === 'ozon' ? 'Ozon' : marketplace === 'wb' ? 'WB' : marketplace === 'ym' ? 'Я.Маркет' : marketplace;
+                  const specific =
+                    marketplace === 'ozon'
+                      ? product?.minProfitOzon ?? product?.min_profit_ozon
+                      : marketplace === 'wb'
+                        ? product?.minProfitWb ?? product?.min_profit_wb
+                        : product?.minProfitYm ?? product?.min_profit_ym;
+                  const fromMp = specific != null && specific !== '' && !isNaN(Number(specific));
+                  return (
+                    <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
+                      = {Number(targetProfit).toFixed(2)} ₽ (цель после налогов
+                      {fromMp ? ` · ${mpLabel}` : ' · общая наценка'})
+                    </div>
+                  );
+                })()}
               </span>
             </div>
           </div>
@@ -771,6 +789,17 @@ export function PriceDetailsModal({
               </div>
             </span>
           </div>
+          {allowPrivateOrders && privateClientMinPrice(product) != null && (
+            <div className="price-details-final-row" style={{ marginTop: '12px' }}>
+              <span className="price-details-final-label">Цена для частных клиентов:</span>
+              <span className="price-details-final-value">
+                {privateClientMinPrice(product).toFixed(2)} ₽
+                <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px', fontStyle: 'italic'}}>
+                  Себестоимость + доп. расходы + общая мин. наценка (без комиссий МП)
+                </div>
+              </span>
+            </div>
+          )}
         </div>
 
         {resolvedCalculatorData.categoryCommission && (
