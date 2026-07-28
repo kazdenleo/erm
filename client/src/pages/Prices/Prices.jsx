@@ -60,6 +60,16 @@ function ozonSuggestedEntryPrice(p) {
   return null;
 }
 
+/**
+ * Цена по акции для UI: у уже участвующих — action_price;
+ * у «доступных к акции» Ozon отдаёт action_price=0 — показываем цену входа.
+ */
+function ozonDisplayActionPrice(p) {
+  const ap = Number(p?.action_price);
+  if (Number.isFinite(ap) && ap > 0) return ap;
+  return ozonSuggestedEntryPrice(p);
+}
+
 // Функция расчета минимальной цены на основе комиссий. Только фактические данные, без значений по умолчанию.
 function calculateMinPrice(basePrice, calculator, marketplace, minProfit, product = null, wbAcquiringPercent = null, wbGemServicesPercent = null) {
   const basePriceNum = Number(basePrice) || 0;
@@ -1702,7 +1712,9 @@ export function Prices() {
                       <th>ID Ozon</th>
                       <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
                       <th>Цена, ₽</th>
-                      <th>Цена по акции, ₽</th>
+                      <th title="У участвующих — текущая цена в акции. У доступных (ещё не в акции) Ozon отдаёт 0 — показываем предлагаемую цену входа">
+                        Цена по акции, ₽
+                      </th>
                       <th title="Цена выше рекомендуемой">⚠ Превышена</th>
                       <th title="Для обычных акций — alert_max_action_price. Для эластичного бустинга Ozon отдаёт 0 в этом поле; берём max_action_price / цену мин. бустинга">
                         Предлагаемая цена входа, ₽
@@ -1752,7 +1764,7 @@ export function Prices() {
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
                         <td style={{ color: 'var(--primary)' }}>{p.min_price_ozon != null ? `${p.min_price_ozon} ₽` : '—'}</td>
                         <td>{p.price != null ? `${p.price} ₽` : '—'}</td>
-                        <td>{formatOzonActionRub(p.action_price)}</td>
+                        <td>{formatOzonActionRub(ozonDisplayActionPrice(p))}</td>
                         <td title={p.alert_max_action_price_failed ? 'Цена выше рекомендуемой, товар может быть исключён' : ''}>{p.alert_max_action_price_failed ? '⚠ Да' : '—'}</td>
                         <td title={Number(p.alert_max_action_price) > 0 ? 'alert_max_action_price' : 'Для эластичного бустинга: max_action_price / price_min_elastic'}>
                           {formatOzonActionRub(ozonSuggestedEntryPrice(p))}
@@ -1792,7 +1804,9 @@ export function Prices() {
                       <th>ID Ozon</th>
                       <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
                       <th>Цена, ₽</th>
-                      <th>Цена по акции, ₽</th>
+                      <th title="У участвующих — текущая цена в акции. У доступных (ещё не в акции) Ozon отдаёт 0 — показываем предлагаемую цену входа">
+                        Цена по акции, ₽
+                      </th>
                       <th title="Цена выше рекомендуемой">⚠ Превышена</th>
                       <th title="Для обычных акций — alert_max_action_price. Для эластичного бустинга Ozon отдаёт 0 в этом поле; берём max_action_price / цену мин. бустинга">
                         Предлагаемая цена входа, ₽
@@ -1816,7 +1830,7 @@ export function Prices() {
                         <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
                         <td style={{ color: 'var(--primary)' }}>{p.min_price_ozon != null ? `${p.min_price_ozon} ₽` : '—'}</td>
                         <td>{p.price != null ? `${p.price} ₽` : '—'}</td>
-                        <td>{formatOzonActionRub(p.action_price)}</td>
+                        <td>{formatOzonActionRub(ozonDisplayActionPrice(p))}</td>
                         <td title={p.alert_max_action_price_failed ? 'Цена выше рекомендуемой' : ''}>{p.alert_max_action_price_failed ? '⚠ Да' : '—'}</td>
                         <td title={Number(p.alert_max_action_price) > 0 ? 'alert_max_action_price' : 'Для эластичного бустинга: max_action_price / price_min_elastic'}>
                           {formatOzonActionRub(ozonSuggestedEntryPrice(p))}
