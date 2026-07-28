@@ -119,6 +119,18 @@ async function upsertCommissionToDb(marketplace, categoryId, data, source = 'man
   const id = mp === 'ozon' ? normalizeOzonCategoryId(categoryId) : normalizeYmCategoryId(categoryId);
   if (!id) return;
   const schemes = Array.isArray(data?.schemes) ? data.schemes : [];
+  // Не затираем уже хорошие комиссии пустым ответом (сбой API / нет габаритов у образца)
+  if (schemes.length === 0) {
+    const existing = await readCommissionsFromDb(mp, [id]);
+    if (existing[id]?.schemes?.length) {
+      logger.warn('[categoryMpCommissions] skip empty overwrite', {
+        marketplace: mp,
+        categoryId: id,
+        note: data?.note,
+      });
+      return;
+    }
+  }
   await query(
     `INSERT INTO marketplace_category_commission_cache
        (marketplace, category_id, schemes, note, sample_offer_id, source, updated_at)
@@ -151,53 +163,83 @@ async function getCacheMeta() {
   }
 }
 
+/**
+ * Сопоставления ERP-категорий → id категории МП (+ user_category_id для образца товара).
+ * @returns {{ ozon: Array<{ id: string, userCategoryId: number|null }>, ym: Array<{ id: string, userCategoryId: number|null }> }}
+ */
 async function collectDistinctMappedCategoryIds() {
   const ozonRes = await query(
     `
-    SELECT DISTINCT TRIM(val) AS id
+    SELECT DISTINCT ON (norm_id)
+      norm_id AS id,
+      user_category_id
     FROM (
-      SELECT uc.marketplace_mappings->>'ozon' AS val
+      SELECT
+        REPLACE(TRIM(uc.marketplace_mappings->>'ozon'), 'ozon_', '') AS norm_id,
+        uc.id AS user_category_id
       FROM user_categories uc
       WHERE uc.marketplace_mappings->>'ozon' IS NOT NULL
         AND TRIM(uc.marketplace_mappings->>'ozon') <> ''
-      UNION
-      SELECT c.marketplace_category_id AS val
+      UNION ALL
+      SELECT
+        REPLACE(TRIM(c.marketplace_category_id), 'ozon_', '') AS norm_id,
+        NULL::bigint AS user_category_id
       FROM category_mappings cm
       JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ozon'
       WHERE cm.marketplace = 'ozon'
         AND c.marketplace_category_id IS NOT NULL
         AND TRIM(c.marketplace_category_id) <> ''
     ) t
-    WHERE val IS NOT NULL AND TRIM(val) <> ''
+    WHERE norm_id IS NOT NULL AND TRIM(norm_id) <> ''
+    ORDER BY norm_id, user_category_id NULLS LAST
     `
   );
   const ymRes = await query(
     `
-    SELECT DISTINCT TRIM(val) AS id
+    SELECT DISTINCT ON (norm_id)
+      norm_id AS id,
+      user_category_id
     FROM (
-      SELECT uc.marketplace_mappings->>'ym' AS val
+      SELECT
+        TRIM(uc.marketplace_mappings->>'ym') AS norm_id,
+        uc.id AS user_category_id
       FROM user_categories uc
       WHERE uc.marketplace_mappings->>'ym' IS NOT NULL
         AND TRIM(uc.marketplace_mappings->>'ym') <> ''
-      UNION
-      SELECT uc.marketplace_mappings->>'yandex' AS val
+      UNION ALL
+      SELECT
+        TRIM(uc.marketplace_mappings->>'yandex') AS norm_id,
+        uc.id AS user_category_id
       FROM user_categories uc
       WHERE uc.marketplace_mappings->>'yandex' IS NOT NULL
         AND TRIM(uc.marketplace_mappings->>'yandex') <> ''
-      UNION
-      SELECT c.marketplace_category_id AS val
+      UNION ALL
+      SELECT
+        TRIM(c.marketplace_category_id) AS norm_id,
+        NULL::bigint AS user_category_id
       FROM category_mappings cm
       JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ym'
       WHERE cm.marketplace = 'ym'
         AND c.marketplace_category_id IS NOT NULL
         AND TRIM(c.marketplace_category_id) <> ''
     ) t
-    WHERE val IS NOT NULL AND TRIM(val) <> ''
+    WHERE norm_id IS NOT NULL AND TRIM(norm_id) <> ''
+    ORDER BY norm_id, user_category_id NULLS LAST
     `
   );
   return {
-    ozon: ozonRes.rows.map((r) => normalizeOzonCategoryId(r.id)).filter(Boolean),
-    ym: ymRes.rows.map((r) => normalizeYmCategoryId(r.id)).filter(Boolean),
+    ozon: ozonRes.rows
+      .map((r) => ({
+        id: normalizeOzonCategoryId(r.id),
+        userCategoryId: r.user_category_id ?? null,
+      }))
+      .filter((r) => r.id),
+    ym: ymRes.rows
+      .map((r) => ({
+        id: normalizeYmCategoryId(r.id),
+        userCategoryId: r.user_category_id ?? null,
+      }))
+      .filter((r) => r.id),
   };
 }
 
@@ -227,12 +269,18 @@ async function findOzonSampleByUserCategory(userCategoryId) {
     `
     SELECT
       p.id AS product_id,
-      TRIM(COALESCE(ps.sku, p.sku)) AS offer_id
+      TRIM(ps.sku) AS offer_id
     FROM products p
-    LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
+    JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
+    LEFT JOIN product_mp_calculator_cache cache
+      ON cache.product_id = p.id AND cache.marketplace = 'ozon' AND cache.calculator IS NOT NULL
     WHERE p.user_category_id = $1
-      AND TRIM(COALESCE(ps.sku, p.sku, '')) <> ''
-    ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
+      AND TRIM(COALESCE(ps.sku, '')) <> ''
+    ORDER BY
+      (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
+      (cache.calculator->'commissions'->'FBO'->>'percent') IS NOT NULL DESC,
+      p.updated_at DESC NULLS LAST,
+      p.id DESC
     LIMIT 1
     `,
     [userCategoryId]
@@ -250,18 +298,23 @@ async function findOzonSampleViaCategoryMappings(ozonCategoryId) {
     `
     SELECT
       p.id AS product_id,
-      TRIM(COALESCE(ps.sku, p.sku)) AS offer_id
+      TRIM(ps.sku) AS offer_id
     FROM category_mappings cm
     JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ozon'
     JOIN products p ON p.id = cm.product_id
-    LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
+    JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
+    LEFT JOIN product_mp_calculator_cache cache
+      ON cache.product_id = p.id AND cache.marketplace = 'ozon' AND cache.calculator IS NOT NULL
     WHERE cm.marketplace = 'ozon'
       AND (
         c.marketplace_category_id = ANY($1::text[])
         OR REPLACE(c.marketplace_category_id, 'ozon_', '') = ANY($1::text[])
       )
-      AND TRIM(COALESCE(ps.sku, p.sku, '')) <> ''
-    ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
+      AND TRIM(COALESCE(ps.sku, '')) <> ''
+    ORDER BY
+      (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
+      p.updated_at DESC NULLS LAST,
+      p.id DESC
     LIMIT 1
     `,
     [variants]
@@ -279,13 +332,18 @@ async function findOzonSampleViaUserCategoryMapping(ozonCategoryId) {
     `
     SELECT
       p.id AS product_id,
-      TRIM(COALESCE(ps.sku, p.sku)) AS offer_id
+      TRIM(ps.sku) AS offer_id
     FROM user_categories uc
     JOIN products p ON p.user_category_id = uc.id
-    LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
+    JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
+    LEFT JOIN product_mp_calculator_cache cache
+      ON cache.product_id = p.id AND cache.marketplace = 'ozon' AND cache.calculator IS NOT NULL
     WHERE uc.marketplace_mappings->>'ozon' = ANY($1::text[])
-      AND TRIM(COALESCE(ps.sku, p.sku, '')) <> ''
-    ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
+      AND TRIM(COALESCE(ps.sku, '')) <> ''
+    ORDER BY
+      (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
+      p.updated_at DESC NULLS LAST,
+      p.id DESC
     LIMIT 1
     `,
     [variants]
@@ -364,7 +422,7 @@ async function getOzonCategoryCommissionsLive(ozonCategoryId, scope, userCategor
     note:
       schemes.length === 0
         ? 'Комиссия не получена из калькулятора Ozon (проверьте артикул и интеграцию)'
-        : `Как в расчёте цен (товар ${sample.offer_id})`,
+        : `Из API Ozon v5 (товар ${sample.offer_id}). В расчёте мин. цен — FBS; FBO справочно (как WB показывает FBO для мин. цен).`,
     sampleOfferId: sample.offer_id,
   };
 
@@ -424,15 +482,21 @@ async function findYmSampleViaCategoryMappings(ymCategoryId) {
     `
     SELECT
       p.id AS product_id,
-      TRIM(COALESCE(ps.sku, p.sku)) AS offer_id
+      TRIM(ps.sku) AS offer_id
     FROM category_mappings cm
     JOIN categories c ON c.id = cm.category_id AND c.marketplace = 'ym'
     JOIN products p ON p.id = cm.product_id
-    LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ym'
+    JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ym'
+    LEFT JOIN product_mp_calculator_cache cache
+      ON cache.product_id = p.id AND cache.marketplace = 'ym' AND cache.calculator IS NOT NULL
     WHERE cm.marketplace = 'ym'
       AND TRIM(c.marketplace_category_id) = $1
-      AND TRIM(COALESCE(ps.sku, p.sku, '')) <> ''
-    ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
+      AND TRIM(COALESCE(ps.sku, '')) <> ''
+    ORDER BY
+      (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
+      (p.length IS NOT NULL AND p.width IS NOT NULL AND p.height IS NOT NULL AND p.weight IS NOT NULL) DESC,
+      p.updated_at DESC NULLS LAST,
+      p.id DESC
     LIMIT 1
     `,
     [id]
@@ -450,13 +514,19 @@ async function findYmSampleViaUserCategoryMapping(ymCategoryId) {
     `
     SELECT
       p.id AS product_id,
-      TRIM(COALESCE(ps.sku, p.sku)) AS offer_id
+      TRIM(ps.sku) AS offer_id
     FROM user_categories uc
     JOIN products p ON p.user_category_id = uc.id
-    LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ym'
+    JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ym'
+    LEFT JOIN product_mp_calculator_cache cache
+      ON cache.product_id = p.id AND cache.marketplace = 'ym' AND cache.calculator IS NOT NULL
     WHERE uc.marketplace_mappings->>'ym' = $1
-      AND TRIM(COALESCE(ps.sku, p.sku, '')) <> ''
-    ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
+      AND TRIM(COALESCE(ps.sku, '')) <> ''
+    ORDER BY
+      (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
+      (p.length IS NOT NULL AND p.width IS NOT NULL AND p.height IS NOT NULL AND p.weight IS NOT NULL) DESC,
+      p.updated_at DESC NULLS LAST,
+      p.id DESC
     LIMIT 1
     `,
     [id]
@@ -519,7 +589,9 @@ function ymCommissionResultFromCalculator(calc, sampleOfferId) {
   if (!schemes.length) return null;
   return {
     schemes,
-    note: sampleOfferId ? `Как в расчёте цен (товар ${sampleOfferId})` : null,
+    note: sampleOfferId
+      ? `Из тарифа YM FEE (товар ${sampleOfferId}). В расчёте мин. цен — FBS.`
+      : null,
     sampleOfferId: sampleOfferId || null,
   };
 }
@@ -530,12 +602,18 @@ async function findYmSampleByUserCategory(userCategoryId) {
     `
     SELECT
       p.id AS product_id,
-      TRIM(COALESCE(ps.sku, p.sku)) AS offer_id
+      TRIM(ps.sku) AS offer_id
     FROM products p
-    LEFT JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ym'
+    JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ym'
+    LEFT JOIN product_mp_calculator_cache cache
+      ON cache.product_id = p.id AND cache.marketplace = 'ym' AND cache.calculator IS NOT NULL
     WHERE p.user_category_id = $1
-      AND TRIM(COALESCE(ps.sku, p.sku, '')) <> ''
-    ORDER BY p.updated_at DESC NULLS LAST, p.id DESC
+      AND TRIM(COALESCE(ps.sku, '')) <> ''
+    ORDER BY
+      (cache.calculator->'commissions'->'FBS'->>'percent') IS NOT NULL DESC,
+      (p.length IS NOT NULL AND p.width IS NOT NULL AND p.height IS NOT NULL AND p.weight IS NOT NULL) DESC,
+      p.updated_at DESC NULLS LAST,
+      p.id DESC
     LIMIT 1
     `,
     [userCategoryId]
@@ -661,17 +739,18 @@ async function getYmCategoryCommissionsLive(ymCategoryId, scope, userCategoryId 
     return fromDb[id];
   }
 
-  if (!sample?.offer_id) {
-    const t = await fetchYmTariff(id, 'FBS', scope);
-    if (t.error) lastError = t.error;
-    if (t.percent != null && Number.isFinite(Number(t.percent))) {
-      const result = {
-        schemes: [{ ...ymProgramLabel('FBS'), percent: Number(t.percent) }],
-        note: 'Ориентировочно (эталонный товар). Добавьте товар YM в категорию — комиссия будет как в расчёте цен.',
-      };
-      setCached(YM_CACHE_NS, cacheKey, result, CACHE_TTL_MS);
-      return result;
-    }
+  // Эталонный тариф по categoryId — даже если образец есть, но без габаритов/веса
+  const t = await fetchYmTariff(id, 'FBS', scope);
+  if (t.error) lastError = t.error;
+  if (t.percent != null && Number.isFinite(Number(t.percent))) {
+    const result = {
+      schemes: [{ ...ymProgramLabel('FBS'), percent: Number(t.percent) }],
+      note: sample?.offer_id
+        ? `Тариф YM FEE по категории (товар ${sample.offer_id} без полного калькулятора). В расчёте цен — после заполнения габаритов/веса.`
+        : 'Ориентировочно (эталонный товар). Добавьте товар YM с габаритами — комиссия будет как в расчёте цен.',
+    };
+    setCached(YM_CACHE_NS, cacheKey, result, CACHE_TTL_MS);
+    return result;
   }
 
   const result = {
@@ -743,14 +822,14 @@ async function refreshAllCommissions(scope, source = 'manual') {
   });
 
   let updated = 0;
-  for (const id of ozon) {
-    const data = await getOzonCategoryCommissionsLive(id, scope, null);
-    await upsertCommissionToDb('ozon', id, data, source);
+  for (const item of ozon) {
+    const data = await getOzonCategoryCommissionsLive(item.id, scope, item.userCategoryId);
+    await upsertCommissionToDb('ozon', item.id, data, source);
     updated += 1;
   }
-  for (const id of ym) {
-    const data = await getYmCategoryCommissionsLive(id, scope);
-    await upsertCommissionToDb('ym', id, data, source);
+  for (const item of ym) {
+    const data = await getYmCategoryCommissionsLive(item.id, scope, item.userCategoryId);
+    await upsertCommissionToDb('ym', item.id, data, source);
     updated += 1;
   }
 

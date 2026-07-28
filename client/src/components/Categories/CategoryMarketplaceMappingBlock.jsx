@@ -19,7 +19,8 @@ function mpBadgeClass(marketplace) {
 }
 
 export function CommissionSchemesRow({ schemes, note, priceCalcSchemeKey = null }) {
-  if (!schemes?.length && !note) return null;
+  const hasSchemes = schemes?.length > 0;
+  if (!hasSchemes && !note) return null;
   return (
     <div className="category-mp-commissions">
       {(schemes || []).map((s) => {

@@ -381,10 +381,17 @@ export function CategoryForm({ category, categories = [], allAttributes = [], ma
     const schemes = (entry?.schemes || []).map((s) => ({
       ...s,
       display: s.display ?? (s.percent != null ? `${s.percent}%` : null),
-    }));
+    })).filter((s) => s.display);
+    let note = entry?.note ?? null;
+    if (!schemes.length && !note && !mpCommissionsLoading) {
+      note =
+        mp === 'ozon' || mp === 'ym'
+          ? 'Нет данных о комиссии — нажмите «Обновить комиссии Ozon/YM из API»'
+          : null;
+    }
     return {
       schemes,
-      note: entry?.note ?? null,
+      note,
       priceCalcSchemeKey: getMpPriceCalcSchemeKey(mp),
     };
   };

@@ -19,6 +19,8 @@ import repositoryFactory from '../config/repository-factory.js';
 import { calculateMinPrice } from './min-price-calculator.service.js';
 import { applyOzonV5ItemToCalculator } from './ozon-v5-item-calculator.js';
 import { applyOzonBrandPromotionFallback } from '../utils/ozonBrandPromotion.js';
+import { applyOzonAdsPromotion } from '../utils/ozonAdsPromotion.js';
+import ozonPerformanceAdsService from './ozonPerformanceAds.service.js';
 import { extractWbWarehouseList, findWbTariffWarehouse } from '../utils/wbTariffs.js';
 import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
 import { resolveProductVolumeLiters } from '../utils/productVolume.js';
@@ -1298,6 +1300,59 @@ class PricesService {
     return applyOzonBrandPromotionFallback(calculator, brandPercent);
   }
 
+  async _enrichOzonCalculatorAdsPromotion(
+    calculator,
+    { offerId = null, integrationScope = null } = {}
+  ) {
+    if (!calculator || typeof calculator !== 'object') return calculator;
+    const oid =
+      offerId != null && String(offerId).trim() !== ''
+        ? String(offerId).trim()
+        : calculator.offer_id != null
+          ? String(calculator.offer_id).trim()
+          : null;
+    if (!oid) return calculator;
+
+    let drr = null;
+    let source = 'ads';
+    try {
+      drr = await ozonPerformanceAdsService.getDrrPercentForOffer(oid, integrationScope || {});
+    } catch (e) {
+      logger.warn('[Prices Service] Ozon ads DRR lookup failed:', e?.message || e);
+    }
+
+    if (drr == null) {
+      try {
+        const cfg = await integrationsService.getMarketplaceConfig('ozon', integrationScope || {});
+        const fallback =
+          cfg?.ozon_ads_percent ??
+          cfg?.ozonAdsPercent ??
+          cfg?.ads_promotion_percent ??
+          cfg?.adsPromotionPercent ??
+          null;
+        if (fallback != null && fallback !== '' && !Number.isNaN(Number(fallback))) {
+          drr = Number(fallback);
+          source = 'config';
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if (drr == null || Number.isNaN(Number(drr))) return calculator;
+    return applyOzonAdsPromotion(calculator, drr, source);
+  }
+
+  async _enrichOzonCalculatorForMinPrice(
+    calculator,
+    { productId = null, brandId = null, offerId = null, integrationScope = null } = {}
+  ) {
+    let calc = calculator;
+    calc = await this._enrichOzonCalculatorBrandPromotion(calc, { productId, brandId });
+    calc = await this._enrichOzonCalculatorAdsPromotion(calc, { offerId, integrationScope });
+    return calc;
+  }
+
   async _upsertMpCalculatorCache(productId, marketplace, calculator, source = 'api') {
     const sanitized = this._sanitizeCalculatorForStorage(calculator, marketplace) || calculator;
     try {
@@ -1412,8 +1467,9 @@ class PricesService {
                 [oid]
               );
               for (const pr of pidsRes.rows) {
-                const calculator = await this._enrichOzonCalculatorBrandPromotion(built.calculator, {
+                const calculator = await this._enrichOzonCalculatorForMinPrice(built.calculator, {
                   productId: pr.product_id,
+                  offerId: oid,
                 });
                 await this._upsertMpCalculatorCache(pr.product_id, 'ozon', calculator, 'batch_v5');
                 updated++;
@@ -1576,7 +1632,11 @@ class PricesService {
         }
         const cached = await this._getMpCalculatorCacheRow(pid, 'ozon');
         if (cached?.calculator) {
-          const calculator = await this._enrichOzonCalculatorBrandPromotion(cached.calculator, { productId: pid });
+          const calculator = await this._enrichOzonCalculatorForMinPrice(cached.calculator, {
+            productId: pid,
+            offerId: normalizedOfferId,
+            integrationScope: options.integrationScope || null,
+          });
           return { found: true, calculator, fromCache: true };
         }
         return {
@@ -1616,7 +1676,11 @@ class PricesService {
       const built = await applyOzonV5ItemToCalculator(item, normalizedOfferId, client_id, api_key);
       if (built.found && built.calculator) {
         const pid = await this._getProductIdByMarketplaceSku('ozon', normalizedOfferId);
-        built.calculator = await this._enrichOzonCalculatorBrandPromotion(built.calculator, { productId: pid });
+        built.calculator = await this._enrichOzonCalculatorForMinPrice(built.calculator, {
+          productId: pid,
+          offerId: normalizedOfferId,
+          integrationScope: options.integrationScope || null,
+        });
         if (pid) {
           await this._upsertMpCalculatorCache(pid, 'ozon', built.calculator, 'live_v5');
         }
@@ -2121,16 +2185,16 @@ class PricesService {
             console.log(`[Prices Service] Using kgvpSupplier as fallback for FBO: ${fboPercent}%`);
           }
           
-          // ВАЖНО: Для WB используем только FBS комиссию (kgvpMarketplace)
-          // НЕ используем FBO комиссию как fallback для FBS!
-          // Если FBS комиссия не найдена, оставляем 0 и логируем предупреждение
-          if (fbsPercent === 0) {
-            console.warn(`[Prices Service] ⚠ WARNING: FBS commission (kgvpMarketplace) not found in raw_data for category ${wbCategoryId}!`);
+          if (fboPercent === 0) {
+            console.warn(`[Prices Service] ⚠ WARNING: FBO commission (paidStorageKgvp) not found in raw_data for category ${wbCategoryId}`);
             console.warn(`[Prices Service] Available fields:`, Object.keys(rawData));
           }
+          if (fbsPercent === 0) {
+            console.warn(`[Prices Service] ⚠ WARNING: FBS commission (kgvpMarketplace) not found (reference only) for category ${wbCategoryId}`);
+          }
           
-          // Для FBO можно использовать FBS как fallback (но не наоборот!)
-          if (fbsPercent > 0 && fboPercent === 0) {
+          // Крайний fallback: если FBO нет, копируем FBS (лучше, чем 0)
+          if (fboPercent === 0 && fbsPercent > 0) {
             fboPercent = fbsPercent;
             console.log(`[Prices Service] Using FBS commission for FBO as fallback (${fboPercent}%)`);
           }
@@ -2180,85 +2244,48 @@ class PricesService {
         }
       }
       
-      // ВАЖНО: Для WB НЕ используем commission_percent как fallback для FBS!
-      // commission_percent может быть устаревшим или неправильным значением.
-      // Используем ТОЛЬКО kgvpMarketplace из raw_data для FBS комиссии.
-      if (fbsPercent === 0) {
-        console.error(`[Prices Service] ✗ ERROR: FBS commission (kgvpMarketplace) not found in raw_data for category ${wbCategoryId}!`);
-        console.error(`[Prices Service] This means the commission data is missing or incorrect.`);
-        console.error(`[Prices Service] Available data:`, {
-          has_raw_data: !!categoryCommission.raw_data,
-          commission_percent: categoryCommission.commission_percent,
-          category_id: categoryCommission.category_id
-        });
-        // НЕ используем commission_percent - он может быть неправильным!
-        // Лучше вернуть ошибку или использовать 0, чем неправильное значение
-      }
-      
-      // Если комиссия из кэша (старая структура для обратной совместимости)
-      // ИСПРАВЛЕНО: kgvpMarketplace - это FBS, а не FBO!
-      // ВАЖНО: Используем кэш ТОЛЬКО если не нашли в raw_data И category_id указан
-      if (fbsPercent === 0 && categoryCommission && categoryCommission.kgvpMarketplace !== undefined && categoryCommission.kgvpMarketplace !== null) {
-        // kgvpMarketplace - это FBS (Маркетплейс)
+      // НЕ используем commission_percent как fallback — только поля из raw_data / кэша API.
+      if (fbsPercent === 0 && categoryCommission?.kgvpMarketplace != null) {
         fbsPercent = parseFloat(categoryCommission.kgvpMarketplace || 0);
         console.log(`[Prices Service] Using cached kgvpMarketplace (FBS) value: ${fbsPercent}%`);
       }
-      if (fboPercent === 0 && categoryCommission && categoryCommission.kgvpSupplier !== undefined && categoryCommission.kgvpSupplier !== null) {
-        // kgvpSupplier - это FBO/FBW (Склад WB)
-        fboPercent = parseFloat(categoryCommission.kgvpSupplier || 0);
-        console.log(`[Prices Service] Using cached kgvpSupplier (FBO) value: ${fboPercent}%`);
+      if (fboPercent === 0 && categoryCommission?.paidStorageKgvp != null) {
+        fboPercent = parseFloat(categoryCommission.paidStorageKgvp || 0);
+        console.log(`[Prices Service] Using cached paidStorageKgvp (FBO) value: ${fboPercent}%`);
       }
-      
-      // ВАЖНО: НЕ используем commission_percent как fallback!
-      // commission_percent может быть устаревшим или неправильным значением.
-      // Для WB используем ТОЛЬКО kgvpMarketplace из raw_data или кэша для FBS комиссии.
-      if (fbsPercent === 0) {
-        console.error(`[Prices Service] ✗ ERROR: FBS commission (kgvpMarketplace) not found in raw_data or cache for category ${wbCategoryId}!`);
-        console.error(`[Prices Service] This means the commission data is missing or incorrect.`);
-        console.error(`[Prices Service] Available data:`, {
-          has_raw_data: !!categoryCommission?.raw_data,
-          commission_percent: categoryCommission?.commission_percent,
-          kgvpMarketplace_from_cache: categoryCommission?.kgvpMarketplace,
-          category_id: categoryCommission?.category_id,
-          provided_category_id: category_id
-        });
-        console.error(`[Prices Service] Cannot calculate WB price correctly without FBS commission.`);
-        // Возвращаем ошибку вместо использования неправильного commission_percent
+      // Устаревший fallback: раньше FBO ошибочно брали из kgvpSupplier (это DBS)
+      if (fboPercent === 0 && categoryCommission?.kgvpSupplier != null) {
+        fboPercent = parseFloat(categoryCommission.kgvpSupplier || 0);
+        console.warn(`[Prices Service] Fallback kgvpSupplier for FBO (prefer paidStorageKgvp): ${fboPercent}%`);
+      }
+
+      // Мин. цена WB считается по FBO/FBW (paidStorageKgvp)
+      if (fboPercent === 0) {
+        console.error(`[Prices Service] ✗ ERROR: FBO commission (paidStorageKgvp) not found for category ${wbCategoryId}`);
         return {
           found: false,
-          error: `Комиссия FBS (Маркетплейс) не найдена для категории ${wbCategoryId}. Пожалуйста, обновите категории и комиссии WB в настройках интеграции.`
+          error: `Комиссия FBO/FBW (Склад WB) не найдена для категории ${wbCategoryId}. Обновите комиссии WB в настройках интеграции.`
         };
       }
       
-      // Логируем финальные значения комиссий и источник данных
       console.log(`[Prices Service] ✓ Final commission percentages for category ${wbCategoryId}:`);
-      console.log(`[Prices Service]   FBS (Маркетплейс, kgvpMarketplace): ${fbsPercent}%`);
-      console.log(`[Prices Service]   FBO/FBW (Склад WB, paidStorageKgvp): ${fboPercent}%`);
-      console.log(`[Prices Service]   Source: raw_data.kgvpMarketplace (NOT commission_percent)`);
-      console.log(`[Prices Service]   commission_percent from DB: ${categoryCommission.commission_percent}% (NOT USED)`);
-      
-      // ВАЖНО: Логируем перед созданием calculatorData, чтобы убедиться, что используется правильная комиссия
-      console.log(`[Prices Service] ========== CREATING CALCULATOR DATA FOR ${offer_id} ==========`);
-      console.log(`[Prices Service] Commission values before creating calculatorData:`);
-      console.log(`[Prices Service]   FBS percent (kgvpMarketplace): ${fbsPercent}%`);
-      console.log(`[Prices Service]   FBO percent (paidStorageKgvp): ${fboPercent}%`);
-      console.log(`[Prices Service]   Category ID: ${wbCategoryId}`);
-      console.log(`[Prices Service]   Source: raw_data.kgvpMarketplace (NOT commission_percent)`);
+      console.log(`[Prices Service]   FBO/FBW (Склад WB, paidStorageKgvp) ← used in min-price: ${fboPercent}%`);
+      console.log(`[Prices Service]   FBS (Маркетплейс, kgvpMarketplace) reference: ${fbsPercent}%`);
       
       const calculatorData = {
         offer_id: offer_id,
         product_id: offer_id,
-        price: productCost != null && productCost > 0 ? productCost : 0, // Используем себестоимость из БД, если она есть
+        price: productCost != null && productCost > 0 ? productCost : 0,
         currency_code: 'RUB',
         commissions: {
           FBO: {
-            percent: fboPercent,
+            percent: fboPercent, // используется в расчёте мин. цены WB
             value: 0,
             delivery_amount: parseWbTariffAmount(fboLogisticsFirstLiter),
             return_amount: parseWbTariffAmount(returnDeliveryBase)
           },
           FBS: {
-            percent: fbsPercent, // ВАЖНО: Для WB используется ТОЛЬКО эта комиссия (FBS из kgvpMarketplace)
+            percent: fbsPercent, // справочно
             value: 0,
             delivery_amount: parseWbTariffAmount(fbsLogisticsFirstLiter),
             return_amount: parseWbTariffAmount(returnDeliveryExpr)
@@ -2272,7 +2299,8 @@ class PricesService {
         logistics_cost: logisticsCost,
         logistics_base: logisticsBase,
         logistics_liter: logisticsLiter,
-        volume_weight: productVolume
+        volume_weight: productVolume,
+        wb_price_scheme: 'FBO'
       };
       
       calculatorData.fullCommissions = { ...calculatorData.commissions };
@@ -2286,7 +2314,7 @@ class PricesService {
         logistics_cost: calculatorData.logistics_cost,
         fbs_commission: calculatorData.commissions.FBS?.percent,
         fbo_commission: calculatorData.commissions.FBO?.percent,
-        note: 'For WB, only FBS commission should be used in calculations'
+        note: 'For WB min-price uses FBO (paidStorageKgvp)'
       });
       console.log(`[Prices Service] =================================================`);
       
@@ -2427,7 +2455,7 @@ class PricesService {
       const length = productRow.length != null && Number(productRow.length) > 0 ? Number(productRow.length) : null;
       const width = productRow.width != null && Number(productRow.width) > 0 ? Number(productRow.width) : null;
       const height = productRow.height != null && Number(productRow.height) > 0 ? Number(productRow.height) : null;
-      const weight = productRow.weight != null && Number(productRow.weight) > 0 ? Number(productRow.weight) : null;
+      const weightRaw = productRow.weight != null && Number(productRow.weight) > 0 ? Number(productRow.weight) : null;
 
       if (length == null || width == null || height == null) {
         logger.warn('[Prices Service] getYMPrices: missing dimensions', { offer_id });
@@ -2436,18 +2464,19 @@ class PricesService {
           error: `У товара ${offer_id} не указаны габариты (длина, ширина, высота) в мм`
         };
       }
-      if (weight == null) {
+      if (weightRaw == null) {
         logger.warn('[Prices Service] getYMPrices: missing weight', { offer_id });
         return {
           found: false,
-          error: `У товара ${offer_id} не указан вес в кг`
+          error: `У товара ${offer_id} не указан вес (г) в карточке`
         };
       }
 
-      // YM API ожидает размеры в см, у нас в карточке — в мм
+      // YM API ожидает размеры в см (у нас в мм) и вес в кг (в карточке — граммы)
       const lengthCm = length / 10;
       const widthCm = width / 10;
       const heightCm = height / 10;
+      const weightKg = Math.round((weightRaw / 1000) * 1000) / 1000;
 
       const body = {
         offers: [{
@@ -2456,7 +2485,7 @@ class PricesService {
           length: Math.round(lengthCm * 100) / 100,
           width: Math.round(widthCm * 100) / 100,
           height: Math.round(heightCm * 100) / 100,
-          weight,
+          weight: weightKg,
           quantity: 1
         }],
         parameters: {
@@ -2628,6 +2657,12 @@ class PricesService {
     if (calc.brand_promotion_source) {
       out.brand_promotion_source = String(calc.brand_promotion_source);
     }
+    if (calc.ads_promotion_percent != null && !isNaN(Number(calc.ads_promotion_percent))) {
+      out.ads_promotion_percent = Number(calc.ads_promotion_percent);
+    }
+    if (calc.ads_promotion_source) {
+      out.ads_promotion_source = String(calc.ads_promotion_source);
+    }
     if (marketplace === 'ym' && calc.ymTariffs) out.ymTariffs = calc.ymTariffs;
     if (!out.commissions || typeof out.commissions !== 'object') return null;
     return out;
@@ -2658,6 +2693,84 @@ class PricesService {
       }
     }
     logger.info(`[Prices Service] Saved bulk prices for ${pricesList.length} products`);
+  }
+
+  /**
+   * Сохранить фактическую цену / цену до скидки / % скидки по МП.
+   * @param {Array<{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent? }>} items
+   */
+  async saveCommercialPrices(items) {
+    if (!Array.isArray(items) || items.length === 0) return { saved: 0 };
+    let saved = 0;
+    for (const item of items) {
+      const productId = Number(item.productId ?? item.product_id);
+      const marketplace = String(item.marketplace || '').trim().toLowerCase();
+      if (!Number.isFinite(productId) || productId < 1) continue;
+      if (!['ozon', 'wb', 'ym'].includes(marketplace)) continue;
+
+      const hasSelling = item.sellingPrice !== undefined || item.selling_price !== undefined;
+      const hasBefore =
+        item.priceBeforeDiscount !== undefined || item.price_before_discount !== undefined;
+      const hasDiscount =
+        item.discountPercent !== undefined || item.discount_percent !== undefined;
+      if (!hasSelling && !hasBefore && !hasDiscount) continue;
+
+      const parseOpt = (v) => {
+        if (v === null || v === '') return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : undefined;
+      };
+
+      const sellingRaw = parseOpt(item.sellingPrice ?? item.selling_price);
+      const beforeRaw = parseOpt(item.priceBeforeDiscount ?? item.price_before_discount);
+      const discountRaw = parseOpt(item.discountPercent ?? item.discount_percent);
+
+      // Убедимся, что строка МП существует (min_price NOT NULL — ставим 0, если ещё не считали).
+      await query(
+        `INSERT INTO product_marketplace_prices (product_id, marketplace, min_price, updated_at)
+         VALUES ($1, $2, 0, CURRENT_TIMESTAMP)
+         ON CONFLICT (product_id, marketplace) DO NOTHING`,
+        [productId, marketplace]
+      );
+
+      const sets = [];
+      const params = [];
+      let i = 1;
+
+      if (hasSelling && sellingRaw !== undefined) {
+        sets.push(`selling_price = $${i++}`);
+        params.push(sellingRaw == null ? null : Number(sellingRaw).toFixed(2));
+        sets.push(`selling_price_manual = $${i++}`);
+        params.push(sellingRaw != null);
+        if (sellingRaw != null) {
+          sets.push(`pricing_strategy_id = NULL`);
+        }
+      }
+      if (hasBefore && beforeRaw !== undefined) {
+        sets.push(`price_before_discount = $${i++}`);
+        params.push(beforeRaw == null ? null : Number(beforeRaw).toFixed(2));
+      }
+      if (hasDiscount && discountRaw !== undefined) {
+        let d = discountRaw;
+        if (d != null) {
+          d = Math.max(0, Math.min(99.99, d));
+        }
+        sets.push(`discount_percent = $${i++}`);
+        params.push(d == null ? null : Number(d).toFixed(2));
+      }
+      if (!sets.length) continue;
+      sets.push('updated_at = CURRENT_TIMESTAMP');
+      params.push(productId, marketplace);
+      await query(
+        `UPDATE product_marketplace_prices
+         SET ${sets.join(', ')}
+         WHERE product_id = $${i++} AND marketplace = $${i}`,
+        params
+      );
+      saved += 1;
+    }
+    logger.info(`[Prices Service] Saved commercial prices: ${saved} rows`);
+    return { saved };
   }
 
   /**
@@ -2798,9 +2911,11 @@ class PricesService {
         const ozonResult = await this.getOzonPrices(skuOzon, mpOpts);
         const data = ozonResult?.data ?? ozonResult;
         if (data?.found && data?.calculator) {
-          const calculator = await this._enrichOzonCalculatorBrandPromotion(data.calculator, {
+          const calculator = await this._enrichOzonCalculatorForMinPrice(data.calculator, {
             productId,
             brandId: product.brand_id ?? product.brandId,
+            offerId: skuOzon,
+            integrationScope,
           });
           const price = calculateMinPrice(basePrice, calculator, 'ozon', minProfit, product);
           if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, calculator);
@@ -2872,6 +2987,15 @@ class PricesService {
     }
 
     logger.info(`[Prices Service] Recalculated and saved min prices for product ${productId}`);
+    try {
+      const { recalculateSellingPricesForProduct } = await import('./pricingStrategy.service.js');
+      await recalculateSellingPricesForProduct(productId);
+    } catch (e) {
+      logger.warn('[Prices Service] strategy selling price recalc failed', {
+        productId,
+        message: e?.message || String(e),
+      });
+    }
     if (!options.skipMinPricePush) {
       try {
         schedulePushForProduct(productId);
