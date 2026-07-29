@@ -25,7 +25,7 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileBoolFlag, isProfileKitsEnabled, isProfileFbsEnabled, isProfileFboEnabled } from '../../utils/profileFlags.js';
+import { isProfileKitsEnabled, isProfileFbsEnabled, isProfileFboEnabled } from '../../utils/profileFlags.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters, resolveProductVolumeLiters } from '../../utils/productVolume.js';
 import { computeTaxesAndNetProfit, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
@@ -362,7 +362,6 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
 export function Prices() {
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
-  const allowPrivateOrders = isProfileBoolFlag(profile?.allow_private_orders);
   const showFbsPrices = isProfileFbsEnabled(profile);
   const showFboPrices = isProfileFboEnabled(profile);
   const minColsPerMp = (showFbsPrices ? 1 : 0) + (showFboPrices ? 1 : 0) || 1;
@@ -1447,7 +1446,6 @@ export function Prices() {
         wbAcquiringPercent={wbAcquiringPercent}
         ozonAcquiringPercent={ozonAcquiringPercent}
         wbGemServicesPercent={wbGemServicesPercent}
-        allowPrivateOrders={allowPrivateOrders}
         taxProfile={taxProfileForProduct(
           organizations,
           priceModal.product,

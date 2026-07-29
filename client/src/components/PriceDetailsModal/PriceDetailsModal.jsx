@@ -9,7 +9,6 @@ import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile, taxProfileForP
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters } from '../../utils/productVolume.js';
 import {
-  privateClientMinPrice,
   privateClientPriceParts,
   resolveMarketplaceMinProfit,
 } from '../../utils/marketplaceMinProfit.js';
@@ -27,7 +26,6 @@ export function PriceDetailsModal({
   wbGemServicesPercent = null,
   ozonAcquiringPercent = null,
   taxProfile = null,
-  allowPrivateOrders = false,
 }) {
   if (!isOpen || !product || !marketplace) {
     return null;
@@ -940,22 +938,6 @@ export function PriceDetailsModal({
               </div>
             </span>
           </div>
-          {(() => {
-            const privateTaxProfile = taxProfile || taxProfileForProduct(null, product);
-            const privatePrice = privateClientMinPrice(product, privateTaxProfile);
-            if (privatePrice == null) return null;
-            return (
-              <div className="price-details-final-row" style={{ marginTop: '12px' }}>
-                <span className="price-details-final-label">Цена для частных клиентов:</span>
-                <span className="price-details-final-value">
-                  {privatePrice.toFixed(2)} ₽
-                  <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px', fontStyle: 'italic' }}>
-                    С учётом налогов организации; без комиссий МП
-                  </div>
-                </span>
-              </div>
-            );
-          })()}
         </div>
 
         {resolvedCalculatorData.categoryCommission && (
