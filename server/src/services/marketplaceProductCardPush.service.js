@@ -11,6 +11,12 @@ import {
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
+import {
+  gramsToKg,
+  mmToCm,
+  resolveCardTextForPush,
+  shouldPushDimensions,
+} from '../utils/productMpFieldLinks.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -129,9 +135,8 @@ async function pushOzonCard(product, categoryMm, ctx) {
   }
 
   const name =
-    trimOrNull(product.mp_ozon_name) || trimOrNull(product.name) || offerId;
-  const description =
-    trimOrNull(product.mp_ozon_description) || trimOrNull(product.description) || '';
+    resolveCardTextForPush(product, 'ozon', 'name') || offerId;
+  const description = resolveCardTextForPush(product, 'ozon', 'description') || '';
 
   const item = {
     offer_id: offerId,
@@ -145,14 +150,16 @@ async function pushOzonCard(product, categoryMm, ctx) {
   if (pid != null && Number.isFinite(Number(pid))) {
     item.product_id = Number(pid);
   }
-  if (product.weight != null && Number(product.weight) > 0) {
-    item.weight = Number(product.weight);
-  }
-  if (product.length && product.width && product.height) {
-    item.dimension_unit = 'mm';
-    item.depth = Number(product.length);
-    item.width = Number(product.width);
-    item.height = Number(product.height);
+  if (shouldPushDimensions(product, 'ozon')) {
+    if (product.weight != null && Number(product.weight) > 0) {
+      item.weight = Number(product.weight);
+    }
+    if (product.length && product.width && product.height) {
+      item.dimension_unit = 'mm';
+      item.depth = Number(product.length);
+      item.width = Number(product.width);
+      item.height = Number(product.height);
+    }
   }
 
   const ozonOverride = await integrationsService.getMarketplaceConfig('ozon', {
@@ -191,14 +198,9 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
   if (!Number.isFinite(nmId) || nmId < 1) {
     return { marketplace: 'wb', ok: false, error: 'Некорректный nmId WB' };
   }
+  // subjectId нужен для создания карточки; /cards/update категорию не меняет (ограничение WB API).
   const subjectId = Number(categoryMm?.wb ?? categoryMm?.wb_subject_id ?? 0);
-  if (!Number.isFinite(subjectId) || subjectId < 1) {
-    return {
-      marketplace: 'wb',
-      ok: false,
-      error: 'В ERP-категории не задано сопоставление WB (subjectId)'
-    };
-  }
+  const hasSubjectMapping = Number.isFinite(subjectId) && subjectId >= 1;
 
   let existing = null;
   try {
@@ -211,19 +213,29 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
     logger.warn('[MP Card Push] WB fetch card before update:', e?.message);
   }
 
+  if (!existing && !hasSubjectMapping) {
+    return {
+      marketplace: 'wb',
+      ok: false,
+      error: 'В ERP-категории не задано сопоставление WB (subjectId), карточка на WB не найдена'
+    };
+  }
+
   const title =
-    trimOrNull(product.mp_wb_name) ||
-    trimOrNull(product.name) ||
+    resolveCardTextForPush(product, 'wb', 'name') ||
     (existing?.title ? String(existing.title) : null);
   const description =
-    trimOrNull(product.mp_wb_description) || trimOrNull(product.description) || '';
+    resolveCardTextForPush(product, 'wb', 'description') ||
+    (existing?.description != null ? String(existing.description) : '');
   const brand =
-    trimOrNull(product.mp_wb_brand) || trimOrNull(product.brand) || trimOrNull(existing?.brand);
+    resolveCardTextForPush(product, 'wb', 'brand') ||
+    trimOrNull(existing?.brand);
   const vendorCode =
-    trimOrNull(product.mp_wb_vendor_code) ||
+    resolveCardTextForPush(product, 'wb', 'sku') ||
     trimOrNull(existing?.vendorCode) ||
     trimOrNull(product.sku);
 
+  // update полностью перезаписывает карточку — сохраняем поля с МП, если в ERP пусто
   const card = {
     nmID: nmId,
     vendorCode: vendorCode || String(nmId),
@@ -233,10 +245,42 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
   };
 
   const chars = buildWbCharacteristics(product.wb_attributes);
-  if (chars.length > 0) card.characteristics = chars;
+  if (chars.length > 0) {
+    card.characteristics = chars;
+  } else if (Array.isArray(existing?.characteristics) && existing.characteristics.length > 0) {
+    card.characteristics = existing.characteristics
+      .map((c) => ({
+        id: Number(c?.id ?? c?.charcID ?? c?.charcId),
+        value: Array.isArray(c?.value) ? c.value : c?.value != null ? [String(c.value)] : []
+      }))
+      .filter((c) => Number.isFinite(c.id) && c.id > 0 && c.value.length > 0);
+  }
 
   if (existing?.sizes && Array.isArray(existing.sizes) && existing.sizes.length > 0) {
     card.sizes = existing.sizes;
+  }
+
+  // ERP: мм / г; WB Content API: габариты в см, weightBrutto в граммах.
+  if (shouldPushDimensions(product, 'wb')) {
+    const L = Number(product.length);
+    const W = Number(product.width);
+    const H = Number(product.height);
+    if (Number.isFinite(L) && L > 0 && Number.isFinite(W) && W > 0 && Number.isFinite(H) && H > 0) {
+      card.dimensions = {
+        length: mmToCm(L),
+        width: mmToCm(W),
+        height: mmToCm(H),
+        ...(product.weight != null && Number(product.weight) > 0
+          ? { weightBrutto: Number(product.weight) }
+          : existing?.dimensions?.weightBrutto != null
+            ? { weightBrutto: Number(existing.dimensions.weightBrutto) }
+            : {})
+      };
+    } else if (existing?.dimensions && typeof existing.dimensions === 'object') {
+      card.dimensions = existing.dimensions;
+    }
+  } else if (existing?.dimensions && typeof existing.dimensions === 'object') {
+    card.dimensions = existing.dimensions;
   }
 
   try {
@@ -244,10 +288,20 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
       profileId: ctx.profileId,
       organizationId: ctx.organizationId
     });
+    const subjectNote =
+      hasSubjectMapping &&
+      existing?.subjectID != null &&
+      Number(existing.subjectID) !== subjectId
+        ? ` (категория WB subjectId ${existing.subjectID} → ${subjectId} через API не меняется — только контент)`
+        : '';
     return {
       marketplace: 'wb',
       ok: true,
-      message: `Карточка WB (nmId ${nmId}) отправлена на обновление`
+      message: `Карточка WB (nmId ${nmId}) отправлена на обновление${subjectNote}`,
+      subjectIdUnchanged:
+        hasSubjectMapping &&
+        existing?.subjectID != null &&
+        Number(existing.subjectID) !== subjectId
     };
   } catch (e) {
     return { marketplace: 'wb', ok: false, error: e?.message || String(e) };
@@ -284,8 +338,8 @@ async function pushYandexCard(product, categoryMm, ctx) {
     return { marketplace: 'ym', ok: false, error: 'Укажите business_id в кабинете Яндекс.Маркета' };
   }
 
-  const name = trimOrNull(product.mp_ym_name) || trimOrNull(product.name);
-  const description = trimOrNull(product.mp_ym_description) || trimOrNull(product.description);
+  const name = resolveCardTextForPush(product, 'ym', 'name');
+  const description = resolveCardTextForPush(product, 'ym', 'description');
 
   const offer = { offerId };
   if (name) offer.name = name;
@@ -306,6 +360,22 @@ async function pushYandexCard(product, categoryMm, ctx) {
   const ymCategoryId = trimOrNull(categoryMm?.ym ?? categoryMm?.yandex);
   if (ymCategoryId && /^\d+$/.test(ymCategoryId)) {
     offer.marketCategoryId = Number(ymCategoryId);
+  }
+
+  // YM Partner API: length/width/height — см, weight — кг
+  if (shouldPushDimensions(product, 'ym')) {
+    const L = mmToCm(product.length);
+    const W = mmToCm(product.width);
+    const H = mmToCm(product.height);
+    const Wt = gramsToKg(product.weight);
+    if (L != null && W != null && H != null) {
+      offer.weightDimensions = {
+        length: L,
+        width: W,
+        height: H,
+        ...(Wt != null ? { weight: Wt } : {})
+      };
+    }
   }
 
   const fetch = (await import('node-fetch')).default;
@@ -455,7 +525,112 @@ export async function pushProductCardsBulk(payload, opts = {}) {
   };
 }
 
+/** Выкл: MARKETPLACE_CARD_AUTO_PUSH_ENABLED=0 */
+export function isCardAutoPushEnabled() {
+  const v = process.env.MARKETPLACE_CARD_AUTO_PUSH_ENABLED;
+  if (v == null || String(v).trim() === '') return true;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
+
+const _cardPushTimers = new Map();
+const _categoryPushTimers = new Map();
+
+/**
+ * Отложенный пуш карточки товара на МП (debounce).
+ * @param {number|string} productId
+ * @param {{ marketplaces?: string|string[], reason?: string, delayMs?: number, profileId?: number|string|null }} [opts]
+ */
+export function schedulePushProductCard(productId, opts = {}) {
+  if (!isCardAutoPushEnabled()) return;
+  const id = Number(productId);
+  if (!Number.isFinite(id) || id < 1) return;
+  const mps = opts.marketplaces ?? 'all';
+  const key = `${id}|${Array.isArray(mps) ? mps.join(',') : String(mps)}`;
+  const prev = _cardPushTimers.get(key);
+  if (prev) clearTimeout(prev);
+  const delayMs = Math.max(500, Number(opts.delayMs) || 2500);
+  const t = setTimeout(() => {
+    _cardPushTimers.delete(key);
+    pushProductCard(id, mps, { profileId: opts.profileId ?? null })
+      .then((out) => {
+        logger.info('[MP Card Push] auto push done', {
+          productId: id,
+          reason: opts.reason || null,
+          ok: out?.ok,
+          results: (out?.results || []).map((r) => ({
+            marketplace: r.marketplace,
+            ok: r.ok,
+            error: r.error || null,
+          })),
+        });
+      })
+      .catch((e) => {
+        logger.warn('[MP Card Push] schedulePushProductCard failed', {
+          productId: id,
+          reason: opts.reason || null,
+          message: e?.message || String(e),
+        });
+      });
+  }, delayMs);
+  _cardPushTimers.set(key, t);
+}
+
+/**
+ * После смены сопоставления ERP-категории — отправить карточки всех товаров этой категории.
+ * @param {number|string} userCategoryId
+ * @param {{ marketplaces?: string|string[], reason?: string, delayMs?: number, profileId?: number|string|null }} [opts]
+ */
+export function schedulePushCardsForCategory(userCategoryId, opts = {}) {
+  if (!isCardAutoPushEnabled()) return;
+  const catId = Number(userCategoryId);
+  if (!Number.isFinite(catId) || catId < 1) return;
+  const prev = _categoryPushTimers.get(catId);
+  if (prev) clearTimeout(prev);
+  const delayMs = Math.max(800, Number(opts.delayMs) || 3000);
+  const t = setTimeout(() => {
+    _categoryPushTimers.delete(catId);
+    (async () => {
+      const r = await query(
+        `SELECT id FROM products
+         WHERE user_category_id = $1
+         ORDER BY id ASC
+         LIMIT 500`,
+        [catId]
+      );
+      const ids = (r.rows || [])
+        .map((row) => Number(row.id))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      if (!ids.length) {
+        logger.info('[MP Card Push] category mapping changed, no products', { userCategoryId: catId });
+        return;
+      }
+      logger.info('[MP Card Push] category mapping → push products', {
+        userCategoryId: catId,
+        count: ids.length,
+        reason: opts.reason || 'category_mapping_changed',
+      });
+      for (const productId of ids) {
+        schedulePushProductCard(productId, {
+          marketplaces: opts.marketplaces ?? 'all',
+          reason: opts.reason || 'category_mapping_changed',
+          delayMs: 400 + (productId % 7) * 150,
+          profileId: opts.profileId ?? null,
+        });
+      }
+    })().catch((e) => {
+      logger.warn('[MP Card Push] schedulePushCardsForCategory failed', {
+        userCategoryId: catId,
+        message: e?.message || String(e),
+      });
+    });
+  }, delayMs);
+  _categoryPushTimers.set(catId, t);
+}
+
 export default {
   pushProductCard,
-  pushProductCardsBulk
+  pushProductCardsBulk,
+  schedulePushProductCard,
+  schedulePushCardsForCategory,
+  isCardAutoPushEnabled,
 };

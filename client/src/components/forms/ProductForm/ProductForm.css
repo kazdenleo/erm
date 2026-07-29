@@ -67,3 +67,41 @@
   background: var(--bs-body-bg, #fff);
 }
 
+/* Изменённые поля карточки МП (ещё не отправлены / отличаются от сохранённых) */
+.product-form .mp-field-dirty {
+  border-color: #c9852a !important;
+  box-shadow: 0 0 0 0.15rem rgba(201, 133, 42, 0.2);
+  background-color: rgba(201, 133, 42, 0.06);
+}
+
+.product-form .nav-link--mp-dirty {
+  color: #9a6700 !important;
+  font-weight: 600;
+}
+
+.product-form .mp-field-linked-hint {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted, #6b7280);
+}
+
+.product-form .mp-linked-dims-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.product-form .mp-field-link-toggles button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.product-form .nav-link--mp-dirty:not(.active) {
+  border-bottom-color: #c9852a;
+}
+

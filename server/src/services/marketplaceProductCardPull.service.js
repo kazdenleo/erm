@@ -7,6 +7,7 @@ import integrationsService from './integrations.service.js';
 import productsService from './products.service.js';
 import logger from '../utils/logger.js';
 import { sanitizeWbVendorCode } from '../utils/wbVendorCode.js';
+import { ymWeightDimensionsToErp } from '../utils/productMpFieldLinks.js';
 
 const ALL_MP = ['ozon', 'wb', 'ym'];
 
@@ -24,6 +25,12 @@ function normalizeMp(marketplace) {
 function trimStr(v) {
   if (v == null) return '';
   return String(v).trim();
+}
+
+/** Ozon offer_id: убираем хвостовые `;` (часто попадают из импорта). */
+function normalizeOzonOfferId(v) {
+  const s = trimStr(v).replace(/;+\s*$/g, '').trim();
+  return s;
 }
 
 function parseJsonObject(v) {
@@ -132,9 +139,15 @@ function mergeYmAttrsFromCard(parameterValues, prev = {}) {
     if (pid == null) continue;
     const key = String(pid);
     if (!isEmptyVal(next[key])) continue;
-    let val = pv?.value ?? pv?.optionId ?? pv?.dictionaryValueId ?? pv?.id;
+    // ENUM: valueId нужен для селекта; текст — запасной вариант
+    let val =
+      pv?.valueId ??
+      pv?.optionId ??
+      pv?.dictionaryValueId ??
+      pv?.value ??
+      null;
     if (val != null && typeof val === 'object') {
-      val = val.value ?? val.id ?? val.label ?? '';
+      val = val.valueId ?? val.id ?? val.value ?? val.label ?? '';
     }
     if (val != null && String(val).trim() !== '') {
       next[key] = String(val).trim();
@@ -267,6 +280,26 @@ function mapYmCardToUpdates(product, data) {
   if (name) updates.mp_ym_name = name;
   if (description) updates.mp_ym_description = description;
 
+  const vendor = trimStr(data.vendor);
+  if (vendor && isEmptyVal(product.brand)) {
+    updates.brand = vendor;
+  }
+
+  const countries = Array.isArray(data.manufacturerCountries) ? data.manufacturerCountries : [];
+  const country = countries.map((c) => trimStr(c)).find(Boolean) || '';
+  if (country && isEmptyVal(product.country_of_origin)) {
+    updates.country_of_origin = country;
+  }
+
+  // YM API: см / кг → ERP мм / г
+  const dims = ymWeightDimensionsToErp(data.weightDimensions);
+  if (dims) {
+    if (dims.length != null && isEmptyVal(product.length)) updates.length = dims.length;
+    if (dims.width != null && isEmptyVal(product.width)) updates.width = dims.width;
+    if (dims.height != null && isEmptyVal(product.height)) updates.height = dims.height;
+    if (dims.weight != null && isEmptyVal(product.weight)) updates.weight = dims.weight;
+  }
+
   const prevAttrs = parseJsonObject(product.ym_attributes);
   const mergedAttrs = mergeYmAttrsFromCard(data.parameterValues, prevAttrs);
   if (Object.keys(mergedAttrs).length > 0) {
@@ -289,19 +322,33 @@ async function fetchOzonCard(product, scope) {
         ? String(product.marketplace_ozon_product_id)
         : '';
   const productId = productIdRaw ? Number(productIdRaw.replace(/\D/g, '')) : null;
-  const offerCandidates = [product.sku_ozon, product.sku]
-    .map((v) => trimStr(v))
+  const explicitOffers = [
+    product.sku_ozon,
+    product.marketplace_skus?.ozon,
+  ]
+    .map((v) => normalizeOzonOfferId(v))
     .filter(Boolean);
-  const offerIds = [...new Set(offerCandidates)];
-  if ((!productId || productId <= 0) && offerIds.length === 0) {
-    const err = new Error('Нет offer_id Ozon / product_id / артикула ERP для запроса.');
+  const hasExplicitLink = (productId && productId > 0) || explicitOffers.length > 0;
+  // Без привязки Ozon не дергаем кабинет по «голому» ERP-артикулу — это даёт ложные 31 ошибку в массовом обновлении.
+  if (!hasExplicitLink) {
+    const erpSku = normalizeOzonOfferId(product.sku);
+    const err = new Error(
+      erpSku
+        ? `Нет привязки к Ozon (sku_ozon / product_id). Артикул ERP «${erpSku}» в кабинет не отправлялся — укажите артикул Ozon в карточке.`
+        : 'Нет привязки к Ozon (sku_ozon / product_id). Укажите артикул Ozon в карточке товара.'
+    );
     err.statusCode = 400;
+    err.code = 'NO_OZON_LINK';
+    err.skipped = true;
     throw err;
   }
+  const offerIds = [...new Set(explicitOffers)];
   const apiBase = { organizationId, profileId: scope.profileId ?? null };
   let data = null;
   let lastErr = null;
+  const tried = [];
   if (productId && productId > 0) {
+    tried.push(`product_id=${productId}`);
     try {
       data = await integrationsService.getOzonProductInfo({ ...apiBase, product_id: productId });
     } catch (e) {
@@ -310,6 +357,7 @@ async function fetchOzonCard(product, scope) {
   }
   for (const offerId of offerIds) {
     if (data) break;
+    tried.push(`offer_id=${offerId}`);
     try {
       data = await integrationsService.getOzonProductInfo({ ...apiBase, offer_id: offerId });
     } catch (e) {
@@ -318,7 +366,9 @@ async function fetchOzonCard(product, scope) {
   }
   if (!data) {
     if (lastErr) throw lastErr;
-    const err = new Error('Товар не найден в кабинете Ozon выбранной организации.');
+    const err = new Error(
+      `Товар не найден в кабинете Ozon выбранной организации (искали: ${tried.join(', ') || '—'}).`
+    );
     err.statusCode = 404;
     throw err;
   }
@@ -487,6 +537,7 @@ export async function pullProductCard(productId, marketplace, opts = {}) {
       results.push({
         marketplace: mp,
         ok: false,
+        skipped: e?.skipped === true || e?.code === 'NO_OZON_LINK',
         error: e?.message || String(e)
       });
     }
@@ -536,16 +587,22 @@ export async function pullProductCardsBulk(payload, opts = {}) {
     }
   }
   const success = items.filter((i) => i.ok).length;
+  const skipped = items.filter(
+    (i) => !i.ok && Array.isArray(i.results) && i.results.every((r) => r.ok || r.skipped)
+  ).length;
+  const failed = items.length - success - skipped;
   logger.info('[MP Card Pull] bulk done', {
     total: items.length,
     success,
-    failed: items.length - success,
+    skipped,
+    failed,
     marketplaces: uniqueMps
   });
   return {
     total: items.length,
     success,
-    failed: items.length - success,
+    skipped,
+    failed,
     items
   };
 }

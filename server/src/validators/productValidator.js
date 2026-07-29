@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import { normalizeBarcodeRows } from '../utils/productBarcodes.js';
+import { normalizeMpFieldLinks } from '../utils/productMpFieldLinks.js';
 
 // Приведение к числу (строка/число с фронта), пусто -> null
 const optionalNum = () => z.union([z.string(), z.number()]).optional().nullable().transform(v => {
@@ -134,6 +135,12 @@ export const createProductSchema = z.object({
   mp_wb_brand: optionalMpText(500),
   mp_ym_name: optionalMpText(2000),
   mp_ym_description: optionalMpText(50000),
+  /** Связь полей «Основное» с МП: { name: ['ozon','wb'], … } — пустые массивы допустимы */
+  mp_field_links: z
+    .any()
+    .optional()
+    .nullable()
+    .transform((v) => (v == null || v === '' ? undefined : normalizeMpFieldLinks(v))),
 });
 
 /**

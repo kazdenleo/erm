@@ -2576,9 +2576,20 @@ class IntegrationsService {
       logger.warn('[YM] offer-cards failed:', e?.message || e);
     }
 
-    const weightDimensions = offer.weightDimensions && typeof offer.weightDimensions === 'object'
-      ? offer.weightDimensions
-      : null;
+    const weightDimensionsRaw =
+      (offer.weightDimensions && typeof offer.weightDimensions === 'object'
+        ? offer.weightDimensions
+        : null) ||
+      (offerCard?.weightDimensions && typeof offerCard.weightDimensions === 'object'
+        ? offerCard.weightDimensions
+        : null) ||
+      (offerCard?.offer?.weightDimensions && typeof offerCard.offer.weightDimensions === 'object'
+        ? offerCard.offer.weightDimensions
+        : null);
+    const weightDimensions = weightDimensionsRaw;
+    const manufacturerCountries = Array.isArray(offer.manufacturerCountries)
+      ? offer.manufacturerCountries.map((c) => String(c || '').trim()).filter(Boolean)
+      : [];
     return {
       offerId: resolvedOfferId,
       shopSku: shopSku != null ? String(shopSku).trim() : null,
@@ -2592,6 +2603,7 @@ class IntegrationsService {
       name: offer.name != null ? String(offer.name).trim() : null,
       description: offer.description != null ? String(offer.description).trim() : null,
       vendor: offer.vendor != null ? String(offer.vendor).trim() : null,
+      manufacturerCountries,
       barcodes: normalizeIntegrationOfferBarcodes(offer.barcodes),
       parameterValues,
       weightDimensions,
