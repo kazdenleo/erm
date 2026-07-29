@@ -8,6 +8,10 @@ import { Button } from '../../common/Button/Button';
 import { integrationsApi } from '../../../services/integrations.api';
 import { warehouseMappingsApi } from '../../../services/warehouseMappings.api';
 import {
+  buildYandexWarehouseMapping,
+  formatYandexWarehouseMappingLabel,
+} from '../../../utils/yandexWarehouseMapping';
+import {
   WEEKDAY_OPTIONS,
   ALL_WEEKDAYS,
   weekendDaysToWorkDays,
@@ -52,6 +56,7 @@ export function WarehouseForm({
   const [loadingYmCampaigns, setLoadingYmCampaigns] = useState(false);
   const [ymCampaignsError, setYmCampaignsError] = useState(null);
   const [ymCampaignId, setYmCampaignId] = useState('');
+  const [ymWarehouseId, setYmWarehouseId] = useState('');
   const [mappingBusy, setMappingBusy] = useState(false);
   const [existingMappings, setExistingMappings] = useState([]);
   const [mappingsLoading, setMappingsLoading] = useState(false);
@@ -330,7 +335,13 @@ export function WarehouseForm({
     const pending = [
       ['wb', wbOfficeToBind],
       ['ozon', ozonWarehouseName],
-      ['ym', ymCampaignId]
+      [
+        'ym',
+        buildYandexWarehouseMapping({
+          campaignId: ymCampaignId,
+          warehouseId: ymWarehouseId,
+        }),
+      ],
     ];
 
     for (const [mp, value] of pending) {
@@ -771,9 +782,10 @@ export function WarehouseForm({
 
       {formData.type === 'warehouse' && (
         <div className="mt-3">
-          <label className="form-label" htmlFor="ymCampaignSelect">Яндекс.Маркет (кампания → склад)</label>
+          <label className="form-label" htmlFor="ymCampaignSelect">Яндекс.Маркет (кампания + склад)</label>
           <div className="text-muted small mb-2">
-            В Яндекс.Маркете используем <code>campaignId</code> как ключ для сопоставления. Выберите кампанию и нажмите «Привязать».
+            <code>campaignId</code> — для заказов и резерва (из API).{' '}
+            <code>ID склада</code> — из кабинета Яндекса, для выгрузки остатков. Это разные числа.
           </div>
           {!canManageMappings ? (
             <div className="alert alert-secondary py-2">Сначала сохраните склад, затем можно добавить привязки маркетплейсов.</div>
@@ -791,19 +803,37 @@ export function WarehouseForm({
                 value={ymCampaignId}
                 onChange={(e) => setYmCampaignId(e.target.value)}
               >
-                <option value="">-- Выберите кампанию ЯМ --</option>
+                <option value="">-- Выберите campaignId --</option>
                 {ymCampaigns.map((c) => (
                   <option key={String(c.id)} value={String(c.id)}>
                     {String(c.id)}{c.name ? ` · ${c.name}` : ''}
                   </option>
                 ))}
               </select>
+              <input
+                className="form-control form-control-sm"
+                style={{ maxWidth: 180 }}
+                value={ymWarehouseId}
+                onChange={(e) => setYmWarehouseId(e.target.value)}
+                placeholder="ID склада, напр. 2384892"
+              />
               <Button
                 type="button"
                 variant="secondary"
                 size="small"
-                disabled={mappingBusy || !ymCampaignId}
-                onClick={() => bindMarketplaceWarehouse('ym', ymCampaignId)}
+                disabled={
+                  mappingBusy ||
+                  (!String(ymCampaignId || '').trim() && !String(ymWarehouseId || '').trim())
+                }
+                onClick={() =>
+                  bindMarketplaceWarehouse(
+                    'ym',
+                    buildYandexWarehouseMapping({
+                      campaignId: ymCampaignId,
+                      warehouseId: ymWarehouseId,
+                    })
+                  )
+                }
               >
                 Привязать
               </Button>
@@ -814,17 +844,35 @@ export function WarehouseForm({
             <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <input
                 className="form-control form-control-sm"
-                style={{ maxWidth: 240 }}
+                style={{ maxWidth: 200 }}
                 value={ymCampaignId}
                 onChange={(e) => setYmCampaignId(e.target.value)}
                 placeholder="campaignId (число)"
+              />
+              <input
+                className="form-control form-control-sm"
+                style={{ maxWidth: 180 }}
+                value={ymWarehouseId}
+                onChange={(e) => setYmWarehouseId(e.target.value)}
+                placeholder="ID склада"
               />
               <Button
                 type="button"
                 variant="secondary"
                 size="small"
-                disabled={mappingBusy || !String(ymCampaignId || '').trim()}
-                onClick={() => bindMarketplaceWarehouse('ym', ymCampaignId)}
+                disabled={
+                  mappingBusy ||
+                  (!String(ymCampaignId || '').trim() && !String(ymWarehouseId || '').trim())
+                }
+                onClick={() =>
+                  bindMarketplaceWarehouse(
+                    'ym',
+                    buildYandexWarehouseMapping({
+                      campaignId: ymCampaignId,
+                      warehouseId: ymWarehouseId,
+                    })
+                  )
+                }
               >
                 Привязать
               </Button>
@@ -860,7 +908,13 @@ export function WarehouseForm({
                     <tr key={m.id}>
                       <td>{m.id}</td>
                       <td>{String(m.marketplace || '').toUpperCase()}</td>
-                      <td>{m.marketplace_warehouse_id ?? m.marketplaceWarehouseId}</td>
+                      <td>
+                        {normalizeMp(m.marketplace) === 'ym'
+                          ? formatYandexWarehouseMappingLabel(
+                              m.marketplace_warehouse_id ?? m.marketplaceWarehouseId
+                            )
+                          : (m.marketplace_warehouse_id ?? m.marketplaceWarehouseId)}
+                      </td>
                       <td style={{ textAlign: 'right' }}>
                         <Button
                           type="button"

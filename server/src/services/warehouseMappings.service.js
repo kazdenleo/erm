@@ -5,6 +5,18 @@
 
 import repositoryFactory from '../config/repository-factory.js';
 import { normalizeWarehouseMappingMarketplace } from '../validators/warehouseMappingsValidator.js';
+import { buildYandexWarehouseMapping, parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
+
+function normalizeMarketplaceWarehouseId(marketplace, marketplaceWarehouseId) {
+  const mp = normalizeWarehouseMappingMarketplace(marketplace);
+  const mw = String(marketplaceWarehouseId ?? '').trim();
+  if (mp !== 'ym') return mw;
+  const parsed = parseYandexWarehouseMapping(mw);
+  if (parsed.campaignId || parsed.warehouseId) {
+    return buildYandexWarehouseMapping(parsed);
+  }
+  return mw;
+}
 
 class WarehouseMappingsService {
   constructor() {
@@ -33,9 +45,11 @@ class WarehouseMappingsService {
       err.statusCode = 400;
       throw err;
     }
-    const mw = String(marketplaceWarehouseId ?? '').trim();
+    const mw = normalizeMarketplaceWarehouseId(mp, marketplaceWarehouseId);
     if (!mw) {
-      const err = new Error('Укажите marketplaceWarehouseId (название/ID склада маркетплейса)');
+      const err = new Error(
+        'Укажите marketplaceWarehouseId (для Яндекс.Маркет: campaignId и/или warehouseId)'
+      );
       err.statusCode = 400;
       throw err;
     }
@@ -107,7 +121,10 @@ class WarehouseMappingsService {
       updates.marketplace = mp;
     }
     if (marketplaceWarehouseId != null) {
-      const mw = String(marketplaceWarehouseId ?? '').trim();
+      const mw = normalizeMarketplaceWarehouseId(
+        updates.marketplace ?? existing.marketplace,
+        marketplaceWarehouseId
+      );
       updates.marketplace_warehouse_id = mw || null;
     }
     const updated = await this.repo.update(mid, updates);

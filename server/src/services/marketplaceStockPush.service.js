@@ -8,6 +8,7 @@ import integrationsService from './integrations.service.js';
 import logger from '../utils/logger.js';
 import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
 import { ozonApiPostWithRetry } from '../utils/ozonSellerApi.js';
+import { parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -279,7 +280,9 @@ async function pushYandex(ctx, quantity, organizationId, profileId) {
     return { marketplace: 'ym', ok: false, skipped: true, reason: 'no_product_sku' };
   }
 
-  const mpWarehouseId = String(ctx.mapping?.marketplace_warehouse_id ?? '').trim();
+  // В маппинге YM: campaignId — для заказов/резерва; warehouseId — только для API остатков.
+  const parsedYm = parseYandexWarehouseMapping(ctx.mapping?.marketplace_warehouse_id);
+  const mpWarehouseId = String(parsedYm.warehouseId || '').trim();
   const updatedAt = new Date().toISOString();
   const skuPayload = {
     sku: offerId,

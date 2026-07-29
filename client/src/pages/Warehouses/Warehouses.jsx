@@ -19,6 +19,11 @@ import {
   warehouseMappingMarketplaceLabel,
   WAREHOUSE_MAPPING_MARKETPLACES,
 } from '../../utils/warehouseMappingMarketplaces';
+import {
+  buildYandexWarehouseMapping,
+  formatYandexWarehouseMappingLabel,
+  parseYandexWarehouseMapping,
+} from '../../utils/yandexWarehouseMapping';
 import './Warehouses.css';
 
 export function Warehouses() {
@@ -38,6 +43,8 @@ export function Warehouses() {
     warehouseId: '',
     marketplace: 'ozon',
     marketplaceWarehouseId: '',
+    ymCampaignId: '',
+    ymWarehouseId: '',
   });
   const [mpSuggestions, setMpSuggestions] = useState([]);
   const [mpSuggestionsLoading, setMpSuggestionsLoading] = useState(false);
@@ -194,16 +201,27 @@ export function Warehouses() {
 
   const openCreateMapping = () => {
     setEditingMapping(null);
-    setMappingForm({ warehouseId: '', marketplace: 'ozon', marketplaceWarehouseId: '' });
+    setMappingForm({
+      warehouseId: '',
+      marketplace: 'ozon',
+      marketplaceWarehouseId: '',
+      ymCampaignId: '',
+      ymWarehouseId: '',
+    });
     setMappingModalOpen(true);
   };
 
   const openEditMapping = (m) => {
     setEditingMapping(m);
+    const mp = normalizeWarehouseMappingMarketplace(m.marketplace ?? 'ozon');
+    const raw = String(m.marketplace_warehouse_id ?? m.marketplaceWarehouseId ?? '');
+    const ym = mp === 'ym' ? parseYandexWarehouseMapping(raw) : { campaignId: '', warehouseId: '' };
     setMappingForm({
       warehouseId: String(m.warehouse_id ?? m.warehouseId ?? ''),
-      marketplace: normalizeWarehouseMappingMarketplace(m.marketplace ?? 'ozon'),
-      marketplaceWarehouseId: String(m.marketplace_warehouse_id ?? m.marketplaceWarehouseId ?? ''),
+      marketplace: mp,
+      marketplaceWarehouseId: raw,
+      ymCampaignId: ym.campaignId || '',
+      ymWarehouseId: ym.warehouseId || '',
     });
     setMappingModalOpen(true);
   };
@@ -211,10 +229,26 @@ export function Warehouses() {
   const submitMapping = async (e) => {
     e.preventDefault();
     try {
+      const mp = normalizeWarehouseMappingMarketplace(mappingForm.marketplace);
+      const marketplaceWarehouseId =
+        mp === 'ym'
+          ? buildYandexWarehouseMapping({
+              campaignId: mappingForm.ymCampaignId,
+              warehouseId: mappingForm.ymWarehouseId,
+            })
+          : String(mappingForm.marketplaceWarehouseId || '').trim();
+      if (!marketplaceWarehouseId) {
+        alert(
+          mp === 'ym'
+            ? 'Укажите campaignId и/или ID склада Яндекс.Маркет'
+            : 'Укажите склад маркетплейса'
+        );
+        return;
+      }
       const payload = {
         warehouseId: mappingForm.warehouseId,
-        marketplace: normalizeWarehouseMappingMarketplace(mappingForm.marketplace),
-        marketplaceWarehouseId: String(mappingForm.marketplaceWarehouseId || '').trim(),
+        marketplace: mp,
+        marketplaceWarehouseId,
       };
       if (editingMapping?.id) {
         await warehouseMappingsApi.update(editingMapping.id, payload);
@@ -368,7 +402,13 @@ export function Warehouses() {
                   <td>{m.id}</td>
                   <td>{wh?.address || `Склад #${wid}`}</td>
                   <td>{warehouseMappingMarketplaceLabel(m.marketplace)}</td>
-                  <td>{m.marketplace_warehouse_id ?? m.marketplaceWarehouseId}</td>
+                  <td>
+                    {normalizeWarehouseMappingMarketplace(m.marketplace) === 'ym'
+                      ? formatYandexWarehouseMappingLabel(
+                          m.marketplace_warehouse_id ?? m.marketplaceWarehouseId
+                        )
+                      : (m.marketplace_warehouse_id ?? m.marketplaceWarehouseId)}
+                  </td>
                   <td>
                     <div style={{display: 'flex', gap: '6px', justifyContent: 'flex-end'}}>
                       <Button variant="secondary" size="small" onClick={() => openEditMapping(m)}>✏️</Button>
@@ -447,6 +487,8 @@ export function Warehouses() {
                   ...prev,
                   marketplace: e.target.value,
                   marketplaceWarehouseId: '',
+                  ymCampaignId: '',
+                  ymWarehouseId: '',
                 }))
               }
               required
@@ -462,45 +504,87 @@ export function Warehouses() {
             </div>
           </div>
           <div className="form-group">
-            <label className="label">Склад маркетплейса (точно как в заказе)</label>
+            <label className="label">
+              {normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'ym'
+                ? 'Яндекс.Маркет: campaignId и ID склада'
+                : 'Склад маркетплейса (точно как в заказе)'}
+            </label>
             {mappingOrgId && mpSuggestionsLoading ? (
               <div className="alert alert-secondary py-2 mb-2">Загрузка списка из интеграции…</div>
             ) : null}
             {mappingOrgId && mpSuggestionsError ? (
               <div className="alert alert-warning py-2 mb-2">{mpSuggestionsError}</div>
             ) : null}
-            {mappingOrgId && mpSuggestions.length > 0 ? (
-              <select
-                className="form-control mb-2"
-                value=""
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v) setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: v }));
-                }}
-              >
-                <option value="">— Выберите из API (необязательно) —</option>
-                {mpSuggestions.map((s) => (
-                  <option key={s.value} value={s.value}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            ) : null}
-            <input
-              className="form-control"
-              value={mappingForm.marketplaceWarehouseId}
-              onChange={(e) =>
-                setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: e.target.value }))
-              }
-              placeholder={
-                normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'wb'
-                  ? 'Напр. «Теплый Стан» или id склада FBS'
-                  : normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'ym'
-                    ? 'Напр. campaignId: 12345678'
-                    : "Напр. 'Москва (FBS)' или id — название"
-              }
-              required
-            />
+            {normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'ym' ? (
+              <>
+                {mappingOrgId && mpSuggestions.length > 0 ? (
+                  <select
+                    className="form-control mb-2"
+                    value=""
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v) setMappingForm((prev) => ({ ...prev, ymCampaignId: v }));
+                    }}
+                  >
+                    <option value="">— Выберите campaignId из API —</option>
+                    {mpSuggestions.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                <input
+                  className="form-control mb-2"
+                  value={mappingForm.ymCampaignId}
+                  onChange={(e) =>
+                    setMappingForm((prev) => ({ ...prev, ymCampaignId: e.target.value }))
+                  }
+                  placeholder="campaignId (из API / заказов), напр. 149210464"
+                />
+                <input
+                  className="form-control"
+                  value={mappingForm.ymWarehouseId}
+                  onChange={(e) =>
+                    setMappingForm((prev) => ({ ...prev, ymWarehouseId: e.target.value }))
+                  }
+                  placeholder="ID склада из кабинета Яндекса, напр. 2384892"
+                />
+              </>
+            ) : (
+              <>
+                {mappingOrgId && mpSuggestions.length > 0 ? (
+                  <select
+                    className="form-control mb-2"
+                    value=""
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v) setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: v }));
+                    }}
+                  >
+                    <option value="">— Выберите из API (необязательно) —</option>
+                    {mpSuggestions.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                <input
+                  className="form-control"
+                  value={mappingForm.marketplaceWarehouseId}
+                  onChange={(e) =>
+                    setMappingForm((prev) => ({ ...prev, marketplaceWarehouseId: e.target.value }))
+                  }
+                  placeholder={
+                    normalizeWarehouseMappingMarketplace(mappingForm.marketplace) === 'wb'
+                      ? 'Напр. «Теплый Стан» или id склада FBS'
+                      : "Напр. 'Москва (FBS)' или id — название"
+                  }
+                  required
+                />
+              </>
+            )}
             <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
               {warehouseMappingMarketplaceHint(mappingForm.marketplace)}
             </div>

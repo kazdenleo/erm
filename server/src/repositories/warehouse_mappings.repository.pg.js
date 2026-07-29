@@ -4,6 +4,7 @@
  */
 
 import { query, transaction } from '../config/database.js';
+import { parseYandexWarehouseMapping } from '../utils/yandexWarehouseMapping.js';
 
 function normalizeProfileId(v) {
   if (v == null || v === '') return null;
@@ -145,6 +146,17 @@ class WarehouseMappingsRepositoryPG {
     const mw = String(marketplaceWarehouseId ?? '').trim();
     if (!mp || !mw) return null;
     const pid = normalizeProfileId(profileId);
+    if (mp === 'ym') {
+      const rows = await this.findAll({ marketplace: mp, ...(pid ? { profileId: pid } : {}) });
+      for (const row of rows || []) {
+        const raw = String(row.marketplace_warehouse_id ?? '').trim();
+        const parsed = parseYandexWarehouseMapping(raw);
+        if (mw === raw || mw === parsed.campaignId) {
+          return row.warehouse_id ?? null;
+        }
+      }
+      return null;
+    }
     const params = [mp, mw];
     let sql = `SELECT wm.warehouse_id
        FROM warehouse_mappings wm`;
