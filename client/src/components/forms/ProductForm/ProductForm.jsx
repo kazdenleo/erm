@@ -447,6 +447,31 @@ function YmPackagingDimensionFields({ formData, onChange, idPrefix = 'ym-dim' })
   );
 }
 
+/** Пишет ERP мм/г и зеркалит в ym_draft.weightDimensions (см/кг) для мин. цен YM. */
+function applyYmPackagingDimChange(prev, key, value) {
+  const next = { ...prev, [key]: value };
+  const l = Number(key === 'length' ? value : next.length);
+  const w = Number(key === 'width' ? value : next.width);
+  const h = Number(key === 'height' ? value : next.height);
+  const wt = Number(key === 'weight' ? value : next.weight);
+  if (Number.isFinite(l) && l > 0 && Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+    const prevDraft =
+      prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+        ? prev.ym_draft
+        : {};
+    next.ym_draft = {
+      ...prevDraft,
+      weightDimensions: {
+        length: Math.round(l) / 10,
+        width: Math.round(w) / 10,
+        height: Math.round(h) / 10,
+        ...(Number.isFinite(wt) && wt > 0 ? { weight: Math.round(wt) / 1000 } : {}),
+      },
+    };
+  }
+  return next;
+}
+
 export const ProductForm = React.forwardRef(function ProductForm({
   product,
   categories = [],
@@ -1826,6 +1851,21 @@ export const ProductForm = React.forwardRef(function ProductForm({
           if (dimsErp.height != null) next.height = String(dimsErp.height);
           if (dimsErp.weight != null) next.weight = String(dimsErp.weight);
         }
+        if (data.weightDimensions && typeof data.weightDimensions === 'object') {
+          const prevDraft =
+            prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+              ? prev.ym_draft
+              : {};
+          next.ym_draft = {
+            ...prevDraft,
+            weightDimensions: {
+              length: data.weightDimensions.length,
+              width: data.weightDimensions.width,
+              height: data.weightDimensions.height,
+              ...(data.weightDimensions.weight != null ? { weight: data.weightDimensions.weight } : {}),
+            },
+          };
+        }
         return next;
       });
       if (Array.isArray(data.parameterValues) && data.parameterValues.length > 0) {
@@ -2126,6 +2166,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
     if (errors[field]) {
       setErrors(prev => {
+        const newErrors = { ...prev };
+        delete newErrors[field];
+        return newErrors;
+      });
+    }
+  };
+
+  const handleYmPackagingDimChange = (field, value) => {
+    setFormData((prev) => applyYmPackagingDimChange(prev, field, value));
+    if (errors[field]) {
+      setErrors((prev) => {
         const newErrors = { ...prev };
         delete newErrors[field];
         return newErrors;
@@ -5004,7 +5055,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
               </p>
               <YmPackagingDimensionFields
                 formData={formData}
-                onChange={handleChange}
+                onChange={handleYmPackagingDimChange}
                 idPrefix="ym-pack"
               />
             </div>
@@ -5046,7 +5097,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       </div>
                       <YmPackagingDimensionFields
                         formData={formData}
-                        onChange={handleChange}
+                        onChange={handleYmPackagingDimChange}
                         idPrefix="ym-fetched"
                       />
                     </div>
@@ -5184,7 +5235,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </div>
                 <YmPackagingDimensionFields
                   formData={formData}
-                  onChange={handleChange}
+                  onChange={handleYmPackagingDimChange}
                   idPrefix="ym-attrs-pack"
                 />
               </div>

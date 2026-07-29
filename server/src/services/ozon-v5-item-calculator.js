@@ -6,7 +6,7 @@
 import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
 import { extractOzonBrandPromotionPercent } from '../utils/ozonBrandPromotion.js';
-import { resolveProductVolumeLiters } from '../utils/productVolume.js';
+import { resolveMarketplaceVolumeLiters } from '../utils/productVolume.js';
 
 /** Минимальный тариф Ozon; при отсутствии — fallback на max (старые ответы API). */
 function pickOzonMinTariff(minVal, maxVal) {
@@ -209,19 +209,20 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
   if (productVolume == null && offer_id) {
     try {
       let productResult = await query(
-        `SELECT p.volume, p.length, p.width, p.height FROM products p
+        `SELECT p.volume, p.length, p.width, p.height, p.ozon_attributes, p.ym_draft
+         FROM products p
          JOIN product_skus ps ON ps.product_id = p.id AND ps.marketplace = 'ozon'
          WHERE ps.sku = $1 LIMIT 1`,
         [offer_id]
       );
       if (!productResult.rows?.length) {
         productResult = await query(
-          'SELECT volume, length, width, height FROM products WHERE sku = $1 LIMIT 1',
+          'SELECT volume, length, width, height, ozon_attributes, ym_draft FROM products WHERE sku = $1 LIMIT 1',
           [offer_id]
         );
       }
       if (productResult.rows?.length) {
-        productVolume = resolveProductVolumeLiters(productResult.rows[0]);
+        productVolume = resolveMarketplaceVolumeLiters(productResult.rows[0], 'ozon');
       }
     } catch (dbError) {
       logger.warn('[Ozon v5 calc] volume DB lookup failed:', dbError.message);
@@ -258,6 +259,7 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
     shipmentProcessingCost !== undefined && shipmentProcessingCost !== null ? shipmentProcessingCost : 0;
 
   calculatorData.volume_weight = productVolume;
+  calculatorData.marketplace = 'ozon';
   calculatorData.processing_cost = processingCost;
   calculatorData.logistics_cost = logisticsCost;
 

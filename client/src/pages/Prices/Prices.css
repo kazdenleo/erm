@@ -114,6 +114,15 @@
   justify-content: center;
 }
 
+.mp-price-min-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+}
+
 .mp-price-cell-min-btn {
   border: 0;
   background: transparent;
@@ -126,6 +135,14 @@
   align-items: center;
   justify-content: center;
   width: 100%;
+}
+
+.mp-price-volume {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .mp-price-stack {

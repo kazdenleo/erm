@@ -1,9 +1,12 @@
 /**
- * Объём товара в литрах для расчёта логистики и отображения.
- * Считаем из габаритов (мм) — те же размеры, что уходят на МП / правятся на вкладках МП.
- * Поле products.volume — только fallback, если габаритов нет.
- * Ozon API volume_weight — объёмный вес в кг, не литры; не используем как объём.
+ * Объём товара в литрах.
+ * Для мин. цен / логистики МП — из атрибутов соответствующего маркетплейса
+ * (см. marketplaceDimensions.js); общие габариты — fallback.
  */
+
+import { resolveMarketplaceVolumeLiters } from './marketplaceDimensions.js';
+
+export { resolveMarketplaceVolumeLiters } from './marketplaceDimensions.js';
 
 function litersFromDimensions(product) {
   const length = Number(product.length);
@@ -21,7 +24,11 @@ function litersFromDimensions(product) {
 }
 
 function litersFromVolumeField(product) {
-  const direct = product.volume ?? product.volume_liters ?? product.volumeLiters;
+  const direct =
+    product.effectiveVolume ??
+    product.volume ??
+    product.volume_liters ??
+    product.volumeLiters;
   if (direct != null && direct !== '') {
     const n = Number(direct);
     if (Number.isFinite(n) && n > 0) return Math.round(n * 1000) / 1000;
@@ -29,10 +36,7 @@ function litersFromVolumeField(product) {
   return null;
 }
 
-/**
- * @param {{ volume?: number|string|null, length?: number|string|null, width?: number|string|null, height?: number|string|null }} product
- * @returns {number|null} литры
- */
+/** Общий объём (без привязки к МП): габариты ERP, иначе volume. */
 export function resolveProductVolumeLiters(product) {
   if (!product || typeof product !== 'object') return null;
   return litersFromDimensions(product) ?? litersFromVolumeField(product);
@@ -41,9 +45,15 @@ export function resolveProductVolumeLiters(product) {
 /**
  * @param {object|null|undefined} calculator
  * @param {object|null|undefined} product
- * @returns {number|null}
+ * @param {string|null|undefined} [marketplace]
  */
-export function resolveEffectiveVolumeLiters(calculator, product) {
+export function resolveEffectiveVolumeLiters(calculator, product, marketplace = null) {
+  const mp = marketplace || calculator?.marketplace || null;
+  if (mp) {
+    const fromMp = resolveMarketplaceVolumeLiters(product, mp);
+    if (fromMp != null) return fromMp;
+  }
+
   const fromProduct = resolveProductVolumeLiters(product);
   if (fromProduct != null) return fromProduct;
 
@@ -57,11 +67,21 @@ export function resolveEffectiveVolumeLiters(calculator, product) {
 }
 
 /**
- * Подставляет литры из габаритов карточки в сохранённые детали расчёта.
+ * @param {object} calculator
+ * @param {object} product
+ * @param {string|null|undefined} [marketplace]
  */
-export function enrichCalculatorVolumeFromProduct(calculator, product) {
+export function enrichCalculatorVolumeFromProduct(calculator, product, marketplace = null) {
   if (!calculator || typeof calculator !== 'object') return calculator;
-  const liters = resolveProductVolumeLiters(product);
+  const mp = marketplace || calculator.marketplace || null;
+  const liters = mp
+    ? resolveMarketplaceVolumeLiters(product, mp) ?? resolveProductVolumeLiters(product)
+    : resolveProductVolumeLiters(product);
   if (liters == null) return calculator;
-  return { ...calculator, volume_weight: liters, volume_source: 'dimensions' };
+  return {
+    ...calculator,
+    volume_weight: liters,
+    volume_source: mp ? `mp:${mp}` : 'dimensions',
+    ...(mp ? { marketplace: mp } : {}),
+  };
 }

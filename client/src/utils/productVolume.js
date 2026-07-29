@@ -1,7 +1,11 @@
 /**
  * Объём товара в литрах (клиент).
- * Для логистики/мин. цен — из габаритов (мм), как на вкладках МП; поле volume — только запасной вариант.
+ * Для мин. цен МП — из атрибутов Ozon/WB или ym_draft; общие габариты — fallback.
  */
+
+import { resolveMarketplaceVolumeLiters } from './marketplaceDimensions.js';
+
+export { resolveMarketplaceVolumeLiters } from './marketplaceDimensions.js';
 
 function litersFromDimensions(product) {
   const length = Number(product.length);
@@ -36,7 +40,13 @@ export function resolveProductVolumeLiters(product) {
   return litersFromDimensions(product) ?? litersFromVolumeField(product);
 }
 
-export function resolveEffectiveVolumeLiters(calculator, product) {
+export function resolveEffectiveVolumeLiters(calculator, product, marketplace = null) {
+  const mp = marketplace || calculator?.marketplace || null;
+  if (mp) {
+    const fromMp = resolveMarketplaceVolumeLiters(product, mp);
+    if (fromMp != null) return fromMp;
+  }
+
   const fromProduct = resolveProductVolumeLiters(product);
   if (fromProduct != null) return fromProduct;
 
@@ -49,9 +59,17 @@ export function resolveEffectiveVolumeLiters(calculator, product) {
   return null;
 }
 
-export function enrichCalculatorVolumeFromProduct(calculator, product) {
+export function enrichCalculatorVolumeFromProduct(calculator, product, marketplace = null) {
   if (!calculator || typeof calculator !== 'object') return calculator;
-  const liters = resolveProductVolumeLiters(product);
+  const mp = marketplace || calculator.marketplace || null;
+  const liters = mp
+    ? resolveMarketplaceVolumeLiters(product, mp) ?? resolveProductVolumeLiters(product)
+    : resolveProductVolumeLiters(product);
   if (liters == null) return calculator;
-  return { ...calculator, volume_weight: liters, volume_source: 'dimensions' };
+  return {
+    ...calculator,
+    volume_weight: liters,
+    volume_source: mp ? `mp:${mp}` : 'dimensions',
+    ...(mp ? { marketplace: mp } : {}),
+  };
 }

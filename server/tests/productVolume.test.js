@@ -1,6 +1,7 @@
 import {
   enrichCalculatorVolumeFromProduct,
   resolveProductVolumeLiters,
+  resolveMarketplaceVolumeLiters,
 } from '../src/utils/productVolume.js';
 
 describe('resolveProductVolumeLiters', () => {
@@ -28,5 +29,22 @@ describe('enrichCalculatorVolumeFromProduct', () => {
       { length: 400, width: 250, height: 150 }
     );
     expect(out.volume_weight).toBe(15);
+  });
+
+  test('uses WB attrs when marketplace=wb', () => {
+    const out = enrichCalculatorVolumeFromProduct(
+      { volume_weight: 3 },
+      {
+        length: 400,
+        width: 250,
+        height: 150,
+        wb_attributes: { 12153433: 200, 7594048: 214, 7594043: 35 },
+      },
+      'wb'
+    );
+    expect(out.volume_weight).toBe(resolveMarketplaceVolumeLiters({
+      wb_attributes: { 12153433: 200, 7594048: 214, 7594043: 35 },
+    }, 'wb'));
+    expect(out.marketplace).toBe('wb');
   });
 });

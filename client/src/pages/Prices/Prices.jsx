@@ -142,7 +142,7 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
   // Логистика: для WB пересчитываем из logistics_base + logistics_liter (как в PriceDetailsModal), иначе из API
   let logisticsCost = 0;
   if (marketplace === 'wb' && calculator.logistics_base !== undefined && calculator.logistics_liter !== undefined) {
-    const volume = resolveEffectiveVolumeLiters(calculator, product) || 0;
+    const volume = resolveEffectiveVolumeLiters(calculator, product, marketplace) || 0;
     if (volume && volume > 1) {
       const additionalLiters = Math.ceil(volume - 1);
       logisticsCost = calculator.logistics_base + calculator.logistics_liter * additionalLiters;
@@ -1447,7 +1447,7 @@ export function Prices() {
             : null;
           const raw = fromModal ?? fromStoredScheme ?? fromState ?? fromStored ?? null;
           if (!raw || !priceModal.product) return raw;
-          let enriched = enrichCalculatorVolumeFromProduct(raw, priceModal.product);
+          let enriched = enrichCalculatorVolumeFromProduct(raw, priceModal.product, priceModal.marketplace);
           if (priceModal.marketplace === 'ozon') {
             enriched = enrichOzonCalculatorFromProduct(enriched, priceModal.product);
           }

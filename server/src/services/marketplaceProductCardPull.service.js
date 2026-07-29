@@ -291,13 +291,25 @@ function mapYmCardToUpdates(product, data) {
     updates.country_of_origin = country;
   }
 
-  // YM API: см / кг → ERP мм / г
+  // YM API: см / кг → ERP мм / г; отдельно сохраняем weightDimensions в ym_draft
   const dims = ymWeightDimensionsToErp(data.weightDimensions);
   if (dims) {
     if (dims.length != null && isEmptyVal(product.length)) updates.length = dims.length;
     if (dims.width != null && isEmptyVal(product.width)) updates.width = dims.width;
     if (dims.height != null && isEmptyVal(product.height)) updates.height = dims.height;
     if (dims.weight != null && isEmptyVal(product.weight)) updates.weight = dims.weight;
+  }
+  if (data.weightDimensions && typeof data.weightDimensions === 'object') {
+    const prevDraft = parseJsonObject(product.ym_draft);
+    updates.ym_draft = {
+      ...prevDraft,
+      weightDimensions: {
+        length: data.weightDimensions.length,
+        width: data.weightDimensions.width,
+        height: data.weightDimensions.height,
+        ...(data.weightDimensions.weight != null ? { weight: data.weightDimensions.weight } : {}),
+      },
+    };
   }
 
   const prevAttrs = parseJsonObject(product.ym_attributes);

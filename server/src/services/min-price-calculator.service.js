@@ -96,7 +96,7 @@ export function calculateMinPrice(
   let logisticsCost = 0;
   if (marketplace === 'wb') {
     if (calculator.logistics_base != null && calculator.logistics_liter != null) {
-      const volume = resolveEffectiveVolumeLiters(calculator, product) || 0;
+      const volume = resolveEffectiveVolumeLiters(calculator, product, marketplace) || 0;
       if (volume && volume > 1) {
         logisticsCost = Number(calculator.logistics_base) + Number(calculator.logistics_liter) * Math.ceil(volume - 1);
       } else {

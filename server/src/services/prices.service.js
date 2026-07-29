@@ -24,7 +24,9 @@ import { applyOzonAdsPromotion } from '../utils/ozonAdsPromotion.js';
 import ozonPerformanceAdsService from './ozonPerformanceAds.service.js';
 import { extractWbWarehouseList, findWbTariffWarehouse, wbTariffWarehouseLabel } from '../utils/wbTariffs.js';
 import { normalizeMarketplaceSku } from '../utils/marketplaceSku.js';
-import { resolveProductVolumeLiters } from '../utils/productVolume.js';
+import { resolveMarketplaceVolumeLiters } from '../utils/productVolume.js';
+import { resolveMarketplaceDimensionsMm } from '../utils/marketplaceDimensions.js';
+
 import { schedulePushForProduct } from './marketplaceMinPricePush.service.js';
 import {
   hasUsableCommissionPercent,
@@ -2334,6 +2336,7 @@ class PricesService {
         if (productIdOpt != null && String(productIdOpt).trim() !== '') {
           productResult = await query(
             `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
+                    p.ozon_attributes, p.wb_attributes, p.ym_attributes, p.ym_draft,
                     ps_wb.sku as sku_wb
              FROM products p
              LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -2347,6 +2350,7 @@ class PricesService {
           productResult = await query(
             isNmId
               ? `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
+                        p.ozon_attributes, p.wb_attributes, p.ym_attributes, p.ym_draft,
                         ps_wb.sku as sku_wb
                  FROM products p
                  LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -2354,6 +2358,7 @@ class PricesService {
                     OR TRIM(COALESCE(p.wb_draft::jsonb->>'nmId', p.wb_draft::jsonb->>'nmID', '')) = $1
                  LIMIT 1`
               : `SELECT p.id, p.sku, p.volume, p.length, p.width, p.height, p.cost, p.price,
+                        p.ozon_attributes, p.wb_attributes, p.ym_attributes, p.ym_draft,
                         ps_wb.sku as sku_wb
                  FROM products p
                  LEFT JOIN product_skus ps_wb ON ps_wb.product_id = p.id AND ps_wb.marketplace = 'wb'
@@ -2367,7 +2372,7 @@ class PricesService {
           const row = productResult.rows[0];
           console.log(`[Prices Service] Found product: id=${row.id}, sku="${row.sku}", sku_wb="${row.sku_wb || 'N/A'}", cost=${row.cost}, price=${row.price}`);
           
-          productVolume = resolveProductVolumeLiters(row);
+          productVolume = resolveMarketplaceVolumeLiters(row, 'wb');
           if (productVolume != null) {
             console.log(`[Prices Service] Got product volume: ${productVolume} liters for ${offer_id}`);
           }
@@ -2602,6 +2607,7 @@ class PricesService {
         logistics_base: logisticsBase,
         logistics_liter: logisticsLiter,
         volume_weight: productVolume,
+        marketplace: 'wb',
         wb_price_scheme: 'FBO'
       };
       
@@ -2736,7 +2742,8 @@ class PricesService {
       let productRow = null;
       try {
         const productResult = await query(
-          `SELECT p.id, p.sku, p.cost, p.price, p.volume, p.weight, p.length, p.width, p.height
+          `SELECT p.id, p.sku, p.cost, p.price, p.volume, p.weight, p.length, p.width, p.height,
+                  p.ym_draft, p.ym_attributes
            FROM products p
            LEFT JOIN product_skus ps_ym ON ps_ym.product_id = p.id AND ps_ym.marketplace = 'ym'
            WHERE (ps_ym.sku = $1 OR p.sku = $1) LIMIT 1`,
@@ -2766,9 +2773,10 @@ class PricesService {
         };
       }
 
-      const length = productRow.length != null && Number(productRow.length) > 0 ? Number(productRow.length) : null;
-      const width = productRow.width != null && Number(productRow.width) > 0 ? Number(productRow.width) : null;
-      const height = productRow.height != null && Number(productRow.height) > 0 ? Number(productRow.height) : null;
+      const ymDims = resolveMarketplaceDimensionsMm(productRow, 'ym');
+      const length = ymDims?.length ?? null;
+      const width = ymDims?.width ?? null;
+      const height = ymDims?.height ?? null;
       const weightRaw = productRow.weight != null && Number(productRow.weight) > 0 ? Number(productRow.weight) : null;
 
       if (length == null || width == null || height == null) {
@@ -2939,7 +2947,8 @@ class PricesService {
         acquiring_amount_rub: agencyAmount,
         processing_cost: processingCost,
         logistics_cost: logisticsCost,
-        volume_weight: resolveProductVolumeLiters(productRow),
+        volume_weight: resolveMarketplaceVolumeLiters(productRow, 'ym'),
+        marketplace: 'ym',
         ymTariffs: {
           FEE: { name: 'Размещение товара на Маркете (комиссия)', percent: feePercent, amount: feeTariff?.amount ?? 0 },
           AGENCY_COMMISSION: { name: 'Приём платежа покупателя (эквайринг)', amount: Number(agencyTariff?.amount) || 0, valueType: agencyValueType, value: agencyValueNum },

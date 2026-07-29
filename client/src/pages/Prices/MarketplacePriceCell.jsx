@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { resolveMarketplaceVolumeLiters } from '../../utils/productVolume.js';
 import {
   formatMoneyInput,
   parseMoneyInput,
@@ -162,33 +163,61 @@ export function MarketplacePriceCells({
     return null;
   };
 
-  const renderMinBtn = (value, onOpen, label) => {
+  const volumeLiters = resolveMarketplaceVolumeLiters(product, marketplace);
+  const volumeLabel =
+    volumeLiters != null && volumeLiters > 0 ? `${Number(volumeLiters).toFixed(2)} л` : null;
+
+  const renderVolumeHint = (show) => {
+    if (!show || !volumeLabel) return null;
+    return (
+      <div className="mp-price-volume" title={`Объём для расчёта мин. цены (${marketplace})`}>
+        {volumeLabel}
+      </div>
+    );
+  };
+
+  const renderMinBtn = (value, onOpen, label, { showVolume = false } = {}) => {
     if (isLoading) return <span className="mp-price-muted">...</span>;
     if (value != null) {
       return (
-        <button
-          type="button"
-          className="mp-price-cell-min-btn"
-          style={{ color }}
-          onClick={onOpen}
-          title={label ? `Детали расчёта мин. цены ${label}` : 'Детали расчёта минимальной цены'}
-        >
-          {value} ₽
-        </button>
+        <div className="mp-price-min-wrap">
+          <button
+            type="button"
+            className="mp-price-cell-min-btn"
+            style={{ color }}
+            onClick={onOpen}
+            title={label ? `Детали расчёта мин. цены ${label}` : 'Детали расчёта минимальной цены'}
+          >
+            {value} ₽
+          </button>
+          {renderVolumeHint(showVolume)}
+        </div>
       );
     }
     if (hasSku) {
       return (
-        <span className="mp-badge" style={{ opacity: 0.5 }}>
-          {skuBadge}
-        </span>
+        <div className="mp-price-min-wrap">
+          <span className="mp-badge" style={{ opacity: 0.5 }}>
+            {skuBadge}
+          </span>
+          {renderVolumeHint(showVolume)}
+        </div>
       );
     }
-    return <span className="mp-price-muted">—</span>;
+    return (
+      <div className="mp-price-min-wrap">
+        <span className="mp-price-muted">—</span>
+        {renderVolumeHint(showVolume)}
+      </div>
+    );
   };
 
   const empty = renderEmpty();
   const showInputs = !isLoading && (min != null || hasSku);
+  // Объём один на МП — показываем в первой колонке мин. (FBS, иначе FBO, иначе единственная)
+  const volumeInFbs = showFbs;
+  const volumeInFbo = showFbo && !showFbs;
+  const volumeInSingle = !showFbs && !showFbo;
 
   return (
     <>
@@ -197,7 +226,8 @@ export function MarketplacePriceCells({
           {renderMinBtn(
             bothSchemes || showFbs ? fbsMin ?? (showFbo ? null : primaryMin) : primaryMin,
             onOpenMinDetailsFbs || onOpenMinDetails,
-            bothSchemes ? 'FBS' : showFbs && !showFbo ? 'FBS' : null
+            bothSchemes ? 'FBS' : showFbs && !showFbo ? 'FBS' : null,
+            { showVolume: volumeInFbs }
           )}
         </td>
       )}
@@ -206,13 +236,14 @@ export function MarketplacePriceCells({
           {renderMinBtn(
             bothSchemes || showFbo ? fboMin ?? (showFbs ? null : primaryMin) : primaryMin,
             onOpenMinDetailsFbo || onOpenMinDetails,
-            bothSchemes ? 'FBO' : 'FBO'
+            bothSchemes ? 'FBO' : 'FBO',
+            { showVolume: volumeInFbo }
           )}
         </td>
       )}
       {!showFbs && !showFbo && (
         <td className="mp-col mp-col-min" style={{ background: bg }}>
-          {empty || renderMinBtn(primaryMin, onOpenMinDetails, null)}
+          {empty || renderMinBtn(primaryMin, onOpenMinDetails, null, { showVolume: volumeInSingle })}
         </td>
       )}
 

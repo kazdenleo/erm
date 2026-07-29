@@ -216,7 +216,8 @@ export function PriceDetailsModal({
     marketplace === 'ozon'
       ? enrichOzonCalculatorFromProduct(calculatorData, product)
       : calculatorData,
-    product
+    product,
+    marketplace
   );
 
   // Проверяем, есть ли ошибка в resolvedCalculatorData
@@ -315,7 +316,7 @@ export function PriceDetailsModal({
   let logisticsCost = 0;
   if (marketplace === 'wb' && resolvedCalculatorData.logistics_base !== undefined && resolvedCalculatorData.logistics_liter !== undefined) {
     // Для WB пересчитываем логистику с учетом округления (volume - 1) вверх
-    const volume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product) || 0;
+    const volume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product, marketplace) || 0;
     
     if (volume && volume > 1) {
       const additionalLiters = Math.ceil(volume - 1);
@@ -416,7 +417,7 @@ export function PriceDetailsModal({
     ? Number(resolvedCalculatorData.ads_promotion_percent) / 100
     : 0;
   
-  const productVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product) || 0;
+  const productVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product, marketplace) || 0;
   
   // Обработка отправления (fbs_first_mile_min_amount) - отдельная статья расходов
   const shipmentProcessingCost = marketplace === 'ozon' 
@@ -588,7 +589,7 @@ export function PriceDetailsModal({
 
   const isEstimatedTariffs = marketplace === 'wb' && resolvedCalculatorData._estimatedTariffs;
 
-  const headerVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product) || 0;
+  const headerVolume = resolveEffectiveVolumeLiters(resolvedCalculatorData, product, marketplace) || 0;
 
   return (
     <Modal
