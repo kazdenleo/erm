@@ -400,7 +400,7 @@ export function Prices() {
   const [wbAcquiringPercent, setWbAcquiringPercent] = useState(null); // Процент эквайринга для WB из настроек
   const [ozonAcquiringPercent, setOzonAcquiringPercent] = useState(null); // Переопределение эквайринга Ozon из настроек
   const [wbGemServicesPercent, setWbGemServicesPercent] = useState(null); // Процент услуг Джем для WB из настроек
-  const [recalcAllLoading, setRecalcAllLoading] = useState(false); // Загрузка пересчёта всех цен
+  const [ymEarlyShipmentDiscountPp, setYmEarlyShipmentDiscountPp] = useState(null);  const [recalcAllLoading, setRecalcAllLoading] = useState(false); // Загрузка пересчёта всех цен
   const [recalcAllMessage, setRecalcAllMessage] = useState(null); // Сообщение после запуска фонового пересчёта
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
   const [pushAllLoading, setPushAllLoading] = useState(false);
@@ -630,14 +630,15 @@ export function Prices() {
     );
   };
 
-  // Загрузка настроек интеграций (эквайринг WB/Ozon, услуги Джем) — один раз при монтировании
+  // Загрузка настроек интеграций (эквайринг WB/Ozon, услуги Джем, скидка YM) — один раз при монтировании
   useEffect(() => {
     let cancelled = false;
     const loadMpSettings = async () => {
       try {
-        const [wbRes, ozonRes] = await Promise.all([
+        const [wbRes, ozonRes, ymRes] = await Promise.all([
           integrationsApi.getMarketplace('wildberries'),
           integrationsApi.getMarketplace('ozon'),
+          integrationsApi.getMarketplace('yandex'),
         ]);
         if (cancelled) return;
         const wbConfig = wbRes?.data || wbRes || {};
@@ -663,18 +664,27 @@ export function Prices() {
         } else {
           setOzonAcquiringPercent(null);
         }
+        const ymConfig = ymRes?.data || ymRes || {};
+        const earlyPp = ymConfig.early_shipment_discount_pp ?? ymConfig.earlyShipmentDiscountPp;
+        if (earlyPp !== undefined && earlyPp !== null && earlyPp !== '') {
+          const percentValue = Number(earlyPp);
+          setYmEarlyShipmentDiscountPp(!isNaN(percentValue) && isFinite(percentValue) ? percentValue : null);
+        } else {
+          setYmEarlyShipmentDiscountPp(null);
+        }
       } catch (err) {
         if (!cancelled) {
           console.error('[Prices] Error loading marketplace settings:', err);
           setWbAcquiringPercent(null);
           setWbGemServicesPercent(null);
           setOzonAcquiringPercent(null);
+          setYmEarlyShipmentDiscountPp(null);
         }
       }
     };
     loadMpSettings();
     return () => { cancelled = true; };
-  }, []);
+  }, [filterOrganizationId]);
 
   // Подставляем сохранённые минимальные цены из БД в state при загрузке/обновлении списка товаров
   useEffect(() => {
@@ -1446,6 +1456,7 @@ export function Prices() {
         wbAcquiringPercent={wbAcquiringPercent}
         ozonAcquiringPercent={ozonAcquiringPercent}
         wbGemServicesPercent={wbGemServicesPercent}
+        ymEarlyShipmentDiscountPp={ymEarlyShipmentDiscountPp}
         taxProfile={taxProfileForProduct(
           organizations,
           priceModal.product,

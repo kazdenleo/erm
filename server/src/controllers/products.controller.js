@@ -310,6 +310,18 @@ class ProductsController {
           row.storedCalculationDetailsOzon = p.storedCalculationDetailsOzon ?? null;
           row.storedCalculationDetailsWb = p.storedCalculationDetailsWb ?? null;
           row.storedCalculationDetailsYm = p.storedCalculationDetailsYm ?? null;
+          row.storedCalculationDetailsOzonFbs = p.storedCalculationDetailsOzonFbs ?? null;
+          row.storedCalculationDetailsOzonFbo = p.storedCalculationDetailsOzonFbo ?? null;
+          row.storedCalculationDetailsWbFbs = p.storedCalculationDetailsWbFbs ?? null;
+          row.storedCalculationDetailsWbFbo = p.storedCalculationDetailsWbFbo ?? null;
+          row.storedCalculationDetailsYmFbs = p.storedCalculationDetailsYmFbs ?? null;
+          row.storedCalculationDetailsYmFbo = p.storedCalculationDetailsYmFbo ?? null;
+          row.storedMinPriceOzonFbs = p.storedMinPriceOzonFbs != null ? Number(p.storedMinPriceOzonFbs) : null;
+          row.storedMinPriceOzonFbo = p.storedMinPriceOzonFbo != null ? Number(p.storedMinPriceOzonFbo) : null;
+          row.storedMinPriceWbFbs = p.storedMinPriceWbFbs != null ? Number(p.storedMinPriceWbFbs) : null;
+          row.storedMinPriceWbFbo = p.storedMinPriceWbFbo != null ? Number(p.storedMinPriceWbFbo) : null;
+          row.storedMinPriceYmFbs = p.storedMinPriceYmFbs != null ? Number(p.storedMinPriceYmFbs) : null;
+          row.storedMinPriceYmFbo = p.storedMinPriceYmFbo != null ? Number(p.storedMinPriceYmFbo) : null;
         }
         row.kit_display = p.kit_display ?? null;
         row.kit_components = Array.isArray(p.kit_components) ? p.kit_components : [];

@@ -25,6 +25,7 @@ export function PriceDetailsModal({
   wbAcquiringPercent = null,
   wbGemServicesPercent = null,
   ozonAcquiringPercent = null,
+  ymEarlyShipmentDiscountPp = null,
   taxProfile = null,
 }) {
   if (!isOpen || !product || !marketplace) {
@@ -433,18 +434,39 @@ export function PriceDetailsModal({
     resolvedCalculatorData: resolvedCalculatorData
   });
   
-  // Проценты (преобразуем в числа).
-  // YM: скидка за раннюю отгрузку — отдельно; в расчёте остаётся нетто-ставка (percent после скидки).
-  const earlyShipmentDiscountPp =
+  // Проценты. YM: полная ставка размещения + скидка за раннюю отгрузку отдельной строкой.
+  // Скидка из деталей расчёта или из настроек интеграции.
+  const settingsEarlyPp =
+    marketplace === 'ym' && ymEarlyShipmentDiscountPp != null && ymEarlyShipmentDiscountPp !== ''
+      ? Number(ymEarlyShipmentDiscountPp)
+      : NaN;
+  const metaEarlyPp =
     marketplace === 'ym'
-      ? Number(commission.early_shipment_discount_pp ?? resolvedCalculatorData.early_shipment_discount_pp) || 0
-      : 0;
+      ? Number(commission.early_shipment_discount_pp ?? resolvedCalculatorData.early_shipment_discount_pp)
+      : NaN;
+  const earlyShipmentDiscountPp =
+    (Number.isFinite(metaEarlyPp) && metaEarlyPp > 0 ? metaEarlyPp : 0) ||
+    (Number.isFinite(settingsEarlyPp) && settingsEarlyPp > 0 ? settingsEarlyPp : 0);
+
   const commissionPercentBefore = Number(commission.percent_before_early_shipment);
-  const commissionDisplayPercent =
-    marketplace === 'ym' && earlyShipmentDiscountPp > 0 && Number.isFinite(commissionPercentBefore)
-      ? commissionPercentBefore
-      : (Number(commission.percent) || 0);
-  const marketplaceCommissionPercent = (Number(commission.percent) || 0) / 100;
+  const storedCommissionPercent = Number(commission.percent) || 0;
+  let commissionDisplayPercent = storedCommissionPercent;
+  let commissionNetPercent = storedCommissionPercent;
+  if (earlyShipmentDiscountPp > 0) {
+    if (Number.isFinite(commissionPercentBefore)) {
+      // Детали после пересчёта: percent уже нетто, before — полная ставка
+      commissionDisplayPercent = commissionPercentBefore;
+      commissionNetPercent = storedCommissionPercent;
+    } else if (Number.isFinite(metaEarlyPp) && metaEarlyPp > 0) {
+      commissionDisplayPercent = storedCommissionPercent + earlyShipmentDiscountPp;
+      commissionNetPercent = storedCommissionPercent;
+    } else {
+      // Только из настроек: в сохранённых деталях ещё полная ставка API
+      commissionDisplayPercent = storedCommissionPercent;
+      commissionNetPercent = Math.max(0, storedCommissionPercent - earlyShipmentDiscountPp);
+    }
+  }
+  const marketplaceCommissionPercent = commissionNetPercent / 100;
   const acquiringPercent = (acquiring || 0) / 100;
   
   // Процент услуг Джем (только для WB, вычисляется от суммы товара)
@@ -756,7 +778,7 @@ export function PriceDetailsModal({
                   +{earlyShipmentDiscountAmount.toFixed(2)} ₽
                   <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
                     = {calculatedPrice.toFixed(2)} × {earlyShipmentDiscountPp.toFixed(2)}% = {earlyShipmentDiscountAmount.toFixed(2)} ₽
-                    {' '}(комиссия {commissionDisplayPercent}% → {(Number(commission.percent) || 0)}%)
+                    {' '}(комиссия {commissionDisplayPercent}% → {commissionNetPercent}%)
                   </div>
                 </span>
               </div>

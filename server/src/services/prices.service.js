@@ -3006,6 +3006,9 @@ class PricesService {
       out.ads_promotion_source = String(calc.ads_promotion_source);
     }
     if (marketplace === 'ym' && calc.ymTariffs) out.ymTariffs = calc.ymTariffs;
+    if (marketplace === 'ym' && calc.early_shipment_discount_pp != null && !isNaN(Number(calc.early_shipment_discount_pp))) {
+      out.early_shipment_discount_pp = Number(calc.early_shipment_discount_pp);
+    }
     if (!out.commissions || typeof out.commissions !== 'object') return null;
     return out;
   }
