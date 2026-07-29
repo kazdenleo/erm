@@ -199,6 +199,19 @@ class IntegrationsController {
   }
 
   /**
+   * GET /api/integrations/marketplaces/yandex/warehouses
+   * FBS-склады: id совпадает с «ID склада» в кабинете Яндекса.
+   */
+  async getYandexWarehouses(req, res, next) {
+    try {
+      const data = await integrationsService.getYandexWarehouses(integrationScopeFromQuery(req));
+      return res.status(200).json({ ok: true, data });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/integrations/marketplaces/wildberries/offices
    */
   async getWildberriesOffices(req, res, next) {

@@ -47,6 +47,7 @@ export function Warehouses() {
     ymWarehouseId: '',
   });
   const [mpSuggestions, setMpSuggestions] = useState([]);
+  const [ymWarehouseSuggestions, setYmWarehouseSuggestions] = useState([]);
   const [mpSuggestionsLoading, setMpSuggestionsLoading] = useState(false);
   const [mpSuggestionsError, setMpSuggestionsError] = useState(null);
 
@@ -88,6 +89,7 @@ export function Warehouses() {
     const mp = normalizeWarehouseMappingMarketplace(mappingForm.marketplace);
     if (!orgId) {
       setMpSuggestions([]);
+      setYmWarehouseSuggestions([]);
       setMpSuggestionsError(null);
       setMpSuggestionsLoading(false);
       return;
@@ -99,6 +101,7 @@ export function Warehouses() {
       setMpSuggestionsError(null);
       try {
         let items = [];
+        let ymWhItems = [];
         if (mp === 'ozon') {
           const response = await integrationsApi.getOzonWarehouses({ organizationId: orgId });
           const payload = response?.data ?? response;
@@ -129,25 +132,49 @@ export function Warehouses() {
             return { value: bindValue, label };
           });
         } else if (mp === 'ym') {
-          const response = await integrationsApi.getYandexCampaigns({ organizationId: orgId });
-          const payload = response?.data ?? response;
-          const list = payload?.campaigns ?? payload?.result?.campaigns ?? payload?.data ?? [];
-          items = (Array.isArray(list) ? list : []).map((c) => {
+          const [campRes, whRes] = await Promise.all([
+            integrationsApi.getYandexCampaigns({ organizationId: orgId }),
+            integrationsApi.getYandexWarehouses({ organizationId: orgId }).catch(() => null),
+          ]);
+          const campPayload = campRes?.data ?? campRes;
+          const campList =
+            campPayload?.campaigns ?? campPayload?.result?.campaigns ?? campPayload?.data ?? [];
+          items = (Array.isArray(campList) ? campList : []).map((c) => {
             const id = c.id ?? c.campaignId ?? null;
             const name = c.domain ?? c.clientId ?? c.name ?? c.business?.name ?? '';
             const idStr = id != null ? String(id).trim() : '';
             return {
               value: idStr,
-              label: idStr ? `${idStr}${name ? ` · ${name}` : ''}` : '',
+              label: idStr ? `${idStr}${name ? ` · ${name}` : ''} (campaignId API)` : '',
+            };
+          });
+          const whPayload = whRes?.data ?? whRes;
+          const whList = whPayload?.warehouses ?? [];
+          ymWhItems = (Array.isArray(whList) ? whList : []).map((w) => {
+            const idStr = w.id != null ? String(w.id).trim() : '';
+            const nameStr = String(w.name || '').trim();
+            const camp = w.campaignId != null ? String(w.campaignId).trim() : '';
+            return {
+              value: idStr,
+              campaignId: camp,
+              label: idStr
+                ? `${idStr}${nameStr ? ` · ${nameStr}` : ''} (ID склада)`
+                : '',
             };
           });
         }
         items = items.filter((x) => String(x.value || '').trim() !== '');
         items.sort((a, b) => String(a.label).localeCompare(String(b.label), 'ru'));
-        if (!cancelled) setMpSuggestions(items);
+        ymWhItems = ymWhItems.filter((x) => String(x.value || '').trim() !== '');
+        ymWhItems.sort((a, b) => String(a.label).localeCompare(String(b.label), 'ru'));
+        if (!cancelled) {
+          setMpSuggestions(items);
+          setYmWarehouseSuggestions(ymWhItems);
+        }
       } catch (e) {
         if (!cancelled) {
           setMpSuggestions([]);
+          setYmWarehouseSuggestions([]);
           setMpSuggestionsError(
             e.response?.data?.message || e.message || 'Не удалось загрузить список'
           );
@@ -523,7 +550,15 @@ export function Warehouses() {
                     value=""
                     onChange={(e) => {
                       const v = e.target.value;
-                      if (v) setMappingForm((prev) => ({ ...prev, ymCampaignId: v }));
+                      if (!v) return;
+                      const linked = ymWarehouseSuggestions.find(
+                        (w) => String(w.campaignId) === String(v)
+                      );
+                      setMappingForm((prev) => ({
+                        ...prev,
+                        ymCampaignId: v,
+                        ymWarehouseId: linked?.value || prev.ymWarehouseId,
+                      }));
                     }}
                   >
                     <option value="">— Выберите campaignId из API —</option>
@@ -540,15 +575,38 @@ export function Warehouses() {
                   onChange={(e) =>
                     setMappingForm((prev) => ({ ...prev, ymCampaignId: e.target.value }))
                   }
-                  placeholder="campaignId (из API / заказов), напр. 149210464"
+                  placeholder="campaignId API (не ID магазина из кабинета)"
                 />
+                {mappingOrgId && ymWarehouseSuggestions.length > 0 ? (
+                  <select
+                    className="form-control mb-2"
+                    value=""
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (!v) return;
+                      const linked = ymWarehouseSuggestions.find((w) => String(w.value) === String(v));
+                      setMappingForm((prev) => ({
+                        ...prev,
+                        ymWarehouseId: v,
+                        ymCampaignId: linked?.campaignId || prev.ymCampaignId,
+                      }));
+                    }}
+                  >
+                    <option value="">— Выберите ID склада из API (= кабинет) —</option>
+                    {ymWarehouseSuggestions.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
                 <input
                   className="form-control"
                   value={mappingForm.ymWarehouseId}
                   onChange={(e) =>
                     setMappingForm((prev) => ({ ...prev, ymWarehouseId: e.target.value }))
                   }
-                  placeholder="ID склада из кабинета Яндекса, напр. 2384892"
+                  placeholder="ID склада из кабинета, напр. 2384892"
                 />
               </>
             ) : (

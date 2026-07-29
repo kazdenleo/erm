@@ -53,6 +53,7 @@ export function WarehouseForm({
   const [ozonWarehousesError, setOzonWarehousesError] = useState(null);
   const [ozonWarehouseName, setOzonWarehouseName] = useState('');
   const [ymCampaigns, setYmCampaigns] = useState([]);
+  const [ymWarehouses, setYmWarehouses] = useState([]);
   const [loadingYmCampaigns, setLoadingYmCampaigns] = useState(false);
   const [ymCampaignsError, setYmCampaignsError] = useState(null);
   const [ymCampaignId, setYmCampaignId] = useState('');
@@ -177,11 +178,12 @@ export function WarehouseForm({
     loadOffices();
   }, [integrationOrganizationId]);
 
-  // Загрузка кампаний Яндекс.Маркета
+  // Загрузка кампаний и FBS-складов Яндекс.Маркета
   useEffect(() => {
     const orgId = String(integrationOrganizationId || '').trim();
     if (!orgId) {
       setYmCampaigns([]);
+      setYmWarehouses([]);
       setYmCampaignsError(null);
       setLoadingYmCampaigns(false);
       return;
@@ -190,8 +192,11 @@ export function WarehouseForm({
       setLoadingYmCampaigns(true);
       setYmCampaignsError(null);
       try {
-        const response = await integrationsApi.getYandexCampaigns({ organizationId: orgId });
-        const payload = response?.data ?? response;
+        const [campRes, whRes] = await Promise.all([
+          integrationsApi.getYandexCampaigns({ organizationId: orgId }),
+          integrationsApi.getYandexWarehouses({ organizationId: orgId }).catch(() => null),
+        ]);
+        const payload = campRes?.data ?? campRes;
         const list = payload?.campaigns ?? payload?.result?.campaigns ?? payload?.data ?? [];
         const arr = Array.isArray(list) ? list : [];
         const normalized = arr
@@ -201,9 +206,22 @@ export function WarehouseForm({
           }))
           .filter((x) => x.id != null);
         setYmCampaigns(normalized);
+
+        const whPayload = whRes?.data ?? whRes;
+        const whList = whPayload?.warehouses ?? [];
+        setYmWarehouses(
+          (Array.isArray(whList) ? whList : [])
+            .map((w) => ({
+              id: w.id != null ? String(w.id) : '',
+              name: String(w.name || '').trim(),
+              campaignId: w.campaignId != null ? String(w.campaignId) : '',
+            }))
+            .filter((w) => w.id)
+        );
       } catch (err) {
         console.error('[WarehouseForm] Error loading YM campaigns:', err);
         setYmCampaigns([]);
+        setYmWarehouses([]);
         setYmCampaignsError(err.response?.data?.message || err.message || 'Не удалось загрузить кампании ЯМ');
       } finally {
         setLoadingYmCampaigns(false);
@@ -784,13 +802,12 @@ export function WarehouseForm({
         <div className="mt-3">
           <label className="form-label" htmlFor="ymCampaignSelect">Яндекс.Маркет (кампания + склад)</label>
           <div className="text-muted small mb-2">
-            <code>campaignId</code> — для заказов и резерва (из API).{' '}
-            <code>ID склада</code> — из кабинета Яндекса, для выгрузки остатков. Это разные числа.
+            У Яндекса <code>campaignId</code> из API ≠ «ID магазина» в кабинете. «ID склада» из API совпадает с кабинетом.
           </div>
           {!canManageMappings ? (
             <div className="alert alert-secondary py-2">Сначала сохраните склад, затем можно добавить привязки маркетплейсов.</div>
           ) : loadingYmCampaigns ? (
-            <div className="alert alert-secondary py-2">Загрузка кампаний Яндекс.Маркета…</div>
+            <div className="alert alert-secondary py-2">Загрузка данных Яндекс.Маркета…</div>
           ) : ymCampaignsError ? (
             <div className="alert alert-warning py-2">Не удалось загрузить кампании: {ymCampaignsError}</div>
           ) : ymCampaigns.length === 0 ? (
@@ -801,22 +818,47 @@ export function WarehouseForm({
                 id="ymCampaignSelect"
                 className="form-select form-select-sm"
                 value={ymCampaignId}
-                onChange={(e) => setYmCampaignId(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setYmCampaignId(v);
+                  const linked = ymWarehouses.find((w) => String(w.campaignId) === String(v));
+                  if (linked?.id) setYmWarehouseId(linked.id);
+                }}
               >
-                <option value="">-- Выберите campaignId --</option>
+                <option value="">-- campaignId (API) --</option>
                 {ymCampaigns.map((c) => (
                   <option key={String(c.id)} value={String(c.id)}>
                     {String(c.id)}{c.name ? ` · ${c.name}` : ''}
                   </option>
                 ))}
               </select>
-              <input
-                className="form-control form-control-sm"
-                style={{ maxWidth: 180 }}
-                value={ymWarehouseId}
-                onChange={(e) => setYmWarehouseId(e.target.value)}
-                placeholder="ID склада, напр. 2384892"
-              />
+              {ymWarehouses.length > 0 ? (
+                <select
+                  className="form-select form-select-sm"
+                  value={ymWarehouseId}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setYmWarehouseId(v);
+                    const linked = ymWarehouses.find((w) => String(w.id) === String(v));
+                    if (linked?.campaignId) setYmCampaignId(linked.campaignId);
+                  }}
+                >
+                  <option value="">-- ID склада (= кабинет) --</option>
+                  {ymWarehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.id}{w.name ? ` · ${w.name}` : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="form-control form-control-sm"
+                  style={{ maxWidth: 180 }}
+                  value={ymWarehouseId}
+                  onChange={(e) => setYmWarehouseId(e.target.value)}
+                  placeholder="ID склада, напр. 2384892"
+                />
+              )}
               <Button
                 type="button"
                 variant="secondary"

@@ -1623,7 +1623,8 @@ class IntegrationsService {
   }
 
   /**
-   * Yandex Market: список кампаний (используем campaignId как "склад" для сопоставления).
+   * Yandex Market: список кампаний (campaignId для заказов/резерва).
+   * ⚠️ campaignId ≠ «ID магазина» в экране складов кабинета — это разные числа у Яндекса.
    */
   async getYandexCampaigns(opts = {}) {
     const scope = this._normalizeIntegrationScope(opts);
@@ -1662,6 +1663,98 @@ class IntegrationsService {
       ttl_ms: 6 * 60 * 60 * 1000
     });
     return data;
+  }
+
+  /**
+   * Yandex Market: FBS-склады кабинета (POST /v2/businesses/{businessId}/warehouses).
+   * id здесь совпадает с «ID склада» в личном кабинете (не с campaignId и не с «ID магазина»).
+   */
+  async getYandexWarehouses(opts = {}) {
+    const scope = this._normalizeIntegrationScope(opts);
+    const config = await this.getMarketplaceConfig('yandex', scope);
+    const apiKey = this._normalizeYandexApiKey(config?.api_key);
+    if (!apiKey) {
+      const err = new Error('Yandex Market не настроен (api_key)');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const cached = await this._cacheGet({
+      cache_type: 'yandex',
+      cache_key: this._integrationCacheKey('warehouses_fbs', scope)
+    });
+    if (cached) return cached;
+
+    const campaignsData = await this.getYandexCampaigns(scope);
+    const campaigns = Array.isArray(campaignsData?.campaigns)
+      ? campaignsData.campaigns
+      : Array.isArray(campaignsData?.result?.campaigns)
+        ? campaignsData.result.campaigns
+        : [];
+    const campaignIds = campaigns
+      .map((c) => Number(c.id ?? c.campaignId))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const businessIds = [
+      ...new Set(
+        campaigns
+          .map((c) => Number(c.business?.id ?? c.businessId))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      ),
+    ];
+    if (businessIds.length === 0) {
+      const fallbackBiz = Number(config?.business_id ?? config?.businessId);
+      if (Number.isFinite(fallbackBiz) && fallbackBiz > 0) businessIds.push(fallbackBiz);
+    }
+
+    const agent = getYandexHttpsAgent();
+    const warehouses = [];
+    const seen = new Set();
+    for (const businessId of businessIds) {
+      const response = await fetch(
+        `https://api.partner.market.yandex.ru/v2/businesses/${encodeURIComponent(businessId)}/warehouses`,
+        {
+          method: 'POST',
+          headers: {
+            'Api-Key': apiKey,
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(campaignIds.length ? { campaignIds } : {}),
+          agent,
+        }
+      );
+      if (!response.ok) {
+        const t = await response.text().catch(() => '');
+        const err = new Error(`Ошибка API Yandex warehouses: ${response.status} ${t.substring(0, 300)}`);
+        err.statusCode = response.status;
+        throw err;
+      }
+      const data = await response.json().catch(() => ({}));
+      const list = data?.result?.warehouses ?? data?.warehouses ?? [];
+      for (const w of Array.isArray(list) ? list : []) {
+        const id = w?.id != null ? String(w.id).trim() : '';
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        warehouses.push({
+          id,
+          name: String(w.name ?? '').trim(),
+          campaignId:
+            w.campaignId != null || w.campaign_id != null
+              ? String(w.campaignId ?? w.campaign_id).trim()
+              : '',
+          express: Boolean(w.express),
+        });
+      }
+    }
+
+    const out = { warehouses };
+    await this._cacheSet({
+      cache_type: 'yandex',
+      cache_key: this._integrationCacheKey('warehouses_fbs', scope),
+      cache_value: out,
+      ttl_ms: 6 * 60 * 60 * 1000
+    });
+    return out;
   }
 
   /**

@@ -146,6 +146,18 @@ export const integrationsApi = {
   },
 
   /**
+   * FBS-склады Яндекс.Маркета: id = «ID склада» из личного кабинета
+   */
+  getYandexWarehouses: async ({ organizationId } = {}) => {
+    const params = {};
+    if (organizationId != null && String(organizationId).trim() !== '') {
+      params.organizationId = String(organizationId).trim();
+    }
+    const response = await api.get('/integrations/marketplaces/yandex/warehouses', { params });
+    return response.data;
+  },
+
+  /**
    * Данные предложения Яндекс.Маркета по offer_id (артикул продавца).
    * @param {{ offer_id?: string, organizationId?: number|string }} params
    */
