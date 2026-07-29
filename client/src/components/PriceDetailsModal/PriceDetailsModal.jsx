@@ -753,7 +753,7 @@ export function PriceDetailsModal({
                     -{ymPaymentTransferDisplay.toFixed(2)} ₽
                     <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
                       {resolvedCalculatorData.ymTariffs?.PAYMENT_TRANSFER?.valueType === 'relative'
-                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.value) || 0).toFixed(2)}% = ${ymPaymentTransferDisplay.toFixed(2)} ₽ (тариф YM, % от цены)`
+                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.value) || 0).toFixed(2)}% = ${ymPaymentTransferDisplay.toFixed(2)} ₽ (тариф YM${resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.fromSettings ? ', из настроек интеграции' : ', % от цены'})`
                         : `= ${ymPaymentTransferDisplay.toFixed(2)} ₽ (тариф YM, фиксированная сумма)`}
                     </div>
                   </span>

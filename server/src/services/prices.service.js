@@ -186,10 +186,13 @@ class PricesService {
   async _getYandexApiCredentials(options = {}) {
     const scope = this._integrationScopeFromOptions(options);
     const cfg = await integrationsService.getMarketplaceConfig('yandex', scope);
+    const ptRaw = cfg?.payment_transfer_percent ?? cfg?.paymentTransferPercent;
+    const pt = ptRaw != null && ptRaw !== '' ? Number(ptRaw) : null;
     return {
       scope,
       api_key: cfg?.api_key ?? cfg?.apiKey ?? null,
       campaign_id: cfg?.campaign_id ?? cfg?.campaignId ?? null,
+      payment_transfer_percent: Number.isFinite(pt) && pt >= 0 ? pt : null,
     };
   }
 
@@ -2576,7 +2579,11 @@ class PricesService {
         };
       }
 
-      const { api_key, campaign_id } = await this._getYandexApiCredentials(options);
+      const {
+        api_key,
+        campaign_id,
+        payment_transfer_percent: paymentTransferPercentOverride,
+      } = await this._getYandexApiCredentials(options);
 
       if (!api_key) {
         logger.warn('[Prices Service] getYMPrices: no API key for Yandex');
@@ -2787,14 +2794,25 @@ class PricesService {
         }
       }
       // Эквайринг YM = приём платежа (AGENCY_COMMISSION) + перевод платежа (PAYMENT_TRANSFER)
-      const agencyAmount = (Number(agencyTariff?.amount) || 0) + (Number(paymentTransferTariff?.amount) || 0);
+      // % перевода: из настроек интеграции (если задан), иначе из ответа tariffs/calculate
+      let paymentTransferValueType = getValueType(paymentTransferTariff);
+      let paymentTransferValueNum = getValueNum(paymentTransferTariff);
+      let paymentTransferAmount = Number(paymentTransferTariff?.amount) || 0;
+      if (paymentTransferPercentOverride != null) {
+        paymentTransferValueType = 'relative';
+        paymentTransferValueNum = paymentTransferPercentOverride;
+        paymentTransferAmount =
+          calcPrice > 0 ? Math.round(((calcPrice * paymentTransferPercentOverride) / 100) * 100) / 100 : 0;
+        logger.info(
+          `[Prices Service] YM PAYMENT_TRANSFER override from settings: ${paymentTransferPercentOverride}% (API was ${paymentTransferTariff?.amount ?? 0} ₽)`
+        );
+      }
+      const agencyAmount = (Number(agencyTariff?.amount) || 0) + paymentTransferAmount;
       const acquiringPercent = calcPrice > 0 ? (agencyAmount / calcPrice * 100) : 0;
-      logger.info(`[Prices Service] YM acquiring: AGENCY_COMMISSION=${agencyTariff?.amount ?? 0} + PAYMENT_TRANSFER=${paymentTransferTariff?.amount ?? 0} = ${agencyAmount} ₽ => ${acquiringPercent.toFixed(2)}%`);
+      logger.info(`[Prices Service] YM acquiring: AGENCY_COMMISSION=${agencyTariff?.amount ?? 0} + PAYMENT_TRANSFER=${paymentTransferAmount} = ${agencyAmount} ₽ => ${acquiringPercent.toFixed(2)}%`);
 
       const agencyValueType = getValueType(agencyTariff);
       const agencyValueNum = getValueNum(agencyTariff);
-      const paymentTransferValueType = getValueType(paymentTransferTariff);
-      const paymentTransferValueNum = getValueNum(paymentTransferTariff);
       const deliveryAmount = (deliveryTariff?.amount ?? 0) + (crossRegionalTariff?.amount ?? 0) + (expressDeliveryTariff?.amount ?? 0);
       const processingCost = sortingTariff?.amount ?? 0;
       const logisticsCost = middleMileTariff?.amount ?? 0;
@@ -2831,7 +2849,13 @@ class PricesService {
         ymTariffs: {
           FEE: { name: 'Размещение товара на Маркете (комиссия)', percent: feePercent, amount: feeTariff?.amount ?? 0 },
           AGENCY_COMMISSION: { name: 'Приём платежа покупателя (эквайринг)', amount: Number(agencyTariff?.amount) || 0, valueType: agencyValueType, value: agencyValueNum },
-          PAYMENT_TRANSFER: { name: 'Перевод платежа покупателя', amount: Number(paymentTransferTariff?.amount) || 0, valueType: paymentTransferValueType, value: paymentTransferValueNum },
+          PAYMENT_TRANSFER: {
+            name: 'Перевод платежа покупателя',
+            amount: paymentTransferAmount,
+            valueType: paymentTransferValueType,
+            value: paymentTransferValueNum,
+            ...(paymentTransferPercentOverride != null ? { fromSettings: true } : {}),
+          },
           DELIVERY_TO_CUSTOMER: { name: 'Доставка покупателю', amount: Number(deliveryTariff?.amount) || 0, valueType: deliveryValueType, value: deliveryValueNum },
           CROSSREGIONAL_DELIVERY: { name: 'Доставка в регион/город/населённый пункт', amount: Number(crossRegionalTariff?.amount) || 0, valueType: crossRegionalValueType, value: crossRegionalValueNum },
           EXPRESS_DELIVERY: { name: 'Экспресс-доставка покупателю', amount: Number(expressDeliveryTariff?.amount) || 0, valueType: expressValueType, value: expressValueNum },

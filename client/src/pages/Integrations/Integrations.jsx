@@ -1221,6 +1221,23 @@ function MarketplacesTab({
               placeholder="Нужен для заказов. Настройки → API в ЛК Маркета"
             />
           </div>
+          <div className="field">
+            <label className="label">Перевод платежа покупателя, %</label>
+            <input
+              type="number"
+              className="input"
+              value={formData.payment_transfer_percent ?? ''}
+              onChange={(e) => handleChange('payment_transfer_percent', e.target.value)}
+              placeholder="например 1.6"
+              min="0"
+              max="100"
+              step="0.1"
+            />
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+              % за перевод денег продавцу (график выплат в кабинете Маркета: 1,6% / 2,3% / 2,8% / 3,3%).
+              Приём платежа 0,12 ₽ берётся из API. Если пусто — в расчёте останется тариф из API (сейчас часто 3,3% за DAILY).
+            </div>
+          </div>
           <FboPackingLimitFields formData={formData} onChange={handleChange} />
           <div className="form-actions">
             <Button

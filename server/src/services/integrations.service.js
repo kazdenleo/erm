@@ -795,6 +795,15 @@ class IntegrationsService {
           config.campaign_id = config.campaignId;
         }
       }
+      if (config.payment_transfer_percent == null && config.paymentTransferPercent != null) {
+        config.payment_transfer_percent = config.paymentTransferPercent;
+      }
+      if (config.payment_transfer_percent != null && config.payment_transfer_percent !== '') {
+        const n = Number(config.payment_transfer_percent);
+        config.payment_transfer_percent = Number.isFinite(n) && n >= 0 ? n : null;
+      } else if (config.payment_transfer_percent === '') {
+        config.payment_transfer_percent = null;
+      }
     }
     if (type === 'wildberries' && config.api_key != null) {
       config.api_key = this._normalizeWbToken(config.api_key) || config.api_key;
@@ -2379,35 +2388,10 @@ class IntegrationsService {
       err.statusCode = 400;
       throw err;
     }
-    const cfg = await this.getMarketplaceConfig('yandex', {
-      profileId: opts.profileId ?? opts.profile_id ?? null,
-      organizationId: opts.organizationId ?? opts.organization_id ?? null
-    });
-    const apiKey = this._normalizeYandexApiKey(cfg?.api_key ?? cfg?.apiKey);
-    if (!apiKey) {
-      const err = new Error('Api-Key Яндекс.Маркета не настроен для организации.');
-      err.statusCode = 400;
-      throw err;
-    }
-    let businessId = cfg?.business_id ?? cfg?.businessId ?? null;
-    const campaignId = cfg?.campaign_id ?? cfg?.campaignId ?? null;
-    if ((businessId == null || businessId === '') && campaignId != null && String(campaignId).trim() !== '') {
-      try {
-        const meta = await this._fetchYandexCampaignSnapshot(campaignId, apiKey);
-        businessId = meta?.businessId ?? businessId;
-      } catch (_) {
-        /* ignore */
-      }
-    }
-    const bid = businessId != null ? Number(businessId) : NaN;
-    if (!Number.isFinite(bid) || bid < 1) {
-      const err = new Error('Укажите business_id в кабинете Яндекс.Маркета организации.');
-      err.statusCode = 400;
-      throw err;
-    }
+    const ctx = await this._resolveYandexBusinessApiContext(opts);
     const fetch = (await import('node-fetch')).default;
     const agent = getYandexHttpsAgent();
-    const url = `https://api.partner.market.yandex.ru/v2/businesses/${encodeURIComponent(String(bid))}/offer-mappings`;
+    const url = `https://api.partner.market.yandex.ru/v2/businesses/${encodeURIComponent(String(ctx.businessId))}/offer-mappings`;
     let response;
     try {
       response = await fetch(url, {
@@ -2415,7 +2399,7 @@ class IntegrationsService {
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
-          'Api-Key': apiKey
+          'Api-Key': ctx.apiKey
         },
         body: JSON.stringify({ offerIds: [oid] }),
         ...(agent ? { agent } : {})
@@ -2453,6 +2437,89 @@ class IntegrationsService {
   }
 
   /**
+   * Категорийные характеристики карточки — POST /offer-cards (в offer-mappings их нет).
+   * @returns {Promise<object|null>} элемент offerCards
+   */
+  async _fetchYandexOfferCardHit(offerId, opts = {}) {
+    const oid = offerId != null ? String(offerId).trim() : '';
+    if (!oid) return null;
+    const ctx = opts.apiKey && opts.businessId
+      ? { apiKey: opts.apiKey, businessId: opts.businessId }
+      : await this._resolveYandexBusinessApiContext(opts);
+    const fetch = (await import('node-fetch')).default;
+    const agent = getYandexHttpsAgent();
+    const url = `https://api.partner.market.yandex.ru/v2/businesses/${encodeURIComponent(String(ctx.businessId))}/offer-cards`;
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'Api-Key': ctx.apiKey
+        },
+        body: JSON.stringify({ offerIds: [oid] }),
+        ...(agent ? { agent } : {})
+      });
+    } catch (e) {
+      logger.warn('[YM] offer-cards network error:', formatYandexNetworkError(e));
+      return null;
+    }
+    const text = await response.text().catch(() => '');
+    if (!response.ok) {
+      logger.warn('[YM] offer-cards HTTP', response.status, text?.substring?.(0, 200));
+      return null;
+    }
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_) {
+      return null;
+    }
+    const cards =
+      data?.result?.offerCards ??
+      data?.offerCards ??
+      data?.result?.cards ??
+      [];
+    const list = Array.isArray(cards) ? cards : [];
+    return list.find((c) => String(c?.offerId ?? '').trim() === oid) || list[0] || null;
+  }
+
+  /**
+   * @param {{ profileId?: number|string|null, organizationId?: number|string|null }} opts
+   * @returns {Promise<{ apiKey: string, businessId: number }>}
+   */
+  async _resolveYandexBusinessApiContext(opts = {}) {
+    const cfg = await this.getMarketplaceConfig('yandex', {
+      profileId: opts.profileId ?? opts.profile_id ?? null,
+      organizationId: opts.organizationId ?? opts.organization_id ?? null
+    });
+    const apiKey = this._normalizeYandexApiKey(cfg?.api_key ?? cfg?.apiKey);
+    if (!apiKey) {
+      const err = new Error('Api-Key Яндекс.Маркета не настроен для организации.');
+      err.statusCode = 400;
+      throw err;
+    }
+    let businessId = cfg?.business_id ?? cfg?.businessId ?? null;
+    const campaignId = cfg?.campaign_id ?? cfg?.campaignId ?? null;
+    if ((businessId == null || businessId === '') && campaignId != null && String(campaignId).trim() !== '') {
+      try {
+        const meta = await this._fetchYandexCampaignSnapshot(campaignId, apiKey);
+        businessId = meta?.businessId ?? businessId;
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    const bid = businessId != null ? Number(businessId) : NaN;
+    if (!Number.isFinite(bid) || bid < 1) {
+      const err = new Error('Укажите business_id в кабинете Яндекс.Маркета организации.');
+      err.statusCode = 400;
+      throw err;
+    }
+    return { apiKey, businessId: bid };
+  }
+
+  /**
    * Предложение Яндекс.Маркета по offerId (артикул ERP) через offer-mappings.
    * @param {string} offerId
    * @param {{ profileId?: number|string|null, organizationId?: number|string|null }} [opts]
@@ -2471,21 +2538,35 @@ class IntegrationsService {
 
   /**
    * Данные карточки товара Яндекс.Маркета по offerId (артикул продавца).
+   * Основные поля — из offer-mappings; категорийные характеристики — из offer-cards.
    * @param {{ offer_id?: string, profileId?: number|string|null, organizationId?: number|string|null }} params
    */
   async getYandexProductInfo(params = {}) {
     const offerId = params.offer_id ?? params.offerId ?? null;
-    const hit = await this._fetchYandexOfferMappingHit(offerId, {
+    const scope = {
       profileId: params.profileId ?? params.profile_id ?? null,
       organizationId: params.organizationId ?? params.organization_id ?? null
-    });
+    };
+    const hit = await this._fetchYandexOfferMappingHit(offerId, scope);
     if (!hit) return null;
     const oid = offerId != null ? String(offerId).trim() : '';
     const offer = hit?.offer && typeof hit.offer === 'object' ? hit.offer : {};
     const mapping = hit?.mapping && typeof hit.mapping === 'object' ? hit.mapping : {};
     const resolvedOfferId = String(offer.offerId ?? hit.offerId ?? oid).trim();
     const shopSku = offer.shopSku ?? hit.shopSku ?? null;
-    const parameterValues = Array.isArray(offer.parameterValues) ? offer.parameterValues : [];
+
+    let parameterValues = Array.isArray(offer.parameterValues) ? offer.parameterValues : [];
+    let offerCard = null;
+    try {
+      offerCard = await this._fetchYandexOfferCardHit(resolvedOfferId || oid, scope);
+      const cardParams = Array.isArray(offerCard?.parameterValues) ? offerCard.parameterValues : [];
+      if (cardParams.length > 0) {
+        parameterValues = cardParams;
+      }
+    } catch (e) {
+      logger.warn('[YM] offer-cards failed:', e?.message || e);
+    }
+
     const weightDimensions = offer.weightDimensions && typeof offer.weightDimensions === 'object'
       ? offer.weightDimensions
       : null;
@@ -2495,6 +2576,7 @@ class IntegrationsService {
       marketSku: mapping.marketSku != null ? String(mapping.marketSku) : null,
       marketCategoryId:
         offer.marketCategoryId ??
+        offerCard?.marketCategoryId ??
         mapping.marketCategoryId ??
         mapping.categoryId ??
         null,
@@ -2504,7 +2586,9 @@ class IntegrationsService {
       barcodes: normalizeIntegrationOfferBarcodes(offer.barcodes),
       parameterValues,
       weightDimensions,
-      raw: hit
+      contentRating: offerCard?.contentRating ?? null,
+      cardStatus: offerCard?.cardStatus ?? null,
+      raw: { mapping: hit, offerCard }
     };
   }
 
