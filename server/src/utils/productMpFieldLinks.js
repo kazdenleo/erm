@@ -62,6 +62,32 @@ export function isMpFieldLinked(links, fieldKey, mp) {
   return list.includes(String(mp || '').toLowerCase());
 }
 
+/**
+ * YM-параметры категории, которые уже редактируются отдельными полями ERP/оффера.
+ */
+export function isYmParamDuplicatingDedicatedField(name) {
+  const n = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  if (!n) return false;
+  if (/^(длина|ширина|высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(n)) return true;
+  if (/^вес\s+(с\s+)?упаковк/.test(n)) return true;
+  if (/^вес\s+товара\s+с\s+упаковк/.test(n)) return true;
+  if (/^габарит(ы|ы\s+упаковк)/.test(n)) return true;
+  if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
+  if (/артикул\s+производител/.test(n)) return true;
+  if (n === 'vendor' || n === 'vendorcode' || n === 'vendor code' || n === 'mpn') return true;
+  if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
+  if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
+  return false;
+}
+
+export function filterYmCategoryAttributesForForm(attrs) {
+  if (!Array.isArray(attrs)) return [];
+  return attrs.filter((a) => !isYmParamDuplicatingDedicatedField(a?.name));
+}
+
 export function mmToCm(mm) {
   const n = Number(mm);
   if (!Number.isFinite(n) || n <= 0) return null;

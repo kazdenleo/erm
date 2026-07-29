@@ -122,6 +122,35 @@ export function gramsToKg(g) {
   return Math.round((n / 1000) * 1000) / 1000;
 }
 
+/**
+ * YM-параметры категории, которые уже редактируются отдельными полями ERP/оффера
+ * (не показываем второй раз среди характеристик).
+ * OEM / OE-код / партномер — не сюда (это категорийные характеристики).
+ */
+export function isYmParamDuplicatingDedicatedField(name) {
+  const n = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  if (!n) return false;
+  if (/^(длина|ширина|высота)\s+(упаковк|товара\s+в\s+упаковк)/.test(n)) return true;
+  if (/^вес\s+(с\s+)?упаковк/.test(n)) return true;
+  if (/^вес\s+товара\s+с\s+упаковк/.test(n)) return true;
+  if (/^габарит(ы|ы\s+упаковк)/.test(n)) return true;
+  if (/страна\s+(производства|изготовления|происхождения)/.test(n)) return true;
+  if (/артикул\s+производител/.test(n)) return true;
+  if (n === 'vendor' || n === 'vendorcode' || n === 'vendor code' || n === 'mpn') return true;
+  if (/^название(\s+товара)?$/.test(n) || n === 'name') return true;
+  if (/^описание(\s+товара)?$/.test(n) || n === 'description') return true;
+  return false;
+}
+
+/** Отфильтровать категорийные параметры YM, дублирующие dedicated-поля. */
+export function filterYmCategoryAttributesForForm(attrs) {
+  if (!Array.isArray(attrs)) return [];
+  return attrs.filter((a) => !isYmParamDuplicatingDedicatedField(a?.name));
+}
+
 /** см → мм (YM → ERP) */
 export function cmToMm(cm) {
   const n = Number(cm);

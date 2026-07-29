@@ -57,7 +57,9 @@ import {
   convertDimensionsForMarketplace,
   cmToMm,
   defaultMpFieldLinks,
+  filterYmCategoryAttributesForForm,
   isMpFieldLinked,
+  isYmParamDuplicatingDedicatedField,
   kgToGrams,
   normalizeMpFieldLinks,
   toggleMpFieldLink,
@@ -1381,10 +1383,17 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setYmCategoryAttributesError('');
       return;
     }
+    const organizationId = resolveKitPickerOrganizationId(
+      formData.organizationId,
+      productsListOrganizationId,
+      currentProduct?.organization_id ?? currentProduct?.organizationId
+    );
     let cancelled = false;
     setYmCategoryAttributesLoading(true);
     setYmCategoryAttributesError('');
-    userCategoriesApi.getMarketplaceAttributes(userCategoryId, 'ym')
+    userCategoriesApi.getMarketplaceAttributes(userCategoryId, 'ym', {
+      organizationId: organizationId || undefined,
+    })
       .then((res) => {
         if (cancelled) return;
         const list = res?.data ?? res;
@@ -1400,7 +1409,49 @@ export const ProductForm = React.forwardRef(function ProductForm({
       })
       .finally(() => { if (!cancelled) setYmCategoryAttributesLoading(false); });
     return () => { cancelled = true; };
-  }, [activeTab, formData.categoryId, ymMarketCategoryId]);
+  }, [
+    activeTab,
+    formData.categoryId,
+    formData.organizationId,
+    ymMarketCategoryId,
+    productsListOrganizationId,
+    currentProduct?.organization_id,
+    currentProduct?.organizationId,
+  ]);
+
+  /** Схема YM без дублей dedicated-полей + пустые поля тоже; обязательные сверху. */
+  const ymFormAttributes = useMemo(() => {
+    const schema = filterYmCategoryAttributesForForm(ymCategoryAttributes);
+    const byId = new Map(schema.map((a) => [String(a.id), a]));
+    const fetchedNames = new Map();
+    if (Array.isArray(ymFetchedProduct?.parameterValues)) {
+      for (const pv of ymFetchedProduct.parameterValues) {
+        const pid = pv?.parameterId ?? pv?.id;
+        if (pid == null) continue;
+        const pname = pv?.parameterName ?? pv?.name ?? pv?.label ?? null;
+        if (pname) fetchedNames.set(String(pid), String(pname));
+      }
+    }
+    for (const [key, raw] of Object.entries(ymAttributeValues || {})) {
+      if (byId.has(key)) continue;
+      if (raw === undefined || raw === null || String(raw).trim() === '') continue;
+      const nameHint = fetchedNames.get(key);
+      if (nameHint && isYmParamDuplicatingDedicatedField(nameHint)) continue;
+      byId.set(key, {
+        id: key,
+        name: nameHint || `Параметр ${key}`,
+        type: 'string',
+        required: false,
+        _orphan: true,
+      });
+    }
+    return [...byId.values()].sort((a, b) => {
+      const ar = a.required ? 1 : 0;
+      const br = b.required ? 1 : 0;
+      if (ar !== br) return br - ar;
+      return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+    });
+  }, [ymCategoryAttributes, ymAttributeValues, ymFetchedProduct]);
 
   // Автоподстановка значений документа в YM-атрибуты по названию параметра
   useEffect(() => {
@@ -1870,12 +1921,20 @@ export const ProductForm = React.forwardRef(function ProductForm({
       });
       if (Array.isArray(data.parameterValues) && data.parameterValues.length > 0) {
         // При явном «Обновить с YM» перезаписываем характеристики карточки
+        // (кроме параметров, которые уже есть как dedicated-поля: страна, габариты, артикул производителя)
+        const dupIds = new Set(
+          (ymCategoryAttributes || [])
+            .filter((a) => isYmParamDuplicatingDedicatedField(a?.name))
+            .map((a) => String(a.id))
+        );
         setYmAttributeValues((prev) => {
           const next = { ...prev };
           data.parameterValues.forEach((pv) => {
             const pid = pv?.parameterId ?? pv?.id;
             if (pid == null) return;
             const key = String(pid);
+            const pname = pv?.parameterName ?? pv?.name ?? pv?.label ?? null;
+            if (dupIds.has(key) || isYmParamDuplicatingDedicatedField(pname)) return;
             let val =
               pv?.valueId ??
               pv?.optionId ??
@@ -1904,7 +1963,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
     } finally {
       setYmSyncLoading(false);
     }
-  }, [formData.sku_ym, formData.sku, formData.organizationId, productsListOrganizationId]);
+  }, [formData.sku_ym, formData.sku, formData.organizationId, productsListOrganizationId, ymCategoryAttributes]);
 
   // Синхронизация формы с данными из блока «Данные с Ozon»: при появлении ozonFetchedProduct подставляем все атрибуты в поля формы
   useEffect(() => {
@@ -2965,7 +3024,20 @@ export const ProductForm = React.forwardRef(function ProductForm({
       attribute_values: attributeValuesPayload,
       ozon_attributes: ozonAttributesPayload,
       wb_attributes: wbAttributesPayload,
-      ym_attributes: Object.keys(ymAttributeValues).length > 0 ? ymAttributeValues : undefined,
+      ym_attributes: (() => {
+        const dupIds = new Set(
+          (ymCategoryAttributes || [])
+            .filter((a) => isYmParamDuplicatingDedicatedField(a?.name))
+            .map((a) => String(a.id))
+        );
+        const cleaned = Object.fromEntries(
+          Object.entries(ymAttributeValues || {}).filter(([k, v]) => {
+            if (dupIds.has(String(k))) return false;
+            return v != null && String(v).trim() !== '';
+          })
+        );
+        return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+      })(),
       marketplace_ozon_product_id: (() => {
         const manual = String(formData.ozon_product_id || '').trim();
         if (manual !== '') {
@@ -5042,25 +5114,6 @@ export const ProductForm = React.forwardRef(function ProductForm({
             </div>
           )}
 
-          <div
-            className="card mb-3"
-            style={{ border: '2px solid #fc3f1d', background: 'rgba(252, 63, 29, 0.04)' }}
-          >
-            <div className="card-header" style={{ fontWeight: 600 }}>
-              Габариты и вес упаковки (Яндекс.Маркет)
-            </div>
-            <div className="card-body">
-              <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Отдельные поля ввода (см / кг), как в кабинете Маркета. В ERP пишутся мм / г.
-              </p>
-              <YmPackagingDimensionFields
-                formData={formData}
-                onChange={handleYmPackagingDimChange}
-                idPrefix="ym-pack"
-              />
-            </div>
-          </div>
-
           {ymFetchedProduct && (
             <div className="card mb-3 border-warning">
               <div className="card-header">Данные с Яндекс.Маркета</div>
@@ -5090,43 +5143,54 @@ export const ProductForm = React.forwardRef(function ProductForm({
                       </div>
                     );
                   }
+                  const rows = [
+                    { label: 'Длина', ym: wd?.length, u: 'см', erp: d?.length, eu: 'мм' },
+                    { label: 'Ширина', ym: wd?.width, u: 'см', erp: d?.width, eu: 'мм' },
+                    { label: 'Высота', ym: wd?.height, u: 'см', erp: d?.height, eu: 'мм' },
+                    { label: 'Вес', ym: wd?.weight, u: 'кг', erp: d?.weight, eu: 'г' },
+                  ];
                   return (
-                    <div style={{ marginTop: 4 }}>
-                      <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: 8 }}>
-                        Габариты с Маркета подставлены в поля ниже (можно править):
+                    <div style={{ fontSize: '12px' }}>
+                      <div style={{ color: 'var(--muted)', marginBottom: 4 }}>
+                        Габариты с Маркета (подставлены в поля упаковки ниже):
                       </div>
-                      <YmPackagingDimensionFields
-                        formData={formData}
-                        onChange={handleYmPackagingDimChange}
-                        idPrefix="ym-fetched"
-                      />
+                      {rows.map((r) => (
+                        <div key={r.label}>
+                          <span style={{ color: 'var(--muted)', marginRight: 6 }}>{r.label}:</span>
+                          {r.ym != null ? `${r.ym} ${r.u}` : '—'}
+                          {r.erp != null ? (
+                            <span style={{ color: 'var(--muted)', marginLeft: 6 }}>→ {r.erp} {r.eu}</span>
+                          ) : null}
+                        </div>
+                      ))}
                     </div>
                   );
                 })()}
                 {Array.isArray(ymFetchedProduct.parameterValues) && ymFetchedProduct.parameterValues.length > 0 ? (
                   <div>
                     <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: 4 }}>
-                      Характеристик загружено: {ymFetchedProduct.parameterValues.length}
+                      Характеристики карточки (без дублей габаритов/страны/артикула производителя)
                     </div>
                     <ul style={{ margin: 0, paddingLeft: 18, maxHeight: 140, overflow: 'auto' }}>
-                      {ymFetchedProduct.parameterValues.slice(0, 20).map((pv, i) => {
-                        const pid = pv?.parameterId ?? pv?.id ?? '—';
-                        const val =
-                          pv?.value ??
-                          pv?.valueId ??
-                          pv?.optionId ??
-                          '—';
-                        return (
-                          <li key={`${pid}-${i}`}>
-                            <span style={{ color: 'var(--muted)' }}>#{pid}:</span> {String(val)}
-                          </li>
-                        );
-                      })}
-                      {ymFetchedProduct.parameterValues.length > 20 ? (
-                        <li style={{ color: 'var(--muted)' }}>
-                          … и ещё {ymFetchedProduct.parameterValues.length - 20}
-                        </li>
-                      ) : null}
+                      {ymFetchedProduct.parameterValues
+                        .filter((pv) => {
+                          const pname = pv?.parameterName ?? pv?.name ?? pv?.label ?? null;
+                          return !isYmParamDuplicatingDedicatedField(pname);
+                        })
+                        .slice(0, 20)
+                        .map((pv, i) => {
+                          const pid = pv?.parameterId ?? pv?.id ?? '—';
+                          const pname = pv?.parameterName ?? pv?.name ?? null;
+                          const val = pv?.value ?? pv?.valueId ?? pv?.optionId ?? '—';
+                          return (
+                            <li key={`${pid}-${i}`}>
+                              <span style={{ color: 'var(--muted)' }}>
+                                {pname ? `${pname} (#${pid})` : `#${pid}`}:
+                              </span>{' '}
+                              {String(val)}
+                            </li>
+                          );
+                        })}
                     </ul>
                   </div>
                 ) : (
@@ -5230,7 +5294,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: 8 }}>
                   Габариты и вес упаковки
                   <span style={{ fontWeight: 400, color: 'var(--muted)', marginLeft: 6 }}>
-                    (не из категории — weightDimensions API)
+                    (отдельные поля; в списке характеристик ниже не дублируются)
                   </span>
                 </div>
                 <YmPackagingDimensionFields
@@ -5238,6 +5302,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   onChange={handleYmPackagingDimChange}
                   idPrefix="ym-attrs-pack"
                 />
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 10 }}>
+                Показаны все параметры категории ({ymFormAttributes.length}
+                {ymCategoryAttributes.length > ymFormAttributes.length
+                  ? `, скрыто дублей dedicated-полей: ${ymCategoryAttributes.length - ymFormAttributes.length}`
+                  : ''}
+                ), включая незаполненные. Обязательные — сверху.
               </div>
               {formData.categoryId && categoryDetailsLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка данных категории…</div>
@@ -5258,13 +5329,13 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 </div>
               ) : ymCategoryAttributesLoading ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>Загрузка характеристик категории…</div>
-              ) : ymCategoryAttributes.length === 0 ? (
+              ) : ymFormAttributes.length === 0 ? (
                 <div className="text-muted" style={{ fontSize: '12px' }}>
                   Маркет не вернул характеристик для этой категории (или категория не листовая). Проверьте сопоставление или выберите конечную категорию в дереве YM.
                 </div>
               ) : (
                 <div className="row g-3">
-                  {ymCategoryAttributes.map((a) => {
+                  {ymFormAttributes.map((a) => {
                     const key = String(a.id);
                     const name = a.name || `Параметр ${key}`;
                     const required = Boolean(a.required);

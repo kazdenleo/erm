@@ -258,7 +258,11 @@ class UserCategoriesController {
           });
         }
         try {
-          const list = await integrationsService.getYandexCategoryContentParameters(ymCategoryIdStr, { forceRefresh });
+          const organizationId = req.query.organization_id ?? req.query.organizationId ?? null;
+          const list = await integrationsService.getYandexCategoryContentParameters(ymCategoryIdStr, {
+            forceRefresh,
+            organizationId,
+          });
           return res.status(200).json({ ok: true, data: Array.isArray(list) ? list : [] });
         } catch (e) {
           logger.warn('[User Categories] Yandex category parameters failed', { userCategoryId: id, ymCategoryId: ymCategoryIdStr, err: e?.message });

@@ -3936,19 +3936,31 @@ class IntegrationsService {
       throw new Error('Некорректный id категории Яндекс.Маркета (ожидается числовой id листовой категории из дерева Маркета).');
     }
 
-    const integrations = await this.getAll();
-    const yandexIntegration = integrations.find((i) => i.code === 'yandex');
-    const api_key = this._normalizeYandexApiKey(yandexIntegration?.config?.api_key);
-    if (!api_key) {
-      throw new Error('Необходим API Key Яндекс.Маркета. Настройте интеграцию на странице «Интеграции».');
-    }
-
-    const cfg = yandexIntegration?.config || {};
-    const businessIdRaw = cfg.business_id ?? cfg.businessId ?? cfg.campaign_id ?? cfg.campaignId;
+    let api_key = null;
     let businessId = null;
-    if (businessIdRaw != null && String(businessIdRaw).trim() !== '') {
-      const n = Number(businessIdRaw);
-      if (Number.isFinite(n) && n > 0) businessId = n;
+    try {
+      const ctx = await this._resolveYandexBusinessApiContext({
+        profileId: opts.profileId ?? opts.profile_id ?? null,
+        organizationId: opts.organizationId ?? opts.organization_id ?? null
+      });
+      api_key = ctx.apiKey;
+      businessId = ctx.businessId;
+    } catch (e) {
+      // fallback: глобальная интеграция (как раньше)
+      const integrations = await this.getAll();
+      const yandexIntegration = integrations.find((i) => i.code === 'yandex');
+      api_key = this._normalizeYandexApiKey(yandexIntegration?.config?.api_key);
+      if (!api_key) {
+        throw e?.message
+          ? e
+          : new Error('Необходим API Key Яндекс.Маркета. Настройте интеграцию на странице «Интеграции».');
+      }
+      const cfg = yandexIntegration?.config || {};
+      const businessIdRaw = cfg.business_id ?? cfg.businessId ?? cfg.campaign_id ?? cfg.campaignId;
+      if (businessIdRaw != null && String(businessIdRaw).trim() !== '') {
+        const n = Number(businessIdRaw);
+        if (Number.isFinite(n) && n > 0) businessId = n;
+      }
     }
 
     const forceRefresh = this._isTruthy(opts.forceRefresh || opts.force_refresh || opts.force);
