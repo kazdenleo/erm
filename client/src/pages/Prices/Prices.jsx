@@ -17,12 +17,6 @@ import { integrationsApi } from '../../services/integrations.api.js';
 import { Button } from '../../components/common/Button/Button';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
-import {
-  formatMoneyInput,
-  parseMoneyInput,
-  percentFromActualAndBefore,
-  priceBeforeFromActualAndPercent,
-} from './marketplacePriceMath.js';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -372,7 +366,7 @@ export function Prices() {
   const showFbsPrices = isProfileFbsEnabled(profile);
   const showFboPrices = isProfileFboEnabled(profile);
   const minColsPerMp = (showFbsPrices ? 1 : 0) + (showFboPrices ? 1 : 0) || 1;
-  const mpColSpan = minColsPerMp + 2; // мин.(1–2) + факт + до/%
+  const mpColSpan = minColsPerMp; // только мин. цены (FBS/FBO)
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
   const { categories } = useCategories();
   const { brands } = useBrands();
@@ -412,165 +406,12 @@ export function Prices() {
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
   const [pushAllLoading, setPushAllLoading] = useState(false);
   const [pushOneProductId, setPushOneProductId] = useState(null);
-  const [selectedIds, setSelectedIds] = useState(() => new Set());
-  const [commercialOverrides, setCommercialOverrides] = useState({});
-  const [bulkMarketplace, setBulkMarketplace] = useState('ozon');
-  const [bulkActual, setBulkActual] = useState('');
-  const [bulkBefore, setBulkBefore] = useState('');
-  const [bulkPct, setBulkPct] = useState('');
-  const [bulkSaving, setBulkSaving] = useState(false);
-  const [bulkMessage, setBulkMessage] = useState(null);
 
   // Получаем wbWarehouseName из основного склада (type = 'warehouse' с указанным wbWarehouseName)
   const mainWarehouse = warehouses.find(w => w.type === 'warehouse' && w.wbWarehouseName);
   const wbWarehouseName = mainWarehouse?.wbWarehouseName || null;
 
   const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
-
-  const mergeProductCommercial = (product) => {
-    if (!product?.id) return product;
-    const baseMp = product.marketplacePrices || {};
-    const next = { ozon: { ...baseMp.ozon }, wb: { ...baseMp.wb }, ym: { ...baseMp.ym } };
-    for (const mp of ['ozon', 'wb', 'ym']) {
-      const ov = commercialOverrides[`${product.id}:${mp}`];
-      if (ov) next[mp] = { ...next[mp], ...ov };
-    }
-    return { ...product, marketplacePrices: next };
-  };
-
-  const allVisibleSelected =
-    visibleProducts.length > 0 && visibleProducts.every((p) => selectedIds.has(Number(p.id)));
-
-  const toggleSelectAllVisible = () => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (allVisibleSelected) {
-        for (const p of visibleProducts) next.delete(Number(p.id));
-      } else {
-        for (const p of visibleProducts) next.add(Number(p.id));
-      }
-      return next;
-    });
-  };
-
-  const toggleSelectOne = (productId) => {
-    const id = Number(productId);
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const handleSaveCommercialItem = async (item) => {
-    await pricesApi.saveCommercial([item]);
-    const key = `${item.productId}:${item.marketplace}`;
-    setCommercialOverrides((prev) => ({
-      ...prev,
-      [key]: {
-        ...(prev[key] || {}),
-        ...(item.sellingPrice !== undefined
-          ? { sellingPrice: item.sellingPrice, sellingPriceManual: item.sellingPrice != null }
-          : {}),
-        ...(item.priceBeforeDiscount !== undefined
-          ? { priceBeforeDiscount: item.priceBeforeDiscount }
-          : {}),
-        ...(item.discountPercent !== undefined ? { discountPercent: item.discountPercent } : {}),
-      },
-    }));
-  };
-
-  const handleBulkApplyCommercial = async () => {
-    const ids = [...selectedIds].filter((id) => Number.isFinite(id) && id > 0);
-    if (!ids.length) {
-      setBulkMessage('Выберите товары в таблице');
-      return;
-    }
-    const mp = bulkMarketplace;
-    const actual = parseMoneyInput(bulkActual);
-    const before = parseMoneyInput(bulkBefore);
-    const pct = parseMoneyInput(bulkPct);
-    if (actual == null && before == null && pct == null) {
-      setBulkMessage('Укажите хотя бы одно поле: факт. цена, до скидки или %');
-      return;
-    }
-
-    // Стратегия: не шлём sellingPrice для товаров со стратегией
-    const items = [];
-    for (const id of ids) {
-      const product = visibleProducts.find((p) => Number(p.id) === id) || products.find((p) => Number(p.id) === id);
-      const strategyLocked = product?.hasPricingStrategy === true;
-      const payload = {
-        productId: id,
-        marketplace: mp,
-      };
-      if (!strategyLocked && actual !== null) payload.sellingPrice = actual;
-      if (before !== null) payload.priceBeforeDiscount = before;
-      if (pct !== null) payload.discountPercent = pct;
-      // Если задали % и факт (или мин) — досчитать before при пустом before
-      if (pct != null && before == null) {
-        const baseActual =
-          actual ??
-          getMarketplacePricePackSafe(product, mp)?.sellingPrice ??
-          Number(
-            mp === 'ozon'
-              ? product?.storedMinPriceOzon
-              : mp === 'wb'
-                ? product?.storedMinPriceWb
-                : product?.storedMinPriceYm
-          ) ??
-          null;
-        if (baseActual != null && baseActual > 0) {
-          const computedBefore = priceBeforeFromActualAndPercent(baseActual, pct);
-          if (computedBefore != null) payload.priceBeforeDiscount = computedBefore;
-        }
-      }
-      if (before != null && pct == null) {
-        const baseActual =
-          actual ??
-          getMarketplacePricePackSafe(product, mp)?.sellingPrice ??
-          null;
-        if (baseActual != null && baseActual > 0) {
-          const computedPct = percentFromActualAndBefore(baseActual, before);
-          if (computedPct != null) payload.discountPercent = computedPct;
-        }
-      }
-      items.push(payload);
-    }
-
-    setBulkSaving(true);
-    setBulkMessage(null);
-    try {
-      await pricesApi.saveCommercial(items);
-      setCommercialOverrides((prev) => {
-        const next = { ...prev };
-        for (const it of items) {
-          const key = `${it.productId}:${it.marketplace}`;
-          next[key] = {
-            ...(next[key] || {}),
-            ...(it.sellingPrice !== undefined
-              ? { sellingPrice: it.sellingPrice, sellingPriceManual: true }
-              : {}),
-            ...(it.priceBeforeDiscount !== undefined
-              ? { priceBeforeDiscount: it.priceBeforeDiscount }
-              : {}),
-            ...(it.discountPercent !== undefined ? { discountPercent: it.discountPercent } : {}),
-          };
-        }
-        return next;
-      });
-      setBulkMessage(`Сохранено для ${items.length} товар(ов) · ${mp.toUpperCase()}`);
-    } catch (e) {
-      setBulkMessage(`Ошибка: ${e?.response?.data?.message || e.message || String(e)}`);
-    } finally {
-      setBulkSaving(false);
-    }
-  };
-
-  function getMarketplacePricePackSafe(product, marketplace) {
-    return product?.marketplacePrices?.[marketplace] || null;
-  }
 
   const loadList = (partial = {}) => {
     const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
@@ -1182,122 +1023,6 @@ export function Prices() {
         </div>
       )}
 
-      {selectedIds.size > 0 && (
-        <div className="prices-bulk-bar">
-          <div className="prices-bulk-bar-title">
-            Массовое изменение · выбрано: {selectedIds.size}
-          </div>
-          <div className="prices-bulk-bar-row">
-            <label className="prices-bulk-field">
-              <span>Маркетплейс</span>
-              <select
-                value={bulkMarketplace}
-                onChange={(e) => setBulkMarketplace(e.target.value)}
-                disabled={bulkSaving}
-              >
-                <option value="ozon">Ozon</option>
-                <option value="wb">WB</option>
-                <option value="ym">Яндекс.Маркет</option>
-              </select>
-            </label>
-            <label className="prices-bulk-field">
-              <span>Факт. цена</span>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="₽"
-                value={bulkActual}
-                disabled={bulkSaving}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setBulkActual(v);
-                  const actual = parseMoneyInput(v);
-                  const pct = parseMoneyInput(bulkPct);
-                  if (actual != null && pct != null && pct < 100) {
-                    const b = priceBeforeFromActualAndPercent(actual, pct);
-                    if (b != null) setBulkBefore(formatMoneyInput(b));
-                  } else if (actual != null) {
-                    const before = parseMoneyInput(bulkBefore);
-                    if (before != null && before > 0) {
-                      const p = percentFromActualAndBefore(actual, before);
-                      if (p != null) setBulkPct(formatMoneyInput(p));
-                    }
-                  }
-                }}
-              />
-            </label>
-            <label className="prices-bulk-field">
-              <span>До скидки</span>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="₽"
-                value={bulkBefore}
-                disabled={bulkSaving}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setBulkBefore(v);
-                  const before = parseMoneyInput(v);
-                  const actual = parseMoneyInput(bulkActual);
-                  if (before != null && before > 0 && actual != null) {
-                    const p = percentFromActualAndBefore(actual, before);
-                    if (p != null) setBulkPct(formatMoneyInput(p));
-                  }
-                }}
-              />
-            </label>
-            <label className="prices-bulk-field">
-              <span>Скидка %</span>
-              <input
-                type="number"
-                step="0.01"
-                max="99.99"
-                placeholder="%"
-                value={bulkPct}
-                disabled={bulkSaving}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setBulkPct(v);
-                  const pct = parseMoneyInput(v);
-                  const actual = parseMoneyInput(bulkActual);
-                  if (pct != null && pct < 100 && actual != null) {
-                    const b = priceBeforeFromActualAndPercent(actual, pct);
-                    if (b != null) setBulkBefore(formatMoneyInput(b));
-                  }
-                }}
-              />
-            </label>
-            <Button
-              type="button"
-              variant="primary"
-              size="small"
-              disabled={bulkSaving}
-              onClick={handleBulkApplyCommercial}
-            >
-              {bulkSaving ? 'Сохранение…' : 'Применить к выбранным'}
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              size="small"
-              disabled={bulkSaving}
-              onClick={() => setSelectedIds(new Set())}
-            >
-              Снять выделение
-            </Button>
-          </div>
-          {bulkMessage ? (
-            <div className="prices-bulk-bar-msg">{bulkMessage}</div>
-          ) : (
-            <div className="prices-bulk-bar-hint">
-              Факт. цена не меняется у товаров со стратегией. Скидка и «до скидки» — для всех выбранных.
-            </div>
-          )}
-        </div>
-      )}
-
       <div style={{marginTop: '20px', width: '100%'}}>
         {totalProducts === 0 && !listRefreshing ? (
           <div className="empty-state">
@@ -1310,15 +1035,6 @@ export function Prices() {
             <table className="prices-table table prices-table-commercial">
               <thead>
                 <tr>
-                  <th rowSpan={2} style={{ width: 36, textAlign: 'center', verticalAlign: 'middle' }}>
-                    <input
-                      type="checkbox"
-                      checked={allVisibleSelected}
-                      onChange={toggleSelectAllVisible}
-                      title="Выбрать все на странице"
-                      aria-label="Выбрать все на странице"
-                    />
-                  </th>
                   <th rowSpan={2} style={{ verticalAlign: 'middle' }}>Артикул</th>
                   <th rowSpan={2} style={{ width: '16%', verticalAlign: 'middle' }}>Товар</th>
                   <th
@@ -1364,8 +1080,6 @@ export function Prices() {
                   {!showFbsPrices && !showFboPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>мин.</th>
                   )}
-                  <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>факт</th>
-                  <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>до / %</th>
                   {showFbsPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>
                       {showFboPrices ? 'мин. FBS' : 'мин.'}
@@ -1379,8 +1093,6 @@ export function Prices() {
                   {!showFbsPrices && !showFboPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>мин.</th>
                   )}
-                  <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>факт</th>
-                  <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>до / %</th>
                   {showFbsPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>
                       {showFboPrices ? 'мин. FBS' : 'мин.'}
@@ -1394,13 +1106,11 @@ export function Prices() {
                   {!showFbsPrices && !showFboPrices && (
                     <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>мин.</th>
                   )}
-                  <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>факт</th>
-                  <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>до / %</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleProducts.map((product) => {
-                  const productMerged = mergeProductCommercial(product);
+                  const productMerged = product;
                   const productKey = String(product.id ?? product.sku ?? '');
                   const raw = calculatedPrices[productKey] || {};
                   const storedOzon = product.storedMinPriceOzon ?? product.stored_min_price_ozon;
@@ -1455,18 +1165,9 @@ export function Prices() {
                       : null) ||
                     product.sku_wb;
                   const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym);
-                  const rowSelected = selectedIds.has(Number(product.id));
 
                   return (
-                    <tr key={product.id} className={rowSelected ? 'prices-row-selected' : undefined}>
-                      <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
-                        <input
-                          type="checkbox"
-                          checked={rowSelected}
-                          onChange={() => toggleSelectOne(product.id)}
-                          aria-label={`Выбрать ${product.sku || product.id}`}
-                        />
-                      </td>
+                    <tr key={product.id}>
                       <td style={{ fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>
                         {product?.id ? (
                           <button
@@ -1582,12 +1283,12 @@ export function Prices() {
                         minPriceFbo={prices.ozonFbo}
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
+                        minOnly
                         isLoading={isLoading}
                         hasSku={!!skuOzon}
                         skuBadge="OZ"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
-                        onSave={handleSaveCommercialItem}
                         onOpenMinDetails={() => openMinModal('ozon', null, prices.ozon)}
                         onOpenMinDetailsFbs={() => openMinModal('ozon', 'FBS', prices.ozonFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ozon', 'FBO', prices.ozonFbo)}
@@ -1600,12 +1301,12 @@ export function Prices() {
                         minPriceFbo={prices.wbFbo}
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
+                        minOnly
                         isLoading={isLoading}
                         hasSku={!!skuWb}
                         skuBadge="WB"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
-                        onSave={handleSaveCommercialItem}
                         onOpenMinDetails={() => openMinModal('wb', null, prices.wb)}
                         onOpenMinDetailsFbs={() => openMinModal('wb', 'FBS', prices.wbFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('wb', 'FBO', prices.wbFbo)}
@@ -1618,12 +1319,12 @@ export function Prices() {
                         minPriceFbo={prices.ymFbo}
                         showFbs={showFbsPrices}
                         showFbo={showFboPrices}
+                        minOnly
                         isLoading={isLoading}
                         hasSku={!!skuYm}
                         skuBadge="YM"
                         strategyLocked={strategyLocked}
                         disabled={recalcAllLoading || pushAllLoading}
-                        onSave={handleSaveCommercialItem}
                         onOpenMinDetails={() => openMinModal('ym', null, prices.ym)}
                         onOpenMinDetailsFbs={() => openMinModal('ym', 'FBS', prices.ymFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ym', 'FBO', prices.ymFbo)}

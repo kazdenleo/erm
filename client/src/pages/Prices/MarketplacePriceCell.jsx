@@ -20,7 +20,7 @@ const MP_BG = {
 };
 
 /**
- * Ячейки МП: мин. FBS / мин. FBO (по флагам) | факт. | до скидки + %.
+ * Ячейки МП: мин. FBS / мин. FBO (по флагам); опционально факт. и до скидки + %.
  */
 export function MarketplacePriceCells({
   product,
@@ -30,6 +30,7 @@ export function MarketplacePriceCells({
   minPriceFbo = null,
   showFbs = true,
   showFbo = false,
+  minOnly = false,
   isLoading,
   hasSku,
   skuBadge,
@@ -215,67 +216,71 @@ export function MarketplacePriceCells({
         </td>
       )}
 
-      <td className="mp-col mp-col-actual" style={{ background: bg }}>
-        {!showInputs ? (
-          renderEmpty()
-        ) : (
-          <div className="mp-price-stack">
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              min="0"
-              className="mp-price-input"
-              value={actualStr}
-              disabled={disabled || strategyLocked || saving}
-              readOnly={strategyLocked}
-              title={
-                strategyLocked
-                  ? 'Стратегия ценообразования активна — цена задаётся стратегией'
-                  : 'Фактическая цена'
-              }
-              placeholder="факт"
-              onChange={(e) => onActualChange(e.target.value)}
-            />
-            {(saving || savedFlash) && (
-              <span className="mp-price-cell-status">{saving ? '…' : '✓'}</span>
-            )}
-          </div>
-        )}
-      </td>
+      {!minOnly && (
+        <td className="mp-col mp-col-actual" style={{ background: bg }}>
+          {!showInputs ? (
+            renderEmpty()
+          ) : (
+            <div className="mp-price-stack">
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                min="0"
+                className="mp-price-input"
+                value={actualStr}
+                disabled={disabled || strategyLocked || saving}
+                readOnly={strategyLocked}
+                title={
+                  strategyLocked
+                    ? 'Стратегия ценообразования активна — цена задаётся стратегией'
+                    : 'Фактическая цена'
+                }
+                placeholder="факт"
+                onChange={(e) => onActualChange(e.target.value)}
+              />
+              {(saving || savedFlash) && (
+                <span className="mp-price-cell-status">{saving ? '…' : '✓'}</span>
+              )}
+            </div>
+          )}
+        </td>
+      )}
 
-      <td className="mp-col mp-col-discount" style={{ background: bg }}>
-        {!showInputs ? (
-          renderEmpty()
-        ) : (
-          <div className="mp-price-discount-pair">
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              min="0"
-              className="mp-price-input"
-              value={beforeStr}
-              disabled={disabled || saving}
-              placeholder="до ск."
-              title="Цена до скидки"
-              onChange={(e) => onBeforeChange(e.target.value)}
-            />
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              max="99.99"
-              className="mp-price-input mp-price-input-pct"
-              value={pctStr}
-              disabled={disabled || saving}
-              placeholder="%"
-              title="Скидка %"
-              onChange={(e) => onPctChange(e.target.value)}
-            />
-          </div>
-        )}
-      </td>
+      {!minOnly && (
+        <td className="mp-col mp-col-discount" style={{ background: bg }}>
+          {!showInputs ? (
+            renderEmpty()
+          ) : (
+            <div className="mp-price-discount-pair">
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                min="0"
+                className="mp-price-input"
+                value={beforeStr}
+                disabled={disabled || saving}
+                placeholder="до ск."
+                title="Цена до скидки"
+                onChange={(e) => onBeforeChange(e.target.value)}
+              />
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                max="99.99"
+                className="mp-price-input mp-price-input-pct"
+                value={pctStr}
+                disabled={disabled || saving}
+                placeholder="%"
+                title="Скидка %"
+                onChange={(e) => onPctChange(e.target.value)}
+              />
+            </div>
+          )}
+        </td>
+      )}
     </>
   );
 }
