@@ -737,24 +737,24 @@ export function PriceDetailsModal({
             {marketplace === 'ym' && (acquiringAmount > 0 || resolvedCalculatorData.acquiring != null || (resolvedCalculatorData.ymTariffs && (resolvedCalculatorData.ymTariffs.AGENCY_COMMISSION || resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER))) && (
               <>
                 <div className="price-breakdown-item">
-                  <span className="price-breakdown-label">Приём платежа покупателя (AGENCY_COMMISSION):</span>
+                  <span className="price-breakdown-label">Приём платежа покупателя:</span>
                   <span className="price-breakdown-value negative">
                     -{ymAgencyDisplay.toFixed(2)} ₽
                     <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
                       {resolvedCalculatorData.ymTariffs?.AGENCY_COMMISSION?.valueType === 'relative'
-                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.AGENCY_COMMISSION?.value) || 0).toFixed(2)}% = ${ymAgencyDisplay.toFixed(2)} ₽ (тариф YM, % от цены)`
-                        : `= ${ymAgencyDisplay.toFixed(2)} ₽ (тариф YM, фиксированная сумма)`}
+                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.AGENCY_COMMISSION?.value) || 0).toFixed(2)}% = ${ymAgencyDisplay.toFixed(2)} ₽`
+                        : `= ${ymAgencyDisplay.toFixed(2)} ₽ (фиксированная сумма)`}
                     </div>
                   </span>
                 </div>
                 <div className="price-breakdown-item">
-                  <span className="price-breakdown-label">Перевод платежа покупателя (PAYMENT_TRANSFER):</span>
+                  <span className="price-breakdown-label">Перевод платежа покупателя:</span>
                   <span className="price-breakdown-value negative">
                     -{ymPaymentTransferDisplay.toFixed(2)} ₽
                     <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
                       {resolvedCalculatorData.ymTariffs?.PAYMENT_TRANSFER?.valueType === 'relative'
-                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.value) || 0).toFixed(2)}% = ${ymPaymentTransferDisplay.toFixed(2)} ₽ (тариф YM${resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.fromSettings ? ', из настроек интеграции' : ', % от цены'})`
-                        : `= ${ymPaymentTransferDisplay.toFixed(2)} ₽ (тариф YM, фиксированная сумма)`}
+                        ? `= ${calculatedPrice.toFixed(2)} × ${(Number(resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.value) || 0).toFixed(2)}% = ${ymPaymentTransferDisplay.toFixed(2)} ₽${resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER?.fromSettings ? ' (из настроек)' : ''}`
+                        : `= ${ymPaymentTransferDisplay.toFixed(2)} ₽ (фиксированная сумма)`}
                     </div>
                   </span>
                 </div>

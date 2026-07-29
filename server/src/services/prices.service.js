@@ -196,6 +196,37 @@ class PricesService {
     };
   }
 
+  /**
+   * Подставляет % перевода платежа из настроек интеграции в калькулятор YM
+   * (и live API, и кэш — иначе mass-recalc оставляет 3.3% от DAILY).
+   */
+  _applyYmPaymentTransferOverride(calculator, paymentTransferPercent) {
+    if (!calculator || paymentTransferPercent == null) return calculator;
+    const pct = Number(paymentTransferPercent);
+    if (!Number.isFinite(pct) || pct < 0) return calculator;
+    const calcPrice = Number(calculator.price) || 0;
+    const amount =
+      calcPrice > 0 ? Math.round(((calcPrice * pct) / 100) * 100) / 100 : 0;
+    const agencyAmount = Number(calculator.ymTariffs?.AGENCY_COMMISSION?.amount) || 0;
+    const ymTariffs = {
+      ...(calculator.ymTariffs || {}),
+      PAYMENT_TRANSFER: {
+        ...(calculator.ymTariffs?.PAYMENT_TRANSFER || {}),
+        name: 'Перевод платежа покупателя',
+        amount,
+        valueType: 'relative',
+        value: pct,
+        fromSettings: true,
+      },
+    };
+    const acquiringAmountRub = agencyAmount + amount;
+    const acquiring = calcPrice > 0 ? Math.round((acquiringAmountRub / calcPrice) * 10000) / 100 : pct;
+    calculator.ymTariffs = ymTariffs;
+    calculator.acquiring = acquiring;
+    calculator.acquiring_amount_rub = acquiringAmountRub;
+    return calculator;
+  }
+
   async _fetchOzonV5PriceItems(filter, client_id, api_key) {
     const response = await fetch('https://api-seller.ozon.ru/v5/product/info/prices', {
       method: 'POST',
@@ -2571,7 +2602,10 @@ class PricesService {
         }
         const cached = await this._getMpCalculatorCacheRow(pid, 'ym');
         if (cached?.calculator) {
-          return { found: true, calculator: cached.calculator, fromCache: true };
+          const calculator = JSON.parse(JSON.stringify(cached.calculator));
+          const { payment_transfer_percent } = await this._getYandexApiCredentials(options);
+          this._applyYmPaymentTransferOverride(calculator, payment_transfer_percent);
+          return { found: true, calculator, fromCache: true };
         }
         return {
           found: false,
@@ -2867,6 +2901,7 @@ class PricesService {
 
       logger.info(`[Prices Service] YM tariffs/calculate OK for ${offer_id}: program=${ymProgram} fee=${feePercent}%, acquiring=${acquiringPercent}%`);
 
+      this._applyYmPaymentTransferOverride(calculator, paymentTransferPercentOverride);
       await this._tryUpsertMpCalculatorCacheFromOffer('ym', offer_id, calculator, 'live');
 
       return {
