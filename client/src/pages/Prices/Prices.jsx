@@ -1330,20 +1330,18 @@ export function Prices() {
                   <th colSpan={mpColSpan} className="mp-head-mp" style={{ background: 'rgba(255,204,0,0.14)' }}>
                     Я.Маркет
                   </th>
-                  {allowPrivateOrders && (
-                    <th
-                      rowSpan={2}
-                      style={{
-                        width: '88px',
-                        textAlign: 'center',
-                        verticalAlign: 'middle',
-                        background: 'rgba(16,185,129,0.10)',
-                      }}
-                      title="Себестоимость + доп. расходы + мин. наценка (частные)"
-                    >
-                      Частные
-                    </th>
-                  )}
+                  <th
+                    rowSpan={2}
+                    style={{
+                      width: '88px',
+                      textAlign: 'center',
+                      verticalAlign: 'middle',
+                      background: 'rgba(16,185,129,0.10)',
+                    }}
+                    title="Себестоимость + доп. расходы + мин. наценка (частные)"
+                  >
+                    Частные
+                  </th>
                   <th rowSpan={2} style={{ width: '72px', textAlign: 'center', verticalAlign: 'middle' }}>
                     Действия
                   </th>
@@ -1585,24 +1583,22 @@ export function Prices() {
                         onOpenMinDetailsFbs={() => openMinModal('ym', 'FBS', prices.ymFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ym', 'FBO', prices.ymFbo)}
                       />
-                      {allowPrivateOrders && (
-                        <td
-                          style={{
-                            textAlign: 'center',
-                            verticalAlign: 'middle',
-                            background: 'rgba(16,185,129,0.06)',
-                            whiteSpace: 'nowrap',
-                            fontWeight: 600,
-                            color: '#059669',
-                          }}
-                          title="Мин. цена для частного клиента: себестоимость + доп. расходы + наценка (частные)"
-                        >
-                          {(() => {
-                            const privatePrice = privateClientMinPrice(productMerged);
-                            return privatePrice != null ? `${privatePrice} ₽` : '—';
-                          })()}
-                        </td>
-                      )}
+                      <td
+                        style={{
+                          textAlign: 'center',
+                          verticalAlign: 'middle',
+                          background: 'rgba(16,185,129,0.06)',
+                          whiteSpace: 'nowrap',
+                          fontWeight: 600,
+                          color: '#059669',
+                        }}
+                        title="Мин. цена для частного клиента: себестоимость + доп. расходы + наценка (частные)"
+                      >
+                        {(() => {
+                          const privatePrice = privateClientMinPrice(productMerged);
+                          return privatePrice != null ? `${privatePrice} ₽` : '—';
+                        })()}
+                      </td>
                       <td style={{ textAlign: 'center', verticalAlign: 'middle', whiteSpace: 'nowrap' }}>
                         <div
                           style={{
