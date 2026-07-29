@@ -1,12 +1,14 @@
 /**
  * Синхронизация отзывов покупателей с Ozon, Wildberries, Яндекс.Маркет.
- *
- * Реализация по аналогии с marketplaceQuestions.service.js.
  */
 
 import integrationsService from './integrations.service.js';
 import repositoryFactory from '../config/repository-factory.js';
 import marketplaceReviewsRepo from '../repositories/marketplace_reviews.repository.pg.js';
+import reviewAutoReplyRulesRepo from '../repositories/review_auto_reply_rules.repository.pg.js';
+import { getYandexBusinessAndCampaigns, normalizeYandexApiKey } from './orders.sync.service.js';
+import { getYandexHttpsAgent } from '../utils/yandex-https-agent.js';
+import { applyReviewTemplate } from '../utils/reviewTemplateText.js';
 import logger from '../utils/logger.js';
 
 function parseIsoDate(v) {
@@ -27,6 +29,24 @@ function normalizeBody(v) {
   return s.trim();
 }
 
+async function getReviewsMarketplaceConfig(type, profileId) {
+  return integrationsService.getMarketplaceConfig(type, { profileId, organizationId: null });
+}
+
+const OZON_PREMIUM_PLUS_HINT =
+  'Ozon: загрузка отзывов через Seller API доступна только с подпиской Premium Plus в кабинете продавца Ozon (метод /v1/review/list). Без подписки API возвращает отказ доступа.';
+
+function isOzonPremiumPlusReviewsError(err) {
+  const m = String(err?.message || err || '');
+  return (
+    m.includes('403') ||
+    m.includes('Premium Plus') ||
+    m.includes('PermissionDenied') ||
+    m.includes('checkSellerPremiumPlus') ||
+    m.includes('premium')
+  );
+}
+
 function isOzonReviewProcessed(r) {
   const st = String(r?.status ?? '').trim().toUpperCase();
   return st === 'PROCESSED' || st === 'ANSWERED';
@@ -44,18 +64,19 @@ function mapOzonReview(r, profileId) {
   const rating = safeRating(r.rating ?? r.score);
   const body = normalizeBody(r.text ?? r.body ?? r.review_text ?? '');
   const hasText = body !== '';
-  // SKU в ответе /v1/review/list
-  const skuOrOffer = r.sku != null && String(r.sku).trim() !== '' ? String(r.sku).trim() : (r.offer_id != null ? String(r.offer_id).trim() : null);
-  const status = r.status ?? null; // PROCESSED/UNPROCESSED/...
+  const skuOrOffer =
+    r.sku != null && String(r.sku).trim() !== ''
+      ? String(r.sku).trim()
+      : r.offer_id != null
+        ? String(r.offer_id).trim()
+        : null;
+  const status = r.status ?? null;
   const sourceCreatedAt =
     parseIsoDate(r.published_at) ??
     parseIsoDate(r.publishedAt) ??
     parseIsoDate(r.created_at) ??
     parseIsoDate(r.createdAt) ??
     null;
-  // В ответах списка у Ozon есть comments_amount, но это не гарантирует seller comment.
-  // Доверяем локально сохранённому answer_text.
-  const answerText = null;
   return {
     profile_id: profileId,
     marketplace: 'ozon',
@@ -63,7 +84,7 @@ function mapOzonReview(r, profileId) {
     rating,
     body,
     has_text: hasText,
-    answer_text: answerText,
+    answer_text: null,
     status: status != null ? String(status) : null,
     sku_or_offer: skuOrOffer,
     source_created_at: sourceCreatedAt,
@@ -72,38 +93,61 @@ function mapOzonReview(r, profileId) {
 }
 
 async function syncOzon(profileId) {
-  const cfg = await integrationsService.getMarketplaceConfig('ozon', { profileId });
-  const client_id = cfg?.client_id ?? cfg?.clientId;
-  const api_key = cfg?.api_key ?? cfg?.apiKey;
-  if (!client_id || !api_key) {
+  const ozonCfg = await getReviewsMarketplaceConfig('ozon', profileId);
+  const ozonOverride =
+    ozonCfg?.client_id && ozonCfg?.api_key
+      ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
+      : null;
+  if (!ozonOverride) {
     throw new Error('Ozon API не настроен (client_id / api_key)');
   }
   let imported = 0;
   const externalIds = [];
   let lastId = null;
-  for (let page = 0; page < 20; page++) {
-    /* eslint-disable no-await-in-loop */
-    const body = {
-      limit: 100,
-      ...(lastId ? { last_id: String(lastId) } : {}),
-      sort_dir: 'DESC',
-      status: 'UNPROCESSED',
-    };
-    const data = await integrationsService._ozonApiPost('/v1/review/list', body, { profileId });
-    const r = data?.result ?? data;
-    const reviews = Array.isArray(r?.reviews) ? r.reviews : (Array.isArray(r?.items) ? r.items : []);
-    for (const it of reviews) {
-      const ext = String(it.id ?? it.review_id ?? it.reviewId ?? '').trim();
-      if (ext) externalIds.push(ext);
-      const row = mapOzonReview(it, profileId);
-      if (!row) continue;
-      await marketplaceReviewsRepo.upsertRow(row);
-      imported += 1;
+  try {
+    for (let page = 0; page < 20; page++) {
+      /* eslint-disable no-await-in-loop */
+      const body = {
+        limit: 100,
+        ...(lastId ? { last_id: String(lastId) } : {}),
+        sort_dir: 'DESC',
+        status: 'UNPROCESSED',
+      };
+      const data = await integrationsService._ozonApiPost('/v1/review/list', body, {
+        profileId,
+        ozonOverride,
+      });
+      // Ответ Ozon: { reviews, has_next, last_id } — иногда внутри result
+      const r = data?.result ?? data ?? {};
+      const reviews = Array.isArray(r?.reviews)
+        ? r.reviews
+        : Array.isArray(r?.items)
+          ? r.items
+          : Array.isArray(data?.reviews)
+            ? data.reviews
+            : [];
+      for (const it of reviews) {
+        const ext = String(it.id ?? it.review_id ?? it.reviewId ?? '').trim();
+        if (ext) externalIds.push(ext);
+        const row = mapOzonReview(it, profileId);
+        if (!row) continue;
+        await marketplaceReviewsRepo.upsertRow(row);
+        imported += 1;
+      }
+      const hasNext = Boolean(r?.has_next ?? data?.has_next);
+      if (!hasNext) break;
+      lastId = r?.last_id ?? r?.lastId ?? data?.last_id ?? data?.lastId ?? null;
+      if (!lastId) break;
+      /* eslint-enable no-await-in-loop */
     }
-    if (!r?.has_next) break;
-    lastId = r?.last_id ?? r?.lastId ?? null;
-    if (!lastId) break;
-    /* eslint-enable no-await-in-loop */
+  } catch (e) {
+    if (isOzonPremiumPlusReviewsError(e)) {
+      const err = new Error(OZON_PREMIUM_PLUS_HINT);
+      err.code = 'OZON_PREMIUM_PLUS_REQUIRED';
+      err.statusCode = 403;
+      throw err;
+    }
+    throw e;
   }
   return { imported, externalIds };
 }
@@ -119,7 +163,6 @@ function mapWbFeedback(fb, profileId) {
   const rating = safeRating(fb.productValuation ?? fb.valuation ?? fb.rating ?? fb.stars);
   const body = normalizeBody(fb.text ?? fb.feedbackText ?? '');
   const hasText = body !== '';
-  const answerText = null;
   const pd = wbProductDetails(fb);
   const skuOrOffer =
     (pd.supplierArticle ?? pd.vendorCode ?? fb.vendorCode ?? fb.vendor_code ?? null) != null
@@ -134,7 +177,7 @@ function mapWbFeedback(fb, profileId) {
     rating,
     body,
     has_text: hasText,
-    answer_text: answerText,
+    answer_text: null,
     status: status != null ? String(status) : null,
     sku_or_offer: skuOrOffer,
     source_created_at: sourceCreatedAt,
@@ -143,7 +186,7 @@ function mapWbFeedback(fb, profileId) {
 }
 
 async function syncWildberries(profileId) {
-  const config = await integrationsService.getMarketplaceConfig('wildberries', { profileId });
+  const config = await getReviewsMarketplaceConfig('wildberries', profileId);
   const raw = config?.api_key ?? config?.apiKey;
   const apiKey = raw ? integrationsService._normalizeWbToken(raw) : null;
   if (!apiKey) {
@@ -151,41 +194,145 @@ async function syncWildberries(profileId) {
   }
   let imported = 0;
   const externalIds = [];
-  const qs = new URLSearchParams();
-  qs.set('take', '500');
-  qs.set('skip', '0');
-  qs.set('isAnswered', 'false');
-  const url = `https://feedbacks-api.wildberries.ru/api/v1/feedbacks?${qs.toString()}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Wildberries API ${response.status}: ${text.substring(0, 400)}`);
-  }
-  let json;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
-  }
-  const root = json?.data ?? json;
-  const list = Array.isArray(root?.feedbacks) ? root.feedbacks : (Array.isArray(root) ? root : []);
-  for (const fb of list) {
-    const ext = String(fb.id ?? fb.feedbackId ?? '').trim();
-    if (ext) externalIds.push(ext);
-    const row = mapWbFeedback(fb, profileId);
-    if (!row) continue;
-    await marketplaceReviewsRepo.upsertRow(row);
-    imported += 1;
+  let skip = 0;
+  const take = 500;
+  for (let page = 0; page < 10; page++) {
+    /* eslint-disable no-await-in-loop */
+    const qs = new URLSearchParams();
+    qs.set('take', String(take));
+    qs.set('skip', String(skip));
+    qs.set('isAnswered', 'false');
+    const url = `https://feedbacks-api.wildberries.ru/api/v1/feedbacks?${qs.toString()}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Wildberries API ${response.status}: ${text.substring(0, 400)}`);
+    }
+    let json;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    const root = json?.data ?? json;
+    const list = Array.isArray(root?.feedbacks) ? root.feedbacks : Array.isArray(root) ? root : [];
+    for (const fb of list) {
+      const ext = String(fb.id ?? fb.feedbackId ?? '').trim();
+      if (ext) externalIds.push(ext);
+      const row = mapWbFeedback(fb, profileId);
+      if (!row) continue;
+      await marketplaceReviewsRepo.upsertRow(row);
+      imported += 1;
+    }
+    if (list.length < take) break;
+    skip += take;
+    /* eslint-enable no-await-in-loop */
   }
   return { imported, externalIds };
 }
 
+function yandexFeedbackBody(fb) {
+  const desc = fb?.description && typeof fb.description === 'object' ? fb.description : {};
+  const parts = [];
+  const advantages = normalizeBody(desc.advantages);
+  const disadvantages = normalizeBody(desc.disadvantages);
+  const comment = normalizeBody(desc.comment ?? fb.comment ?? fb.text ?? '');
+  if (advantages) parts.push(`Достоинства: ${advantages}`);
+  if (disadvantages) parts.push(`Недостатки: ${disadvantages}`);
+  if (comment) parts.push(comment);
+  return parts.join('\n').trim();
+}
+
+function mapYandexFeedback(fb, profileId) {
+  if (!fb || fb.needReaction === false) return null;
+  const ext = String(fb.feedbackId ?? fb.id ?? '').trim();
+  if (!ext) return null;
+  const rating = safeRating(fb.statistics?.rating ?? fb.rating ?? fb.statistics?.ratingValue);
+  const body = yandexFeedbackBody(fb);
+  const hasText = body !== '';
+  const offerId = fb.identifiers?.offerId ?? fb.offerId ?? fb.identifiers?.offer_id ?? null;
+  const skuOrOffer = offerId != null && String(offerId).trim() !== '' ? String(offerId).trim() : null;
+  const sourceCreatedAt = parseIsoDate(fb.createdAt ?? fb.created_at ?? fb.updatedAt);
+  return {
+    profile_id: profileId,
+    marketplace: 'yandex',
+    external_id: ext,
+    rating,
+    body,
+    has_text: hasText,
+    answer_text: null,
+    status: fb.needReaction === false ? 'READ' : 'NEED_REACTION',
+    sku_or_offer: skuOrOffer,
+    source_created_at: sourceCreatedAt,
+    raw_payload: fb,
+  };
+}
+
 async function syncYandex(profileId) {
-  void profileId;
-  return { imported: 0, externalIds: [] };
+  const config = await getReviewsMarketplaceConfig('yandex', profileId);
+  const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
+  if (!apiKey) {
+    const err = new Error(
+      'Яндекс.Маркет: не настроен Api-Key (нужен доступ «Общение с покупателями» / communication).'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  const { businessId } = await getYandexBusinessAndCampaigns(config);
+  if (businessId == null || Number.isNaN(Number(businessId)) || Number(businessId) < 1) {
+    const err = new Error(
+      'Яндекс.Маркет: не удалось определить businessId. Укажите Business ID в интеграции или проверьте api_key.'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  const agent = getYandexHttpsAgent();
+  let imported = 0;
+  const externalIds = [];
+  let pageToken = '';
+  for (let i = 0; i < 80; i++) {
+    /* eslint-disable no-await-in-loop */
+    const qs = new URLSearchParams();
+    qs.set('limit', '50');
+    if (pageToken) qs.set('pageToken', pageToken);
+    const url = `https://api.partner.market.yandex.ru/v2/businesses/${businessId}/goods-feedback?${qs.toString()}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Api-Key': apiKey,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ reactionStatus: 'NEED_REACTION' }),
+      ...(agent && { agent }),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Яндекс.Маркет API ${response.status}: ${text.substring(0, 400)}`);
+    }
+    let json;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      throw new Error('Яндекс.Маркет: неверный JSON в ответе');
+    }
+    const result = json?.result ?? json;
+    const feedbacks = Array.isArray(result?.feedbacks) ? result.feedbacks : [];
+    for (const fb of feedbacks) {
+      const row = mapYandexFeedback(fb, profileId);
+      if (!row) continue;
+      externalIds.push(row.external_id);
+      await marketplaceReviewsRepo.upsertRow(row);
+      imported += 1;
+    }
+    pageToken = result?.paging?.nextPageToken ?? '';
+    if (!pageToken || feedbacks.length === 0) break;
+    /* eslint-enable no-await-in-loop */
+  }
+  return { imported, externalIds };
 }
 
 /** Убираем из БД отзывы, на которые уже ответили или которых нет в списке неотвеченных на МП. */
@@ -216,7 +363,7 @@ function parseAnsweredFilter(query) {
 
 /**
  * @param {number} profileId
- * @param {{ only?: 'ozon'|'wildberries'|'yandex'|null }} [opts]
+ * @param {{ only?: 'ozon'|'wildberries'|'yandex'|null, skipAutoReply?: boolean }} [opts]
  */
 export async function syncMarketplaceReviews(profileId, opts = {}) {
   if (!repositoryFactory.isUsingPostgreSQL()) {
@@ -267,7 +414,18 @@ export async function syncMarketplaceReviews(profileId, opts = {}) {
       results.push({ marketplace: mp, ok: false, imported: 0, error: msg });
     }
   }
-  return { results };
+
+  let autoReply = null;
+  if (!opts.skipAutoReply) {
+    try {
+      autoReply = await processReviewAutoReplies(profileId, { limit: 80 });
+    } catch (e) {
+      logger.warn(`[MarketplaceReviews] auto-reply profile=${profileId} failed: ${e?.message || e}`);
+      autoReply = { answered: 0, errors: [e?.message || String(e)] };
+    }
+  }
+
+  return { results, autoReply };
 }
 
 export async function listMarketplaceReviews(profileId, query = {}) {
@@ -280,7 +438,11 @@ export async function listMarketplaceReviews(profileId, query = {}) {
 
 export async function getMarketplaceReviewsStats(profileId, query = {}) {
   if (!repositoryFactory.isUsingPostgreSQL()) {
-    return { newCount: 0, counts: { all: 0, new: 0, answered: 0 }, countsByMarketplace: { ozon: 0, wildberries: 0, yandex: 0 } };
+    return {
+      newCount: 0,
+      counts: { all: 0, new: 0, answered: 0 },
+      countsByMarketplace: { ozon: 0, wildberries: 0, yandex: 0 },
+    };
   }
   return await marketplaceReviewsRepo.getStats(profileId, query);
 }
@@ -288,15 +450,30 @@ export async function getMarketplaceReviewsStats(profileId, query = {}) {
 async function submitAnswerOzon(profileId, row, text) {
   const reviewId = String(row.external_id ?? '').trim();
   if (!reviewId) throw new Error('Ozon: нет external_id отзыва.');
-  await integrationsService._ozonApiPost(
-    '/v1/review/comment/create',
-    { review_id: reviewId, text: String(text).trim(), mark_review_as_processed: true },
-    { profileId }
-  );
+  const ozonCfg = await getReviewsMarketplaceConfig('ozon', profileId);
+  const ozonOverride =
+    ozonCfg?.client_id && ozonCfg?.api_key
+      ? { client_id: ozonCfg.client_id, api_key: ozonCfg.api_key }
+      : null;
+  try {
+    await integrationsService._ozonApiPost(
+      '/v1/review/comment/create',
+      { review_id: reviewId, text: String(text).trim(), mark_review_as_processed: true },
+      { profileId, ozonOverride }
+    );
+  } catch (e) {
+    if (isOzonPremiumPlusReviewsError(e)) {
+      const err = new Error(OZON_PREMIUM_PLUS_HINT);
+      err.code = 'OZON_PREMIUM_PLUS_REQUIRED';
+      err.statusCode = 403;
+      throw err;
+    }
+    throw e;
+  }
 }
 
 async function submitAnswerWildberries(profileId, row, text) {
-  const config = await integrationsService.getMarketplaceConfig('wildberries', { profileId });
+  const config = await getReviewsMarketplaceConfig('wildberries', profileId);
   const raw = config?.api_key ?? config?.apiKey;
   const apiKey = raw ? integrationsService._normalizeWbToken(raw) : null;
   if (!apiKey) {
@@ -318,7 +495,6 @@ async function submitAnswerWildberries(profileId, row, text) {
   if (!response.ok) {
     throw new Error(`Wildberries API ${response.status}: ${respText.substring(0, 400)}`);
   }
-  // WB может вернуть error=true в теле
   try {
     const json = respText ? JSON.parse(respText) : null;
     if (json && typeof json === 'object') {
@@ -326,7 +502,9 @@ async function submitAnswerWildberries(profileId, row, text) {
       const errText = json.errorText ? String(json.errorText).trim() : '';
       const addErr =
         json.additionalErrors != null
-          ? String(Array.isArray(json.additionalErrors) ? json.additionalErrors.join('; ') : json.additionalErrors).trim()
+          ? String(
+              Array.isArray(json.additionalErrors) ? json.additionalErrors.join('; ') : json.additionalErrors
+            ).trim()
           : '';
       if (errFlag || errText) {
         throw new Error(`Wildberries API: ответ не принят${errText ? ` — ${errText.substring(0, 300)}` : ''}`);
@@ -339,7 +517,6 @@ async function submitAnswerWildberries(profileId, row, text) {
     if (e?.message && String(e.message).startsWith('Wildberries API: ответ не принят')) throw e;
   }
 
-  // Подтверждаем, что WB действительно сохранил ответ (иначе отзыв останется «неотвеченным» на МП).
   const verifyUrl = `https://feedbacks-api.wildberries.ru/api/v1/feedback?id=${encodeURIComponent(ext)}`;
   let verified = false;
   let lastVerifyErr = '';
@@ -379,11 +556,51 @@ async function submitAnswerWildberries(profileId, row, text) {
   }
 }
 
+async function submitAnswerYandex(profileId, row, text) {
+  const config = await getReviewsMarketplaceConfig('yandex', profileId);
+  const apiKey = normalizeYandexApiKey(config?.api_key ?? config?.apiKey);
+  if (!apiKey) {
+    const err = new Error(
+      'Яндекс.Маркет: не настроен Api-Key (нужен доступ «Общение с покупателями» / communication).'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  const { businessId } = await getYandexBusinessAndCampaigns(config);
+  if (businessId == null || Number.isNaN(Number(businessId)) || Number(businessId) < 1) {
+    const err = new Error(
+      'Яндекс.Маркет: не удалось определить businessId. Укажите Business ID в интеграции.'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  const feedbackId = Number(String(row.external_id ?? '').trim());
+  if (!Number.isFinite(feedbackId) || feedbackId < 1) {
+    throw new Error('Яндекс.Маркет: нет корректного feedbackId отзыва.');
+  }
+  const agent = getYandexHttpsAgent();
+  const url = `https://api.partner.market.yandex.ru/v2/businesses/${businessId}/goods-feedback/comments/update`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Api-Key': apiKey,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      feedbackId,
+      comment: { text: String(text).trim() },
+    }),
+    ...(agent && { agent }),
+  });
+  const respText = await response.text();
+  if (!response.ok) {
+    throw new Error(`Яндекс.Маркет API ${response.status}: ${respText.substring(0, 400)}`);
+  }
+}
+
 /**
- * Отправить ответ на отзыв в API маркетплейса и сохранить текст в БД.
- * @param {number} profileId
- * @param {string|number} reviewRowId — id строки в marketplace_reviews
- * @param {string} text
+ * Отправить ответ на отзыв в API маркетплейса и удалить строку из БД.
  */
 export async function submitMarketplaceReviewAnswer(profileId, reviewRowId, text) {
   if (!repositoryFactory.isUsingPostgreSQL()) {
@@ -406,11 +623,8 @@ export async function submitMarketplaceReviewAnswer(profileId, reviewRowId, text
   const mp = String(row.marketplace || '').trim().toLowerCase();
   if (mp === 'ozon') await submitAnswerOzon(profileId, row, trimmed);
   else if (mp === 'wildberries') await submitAnswerWildberries(profileId, row, trimmed);
-  else if (mp === 'yandex') {
-    const err = new Error('Ответы на отзывы Яндекс.Маркета пока не поддерживаются');
-    err.statusCode = 501;
-    throw err;
-  } else {
+  else if (mp === 'yandex') await submitAnswerYandex(profileId, row, trimmed);
+  else {
     const err = new Error('Неверный marketplace');
     err.statusCode = 400;
     throw err;
@@ -423,3 +637,78 @@ export async function submitMarketplaceReviewAnswer(profileId, reviewRowId, text
   };
 }
 
+/**
+ * Автоответ по включённым правилам (рейтинг × наличие текста → шаблон).
+ * Запускается после синхронизации отзывов (по умолчанию раз в час) и вручную.
+ */
+export async function processReviewAutoReplies(profileId, { limit = 50 } = {}) {
+  if (!repositoryFactory.isUsingPostgreSQL()) {
+    return { answered: 0, skipped: 0, errors: [] };
+  }
+  const pid = Number(profileId);
+  if (!Number.isFinite(pid) || pid < 1) {
+    return { answered: 0, skipped: 0, errors: ['Некорректный profileId'] };
+  }
+  const rules = await reviewAutoReplyRulesRepo.listEnabledWithTemplates(pid);
+  if (!rules.length) {
+    return { answered: 0, skipped: 0, errors: [], rules: 0 };
+  }
+
+  const fetchLimit = Math.min(500, Math.max(limit * 3, 80));
+  const items = await marketplaceReviewsRepo.listMatchingAutoReplyRules(pid, rules, {
+    limit: fetchLimit,
+  });
+
+  let answered = 0;
+  let skipped = 0;
+  const errors = [];
+
+  const matchRule = (rating, hasText) => {
+    for (const rule of rules) {
+      const ratingOk = rule.rating == null || Number(rule.rating) === Number(rating);
+      const textOk = rule.hasText == null || Boolean(rule.hasText) === Boolean(hasText);
+      if (ratingOk && textOk) return rule;
+    }
+    return null;
+  };
+
+  for (const item of items) {
+    if (answered >= limit) break;
+    const rating = safeRating(item.rating);
+    if (rating == null) {
+      skipped += 1;
+      continue;
+    }
+    const hasText = Boolean(item.hasText ?? item.has_text);
+    const rule = matchRule(rating, hasText);
+    if (!rule?.templateBody) {
+      skipped += 1;
+      continue;
+    }
+    const text = applyReviewTemplate(rule.templateBody, {
+      skuOrOffer: item.skuOrOffer ?? item.sku_or_offer,
+    });
+    if (!text) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await submitMarketplaceReviewAnswer(pid, item.id, text);
+      answered += 1;
+      // WB/Ozon лимитируют ответы — пауза между отправками
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 1200));
+    } catch (e) {
+      const msg = e?.message || String(e);
+      errors.push(`#${item.id}: ${msg}`);
+      logger.warn(`[MarketplaceReviews] auto-reply failed id=${item.id}: ${msg}`);
+      if (/429|too many requests|rate limit/i.test(msg)) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    }
+  }
+
+  return { answered, skipped, errors, rules: rules.length, candidates: items.length };
+}

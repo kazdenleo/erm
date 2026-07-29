@@ -16,21 +16,24 @@ export const reviewsApi = {
   getStats: async (params = {}) => {
     const response = await api.get('/reviews/stats', { params });
     const payload = response.data?.data ?? response.data;
-    const n = payload?.newCount;
+    const toNum = (v) => {
+      const n = typeof v === 'number' ? v : Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
     const c = payload?.counts;
     const byMp = payload?.countsByMarketplace ?? {};
+    const newCount = toNum(payload?.newCount ?? c?.new);
     return {
-      newCount: typeof n === 'number' && Number.isFinite(n) ? n : 0,
+      newCount,
       counts: {
-        all: typeof c?.all === 'number' && Number.isFinite(c.all) ? c.all : 0,
-        new: typeof c?.new === 'number' && Number.isFinite(c.new) ? c.new : 0,
-        answered: typeof c?.answered === 'number' && Number.isFinite(c.answered) ? c.answered : 0,
+        all: toNum(c?.all),
+        new: toNum(c?.new ?? newCount),
+        answered: toNum(c?.answered),
       },
       countsByMarketplace: {
-        ozon: typeof byMp.ozon === 'number' && Number.isFinite(byMp.ozon) ? byMp.ozon : 0,
-        wildberries:
-          typeof byMp.wildberries === 'number' && Number.isFinite(byMp.wildberries) ? byMp.wildberries : 0,
-        yandex: typeof byMp.yandex === 'number' && Number.isFinite(byMp.yandex) ? byMp.yandex : 0,
+        ozon: toNum(byMp.ozon),
+        wildberries: toNum(byMp.wildberries),
+        yandex: toNum(byMp.yandex),
       },
     };
   },

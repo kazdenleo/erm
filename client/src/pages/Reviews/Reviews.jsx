@@ -6,7 +6,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { MARKETPLACE_TABLE_BADGES } from '../../constants/marketplaceUi';
 import { normalizeMarketplaceForUI } from '../../utils/orderListGroupKey';
 import { reviewsApi } from '../../services/reviews.api';
+import { reviewAnswerTemplatesApi } from '../../services/reviewAnswerTemplates.api';
 import { Button } from '../../components/common/Button/Button';
+import { ReviewTemplatesModal } from './ReviewTemplatesModal';
+import { applyReviewTemplate } from './reviewTemplateText';
 import './Reviews.css';
 
 const HAS_TEXT_OPTIONS = [
@@ -54,8 +57,10 @@ const AUTO_REFRESH_MS = 60 * 60 * 1000;
 
 export function Reviews() {
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
+  const [syncInfo, setSyncInfo] = useState('');
 
   const [marketplaceFilter, setMarketplaceFilter] = useState('all');
   const [starsFilter, setStarsFilter] = useState('all');
@@ -66,6 +71,8 @@ export function Reviews() {
   const [mpCounts, setMpCounts] = useState({ ozon: 0, wildberries: 0, yandex: 0 });
   const [drafts, setDrafts] = useState({});
   const [sendingId, setSendingId] = useState(null);
+  const [templates, setTemplates] = useState([]);
+  const [templatesModalOpen, setTemplatesModalOpen] = useState(false);
 
   const loadCounts = useCallback(async () => {
     try {
@@ -79,6 +86,15 @@ export function Reviews() {
       setMpCounts({ ozon: 0, wildberries: 0, yandex: 0 });
     }
   }, [marketplaceFilter]);
+
+  const loadTemplates = useCallback(async () => {
+    try {
+      const data = await reviewAnswerTemplatesApi.getAll();
+      setTemplates(Array.isArray(data) ? data : []);
+    } catch {
+      setTemplates([]);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -108,6 +124,10 @@ export function Reviews() {
   }, [load]);
 
   useEffect(() => {
+    void loadTemplates();
+  }, [loadTemplates]);
+
+  useEffect(() => {
     const id = setInterval(() => loadRef.current(), AUTO_REFRESH_MS);
     return () => clearInterval(id);
   }, []);
@@ -117,6 +137,11 @@ export function Reviews() {
 
   const setDraft = (id, value) => {
     setDrafts((prev) => ({ ...prev, [id]: value }));
+  };
+
+  const applyTemplate = (r, tpl) => {
+    const text = applyReviewTemplate(tpl?.body || '', { skuOrOffer: r.skuOrOffer });
+    setDraft(r.id, text);
   };
 
   const sendAnswer = async (r) => {
@@ -142,6 +167,30 @@ export function Reviews() {
     }
   };
 
+  const syncNow = async () => {
+    try {
+      setSyncing(true);
+      setError('');
+      setSyncInfo('');
+      const data = await reviewsApi.sync();
+      const results = Array.isArray(data?.results) ? data.results : [];
+      const parts = results.map((r) => {
+        if (!r?.ok) return `${r.marketplace}: ошибка — ${r.error || 'неизвестно'}`;
+        return `${r.marketplace}: +${r.imported ?? 0}`;
+      });
+      const auto = data?.autoReply;
+      if (auto && Number(auto.answered) > 0) {
+        parts.push(`автоответов: ${auto.answered}`);
+      }
+      setSyncInfo(parts.join('; ') || 'Синхронизация завершена');
+      await load();
+    } catch (e) {
+      setError(e?.response?.data?.message || e?.message || 'Не удалось синхронизировать отзывы');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const mpTotalAll = mpCounts.ozon + mpCounts.wildberries + mpCounts.yandex;
 
   return (
@@ -149,11 +198,18 @@ export function Reviews() {
       <h1 className="title">Отзывы</h1>
       <p className="subtitle">
         Новые отзывы без ответа. Отвеченные не хранятся — после ответа отзыв исчезает из списка. Данные
-        обновляются на сервере раз в час.
+        обновляются на сервере раз в час; можно синхронизировать вручную.
       </p>
 
       <div className="reviews-toolbar">
-        <div className="reviews-toolbar-left" />
+        <div className="reviews-toolbar-left">
+          <Button type="button" variant="primary" size="small" onClick={() => void syncNow()} disabled={syncing}>
+            {syncing ? 'Синхронизация…' : 'Синхронизировать'}
+          </Button>
+          <Button type="button" variant="secondary" size="small" onClick={() => setTemplatesModalOpen(true)}>
+            Шаблоны и автоответы
+          </Button>
+        </div>
         <div className="reviews-toolbar-right">
           <div className="reviews-filter">
             <span className="reviews-filter-label">Маркетплейс</span>
@@ -198,6 +254,7 @@ export function Reviews() {
 
       <div className="reviews-counts text-muted small">
         Новых отзывов: <strong>{filterCounts.new}</strong>
+        {syncInfo ? <span className="reviews-sync-info"> · {syncInfo}</span> : null}
       </div>
 
       {error && <div className="alert alert-danger mt-2">{error}</div>}
@@ -223,12 +280,18 @@ export function Reviews() {
             <tbody>
               {items.map((r) => {
                 const mp = normalizeMarketplaceForUI(r.marketplace);
-                const badge = MARKETPLACE_TABLE_BADGES[mp] || null;
+                const badge = MARKETPLACE_TABLE_BADGES.find((m) => m.code === mp) || null;
                 return (
                   <tr key={r.id}>
                     <td className="text-nowrap">{formatDt(r.sourceCreatedAt)}</td>
                     <td className="text-nowrap">
-                      {badge ? <span className={`badge ${badge.className}`}>{badge.label}</span> : mp}
+                      {badge ? (
+                        <span className={`mp-badge ${badge.badgeClass}`} title={badge.name}>
+                          {badge.shortLabel}
+                        </span>
+                      ) : (
+                        mp
+                      )}
                     </td>
                     <td className="text-nowrap">{starsLabel(r.rating)}</td>
                     <td className="text-nowrap">{r.skuOrOffer || '—'}</td>
@@ -238,6 +301,22 @@ export function Reviews() {
                     </td>
                     <td style={{ minWidth: 320 }}>
                       <div className="reviews-answer-form">
+                        {templates.length > 0 ? (
+                          <div className="reviews-template-chips">
+                            {templates.map((tpl) => (
+                              <button
+                                key={tpl.id}
+                                type="button"
+                                className="reviews-template-chip"
+                                title={tpl.body}
+                                onClick={() => applyTemplate(r, tpl)}
+                                disabled={sendingId === r.id}
+                              >
+                                {tpl.title}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
                         <textarea
                           className="form-control form-control-sm"
                           rows={3}
@@ -265,7 +344,19 @@ export function Reviews() {
           </table>
         </div>
       )}
+
+      <ReviewTemplatesModal
+        isOpen={templatesModalOpen}
+        onClose={() => {
+          setTemplatesModalOpen(false);
+          void loadTemplates();
+        }}
+        prefetchedTemplates={templates}
+        onChange={() => {
+          void loadTemplates();
+          bumpReviewsStats();
+        }}
+      />
     </div>
   );
 }
-

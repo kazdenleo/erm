@@ -13,6 +13,7 @@ import {
 } from '../../../utils/profileFlags.js';
 import { isNavFeatureEnabled } from '../../../utils/userNavSections.js';
 import { questionsApi } from '../../../services/questions.api';
+import { reviewsApi } from '../../../services/reviews.api';
 import { marketplaceReturnsApi } from '../../../services/marketplaceReturns.api';
 import { WAREHOUSE_OPERATION_OPS, warehouseOpFromSearch } from '../../../pages/StockLevels/warehouseTabs.js';
 
@@ -143,6 +144,7 @@ export function Sidebar({ onNavigate }) {
   const fboMenuEnabled = isProfileFboEnabled(profile);
   const NONE = '__none__';
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
+  const [reviewsNewCount, setReviewsNewCount] = useState(0);
   const [returnsWaitingCount, setReturnsWaitingCount] = useState(0);
 
   const onLeafClick = useCallback((item) => {
@@ -167,6 +169,19 @@ export function Sidebar({ onNavigate }) {
     }
   }, [user?.profileId]);
 
+  const loadReviewsStats = useCallback(async () => {
+    if (user?.profileId == null || user?.profileId === '') {
+      setReviewsNewCount(0);
+      return;
+    }
+    try {
+      const { newCount } = await reviewsApi.getStats();
+      setReviewsNewCount(typeof newCount === 'number' && Number.isFinite(newCount) ? newCount : 0);
+    } catch {
+      setReviewsNewCount(0);
+    }
+  }, [user?.profileId]);
+
   const loadReturnsStats = useCallback(async () => {
     if (user?.profileId == null || user?.profileId === '') {
       setReturnsWaitingCount(0);
@@ -185,6 +200,12 @@ export function Sidebar({ onNavigate }) {
     const t = setInterval(loadQuestionsStats, 60000);
     return () => clearInterval(t);
   }, [loadQuestionsStats]);
+
+  useEffect(() => {
+    loadReviewsStats();
+    const t = setInterval(loadReviewsStats, 60000);
+    return () => clearInterval(t);
+  }, [loadReviewsStats]);
 
   useEffect(() => {
     if (user?.profileId == null || user?.profileId === '') return undefined;
@@ -218,8 +239,18 @@ export function Sidebar({ onNavigate }) {
   }, [loadQuestionsStats]);
 
   useEffect(() => {
+    const onRefresh = () => loadReviewsStats();
+    window.addEventListener('reviews-stats-refresh', onRefresh);
+    return () => window.removeEventListener('reviews-stats-refresh', onRefresh);
+  }, [loadReviewsStats]);
+
+  useEffect(() => {
     if (location.pathname === '/questions') loadQuestionsStats();
   }, [location.pathname, loadQuestionsStats]);
+
+  useEffect(() => {
+    if (location.pathname === '/reviews') loadReviewsStats();
+  }, [location.pathname, loadReviewsStats]);
 
   /** Активен ли подпункт (учёт ?op= у /stock-levels/warehouse; без ложного highlight родителя вроде /prices на /prices/strategies) */
   const childMatchesLocation = useCallback((sub, loc, siblings = []) => {
@@ -311,7 +342,18 @@ export function Sidebar({ onNavigate }) {
 
               if (!hasChildren) {
                 const showQBadge = item.path === '/questions' && questionsNewCount > 0;
-                const badgeText = questionsNewCount > 99 ? '99+' : String(questionsNewCount);
+                const showRBadge = item.path === '/reviews' && reviewsNewCount > 0;
+                const badgeCount = showQBadge
+                  ? questionsNewCount
+                  : showRBadge
+                    ? reviewsNewCount
+                    : 0;
+                const badgeText = badgeCount > 99 ? '99+' : String(badgeCount);
+                const badgeTitle = showQBadge
+                  ? 'Новых вопросов без ответа'
+                  : showRBadge
+                    ? 'Новых отзывов без ответа'
+                    : '';
                 return (
                   <li key={item.path}>
                     <Link
@@ -324,8 +366,8 @@ export function Sidebar({ onNavigate }) {
                     >
                       <i className={`metismenu-icon ${item.iconClass}`} />
                       <span className="sidebar-nav-label">{item.label}</span>
-                      {showQBadge ? (
-                        <span className="sidebar-menu-badge" title="Новых вопросов без ответа">
+                      {showQBadge || showRBadge ? (
+                        <span className="sidebar-menu-badge" title={badgeTitle}>
                           {badgeText}
                         </span>
                       ) : null}

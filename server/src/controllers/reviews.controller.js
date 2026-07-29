@@ -81,7 +81,7 @@ class ReviewsController {
       res.setHeader('Cache-Control', 'no-store');
       return res.status(200).json({ ok: true, data: saved });
     } catch (error) {
-      if ([400, 404, 501, 502].includes(error.statusCode)) {
+      if ([400, 403, 404, 501, 502].includes(error.statusCode)) {
         return res.status(error.statusCode).json({ ok: false, message: error.message });
       }
       next(error);

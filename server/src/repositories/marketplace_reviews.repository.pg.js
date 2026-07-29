@@ -238,6 +238,52 @@ class MarketplaceReviewsRepositoryPG {
     return (result.rows || []).map(rowToApi);
   }
 
+  /**
+   * Неотвеченные отзывы, подходящие под хотя бы одно правило автоответа.
+   * @param {number} profileId
+   * @param {Array<{ rating?: number|null, hasText?: boolean|null }>} rules
+   * @param {{ limit?: number }} [opts]
+   */
+  async listMatchingAutoReplyRules(profileId, rules, { limit = 100 } = {}) {
+    const pid = Number(profileId);
+    if (!Number.isFinite(pid) || pid < 1) return [];
+    const list = Array.isArray(rules) ? rules.filter(Boolean) : [];
+    if (!list.length) return [];
+
+    const where = [`profile_id = $1`, SQL_NEEDS_REPLY];
+    const params = [pid];
+    let i = 2;
+    const orParts = [];
+    for (const rule of list) {
+      const parts = [];
+      if (rule.rating != null && Number.isFinite(Number(rule.rating))) {
+        parts.push(`rating = $${i++}`);
+        params.push(Math.round(Number(rule.rating)));
+      } else {
+        parts.push(`rating IS NOT NULL`);
+      }
+      if (rule.hasText === true || rule.hasText === false) {
+        parts.push(`has_text = $${i++}`);
+        params.push(Boolean(rule.hasText));
+      }
+      if (parts.length) orParts.push(`(${parts.join(' AND ')})`);
+    }
+    if (!orParts.length) return [];
+    where.push(`(${orParts.join(' OR ')})`);
+
+    const limRaw = Number(limit);
+    const lim = Number.isFinite(limRaw) ? Math.max(1, Math.min(500, Math.round(limRaw))) : 100;
+    const sql = `
+      SELECT * FROM marketplace_reviews
+      WHERE ${where.join(' AND ')}
+      ORDER BY source_created_at ASC NULLS LAST, id ASC
+      LIMIT $${i++}
+    `;
+    params.push(lim);
+    const result = await query(sql, params);
+    return (result.rows || []).map(rowToApi);
+  }
+
   async getStats(profileId, queryParams = {}) {
     const pid = Number(profileId);
     if (!Number.isFinite(pid) || pid < 1) {
