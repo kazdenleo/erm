@@ -269,7 +269,12 @@ async function pushWildberries(ctx, quantity, organizationId, profileId) {
 async function pushYandex(ctx, quantity, organizationId, profileId) {
   const cfg = await mpConfig({ organizationId, profileId }, 'yandex');
   const apiKey = yandexKey(cfg);
-  const campaignId = String(cfg?.campaign_id ?? cfg?.campaignId ?? '').trim();
+  // campaignId из привязки склада приоритетнее campaign_id кабинета:
+  // иначе остатки уходят в другую кампанию при нескольких магазинах YM на одном ключе.
+  const parsedYm = parseYandexWarehouseMapping(ctx.mapping?.marketplace_warehouse_id);
+  const campaignId = String(
+    parsedYm.campaignId || cfg?.campaign_id || cfg?.campaignId || ''
+  ).trim();
   if (!apiKey || !campaignId) {
     return { marketplace: 'ym', ok: false, skipped: true, reason: 'no_credentials' };
   }
@@ -280,8 +285,6 @@ async function pushYandex(ctx, quantity, organizationId, profileId) {
     return { marketplace: 'ym', ok: false, skipped: true, reason: 'no_product_sku' };
   }
 
-  // В маппинге YM: campaignId — для заказов/резерва; warehouseId — только для API остатков.
-  const parsedYm = parseYandexWarehouseMapping(ctx.mapping?.marketplace_warehouse_id);
   const mpWarehouseId = String(parsedYm.warehouseId || '').trim();
   const updatedAt = new Date().toISOString();
   const skuPayload = {
@@ -313,8 +316,12 @@ async function pushYandex(ctx, quantity, organizationId, profileId) {
     err.statusCode = response.status;
     throw err;
   }
-  logger.info(`[MP Stock Push] YM OK product=${ctx.product?.id} offer=${offerId} qty=${quantity}`);
-  return { marketplace: 'ym', ok: true, quantity, offerId };
+  logger.info(
+    `[MP Stock Push] YM OK product=${ctx.product?.id} offer=${offerId} qty=${quantity}` +
+      ` campaign=${campaignId}` +
+      (mpWarehouseId ? ` wh=${mpWarehouseId}` : '')
+  );
+  return { marketplace: 'ym', ok: true, quantity, offerId, campaignId, warehouseId: mpWarehouseId || null };
 }
 
 export default { pushStockToMarketplace };
