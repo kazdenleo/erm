@@ -394,7 +394,7 @@ export function PricePromotions() {
         isOpen={actionModal.isOpen}
         onClose={() => setActionModal({ isOpen: false, action: null })}
         title={actionModal.action ? `Акция: ${actionModal.action.title || actionModal.action.id}` : 'Акция'}
-        size="large"
+        size="xl"
       >
         <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
           <button
@@ -581,7 +581,7 @@ export function PricePromotions() {
         isOpen={wbActionModal.isOpen}
         onClose={() => setWbActionModal({ isOpen: false, promotion: null })}
         title={wbActionModal.promotion ? `Акция WB: ${wbActionModal.promotion.name || wbActionModal.promotion.id}` : 'Акция WB'}
-        size="large"
+        size="xl"
       >
         <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
           <button
