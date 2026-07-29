@@ -1321,6 +1321,22 @@ export function Prices() {
                   </th>
                   <th rowSpan={2} style={{ verticalAlign: 'middle' }}>Артикул</th>
                   <th rowSpan={2} style={{ width: '16%', verticalAlign: 'middle' }}>Товар</th>
+                  <th
+                    rowSpan={2}
+                    className="prices-private-col"
+                    style={{
+                      width: '88px',
+                      minWidth: '88px',
+                      textAlign: 'center',
+                      verticalAlign: 'middle',
+                      background: 'rgba(16,185,129,0.14)',
+                      color: '#047857',
+                      fontWeight: 700,
+                    }}
+                    title="Мин. цена для частного клиента: себестоимость + доп. расходы + наценка (частные)"
+                  >
+                    Частные
+                  </th>
                   <th colSpan={mpColSpan} className="mp-head-mp" style={{ background: 'rgba(0,91,255,0.12)' }}>
                     Ozon
                   </th>
@@ -1329,18 +1345,6 @@ export function Prices() {
                   </th>
                   <th colSpan={mpColSpan} className="mp-head-mp" style={{ background: 'rgba(255,204,0,0.14)' }}>
                     Я.Маркет
-                  </th>
-                  <th
-                    rowSpan={2}
-                    style={{
-                      width: '88px',
-                      textAlign: 'center',
-                      verticalAlign: 'middle',
-                      background: 'rgba(16,185,129,0.10)',
-                    }}
-                    title="Себестоимость + доп. расходы + мин. наценка (частные)"
-                  >
-                    Частные
                   </th>
                   <th rowSpan={2} style={{ width: '72px', textAlign: 'center', verticalAlign: 'middle' }}>
                     Действия
@@ -1529,6 +1533,23 @@ export function Prices() {
                           </div>
                         ) : null}
                       </td>
+                      <td
+                        className="prices-private-col"
+                        style={{
+                          textAlign: 'center',
+                          verticalAlign: 'middle',
+                          background: 'rgba(16,185,129,0.08)',
+                          whiteSpace: 'nowrap',
+                          fontWeight: 700,
+                          color: '#047857',
+                        }}
+                        title="Мин. цена для частного клиента: себестоимость + доп. расходы + наценка (частные)"
+                      >
+                        {(() => {
+                          const privatePrice = privateClientMinPrice(productMerged);
+                          return privatePrice != null ? `${privatePrice} ₽` : '—';
+                        })()}
+                      </td>
                       <MarketplacePriceCells
                         product={productMerged}
                         marketplace="ozon"
@@ -1583,22 +1604,6 @@ export function Prices() {
                         onOpenMinDetailsFbs={() => openMinModal('ym', 'FBS', prices.ymFbs)}
                         onOpenMinDetailsFbo={() => openMinModal('ym', 'FBO', prices.ymFbo)}
                       />
-                      <td
-                        style={{
-                          textAlign: 'center',
-                          verticalAlign: 'middle',
-                          background: 'rgba(16,185,129,0.06)',
-                          whiteSpace: 'nowrap',
-                          fontWeight: 600,
-                          color: '#059669',
-                        }}
-                        title="Мин. цена для частного клиента: себестоимость + доп. расходы + наценка (частные)"
-                      >
-                        {(() => {
-                          const privatePrice = privateClientMinPrice(productMerged);
-                          return privatePrice != null ? `${privatePrice} ₽` : '—';
-                        })()}
-                      </td>
                       <td style={{ textAlign: 'center', verticalAlign: 'middle', whiteSpace: 'nowrap' }}>
                         <div
                           style={{
