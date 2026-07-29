@@ -1,20 +1,9 @@
 /**
  * Объём товара в литрах (клиент).
+ * Для логистики/мин. цен — из габаритов (мм), как на вкладках МП; поле volume — только запасной вариант.
  */
 
-export function resolveProductVolumeLiters(product) {
-  if (!product || typeof product !== 'object') return null;
-
-  const direct =
-    product.effectiveVolume ??
-    product.volume ??
-    product.volume_liters ??
-    product.volumeLiters;
-  if (direct != null && direct !== '') {
-    const n = Number(direct);
-    if (Number.isFinite(n) && n > 0) return Math.round(n * 1000) / 1000;
-  }
-
+function litersFromDimensions(product) {
   const length = Number(product.length);
   const width = Number(product.width);
   const height = Number(product.height);
@@ -26,8 +15,25 @@ export function resolveProductVolumeLiters(product) {
     const liters = (length * width * height) / 1_000_000;
     if (liters > 0) return Math.round(liters * 1000) / 1000;
   }
-
   return null;
+}
+
+function litersFromVolumeField(product) {
+  const direct =
+    product.effectiveVolume ??
+    product.volume ??
+    product.volume_liters ??
+    product.volumeLiters;
+  if (direct != null && direct !== '') {
+    const n = Number(direct);
+    if (Number.isFinite(n) && n > 0) return Math.round(n * 1000) / 1000;
+  }
+  return null;
+}
+
+export function resolveProductVolumeLiters(product) {
+  if (!product || typeof product !== 'object') return null;
+  return litersFromDimensions(product) ?? litersFromVolumeField(product);
 }
 
 export function resolveEffectiveVolumeLiters(calculator, product) {
@@ -47,5 +53,5 @@ export function enrichCalculatorVolumeFromProduct(calculator, product) {
   if (!calculator || typeof calculator !== 'object') return calculator;
   const liters = resolveProductVolumeLiters(product);
   if (liters == null) return calculator;
-  return { ...calculator, volume_weight: liters };
+  return { ...calculator, volume_weight: liters, volume_source: 'dimensions' };
 }

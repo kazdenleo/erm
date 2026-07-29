@@ -4,7 +4,7 @@ import {
 } from '../src/utils/productVolume.js';
 
 describe('resolveProductVolumeLiters', () => {
-  test('uses explicit volume', () => {
+  test('uses explicit volume when no dimensions', () => {
     expect(resolveProductVolumeLiters({ volume: 15 })).toBe(15);
   });
 
@@ -12,8 +12,8 @@ describe('resolveProductVolumeLiters', () => {
     expect(resolveProductVolumeLiters({ length: 400, width: 250, height: 150 })).toBe(15);
   });
 
-  test('prefers explicit volume over dimensions', () => {
-    expect(resolveProductVolumeLiters({ volume: 12, length: 400, width: 250, height: 150 })).toBe(12);
+  test('prefers dimensions over explicit volume', () => {
+    expect(resolveProductVolumeLiters({ volume: 12, length: 400, width: 250, height: 150 })).toBe(15);
   });
 
   test('returns null when no data', () => {
