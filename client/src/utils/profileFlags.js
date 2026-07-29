@@ -16,6 +16,10 @@ export function accountSettingsFromProfile(profile) {
         : profile.manualOrdersWarehouseId != null && profile.manualOrdersWarehouseId !== ''
           ? String(profile.manualOrdersWarehouseId)
           : '',
+    fbs_enabled:
+      profile.fbs_enabled === undefined && profile.fbsEnabled === undefined
+        ? true
+        : isProfileBoolFlag(profile.fbs_enabled ?? profile.fbsEnabled),
     fbo_enabled: isProfileBoolFlag(profile.fbo_enabled ?? profile.fboEnabled),
     fbo_deduction_warehouse_id:
       profile.fbo_deduction_warehouse_id != null && profile.fbo_deduction_warehouse_id !== ''
@@ -59,7 +63,14 @@ export function isProfileProductionEnabled(profile) {
   return profile.production_enabled !== false;
 }
 
-/** Поставки FBO включены в настройках аккаунта. */
+/** FBS включён в настройках аккаунта (по умолчанию да). */
+export function isProfileFbsEnabled(profile) {
+  if (profile == null) return true;
+  if (profile.fbs_enabled === undefined && profile.fbsEnabled === undefined) return true;
+  return isProfileBoolFlag(profile.fbs_enabled ?? profile.fbsEnabled);
+}
+
+/** Поставки / мин. цены FBO включены в настройках аккаунта. */
 export function isProfileFboEnabled(profile) {
   if (profile == null) return false;
   return isProfileBoolFlag(profile.fbo_enabled ?? profile.fboEnabled);

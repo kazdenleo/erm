@@ -2708,7 +2708,7 @@ class PricesService {
           quantity: 1
         }],
         parameters: {
-          sellingProgram: 'FBS',
+          sellingProgram: String(options.sellingProgram || 'FBS').toUpperCase() === 'FBY' ? 'FBY' : 'FBS',
           currency: 'RUR',
           frequency: 'DAILY'
         }
@@ -2806,20 +2806,23 @@ class PricesService {
       const expressValueType = getValueType(expressDeliveryTariff);
       const expressValueNum = getValueNum(expressDeliveryTariff);
 
+      const ymProgram = String(options.sellingProgram || 'FBS').toUpperCase() === 'FBY' ? 'FBY' : 'FBS';
+      const feeCommission = {
+        percent: feePercent,
+        value: feeTariff?.amount ?? 0,
+        delivery_amount: deliveryAmount,
+        return_amount: 0,
+        return_processing_amount: 0
+      };
       const calculator = {
         offer_id,
         product_id: productRow?.id ?? offer_id,
         price: calcPrice,
         currency_code: 'RUB',
-        commissions: {
-          FBS: {
-            percent: feePercent,
-            value: feeTariff?.amount ?? 0,
-            delivery_amount: deliveryAmount,
-            return_amount: 0,
-            return_processing_amount: 0
-          }
-        },
+        sellingProgram: ymProgram,
+        commissions: ymProgram === 'FBY'
+          ? { FBO: feeCommission, FBS: feeCommission }
+          : { FBS: feeCommission },
         acquiring: Math.round(acquiringPercent * 100) / 100,
         acquiring_amount_rub: agencyAmount,
         processing_cost: processingCost,
@@ -2838,7 +2841,7 @@ class PricesService {
         rawTariffs: tariffs.map(t => ({ type: t.type, amount: t.amount, currency: t.currency, parameters: t.parameters }))
       };
 
-      logger.info(`[Prices Service] YM tariffs/calculate OK for ${offer_id}: fee=${feePercent}%, acquiring=${acquiringPercent}%`);
+      logger.info(`[Prices Service] YM tariffs/calculate OK for ${offer_id}: program=${ymProgram} fee=${feePercent}%, acquiring=${acquiringPercent}%`);
 
       await this._tryUpsertMpCalculatorCacheFromOffer('ym', offer_id, calculator, 'live');
 
@@ -2952,6 +2955,27 @@ class PricesService {
         [productId, marketplace]
       );
 
+      let prevSelling = null;
+      let prevMin = null;
+      let profileId = null;
+      if (hasSelling && sellingRaw !== undefined) {
+        try {
+          const prev = await query(
+            `SELECT pmp.selling_price, pmp.min_price, p.profile_id
+             FROM product_marketplace_prices pmp
+             JOIN products p ON p.id = pmp.product_id
+             WHERE pmp.product_id = $1 AND pmp.marketplace = $2`,
+            [productId, marketplace]
+          );
+          prevSelling =
+            prev.rows?.[0]?.selling_price != null ? Number(prev.rows[0].selling_price) : null;
+          prevMin = prev.rows?.[0]?.min_price != null ? Number(prev.rows[0].min_price) : null;
+          profileId = prev.rows?.[0]?.profile_id ?? null;
+        } catch {
+          /* ignore */
+        }
+      }
+
       const sets = [];
       const params = [];
       let i = 1;
@@ -2963,6 +2987,14 @@ class PricesService {
         params.push(sellingRaw != null);
         if (sellingRaw != null) {
           sets.push(`pricing_strategy_id = NULL`);
+          sets.push(`strategy_details = $${i++}::jsonb`);
+          params.push(
+            JSON.stringify({
+              mode: 'manual',
+              reason: 'manual_selling_price',
+              sellingPrice: sellingRaw,
+            })
+          );
         }
       }
       if (hasBefore && beforeRaw !== undefined) {
@@ -2986,6 +3018,27 @@ class PricesService {
          WHERE product_id = $${i++} AND marketplace = $${i}`,
         params
       );
+      if (hasSelling && sellingRaw !== undefined) {
+        try {
+          const { logMarketplacePriceChange } = await import(
+            './marketplacePriceChanges.service.js'
+          );
+          await logMarketplacePriceChange({
+            productId,
+            marketplace,
+            source: 'manual',
+            reason: 'Ручное изменение фактической цены',
+            minPriceBefore: prevMin,
+            minPriceAfter: prevMin,
+            sellingPriceBefore: prevSelling,
+            sellingPriceAfter: sellingRaw,
+            profileId,
+            meta: { mode: 'manual', reason: 'manual_selling_price' },
+          });
+        } catch {
+          /* ignore history errors */
+        }
+      }
       saved += 1;
     }
     logger.info(`[Prices Service] Saved commercial prices: ${saved} rows`);
@@ -2993,17 +3046,58 @@ class PricesService {
   }
 
   /**
-   * Сохранить рассчитанную минимальную цену и детали расчёта по маркетплейсу в БД
-   * @param {object} [calculationDetails] - данные калькулятора (комиссии, логистика и т.д.) для отображения в модалке
+   * Сохранить рассчитанную минимальную цену и детали расчёта по маркетплейсу в БД.
+   * @param {object|null} [calculationDetails]
+   * @param {{ scheme?: 'FBS'|'FBO', alsoPrimary?: boolean }} [opts]
+   *   scheme — писать в min_price_fbs / min_price_fbo;
+   *   alsoPrimary (default true) — синхронизировать legacy min_price (Ozon/YM←FBS, WB←FBO).
    */
-  async saveProductMarketplacePrice(productId, marketplace, minPrice, calculationDetails = null) {
+  async saveProductMarketplacePrice(productId, marketplace, minPrice, calculationDetails = null, opts = {}) {
     if (minPrice == null || isNaN(Number(minPrice)) || Number(minPrice) < 0) return;
     const num = Number(minPrice).toFixed(2);
     const toStore = calculationDetails != null && typeof calculationDetails === 'object'
       ? (this._sanitizeCalculatorForStorage(calculationDetails, marketplace) || calculationDetails)
       : null;
     const detailsJson = toStore != null ? JSON.stringify(toStore) : null;
+    const scheme = String(opts.scheme || '').toUpperCase();
+    const alsoPrimary = opts.alsoPrimary !== false;
+    const mp = String(marketplace || '').toLowerCase();
+    const isPrimaryScheme =
+      (mp === 'wb' && (scheme === 'FBO' || !scheme)) ||
+      (mp !== 'wb' && (scheme === 'FBS' || !scheme));
+
     try {
+      if (scheme === 'FBS' || scheme === 'FBO') {
+        const priceCol = scheme === 'FBS' ? 'min_price_fbs' : 'min_price_fbo';
+        const detailsCol = scheme === 'FBS' ? 'calculation_details_fbs' : 'calculation_details_fbo';
+        if (alsoPrimary && isPrimaryScheme) {
+          await query(
+            `INSERT INTO product_marketplace_prices
+               (product_id, marketplace, min_price, calculation_details, ${priceCol}, ${detailsCol}, updated_at)
+             VALUES ($1, $2, $3, $4::jsonb, $3, $4::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (product_id, marketplace) DO UPDATE SET
+               min_price = $3,
+               calculation_details = $4::jsonb,
+               ${priceCol} = $3,
+               ${detailsCol} = $4::jsonb,
+               updated_at = CURRENT_TIMESTAMP`,
+            [productId, marketplace, num, detailsJson]
+          );
+        } else {
+          await query(
+            `INSERT INTO product_marketplace_prices
+               (product_id, marketplace, ${priceCol}, ${detailsCol}, updated_at)
+             VALUES ($1, $2, $3, $4::jsonb, CURRENT_TIMESTAMP)
+             ON CONFLICT (product_id, marketplace) DO UPDATE SET
+               ${priceCol} = $3,
+               ${detailsCol} = $4::jsonb,
+               updated_at = CURRENT_TIMESTAMP`,
+            [productId, marketplace, num, detailsJson]
+          );
+        }
+        return;
+      }
+
       await query(
         `INSERT INTO product_marketplace_prices (product_id, marketplace, min_price, calculation_details, updated_at)
          VALUES ($1, $2, $3, $4::jsonb, CURRENT_TIMESTAMP)
@@ -3011,14 +3105,14 @@ class PricesService {
         [productId, marketplace, num, detailsJson]
       );
     } catch (err) {
-      if (err.message && err.message.includes('calculation_details')) {
+      if (err.message && (err.message.includes('calculation_details') || err.message.includes('min_price_fbs') || err.message.includes('min_price_fbo'))) {
         await query(
           `INSERT INTO product_marketplace_prices (product_id, marketplace, min_price, updated_at)
            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
            ON CONFLICT (product_id, marketplace) DO UPDATE SET min_price = $3, updated_at = CURRENT_TIMESTAMP`,
           [productId, marketplace, num]
         );
-        logger.warn('[Prices Service] Column calculation_details missing — run migration 025. Saved min_price only.');
+        logger.warn('[Prices Service] Scheme/details columns missing — run migration 156. Saved min_price only.');
       } else {
         throw err;
       }
@@ -3204,15 +3298,18 @@ class PricesService {
               );
               calculator.acquiring = ozonAcquiringPercent;
             }
-            const price = calculateMinPrice(
-              basePrice,
-              calculator,
-              'ozon',
-              resolveMarketplaceMinProfit(product, 'ozon', minProfitDefault),
-              product
-            );
-            if (price != null) await this.saveProductMarketplacePrice(productId, 'ozon', price, calculator);
-            else errors.ozon = 'Не удалось рассчитать минимальную цену Ozon';
+            const profit = resolveMarketplaceMinProfit(product, 'ozon', minProfitDefault);
+            const priceFbs = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, null, 'FBS');
+            const priceFbo = calculateMinPrice(basePrice, calculator, 'ozon', profit, product, null, null, null, 'FBO');
+            if (priceFbs != null) {
+              await this.saveProductMarketplacePrice(productId, 'ozon', priceFbs, calculator, { scheme: 'FBS' });
+            }
+            if (priceFbo != null) {
+              await this.saveProductMarketplacePrice(productId, 'ozon', priceFbo, { ...calculator, price_scheme: 'FBO' }, { scheme: 'FBO' });
+            }
+            if (priceFbs == null && priceFbo == null) errors.ozon = 'Не удалось рассчитать минимальную цену Ozon';
+            else if (priceFbs == null) errors.ozon_fbs = 'Нет комиссии FBS Ozon';
+            else if (priceFbo == null) errors.ozon_fbo = 'Нет комиссии FBO Ozon';
           }
         } else if (data?.error) {
           errors.ozon = data.error;
@@ -3251,22 +3348,25 @@ class PricesService {
               meta: { productId, offerId: skuWb },
             });
           } else {
-            const price = calculateMinPrice(
-              basePrice,
-              data.calculator,
-              'wb',
-              resolveMarketplaceMinProfit(product, 'wb', minProfitDefault),
-              product,
-              wbAcquiringPercent,
-              wbGemServicesPercent
+            const profit = resolveMarketplaceMinProfit(product, 'wb', minProfitDefault);
+            const priceFbo = calculateMinPrice(
+              basePrice, data.calculator, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, null, 'FBO'
             );
-            console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: price=${price}`);
-            if (price != null) {
-              await this.saveProductMarketplacePrice(productId, 'wb', price, data.calculator);
-              console.log(`[Prices Service] *** Saved WB min price for product ${productId}: ${price} ₽ ***`);
-            } else {
-              console.log(`[Prices Service] WB price is NULL for product ${productId}, not saving`);
+            const priceFbs = calculateMinPrice(
+              basePrice, data.calculator, 'wb', profit, product, wbAcquiringPercent, wbGemServicesPercent, null, 'FBS'
+            );
+            console.log(`[Prices Service] calculateMinPrice(WB) product ${productId}: FBO=${priceFbo} FBS=${priceFbs}`);
+            if (priceFbo != null) {
+              await this.saveProductMarketplacePrice(productId, 'wb', priceFbo, data.calculator, { scheme: 'FBO' });
+              console.log(`[Prices Service] *** Saved WB FBO min price for product ${productId}: ${priceFbo} ₽ ***`);
+            }
+            if (priceFbs != null) {
+              await this.saveProductMarketplacePrice(productId, 'wb', priceFbs, { ...data.calculator, price_scheme: 'FBS' }, { scheme: 'FBS' });
+            }
+            if (priceFbo == null && priceFbs == null) {
               errors.wb = 'Не удалось рассчитать минимальную цену WB (формула вернула пусто).';
+            } else if (priceFbo == null) {
+              errors.wb_fbo = 'Нет комиссии FBO WB';
             }
           }
         } else {
@@ -3288,35 +3388,61 @@ class PricesService {
 
     if (skuYm && (ymCategoryId || ymUserCategoryId)) {
       try {
-        const ymResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, mpOpts);
-        const data = ymResult?.data ?? ymResult;
-        if (data?.found && data?.calculator) {
-          if (!hasUsableCommissionPercent(data.calculator, 'ym')) {
-            errors.ym = 'Нет комиссии YM в калькуляторе — прежняя мин. цена сохранена';
-            logger.error(`[Prices Service] commission_cache_missing ym product ${productId}`);
+        const profit = resolveMarketplaceMinProfit(product, 'ym', minProfitDefault);
+        const ymFbsResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, {
+          ...mpOpts,
+          sellingProgram: 'FBS',
+        });
+        const dataFbs = ymFbsResult?.data ?? ymFbsResult;
+        if (dataFbs?.found && dataFbs?.calculator) {
+          if (!hasUsableCommissionPercent(dataFbs.calculator, 'ym', 'FBS')) {
+            errors.ym = 'Нет комиссии YM FBS в калькуляторе — прежняя мин. цена сохранена';
             await notifyCommissionIssue({
               type: 'commission_cache_missing',
               severity: 'error',
               marketplace: 'ym',
               source: 'min_price_recalc',
               dedupeKey: 'ym',
-              message: `Товар ${productId} (${skuYm}): нет usable комиссии YM. Мин. цена не пересчитана.`,
+              message: `Товар ${productId} (${skuYm}): нет usable комиссии YM FBS. Мин. цена не пересчитана.`,
               meta: { productId, offerId: skuYm },
             });
           } else {
-            const price = calculateMinPrice(
-              basePrice,
-              data.calculator,
-              'ym',
-              resolveMarketplaceMinProfit(product, 'ym', minProfitDefault),
-              product
-            );
-            if (price != null) await this.saveProductMarketplacePrice(productId, 'ym', price, data.calculator);
-            else errors.ym = 'Не удалось рассчитать минимальную цену YM';
+            const priceFbs = calculateMinPrice(basePrice, dataFbs.calculator, 'ym', profit, product, null, null, null, 'FBS');
+            if (priceFbs != null) {
+              await this.saveProductMarketplacePrice(productId, 'ym', priceFbs, dataFbs.calculator, { scheme: 'FBS' });
+            } else {
+              errors.ym = 'Не удалось рассчитать минимальную цену YM FBS';
+            }
           }
-        } else if (data?.error) {
-          errors.ym = data.error;
-          logger.warn(`[Prices Service] recalc YM for product ${productId}:`, data.error);
+        } else if (dataFbs?.error) {
+          errors.ym = dataFbs.error;
+          logger.warn(`[Prices Service] recalc YM FBS for product ${productId}:`, dataFbs.error);
+        }
+
+        // FBY = FBO на Яндексе (отдельный live-запрос; кэш FBS не подходит)
+        try {
+          const ymFbyOpts = { ...mpOpts, sellingProgram: 'FBY', source: 'live' };
+          const ymFbyResult = await this.getYMPrices(skuYm, ymCategoryId, ymUserCategoryId, ymFbyOpts);
+          const dataFby = ymFbyResult?.data ?? ymFbyResult;
+          if (dataFby?.found && dataFby?.calculator) {
+            const priceFbo = calculateMinPrice(basePrice, dataFby.calculator, 'ym', profit, product, null, null, null, 'FBO');
+            if (priceFbo != null) {
+              await this.saveProductMarketplacePrice(
+                productId,
+                'ym',
+                priceFbo,
+                { ...dataFby.calculator, price_scheme: 'FBY' },
+                { scheme: 'FBO' }
+              );
+            } else {
+              errors.ym_fbo = 'Не удалось рассчитать мин. цену YM FBY';
+            }
+          } else if (dataFby?.error) {
+            errors.ym_fbo = dataFby.error;
+          }
+        } catch (eFby) {
+          errors.ym_fbo = eFby.message || String(eFby);
+          logger.warn(`[Prices Service] recalc YM FBY for product ${productId}:`, eFby.message);
         }
       } catch (err) {
         errors.ym = err.message || String(err);

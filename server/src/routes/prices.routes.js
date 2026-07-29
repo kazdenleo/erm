@@ -15,6 +15,9 @@ router.get('/ozon', (req, res, next) => pricesController.getOzonPrices(req, res,
 router.post('/ozon/block-auto-promotions/enforce', (req, res, next) =>
   pricesController.enforceOzonBlockAutoPromotions(req, res, next)
 );
+router.post('/ozon/ads-stats/sync', (req, res, next) =>
+  pricesController.syncOzonAdsStats(req, res, next)
+);
 
 // Получить список акций Ozon
 router.get('/actions/ozon', (req, res, next) => pricesController.getOzonActions(req, res, next));
@@ -48,8 +51,17 @@ router.post('/sync-calculator-cache', (req, res, next) => pricesController.syncC
 // Пересчитать минимальные цены для одного товара (productId в теле: { productId: number })
 router.post('/recalculate-one', (req, res, next) => pricesController.recalculateForProduct(req, res, next));
 
+// Отправить сохранённые мин. цены одного товара на маркетплейсы
+router.post('/push-one', (req, res, next) => pricesController.pushOne(req, res, next));
+
+// Отправить мин. цены на МП (фон; body.organizationId — опционально)
+router.post('/push-all', (req, res, next) => pricesController.pushAll(req, res, next));
+
 // Сохранить переданные рассчитанные цены в БД (массив { productId, ozon?, wb?, ym? })
 router.post('/save-bulk', (req, res, next) => pricesController.saveBulk(req, res, next));
+
+// Фактическая цена / до скидки / % скидки
+router.post('/save-commercial', (req, res, next) => pricesController.saveCommercial(req, res, next));
 
 export default router;
 

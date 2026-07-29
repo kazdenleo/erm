@@ -8,6 +8,7 @@ import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile } from '../util
 import {
   extractMinPriceCommissionPercent,
   hasUsableCommissionPercent,
+  normalizePriceScheme,
   MIN_USABLE_COMMISSION_PERCENT,
 } from '../utils/commissionGuards.js';
 
@@ -16,25 +17,41 @@ function safeExpenseNum(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
-export function calculateMinPrice(basePrice, calculator, marketplace, minProfit, product = null, wbAcquiringPercent = null, wbGemServicesPercent = null, taxProfile = null) {
+/**
+ * @param {string|null} [scheme] — 'FBS' | 'FBO' (по умолчанию: WB→FBO, остальные→FBS)
+ */
+export function calculateMinPrice(
+  basePrice,
+  calculator,
+  marketplace,
+  minProfit,
+  product = null,
+  wbAcquiringPercent = null,
+  wbGemServicesPercent = null,
+  taxProfile = null,
+  scheme = null
+) {
   const basePriceNum = Number(basePrice) || 0;
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
   if (minProfitNum == null || minProfitNum < 0) return null;
   if (!calculator || !calculator.commissions) return null;
 
-  // Не считаем мин. цену с 0%/пустой комиссией — это занижает цену для покупателя.
-  // Нет «дефолта 40%»: либо валидный % из кэша/API, либо null (оставляем прежнюю мин. цену).
-  if (!hasUsableCommissionPercent(calculator, marketplace)) {
+  const priceScheme = normalizePriceScheme(scheme, marketplace);
+
+  if (!hasUsableCommissionPercent(calculator, marketplace, priceScheme)) {
     return null;
   }
 
   const commissions = calculator.commissions;
-  // WB: мин. цена по схеме FBO/FBW (paidStorageKgvp). Логистика уже в logistics_base/liter —
-  // delivery_amount из комиссии не добавляем, иначе будет двойной учёт boxDeliveryMarketplace*.
+  // WB: логистика уже в logistics_base/liter — delivery_amount из комиссии не добавляем.
   let commission;
   if (marketplace === 'wb') {
-    const wbBase = commissions.FBO || commissions.FBS;
+    const wbBase = priceScheme === 'FBS'
+      ? (commissions.FBS || commissions.FBO)
+      : (commissions.FBO || commissions.FBS);
     commission = { ...wbBase, delivery_amount: 0 };
+  } else if (priceScheme === 'FBO') {
+    commission = commissions.FBO || commissions.FBS;
   } else {
     commission = commissions.FBS || commissions.FBO;
   }
@@ -68,7 +85,12 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
 
   let processingCost = 0;
   if (marketplace === 'ozon' || marketplace === 'ym') {
-    processingCost = (calculator.processing_cost != null) ? Number(calculator.processing_cost) : 0;
+    if (priceScheme === 'FBO') {
+      // FBO/FBY: обработки «первой мили» FBS нет
+      processingCost = 0;
+    } else {
+      processingCost = (calculator.processing_cost != null) ? Number(calculator.processing_cost) : 0;
+    }
   }
 
   let logisticsCost = 0;
@@ -83,6 +105,14 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
     } else {
       logisticsCost = (calculator.logistics_cost != null && calculator.logistics_cost !== '') ? Number(calculator.logistics_cost) : 0;
     }
+  } else if (marketplace === 'ozon' && priceScheme === 'FBO') {
+    // FBO: логистика склада Ozon — из FBO direct_flow, иначе 0 (доставка покупателю уже в commission.delivery_amount)
+    const fboLog =
+      commission.direct_flow_trans_amount != null
+        ? Number(commission.direct_flow_trans_amount)
+        : (calculator.logistics_cost_fbo != null ? Number(calculator.logistics_cost_fbo) : 0);
+    logisticsCost = Number.isFinite(fboLog) ? fboLog : 0;
+    if (logisticsCost > 0) logisticsCost = Math.round(logisticsCost);
   } else {
     logisticsCost = (calculator.logistics_cost != null) ? Number(calculator.logistics_cost) : 0;
     if (marketplace === 'ozon' && logisticsCost > 0) logisticsCost = Math.round(logisticsCost);
@@ -109,7 +139,7 @@ export function calculateMinPrice(basePrice, calculator, marketplace, minProfit,
     }
   }
 
-  const marketplaceCommissionPercent = (extractMinPriceCommissionPercent(calculator, marketplace) || 0) / 100;
+  const marketplaceCommissionPercent = (extractMinPriceCommissionPercent(calculator, marketplace, priceScheme) || 0) / 100;
   if (marketplaceCommissionPercent < MIN_USABLE_COMMISSION_PERCENT / 100) return null;
   const acquiringPercent = (Number(acquiring) || 0) / 100;
   let gemServicesPercent = 0;

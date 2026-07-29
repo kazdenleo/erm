@@ -31,16 +31,21 @@ export function ymWeightGramsToKg(weightRaw) {
 }
 
 /**
- * Процент комиссии, который реально идёт в calculateMinPrice.
- * WB → FBO (иначе FBS); Ozon/YM → FBS (иначе FBO).
+ * Процент комиссии для calculateMinPrice.
+ * @param {'FBS'|'FBO'|null|undefined} [scheme] — явная схема; иначе дефолт: WB→FBO, остальные→FBS
  * @returns {number|null}
  */
-export function extractMinPriceCommissionPercent(calculator, marketplace) {
+export function extractMinPriceCommissionPercent(calculator, marketplace, scheme = null) {
   const commissions = calculator?.commissions;
   if (!commissions || typeof commissions !== 'object') return null;
   const mp = String(marketplace || '').toLowerCase();
+  const want = String(scheme || '').toUpperCase();
   let raw;
-  if (mp === 'wb' || mp === 'wildberries') {
+  if (want === 'FBS') {
+    raw = commissions.FBS?.percent ?? commissions.FBO?.percent;
+  } else if (want === 'FBO' || want === 'FBY' || want === 'FBW') {
+    raw = commissions.FBO?.percent ?? commissions.FBS?.percent;
+  } else if (mp === 'wb' || mp === 'wildberries') {
     raw = commissions.FBO?.percent ?? commissions.FBS?.percent;
   } else {
     raw = commissions.FBS?.percent ?? commissions.FBO?.percent;
@@ -50,9 +55,18 @@ export function extractMinPriceCommissionPercent(calculator, marketplace) {
   return Number.isFinite(n) ? n : null;
 }
 
-export function hasUsableCommissionPercent(calculator, marketplace) {
-  const p = extractMinPriceCommissionPercent(calculator, marketplace);
+export function hasUsableCommissionPercent(calculator, marketplace, scheme = null) {
+  const p = extractMinPriceCommissionPercent(calculator, marketplace, scheme);
   return p != null && p >= MIN_USABLE_COMMISSION_PERCENT;
+}
+
+/** Нормализация схемы: FBS | FBO */
+export function normalizePriceScheme(scheme, marketplace) {
+  const s = String(scheme || '').toUpperCase();
+  if (s === 'FBS') return 'FBS';
+  if (s === 'FBO' || s === 'FBY' || s === 'FBW') return 'FBO';
+  const mp = String(marketplace || '').toLowerCase();
+  return mp === 'wb' || mp === 'wildberries' ? 'FBO' : 'FBS';
 }
 
 /**

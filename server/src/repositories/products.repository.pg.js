@@ -1109,40 +1109,66 @@ class ProductsRepositoryPG {
           pricesResult = await query(
             `SELECT product_id, marketplace, min_price, calculation_details, updated_at,
                     selling_price, price_before_discount, discount_percent,
-                    pricing_strategy_id, COALESCE(selling_price_manual, false) AS selling_price_manual
+                    pricing_strategy_id, COALESCE(selling_price_manual, false) AS selling_price_manual,
+                    min_price_fbs, min_price_fbo,
+                    calculation_details_fbs, calculation_details_fbo
              FROM product_marketplace_prices WHERE product_id = ANY($1)`,
             [productIds]
           );
         } catch (colErr) {
-          if (colErr.message && (colErr.message.includes('calculation_details') || colErr.message.includes('selling_price') || colErr.message.includes('price_before_discount') || colErr.message.includes('selling_price_manual'))) {
+          if (colErr.message && (colErr.message.includes('calculation_details') || colErr.message.includes('selling_price') || colErr.message.includes('price_before_discount') || colErr.message.includes('selling_price_manual') || colErr.message.includes('min_price_fbs') || colErr.message.includes('min_price_fbo'))) {
             try {
               pricesResult = await query(
-                'SELECT product_id, marketplace, min_price, calculation_details, updated_at FROM product_marketplace_prices WHERE product_id = ANY($1)',
+                `SELECT product_id, marketplace, min_price, calculation_details, updated_at,
+                        selling_price, price_before_discount, discount_percent,
+                        pricing_strategy_id, COALESCE(selling_price_manual, false) AS selling_price_manual
+                 FROM product_marketplace_prices WHERE product_id = ANY($1)`,
                 [productIds]
               );
             } catch (colErr2) {
-              if (colErr2.message && colErr2.message.includes('calculation_details')) {
-                pricesResult = await query(
-                  'SELECT product_id, marketplace, min_price, updated_at FROM product_marketplace_prices WHERE product_id = ANY($1)',
-                  [productIds]
-                );
+              if (colErr2.message && (colErr2.message.includes('calculation_details') || colErr2.message.includes('selling_price'))) {
+                try {
+                  pricesResult = await query(
+                    'SELECT product_id, marketplace, min_price, calculation_details, updated_at FROM product_marketplace_prices WHERE product_id = ANY($1)',
+                    [productIds]
+                  );
+                } catch (colErr3) {
+                  if (colErr3.message && colErr3.message.includes('calculation_details')) {
+                    pricesResult = await query(
+                      'SELECT product_id, marketplace, min_price, updated_at FROM product_marketplace_prices WHERE product_id = ANY($1)',
+                      [productIds]
+                    );
+                  } else {
+                    throw colErr3;
+                  }
+                }
               } else {
                 throw colErr2;
               }
             }
-            console.warn('[Products Repository] Extended marketplace price columns missing — run migration 152. Loaded basic min prices.');
+            console.warn('[Products Repository] Extended marketplace price columns missing — run migration 152/156. Loaded basic min prices.');
           } else {
             throw colErr;
           }
         }
+        const parseDetails = (raw) => {
+          if (raw == null) return null;
+          if (typeof raw === 'object') return raw;
+          if (typeof raw === 'string') {
+            try { return JSON.parse(raw); } catch { return null; }
+          }
+          return null;
+        };
         pricesResult.rows.forEach(row => {
           const rawId = row.product_id;
           const key = String(typeof rawId === 'number' ? rawId : parseInt(rawId, 10) || rawId);
           if (!pricesByProduct[key]) pricesByProduct[key] = {};
           const price = row.min_price != null ? parseFloat(row.min_price) : null;
-          const details = row.calculation_details != null
-            ? (typeof row.calculation_details === 'object' ? row.calculation_details : (typeof row.calculation_details === 'string' ? (() => { try { return JSON.parse(row.calculation_details); } catch (e) { return null; } })() : null))
-            : null;
+          const details = parseDetails(row.calculation_details);
+          const priceFbs = row.min_price_fbs != null ? parseFloat(row.min_price_fbs) : null;
+          const priceFbo = row.min_price_fbo != null ? parseFloat(row.min_price_fbo) : null;
+          const detailsFbs = parseDetails(row.calculation_details_fbs);
+          const detailsFbo = parseDetails(row.calculation_details_fbo);
           const selling = row.selling_price != null ? parseFloat(row.selling_price) : null;
           const before = row.price_before_discount != null ? parseFloat(row.price_before_discount) : null;
           const discount = row.discount_percent != null ? parseFloat(row.discount_percent) : null;
@@ -1150,7 +1176,11 @@ class ProductsRepositoryPG {
           const sellingManual = row.selling_price_manual === true;
           const pack = {
             min: price,
+            minFbs: priceFbs,
+            minFbo: priceFbo,
             details,
+            detailsFbs,
+            detailsFbo,
             selling,
             before,
             discount,
@@ -1159,15 +1189,27 @@ class ProductsRepositoryPG {
           };
           if (row.marketplace === 'ozon') {
             pricesByProduct[key].ozon = price;
+            pricesByProduct[key].ozonFbs = priceFbs ?? (price != null ? price : null);
+            pricesByProduct[key].ozonFbo = priceFbo;
             pricesByProduct[key].ozonDetails = details;
+            pricesByProduct[key].ozonDetailsFbs = detailsFbs ?? details;
+            pricesByProduct[key].ozonDetailsFbo = detailsFbo;
             pricesByProduct[key].ozonPack = pack;
           } else if (row.marketplace === 'wb') {
             pricesByProduct[key].wb = price;
+            pricesByProduct[key].wbFbs = priceFbs;
+            pricesByProduct[key].wbFbo = priceFbo ?? (price != null ? price : null);
             pricesByProduct[key].wbDetails = details;
+            pricesByProduct[key].wbDetailsFbs = detailsFbs;
+            pricesByProduct[key].wbDetailsFbo = detailsFbo ?? details;
             pricesByProduct[key].wbPack = pack;
           } else if (row.marketplace === 'ym') {
             pricesByProduct[key].ym = price;
+            pricesByProduct[key].ymFbs = priceFbs ?? (price != null ? price : null);
+            pricesByProduct[key].ymFbo = priceFbo;
             pricesByProduct[key].ymDetails = details;
+            pricesByProduct[key].ymDetailsFbs = detailsFbs ?? details;
+            pricesByProduct[key].ymDetailsFbo = detailsFbo;
             pricesByProduct[key].ymPack = pack;
           }
           if (row.updated_at && (!pricesByProduct[key].updated_at || new Date(row.updated_at) > new Date(pricesByProduct[key].updated_at))) {
@@ -1285,9 +1327,21 @@ class ProductsRepositoryPG {
         product.storedMinPriceOzon = stored.ozon ?? null;
         product.storedMinPriceWb = stored.wb ?? null;
         product.storedMinPriceYm = stored.ym ?? null;
+        product.storedMinPriceOzonFbs = stored.ozonFbs ?? stored.ozon ?? null;
+        product.storedMinPriceOzonFbo = stored.ozonFbo ?? null;
+        product.storedMinPriceWbFbs = stored.wbFbs ?? null;
+        product.storedMinPriceWbFbo = stored.wbFbo ?? stored.wb ?? null;
+        product.storedMinPriceYmFbs = stored.ymFbs ?? stored.ym ?? null;
+        product.storedMinPriceYmFbo = stored.ymFbo ?? null;
         product.storedCalculationDetailsOzon = stored.ozonDetails ?? null;
         product.storedCalculationDetailsWb = stored.wbDetails ?? null;
         product.storedCalculationDetailsYm = stored.ymDetails ?? null;
+        product.storedCalculationDetailsOzonFbs = stored.ozonDetailsFbs ?? stored.ozonDetails ?? null;
+        product.storedCalculationDetailsOzonFbo = stored.ozonDetailsFbo ?? null;
+        product.storedCalculationDetailsWbFbs = stored.wbDetailsFbs ?? null;
+        product.storedCalculationDetailsWbFbo = stored.wbDetailsFbo ?? stored.wbDetails ?? null;
+        product.storedCalculationDetailsYmFbs = stored.ymDetailsFbs ?? stored.ymDetails ?? null;
+        product.storedCalculationDetailsYmFbo = stored.ymDetailsFbo ?? null;
         if (stored.updated_at) product.storedMinPriceUpdatedAt = stored.updated_at;
 
         const mapPack = (pack) => {

@@ -5,5 +5,181 @@
 
 /* Бейджи МП — src/styles/mp-badges.css */
 
-/* Общие стили наследуются из tables.css и pages.css */
+.prices-row-action-btn {
+  min-width: 28px;
+  padding: 2px 4px !important;
+  line-height: 1.1;
+  font-size: 12px !important;
+}
 
+.prices-row-selected {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.prices-table-commercial th,
+.prices-table-commercial td {
+  padding: 3px 4px !important;
+  vertical-align: middle !important;
+  text-align: center;
+}
+
+.prices-table-commercial thead .mp-head-mp {
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  vertical-align: middle !important;
+  border-bottom: 0 !important;
+}
+
+.prices-table-commercial thead .mp-head-sub {
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--muted);
+  text-align: center;
+  vertical-align: middle !important;
+  white-space: nowrap;
+  padding-top: 0 !important;
+}
+
+.prices-bulk-bar {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.prices-bulk-bar-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.prices-bulk-bar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.prices-bulk-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.prices-bulk-field input,
+.prices-bulk-field select {
+  min-width: 88px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.prices-bulk-bar-msg,
+.prices-bulk-bar-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mp-col {
+  text-align: center;
+  vertical-align: middle !important;
+  white-space: nowrap;
+}
+
+.mp-col-min {
+  min-width: 64px;
+}
+
+.mp-col-actual {
+  min-width: 72px;
+}
+
+.mp-col-discount {
+  min-width: 108px;
+}
+
+.mp-price-muted {
+  color: var(--muted);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mp-price-cell-min-btn {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.mp-price-stack {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 68px;
+  margin: 0 auto;
+}
+
+.mp-price-discount-pair {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.mp-price-input {
+  width: 68px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 22px;
+  box-sizing: border-box;
+  text-align: center;
+  margin: 0 auto;
+  display: block;
+}
+
+.mp-price-input-pct {
+  width: 42px;
+}
+
+.mp-price-input:disabled,
+.mp-price-input[readonly] {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.mp-price-cell-status {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  font-size: 9px;
+  color: #10b981;
+  line-height: 1;
+}
+
+/* Общие стили наследуются из tables.css и pages.css */

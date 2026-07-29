@@ -41,9 +41,34 @@ export const pricesApi = {
     return response.data;
   },
 
+  /** Отправить сохранённые мин. цены одного товара на маркетплейсы */
+  async pushForProduct(productId) {
+    const response = await api.post('/product/prices/push-one', { productId });
+    return response.data;
+  },
+
+  /**
+   * Отправить мин. цены на маркетплейсы (фон).
+   * @param {{ organizationId?: number|string|null }} [opts]
+   */
+  async pushAll(opts = {}) {
+    const body = {};
+    if (opts.organizationId != null && String(opts.organizationId).trim() !== '') {
+      body.organizationId = Number(opts.organizationId);
+    }
+    const response = await api.post('/product/prices/push-all', body);
+    return response.data;
+  },
+
   /** Применить запрет авто-добавления товаров в акции Ozon для текущей организации */
   async enforceOzonBlockAutoPromotions() {
     const response = await api.post('/product/prices/ozon/block-auto-promotions/enforce');
+    return response.data;
+  },
+
+  /** Выгрузить ДРР рекламы Ozon Performance за период */
+  async syncOzonAdsStats(days = 14) {
+    const response = await api.post('/product/prices/ozon/ads-stats/sync', { days });
     return response.data;
   },
 
@@ -87,6 +112,15 @@ export const pricesApi = {
   /** Сохранить рассчитанные цены в БД (массив { productId, ozon?, wb?, ym? }) */
   async saveBulk(pricesList) {
     const response = await api.post('/product/prices/save-bulk', { prices: pricesList });
+    return response.data;
+  },
+
+  /**
+   * Сохранить фактическую цену / до скидки / % по МП.
+   * @param {Array<{ productId, marketplace, sellingPrice?, priceBeforeDiscount?, discountPercent? }>} items
+   */
+  async saveCommercial(items) {
+    const response = await api.post('/product/prices/save-commercial', { items });
     return response.data;
   }
 };

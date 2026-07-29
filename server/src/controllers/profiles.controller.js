@@ -96,6 +96,10 @@ function pickAccountOwnerProfilePayload(body) {
       out.manual_orders_warehouse_id = Number.isFinite(n) && n > 0 ? n : null;
     }
   }
+  if (b.fbs_enabled !== undefined || b.fbsEnabled !== undefined) {
+    const v = b.fbs_enabled ?? b.fbsEnabled;
+    out.fbs_enabled = v === true || v === '1' || v === 'true';
+  }
   if (b.fbo_enabled !== undefined || b.fboEnabled !== undefined) {
     const v = b.fbo_enabled ?? b.fboEnabled;
     out.fbo_enabled = v === true || v === '1' || v === 'true';

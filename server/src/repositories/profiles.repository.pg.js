@@ -177,6 +177,10 @@ class ProfilesRepositoryPG {
         set('manual_orders_warehouse_id', Number.isFinite(n) && n > 0 ? n : null);
       }
     }
+    if (updates.fbs_enabled !== undefined || updates.fbsEnabled !== undefined) {
+      const v = updates.fbs_enabled ?? updates.fbsEnabled;
+      set('fbs_enabled', v === true || v === '1' || v === 'true');
+    }
     if (updates.fbo_enabled !== undefined || updates.fboEnabled !== undefined) {
       const v = updates.fbo_enabled ?? updates.fboEnabled;
       set('fbo_enabled', v === true || v === '1' || v === 'true');

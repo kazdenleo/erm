@@ -18,6 +18,7 @@ export function PriceDetailsModal({
   marketplace,
   priceData,
   calculatorData,
+  priceScheme = null,
   wbAcquiringPercent = null,
   wbGemServicesPercent = null,
   ozonAcquiringPercent = null,
@@ -34,7 +35,13 @@ export function PriceDetailsModal({
     'ym': 'Yandex Market'
   };
 
+  const schemeNorm = String(priceScheme || '').toUpperCase();
+  const schemeLabel =
+    schemeNorm === 'FBS' ? 'FBS' :
+    schemeNorm === 'FBO' || schemeNorm === 'FBY' || schemeNorm === 'FBW' ? (marketplace === 'ym' ? 'FBY' : 'FBO') :
+    null;
   const marketplaceName = marketplaceNames[marketplace] || marketplace;
+  const titleScheme = schemeLabel ? ` (${schemeLabel})` : '';
 
   // Есть ли полноценные данные для детального расчёта (комиссии обязательны; для WB также логика по logistics_base/logistics_liter)
   const hasValidDetails = calculatorData && typeof calculatorData === 'object' && !calculatorData.error &&
@@ -49,7 +56,7 @@ export function PriceDetailsModal({
       <Modal
         isOpen={isOpen}
         onClose={onClose}
-        title={`Минимальная цена — ${marketplaceName}`}
+        title={`Минимальная цена — ${marketplaceName}${titleScheme}`}
         size="medium"
       >
         <div className="price-details" style={{ padding: '20px' }}>
@@ -101,14 +108,21 @@ export function PriceDetailsModal({
     return null;
   }
 
-  // Извлекаем данные из калькулятора. WB — схема FBO/FBW (paidStorageKgvp); логистика отдельно.
+  // Извлекаем данные из калькулятора. Схема: priceScheme или дефолт (WB→FBO, остальные→FBS).
   const commissions = resolvedCalculatorData.commissions || {};
   const emptyCommission = { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 };
-  
+  const wantFbo = schemeNorm === 'FBO' || schemeNorm === 'FBY' || schemeNorm === 'FBW'
+    || (!schemeNorm && marketplace === 'wb');
+  const wantFbs = schemeNorm === 'FBS' || (!schemeNorm && marketplace !== 'wb');
+
   let commission;
   if (marketplace === 'wb') {
-    const wbBase = commissions.FBO || commissions.FBS || emptyCommission;
+    const wbBase = wantFbs
+      ? (commissions.FBS || commissions.FBO || emptyCommission)
+      : (commissions.FBO || commissions.FBS || emptyCommission);
     commission = { ...wbBase, delivery_amount: 0 };
+  } else if (wantFbo) {
+    commission = commissions.FBO || commissions.FBS || emptyCommission;
   } else {
     commission = commissions.FBS || commissions.FBO || emptyCommission;
   }
@@ -410,7 +424,7 @@ export function PriceDetailsModal({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={`💰 Расчёт минимальной цены · ${marketplaceName}`}
+      title={`💰 Расчёт минимальной цены · ${marketplaceName}${titleScheme}`}
       size="large"
     >
       <div className="price-details">

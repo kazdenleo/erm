@@ -113,12 +113,20 @@ export async function applyOzonV5ItemToCalculator(item, offer_id, client_id, api
       commissions.sales_percent_fbo || commissions.fbo_sales_percent || commissions.fbo_percent || 0;
 
     if (fboPercent > 0 || commissions.fbo_deliv_to_customer_amount) {
+      const fboDirectFlow = pickOzonMinTariff(
+        commissions.fbo_direct_flow_trans_min_amount,
+        commissions.fbo_direct_flow_trans_max_amount
+      );
       calculatorData.commissions.FBO = {
         percent: parseFloat(fboPercent || 0),
         value: 0,
         delivery_amount: parseFloat(commissions.fbo_deliv_to_customer_amount || 0),
-        return_amount: parseFloat(commissions.fbo_return_flow_amount || 0)
+        return_amount: parseFloat(commissions.fbo_return_flow_amount || 0),
+        direct_flow_trans_amount: fboDirectFlow !== null ? fboDirectFlow : 0,
       };
+      if (fboDirectFlow != null && fboDirectFlow > 0) {
+        calculatorData.logistics_cost_fbo = fboDirectFlow;
+      }
     }
 
     if (!calculatorData.commissions.FBS && !calculatorData.commissions.FBO && Object.keys(commissions).length > 0) {

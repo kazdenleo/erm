@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useProducts } from '../../hooks/useProducts';
 import { useCategories } from '../../hooks/useCategories';
 import { useBrands } from '../../hooks/useBrands';
@@ -14,8 +15,14 @@ import { productsApi } from '../../services/products.api.js';
 import { categoryMappingsApi } from '../../services/categoryMappings.api.js';
 import { integrationsApi } from '../../services/integrations.api.js';
 import { Button } from '../../components/common/Button/Button';
-import { Modal } from '../../components/common/Modal/Modal';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
+import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
+import {
+  formatMoneyInput,
+  parseMoneyInput,
+  percentFromActualAndBefore,
+  priceBeforeFromActualAndPercent,
+} from './marketplacePriceMath.js';
 import './Prices.css';
 import '../Products/Products.css';
 import { useProductCardModal } from '../../context/ProductCardModalContext.jsx';
@@ -24,9 +31,11 @@ import {
   fetchHasUncategorizedProducts,
 } from '../../utils/uncategorizedCategoryFilter.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { isProfileBoolFlag, isProfileKitsEnabled } from '../../utils/profileFlags.js';
+import { isProfileBoolFlag, isProfileKitsEnabled, isProfileFbsEnabled, isProfileFboEnabled } from '../../utils/profileFlags.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters, resolveProductVolumeLiters } from '../../utils/productVolume.js';
+import { computeTaxesAndNetProfit, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
+import { getApiSessionContext } from '../../services/apiSession.js';
 
 const PRICES_LIST_PAGE_SIZES = [50, 100, 200];
 
@@ -37,41 +46,8 @@ function getPriceResult(r) {
   return r;
 }
 
-function formatOzonActionRub(value) {
-  if (value == null || value === '') return '—';
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return '—';
-  return `${n} ₽`;
-}
-
-/**
- * Предлагаемая цена для входа в акцию Ozon.
- * Обычные акции: alert_max_action_price.
- * Эластичный бустинг: alert_max_action_price = 0, цена входа — max_action_price / price_min_elastic.
- */
-function ozonSuggestedEntryPrice(p) {
-  if (!p) return null;
-  const alert = Number(p.alert_max_action_price);
-  if (Number.isFinite(alert) && alert > 0) return alert;
-  const maxAction = Number(p.max_action_price);
-  if (Number.isFinite(maxAction) && maxAction > 0) return maxAction;
-  const minElastic = Number(p.price_min_elastic);
-  if (Number.isFinite(minElastic) && minElastic > 0) return minElastic;
-  return null;
-}
-
-/**
- * Цена по акции для UI: у уже участвующих — action_price;
- * у «доступных к акции» Ozon отдаёт action_price=0 — показываем цену входа.
- */
-function ozonDisplayActionPrice(p) {
-  const ap = Number(p?.action_price);
-  if (Number.isFinite(ap) && ap > 0) return ap;
-  return ozonSuggestedEntryPrice(p);
-}
-
 // Функция расчета минимальной цены на основе комиссий. Только фактические данные, без значений по умолчанию.
-function calculateMinPrice(basePrice, calculator, marketplace, minProfit, product = null, wbAcquiringPercent = null, wbGemServicesPercent = null) {
+function calculateMinPrice(basePrice, calculator, marketplace, minProfit, product = null, wbAcquiringPercent = null, wbGemServicesPercent = null, taxProfile = null, ozonAcquiringPercent = null) {
   const basePriceNum = Number(basePrice) || 0;
   // Минимальная прибыль — только из карточки товара; без значения расчёт не выполняем
   const minProfitNum = (minProfit != null && minProfit !== '' && !isNaN(Number(minProfit))) ? Number(minProfit) : null;
@@ -85,34 +61,21 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
   }
 
   const commissions = calculator.commissions;
-  // Расчёт минимальной цены для продажи по схеме FBS. Для WB используем только комиссию FBS (Маркетплейс), не FBO.
-  const commission = marketplace === 'wb'
-    ? (commissions.FBS || { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 })
-    : (commissions.FBS || commissions.FBO || { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 });
-  
-  // ВАЖНО: Для WB логируем, какая комиссия используется
+  // WB: мин. цена по схеме FBO/FBW (paidStorageKgvp). Логистика уже в logistics_base/liter.
+  const emptyCommission = { percent: 0, value: 0, delivery_amount: 0, return_amount: 0 };
+  let commission;
   if (marketplace === 'wb') {
-    console.log(`[calculateMinPrice] ========== WB COMMISSION SELECTION ==========`);
-    console.log(`[calculateMinPrice] Available commissions:`, {
-      hasFBS: !!commissions.FBS,
-      fbsPercent: commissions.FBS?.percent,
-      hasFBO: !!commissions.FBO,
-      fboPercent: commissions.FBO?.percent,
-      selectedCommission: commission.percent,
-      allCommissions: commissions
-    });
-    
-    // Предупреждение, если используется FBO вместо FBS
-    if (commissions.FBO && !commissions.FBS) {
-      console.error(`[calculateMinPrice] ⚠ ERROR: FBS commission missing, but FBO exists! This should not happen.`);
-    }
-    if (commissions.FBS && commissions.FBO && commissions.FBS.percent !== commissions.FBO.percent) {
-      console.log(`[calculateMinPrice] ✓ FBS (${commissions.FBS.percent}%) and FBO (${commissions.FBO.percent}%) differ - using FBS for WB`);
-    }
+    const wbBase = commissions.FBO || commissions.FBS || emptyCommission;
+    commission = { ...wbBase, delivery_amount: 0 };
+  } else {
+    commission = commissions.FBS || commissions.FBO || emptyCommission;
+  }
+  
+  if (marketplace === 'wb') {
+    console.log(`[calculateMinPrice] WB commission: FBO=${commissions.FBO?.percent}% FBS=${commissions.FBS?.percent}% → using ${commission.percent}% (FBO/FBW)`);
     if (commission.percent === 0) {
-      console.error(`[calculateMinPrice] ✗ ERROR: Selected commission percent is 0! This will cause incorrect calculation.`);
+      console.error(`[calculateMinPrice] ✗ ERROR: Selected WB commission percent is 0!`);
     }
-    console.log(`[calculateMinPrice] ============================================`);
   }
   
   // Основные расходы (преобразуем в числа, без fallback - только из API)
@@ -129,6 +92,9 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
       acquiring = 0;
       console.warn(`[calculateMinPrice] ⚠ WB acquiring percent not loaded from settings, using 0%`);
     }
+  } else if (marketplace === 'ozon' && ozonAcquiringPercent != null && ozonAcquiringPercent !== '') {
+    acquiring = Number(ozonAcquiringPercent) || 0;
+    console.log(`[calculateMinPrice] ✓ Ozon acquiring percent from settings: ${acquiring}%`);
   } else {
     acquiring = calculator.acquiring !== undefined && calculator.acquiring !== null
       ? Number(calculator.acquiring)
@@ -270,12 +236,16 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
   const brandPromotionPercent = (calculator.brand_promotion_percent != null && !isNaN(Number(calculator.brand_promotion_percent)))
     ? Number(calculator.brand_promotion_percent) / 100
     : 0;
+  // Реклама (ДРР) — из Performance API / fallback настроек
+  const adsPromotionPercent = (calculator.ads_promotion_percent != null && !isNaN(Number(calculator.ads_promotion_percent)))
+    ? Number(calculator.ads_promotion_percent) / 100
+    : 0;
   
   // Фиксированные расходы: для YM доставка (%) и приём платежа (0.12 ₽) учитываются в формуле/итерации
   const fixedExpenses = Number(processingCost) + Number(logisticsCost) + Number(deliveryToCustomer) + Number(returnCost) + Number(returnProcessingCost) + Number(returnLossCost) + (marketplace === 'ym' ? (ymAgencyFixed + ymPaymentTransferFixed) : 0);
 
   const targetProfitAfterTax = Number(minProfitNum);
-  const taxRate = 0.15;
+  const profile = taxProfile || taxProfileForProduct(null, product);
 
   const calculateNetProfit = (price) => {
     const priceNum = Number(price) || 0;
@@ -291,22 +261,24 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
       }
     }
     const brandPromotionAmount = priceNum * brandPromotionPercent;
+    const adsPromotionAmount = priceNum * adsPromotionPercent;
     const gemServicesAmount = priceNum * gemServicesPercent;
     const deliveryAmountAtPrice = marketplace === 'ym' ? priceNum * ymDeliveryPercent : 0;
-    const totalExpenses = Number(basePriceNum) + Number(fixedExpenses) + Number(commissionAmount) + Number(acquiringAmount) + Number(deliveryAmountAtPrice) + Number(brandPromotionAmount) + Number(gemServicesAmount);
-    const profitBeforeTax = priceNum - totalExpenses;
-    const taxes = Math.max(0, profitBeforeTax * taxRate); // Налоги только с положительной прибылью
-    const netProfit = profitBeforeTax - taxes;
+    const totalExpenses = Number(basePriceNum) + Number(fixedExpenses) + Number(commissionAmount) + Number(acquiringAmount) + Number(deliveryAmountAtPrice) + Number(brandPromotionAmount) + Number(adsPromotionAmount) + Number(gemServicesAmount);
+    const { netProfit } = computeTaxesAndNetProfit({
+      price: priceNum,
+      totalExpenses,
+      taxProfile: profile,
+    });
     return Number(netProfit);
   };
   
-  const denominator = 1 - marketplaceCommissionPercent - acquiringPercent - brandPromotionPercent - gemServicesPercent - (marketplace === 'ym' ? ymDeliveryPercent : 0);
+  const denominator = 1 - marketplaceCommissionPercent - acquiringPercent - brandPromotionPercent - adsPromotionPercent - gemServicesPercent - (marketplace === 'ym' ? ymDeliveryPercent : 0);
   if (denominator <= 0) {
     console.warn('[calculateMinPrice] Invalid denominator (commission/acquiring/delivery data)');
     return null;
   }
-  const targetProfitBeforeTax = targetProfitAfterTax / (1 - taxRate);
-  let recommendedPrice = Math.round((basePriceNum + fixedExpenses + targetProfitBeforeTax) / denominator);
+  let recommendedPrice = Math.round((basePriceNum + fixedExpenses + targetProfitAfterTax) / denominator);
   
   // Итеративно увеличиваем цену по 1₽ до достижения целевой чистой прибыли.
   // Это гарантирует корректный результат при округлениях (Ozon: ceil эквайринга и т.д.)
@@ -336,12 +308,15 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
     console.log(`[calculateMinPrice] Ozon final acquiring amount rounded: ${acquiringAmountBefore.toFixed(2)} → ${finalAcquiringAmount}`);
   }
   const finalBrandPromotionAmount = Number(recommendedPriceNum * brandPromotionPercent);
+  const finalAdsPromotionAmount = Number(recommendedPriceNum * adsPromotionPercent);
   // Услуги Джем (только для WB, вычисляется от суммы товара)
   const finalGemServicesAmount = Number(recommendedPriceNum * gemServicesPercent);
-  const finalTotalExpenses = Number(basePriceNum) + Number(fixedExpenses) + Number(finalCommissionAmount) + Number(finalAcquiringAmount) + Number(finalBrandPromotionAmount) + Number(finalGemServicesAmount);
-  const finalProfitBeforeTax = Number(recommendedPriceNum) - Number(finalTotalExpenses);
-  const finalTaxes = Math.max(0, Number(finalProfitBeforeTax) * taxRate);
-  const finalNetProfit = Number(finalProfitBeforeTax) - Number(finalTaxes);
+  const finalTotalExpenses = Number(basePriceNum) + Number(fixedExpenses) + Number(finalCommissionAmount) + Number(finalAcquiringAmount) + Number(finalBrandPromotionAmount) + Number(finalAdsPromotionAmount) + Number(finalGemServicesAmount);
+  const { vat: finalVat, incomeTax: finalTaxes, netProfit: finalNetProfit, profitBeforeIncomeTax: finalProfitBeforeTax } = computeTaxesAndNetProfit({
+    price: recommendedPriceNum,
+    totalExpenses: finalTotalExpenses,
+    taxProfile: profile,
+  });
   
   const buyoutRateForLog = (product && product.buyout_rate != null && product.buyout_rate !== '') ? Number(product.buyout_rate) : null;
   const returnRatePercent = buyoutRateForLog != null ? ((1 - buyoutRateForLog / 100) * 100).toFixed(2) : '—';
@@ -366,6 +341,7 @@ function calculateMinPrice(basePrice, calculator, marketplace, minProfit, produc
     gemServicesAmount: Number(finalGemServicesAmount).toFixed(2),
     totalExpenses: Number(finalTotalExpenses).toFixed(2),
     profitBeforeTax: Number(finalProfitBeforeTax).toFixed(2),
+    vat: Number(finalVat).toFixed(2),
     taxes: Number(finalTaxes).toFixed(2),
     netProfit: Number(finalNetProfit).toFixed(2),
     targetNetProfit: targetProfitAfterTax,
@@ -392,6 +368,10 @@ export function Prices() {
   const { profile } = useAuth();
   const kitsEnabled = isProfileKitsEnabled(profile);
   const allowPrivateOrders = isProfileBoolFlag(profile?.allow_private_orders);
+  const showFbsPrices = isProfileFbsEnabled(profile);
+  const showFboPrices = isProfileFboEnabled(profile);
+  const minColsPerMp = (showFbsPrices ? 1 : 0) + (showFboPrices ? 1 : 0) || 1;
+  const mpColSpan = minColsPerMp + 2; // мин.(1–2) + факт + до/%
   const { products, meta, loading, listRefreshing, error, loadProducts } = useProducts({ autoLoad: false });
   const { categories } = useCategories();
   const { brands } = useBrands();
@@ -424,45 +404,172 @@ export function Prices() {
   const [priceErrors, setPriceErrors] = useState({}); // Ошибки расчета цен
   const [priceModal, setPriceModal] = useState({ isOpen: false, product: null, marketplace: null, price: null, calculatorData: null });
   const [wbAcquiringPercent, setWbAcquiringPercent] = useState(null); // Процент эквайринга для WB из настроек
+  const [ozonAcquiringPercent, setOzonAcquiringPercent] = useState(null); // Переопределение эквайринга Ozon из настроек
   const [wbGemServicesPercent, setWbGemServicesPercent] = useState(null); // Процент услуг Джем для WB из настроек
   const [recalcAllLoading, setRecalcAllLoading] = useState(false); // Загрузка пересчёта всех цен
   const [recalcAllMessage, setRecalcAllMessage] = useState(null); // Сообщение после запуска фонового пересчёта
   const [recalcOneProductId, setRecalcOneProductId] = useState(null); // ID товара, для которого идёт пересчёт
-  const [activeSection, setActiveSection] = useState('prices'); // 'prices' | 'promotions'
-  const [activePromoMarketplace, setActivePromoMarketplace] = useState('ozon'); // 'ozon' | 'wb' | 'ym'
-  const [ozonActions, setOzonActions] = useState([]);
-  const [ozonActionsLoading, setOzonActionsLoading] = useState(false);
-  const [ozonActionsError, setOzonActionsError] = useState(null);
-  const [wbActions, setWbActions] = useState([]);
-  const [wbActionsLoading, setWbActionsLoading] = useState(false);
-  const [wbActionsError, setWbActionsError] = useState(null);
-  const [actionModal, setActionModal] = useState({ isOpen: false, action: null });
-  const [actionModalTab, setActionModalTab] = useState('participating');
-  const [actionProducts, setActionProducts] = useState([]);
-  const [actionCandidates, setActionCandidates] = useState([]);
-  const [actionProductsLoading, setActionProductsLoading] = useState(false);
-  const [actionCandidatesLoading, setActionCandidatesLoading] = useState(false);
-  const [actionProductsError, setActionProductsError] = useState(null);
-  const [actionCandidatesError, setActionCandidatesError] = useState(null);
-  const [wbActionModal, setWbActionModal] = useState({ isOpen: false, promotion: null });
-  const [wbActionDetails, setWbActionDetails] = useState(null);
-  const [wbActionDetailsLoading, setWbActionDetailsLoading] = useState(false);
-  const [wbActionDetailsError, setWbActionDetailsError] = useState(null);
-  const [wbActionModalTab, setWbActionModalTab] = useState('details'); // 'details' | 'participating' | 'candidates'
-  const [wbNomenclaturesIn, setWbNomenclaturesIn] = useState([]);
-  const [wbNomenclaturesOut, setWbNomenclaturesOut] = useState([]);
-  const [wbNomenclaturesInLoading, setWbNomenclaturesInLoading] = useState(false);
-  const [wbNomenclaturesOutLoading, setWbNomenclaturesOutLoading] = useState(false);
-  const [wbNomenclaturesInError, setWbNomenclaturesInError] = useState(null);
-  const [wbNomenclaturesOutError, setWbNomenclaturesOutError] = useState(null);
-  const [wbNomenclaturesInNotApplicable, setWbNomenclaturesInNotApplicable] = useState(false);
-  const [wbNomenclaturesOutNotApplicable, setWbNomenclaturesOutNotApplicable] = useState(false);
+  const [pushAllLoading, setPushAllLoading] = useState(false);
+  const [pushOneProductId, setPushOneProductId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [commercialOverrides, setCommercialOverrides] = useState({});
+  const [bulkMarketplace, setBulkMarketplace] = useState('ozon');
+  const [bulkActual, setBulkActual] = useState('');
+  const [bulkBefore, setBulkBefore] = useState('');
+  const [bulkPct, setBulkPct] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState(null);
 
   // Получаем wbWarehouseName из основного склада (type = 'warehouse' с указанным wbWarehouseName)
   const mainWarehouse = warehouses.find(w => w.type === 'warehouse' && w.wbWarehouseName);
   const wbWarehouseName = mainWarehouse?.wbWarehouseName || null;
 
   const visibleProducts = useMemo(() => products.filter(Boolean), [products]);
+
+  const mergeProductCommercial = (product) => {
+    if (!product?.id) return product;
+    const baseMp = product.marketplacePrices || {};
+    const next = { ozon: { ...baseMp.ozon }, wb: { ...baseMp.wb }, ym: { ...baseMp.ym } };
+    for (const mp of ['ozon', 'wb', 'ym']) {
+      const ov = commercialOverrides[`${product.id}:${mp}`];
+      if (ov) next[mp] = { ...next[mp], ...ov };
+    }
+    return { ...product, marketplacePrices: next };
+  };
+
+  const allVisibleSelected =
+    visibleProducts.length > 0 && visibleProducts.every((p) => selectedIds.has(Number(p.id)));
+
+  const toggleSelectAllVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const p of visibleProducts) next.delete(Number(p.id));
+      } else {
+        for (const p of visibleProducts) next.add(Number(p.id));
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectOne = (productId) => {
+    const id = Number(productId);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSaveCommercialItem = async (item) => {
+    await pricesApi.saveCommercial([item]);
+    const key = `${item.productId}:${item.marketplace}`;
+    setCommercialOverrides((prev) => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || {}),
+        ...(item.sellingPrice !== undefined
+          ? { sellingPrice: item.sellingPrice, sellingPriceManual: item.sellingPrice != null }
+          : {}),
+        ...(item.priceBeforeDiscount !== undefined
+          ? { priceBeforeDiscount: item.priceBeforeDiscount }
+          : {}),
+        ...(item.discountPercent !== undefined ? { discountPercent: item.discountPercent } : {}),
+      },
+    }));
+  };
+
+  const handleBulkApplyCommercial = async () => {
+    const ids = [...selectedIds].filter((id) => Number.isFinite(id) && id > 0);
+    if (!ids.length) {
+      setBulkMessage('Выберите товары в таблице');
+      return;
+    }
+    const mp = bulkMarketplace;
+    const actual = parseMoneyInput(bulkActual);
+    const before = parseMoneyInput(bulkBefore);
+    const pct = parseMoneyInput(bulkPct);
+    if (actual == null && before == null && pct == null) {
+      setBulkMessage('Укажите хотя бы одно поле: факт. цена, до скидки или %');
+      return;
+    }
+
+    // Стратегия: не шлём sellingPrice для товаров со стратегией
+    const items = [];
+    for (const id of ids) {
+      const product = visibleProducts.find((p) => Number(p.id) === id) || products.find((p) => Number(p.id) === id);
+      const strategyLocked = product?.hasPricingStrategy === true;
+      const payload = {
+        productId: id,
+        marketplace: mp,
+      };
+      if (!strategyLocked && actual !== null) payload.sellingPrice = actual;
+      if (before !== null) payload.priceBeforeDiscount = before;
+      if (pct !== null) payload.discountPercent = pct;
+      // Если задали % и факт (или мин) — досчитать before при пустом before
+      if (pct != null && before == null) {
+        const baseActual =
+          actual ??
+          getMarketplacePricePackSafe(product, mp)?.sellingPrice ??
+          Number(
+            mp === 'ozon'
+              ? product?.storedMinPriceOzon
+              : mp === 'wb'
+                ? product?.storedMinPriceWb
+                : product?.storedMinPriceYm
+          ) ??
+          null;
+        if (baseActual != null && baseActual > 0) {
+          const computedBefore = priceBeforeFromActualAndPercent(baseActual, pct);
+          if (computedBefore != null) payload.priceBeforeDiscount = computedBefore;
+        }
+      }
+      if (before != null && pct == null) {
+        const baseActual =
+          actual ??
+          getMarketplacePricePackSafe(product, mp)?.sellingPrice ??
+          null;
+        if (baseActual != null && baseActual > 0) {
+          const computedPct = percentFromActualAndBefore(baseActual, before);
+          if (computedPct != null) payload.discountPercent = computedPct;
+        }
+      }
+      items.push(payload);
+    }
+
+    setBulkSaving(true);
+    setBulkMessage(null);
+    try {
+      await pricesApi.saveCommercial(items);
+      setCommercialOverrides((prev) => {
+        const next = { ...prev };
+        for (const it of items) {
+          const key = `${it.productId}:${it.marketplace}`;
+          next[key] = {
+            ...(next[key] || {}),
+            ...(it.sellingPrice !== undefined
+              ? { sellingPrice: it.sellingPrice, sellingPriceManual: true }
+              : {}),
+            ...(it.priceBeforeDiscount !== undefined
+              ? { priceBeforeDiscount: it.priceBeforeDiscount }
+              : {}),
+            ...(it.discountPercent !== undefined ? { discountPercent: it.discountPercent } : {}),
+          };
+        }
+        return next;
+      });
+      setBulkMessage(`Сохранено для ${items.length} товар(ов) · ${mp.toUpperCase()}`);
+    } catch (e) {
+      setBulkMessage(`Ошибка: ${e?.response?.data?.message || e.message || String(e)}`);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
+
+  function getMarketplacePricePackSafe(product, marketplace) {
+    return product?.marketplacePrices?.[marketplace] || null;
+  }
 
   const loadList = (partial = {}) => {
     const org = partial.organizationId !== undefined ? partial.organizationId : filterOrganizationId;
@@ -682,229 +789,51 @@ export function Prices() {
     );
   };
 
-  // Загрузка настроек интеграции Wildberries (эквайринг, услуги Джем) — один раз при монтировании
+  // Загрузка настроек интеграций (эквайринг WB/Ozon, услуги Джем) — один раз при монтировании
   useEffect(() => {
     let cancelled = false;
-    const loadWBSettings = async () => {
+    const loadMpSettings = async () => {
       try {
-        const response = await integrationsApi.getMarketplace('wildberries');
+        const [wbRes, ozonRes] = await Promise.all([
+          integrationsApi.getMarketplace('wildberries'),
+          integrationsApi.getMarketplace('ozon'),
+        ]);
         if (cancelled) return;
-        const config = response?.data || response || {};
-        const acquiringPercent = config.acquiring_percent;
+        const wbConfig = wbRes?.data || wbRes || {};
+        const acquiringPercent = wbConfig.acquiring_percent;
         if (acquiringPercent !== undefined && acquiringPercent !== null && acquiringPercent !== '') {
           const percentValue = Number(acquiringPercent);
-          if (!isNaN(percentValue) && isFinite(percentValue)) {
-            setWbAcquiringPercent(percentValue);
-          } else {
-            setWbAcquiringPercent(null);
-          }
+          setWbAcquiringPercent(!isNaN(percentValue) && isFinite(percentValue) ? percentValue : null);
         } else {
           setWbAcquiringPercent(null);
         }
-        const gemServicesPercent = config.gem_services_percent;
+        const gemServicesPercent = wbConfig.gem_services_percent;
         if (gemServicesPercent !== undefined && gemServicesPercent !== null && gemServicesPercent !== '') {
           const percentValue = Number(gemServicesPercent);
-          if (!isNaN(percentValue) && isFinite(percentValue)) {
-            setWbGemServicesPercent(percentValue);
-          } else {
-            setWbGemServicesPercent(null);
-          }
+          setWbGemServicesPercent(!isNaN(percentValue) && isFinite(percentValue) ? percentValue : null);
         } else {
           setWbGemServicesPercent(null);
         }
+        const ozonConfig = ozonRes?.data || ozonRes || {};
+        const ozonAcq = ozonConfig.acquiring_percent;
+        if (ozonAcq !== undefined && ozonAcq !== null && ozonAcq !== '') {
+          const percentValue = Number(ozonAcq);
+          setOzonAcquiringPercent(!isNaN(percentValue) && isFinite(percentValue) ? percentValue : null);
+        } else {
+          setOzonAcquiringPercent(null);
+        }
       } catch (err) {
         if (!cancelled) {
-          console.error('[Prices] Error loading WB settings:', err);
+          console.error('[Prices] Error loading marketplace settings:', err);
           setWbAcquiringPercent(null);
           setWbGemServicesPercent(null);
+          setOzonAcquiringPercent(null);
         }
       }
     };
-    loadWBSettings();
+    loadMpSettings();
     return () => { cancelled = true; };
   }, []);
-
-  // При открытии модалки акции — загружаем участвующие и доступные товары
-  useEffect(() => {
-    if (!actionModal.isOpen || !actionModal.action?.id) {
-      return;
-    }
-    const actionId = actionModal.action.id;
-    setActionProducts([]);
-    setActionCandidates([]);
-    setActionProductsError(null);
-    setActionCandidatesError(null);
-
-    let cancelled = false;
-    (async () => {
-      setActionProductsLoading(true);
-      try {
-        const res = await pricesApi.getOzonActionProducts(actionId);
-        if (cancelled) return;
-        const data = res?.data ?? res;
-        setActionProducts(Array.isArray(data) ? data : []);
-        if (res?.error) setActionProductsError(res.error);
-      } catch (err) {
-        if (!cancelled) {
-          setActionProductsError(err.response?.data?.error || err.message || 'Ошибка загрузки');
-          setActionProducts([]);
-        }
-      } finally {
-        if (!cancelled) setActionProductsLoading(false);
-      }
-    })();
-
-    setActionCandidatesLoading(true);
-    (async () => {
-      try {
-        const res = await pricesApi.getOzonActionCandidates(actionId);
-        if (cancelled) return;
-        const data = res?.data ?? res;
-        setActionCandidates(Array.isArray(data) ? data : []);
-        if (res?.error) setActionCandidatesError(res.error);
-      } catch (err) {
-        if (!cancelled) {
-          setActionCandidatesError(err.response?.data?.error || err.message || 'Ошибка загрузки');
-          setActionCandidates([]);
-        }
-      } finally {
-        if (!cancelled) setActionCandidatesLoading(false);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [actionModal.isOpen, actionModal.action?.id]);
-
-  // Загрузка акций Ozon при открытии вкладки «Акции» → Ozon
-  useEffect(() => {
-    if (activeSection !== 'promotions' || activePromoMarketplace !== 'ozon') return;
-    let cancelled = false;
-    const load = async () => {
-      setOzonActionsLoading(true);
-      setOzonActionsError(null);
-      try {
-        const res = await pricesApi.getOzonActions();
-        const data = res?.data ?? res;
-        if (cancelled) return;
-        setOzonActions(Array.isArray(data) ? data : []);
-        if (!Array.isArray(data) && res?.error) setOzonActionsError(res.error);
-      } catch (err) {
-        if (!cancelled) {
-          setOzonActionsError(err.response?.data?.error || err.message || 'Ошибка загрузки акций');
-          setOzonActions([]);
-        }
-      } finally {
-        if (!cancelled) setOzonActionsLoading(false);
-      }
-    };
-    load();
-    return () => { cancelled = true; };
-  }, [activeSection, activePromoMarketplace]);
-
-  // При открытии модалки акции WB — загружаем детали и номенклатуры (участвующие / доступные)
-  useEffect(() => {
-    if (!wbActionModal.isOpen || !wbActionModal.promotion?.id) {
-      setWbActionDetails(null);
-      setWbNomenclaturesIn([]);
-      setWbNomenclaturesOut([]);
-      setWbActionModalTab('details');
-      return;
-    }
-    const promotionId = wbActionModal.promotion.id;
-    let cancelled = false;
-    setWbActionDetails(null);
-    setWbActionDetailsError(null);
-    setWbActionDetailsLoading(true);
-    setWbNomenclaturesIn([]);
-    setWbNomenclaturesOut([]);
-    setWbNomenclaturesInError(null);
-    setWbNomenclaturesOutError(null);
-    setWbNomenclaturesInNotApplicable(false);
-    setWbNomenclaturesOutNotApplicable(false);
-
-    (async () => {
-      try {
-        const res = await pricesApi.getWBPromotionDetails(promotionId);
-        if (cancelled) return;
-        const data = res?.data ?? res;
-        setWbActionDetails(data || null);
-        if (res?.error) setWbActionDetailsError(res.error);
-      } catch (err) {
-        if (!cancelled) {
-          setWbActionDetailsError(err.response?.data?.error || err.message || 'Ошибка загрузки деталей акции');
-          setWbActionDetails(null);
-        }
-      } finally {
-        if (!cancelled) setWbActionDetailsLoading(false);
-      }
-    })();
-
-    setWbNomenclaturesInLoading(true);
-    (async () => {
-      try {
-        const res = await pricesApi.getWBPromotionNomenclatures(promotionId, true, 1000, 0);
-        if (cancelled) return;
-        const data = res?.data ?? res;
-        setWbNomenclaturesIn(Array.isArray(data) ? data : []);
-        setWbNomenclaturesInNotApplicable(res?.notApplicable === true);
-        if (res?.error) setWbNomenclaturesInError(res.error);
-      } catch (err) {
-        if (!cancelled) {
-          setWbNomenclaturesInError(err.response?.data?.error || err.message || 'Ошибка загрузки');
-          setWbNomenclaturesIn([]);
-        }
-      } finally {
-        if (!cancelled) setWbNomenclaturesInLoading(false);
-      }
-    })();
-
-    setWbNomenclaturesOutLoading(true);
-    (async () => {
-      try {
-        const res = await pricesApi.getWBPromotionNomenclatures(promotionId, false, 1000, 0);
-        if (cancelled) return;
-        const data = res?.data ?? res;
-        setWbNomenclaturesOut(Array.isArray(data) ? data : []);
-        setWbNomenclaturesOutNotApplicable(res?.notApplicable === true);
-        if (res?.error) setWbNomenclaturesOutError(res.error);
-      } catch (err) {
-        if (!cancelled) {
-          setWbNomenclaturesOutError(err.response?.data?.error || err.message || 'Ошибка загрузки');
-          setWbNomenclaturesOut([]);
-        }
-      } finally {
-        if (!cancelled) setWbNomenclaturesOutLoading(false);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [wbActionModal.isOpen, wbActionModal.promotion?.id]);
-
-  // Загрузка акций WB при открытии вкладки «Акции» → Wildberries
-  useEffect(() => {
-    if (activeSection !== 'promotions' || activePromoMarketplace !== 'wb') return;
-    let cancelled = false;
-    const load = async () => {
-      setWbActionsLoading(true);
-      setWbActionsError(null);
-      try {
-        const res = await pricesApi.getWBActions();
-        const data = res?.data ?? res;
-        if (cancelled) return;
-        setWbActions(Array.isArray(data) ? data : []);
-        if (!Array.isArray(data) && res?.error) setWbActionsError(res.error);
-      } catch (err) {
-        if (!cancelled) {
-          setWbActionsError(err.response?.data?.error || err.message || 'Ошибка загрузки акций WB');
-          setWbActions([]);
-        }
-      } finally {
-        if (!cancelled) setWbActionsLoading(false);
-      }
-    };
-    load();
-    return () => { cancelled = true; };
-  }, [activeSection, activePromoMarketplace]);
 
   // Подставляем сохранённые минимальные цены из БД в state при загрузке/обновлении списка товаров
   useEffect(() => {
@@ -1015,6 +944,62 @@ export function Prices() {
     }
   };
 
+  /** Отправить сохранённые мин. цены одного товара на маркетплейсы. */
+  const handlePushOne = async (productId) => {
+    if (!productId) return;
+    try {
+      setPushOneProductId(productId);
+      setRecalcAllMessage(null);
+      const res = await pricesApi.pushForProduct(productId);
+      const msg = res?.message || 'Цены отправлены на маркетплейсы.';
+      setRecalcAllMessage(msg);
+      setTimeout(() => setRecalcAllMessage(null), 8000);
+    } catch (err) {
+      console.error('[Prices] push one failed:', err);
+      setRecalcAllMessage('Ошибка: ' + (err.response?.data?.message || err.message));
+      setTimeout(() => setRecalcAllMessage(null), 8000);
+    } finally {
+      setPushOneProductId(null);
+    }
+  };
+
+  /** Отправить мин. цены на МП (фон). Если выбран фильтр организации — только она. */
+  const handlePushAll = async () => {
+    try {
+      setPushAllLoading(true);
+      setRecalcAllMessage(null);
+      if (filterOrganizationId) {
+        const org = organizations.find((o) => String(o.id) === String(filterOrganizationId));
+        if (org && org.auto_push_marketplace_prices !== true) {
+          setRecalcAllMessage(
+            'Ошибка: у выбранной организации выключена «Автоматически отправлять цены на маркетплейсы». Включите в разделе Организации.'
+          );
+          setTimeout(() => setRecalcAllMessage(null), 10000);
+          return;
+        }
+      } else {
+        const ok = window.confirm(
+          'Отправить сохранённые минимальные цены на маркетплейсы для всех организаций с включённой автоотправкой цен?\n\nОперация выполняется в фоне.'
+        );
+        if (!ok) return;
+      }
+      const res = await pricesApi.pushAll({
+        organizationId: filterOrganizationId || undefined,
+      });
+      const msg =
+        res?.message ||
+        'Отправка цен на маркетплейсы запущена в фоне.';
+      setRecalcAllMessage(msg);
+      setTimeout(() => setRecalcAllMessage(null), 15000);
+    } catch (err) {
+      console.error('[Prices] push all failed:', err);
+      setRecalcAllMessage('Ошибка: ' + (err.response?.data?.message || err.message));
+      setTimeout(() => setRecalcAllMessage(null), 10000);
+    } finally {
+      setPushAllLoading(false);
+    }
+  };
+
   if (loading && products.length === 0) {
     return <div className="loading">Загрузка цен...</div>;
   }
@@ -1026,178 +1011,11 @@ export function Prices() {
   return (
     <div className="card">
       <h1 className="title">💰 Цены</h1>
-      <p className="subtitle">Управление ценами товаров на маркетплейсах</p>
+      <p className="subtitle">
+        Управление ценами товаров на маркетплейсах ·{' '}
+        <Link to="/prices/strategies" style={{ color: 'var(--primary)' }}>Стратегии ценообразования</Link>
+      </p>
 
-      {/* Вкладки: Цены | Акции */}
-      <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-        <button
-          type="button"
-          onClick={() => setActiveSection('prices')}
-          style={{
-            padding: '10px 16px',
-            background: activeSection === 'prices' ? 'rgba(0,91,255,0.2)' : 'transparent',
-            border: 'none',
-            borderBottom: activeSection === 'prices' ? '2px solid #005bff' : '2px solid transparent',
-            color: activeSection === 'prices' ? '#fff' : 'var(--muted)',
-            cursor: 'pointer',
-            fontSize: '14px',
-            fontWeight: 500
-          }}
-        >
-          Цены
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveSection('promotions')}
-          style={{
-            padding: '10px 16px',
-            background: activeSection === 'promotions' ? 'rgba(0,91,255,0.2)' : 'transparent',
-            border: 'none',
-            borderBottom: activeSection === 'promotions' ? '2px solid #005bff' : '2px solid transparent',
-            color: activeSection === 'promotions' ? '#fff' : 'var(--muted)',
-            cursor: 'pointer',
-            fontSize: '14px',
-            fontWeight: 500
-          }}
-        >
-          Акции
-        </button>
-      </div>
-
-      {activeSection === 'promotions' && (
-        <>
-          {/* Вкладки маркетплейсов внутри Акций */}
-          <div style={{ display: 'flex', gap: '4px', marginBottom: '16px' }}>
-            {[
-              { key: 'ozon', label: 'Ozon' },
-              { key: 'wb', label: 'Wildberries' },
-              { key: 'ym', label: 'Яндекс.Маркет' }
-            ].map(({ key, label }) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setActivePromoMarketplace(key)}
-                style={{
-                  padding: '8px 14px',
-                  background: activePromoMarketplace === key ? 'rgba(255,255,255,0.1)' : 'transparent',
-                  border: '1px solid rgba(255,255,255,0.2)',
-                  borderRadius: '6px',
-                  color: activePromoMarketplace === key ? '#fff' : 'var(--muted)',
-                  cursor: 'pointer',
-                  fontSize: '13px'
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Контент вкладки Ozon */}
-          {activePromoMarketplace === 'ozon' && (
-            <div className="prices-table-container" style={{ marginTop: '16px' }}>
-              {ozonActionsLoading ? (
-                <p style={{ color: 'var(--muted)' }}>Загрузка акций...</p>
-              ) : ozonActionsError ? (
-                <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {ozonActionsError}</p>
-              ) : ozonActions.length === 0 ? (
-                <p style={{ color: 'var(--muted)' }}>Акций нет</p>
-              ) : (
-                <table className="prices-table table">
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>Название</th>
-                      <th>Тип</th>
-                      <th>Начало</th>
-                      <th>Окончание</th>
-                      <th>Участвует товаров</th>
-                      <th title="Количество товаров, которые могут участвовать в акции">Могут участвовать</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ozonActions.map((a) => (
-                      <tr
-                        key={a.id}
-                        onClick={() => setActionModal({ isOpen: true, action: a })}
-                        style={{ cursor: 'pointer' }}
-                        title="Нажмите, чтобы открыть товары акции"
-                      >
-                        <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{a.id}</td>
-                        <td>{a.title || '—'}</td>
-                        <td>{a.action_type || a.discount_type || '—'}</td>
-                        <td style={{ fontSize: '13px' }}>
-                          {a.date_start ? new Date(a.date_start).toLocaleDateString('ru-RU') : '—'}
-                        </td>
-                        <td style={{ fontSize: '13px' }}>
-                          {a.date_end ? new Date(a.date_end).toLocaleDateString('ru-RU') : '—'}
-                        </td>
-                        <td style={{ textAlign: 'center' }}>{a.participating_products_count ?? a.potential_products_count ?? 0}</td>
-                        <td style={{ textAlign: 'center' }}>{a.potential_products_count ?? 0}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          )}
-
-          {activePromoMarketplace === 'wb' && (
-            <div className="prices-table-container" style={{ marginTop: '16px' }}>
-              {wbActionsLoading ? (
-                <p style={{ color: 'var(--muted)' }}>Загрузка акций WB...</p>
-              ) : wbActionsError ? (
-                <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {wbActionsError}</p>
-              ) : wbActions.length === 0 ? (
-                <p style={{ color: 'var(--muted)' }}>Акций WB нет</p>
-              ) : (
-                <table className="prices-table table">
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>Название</th>
-                      <th>Тип</th>
-                      <th>Начало</th>
-                      <th>Окончание</th>
-                      <th title="Товаров в акции">В акции</th>
-                      <th title="Товаров не в акции (могут участвовать)">Не в акции</th>
-                      <th>% участия</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {wbActions.map((a) => (
-                      <tr
-                        key={a.id}
-                        style={{ cursor: 'pointer' }}
-                        onClick={() => setWbActionModal({ isOpen: true, promotion: a })}
-                        title="Нажмите, чтобы открыть детали акции"
-                      >
-                        <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{a.id}</td>
-                        <td>{a.name || '—'}</td>
-                        <td>{a.type || '—'}</td>
-                        <td style={{ fontSize: '13px' }}>
-                          {a.startDateTime ? new Date(a.startDateTime).toLocaleDateString('ru-RU') : '—'}
-                        </td>
-                        <td style={{ fontSize: '13px' }}>
-                          {a.endDateTime ? new Date(a.endDateTime).toLocaleDateString('ru-RU') : '—'}
-                        </td>
-                        <td style={{ textAlign: 'center' }}>{a.inPromoActionTotal ?? a.inPromoActionLeftovers ?? '—'}</td>
-                        <td style={{ textAlign: 'center' }}>{a.notInPromoActionTotal ?? a.notInPromoActionLeftovers ?? '—'}</td>
-                        <td style={{ textAlign: 'center' }}>{a.participationPercentage != null ? `${a.participationPercentage}%` : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          )}
-          {activePromoMarketplace === 'ym' && (
-            <p style={{ color: 'var(--muted)', marginTop: '24px' }}>Раздел акций Яндекс.Маркета — в разработке</p>
-          )}
-        </>
-      )}
-
-      {activeSection === 'prices' && (
-      <>
       <div className="main-card mb-3 card">
         <div className="card-body p-0">
           <div className="products-list-toolbar">
@@ -1363,6 +1181,122 @@ export function Prices() {
         </div>
       )}
 
+      {selectedIds.size > 0 && (
+        <div className="prices-bulk-bar">
+          <div className="prices-bulk-bar-title">
+            Массовое изменение · выбрано: {selectedIds.size}
+          </div>
+          <div className="prices-bulk-bar-row">
+            <label className="prices-bulk-field">
+              <span>Маркетплейс</span>
+              <select
+                value={bulkMarketplace}
+                onChange={(e) => setBulkMarketplace(e.target.value)}
+                disabled={bulkSaving}
+              >
+                <option value="ozon">Ozon</option>
+                <option value="wb">WB</option>
+                <option value="ym">Яндекс.Маркет</option>
+              </select>
+            </label>
+            <label className="prices-bulk-field">
+              <span>Факт. цена</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="₽"
+                value={bulkActual}
+                disabled={bulkSaving}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setBulkActual(v);
+                  const actual = parseMoneyInput(v);
+                  const pct = parseMoneyInput(bulkPct);
+                  if (actual != null && pct != null && pct < 100) {
+                    const b = priceBeforeFromActualAndPercent(actual, pct);
+                    if (b != null) setBulkBefore(formatMoneyInput(b));
+                  } else if (actual != null) {
+                    const before = parseMoneyInput(bulkBefore);
+                    if (before != null && before > 0) {
+                      const p = percentFromActualAndBefore(actual, before);
+                      if (p != null) setBulkPct(formatMoneyInput(p));
+                    }
+                  }
+                }}
+              />
+            </label>
+            <label className="prices-bulk-field">
+              <span>До скидки</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="₽"
+                value={bulkBefore}
+                disabled={bulkSaving}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setBulkBefore(v);
+                  const before = parseMoneyInput(v);
+                  const actual = parseMoneyInput(bulkActual);
+                  if (before != null && before > 0 && actual != null) {
+                    const p = percentFromActualAndBefore(actual, before);
+                    if (p != null) setBulkPct(formatMoneyInput(p));
+                  }
+                }}
+              />
+            </label>
+            <label className="prices-bulk-field">
+              <span>Скидка %</span>
+              <input
+                type="number"
+                step="0.01"
+                max="99.99"
+                placeholder="%"
+                value={bulkPct}
+                disabled={bulkSaving}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setBulkPct(v);
+                  const pct = parseMoneyInput(v);
+                  const actual = parseMoneyInput(bulkActual);
+                  if (pct != null && pct < 100 && actual != null) {
+                    const b = priceBeforeFromActualAndPercent(actual, pct);
+                    if (b != null) setBulkBefore(formatMoneyInput(b));
+                  }
+                }}
+              />
+            </label>
+            <Button
+              type="button"
+              variant="primary"
+              size="small"
+              disabled={bulkSaving}
+              onClick={handleBulkApplyCommercial}
+            >
+              {bulkSaving ? 'Сохранение…' : 'Применить к выбранным'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="small"
+              disabled={bulkSaving}
+              onClick={() => setSelectedIds(new Set())}
+            >
+              Снять выделение
+            </Button>
+          </div>
+          {bulkMessage ? (
+            <div className="prices-bulk-bar-msg">{bulkMessage}</div>
+          ) : (
+            <div className="prices-bulk-bar-hint">
+              Факт. цена не меняется у товаров со стратегией. Скидка и «до скидки» — для всех выбранных.
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{marginTop: '20px', width: '100%'}}>
         {totalProducts === 0 && !listRefreshing ? (
           <div className="empty-state">
@@ -1372,25 +1306,84 @@ export function Prices() {
         ) : (
           <div className={`prices-table-container card ${listRefreshing ? 'opacity-75' : ''}`}>
             {renderPricesListPager('top')}
-            <table className="prices-table table">
+            <table className="prices-table table prices-table-commercial">
               <thead>
                 <tr>
-                  <th>Артикул</th>
-                  <th style={{width: '25%'}}>Товар</th>
-                  <th style={{textAlign: 'right'}}>Себестоимость</th>
-                  <th style={{textAlign: 'center', background: 'rgba(0,91,255,0.1)'}}>Ozon</th>
-                  <th style={{textAlign: 'center', background: 'rgba(203,17,171,0.1)'}}>WB</th>
-                  <th style={{textAlign: 'center', background: 'rgba(255,204,0,0.1)'}}>Яндекс.Маркет</th>
-                  <th style={{width: '100px', textAlign: 'center'}}>Действия</th>
+                  <th rowSpan={2} style={{ width: 36, textAlign: 'center', verticalAlign: 'middle' }}>
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={toggleSelectAllVisible}
+                      title="Выбрать все на странице"
+                      aria-label="Выбрать все на странице"
+                    />
+                  </th>
+                  <th rowSpan={2} style={{ verticalAlign: 'middle' }}>Артикул</th>
+                  <th rowSpan={2} style={{ width: '16%', verticalAlign: 'middle' }}>Товар</th>
+                  <th colSpan={mpColSpan} className="mp-head-mp" style={{ background: 'rgba(0,91,255,0.12)' }}>
+                    Ozon
+                  </th>
+                  <th colSpan={mpColSpan} className="mp-head-mp" style={{ background: 'rgba(203,17,171,0.12)' }}>
+                    WB
+                  </th>
+                  <th colSpan={mpColSpan} className="mp-head-mp" style={{ background: 'rgba(255,204,0,0.14)' }}>
+                    Я.Маркет
+                  </th>
+                  <th rowSpan={2} style={{ width: '72px', textAlign: 'center', verticalAlign: 'middle' }}>
+                    Действия
+                  </th>
+                </tr>
+                <tr>
+                  {showFbsPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>
+                      {showFboPrices ? 'мин. FBS' : 'мин.'}
+                    </th>
+                  )}
+                  {showFboPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>
+                      {showFbsPrices ? 'мин. FBO' : 'мин. FBO'}
+                    </th>
+                  )}
+                  {!showFbsPrices && !showFboPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>мин.</th>
+                  )}
+                  <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>факт</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(0,91,255,0.06)' }}>до / %</th>
+                  {showFbsPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>
+                      {showFboPrices ? 'мин. FBS' : 'мин.'}
+                    </th>
+                  )}
+                  {showFboPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>
+                      {showFbsPrices ? 'мин. FBO' : 'мин. FBO'}
+                    </th>
+                  )}
+                  {!showFbsPrices && !showFboPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>мин.</th>
+                  )}
+                  <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>факт</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(203,17,171,0.06)' }}>до / %</th>
+                  {showFbsPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>
+                      {showFboPrices ? 'мин. FBS' : 'мин.'}
+                    </th>
+                  )}
+                  {showFboPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>
+                      {showFbsPrices ? 'мин. FBO' : 'мин. FBO'}
+                    </th>
+                  )}
+                  {!showFbsPrices && !showFboPrices && (
+                    <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>мин.</th>
+                  )}
+                  <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>факт</th>
+                  <th className="mp-head-sub" style={{ background: 'rgba(255,204,0,0.08)' }}>до / %</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleProducts.map(product => {
-                  // basePrice используется для расчета минимальной цены (себестоимость товара)
-                  // Берем себестоимость из product.cost (или price/base_price), и добавляем доп.расходы (additionalExpenses)
-                  const costBaseNum = Number(product.cost ?? product.price ?? product.base_price ?? 0) || 0;
-                  const additionalExpensesNum = Number(product.additionalExpenses ?? product.additional_expenses ?? 0) || 0;
-                  const productCost = costBaseNum > 0 ? costBaseNum : null; // Отображаем отдельно, без суммы
+                {visibleProducts.map((product) => {
+                  const productMerged = mergeProductCommercial(product);
                   const productKey = String(product.id ?? product.sku ?? '');
                   const raw = calculatedPrices[productKey] || {};
                   const storedOzon = product.storedMinPriceOzon ?? product.stored_min_price_ozon;
@@ -1399,11 +1392,43 @@ export function Prices() {
                   const prices = {
                     ozon: raw.ozon ?? storedOzon ?? null,
                     wb: raw.wb ?? storedWb ?? null,
-                    ym: raw.ym ?? storedYm ?? null
+                    ym: raw.ym ?? storedYm ?? null,
+                    ozonFbs: raw.ozonFbs ?? product.storedMinPriceOzonFbs ?? storedOzon ?? null,
+                    ozonFbo: raw.ozonFbo ?? product.storedMinPriceOzonFbo ?? null,
+                    wbFbs: raw.wbFbs ?? product.storedMinPriceWbFbs ?? null,
+                    wbFbo: raw.wbFbo ?? product.storedMinPriceWbFbo ?? storedWb ?? null,
+                    ymFbs: raw.ymFbs ?? product.storedMinPriceYmFbs ?? storedYm ?? null,
+                    ymFbo: raw.ymFbo ?? product.storedMinPriceYmFbo ?? null,
+                  };
+                  const openMinModal = (marketplace, scheme, price, detailsFallback) => {
+                    const schemeKey = scheme === 'FBO' ? 'Fbo' : scheme === 'FBS' ? 'Fbs' : '';
+                    const storedDetails =
+                      (schemeKey &&
+                        product[
+                          `storedCalculationDetails${marketplace === 'ozon' ? 'Ozon' : marketplace === 'wb' ? 'Wb' : 'Ym'}${schemeKey}`
+                        ]) ||
+                      (marketplace === 'ozon'
+                        ? product.storedCalculationDetailsOzon
+                        : marketplace === 'wb'
+                          ? product.storedCalculationDetailsWb
+                          : product.storedCalculationDetailsYm);
+                    setPriceModal({
+                      isOpen: true,
+                      product,
+                      marketplace,
+                      priceScheme: scheme || null,
+                      price,
+                      calculatorData:
+                        calculatorData[productKey]?.[marketplace] ||
+                        detailsFallback ||
+                        storedDetails ||
+                        null,
+                    });
                   };
                   const isLoading = loadingPrices[productKey];
-                  
-                  const skuOzon = product.sku_ozon || product.ozon_sku || (product.product_skus && product.product_skus.ozon);
+                  const strategyLocked = product.hasPricingStrategy === true;
+                  const skuOzon =
+                    product.sku_ozon || product.ozon_sku || (product.product_skus && product.product_skus.ozon);
                   const skuWb =
                     product.mp_wb_vendor_code ||
                     (product.product_skus && product.product_skus.wb) ||
@@ -1413,190 +1438,182 @@ export function Prices() {
                       : null) ||
                     product.sku_wb;
                   const skuYm = product.sku_ym || product.ym_sku || (product.product_skus && product.product_skus.ym);
-                  
+                  const rowSelected = selectedIds.has(Number(product.id));
+
                   return (
-                    <tr key={product.id}>
-                      <td style={{fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap'}}>
+                    <tr key={product.id} className={rowSelected ? 'prices-row-selected' : undefined}>
+                      <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                        <input
+                          type="checkbox"
+                          checked={rowSelected}
+                          onChange={() => toggleSelectOne(product.id)}
+                          aria-label={`Выбрать ${product.sku || product.id}`}
+                        />
+                      </td>
+                      <td style={{ fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle' }}>
                         {product?.id ? (
                           <button
                             type="button"
                             onClick={(e) => openProductCardFromClick(product.id, e)}
                             title="Открыть карточку товара"
-                            style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+                            style={{
+                              padding: 0,
+                              border: 0,
+                              background: 'transparent',
+                              color: 'inherit',
+                              textDecoration: 'underline',
+                              cursor: 'pointer',
+                            }}
                           >
                             {product.sku || '—'}
                           </button>
-                        ) : (product.sku || '—')}
+                        ) : (
+                          product.sku || '—'
+                        )}
                       </td>
-                      <td style={{overflow: 'hidden', textOverflow: 'ellipsis'}}>
-                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'center', verticalAlign: 'middle' }}>
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'center' }}>
                           {product?.id ? (
                             <button
                               type="button"
                               onClick={(e) => openProductCardFromClick(product.id, e)}
                               title="Открыть карточку товара"
-                              style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer', textAlign: 'left' }}
+                              style={{
+                                padding: 0,
+                                border: 0,
+                                background: 'transparent',
+                                color: 'inherit',
+                                textDecoration: 'underline',
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                              }}
                             >
                               {product.name || 'Без названия'}
                             </button>
-                          ) : (product.name || 'Без названия')}
+                          ) : (
+                            product.name || 'Без названия'
+                          )}
                         </div>
                         {resolveProductVolumeLiters(product) != null && (
-                          <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px'}}>
+                          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px', textAlign: 'center' }}>
                             Объем: {resolveProductVolumeLiters(product).toFixed(2)} л
                           </div>
                         )}
+                        {strategyLocked ? (
+                          <div
+                            style={{ fontSize: '10px', color: '#d97706', marginTop: '2px', textAlign: 'center' }}
+                            title={
+                              product.effectivePricingStrategySource === 'product'
+                                ? 'Стратегия товара'
+                                : product.effectivePricingStrategySource === 'organization'
+                                  ? 'Стратегия организации'
+                                  : 'Стратегия по умолчанию кабинета'
+                            }
+                          >
+                            {product.effectivePricingStrategyName
+                              ? product.effectivePricingStrategyName
+                              : 'стратегия'}
+                          </div>
+                        ) : null}
                       </td>
-                      <td style={{textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap'}}>
-                        <div>
-                          <div>
-                            {productCost !== null ? (
-                              <span style={{color: '#10b981'}}>{parseFloat(productCost).toFixed(2)} ₽</span>
-                            ) : (
-                              <span style={{color: 'var(--muted)', fontSize: '12px'}}>—</span>
-                            )}
-                          </div>
-                          <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px', fontWeight: 400}}>
-                            {additionalExpensesNum > 0 ? (
-                              <span>{additionalExpensesNum.toFixed(2)} ₽ доп.</span>
-                            ) : (
-                              <span>— доп.</span>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      <td style={{textAlign: 'center', whiteSpace: 'nowrap'}}>
-                        {isLoading ? (
-                          <span style={{color: 'var(--muted)', fontSize: '12px'}}>...</span>
-                        ) : prices.ozon ? (
-                          <div
-                            onClick={() => setPriceModal({
-                              isOpen: true,
-                              product: product,
-                              marketplace: 'ozon',
-                              price: prices.ozon,
-                              calculatorData: calculatorData[productKey]?.ozon
-                            })}
-                            style={{cursor: 'pointer'}}
-                            title="Нажмите для просмотра деталей расчета цены"
-                          >
-                            <div style={{fontSize: '14px', fontWeight: 600, color: '#0b91ff'}}>
-                              {prices.ozon} ₽
-                            </div>
-                            <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px'}}>мин. цена</div>
-                          </div>
-                        ) : priceErrors[productKey]?.ozon ? (
-                          <div
-                            style={{cursor: 'help'}}
-                            title={priceErrors[productKey].ozon}
-                          >
-                            <span style={{color: '#ef4444', fontSize: '12px'}}>⚠️ Ошибка</span>
-                            <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', maxWidth: '240px'}}>
-                              {priceErrors[productKey].ozon.length > 85
-                                ? priceErrors[productKey].ozon.substring(0, 85) + '…'
-                                : priceErrors[productKey].ozon}
-                            </div>
-                          </div>
-                        ) : skuOzon ? (
-                          <span className="mp-badge ozon" style={{opacity: 0.5}}>OZ</span>
-                        ) : (
-                          <span style={{color: 'var(--muted)', fontSize: '12px'}}>—</span>
-                        )}
-                      </td>
-                      <td style={{textAlign: 'center', whiteSpace: 'nowrap'}}>
-                        {isLoading ? (
-                          <span style={{color: 'var(--muted)', fontSize: '12px'}}>...</span>
-                        ) : prices.wb ? (
-                          <div
-                            onClick={() => setPriceModal({
-                              isOpen: true,
-                              product: product,
-                              marketplace: 'wb',
-                              price: prices.wb,
-                              calculatorData: calculatorData[productKey]?.wb
-                            })}
-                            style={{cursor: 'pointer'}}
-                            title="Нажмите для просмотра деталей расчета цены"
-                          >
-                            <div style={{fontSize: '14px', fontWeight: 600, color: '#cb11ab'}}>
-                              {prices.wb} ₽
-                            </div>
-                            <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px'}}>мин. цена</div>
-                          </div>
-                        ) : priceErrors[productKey]?.wb ? (
-                          <div
-                            style={{cursor: 'help'}}
-                            title={priceErrors[productKey].wb}
-                          >
-                            <span style={{color: '#ef4444', fontSize: '12px'}}>⚠️ Ошибка</span>
-                            <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', maxWidth: '240px'}}>
-                              {priceErrors[productKey].wb.length > 85 
-                                ? priceErrors[productKey].wb.substring(0, 85) + '…'
-                                : priceErrors[productKey].wb}
-                            </div>
-                          </div>
-                        ) : calculatorData[productKey]?.wb?.error ? (
-                          <div
-                            onClick={() => setPriceModal({
-                              isOpen: true,
-                              product: product,
-                              marketplace: 'wb',
-                              price: null,
-                              calculatorData: calculatorData[productKey]?.wb
-                            })}
-                            style={{cursor: 'pointer'}}
-                            title="Нажмите для просмотра ошибки"
-                          >
-                            <div style={{fontSize: '12px', color: '#ef4444', fontWeight: 500}}>
-                              ⚠️ Ошибка
-                            </div>
-                            <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px'}}>
-                              {calculatorData[productKey]?.wb?.error || 'Данных нет'}
-                            </div>
-                          </div>
-                        ) : skuWb ? (
-                          <span className="mp-badge wb" style={{opacity: 0.5}}>WB</span>
-                        ) : (
-                          <span style={{color: 'var(--muted)', fontSize: '12px'}}>—</span>
-                        )}
-                      </td>
-                      <td style={{textAlign: 'center', whiteSpace: 'nowrap'}}>
-                        {isLoading ? (
-                          <span style={{color: 'var(--muted)', fontSize: '12px'}}>...</span>
-                        ) : prices.ym ? (
-                          <div
-                            onClick={() => setPriceModal({
-                              isOpen: true,
-                              product: product,
-                              marketplace: 'ym',
-                              price: prices.ym,
-                              calculatorData: calculatorData[productKey]?.ym
-                            })}
-                            style={{cursor: 'pointer'}}
-                            title="Нажмите для просмотра деталей расчета цены"
-                          >
-                            <div style={{fontSize: '14px', fontWeight: 600, color: '#ffcc00'}}>
-                              {prices.ym} ₽
-                            </div>
-                            <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '2px'}}>мин. цена</div>
-                          </div>
-                        ) : skuYm ? (
-                          <span className="mp-badge ym" style={{opacity: 0.5}}>YM</span>
-                        ) : (
-                          <span style={{color: 'var(--muted)', fontSize: '12px'}}>—</span>
-                        )}
-                      </td>
-                      <td style={{textAlign: 'center', verticalAlign: 'middle'}}>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="small"
-                          onClick={() => handleRecalcOne(product.id)}
-                          disabled={recalcAllLoading || recalcOneProductId === product.id}
-                          title="Пересчитать минимальные цены только для этого товара"
+                      <MarketplacePriceCells
+                        product={productMerged}
+                        marketplace="ozon"
+                        minPrice={prices.ozon}
+                        minPriceFbs={prices.ozonFbs}
+                        minPriceFbo={prices.ozonFbo}
+                        showFbs={showFbsPrices}
+                        showFbo={showFboPrices}
+                        isLoading={isLoading}
+                        hasSku={!!skuOzon}
+                        skuBadge="OZ"
+                        strategyLocked={strategyLocked}
+                        disabled={recalcAllLoading || pushAllLoading}
+                        onSave={handleSaveCommercialItem}
+                        onOpenMinDetails={() => openMinModal('ozon', null, prices.ozon)}
+                        onOpenMinDetailsFbs={() => openMinModal('ozon', 'FBS', prices.ozonFbs)}
+                        onOpenMinDetailsFbo={() => openMinModal('ozon', 'FBO', prices.ozonFbo)}
+                      />
+                      <MarketplacePriceCells
+                        product={productMerged}
+                        marketplace="wb"
+                        minPrice={prices.wb}
+                        minPriceFbs={prices.wbFbs}
+                        minPriceFbo={prices.wbFbo}
+                        showFbs={showFbsPrices}
+                        showFbo={showFboPrices}
+                        isLoading={isLoading}
+                        hasSku={!!skuWb}
+                        skuBadge="WB"
+                        strategyLocked={strategyLocked}
+                        disabled={recalcAllLoading || pushAllLoading}
+                        onSave={handleSaveCommercialItem}
+                        onOpenMinDetails={() => openMinModal('wb', null, prices.wb)}
+                        onOpenMinDetailsFbs={() => openMinModal('wb', 'FBS', prices.wbFbs)}
+                        onOpenMinDetailsFbo={() => openMinModal('wb', 'FBO', prices.wbFbo)}
+                      />
+                      <MarketplacePriceCells
+                        product={productMerged}
+                        marketplace="ym"
+                        minPrice={prices.ym}
+                        minPriceFbs={prices.ymFbs}
+                        minPriceFbo={prices.ymFbo}
+                        showFbs={showFbsPrices}
+                        showFbo={showFboPrices}
+                        isLoading={isLoading}
+                        hasSku={!!skuYm}
+                        skuBadge="YM"
+                        strategyLocked={strategyLocked}
+                        disabled={recalcAllLoading || pushAllLoading}
+                        onSave={handleSaveCommercialItem}
+                        onOpenMinDetails={() => openMinModal('ym', null, prices.ym)}
+                        onOpenMinDetailsFbs={() => openMinModal('ym', 'FBS', prices.ymFbs)}
+                        onOpenMinDetailsFbo={() => openMinModal('ym', 'FBO', prices.ymFbo)}
+                      />
+                      <td style={{ textAlign: 'center', verticalAlign: 'middle', whiteSpace: 'nowrap' }}>
+                        <div
+                          style={{
+                            display: 'inline-flex',
+                            gap: '4px',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
                         >
-                          {recalcOneProductId === product.id ? '⏳' : '🔄'} Пересчитать
-                        </Button>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="small"
+                            className="prices-row-action-btn"
+                            onClick={() => handleRecalcOne(product.id)}
+                            disabled={
+                              recalcAllLoading ||
+                              pushAllLoading ||
+                              recalcOneProductId === product.id ||
+                              pushOneProductId === product.id
+                            }
+                            title="Пересчитать минимальные цены"
+                            aria-label="Пересчитать минимальные цены"
+                          >
+                            {recalcOneProductId === product.id ? '⏳' : '🔄'}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="small"
+                            className="prices-row-action-btn"
+                            onClick={() => handlePushOne(product.id)}
+                            disabled={
+                              recalcAllLoading ||
+                              pushAllLoading ||
+                              recalcOneProductId === product.id ||
+                              pushOneProductId === product.id
+                            }
+                            title="Отправить цены на маркетплейсы"
+                            aria-label="Отправить цены на маркетплейсы"
+                          >
+                            {pushOneProductId === product.id ? '⏳' : '📤'}
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1609,8 +1626,15 @@ export function Prices() {
       </div>
 
       <div className="actions" style={{marginTop: '16px', display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center'}}>
-        <Button variant="primary" onClick={handleRecalcAndSave} disabled={recalcAllLoading || listRefreshing}>
+        <Button variant="primary" onClick={handleRecalcAndSave} disabled={recalcAllLoading || pushAllLoading || listRefreshing}>
           {recalcAllLoading ? '⏳ Запуск пересчёта...' : '📊 Пересчитать и сохранить все минимальные цены'}
+        </Button>
+        <Button variant="secondary" onClick={handlePushAll} disabled={recalcAllLoading || pushAllLoading || listRefreshing}>
+          {pushAllLoading
+            ? '⏳ Запуск отправки...'
+            : filterOrganizationId
+              ? '📤 Отправить цены на маркетплейсы (организация)'
+              : '📤 Отправить цены на маркетплейсы'}
         </Button>
         <div style={{marginTop: '8px', fontSize: '12px', color: 'var(--muted)', width: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px'}}>
           {recalcAllMessage && (
@@ -1626,8 +1650,6 @@ export function Prices() {
           )}
         </div>
       </div>
-      </>
-      )}
 
       <PriceDetailsModal
         isOpen={priceModal.isOpen}
@@ -1635,14 +1657,24 @@ export function Prices() {
         product={priceModal.product}
         marketplace={priceModal.marketplace}
         priceData={priceModal.price}
+        priceScheme={priceModal.priceScheme || null}
         calculatorData={(() => {
           const productKey = priceModal.product && (priceModal.product.id ?? priceModal.product.sku);
           const fromState = productKey ? calculatorData[productKey]?.[priceModal.marketplace] : null;
           const fromModal = priceModal.calculatorData;
+          const scheme = String(priceModal.priceScheme || '').toUpperCase();
+          const mp = priceModal.marketplace;
+          const mpCap = mp === 'ozon' ? 'Ozon' : mp === 'wb' ? 'Wb' : 'Ym';
+          const fromStoredScheme =
+            scheme === 'FBS'
+              ? priceModal.product?.[`storedCalculationDetails${mpCap}Fbs`]
+              : scheme === 'FBO' || scheme === 'FBY'
+                ? priceModal.product?.[`storedCalculationDetails${mpCap}Fbo`]
+                : null;
           const fromStored = priceModal.product && priceModal.marketplace
             ? (priceModal.marketplace === 'ozon' ? priceModal.product.storedCalculationDetailsOzon : priceModal.marketplace === 'wb' ? priceModal.product.storedCalculationDetailsWb : priceModal.product.storedCalculationDetailsYm)
             : null;
-          const raw = fromState ?? fromModal ?? fromStored ?? null;
+          const raw = fromModal ?? fromStoredScheme ?? fromState ?? fromStored ?? null;
           if (!raw || !priceModal.product) return raw;
           let enriched = enrichCalculatorVolumeFromProduct(raw, priceModal.product);
           if (priceModal.marketplace === 'ozon') {
@@ -1651,443 +1683,15 @@ export function Prices() {
           return enriched;
         })()}
         wbAcquiringPercent={wbAcquiringPercent}
+        ozonAcquiringPercent={ozonAcquiringPercent}
         wbGemServicesPercent={wbGemServicesPercent}
         allowPrivateOrders={allowPrivateOrders}
+        taxProfile={taxProfileForProduct(
+          organizations,
+          priceModal.product,
+          filterOrganizationId || getApiSessionContext().organizationId || null
+        )}
       />
-
-      {/* Модалка: товары акции Ozon — участвующие и доступные к акции */}
-      <Modal
-        isOpen={actionModal.isOpen}
-        onClose={() => setActionModal({ isOpen: false, action: null })}
-        title={actionModal.action ? `Акция: ${actionModal.action.title || actionModal.action.id}` : 'Акция'}
-        size="large"
-      >
-        <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
-          <button
-            type="button"
-            onClick={() => setActionModalTab('participating')}
-            style={{
-              padding: '8px 14px',
-              background: actionModalTab === 'participating' ? 'rgba(0,91,255,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: actionModalTab === 'participating' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
-            Участвующие в акции
-          </button>
-          <button
-            type="button"
-            onClick={() => setActionModalTab('candidates')}
-            style={{
-              padding: '8px 14px',
-              background: actionModalTab === 'candidates' ? 'rgba(0,91,255,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: actionModalTab === 'candidates' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
-            Доступные к акции
-          </button>
-        </div>
-        {actionModalTab === 'participating' && (
-          <div className="prices-table-container">
-            {actionProductsLoading ? (
-              <p style={{ color: 'var(--muted)' }}>Загрузка...</p>
-            ) : actionProductsError ? (
-              <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {actionProductsError}</p>
-            ) : actionProducts.length === 0 ? (
-              <p style={{ color: 'var(--muted)' }}>Нет товаров из нашей системы, участвующих в этой акции</p>
-            ) : (
-              <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
-                <table className="prices-table table">
-                  <thead>
-                    <tr>
-                      <th>Наш товар</th>
-                      <th>Артикул</th>
-                      <th>ID Ozon</th>
-                      <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
-                      <th>Цена, ₽</th>
-                      <th title="У участвующих — текущая цена в акции. У доступных (ещё не в акции) Ozon отдаёт 0 — показываем предлагаемую цену входа">
-                        Цена по акции, ₽
-                      </th>
-                      <th title="Цена выше рекомендуемой">⚠ Превышена</th>
-                      <th title="Для обычных акций — alert_max_action_price. Для эластичного бустинга Ozon отдаёт 0 в этом поле; берём max_action_price / цену мин. бустинга">
-                        Предлагаемая цена входа, ₽
-                      </th>
-                      <th>Макс. цена акции, ₽</th>
-                      <th>Режим</th>
-                      <th>Мин. остаток</th>
-                      <th>Остаток</th>
-                      <th>Бустинг, %</th>
-                      <th>Цена мин. бустинга, ₽</th>
-                      <th>Цена макс. бустинга, ₽</th>
-                      <th>Мин. бустинг, %</th>
-                      <th>Макс. бустинг, %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {actionProducts.map((p) => (
-                      <tr key={p.id} style={p.alert_max_action_price_failed ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
-                        <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>
-                          {p.our_product_id != null ? (
-                            <button
-                              type="button"
-                              onClick={(e) => openProductCardFromClick(p.our_product_id, e)}
-                              title="Открыть карточку товара"
-                              style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer', textAlign: 'left' }}
-                            >
-                              {p.our_product_name || '—'}
-                            </button>
-                          ) : (
-                            p.our_product_name || '—'
-                          )}
-                        </td>
-                        <td style={{ fontSize: '13px', color: 'var(--muted)' }}>
-                          {p.our_product_id != null ? (
-                            <button
-                              type="button"
-                              onClick={(e) => openProductCardFromClick(p.our_product_id, e)}
-                              title="Открыть карточку товара"
-                              style={{ padding: 0, border: 0, background: 'transparent', color: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
-                            >
-                              {p.our_sku ?? p.offer_id ?? '—'}
-                            </button>
-                          ) : (
-                            p.our_sku ?? p.offer_id ?? '—'
-                          )}
-                        </td>
-                        <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
-                        <td style={{ color: 'var(--primary)' }}>{p.min_price_ozon != null ? `${p.min_price_ozon} ₽` : '—'}</td>
-                        <td>{p.price != null ? `${p.price} ₽` : '—'}</td>
-                        <td>{formatOzonActionRub(ozonDisplayActionPrice(p))}</td>
-                        <td title={p.alert_max_action_price_failed ? 'Цена выше рекомендуемой, товар может быть исключён' : ''}>{p.alert_max_action_price_failed ? '⚠ Да' : '—'}</td>
-                        <td title={Number(p.alert_max_action_price) > 0 ? 'alert_max_action_price' : 'Для эластичного бустинга: max_action_price / price_min_elastic'}>
-                          {formatOzonActionRub(ozonSuggestedEntryPrice(p))}
-                        </td>
-                        <td>{formatOzonActionRub(p.max_action_price)}</td>
-                        <td style={{ fontSize: '12px' }}>{p.add_mode || '—'}</td>
-                        <td>{p.min_stock != null ? p.min_stock : '—'}</td>
-                        <td>{p.stock != null ? p.stock : '—'}</td>
-                        <td>{p.current_boost != null ? p.current_boost : '—'}</td>
-                        <td>{formatOzonActionRub(p.price_min_elastic)}</td>
-                        <td>{formatOzonActionRub(p.price_max_elastic)}</td>
-                        <td>{p.min_boost != null ? p.min_boost : '—'}</td>
-                        <td>{p.max_boost != null ? p.max_boost : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-        {actionModalTab === 'candidates' && (
-          <div className="prices-table-container">
-            {actionCandidatesLoading ? (
-              <p style={{ color: 'var(--muted)' }}>Загрузка...</p>
-            ) : actionCandidatesError ? (
-              <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {actionCandidatesError}</p>
-            ) : actionCandidates.length === 0 ? (
-              <p style={{ color: 'var(--muted)' }}>Нет товаров из нашей системы, доступных к добавлению в эту акцию</p>
-            ) : (
-              <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
-                <table className="prices-table table">
-                  <thead>
-                    <tr>
-                      <th>Наш товар</th>
-                      <th>Артикул</th>
-                      <th>ID Ozon</th>
-                      <th title="Сохранённая минимальная цена для Ozon">Мин. цена (Ozon), ₽</th>
-                      <th>Цена, ₽</th>
-                      <th title="У участвующих — текущая цена в акции. У доступных (ещё не в акции) Ozon отдаёт 0 — показываем предлагаемую цену входа">
-                        Цена по акции, ₽
-                      </th>
-                      <th title="Цена выше рекомендуемой">⚠ Превышена</th>
-                      <th title="Для обычных акций — alert_max_action_price. Для эластичного бустинга Ozon отдаёт 0 в этом поле; берём max_action_price / цену мин. бустинга">
-                        Предлагаемая цена входа, ₽
-                      </th>
-                      <th>Макс. цена акции, ₽</th>
-                      <th>Режим</th>
-                      <th>Мин. остаток</th>
-                      <th>Остаток</th>
-                      <th>Бустинг, %</th>
-                      <th>Цена мин. бустинга, ₽</th>
-                      <th>Цена макс. бустинга, ₽</th>
-                      <th>Мин. бустинг, %</th>
-                      <th>Макс. бустинг, %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {actionCandidates.map((p) => (
-                      <tr key={p.id} style={p.alert_max_action_price_failed ? { backgroundColor: 'rgba(239,68,68,0.08)' } : undefined}>
-                        <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.our_product_name || ''}>{p.our_product_name || '—'}</td>
-                        <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{p.our_sku ?? p.offer_id ?? '—'}</td>
-                        <td style={{ fontSize: '12px', color: 'var(--muted)' }}>{p.id}</td>
-                        <td style={{ color: 'var(--primary)' }}>{p.min_price_ozon != null ? `${p.min_price_ozon} ₽` : '—'}</td>
-                        <td>{p.price != null ? `${p.price} ₽` : '—'}</td>
-                        <td>{formatOzonActionRub(ozonDisplayActionPrice(p))}</td>
-                        <td title={p.alert_max_action_price_failed ? 'Цена выше рекомендуемой' : ''}>{p.alert_max_action_price_failed ? '⚠ Да' : '—'}</td>
-                        <td title={Number(p.alert_max_action_price) > 0 ? 'alert_max_action_price' : 'Для эластичного бустинга: max_action_price / price_min_elastic'}>
-                          {formatOzonActionRub(ozonSuggestedEntryPrice(p))}
-                        </td>
-                        <td>{formatOzonActionRub(p.max_action_price)}</td>
-                        <td style={{ fontSize: '12px' }}>{p.add_mode || '—'}</td>
-                        <td>{p.min_stock != null ? p.min_stock : '—'}</td>
-                        <td>{p.stock != null ? p.stock : '—'}</td>
-                        <td>{p.current_boost != null ? p.current_boost : '—'}</td>
-                        <td>{formatOzonActionRub(p.price_min_elastic)}</td>
-                        <td>{formatOzonActionRub(p.price_max_elastic)}</td>
-                        <td>{p.min_boost != null ? p.min_boost : '—'}</td>
-                        <td>{p.max_boost != null ? p.max_boost : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
-
-      {/* Модалка: детали акции WB + номенклатуры (участвующие / доступные) */}
-      <Modal
-        isOpen={wbActionModal.isOpen}
-        onClose={() => setWbActionModal({ isOpen: false, promotion: null })}
-        title={wbActionModal.promotion ? `Акция WB: ${wbActionModal.promotion.name || wbActionModal.promotion.id}` : 'Акция WB'}
-        size="large"
-      >
-        <div style={{ marginBottom: '12px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
-          <button
-            type="button"
-            onClick={() => setWbActionModalTab('details')}
-            style={{
-              padding: '8px 14px',
-              background: wbActionModalTab === 'details' ? 'rgba(203,17,171,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: wbActionModalTab === 'details' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
-            Детали
-          </button>
-          <button
-            type="button"
-            onClick={() => setWbActionModalTab('participating')}
-            style={{
-              padding: '8px 14px',
-              background: wbActionModalTab === 'participating' ? 'rgba(203,17,171,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: wbActionModalTab === 'participating' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
-            Участвующие в акции
-          </button>
-          <button
-            type="button"
-            onClick={() => setWbActionModalTab('candidates')}
-            style={{
-              padding: '8px 14px',
-              background: wbActionModalTab === 'candidates' ? 'rgba(203,17,171,0.2)' : 'transparent',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '6px',
-              color: wbActionModalTab === 'candidates' ? '#fff' : 'var(--muted)',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
-            Доступные к акции
-          </button>
-        </div>
-
-        {wbActionModalTab === 'details' && (
-          <>
-            {wbActionDetailsLoading ? (
-              <p style={{ color: 'var(--muted)' }}>Загрузка деталей акции...</p>
-            ) : wbActionDetailsError ? (
-              <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {wbActionDetailsError}</p>
-            ) : wbActionDetails ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {wbActionDetails.description && (
-                  <div>
-                    <strong style={{ color: 'var(--muted)', fontSize: '12px', textTransform: 'uppercase' }}>Описание</strong>
-                    <p style={{ margin: '6px 0 0', whiteSpace: 'pre-wrap' }}>{wbActionDetails.description}</p>
-                  </div>
-                )}
-                {Array.isArray(wbActionDetails.advantages) && wbActionDetails.advantages.length > 0 && (
-                  <div>
-                    <strong style={{ color: 'var(--muted)', fontSize: '12px', textTransform: 'uppercase' }}>Преимущества</strong>
-                    <ul style={{ margin: '6px 0 0', paddingLeft: '20px' }}>
-                      {wbActionDetails.advantages.map((adv, i) => (
-                        <li key={i}>{adv}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px 24px' }}>
-                  <div>
-                    <span style={{ color: 'var(--muted)', fontSize: '12px' }}>Тип</span>
-                    <div>{wbActionDetails.type || '—'}</div>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--muted)', fontSize: '12px' }}>Начало</span>
-                    <div>{wbActionDetails.startDateTime ? new Date(wbActionDetails.startDateTime).toLocaleString('ru-RU') : '—'}</div>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--muted)', fontSize: '12px' }}>Окончание</span>
-                    <div>{wbActionDetails.endDateTime ? new Date(wbActionDetails.endDateTime).toLocaleString('ru-RU') : '—'}</div>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--muted)', fontSize: '12px' }}>В акции (остаток / всего)</span>
-                    <div>{wbActionDetails.inPromoActionLeftovers != null || wbActionDetails.inPromoActionTotal != null ? `${wbActionDetails.inPromoActionLeftovers ?? '—'} / ${wbActionDetails.inPromoActionTotal ?? '—'}` : '—'}</div>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--muted)', fontSize: '12px' }}>Не в акции (остаток / всего)</span>
-                    <div>{wbActionDetails.notInPromoActionLeftovers != null || wbActionDetails.notInPromoActionTotal != null ? `${wbActionDetails.notInPromoActionLeftovers ?? '—'} / ${wbActionDetails.notInPromoActionTotal ?? '—'}` : '—'}</div>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--muted)', fontSize: '12px' }}>% участия</span>
-                    <div>{wbActionDetails.participationPercentage != null ? `${wbActionDetails.participationPercentage}%` : '—'}</div>
-                  </div>
-                  {wbActionDetails.exceptionProductsCount != null && (
-                    <div>
-                      <span style={{ color: 'var(--muted)', fontSize: '12px' }}>Исключённых товаров</span>
-                      <div>{wbActionDetails.exceptionProductsCount}</div>
-                    </div>
-                  )}
-                </div>
-                {Array.isArray(wbActionDetails.ranging) && wbActionDetails.ranging.length > 0 && (
-                  <div>
-                    <strong style={{ color: 'var(--muted)', fontSize: '12px', textTransform: 'uppercase' }}>Ранжирование</strong>
-                    <div style={{ overflowX: 'auto', marginTop: '8px' }}>
-                      <table className="prices-table table" style={{ minWidth: '280px' }}>
-                        <thead>
-                          <tr>
-                            <th>Условие</th>
-                            <th>% участия</th>
-                            <th>Буст</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {wbActionDetails.ranging.map((r, i) => (
-                            <tr key={i}>
-                              <td>{r.condition || '—'}</td>
-                              <td>{r.participationRate != null ? `${r.participationRate}%` : '—'}</td>
-                              <td>{r.boost != null ? r.boost : '—'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <p style={{ color: 'var(--muted)' }}>Нет деталей по акции</p>
-            )}
-          </>
-        )}
-
-        {wbActionModalTab === 'participating' && (
-          <div className="prices-table-container">
-            {wbNomenclaturesInLoading ? (
-              <p style={{ color: 'var(--muted)' }}>Загрузка товаров в акции...</p>
-            ) : wbNomenclaturesInError ? (
-              <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {wbNomenclaturesInError}</p>
-            ) : wbNomenclaturesIn.length === 0 ? (
-              <p style={{ color: 'var(--muted)' }}>
-                {wbNomenclaturesInNotApplicable
-                  ? 'Для этой акции список товаров недоступен (например, авто-акция).'
-                  : 'Нет товаров, участвующих в этой акции'}
-              </p>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table className="prices-table table">
-                  <thead>
-                    <tr>
-                      <th>ID (nm)</th>
-                      <th>В акции</th>
-                      <th>Цена, ₽</th>
-                      <th>Валюта</th>
-                      <th>План. цена, ₽</th>
-                      <th>Скидка, %</th>
-                      <th>План. скидка, %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {wbNomenclaturesIn.map((n) => (
-                      <tr key={n.id}>
-                        <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{n.id}</td>
-                        <td>{n.inAction ? 'Да' : 'Нет'}</td>
-                        <td>{n.price != null ? `${n.price}` : '—'}</td>
-                        <td>{n.currencyCode || '—'}</td>
-                        <td>{n.planPrice != null ? `${n.planPrice}` : '—'}</td>
-                        <td>{n.discount != null ? `${n.discount}%` : '—'}</td>
-                        <td>{n.planDiscount != null ? `${n.planDiscount}%` : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {wbActionModalTab === 'candidates' && (
-          <div className="prices-table-container">
-            {wbNomenclaturesOutLoading ? (
-              <p style={{ color: 'var(--muted)' }}>Загрузка товаров, доступных к акции...</p>
-            ) : wbNomenclaturesOutError ? (
-              <p style={{ color: 'var(--danger, #ef4444)' }}>⚠️ {wbNomenclaturesOutError}</p>
-            ) : wbNomenclaturesOut.length === 0 ? (
-              <p style={{ color: 'var(--muted)' }}>
-                {wbNomenclaturesOutNotApplicable
-                  ? 'Для этой акции список товаров недоступен (например, авто-акция).'
-                  : 'Нет товаров, доступных к добавлению в эту акцию'}
-              </p>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table className="prices-table table">
-                  <thead>
-                    <tr>
-                      <th>ID (nm)</th>
-                      <th>В акции</th>
-                      <th>Цена, ₽</th>
-                      <th>Валюта</th>
-                      <th>План. цена, ₽</th>
-                      <th>Скидка, %</th>
-                      <th>План. скидка, %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {wbNomenclaturesOut.map((n) => (
-                      <tr key={n.id}>
-                        <td style={{ fontSize: '13px', color: 'var(--muted)' }}>{n.id}</td>
-                        <td>{n.inAction ? 'Да' : 'Нет'}</td>
-                        <td>{n.price != null ? `${n.price}` : '—'}</td>
-                        <td>{n.currencyCode || '—'}</td>
-                        <td>{n.planPrice != null ? `${n.planPrice}` : '—'}</td>
-                        <td>{n.discount != null ? `${n.discount}%` : '—'}</td>
-                        <td>{n.planDiscount != null ? `${n.planDiscount}%` : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }
-

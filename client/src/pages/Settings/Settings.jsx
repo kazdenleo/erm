@@ -36,6 +36,7 @@ export function Settings() {
     contact_phone: '',
     allow_private_orders: false,
     manual_orders_warehouse_id: '',
+    fbs_enabled: true,
     fbo_enabled: false,
     fbo_deduction_warehouse_id: '',
     require_reserved_stock_for_assembly: false,
@@ -100,6 +101,7 @@ export function Settings() {
         manual_orders_warehouse_id: form.allow_private_orders
           ? form.manual_orders_warehouse_id || null
           : null,
+        fbs_enabled: form.fbs_enabled !== false,
         fbo_enabled: form.fbo_enabled,
         fbo_deduction_warehouse_id: form.fbo_enabled ? form.fbo_deduction_warehouse_id || null : null,
         require_reserved_stock_for_assembly: form.require_reserved_stock_for_assembly,
@@ -522,6 +524,19 @@ export function Settings() {
               <label className="settings-account-toggle">
                 <input
                   type="checkbox"
+                  checked={form.fbs_enabled !== false}
+                  onChange={(e) => setForm((f) => ({ ...f, fbs_enabled: e.target.checked }))}
+                />
+                <span>
+                  <strong>Работать по FBS</strong>
+                  <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
+                    Считать и показывать минимальные цены по схеме FBS (со своего склада).
+                  </span>
+                </span>
+              </label>
+              <label className="settings-account-toggle">
+                <input
+                  type="checkbox"
                   checked={form.fbo_enabled}
                   onChange={(e) => {
                     const on = e.target.checked;
@@ -535,7 +550,7 @@ export function Settings() {
                 <span>
                   <strong>Работать по FBO</strong>
                   <span className="text-muted small" style={{ display: 'block', fontWeight: 'normal', marginTop: 4 }}>
-                    При создании и импорте поставок FBO автоматически подставляется склад списания остатков.
+                    Мин. цены FBO на странице «Цены»; при поставках FBO подставляется склад списания остатков.
                   </span>
                 </span>
               </label>
