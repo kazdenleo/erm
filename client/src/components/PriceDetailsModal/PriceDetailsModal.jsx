@@ -731,6 +731,14 @@ export function PriceDetailsModal({
                     FBS комиссия ({commissions.FBS.percent}%) справочно, в расчёт мин. цены не входит
                   </div>
                 )}
+                {marketplace === 'ym' && (Number(commission.early_shipment_discount_pp) > 0 || Number(resolvedCalculatorData.early_shipment_discount_pp) > 0) && (
+                  <div style={{fontSize: '9px', color: '#64748b', marginTop: '2px', fontStyle: 'italic'}}>
+                    скидка за раннюю отгрузку −{Number(commission.early_shipment_discount_pp || resolvedCalculatorData.early_shipment_discount_pp)} п.п.
+                    {commission.percent_before_early_shipment != null
+                      ? ` (было ${Number(commission.percent_before_early_shipment)}%)`
+                      : ''}
+                  </div>
+                )}
               </span>
             </div>
             

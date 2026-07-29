@@ -1238,6 +1238,23 @@ function MarketplacesTab({
               Приём платежа 0,12 ₽ берётся из API. Если пусто — в расчёте останется тариф из API (сейчас часто 3,3% за DAILY).
             </div>
           </div>
+          <div className="field">
+            <label className="label">Скидка за раннюю отгрузку, п.п.</label>
+            <input
+              type="number"
+              className="input"
+              value={formData.early_shipment_discount_pp ?? ''}
+              onChange={(e) => handleChange('early_shipment_discount_pp', e.target.value)}
+              placeholder="например 4 или 7"
+              min="0"
+              max="50"
+              step="1"
+            />
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
+              Снижение ставки размещения в процентных пунктах (не % от комиссии): обычно 4 п.п. (до 36 ч) или 7 п.п. (до 28 ч).
+              Пример: ставка 20% − 7 п.п. = 13%. Если пусто — скидка не учитывается.
+            </div>
+          </div>
           <FboPackingLimitFields formData={formData} onChange={handleChange} />
           <div className="form-actions">
             <Button

@@ -804,6 +804,15 @@ class IntegrationsService {
       } else if (config.payment_transfer_percent === '') {
         config.payment_transfer_percent = null;
       }
+      if (config.early_shipment_discount_pp == null && config.earlyShipmentDiscountPp != null) {
+        config.early_shipment_discount_pp = config.earlyShipmentDiscountPp;
+      }
+      if (config.early_shipment_discount_pp != null && config.early_shipment_discount_pp !== '') {
+        const n = Number(config.early_shipment_discount_pp);
+        config.early_shipment_discount_pp = Number.isFinite(n) && n >= 0 ? n : null;
+      } else if (config.early_shipment_discount_pp === '') {
+        config.early_shipment_discount_pp = null;
+      }
     }
     if (type === 'wildberries' && config.api_key != null) {
       config.api_key = this._normalizeWbToken(config.api_key) || config.api_key;

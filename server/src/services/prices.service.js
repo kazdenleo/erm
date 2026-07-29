@@ -188,11 +188,14 @@ class PricesService {
     const cfg = await integrationsService.getMarketplaceConfig('yandex', scope);
     const ptRaw = cfg?.payment_transfer_percent ?? cfg?.paymentTransferPercent;
     const pt = ptRaw != null && ptRaw !== '' ? Number(ptRaw) : null;
+    const esRaw = cfg?.early_shipment_discount_pp ?? cfg?.earlyShipmentDiscountPp;
+    const es = esRaw != null && esRaw !== '' ? Number(esRaw) : null;
     return {
       scope,
       api_key: cfg?.api_key ?? cfg?.apiKey ?? null,
       campaign_id: cfg?.campaign_id ?? cfg?.campaignId ?? null,
       payment_transfer_percent: Number.isFinite(pt) && pt >= 0 ? pt : null,
+      early_shipment_discount_pp: Number.isFinite(es) && es >= 0 ? es : null,
     };
   }
 
@@ -224,6 +227,58 @@ class PricesService {
     calculator.ymTariffs = ymTariffs;
     calculator.acquiring = acquiring;
     calculator.acquiring_amount_rub = acquiringAmountRub;
+    return calculator;
+  }
+
+
+  /**
+   * Скидка за раннюю отгрузку FBS: −N процентных пунктов от ставки размещения (FEE).
+   * Идемпотентно: база всегда percent_before_early_shipment (иначе текущий percent).
+   * При pp<=0 / null — восстанавливает исходную ставку, если база была сохранена.
+   */
+  _applyYmEarlyShipmentDiscount(calculator, discountPp) {
+    if (!calculator) return calculator;
+    const ppRaw = discountPp == null || discountPp === '' ? 0 : Number(discountPp);
+    const pp = Number.isFinite(ppRaw) && ppRaw > 0 ? ppRaw : 0;
+
+    const applyCommission = (c) => {
+      if (!c || typeof c !== 'object') return c;
+      const baseRaw = c.percent_before_early_shipment ?? c.percent;
+      const before = Number(baseRaw);
+      if (!Number.isFinite(before)) return c;
+      if (pp <= 0) {
+        const { percent_before_early_shipment: _b, early_shipment_discount_pp: _d, ...rest } = c;
+        return { ...rest, percent: before };
+      }
+      const next = Math.max(0, Math.round((before - pp) * 100) / 100);
+      return {
+        ...c,
+        percent: next,
+        percent_before_early_shipment: before,
+        early_shipment_discount_pp: pp,
+      };
+    };
+
+    const commissions = calculator.commissions || {};
+    calculator.commissions = {
+      ...commissions,
+      ...(commissions.FBS ? { FBS: applyCommission(commissions.FBS) } : {}),
+      ...(commissions.FBO ? { FBO: applyCommission(commissions.FBO) } : {}),
+    };
+
+    if (calculator.ymTariffs?.FEE) {
+      const fee = calculator.ymTariffs.FEE;
+      calculator.ymTariffs = {
+        ...calculator.ymTariffs,
+        FEE: {
+          ...applyCommission(fee),
+          ...(pp > 0 ? { fromSettings: true } : {}),
+        },
+      };
+    }
+
+    if (pp > 0) calculator.early_shipment_discount_pp = pp;
+    else delete calculator.early_shipment_discount_pp;
     return calculator;
   }
 
@@ -2603,8 +2658,12 @@ class PricesService {
         const cached = await this._getMpCalculatorCacheRow(pid, 'ym');
         if (cached?.calculator) {
           const calculator = JSON.parse(JSON.stringify(cached.calculator));
-          const { payment_transfer_percent } = await this._getYandexApiCredentials(options);
+          const {
+            payment_transfer_percent,
+            early_shipment_discount_pp,
+          } = await this._getYandexApiCredentials(options);
           this._applyYmPaymentTransferOverride(calculator, payment_transfer_percent);
+          this._applyYmEarlyShipmentDiscount(calculator, early_shipment_discount_pp);
           return { found: true, calculator, fromCache: true };
         }
         return {
@@ -2617,6 +2676,7 @@ class PricesService {
         api_key,
         campaign_id,
         payment_transfer_percent: paymentTransferPercentOverride,
+        early_shipment_discount_pp: earlyShipmentDiscountPpOverride,
       } = await this._getYandexApiCredentials(options);
 
       if (!api_key) {
@@ -2902,6 +2962,7 @@ class PricesService {
       logger.info(`[Prices Service] YM tariffs/calculate OK for ${offer_id}: program=${ymProgram} fee=${feePercent}%, acquiring=${acquiringPercent}%`);
 
       this._applyYmPaymentTransferOverride(calculator, paymentTransferPercentOverride);
+      this._applyYmEarlyShipmentDiscount(calculator, earlyShipmentDiscountPpOverride);
       await this._tryUpsertMpCalculatorCacheFromOffer('ym', offer_id, calculator, 'live');
 
       return {
