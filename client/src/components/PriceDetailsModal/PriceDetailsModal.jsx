@@ -8,7 +8,11 @@ import { Modal } from '../common/Modal/Modal';
 import { computeTaxesAndNetProfit, resolveOrganizationTaxProfile, taxProfileForProduct } from '../../utils/organizationTaxRates.js';
 import { enrichOzonCalculatorFromProduct } from '../../utils/ozonBrandPromotion.js';
 import { enrichCalculatorVolumeFromProduct, resolveEffectiveVolumeLiters } from '../../utils/productVolume.js';
-import { privateClientMinPrice, resolveMarketplaceMinProfit } from '../../utils/marketplaceMinProfit.js';
+import {
+  privateClientMinPrice,
+  privateClientPriceParts,
+  resolveMarketplaceMinProfit,
+} from '../../utils/marketplaceMinProfit.js';
 import './PriceDetailsModal.css';
 
 export function PriceDetailsModal({
@@ -27,6 +31,60 @@ export function PriceDetailsModal({
 }) {
   if (!isOpen || !product || !marketplace) {
     return null;
+  }
+
+  if (marketplace === 'private' || marketplace === 'manual') {
+    const parts = privateClientPriceParts(product);
+    const total =
+      parts?.total ??
+      (priceData != null && !Number.isNaN(Number(priceData)) ? Math.round(Number(priceData)) : null);
+    if (total == null) return null;
+    return (
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Минимальная цена — частные заказы"
+        size="medium"
+      >
+        <div className="price-details" style={{ padding: '20px' }}>
+          <div style={{ marginBottom: '16px', fontSize: '18px', fontWeight: 600 }}>
+            {product.sku && <span style={{ color: 'var(--muted)', marginRight: '8px' }}>{product.sku}</span>}
+            {product.name || 'Товар'}
+          </div>
+
+          <div className="price-details-section">
+            <h3 className="price-details-subtitle">Расчёт для частного клиента</h3>
+            <div className="price-breakdown">
+              <div className="price-breakdown-item">
+                <span className="price-breakdown-label">Себестоимость</span>
+                <span className="price-breakdown-value">
+                  {(parts?.cost ?? 0).toFixed(2)} ₽
+                </span>
+              </div>
+              <div className="price-breakdown-item">
+                <span className="price-breakdown-label">Доп. расходы</span>
+                <span className="price-breakdown-value">
+                  {(parts?.additionalExpenses ?? 0).toFixed(2)} ₽
+                </span>
+              </div>
+              <div className="price-breakdown-item">
+                <span className="price-breakdown-label">Мин. наценка (частные)</span>
+                <span className="price-breakdown-value">
+                  {(parts?.minMarkup ?? 0).toFixed(2)} ₽
+                </span>
+              </div>
+              <div className="price-breakdown-item price-breakdown-total">
+                <span className="price-breakdown-label">Минимальная цена</span>
+                <span className="price-breakdown-value">{total.toFixed(2)} ₽</span>
+              </div>
+            </div>
+            <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '12px 0 0' }}>
+              Без комиссий и логистики маркетплейсов: себестоимость + доп. расходы + мин. наценка из карточки товара.
+            </p>
+          </div>
+        </div>
+      </Modal>
+    );
   }
 
   const marketplaceNames = {
@@ -803,7 +861,8 @@ export function PriceDetailsModal({
               </div>
             </span>
           </div>
-          {allowPrivateOrders && privateClientMinPrice(product) != null && (
+          {(allowPrivateOrders || privateClientMinPrice(product) != null) &&
+            privateClientMinPrice(product) != null && (
             <div className="price-details-final-row" style={{ marginTop: '12px' }}>
               <span className="price-details-final-label">Цена для частных клиентов:</span>
               <span className="price-details-final-value">

@@ -25,13 +25,24 @@ export function resolveMarketplaceMinProfit(product, marketplace, fallback = 50)
   return fallback;
 }
 
-/** Мин. цена для частного клиента: себестоимость + доп. расходы + общая мин. наценка. */
-export function privateClientMinPrice(product) {
+/** Слагаемые мин. цены для частного клиента (себестоимость + доп. + наценка). */
+export function privateClientPriceParts(product) {
   if (!product) return null;
   const cost = numOrNull(product.cost ?? product.price ?? product.base_price) ?? 0;
   const add = numOrNull(product.additional_expenses ?? product.additionalExpenses) ?? 0;
   const profit = numOrNull(product.min_price ?? product.minPrice);
   if (profit == null || profit < 0) return null;
   const total = cost + add + profit;
-  return total > 0 ? Math.round(total) : null;
+  if (!(total > 0)) return null;
+  return {
+    cost,
+    additionalExpenses: add,
+    minMarkup: profit,
+    total: Math.round(total),
+  };
+}
+
+/** Мин. цена для частного клиента: себестоимость + доп. расходы + общая мин. наценка. */
+export function privateClientMinPrice(product) {
+  return privateClientPriceParts(product)?.total ?? null;
 }

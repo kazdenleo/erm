@@ -1540,14 +1540,33 @@ export function Prices() {
                           verticalAlign: 'middle',
                           background: 'rgba(16,185,129,0.08)',
                           whiteSpace: 'nowrap',
-                          fontWeight: 700,
-                          color: '#047857',
                         }}
-                        title="Мин. цена для частного клиента: себестоимость + доп. расходы + наценка (частные)"
+                        title="Нажмите, чтобы открыть расчёт мин. цены для частного клиента"
                       >
                         {(() => {
                           const privatePrice = privateClientMinPrice(productMerged);
-                          return privatePrice != null ? `${privatePrice} ₽` : '—';
+                          if (privatePrice == null) {
+                            return <span className="mp-price-muted">—</span>;
+                          }
+                          return (
+                            <button
+                              type="button"
+                              className="mp-price-cell-min-btn"
+                              style={{ color: '#047857' }}
+                              onClick={() =>
+                                setPriceModal({
+                                  isOpen: true,
+                                  product: productMerged,
+                                  marketplace: 'private',
+                                  priceScheme: null,
+                                  price: privatePrice,
+                                  calculatorData: null,
+                                })
+                              }
+                            >
+                              {privatePrice} ₽
+                            </button>
+                          );
                         })()}
                       </td>
                       <MarketplacePriceCells
@@ -1693,6 +1712,9 @@ export function Prices() {
         priceData={priceModal.price}
         priceScheme={priceModal.priceScheme || null}
         calculatorData={(() => {
+          if (priceModal.marketplace === 'private' || priceModal.marketplace === 'manual') {
+            return null;
+          }
           const productKey = priceModal.product && (priceModal.product.id ?? priceModal.product.sku);
           const fromState = productKey ? calculatorData[productKey]?.[priceModal.marketplace] : null;
           const fromModal = priceModal.calculatorData;
