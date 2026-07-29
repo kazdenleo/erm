@@ -433,7 +433,17 @@ export function PriceDetailsModal({
     resolvedCalculatorData: resolvedCalculatorData
   });
   
-  // Проценты (преобразуем в числа)
+  // Проценты (преобразуем в числа).
+  // YM: скидка за раннюю отгрузку — отдельно; в расчёте остаётся нетто-ставка (percent после скидки).
+  const earlyShipmentDiscountPp =
+    marketplace === 'ym'
+      ? Number(commission.early_shipment_discount_pp ?? resolvedCalculatorData.early_shipment_discount_pp) || 0
+      : 0;
+  const commissionPercentBefore = Number(commission.percent_before_early_shipment);
+  const commissionDisplayPercent =
+    marketplace === 'ym' && earlyShipmentDiscountPp > 0 && Number.isFinite(commissionPercentBefore)
+      ? commissionPercentBefore
+      : (Number(commission.percent) || 0);
   const marketplaceCommissionPercent = (Number(commission.percent) || 0) / 100;
   const acquiringPercent = (acquiring || 0) / 100;
   
@@ -457,6 +467,9 @@ export function PriceDetailsModal({
   
   // Расчет затрат
   const commissionAmount = calculatedPrice * marketplaceCommissionPercent;
+  const commissionGrossAmount = calculatedPrice * (commissionDisplayPercent / 100);
+  const earlyShipmentDiscountAmount =
+    earlyShipmentDiscountPp > 0 ? calculatedPrice * (earlyShipmentDiscountPp / 100) : 0;
   // Для Ozon: округляем эквайринг в большую сторону до целого числа
   let acquiringAmount = calculatedPrice * acquiringPercent;
   if (marketplace === 'ozon') {
@@ -714,12 +727,12 @@ export function PriceDetailsModal({
             
             <div className="price-breakdown-item">
               <span className="price-breakdown-label">
-                Комиссия {marketplaceName}{marketplace === 'wb' ? ' (FBO)' : ''} ({commission.percent || 0}%):
+                Комиссия {marketplaceName}{marketplace === 'wb' ? ' (FBO)' : ''} ({commissionDisplayPercent}%):
               </span>
               <span className="price-breakdown-value negative">
-                -{commissionAmount.toFixed(2)} ₽
+                -{commissionGrossAmount.toFixed(2)} ₽
                 <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {calculatedPrice.toFixed(2)} × {(marketplaceCommissionPercent * 100).toFixed(2)}% = {commissionAmount.toFixed(2)} ₽
+                  = {calculatedPrice.toFixed(2)} × {Number(commissionDisplayPercent).toFixed(2)}% = {commissionGrossAmount.toFixed(2)} ₽
                   {marketplace === 'wb' && (
                     <span style={{color: '#10b981', fontWeight: 600}}>
                       {' '}— схема FBO/FBW (Склад WB, paidStorageKgvp), по категории из API WB
@@ -731,16 +744,23 @@ export function PriceDetailsModal({
                     FBS комиссия ({commissions.FBS.percent}%) справочно, в расчёт мин. цены не входит
                   </div>
                 )}
-                {marketplace === 'ym' && (Number(commission.early_shipment_discount_pp) > 0 || Number(resolvedCalculatorData.early_shipment_discount_pp) > 0) && (
-                  <div style={{fontSize: '9px', color: '#64748b', marginTop: '2px', fontStyle: 'italic'}}>
-                    скидка за раннюю отгрузку −{Number(commission.early_shipment_discount_pp || resolvedCalculatorData.early_shipment_discount_pp)} п.п.
-                    {commission.percent_before_early_shipment != null
-                      ? ` (было ${Number(commission.percent_before_early_shipment)}%)`
-                      : ''}
-                  </div>
-                )}
               </span>
             </div>
+
+            {marketplace === 'ym' && earlyShipmentDiscountPp > 0 && (
+              <div className="price-breakdown-item">
+                <span className="price-breakdown-label">
+                  Скидка за раннюю отгрузку (−{earlyShipmentDiscountPp} п.п.):
+                </span>
+                <span className="price-breakdown-value positive">
+                  +{earlyShipmentDiscountAmount.toFixed(2)} ₽
+                  <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
+                    = {calculatedPrice.toFixed(2)} × {earlyShipmentDiscountPp.toFixed(2)}% = {earlyShipmentDiscountAmount.toFixed(2)} ₽
+                    {' '}(комиссия {commissionDisplayPercent}% → {(Number(commission.percent) || 0)}%)
+                  </div>
+                </span>
+              </div>
+            )}
             
             {marketplace === 'ym' && (acquiringAmount > 0 || resolvedCalculatorData.acquiring != null || (resolvedCalculatorData.ymTariffs && (resolvedCalculatorData.ymTariffs.AGENCY_COMMISSION || resolvedCalculatorData.ymTariffs.PAYMENT_TRANSFER))) && (
               <>
@@ -851,7 +871,10 @@ export function PriceDetailsModal({
               <span className="price-breakdown-value negative">
                 {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
                 <div style={{fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic'}}>
-                  = {commissionAmount.toFixed(2)} + {effectiveAcquiringAmount.toFixed(2)}{marketplace === 'ym' ? ` (${ymAgencyDisplay.toFixed(2)} + ${ymPaymentTransferDisplay.toFixed(2)})` : ''} + {brandPromotionAmount.toFixed(2)}{adsPromotionAmount > 0 ? ` + ${adsPromotionAmount.toFixed(2)}` : ''}{gemServicesAmount > 0 ? ' + ' + gemServicesAmount.toFixed(2) : ''} + {fixedExpenses.toFixed(2)} = {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
+                  = {earlyShipmentDiscountPp > 0
+                    ? `${commissionGrossAmount.toFixed(2)} − ${earlyShipmentDiscountAmount.toFixed(2)}`
+                    : commissionAmount.toFixed(2)}
+                  {' '}+ {effectiveAcquiringAmount.toFixed(2)}{marketplace === 'ym' ? ` (${ymAgencyDisplay.toFixed(2)} + ${ymPaymentTransferDisplay.toFixed(2)})` : ''} + {brandPromotionAmount.toFixed(2)}{adsPromotionAmount > 0 ? ` + ${adsPromotionAmount.toFixed(2)}` : ''}{gemServicesAmount > 0 ? ' + ' + gemServicesAmount.toFixed(2) : ''} + {fixedExpenses.toFixed(2)} = {(commissionAmount + effectiveAcquiringAmount + brandPromotionAmount + adsPromotionAmount + gemServicesAmount + fixedExpenses).toFixed(2)} ₽
                 </div>
               </span>
             </div>
