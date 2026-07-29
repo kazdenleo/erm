@@ -60,14 +60,20 @@ export function privateClientPriceParts(product, taxProfile = null) {
   const vatR = Number(profile.vatRate) || 0;
   const incR = Number(profile.incomeTaxRate) || 0;
   let denom;
+  let numerator;
   if (profile.incomeTaxOnRevenue) {
     denom = 1 - vatR - incR;
+    numerator = expenses + Number(targetProfit);
   } else {
     denom = (1 - vatR) * (1 - incR);
+    numerator = Number(targetProfit) + expenses * (1 - incR);
   }
   if (!(denom > 0.01)) denom = 0.01;
 
-  let price = Math.max(1, Math.ceil((expenses + Number(targetProfit)) / denom));
+  let price = Math.max(1, Math.ceil(numerator / denom));
+  while (price > 1 && netAt(price - 1) >= Number(targetProfit)) {
+    price -= 1;
+  }
   let guard = 0;
   while (netAt(price) < Number(targetProfit) && guard < 20000) {
     price += 1;
