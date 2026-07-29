@@ -3084,10 +3084,12 @@ class PricesService {
             [productId, marketplace, num, detailsJson]
           );
         } else {
+          // PG проверяет NOT NULL на INSERT до ON CONFLICT — min_price обязателен в VALUES.
+          // На конфликте legacy min_price не трогаем (это «вторая» схема).
           await query(
             `INSERT INTO product_marketplace_prices
-               (product_id, marketplace, ${priceCol}, ${detailsCol}, updated_at)
-             VALUES ($1, $2, $3, $4::jsonb, CURRENT_TIMESTAMP)
+               (product_id, marketplace, min_price, ${priceCol}, ${detailsCol}, updated_at)
+             VALUES ($1, $2, $3, $3, $4::jsonb, CURRENT_TIMESTAMP)
              ON CONFLICT (product_id, marketplace) DO UPDATE SET
                ${priceCol} = $3,
                ${detailsCol} = $4::jsonb,
