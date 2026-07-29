@@ -34,11 +34,37 @@ export function PriceDetailsModal({
   }
 
   if (marketplace === 'private' || marketplace === 'manual') {
-    const parts = privateClientPriceParts(product);
+    const profile = taxProfile || taxProfileForProduct(null, product) || resolveOrganizationTaxProfile(null);
+    const parts = privateClientPriceParts(product, profile);
     const total =
       parts?.total ??
       (priceData != null && !Number.isNaN(Number(priceData)) ? Math.round(Number(priceData)) : null);
     if (total == null) return null;
+
+    const vatPctLabel = profile.vatRate > 0 ? `${(profile.vatRate * 100).toFixed(0)}%` : '0%';
+    const incomeTaxPctLabel =
+      profile.incomeTaxRate > 0
+        ? profile.incomeTaxOnRevenue
+          ? `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с выручки`
+          : `УСН ${(profile.incomeTaxRate * 100).toFixed(0)}% с прибыли`
+        : 'не указан в организации';
+    const incomeTaxPct = profile.incomeTaxRate > 0 ? `${(profile.incomeTaxRate * 100).toFixed(0)}%` : '0%';
+    const vatAmount = parts?.vat ?? 0;
+    const incomeTaxAmount = parts?.incomeTax ?? 0;
+    const netProfit = parts?.netProfit ?? 0;
+    const profitBeforeIncomeTax = parts?.profitBeforeIncomeTax ?? 0;
+    const incomeTaxFormulaHint = (() => {
+      if (profile.incomeTaxRate <= 0) return null;
+      if (profile.incomeTaxOnRevenue) {
+        return `= ${total.toFixed(2)} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽`;
+      }
+      const base = profitBeforeIncomeTax.toFixed(2);
+      if (profitBeforeIncomeTax <= 0) {
+        return `= ${base} × ${incomeTaxPct} = 0 ₽ (прибыль до налога не положительная)`;
+      }
+      return `= ${base} × ${incomeTaxPct} = ${incomeTaxAmount.toFixed(2)} ₽ (прибыль до налога: цена − расходы − НДС)`;
+    })();
+
     return (
       <Modal
         isOpen={isOpen}
@@ -67,10 +93,63 @@ export function PriceDetailsModal({
                   {(parts?.additionalExpenses ?? 0).toFixed(2)} ₽
                 </span>
               </div>
+              <div className="price-breakdown-item price-breakdown-subtotal">
+                <span className="price-breakdown-label">Расходы всего</span>
+                <span className="price-breakdown-value">
+                  {(parts?.expenses ?? 0).toFixed(2)} ₽
+                </span>
+              </div>
               <div className="price-breakdown-item">
-                <span className="price-breakdown-label">Мин. наценка (частные)</span>
+                <span className="price-breakdown-label">Целевая чистая прибыль (наценка)</span>
                 <span className="price-breakdown-value">
                   {(parts?.minMarkup ?? 0).toFixed(2)} ₽
+                  <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
+                    после налогов · из карточки товара
+                  </div>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="price-details-section">
+            <h3 className="price-details-subtitle">Налоги и прибыль</h3>
+            <div className="price-breakdown">
+              {profile.vatRate > 0 && (
+                <div className="price-breakdown-item">
+                  <span className="price-breakdown-label">НДС ({vatPctLabel})</span>
+                  <span className="price-breakdown-value negative">
+                    −{vatAmount.toFixed(2)} ₽
+                    <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
+                      = {total.toFixed(2)} × {vatPctLabel}
+                    </div>
+                  </span>
+                </div>
+              )}
+              {profile.incomeTaxRate > 0 && (
+                <div className="price-breakdown-item">
+                  <span className="price-breakdown-label">Налог ({incomeTaxPctLabel})</span>
+                  <span className="price-breakdown-value negative">
+                    −{incomeTaxAmount.toFixed(2)} ₽
+                    {incomeTaxFormulaHint && (
+                      <div style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px', fontStyle: 'italic' }}>
+                        {incomeTaxFormulaHint}
+                      </div>
+                    )}
+                  </span>
+                </div>
+              )}
+              {profile.vatRate <= 0 && profile.incomeTaxRate <= 0 && (
+                <div className="price-breakdown-item">
+                  <span className="price-breakdown-label">Налоги</span>
+                  <span className="price-breakdown-value" style={{ color: 'var(--muted)' }}>
+                    не заданы в организации товара
+                  </span>
+                </div>
+              )}
+              <div className="price-breakdown-item">
+                <span className="price-breakdown-label">Чистая прибыль</span>
+                <span className={`price-breakdown-value ${netProfit >= 0 ? 'positive' : 'negative'}`}>
+                  {netProfit.toFixed(2)} ₽
                 </span>
               </div>
               <div className="price-breakdown-item price-breakdown-total">
@@ -79,7 +158,7 @@ export function PriceDetailsModal({
               </div>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '12px 0 0' }}>
-              Без комиссий и логистики маркетплейсов: себестоимость + доп. расходы + мин. наценка из карточки товара.
+              Без комиссий МП. Цена подобрана так, чтобы чистая прибыль после налогов была не ниже целевой наценки.
             </p>
           </div>
         </div>
@@ -861,18 +940,22 @@ export function PriceDetailsModal({
               </div>
             </span>
           </div>
-          {(allowPrivateOrders || privateClientMinPrice(product) != null) &&
-            privateClientMinPrice(product) != null && (
-            <div className="price-details-final-row" style={{ marginTop: '12px' }}>
-              <span className="price-details-final-label">Цена для частных клиентов:</span>
-              <span className="price-details-final-value">
-                {privateClientMinPrice(product).toFixed(2)} ₽
-                <div style={{fontSize: '11px', color: 'var(--muted)', marginTop: '4px', fontStyle: 'italic'}}>
-                  Себестоимость + доп. расходы + общая мин. наценка (без комиссий МП)
-                </div>
-              </span>
-            </div>
-          )}
+          {(() => {
+            const privateTaxProfile = taxProfile || taxProfileForProduct(null, product);
+            const privatePrice = privateClientMinPrice(product, privateTaxProfile);
+            if (privatePrice == null) return null;
+            return (
+              <div className="price-details-final-row" style={{ marginTop: '12px' }}>
+                <span className="price-details-final-label">Цена для частных клиентов:</span>
+                <span className="price-details-final-value">
+                  {privatePrice.toFixed(2)} ₽
+                  <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px', fontStyle: 'italic' }}>
+                    С учётом налогов организации; без комиссий МП
+                  </div>
+                </span>
+              </div>
+            );
+          })()}
         </div>
 
         {resolvedCalculatorData.categoryCommission && (

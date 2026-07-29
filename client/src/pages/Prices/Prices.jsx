@@ -1544,7 +1544,12 @@ export function Prices() {
                         title="Нажмите, чтобы открыть расчёт мин. цены для частного клиента"
                       >
                         {(() => {
-                          const privatePrice = privateClientMinPrice(productMerged);
+                          const rowTaxProfile = taxProfileForProduct(
+                            organizations,
+                            productMerged,
+                            filterOrganizationId || getApiSessionContext().organizationId || null
+                          );
+                          const privatePrice = privateClientMinPrice(productMerged, rowTaxProfile);
                           if (privatePrice == null) {
                             return <span className="mp-price-muted">—</span>;
                           }

@@ -2,6 +2,11 @@
  * Целевая чистая прибыль (₽) для расчёта мин. цены МП (синхронно с server).
  */
 
+import {
+  computeTaxesAndNetProfit,
+  resolveOrganizationTaxProfile,
+} from './organizationTaxRates.js';
+
 function numOrNull(v) {
   if (v == null || v === '') return null;
   const n = Number(v);
@@ -25,24 +30,69 @@ export function resolveMarketplaceMinProfit(product, marketplace, fallback = 50)
   return fallback;
 }
 
-/** Слагаемые мин. цены для частного клиента (себестоимость + доп. + наценка). */
-export function privateClientPriceParts(product) {
+/**
+ * Мин. цена для частного клиента с учётом налогов организации.
+ * Цель: чистая прибыль после НДС и налога ≥ мин. наценки (частные).
+ */
+export function privateClientPriceParts(product, taxProfile = null) {
   if (!product) return null;
   const cost = numOrNull(product.cost ?? product.price ?? product.base_price) ?? 0;
   const add = numOrNull(product.additional_expenses ?? product.additionalExpenses) ?? 0;
-  const profit = numOrNull(product.min_price ?? product.minPrice);
-  if (profit == null || profit < 0) return null;
-  const total = cost + add + profit;
-  if (!(total > 0)) return null;
+  const targetProfit = numOrNull(product.min_price ?? product.minPrice);
+  if (targetProfit == null || targetProfit < 0) return null;
+
+  const expenses = cost + add;
+  const profile = taxProfile || resolveOrganizationTaxProfile(null);
+
+  const netAt = (price) =>
+    computeTaxesAndNetProfit({
+      price,
+      totalExpenses: expenses,
+      taxProfile: profile,
+    }).netProfit;
+
+  const vatR = Number(profile.vatRate) || 0;
+  const incR = Number(profile.incomeTaxRate) || 0;
+  let denom;
+  if (profile.incomeTaxOnRevenue) {
+    denom = 1 - vatR - incR;
+  } else {
+    denom = (1 - vatR) * (1 - incR);
+  }
+  if (!(denom > 0.01)) denom = 0.01;
+
+  let price = Math.max(
+    1,
+    Math.ceil((expenses + Number(targetProfit)) / denom)
+  );
+  let guard = 0;
+  while (netAt(price) < Number(targetProfit) && guard < 20000) {
+    price += 1;
+    guard += 1;
+    if (price > (expenses + Number(targetProfit)) * 20 + 1000) break;
+  }
+
+  const taxes = computeTaxesAndNetProfit({
+    price,
+    totalExpenses: expenses,
+    taxProfile: profile,
+  });
+
   return {
     cost,
     additionalExpenses: add,
-    minMarkup: profit,
-    total: Math.round(total),
+    expenses,
+    minMarkup: targetProfit,
+    total: Math.round(price),
+    vat: taxes.vat,
+    incomeTax: taxes.incomeTax,
+    netProfit: taxes.netProfit,
+    profitBeforeIncomeTax: taxes.profitBeforeIncomeTax,
+    taxProfile: profile,
   };
 }
 
-/** Мин. цена для частного клиента: себестоимость + доп. расходы + общая мин. наценка. */
-export function privateClientMinPrice(product) {
-  return privateClientPriceParts(product)?.total ?? null;
+/** Мин. цена для частного клиента: с налогами организации (если профиль передан). */
+export function privateClientMinPrice(product, taxProfile = null) {
+  return privateClientPriceParts(product, taxProfile)?.total ?? null;
 }
