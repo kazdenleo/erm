@@ -120,42 +120,78 @@
   font-weight: 700;
 }
 
-/* Плашка «Остатки»: те же отступы/высота, что у соседних .card.widget-content */
+/* Плашка «Остатки»: список складов */
 .home-stock-plate-block {
-  cursor: pointer;
+  cursor: default;
   transition: filter 0.15s ease, box-shadow 0.15s ease;
   user-select: none;
 }
 
 .home-stock-plate-block:hover {
-  filter: brightness(1.06);
+  filter: brightness(1.03);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
 }
 
-.home-stock-plate-block:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.85);
-  outline-offset: 2px;
-}
-
-/* Три зоны: заголовок | количество по центру плашки | сумма справа */
-.home-stock-plate-block .widget-content-wrapper.home-stock-plate-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: center;
-  gap: 0.5rem 0.75rem;
+.home-stock-plate-block .widget-content-wrapper.home-stock-plate-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.55rem;
   width: 100%;
 }
 
-.home-stock-plate-col-center {
-  text-align: center;
-  justify-self: center;
+.home-stock-plate-head .widget-heading {
+  margin-bottom: 0;
+}
+
+.home-stock-plate-head .widget-subheading {
+  opacity: 0.9;
+}
+
+.home-stock-wh-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.home-stock-wh-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto auto;
+  align-items: center;
+  gap: 0.5rem 0.85rem;
+  padding: 0.35rem 0.45rem;
+  margin: 0 -0.25rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.home-stock-wh-row:hover,
+.home-stock-wh-row:focus-visible {
+  background: rgba(255, 255, 255, 0.18);
+  outline: none;
+}
+
+.home-stock-wh-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.home-stock-plate-col-right {
-  text-align: right;
-  justify-self: end;
+.home-stock-wh-qty,
+.home-stock-wh-cost {
   white-space: nowrap;
+  text-align: right;
+}
+
+.home-stock-wh-empty {
+  opacity: 0.9;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .home-stock-plate-num {

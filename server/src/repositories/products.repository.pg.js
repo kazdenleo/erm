@@ -412,6 +412,7 @@ function buildFindAllFilters(options = {}) {
     inStockOnly,
     warehouseId,
     supplierId,
+    unlinkedMp,
   } = options;
   let whereSql = ' WHERE 1=1';
   const params = [];
@@ -502,6 +503,52 @@ function buildFindAllFilters(options = {}) {
     whereSql += ` AND LOWER(TRIM(COALESCE(p.product_type::text, ''))) = 'kit'`;
   } else if (pt === 'product') {
     whereSql += ` AND (p.product_type IS NULL OR LOWER(TRIM(COALESCE(p.product_type::text, ''))) <> 'kit')`;
+  }
+
+  const unlinkedList = (() => {
+    const raw = unlinkedMp;
+    if (raw == null || raw === '') return [];
+    const parts = Array.isArray(raw)
+      ? raw
+      : String(raw)
+          .split(',')
+          .map((s) => s.trim().toLowerCase());
+    const allowed = new Set(['ozon', 'wb', 'ym']);
+    return [...new Set(parts.filter((m) => allowed.has(m)))];
+  })();
+
+  for (const mp of unlinkedList) {
+    if (mp === 'ozon') {
+      // Как бейдж в списке: нет offer_id и нет product_id
+      whereSql += ` AND NOT EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id
+          AND ps.marketplace = 'ozon'
+          AND (
+            COALESCE(TRIM(ps.sku::text), '') <> ''
+            OR ps.marketplace_product_id IS NOT NULL
+          )
+      )`;
+    } else if (mp === 'wb') {
+      // Как бейдж: есть nmId (цифровой sku в product_skus.wb или nmId в wb_draft)
+      whereSql += ` AND NOT EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id
+          AND ps.marketplace = 'wb'
+          AND COALESCE(TRIM(ps.sku::text), '') ~ '^[0-9]+$'
+      )`;
+      whereSql += ` AND NOT (
+        p.wb_draft IS NOT NULL
+        AND p.wb_draft::text ~* '"(nmId|nmID|nm_id)"[[:space:]]*:[[:space:]]*"?[0-9]+'
+      )`;
+    } else if (mp === 'ym') {
+      whereSql += ` AND NOT EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id
+          AND ps.marketplace = 'ym'
+          AND COALESCE(TRIM(ps.sku::text), '') <> ''
+      )`;
+    }
   }
 
   const onlyInStock =
@@ -2314,8 +2361,9 @@ class ProductsRepositoryPG {
           weight, length, width, height, volume, quantity, unit, description, product_type, organization_id, supplier_id, country_of_origin,
           mp_ozon_name, mp_ozon_description, mp_ozon_brand,
           mp_wb_vendor_code, mp_wb_name, mp_wb_description, mp_wb_brand,
-          mp_ym_name, mp_ym_description
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+          mp_ym_name, mp_ym_description,
+          mp_field_links
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35::jsonb)
         RETURNING *
       `, [
         profileIdRaw,
@@ -2356,7 +2404,19 @@ class ProductsRepositoryPG {
         mpStr(productData.mp_wb_description),
         mpStr(productData.mp_wb_brand),
         mpStr(productData.mp_ym_name),
-        mpStr(productData.mp_ym_description)
+        mpStr(productData.mp_ym_description),
+        JSON.stringify(
+          productData.mp_field_links != null && typeof productData.mp_field_links === 'object'
+            ? productData.mp_field_links
+            : {
+                name: ['ozon', 'wb', 'ym'],
+                sku: ['ozon', 'wb', 'ym'],
+                description: ['ozon', 'wb', 'ym'],
+                brand: ['ozon', 'wb'],
+                country: ['ozon', 'wb', 'ym'],
+                dimensions: ['ozon', 'wb', 'ym'],
+              }
+        )
       ]);
       
       const product = productResult.rows[0];
@@ -2560,6 +2620,7 @@ class ProductsRepositoryPG {
         'mp_ozon_name', 'mp_ozon_description', 'mp_ozon_brand',
         'mp_wb_vendor_code', 'mp_wb_name', 'mp_wb_description', 'mp_wb_brand',
         'mp_ym_name', 'mp_ym_description',
+        'mp_field_links',
         'ozon_attributes', 'wb_attributes', 'ym_attributes',
         'ozon_draft', 'wb_draft', 'ym_draft',
         'images'
@@ -2619,7 +2680,7 @@ class ProductsRepositoryPG {
         if (
           field === 'ozon_attributes' || field === 'wb_attributes' || field === 'ym_attributes' ||
           field === 'ozon_draft' || field === 'wb_draft' || field === 'ym_draft' ||
-          field === 'images'
+          field === 'images' || field === 'mp_field_links'
         ) {
           updateFields.push(`${field} = $${paramIndex++}::jsonb`);
           params.push(updates[field] != null && typeof updates[field] === 'object' ? JSON.stringify(updates[field]) : null);
@@ -3096,54 +3157,149 @@ class ProductsRepositoryPG {
   }
 
   /**
-   * Сводка остатков для главной страницы (агрегация в SQL, без полной выгрузки каталога).
+   * Сводка остатков для главной: отдельно по каждому складу ERP (product_warehouse_stock).
+   * Склады поставщиков (type=supplier) не включаем.
    */
   async getHomeStockSummary(profileId = null) {
     const params = [];
-    let where = 'WHERE COALESCE(p.is_archived, false) = false';
+    let profileSql = '';
     if (profileId != null && profileId !== '') {
       params.push(profileId);
-      where += ' AND p.profile_id = $1';
+      profileSql = ` AND w.profile_id = $1`;
     }
-    const rowsRes = await query(
-      `SELECT COALESCE(p.user_category_id::text, '_none') AS category_id,
+    const prodProfileSql =
+      profileId != null && profileId !== '' ? ` AND p.profile_id = $1` : '';
+
+    const allWhRes = await query(
+      `SELECT w.id AS warehouse_id,
+              COALESCE(NULLIF(TRIM(w.address), ''), 'Склад #' || w.id::text) AS warehouse_name
+       FROM warehouses w
+       WHERE LOWER(TRIM(COALESCE(w.type, 'warehouse'))) NOT IN ('supplier')
+         ${profileSql}
+       ORDER BY warehouse_name`,
+      params
+    );
+
+    const totalsRes = await query(
+      `SELECT pws.warehouse_id,
+              COALESCE(SUM(GREATEST(COALESCE(pws.quantity, 0), 0)), 0)::bigint AS qty,
+              COALESCE(
+                SUM(GREATEST(COALESCE(pws.quantity, 0), 0) * COALESCE(p.cost, 0)),
+                0
+              ) AS cost_sum,
+              COUNT(*) FILTER (
+                WHERE p.id IS NOT NULL AND COALESCE(pws.quantity, 0) > 0
+              )::int AS skus_with_stock
+       FROM product_warehouse_stock pws
+       INNER JOIN warehouses w ON w.id = pws.warehouse_id
+       LEFT JOIN products p
+         ON p.id = pws.product_id
+        AND COALESCE(p.is_archived, false) = false
+        ${prodProfileSql}
+       WHERE LOWER(TRIM(COALESCE(w.type, 'warehouse'))) NOT IN ('supplier')
+         ${profileSql}
+       GROUP BY pws.warehouse_id`,
+      params
+    );
+
+    const catRes = await query(
+      `SELECT pws.warehouse_id,
+              COALESCE(p.user_category_id::text, '_none') AS category_id,
               COALESCE(uc.name, 'Без категории') AS category_name,
-              COALESCE(SUM(GREATEST(COALESCE(p.quantity, 0), 0)), 0)::bigint AS qty,
-              COALESCE(SUM(GREATEST(COALESCE(p.quantity, 0), 0) * COALESCE(p.cost, 0)), 0) AS cost_sum
-       FROM products p
+              COALESCE(SUM(GREATEST(COALESCE(pws.quantity, 0), 0)), 0)::bigint AS qty,
+              COALESCE(
+                SUM(GREATEST(COALESCE(pws.quantity, 0), 0) * COALESCE(p.cost, 0)),
+                0
+              ) AS cost_sum
+       FROM product_warehouse_stock pws
+       INNER JOIN warehouses w ON w.id = pws.warehouse_id
+       INNER JOIN products p ON p.id = pws.product_id
        LEFT JOIN user_categories uc ON uc.id = p.user_category_id
-       ${where}
-       GROUP BY p.user_category_id, uc.name
+       WHERE COALESCE(p.is_archived, false) = false
+         AND LOWER(TRIM(COALESCE(w.type, 'warehouse'))) NOT IN ('supplier')
+         ${profileSql}
+         ${prodProfileSql}
+       GROUP BY pws.warehouse_id, p.user_category_id, uc.name
        ORDER BY category_name`,
       params
     );
-    const skusRes = await query(
-      `SELECT COUNT(*)::int AS skus_with_stock
-       FROM products p
-       ${where} AND COALESCE(p.quantity, 0) > 0`,
-      params
-    );
+
     const totalRes = await query(
-      `SELECT COUNT(*)::int AS total_products FROM products p ${where}`,
+      `SELECT COUNT(*)::int AS total_products
+       FROM products p
+       WHERE COALESCE(p.is_archived, false) = false
+         ${prodProfileSql}`,
       params
     );
-    const rows = rowsRes.rows || [];
-    let totalQty = 0;
-    let totalCostSum = 0;
-    for (const r of rows) {
-      totalQty += Number(r.qty) || 0;
-      totalCostSum += Number(r.cost_sum) || 0;
-    }
-    return {
-      rows: rows.map((r) => ({
+
+    const catsByWh = new Map();
+    for (const r of catRes.rows || []) {
+      const wid = String(r.warehouse_id);
+      if (!catsByWh.has(wid)) catsByWh.set(wid, []);
+      catsByWh.get(wid).push({
         categoryId: r.category_id,
         name: r.category_name,
         qty: Number(r.qty) || 0,
         costSum: Number(r.cost_sum) || 0,
-      })),
+      });
+    }
+
+    const totalsByWh = new Map(
+      (totalsRes.rows || []).map((r) => [
+        String(r.warehouse_id),
+        {
+          totalQty: Number(r.qty) || 0,
+          totalCostSum: Number(r.cost_sum) || 0,
+          skusWithStock: Number(r.skus_with_stock) || 0,
+        },
+      ])
+    );
+
+    const warehouses = (allWhRes.rows || []).map((w) => {
+      const id = String(w.warehouse_id);
+      const t = totalsByWh.get(id) || { totalQty: 0, totalCostSum: 0, skusWithStock: 0 };
+      return {
+        warehouseId: id,
+        name: w.warehouse_name,
+        totalQty: t.totalQty,
+        totalCostSum: t.totalCostSum,
+        skusWithStock: t.skusWithStock,
+        rows: catsByWh.get(id) || [],
+      };
+    });
+
+    let totalQty = 0;
+    let totalCostSum = 0;
+    let skusWithStock = 0;
+    for (const wh of warehouses) {
+      totalQty += wh.totalQty;
+      totalCostSum += wh.totalCostSum;
+      skusWithStock += wh.skusWithStock;
+    }
+
+    const flatMap = new Map();
+    for (const wh of warehouses) {
+      for (const row of wh.rows) {
+        if (!flatMap.has(row.categoryId)) {
+          flatMap.set(row.categoryId, {
+            categoryId: row.categoryId,
+            name: row.name,
+            qty: 0,
+            costSum: 0,
+          });
+        }
+        const agg = flatMap.get(row.categoryId);
+        agg.qty += row.qty;
+        agg.costSum += row.costSum;
+      }
+    }
+
+    return {
+      warehouses,
+      rows: [...flatMap.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru')),
       totalQty,
       totalCostSum,
-      skusWithStock: Number(skusRes.rows[0]?.skus_with_stock) || 0,
+      skusWithStock,
       totalProducts: Number(totalRes.rows[0]?.total_products) || 0,
     };
   }

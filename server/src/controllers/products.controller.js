@@ -256,6 +256,15 @@ class ProductsController {
       if (req.query.archivedOnly === 'true' || req.query.archivedOnly === '1') {
         options.archivedOnly = true;
       }
+      if (req.query.unlinkedMp != null && String(req.query.unlinkedMp).trim() !== '') {
+        const raw = req.query.unlinkedMp;
+        const parts = Array.isArray(raw)
+          ? raw.flatMap((x) => String(x).split(','))
+          : String(raw).split(',');
+        const allowed = new Set(['ozon', 'wb', 'ym']);
+        const list = [...new Set(parts.map((s) => String(s).trim().toLowerCase()).filter((m) => allowed.has(m)))];
+        if (list.length) options.unlinkedMp = list;
+      }
       const isStockList = resolveStockListMode(req, options);
       if (isStockList) {
         options.listView = 'stock';
@@ -365,7 +374,14 @@ class ProductsController {
       if (tid === TENANT_LIST_EMPTY) {
         return res.status(200).json({
           ok: true,
-          data: { rows: [], totalQty: 0, totalCostSum: 0, skusWithStock: 0, totalProducts: 0 },
+          data: {
+            warehouses: [],
+            rows: [],
+            totalQty: 0,
+            totalCostSum: 0,
+            skusWithStock: 0,
+            totalProducts: 0,
+          },
         });
       }
       const data = await productsService.getHomeStockSummary(tid != null ? { profileId: tid } : {});

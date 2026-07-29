@@ -57,7 +57,7 @@ async function postMarketplaceCardBulk(url, payload = {}) {
 }
 
 export const productsApi = {
-  /** Сводка остатков по категориям для главной (лёгкий SQL на сервере). */
+  /** Сводка остатков по складам для главной (лёгкий SQL на сервере). */
   getHomeStockSummary: async () => {
     const response = await api.get('/products/home-stock-summary');
     return response.data?.data ?? response.data;
@@ -94,6 +94,13 @@ export const productsApi = {
     }
     if (options.includeArchived === true) params.includeArchived = '1';
     if (options.archivedOnly === true) params.archivedOnly = '1';
+    if (options.unlinkedMp != null && options.unlinkedMp !== '') {
+      const list = Array.isArray(options.unlinkedMp)
+        ? options.unlinkedMp
+        : String(options.unlinkedMp).split(',');
+      const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
+      if (cleaned.length) params.unlinkedMp = cleaned.join(',');
+    }
     if (options.stockList === true || options.stockList === '1' || options.stockList === 1) {
       params.listView = 'stock';
       params.stockList = '1';

@@ -253,7 +253,7 @@ class ProductsService {
     return this._attachParticipationFlags(items);
   }
 
-  /** Сводка остатков по категориям для главной (без загрузки всего каталога). */
+  /** Сводка остатков по складам (и категориям внутри склада) для главной. */
   async getHomeStockSummary(options = {}) {
     if (!repositoryFactory.isUsingPostgreSQL()) {
       const list = await this.getAll(options);
@@ -278,8 +278,19 @@ class ProductsService {
         row.qty += qty;
         row.costSum += lineCost;
       }
+      const rows = [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
       return {
-        rows: [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+        warehouses: [
+          {
+            warehouseId: 'all',
+            name: 'Все склады',
+            totalQty,
+            totalCostSum,
+            skusWithStock,
+            rows,
+          },
+        ],
+        rows,
         totalQty,
         totalCostSum,
         skusWithStock,

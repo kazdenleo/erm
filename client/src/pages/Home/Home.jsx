@@ -68,6 +68,7 @@ export function Home() {
   const [stockSummaryLoading, setStockSummaryLoading] = useState(true);
   const [stockSummaryError, setStockSummaryError] = useState(null);
   const [stockDetailOpen, setStockDetailOpen] = useState(false);
+  const [stockDetailWarehouseId, setStockDetailWarehouseId] = useState(null);
   const [questionsNewCount, setQuestionsNewCount] = useState(0);
   const [returnsStats, setReturnsStats] = useState({
     waitingCount: 0,
@@ -221,6 +222,7 @@ export function Home() {
   const stockWidgetColClass = 'col-12 col-md-6';
 
   const rows = stockSummary?.rows ?? [];
+  const warehouses = Array.isArray(stockSummary?.warehouses) ? stockSummary.warehouses : [];
   const totalQty = Number(stockSummary?.totalQty) || 0;
   const totalCostSum = Number(stockSummary?.totalCostSum) || 0;
   const stockPositionsCount = Number(stockSummary?.skusWithStock) || 0;
@@ -228,6 +230,25 @@ export function Home() {
   const stockLoading = stockSummaryLoading;
   const stockError = stockSummaryError;
   const returnsByMp = returnsStats.countsByMarketplace || { ozon: 0, wildberries: 0, yandex: 0 };
+
+  const openStockDetail = (warehouseId = null) => {
+    setStockDetailWarehouseId(warehouseId != null ? String(warehouseId) : null);
+    setStockDetailOpen(true);
+  };
+
+  const detailWarehouse =
+    stockDetailWarehouseId != null
+      ? warehouses.find((w) => String(w.warehouseId) === String(stockDetailWarehouseId))
+      : null;
+  const detailRows = detailWarehouse?.rows ?? rows;
+  const detailQty = detailWarehouse ? Number(detailWarehouse.totalQty) || 0 : totalQty;
+  const detailCost = detailWarehouse ? Number(detailWarehouse.totalCostSum) || 0 : totalCostSum;
+  const detailSkus = detailWarehouse
+    ? Number(detailWarehouse.skusWithStock) || 0
+    : stockPositionsCount;
+  const detailTitle = detailWarehouse
+    ? `Остатки: ${detailWarehouse.name}`
+    : 'Остатки по категориям';
 
   return (
     <div>
@@ -349,44 +370,72 @@ export function Home() {
           {isAccountAdmin && (
             <div className={stockWidgetColClass}>
               <div
-                role="button"
-                tabIndex={0}
                 className="card mb-3 widget-content bg-grow-early home-stock-plate-block"
-                onClick={() => setStockDetailOpen(true)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    setStockDetailOpen(true);
-                  }
-                }}
-                aria-haspopup="dialog"
-                aria-expanded={stockDetailOpen}
-                title="Открыть остатки по категориям"
+                title="Остатки по складам"
               >
-                <div className="widget-content-wrapper text-white home-stock-plate-row">
-                  <div className="widget-content-left">
+                <div className="widget-content-wrapper text-white home-stock-plate-stack">
+                  <div className="home-stock-plate-head">
                     <div className="widget-heading">Остатки</div>
-                    <div className="widget-subheading">На складе</div>
+                    <div className="widget-subheading">По складам</div>
                   </div>
-                  <div className="widget-numbers text-white home-stock-plate-col-center">
-                    {stockLoading ? '…' : stockError ? '—' : (
-                      <>
-                        <span className="home-stock-plate-num">{formatQty(totalQty)}</span>
-                        <span className="home-stock-plate-suffix"> шт</span>
-                      </>
-                    )}
-                  </div>
-                  <div className="widget-numbers text-white home-stock-plate-col-right">
-                    {stockLoading ? '…' : stockError ? '—' : (() => {
-                      const amt = formatRubAmountInt(totalCostSum);
-                      return amt == null ? '—' : (
-                        <>
-                          <span className="home-stock-plate-num">{amt}</span>
-                          <span className="home-stock-plate-suffix"> руб.</span>
-                        </>
-                      );
-                    })()}
-                  </div>
+                  {stockLoading ? (
+                    <div className="home-stock-wh-empty">…</div>
+                  ) : stockError ? (
+                    <div className="home-stock-wh-empty">—</div>
+                  ) : warehouses.length === 0 ? (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="home-stock-wh-empty"
+                      onClick={() => openStockDetail(null)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openStockDetail(null);
+                        }
+                      }}
+                    >
+                      Нет складов
+                    </div>
+                  ) : (
+                    <div className="home-stock-wh-list" role="list" aria-label="Остатки по складам">
+                      {warehouses.map((wh) => {
+                        const amt = formatRubAmountInt(Number(wh.totalCostSum) || 0);
+                        return (
+                          <div
+                            key={wh.warehouseId}
+                            role="button"
+                            tabIndex={0}
+                            className="home-stock-wh-row"
+                            onClick={() => openStockDetail(wh.warehouseId)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                openStockDetail(wh.warehouseId);
+                              }
+                            }}
+                            title={`Категории склада «${wh.name}»`}
+                          >
+                            <div className="home-stock-wh-name">{wh.name}</div>
+                            <div className="home-stock-wh-qty">
+                              <span className="home-stock-plate-num">{formatQty(Number(wh.totalQty) || 0)}</span>
+                              <span className="home-stock-plate-suffix"> шт</span>
+                            </div>
+                            <div className="home-stock-wh-cost">
+                              {amt == null ? (
+                                '—'
+                              ) : (
+                                <>
+                                  <span className="home-stock-plate-num">{amt}</span>
+                                  <span className="home-stock-plate-suffix"> руб.</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -590,17 +639,20 @@ export function Home() {
       {isAccountAdmin && (
         <Modal
           isOpen={stockDetailOpen}
-          onClose={() => setStockDetailOpen(false)}
-          title="Остатки по категориям"
+          onClose={() => {
+            setStockDetailOpen(false);
+            setStockDetailWarehouseId(null);
+          }}
+          title={detailTitle}
           size="large"
         >
           <div className="home-stock-modal-total mb-3" role="status">
             <strong>Итого по себестоимости:</strong>{' '}
-            {stockLoading ? '…' : stockError ? '—' : formatRub(totalCostSum)}
+            {stockLoading ? '…' : stockError ? '—' : formatRub(detailCost)}
             <span className="text-muted ms-2">
-              · единиц: {stockLoading ? '…' : formatQty(totalQty)}
+              · единиц: {stockLoading ? '…' : formatQty(detailQty)}
               {' · '}
-              позиций с остатком: {stockLoading ? '…' : formatQty(stockPositionsCount)}
+              позиций с остатком: {stockLoading ? '…' : formatQty(detailSkus)}
             </span>
           </div>
           {stockError && (
@@ -623,14 +675,14 @@ export function Home() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.length === 0 ? (
+                  {detailRows.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="text-center text-muted py-4">
                         Нет товаров
                       </td>
                     </tr>
                   ) : (
-                    rows.map((row) => (
+                    detailRows.map((row) => (
                       <tr key={row.categoryId}>
                         <td>{row.name}</td>
                         <td className="text-end text-nowrap">{formatQty(row.qty)}</td>
@@ -639,12 +691,12 @@ export function Home() {
                     ))
                   )}
                 </tbody>
-                {rows.length > 0 && (
+                {detailRows.length > 0 && (
                   <tfoot className="table-group-divider">
                     <tr className="fw-semibold">
                       <td>Всего</td>
-                      <td className="text-end">{formatQty(totalQty)}</td>
-                      <td className="text-end text-nowrap">{formatRub(totalCostSum)}</td>
+                      <td className="text-end">{formatQty(detailQty)}</td>
+                      <td className="text-end text-nowrap">{formatRub(detailCost)}</td>
                     </tr>
                   </tfoot>
                 )}
