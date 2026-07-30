@@ -858,7 +858,7 @@ function MpSkuCountryDimsEditor({
                 type="number"
                 className="form-control form-control-sm"
                 min="0"
-                step={code === 'wb' ? '0.1' : '1'}
+                step={code === 'wb' ? (f.key === 'weight' ? '0.001' : '0.1') : '1'}
                 value={dimDisp(f.key)}
                 onChange={(e) => onDimChange(f.key, e.target.value)}
               />
