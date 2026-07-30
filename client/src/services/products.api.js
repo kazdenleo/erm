@@ -101,6 +101,13 @@ export const productsApi = {
       const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
       if (cleaned.length) params.unlinkedMp = cleaned.join(',');
     }
+    if (options.linkedMp != null && options.linkedMp !== '') {
+      const list = Array.isArray(options.linkedMp)
+        ? options.linkedMp
+        : String(options.linkedMp).split(',');
+      const cleaned = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
+      if (cleaned.length) params.linkedMp = cleaned.join(',');
+    }
     if (options.stockList === true || options.stockList === '1' || options.stockList === 1) {
       params.listView = 'stock';
       params.stockList = '1';

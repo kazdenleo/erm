@@ -265,6 +265,15 @@ class ProductsController {
         const list = [...new Set(parts.map((s) => String(s).trim().toLowerCase()).filter((m) => allowed.has(m)))];
         if (list.length) options.unlinkedMp = list;
       }
+      if (req.query.linkedMp != null && String(req.query.linkedMp).trim() !== '') {
+        const raw = req.query.linkedMp;
+        const parts = Array.isArray(raw)
+          ? raw.flatMap((x) => String(x).split(','))
+          : String(raw).split(',');
+        const allowed = new Set(['ozon', 'wb', 'ym']);
+        const list = [...new Set(parts.map((s) => String(s).trim().toLowerCase()).filter((m) => allowed.has(m)))];
+        if (list.length) options.linkedMp = list;
+      }
       const isStockList = resolveStockListMode(req, options);
       if (isStockList) {
         options.listView = 'stock';

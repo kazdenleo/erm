@@ -57,6 +57,11 @@ export function useProducts(options = {}) {
           ? opts.unlinkedMp
           : String(opts.unlinkedMp);
       }
+      if (opts.linkedMp != null && opts.linkedMp !== '') {
+        params.linkedMp = Array.isArray(opts.linkedMp)
+          ? opts.linkedMp
+          : String(opts.linkedMp);
+      }
       if (opts.warehouseId != null && opts.warehouseId !== '') {
         params.warehouseId = String(opts.warehouseId);
       }

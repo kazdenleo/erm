@@ -413,6 +413,7 @@ function buildFindAllFilters(options = {}) {
     warehouseId,
     supplierId,
     unlinkedMp,
+    linkedMp,
   } = options;
   let whereSql = ' WHERE 1=1';
   const params = [];
@@ -543,6 +544,52 @@ function buildFindAllFilters(options = {}) {
       )`;
     } else if (mp === 'ym') {
       whereSql += ` AND NOT EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id
+          AND ps.marketplace = 'ym'
+          AND COALESCE(TRIM(ps.sku::text), '') <> ''
+      )`;
+    }
+  }
+
+  const linkedList = (() => {
+    const raw = linkedMp;
+    if (raw == null || raw === '') return [];
+    const parts = Array.isArray(raw)
+      ? raw
+      : String(raw)
+          .split(',')
+          .map((s) => s.trim().toLowerCase());
+    const allowed = new Set(['ozon', 'wb', 'ym']);
+    return [...new Set(parts.filter((m) => allowed.has(m)))];
+  })();
+
+  for (const mp of linkedList) {
+    if (mp === 'ozon') {
+      whereSql += ` AND EXISTS (
+        SELECT 1 FROM product_skus ps
+        WHERE ps.product_id = p.id
+          AND ps.marketplace = 'ozon'
+          AND (
+            COALESCE(TRIM(ps.sku::text), '') <> ''
+            OR ps.marketplace_product_id IS NOT NULL
+          )
+      )`;
+    } else if (mp === 'wb') {
+      whereSql += ` AND (
+        EXISTS (
+          SELECT 1 FROM product_skus ps
+          WHERE ps.product_id = p.id
+            AND ps.marketplace = 'wb'
+            AND COALESCE(TRIM(ps.sku::text), '') ~ '^[0-9]+$'
+        )
+        OR (
+          p.wb_draft IS NOT NULL
+          AND p.wb_draft::text ~* '"(nmId|nmID|nm_id)"[[:space:]]*:[[:space:]]*"?[0-9]+'
+        )
+      )`;
+    } else if (mp === 'ym') {
+      whereSql += ` AND EXISTS (
         SELECT 1 FROM product_skus ps
         WHERE ps.product_id = p.id
           AND ps.marketplace = 'ym'

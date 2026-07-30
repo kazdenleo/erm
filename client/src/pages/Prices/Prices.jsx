@@ -15,6 +15,7 @@ import { productsApi } from '../../services/products.api.js';
 import { categoryMappingsApi } from '../../services/categoryMappings.api.js';
 import { integrationsApi } from '../../services/integrations.api.js';
 import { Button } from '../../components/common/Button/Button';
+import { MarketplaceToggle } from '../../components/common/MarketplaceToggle/MarketplaceToggle.jsx';
 import { PriceDetailsModal } from '../../components/PriceDetailsModal/PriceDetailsModal';
 import { MarketplacePriceCells } from './MarketplacePriceCell.jsx';
 import './Prices.css';
@@ -33,6 +34,13 @@ import { getApiSessionContext } from '../../services/apiSession.js';
 import { privateClientMinPrice } from '../../utils/marketplaceMinProfit.js';
 
 const PRICES_LIST_PAGE_SIZES = [50, 100, 200];
+
+/** Тумблеры фильтра связи с МП (как на странице товаров) */
+const MP_LINK_FILTER_TOGGLES = [
+  { code: 'ozon', label: 'OZ', name: 'Ozon', color: '#005bff' },
+  { code: 'wb', label: 'WB', name: 'Wildberries', color: '#cb11ab' },
+  { code: 'ym', label: 'ЯМ', name: 'Яндекс.Маркет', color: '#fc3f1d' },
+];
 
 // Нормализация ответа API: сервер возвращает { ok, data: result }, axios даёт response.data = этот объект
 function getPriceResult(r) {
@@ -377,6 +385,10 @@ export function Prices() {
   const [filterCategoryId, setFilterCategoryId] = useState('');
   const [filterProductType, setFilterProductType] = useState('');
   const [filterArchiveMode, setFilterArchiveMode] = useState('');
+  /** Активные тумблеры: показать товары без связи с этими МП */
+  const [filterUnlinkedMp, setFilterUnlinkedMp] = useState(() => new Set());
+  /** Активные тумблеры: показать товары со связью с этими МП */
+  const [filterLinkedMp, setFilterLinkedMp] = useState(() => new Set());
   const [showUncategorizedCategoryOption, setShowUncategorizedCategoryOption] = useState(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [listSearch, setListSearch] = useState('');
@@ -419,12 +431,26 @@ export function Prices() {
     const pt = partial.productType !== undefined ? partial.productType : filterProductType;
     const archiveMode =
       partial.archiveMode !== undefined ? partial.archiveMode : filterArchiveMode;
+    const unlinked =
+      partial.unlinkedMp !== undefined ? partial.unlinkedMp : filterUnlinkedMp;
+    const linked =
+      partial.linkedMp !== undefined ? partial.linkedMp : filterLinkedMp;
     const searchRaw = partial.search !== undefined ? partial.search : listSearch;
     const page = partial.page !== undefined ? partial.page : currentPage;
     const search = typeof searchRaw === 'string' ? searchRaw.trim() : '';
     const ptTrim = typeof pt === 'string' ? pt.trim() : '';
     const limitCandidate = partial.limit !== undefined ? Number(partial.limit) : pageSize;
     const limit = PRICES_LIST_PAGE_SIZES.includes(limitCandidate) ? limitCandidate : 50;
+    const unlinkedArr = unlinked instanceof Set
+      ? [...unlinked]
+      : Array.isArray(unlinked)
+        ? unlinked
+        : [];
+    const linkedArr = linked instanceof Set
+      ? [...linked]
+      : Array.isArray(linked)
+        ? linked
+        : [];
     return loadProducts({
       organizationId: org || undefined,
       brandId: brand || undefined,
@@ -433,6 +459,8 @@ export function Prices() {
       search: search || undefined,
       includeArchived: archiveMode === 'include' || archiveMode === 'only',
       archivedOnly: archiveMode === 'only',
+      unlinkedMp: unlinkedArr.length ? unlinkedArr : undefined,
+      linkedMp: linkedArr.length ? linkedArr : undefined,
       limit,
       offset: Math.max(0, (page - 1) * limit),
       silent: true,
@@ -446,7 +474,9 @@ export function Prices() {
     (filterBrandId ? 1 : 0) +
     (filterCategoryId ? 1 : 0) +
     (filterProductType ? 1 : 0) +
-    (filterArchiveMode ? 1 : 0);
+    (filterArchiveMode ? 1 : 0) +
+    filterUnlinkedMp.size +
+    filterLinkedMp.size;
   const totalProducts = Number.isFinite(Number(meta?.total)) ? Number(meta.total) : visibleProducts.length;
   const totalPages = Math.max(1, Math.ceil(Math.max(0, totalProducts) / Math.max(1, pageSize)));
 
@@ -457,7 +487,42 @@ export function Prices() {
     setFilterCategoryId('');
     setFilterProductType('');
     setFilterArchiveMode('');
-    loadList({ organizationId: '', brandId: '', categoryId: '', productType: '', archiveMode: '', page: 1 });
+    setFilterUnlinkedMp(new Set());
+    setFilterLinkedMp(new Set());
+    loadList({
+      organizationId: '',
+      brandId: '',
+      categoryId: '',
+      productType: '',
+      archiveMode: '',
+      unlinkedMp: [],
+      linkedMp: [],
+      page: 1,
+    });
+  };
+
+  const toggleUnlinkedMpFilter = (mpCode) => {
+    setCurrentPage(1);
+    const nextUnlinked = new Set(filterUnlinkedMp);
+    if (nextUnlinked.has(mpCode)) nextUnlinked.delete(mpCode);
+    else nextUnlinked.add(mpCode);
+    const nextLinked = new Set(filterLinkedMp);
+    if (nextUnlinked.has(mpCode)) nextLinked.delete(mpCode);
+    setFilterUnlinkedMp(nextUnlinked);
+    setFilterLinkedMp(nextLinked);
+    loadListRef.current({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
+  };
+
+  const toggleLinkedMpFilter = (mpCode) => {
+    setCurrentPage(1);
+    const nextLinked = new Set(filterLinkedMp);
+    if (nextLinked.has(mpCode)) nextLinked.delete(mpCode);
+    else nextLinked.add(mpCode);
+    const nextUnlinked = new Set(filterUnlinkedMp);
+    if (nextLinked.has(mpCode)) nextUnlinked.delete(mpCode);
+    setFilterLinkedMp(nextLinked);
+    setFilterUnlinkedMp(nextUnlinked);
+    loadListRef.current({ unlinkedMp: nextUnlinked, linkedMp: nextLinked, page: 1 });
   };
 
   const handleListSearchChange = (e) => {
@@ -1002,6 +1067,58 @@ export function Prices() {
                       <option value="include">Включая архивные</option>
                       <option value="only">Только архивные</option>
                     </select>
+                  </div>
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <div className="products-unlinked-mp-filter" title="Показать товары без связи с маркетплейсом">
+                      <span className="text-muted small d-block mb-1">Не связан</span>
+                      <div className="d-flex align-items-center gap-1">
+                        {MP_LINK_FILTER_TOGGLES.map((mp) => {
+                          const active = filterUnlinkedMp.has(mp.code);
+                          return (
+                            <MarketplaceToggle
+                              key={mp.code}
+                              active={active}
+                              size={28}
+                              color={mp.color}
+                              title={
+                                active
+                                  ? `Показаны товары без связи с ${mp.name}`
+                                  : `Показать товары без связи с ${mp.name}`
+                              }
+                              onToggle={() => toggleUnlinkedMpFilter(mp.code)}
+                            >
+                              {mp.label}
+                            </MarketplaceToggle>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="col-12 col-md-6 col-lg-3">
+                    <div className="products-unlinked-mp-filter" title="Показать товары со связью с маркетплейсом">
+                      <span className="text-muted small d-block mb-1">Связан</span>
+                      <div className="d-flex align-items-center gap-1">
+                        {MP_LINK_FILTER_TOGGLES.map((mp) => {
+                          const active = filterLinkedMp.has(mp.code);
+                          return (
+                            <MarketplaceToggle
+                              key={mp.code}
+                              active={active}
+                              size={28}
+                              color={mp.color}
+                              title={
+                                active
+                                  ? `Показаны товары со связью с ${mp.name}`
+                                  : `Показать товары со связью с ${mp.name}`
+                              }
+                              onToggle={() => toggleLinkedMpFilter(mp.code)}
+                            >
+                              {mp.label}
+                            </MarketplaceToggle>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 </div>
                 {activeFiltersCount > 0 ? (
