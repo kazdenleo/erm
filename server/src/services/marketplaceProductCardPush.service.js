@@ -15,7 +15,9 @@ import {
   gramsToKg,
   isMpFieldLinked,
   mmToCm,
+  normalizeMpFieldLinks,
   resolveCardTextForPush,
+  resolveDimensionsMmForPush,
   shouldPushDimensions,
 } from '../utils/productMpFieldLinks.js';
 
@@ -152,14 +154,15 @@ async function pushOzonCard(product, categoryMm, ctx) {
     item.product_id = Number(pid);
   }
   if (shouldPushDimensions(product, 'ozon')) {
-    if (product.weight != null && Number(product.weight) > 0) {
-      item.weight = Number(product.weight);
+    const dims = resolveDimensionsMmForPush(product, 'ozon') || {};
+    if (dims.weight != null && Number(dims.weight) > 0) {
+      item.weight = Number(dims.weight);
     }
-    if (product.length && product.width && product.height) {
+    if (dims.length && dims.width && dims.height) {
       item.dimension_unit = 'mm';
-      item.depth = Number(product.length);
-      item.width = Number(product.width);
-      item.height = Number(product.height);
+      item.depth = Number(dims.length);
+      item.width = Number(dims.width);
+      item.height = Number(dims.height);
     }
   }
 
@@ -263,16 +266,17 @@ async function pushWildberriesCard(product, categoryMm, ctx) {
 
   // ERP: мм / г; WB Content API: габариты в см, weightBrutto в граммах.
   if (shouldPushDimensions(product, 'wb')) {
-    const L = Number(product.length);
-    const W = Number(product.width);
-    const H = Number(product.height);
+    const dims = resolveDimensionsMmForPush(product, 'wb') || {};
+    const L = Number(dims.length);
+    const W = Number(dims.width);
+    const H = Number(dims.height);
     if (Number.isFinite(L) && L > 0 && Number.isFinite(W) && W > 0 && Number.isFinite(H) && H > 0) {
       card.dimensions = {
         length: mmToCm(L),
         width: mmToCm(W),
         height: mmToCm(H),
-        ...(product.weight != null && Number(product.weight) > 0
-          ? { weightBrutto: Number(product.weight) }
+        ...(dims.weight != null && Number(dims.weight) > 0
+          ? { weightBrutto: Number(dims.weight) }
           : existing?.dimensions?.weightBrutto != null
             ? { weightBrutto: Number(existing.dimensions.weightBrutto) }
             : {})
@@ -364,23 +368,69 @@ async function pushYandexCard(product, categoryMm, ctx) {
   }
 
   // YM Partner API: length/width/height — см, weight — кг
-  if (shouldPushDimensions(product, 'ym')) {
-    const L = mmToCm(product.length);
-    const W = mmToCm(product.width);
-    const H = mmToCm(product.height);
-    const Wt = gramsToKg(product.weight);
-    if (L != null && W != null && H != null) {
-      offer.weightDimensions = {
-        length: L,
-        width: W,
-        height: H,
-        ...(Wt != null ? { weight: Wt } : {})
-      };
+  // Связь вкл. → из ERP; выкл. → из ym_draft.weightDimensions (если есть)
+  {
+    const links = normalizeMpFieldLinks(product.mp_field_links);
+    let wd = null;
+    if (isMpFieldLinked(links, 'dimensions', 'ym')) {
+      const L = mmToCm(product.length);
+      const W = mmToCm(product.width);
+      const H = mmToCm(product.height);
+      const Wt = gramsToKg(product.weight);
+      if (L != null && W != null && H != null) {
+        wd = { length: L, width: W, height: H, ...(Wt != null ? { weight: Wt } : {}) };
+      }
+    } else {
+      const draft =
+        product.ym_draft && typeof product.ym_draft === 'object' && !Array.isArray(product.ym_draft)
+          ? product.ym_draft
+          : typeof product.ym_draft === 'string'
+            ? (() => {
+                try {
+                  return JSON.parse(product.ym_draft);
+                } catch {
+                  return null;
+                }
+              })()
+            : null;
+      const raw = draft?.weightDimensions;
+      if (raw && typeof raw === 'object') {
+        const L = Number(raw.length);
+        const W = Number(raw.width);
+        const H = Number(raw.height);
+        const Wt = Number(raw.weight);
+        if (Number.isFinite(L) && L > 0 && Number.isFinite(W) && W > 0 && Number.isFinite(H) && H > 0) {
+          wd = {
+            length: L,
+            width: W,
+            height: H,
+            ...(Number.isFinite(Wt) && Wt > 0 ? { weight: Wt } : {}),
+          };
+        }
+      }
     }
+    if (wd) offer.weightDimensions = wd;
   }
 
   if (isMpFieldLinked(product.mp_field_links, 'country', 'ym')) {
     const country = String(product.country_of_origin || '').trim();
+    if (country) {
+      offer.manufacturerCountries = [country];
+    }
+  } else {
+    let draft =
+      product.ym_draft && typeof product.ym_draft === 'object' && !Array.isArray(product.ym_draft)
+        ? product.ym_draft
+        : null;
+    if (!draft && typeof product.ym_draft === 'string') {
+      try {
+        draft = JSON.parse(product.ym_draft);
+      } catch {
+        draft = null;
+      }
+    }
+    const list = Array.isArray(draft?.manufacturerCountries) ? draft.manufacturerCountries : [];
+    const country = list.map((c) => String(c || '').trim()).find(Boolean) || '';
     if (country) {
       offer.manufacturerCountries = [country];
     }

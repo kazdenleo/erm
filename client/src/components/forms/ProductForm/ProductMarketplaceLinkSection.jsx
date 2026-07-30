@@ -64,10 +64,10 @@ export function ProductMarketplaceLinkSection({
       ? 'Выберите организацию'
       : !hasLinkIdentifiers
         ? marketplace === 'wb'
-          ? 'Укажите vendorCode WB, nmId или артикул ERP'
+          ? 'Укажите vendorCode WB, nmId или артикул'
           : marketplace === 'ozon'
-            ? 'Укажите offer_id Ozon, product_id или артикул ERP'
-            : 'Укажите offerId ЯМ или артикул ERP'
+            ? 'Укажите offer_id Ozon, product_id или артикул'
+            : 'Укажите offerId ЯМ или артикул'
         : '';
 
   const handleAutoLink = async () => {
@@ -147,24 +147,24 @@ export function ProductMarketplaceLinkSection({
         </Button>
       </div>
       <p style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '8px', lineHeight: 1.45 }}>
-        Идентификаторы для сопоставления товара ERP с карточкой на площадке. Иконка справа ищет карточку в
+        Идентификаторы для сопоставления товара с карточкой на площадке. Иконка справа ищет карточку в
         кабинете организации
         {marketplace === 'wb' ? (
           <>
             {' '}
             по vendorCode WB (<code>{wbVendorTrim || '—'}</code>), nmId (<code>{wbNmTrim || '—'}</code>) или
-            артикулу ERP (<code>{skuTrim || '—'}</code>).
+            артикулу (<code>{skuTrim || '—'}</code>).
           </>
         ) : marketplace === 'ozon' ? (
           <>
             {' '}
-            по offer_id (<code>{ozonOfferTrim || '—'}</code>), product_id или артикулу ERP (
+            по offer_id (<code>{ozonOfferTrim || '—'}</code>), product_id или артикулу (
             <code>{skuTrim || '—'}</code>).
           </>
         ) : (
           <>
             {' '}
-            по offerId ЯМ (<code>{ymOfferTrim || '—'}</code>) или артикулу ERP (<code>{skuTrim || '—'}</code>).
+            по offerId ЯМ (<code>{ymOfferTrim || '—'}</code>) или артикулу (<code>{skuTrim || '—'}</code>).
           </>
         )}
       </p>

@@ -57,12 +57,19 @@ import {
   convertDimensionsForMarketplace,
   cmToMm,
   defaultMpFieldLinks,
+  erpDimsToYmWeightDimensions,
   filterYmCategoryAttributesForForm,
+  getMpDraftCountry,
+  getMpDraftDimensionsMm,
+  getYmDraftCountry,
+  getYmDraftWeightDimensions,
   isMpFieldLinked,
   isYmParamDuplicatingDedicatedField,
   kgToGrams,
   normalizeMpFieldLinks,
   toggleMpFieldLink,
+  withMpDraftPatch,
+  withYmDraftCountry,
   ymWeightDimensionsToErp,
 } from '../../../utils/productMpFieldLinks.js';
 import './ProductForm.css';
@@ -375,24 +382,103 @@ const EMPTY_PRODUCT_FORM_DATA = {
   mp_ozon_description: '',
   mp_ozon_brand: '',
   mp_field_links: defaultMpFieldLinks(),
+  ozon_draft: {},
+  wb_draft: {},
+  ym_draft: {},
 };
 
-/** Отдельные поля габаритов/веса YM (см/кг) — как атрибуты, не одной строкой. */
+/** Полный JSON ответа МП после «Обновить с …» — чтобы видеть, какие поля реально пришли. */
+function MpApiResponseDump({ data, open, onToggle, label = 'Сырой ответ API' }) {
+  const [copied, setCopied] = useState(false);
+  if (!data) return null;
+  let json = '';
+  try {
+    json = JSON.stringify(data, null, 2);
+  } catch {
+    json = String(data);
+  }
+  const topKeys = Object.keys(data);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+  return (
+    <div className="mp-api-response-dump" style={{ marginTop: 12, borderTop: '1px solid rgba(0,0,0,0.08)', paddingTop: 12 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <button
+          type="button"
+          className="btn btn-link p-0"
+          style={{ fontSize: 12 }}
+          onClick={onToggle}
+        >
+          {open ? `Свернуть ${label}` : `Показать ${label}`}
+        </button>
+        {open ? (
+          <button type="button" className="btn btn-sm btn-outline-secondary" onClick={copy}>
+            {copied ? 'Скопировано' : 'Копировать JSON'}
+          </button>
+        ) : null}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+        Ключи верхнего уровня ({topKeys.length}): {topKeys.join(', ') || '—'}
+      </div>
+      {open ? (
+        <pre
+          style={{
+            marginTop: 8,
+            maxHeight: 420,
+            overflow: 'auto',
+            fontSize: 11,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            background: 'rgba(0,0,0,0.04)',
+            borderRadius: 6,
+            padding: 10,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {json}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
+/** Поля габаритов/веса YM (см/кг). При связи — из ERP; без связи — только ym_draft. */
 function YmPackagingDimensionFields({ formData, onChange, idPrefix = 'ym-dim' }) {
+  const linked = isMpFieldLinked(formData?.mp_field_links, 'dimensions', 'ym');
+  const draftWd = getYmDraftWeightDimensions(formData) || {};
   const dimFields = [
     { key: 'length', label: 'Длина упаковки', unit: 'см', step: '0.1', placeholder: '26' },
     { key: 'width', label: 'Ширина упаковки', unit: 'см', step: '0.1', placeholder: '16.5' },
     { key: 'height', label: 'Высота упаковки', unit: 'см', step: '0.1', placeholder: '6.7' },
   ];
-  const g = Number(formData?.weight);
-  const weightKg =
-    Number.isFinite(g) && g > 0 ? String(Math.round(g) / 1000) : '';
+
+  const displayCm = (key) => {
+    if (linked) {
+      const mm = Number(formData?.[key]);
+      return Number.isFinite(mm) && mm > 0 ? String(Math.round(mm) / 10) : '';
+    }
+    const cm = Number(draftWd[key]);
+    return Number.isFinite(cm) && cm > 0 ? String(cm) : '';
+  };
+  const displayWeightKg = () => {
+    if (linked) {
+      const g = Number(formData?.weight);
+      return Number.isFinite(g) && g > 0 ? String(Math.round(g) / 1000) : '';
+    }
+    const kg = Number(draftWd.weight);
+    return Number.isFinite(kg) && kg > 0 ? String(kg) : '';
+  };
 
   return (
     <div className="row g-3" data-testid="ym-packaging-dims">
       {dimFields.map((f) => {
-        const mm = Number(formData?.[f.key]);
-        const cmVal = Number.isFinite(mm) && mm > 0 ? String(Math.round(mm) / 10) : '';
         const id = `${idPrefix}-${f.key}`;
         return (
           <div className="col-12 col-md-6 col-lg-4" key={f.key}>
@@ -407,16 +493,8 @@ function YmPackagingDimensionFields({ formData, onChange, idPrefix = 'ym-dim' })
               step={f.step}
               min="0"
               placeholder={f.placeholder}
-              value={cmVal}
-              onChange={(e) => {
-                const raw = e.target.value;
-                if (raw === '' || raw == null) {
-                  onChange(f.key, '');
-                  return;
-                }
-                const mmNext = cmToMm(raw);
-                onChange(f.key, mmNext != null ? String(mmNext) : '');
-              }}
+              value={displayCm(f.key)}
+              onChange={(e) => onChange(f.key, e.target.value)}
             />
           </div>
         );
@@ -433,45 +511,171 @@ function YmPackagingDimensionFields({ formData, onChange, idPrefix = 'ym-dim' })
           step="0.001"
           min="0"
           placeholder="1.289"
-          value={weightKg}
-          onChange={(e) => {
-            const raw = e.target.value;
-            if (raw === '' || raw == null) {
-              onChange('weight', '');
-              return;
-            }
-            const grams = kgToGrams(raw);
-            onChange('weight', grams != null ? String(grams) : '');
-          }}
+          value={displayWeightKg()}
+          onChange={(e) => onChange('weight', e.target.value)}
         />
       </div>
     </div>
   );
 }
 
-/** Пишет ERP мм/г и зеркалит в ym_draft.weightDimensions (см/кг) для мин. цен YM. */
+/**
+ * value — см (длина/ширина/высота) или кг (вес), как в инпутах YM.
+ * Связь dimensions↔ym: пишет ERP мм/г + зеркало в ym_draft.
+ * Без связи: только ym_draft.weightDimensions.
+ */
 function applyYmPackagingDimChange(prev, key, value) {
-  const next = { ...prev, [key]: value };
-  const l = Number(key === 'length' ? value : next.length);
-  const w = Number(key === 'width' ? value : next.width);
-  const h = Number(key === 'height' ? value : next.height);
-  const wt = Number(key === 'weight' ? value : next.weight);
-  if (Number.isFinite(l) && l > 0 && Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
-    const prevDraft =
-      prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
-        ? prev.ym_draft
+  const linked = isMpFieldLinked(prev.mp_field_links, 'dimensions', 'ym');
+  const prevDraft =
+    prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+      ? prev.ym_draft
+      : {};
+  const prevWd =
+    prevDraft.weightDimensions && typeof prevDraft.weightDimensions === 'object'
+      ? { ...prevDraft.weightDimensions }
+      : linked
+        ? erpDimsToYmWeightDimensions(prev) || {}
         : {};
-    next.ym_draft = {
+
+  const nextWd = { ...prevWd };
+  if (value === '' || value == null) {
+    delete nextWd[key];
+  } else {
+    const n = Number(String(value).replace(',', '.'));
+    if (Number.isFinite(n) && n > 0) nextWd[key] = n;
+    else delete nextWd[key];
+  }
+
+  const next = {
+    ...prev,
+    ym_draft: {
       ...prevDraft,
-      weightDimensions: {
-        length: Math.round(l) / 10,
-        width: Math.round(w) / 10,
-        height: Math.round(h) / 10,
-        ...(Number.isFinite(wt) && wt > 0 ? { weight: Math.round(wt) / 1000 } : {}),
-      },
-    };
+      weightDimensions: nextWd,
+    },
+  };
+
+  if (linked) {
+    if (key === 'weight') {
+      next.weight = value === '' || value == null ? '' : (kgToGrams(value) != null ? String(kgToGrams(value)) : '');
+    } else {
+      next[key] = value === '' || value == null ? '' : (cmToMm(value) != null ? String(cmToMm(value)) : '');
+    }
   }
   return next;
+}
+
+/**
+ * Артикул / страна / габариты на вкладке Ozon|WB — всегда редактируемые.
+ * Связь с «Основным» — двусторонний синхрон; без связи — ozon_draft / wb_draft.
+ */
+function MpSkuCountryDimsEditor({
+  mp,
+  formData,
+  onSkuChange,
+  onCountryChange,
+  onDimChange,
+}) {
+  const code = String(mp || '').toLowerCase();
+  const linkedSku = isMpFieldLinked(formData.mp_field_links, 'sku', code);
+  const linkedCountry = isMpFieldLinked(formData.mp_field_links, 'country', code);
+  const linkedDims = isMpFieldLinked(formData.mp_field_links, 'dimensions', code);
+  const skuValue = linkedSku
+    ? formData.sku || ''
+    : code === 'ozon'
+      ? formData.sku_ozon || ''
+      : code === 'wb'
+        ? formData.mp_wb_vendor_code || ''
+        : '';
+  const countryValue = linkedCountry
+    ? formData.country_of_origin || ''
+    : getMpDraftCountry(formData, code);
+  const dimsMm = linkedDims
+    ? {
+        length: formData.length,
+        width: formData.width,
+        height: formData.height,
+        weight: formData.weight,
+      }
+    : getMpDraftDimensionsMm(formData, code) || {};
+  const d = convertDimensionsForMarketplace(code, dimsMm);
+  const dimDisp = (key) => (d[key] != null ? String(d[key]) : '');
+  const skuLabel = code === 'wb' ? 'vendorCode (WB)' : 'Артикул (Ozon)';
+  const dimFields = [
+    { key: 'length', label: `Длина (${d.lengthUnit})` },
+    { key: 'width', label: `Ширина (${d.lengthUnit})` },
+    { key: 'height', label: `Высота (${d.lengthUnit})` },
+    { key: 'weight', label: `Вес (${d.weightUnit})` },
+  ];
+
+  return (
+    <div className="row g-3" data-testid={`mp-meta-dims-${code}`}>
+      <div className="col-md-4">
+        <label className="form-label" htmlFor={`${code}-tab-sku`}>
+          {skuLabel}
+          {linkedSku ? <span className="mp-field-linked-hint"> · синхрон с Основным</span> : null}
+        </label>
+        <input
+          id={`${code}-tab-sku`}
+          type="text"
+          className="form-control form-control-sm"
+          value={skuValue}
+          onChange={(e) => onSkuChange(e.target.value)}
+        />
+      </div>
+      <div className="col-md-4">
+        <label className="form-label" htmlFor={`${code}-tab-country`}>
+          Страна
+          {linkedCountry ? (
+            <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+          ) : (
+            <span className="mp-field-linked-hint"> · только {code === 'wb' ? 'WB' : 'Ozon'}</span>
+          )}
+        </label>
+        <input
+          id={`${code}-tab-country`}
+          type="text"
+          className="form-control form-control-sm"
+          value={countryValue}
+          onChange={(e) => onCountryChange(e.target.value)}
+          list={`${code}-country-list`}
+          placeholder="Например, Китай"
+        />
+        <datalist id={`${code}-country-list`}>
+          {COUNTRY_OPTIONS.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
+      </div>
+      <div className="col-12">
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+          Габариты и вес
+          {linkedDims ? (
+            <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+          ) : (
+            <span className="mp-field-linked-hint"> · только {code === 'wb' ? 'WB' : 'Ozon'}</span>
+          )}
+        </div>
+        <div className="row g-2">
+          {dimFields.map((f) => (
+            <div className="col-6 col-md-3" key={f.key}>
+              <label className="form-label" htmlFor={`${code}-dim-${f.key}`}>
+                {f.label}
+              </label>
+              <input
+                id={`${code}-dim-${f.key}`}
+                type="number"
+                className="form-control form-control-sm"
+                min="0"
+                step={code === 'wb' && f.key !== 'weight' ? '0.1' : '1'}
+                value={dimDisp(f.key)}
+                onChange={(e) => onDimChange(f.key, e.target.value)}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export const ProductForm = React.forwardRef(function ProductForm({
@@ -588,6 +792,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
   const [ymSyncSuccess, setYmSyncSuccess] = useState('');
   /** Данные с Яндекс.Маркета после «Обновить данные с YM» */
   const [ymFetchedProduct, setYmFetchedProduct] = useState(null);
+  /** Раскрыт ли сырой ответ API YM */
+  const [ymShowAllFields, setYmShowAllFields] = useState(false);
   // Images (ERP storage + targeting marketplaces)
   const [productImages, setProductImages] = useState([]);
   const [imageUploadLoading, setImageUploadLoading] = useState(false);
@@ -617,6 +823,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setWbShowAllFields(false);
       setWbAttributeValues({});
       setYmFetchedProduct(null);
+      setYmShowAllFields(false);
       setYmAttributeValues({});
       setProductImages([]);
       setImageError('');
@@ -643,6 +850,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       setYmSyncError('');
       setYmSyncSuccess('');
       setYmFetchedProduct(null);
+      setYmShowAllFields(false);
       setCalculatedVolume('');
       setErrors({});
       const t = String(initialTab || 'main').trim();
@@ -808,6 +1016,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
         mp_ozon_description: currentProduct.mp_ozon_description || '',
         mp_ozon_brand: currentProduct.mp_ozon_brand || '',
         mp_field_links: normalizeMpFieldLinks(currentProduct.mp_field_links),
+        ozon_draft:
+          currentProduct.ozon_draft && typeof currentProduct.ozon_draft === 'object' && !Array.isArray(currentProduct.ozon_draft)
+            ? currentProduct.ozon_draft
+            : {},
+        wb_draft:
+          currentProduct.wb_draft && typeof currentProduct.wb_draft === 'object' && !Array.isArray(currentProduct.wb_draft)
+            ? currentProduct.wb_draft
+            : {},
+        ym_draft:
+          currentProduct.ym_draft && typeof currentProduct.ym_draft === 'object' && !Array.isArray(currentProduct.ym_draft)
+            ? currentProduct.ym_draft
+            : {},
       });
       setFormData((prev) => applyLinkedMpFieldsFromMain(prev, prev.mp_field_links));
       const ozonAttrs = currentProduct.ozon_attributes && typeof currentProduct.ozon_attributes === 'object'
@@ -1534,15 +1754,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
       if (name) next.mp_ozon_name = name;
       if (description) next.mp_ozon_description = description;
       if (brand) next.mp_ozon_brand = brand;
-      if (data.weight != null && (!prev.weight || String(prev.weight).trim() === '')) {
-        next.weight = String(data.weight);
+      if (isMpFieldLinked(prev.mp_field_links, 'dimensions', 'ozon')) {
+        if (data.weight != null) next.weight = String(data.weight);
+        const dx = data.dimension_x ?? data.width;
+        const dy = data.dimension_y ?? data.height;
+        const dz = data.dimension_z ?? data.length;
+        if (dx != null) next.width = String(dx);
+        if (dy != null) next.height = String(dy);
+        if (dz != null) next.length = String(dz);
       }
-      const dx = data.dimension_x ?? data.width;
-      const dy = data.dimension_y ?? data.height;
-      const dz = data.dimension_z ?? data.length;
-      if (dx != null && (!prev.width || String(prev.width).trim() === '')) next.width = String(dx);
-      if (dy != null && (!prev.height || String(prev.height).trim() === '')) next.height = String(dy);
-      if (dz != null && (!prev.length || String(prev.length).trim() === '')) next.length = String(dz);
       return next;
     });
   }, []);
@@ -1606,6 +1826,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
       }
       setSyncedOzonProductId(data.id != null ? Number(data.id) : null);
       setOzonFetchedProduct(data);
+      setOzonShowAllFields(true);
       mergeOzonFetchedIntoForm(data);
       const offerIdFromOzon = (data.offer_id ?? data.sku ?? '').trim();
       setFormData((prev) => {
@@ -1698,10 +1919,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
       if (description) next.mp_wb_description = description;
       if (brand) next.mp_wb_brand = brand;
       if (vendorCode) next.mp_wb_vendor_code = vendorCode;
-      if (wG != null && (!prev.weight || String(prev.weight).trim() === '')) next.weight = String(wG);
-      if (lMm != null && (!prev.length || String(prev.length).trim() === '')) next.length = String(lMm);
-      if (wMm != null && (!prev.width || String(prev.width).trim() === '')) next.width = String(wMm);
-      if (hMm != null && (!prev.height || String(prev.height).trim() === '')) next.height = String(hMm);
+      if (isMpFieldLinked(prev.mp_field_links, 'dimensions', 'wb')) {
+        if (wG != null) next.weight = String(wG);
+        if (lMm != null) next.length = String(lMm);
+        if (wMm != null) next.width = String(wMm);
+        if (hMm != null) next.height = String(hMm);
+      }
       const prevEmpty =
         !Array.isArray(prev.barcodes) ||
         prev.barcodes.every((b) => !coerceBarcodeString(b?.barcode ?? b));
@@ -1801,6 +2024,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return;
       }
       setWbFetchedProduct(data);
+      setWbShowAllFields(true);
       mergeWbFetchedIntoForm(data);
       if (Array.isArray(data.characteristics) && data.characteristics.length > 0) {
         setWbAttributeValues((prev) => mergeWbCharacteristicsIntoValues(data.characteristics, prev));
@@ -1866,6 +2090,7 @@ export const ProductForm = React.forwardRef(function ProductForm({
         return;
       }
       setYmFetchedProduct(data);
+      setYmShowAllFields(true);
       const resolvedOfferId = String(data.offerId ?? offerId).trim();
       const name = data.name != null ? String(data.name).trim() : '';
       const description = data.description != null ? String(data.description).trim() : '';
@@ -1893,15 +2118,20 @@ export const ProductForm = React.forwardRef(function ProductForm({
           if (!String(prev.brand || '').trim()) next.brand = vendor;
         }
         if (country) {
-          next.country_of_origin = country;
+          const prevDraft =
+            next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
+              ? next.ym_draft
+              : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+                ? prev.ym_draft
+                : {};
+          next.ym_draft = { ...prevDraft, manufacturerCountries: [country] };
+          if (isMpFieldLinked(prev.mp_field_links, 'country', 'ym')) {
+            next.country_of_origin = country;
+          } else if (!String(prev.country_of_origin || '').trim()) {
+            next.country_of_origin = country;
+          }
         }
-        // Явное обновление с МП перезаписывает габариты/вес (ERP: мм / г)
-        if (dimsErp) {
-          if (dimsErp.length != null) next.length = String(dimsErp.length);
-          if (dimsErp.width != null) next.width = String(dimsErp.width);
-          if (dimsErp.height != null) next.height = String(dimsErp.height);
-          if (dimsErp.weight != null) next.weight = String(dimsErp.weight);
-        }
+        // Габариты: в ym_draft всегда; в ERP — только если связь dimensions↔ym
         if (data.weightDimensions && typeof data.weightDimensions === 'object') {
           const prevDraft =
             prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
@@ -1916,6 +2146,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
               ...(data.weightDimensions.weight != null ? { weight: data.weightDimensions.weight } : {}),
             },
           };
+        }
+        if (dimsErp && isMpFieldLinked(prev.mp_field_links, 'dimensions', 'ym')) {
+          if (dimsErp.length != null) next.length = String(dimsErp.length);
+          if (dimsErp.width != null) next.width = String(dimsErp.width);
+          if (dimsErp.height != null) next.height = String(dimsErp.height);
+          if (dimsErp.weight != null) next.weight = String(dimsErp.weight);
         }
         return next;
       });
@@ -2111,8 +2347,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
       selectedBrandForCert?.manufacturer_country ?? selectedBrandForCert?.manufacturerCountry ?? '';
     if (!country) return;
 
-    const fillCountryAttrs = (attrs, setter) => {
-      if (!attrs?.length) return;
+    const fillCountryAttrs = (attrs, setter, linked) => {
+      if (!linked || !attrs?.length) return;
       setter((prev) => {
         let changed = false;
         const next = { ...prev };
@@ -2128,14 +2364,15 @@ export const ProductForm = React.forwardRef(function ProductForm({
       });
     };
 
-    fillCountryAttrs(ozonAttributes, setOzonAttributeValues);
-    fillCountryAttrs(wbCategoryAttributes, setWbAttributeValues);
-    fillCountryAttrs(ymCategoryAttributes, setYmAttributeValues);
+    fillCountryAttrs(ozonAttributes, setOzonAttributeValues, isMpFieldLinked(formData.mp_field_links, 'country', 'ozon'));
+    fillCountryAttrs(wbCategoryAttributes, setWbAttributeValues, isMpFieldLinked(formData.mp_field_links, 'country', 'wb'));
+    fillCountryAttrs(ymCategoryAttributes, setYmAttributeValues, isMpFieldLinked(formData.mp_field_links, 'country', 'ym'));
   }, [
     selectedBrandForCert,
     ozonAttributes,
     wbCategoryAttributes,
     ymCategoryAttributes,
+    formData.mp_field_links,
   ]);
 
   useEffect(() => {
@@ -2218,6 +2455,9 @@ export const ProductForm = React.forwardRef(function ProductForm({
         else if (field === 'description') syncFields.push('description');
         else if (field === 'brand') syncFields.push('brand');
         else if (field === 'country_of_origin') syncFields.push('country');
+        else if (field === 'length' || field === 'width' || field === 'height' || field === 'weight') {
+          syncFields.push('dimensions');
+        }
         if (syncFields.length) {
           return applyLinkedMpFieldsFromMain(next, next.mp_field_links, syncFields);
         }
@@ -2233,6 +2473,19 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   };
 
+  /**
+   * Текст карточки МП всегда редактируем (mp_*).
+   * При связи с «Основным» — двусторонняя синхронизация только с Main (не с другими МП).
+   */
+  const handleMpCardFieldChange = useCallback((mpField, mainField, linkKey, mp, value) => {
+    setFormData((prev) => {
+      const next = { ...prev, [mpField]: value };
+      if (!isMpFieldLinked(prev.mp_field_links, linkKey, mp)) return next;
+      next[mainField] = value;
+      return applyLinkedMpFieldsFromMain(next, next.mp_field_links, [linkKey]);
+    });
+  }, []);
+
   const handleYmPackagingDimChange = (field, value) => {
     setFormData((prev) => applyYmPackagingDimChange(prev, field, value));
     if (errors[field]) {
@@ -2244,13 +2497,123 @@ export const ProductForm = React.forwardRef(function ProductForm({
     }
   };
 
+  /** Артикул на вкладке Ozon/WB: связь вкл. → Main.sku; выкл. → sku_ozon / mp_wb_vendor_code. */
+  const handleMpSkuMetaChange = useCallback((mp, value) => {
+    const code = String(mp || '').toLowerCase();
+    setFormData((prev) => {
+      if (isMpFieldLinked(prev.mp_field_links, 'sku', code)) {
+        const next = { ...prev, sku: value };
+        return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['sku']);
+      }
+      if (code === 'ozon') return { ...prev, sku_ozon: value };
+      if (code === 'wb') return { ...prev, mp_wb_vendor_code: value };
+      return prev;
+    });
+  }, []);
+
+  const handleMpCountryMetaChange = useCallback((mp, value) => {
+    const code = String(mp || '').toLowerCase();
+    setFormData((prev) => {
+      if (isMpFieldLinked(prev.mp_field_links, 'country', code)) {
+        const next = { ...prev, country_of_origin: value };
+        return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['country']);
+      }
+      return withMpDraftPatch(prev, code, { country: value });
+    });
+  }, []);
+
+  /** Габариты Ozon/WB: в UI единицы МП; в форме/draft — мм/г. */
+  const handleMpDimMetaChange = useCallback((mp, key, raw) => {
+    const code = String(mp || '').toLowerCase();
+    setFormData((prev) => {
+      let mmVal = '';
+      if (raw !== '' && raw != null) {
+        if (code === 'wb' && key !== 'weight') {
+          const n = cmToMm(raw);
+          mmVal = n != null ? String(n) : '';
+        } else {
+          const n = Number(raw);
+          mmVal = Number.isFinite(n) && n > 0 ? String(Math.round(n)) : '';
+        }
+      }
+      if (isMpFieldLinked(prev.mp_field_links, 'dimensions', code)) {
+        const next = { ...prev, [key]: mmVal };
+        return applyLinkedMpFieldsFromMain(next, next.mp_field_links, ['dimensions']);
+      }
+      const prevDims = getMpDraftDimensionsMm(prev, code) || {};
+      const nextDims = { ...prevDims };
+      if (mmVal === '') delete nextDims[key];
+      else nextDims[key] = Number(mmVal);
+      return withMpDraftPatch(prev, code, { dimensions: nextDims });
+    });
+  }, []);
+
   const handleMpFieldLinkToggle = useCallback((fieldKey, mp) => {
     setFormData((prev) => {
       const links = toggleMpFieldLink(prev.mp_field_links, fieldKey, mp);
-      const next = { ...prev, mp_field_links: links };
-      // При включении связи сразу копируем значение из «Основное»
+      let next = { ...prev, mp_field_links: links };
       if (isMpFieldLinked(links, fieldKey, mp)) {
         return applyLinkedMpFieldsFromMain(next, links, [fieldKey]);
+      }
+      // Выключили связь с «Основным»: зафиксировать текущее значение в своём хранилище МП
+      if (fieldKey === 'dimensions' && mp === 'ym') {
+        const existing = getYmDraftWeightDimensions(next);
+        const hasDims =
+          existing &&
+          Number(existing.length) > 0 &&
+          Number(existing.width) > 0 &&
+          Number(existing.height) > 0;
+        if (!hasDims) {
+          const fromErp = erpDimsToYmWeightDimensions(next);
+          if (fromErp) {
+            const prevDraft =
+              next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
+                ? next.ym_draft
+                : {};
+            next = { ...next, ym_draft: { ...prevDraft, weightDimensions: fromErp } };
+          }
+        }
+      }
+      if (fieldKey === 'country' && mp === 'ym') {
+        const draftC = getYmDraftCountry(next);
+        if (!draftC && String(next.country_of_origin || '').trim()) {
+          next = withYmDraftCountry(next, next.country_of_origin);
+        }
+      }
+      if (fieldKey === 'dimensions' && (mp === 'ozon' || mp === 'wb')) {
+        const existing = getMpDraftDimensionsMm(next, mp);
+        const hasDims =
+          existing &&
+          Number(existing.length) > 0 &&
+          Number(existing.width) > 0 &&
+          Number(existing.height) > 0;
+        if (!hasDims) {
+          const dims = {
+            length: next.length !== '' && next.length != null ? Number(next.length) : null,
+            width: next.width !== '' && next.width != null ? Number(next.width) : null,
+            height: next.height !== '' && next.height != null ? Number(next.height) : null,
+            weight: next.weight !== '' && next.weight != null ? Number(next.weight) : null,
+          };
+          if (Number(dims.length) > 0 || Number(dims.width) > 0 || Number(dims.height) > 0) {
+            next = withMpDraftPatch(next, mp, { dimensions: dims });
+          }
+        }
+      }
+      if (fieldKey === 'country' && (mp === 'ozon' || mp === 'wb')) {
+        const draftC = getMpDraftCountry(next, mp);
+        if (!draftC && String(next.country_of_origin || '').trim()) {
+          next = withMpDraftPatch(next, mp, { country: String(next.country_of_origin).trim() });
+        }
+      }
+      if (fieldKey === 'sku' && mp === 'ozon') {
+        if (!String(next.sku_ozon || '').trim() && String(next.sku || '').trim()) {
+          next = { ...next, sku_ozon: next.sku };
+        }
+      }
+      if (fieldKey === 'sku' && mp === 'wb') {
+        if (!String(next.mp_wb_vendor_code || '').trim() && String(next.sku || '').trim()) {
+          next = { ...next, mp_wb_vendor_code: next.sku };
+        }
       }
       return next;
     });
@@ -3012,6 +3375,18 @@ export const ProductForm = React.forwardRef(function ProductForm({
       mp_ym_name: trimOrNull(formData.mp_ym_name),
       mp_ym_description: trimOrNull(formData.mp_ym_description),
       mp_field_links: normalizeMpFieldLinks(formData.mp_field_links),
+      ozon_draft:
+        formData.ozon_draft && typeof formData.ozon_draft === 'object' && !Array.isArray(formData.ozon_draft)
+          ? formData.ozon_draft
+          : {},
+      wb_draft:
+        formData.wb_draft && typeof formData.wb_draft === 'object' && !Array.isArray(formData.wb_draft)
+          ? formData.wb_draft
+          : {},
+      ym_draft:
+        formData.ym_draft && typeof formData.ym_draft === 'object' && !Array.isArray(formData.ym_draft)
+          ? formData.ym_draft
+          : {},
       buyout_rate: formData.buyout_rate ? parseFloat(formData.buyout_rate) : 95,
       barcodes: filteredBarcodes,
       weight: formData.weight ? parseFloat(formData.weight) : null,
@@ -3319,7 +3694,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
           />
         </h3>
         <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: '10px' }}>
-          ERP: мм и г. При связи: Ozon — мм/г, WB — см/г, Яндекс — см/кг.
+          ERP: мм и г. Тумблеры связывают только с «Основным» (не Ozon↔WB↔YM между собой).
+          При связи: Ozon — мм/г, WB — см/г, Яндекс — см/кг.
         </div>
         <div className="row g-3">
           <div className="col-md-2">
@@ -4328,99 +4704,76 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Текст карточки Ozon</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
-                Поля для выгрузки на Ozon (отдельно от вкладки «Основное»). После «Обновить с Ozon» подставляются автоматически.
+                Поля для выгрузки на Ozon — всегда можно править. Связь с «Основным» синхронизирует значения;
+                «Сохранить и отправить» уносит текущие поля вкладки в кабинет.
               </p>
               <div className="row g-3">
                 <div className="col-md-6">
                   <label className="form-label" htmlFor="ozon-tab-name">
                     Название (Ozon)
                     {isMpFieldLinked(formData.mp_field_links, 'name', 'ozon') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
                     ) : null}
                   </label>
                   <input
                     id="ozon-tab-name"
                     type="text"
                     className={mpFieldClass('form-control form-control-sm', 'mp_ozon_name')}
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'name', 'ozon')
-                        ? formData.name
-                        : formData.mp_ozon_name
+                    value={formData.mp_ozon_name}
+                    onChange={(e) =>
+                      handleMpCardFieldChange('mp_ozon_name', 'name', 'name', 'ozon', e.target.value)
                     }
-                    onChange={(e) => handleChange('mp_ozon_name', e.target.value)}
-                    disabled={isMpFieldLinked(formData.mp_field_links, 'name', 'ozon')}
                   />
                 </div>
                 <div className="col-md-6">
                   <label className="form-label" htmlFor="ozon-tab-brand">
                     Бренд (Ozon)
                     {isMpFieldLinked(formData.mp_field_links, 'brand', 'ozon') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
                     ) : null}
                   </label>
                   <input
                     id="ozon-tab-brand"
                     type="text"
                     className={mpFieldClass('form-control form-control-sm', 'mp_ozon_brand')}
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'brand', 'ozon')
-                        ? formData.brand
-                        : formData.mp_ozon_brand
+                    value={formData.mp_ozon_brand}
+                    onChange={(e) =>
+                      handleMpCardFieldChange('mp_ozon_brand', 'brand', 'brand', 'ozon', e.target.value)
                     }
-                    onChange={(e) => handleChange('mp_ozon_brand', e.target.value)}
-                    disabled={isMpFieldLinked(formData.mp_field_links, 'brand', 'ozon')}
                   />
                 </div>
                 <div className="col-12">
                   <label className="form-label" htmlFor="ozon-tab-description">
                     Описание (Ozon)
                     {isMpFieldLinked(formData.mp_field_links, 'description', 'ozon') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
                     ) : null}
                   </label>
                   <textarea
                     id="ozon-tab-description"
                     className={mpFieldClass('form-control form-control-sm', 'mp_ozon_description')}
                     rows={5}
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'description', 'ozon')
-                        ? formData.description
-                        : formData.mp_ozon_description
+                    value={formData.mp_ozon_description}
+                    onChange={(e) =>
+                      handleMpCardFieldChange(
+                        'mp_ozon_description',
+                        'description',
+                        'description',
+                        'ozon',
+                        e.target.value
+                      )
                     }
-                    onChange={(e) => handleChange('mp_ozon_description', e.target.value)}
-                    disabled={isMpFieldLinked(formData.mp_field_links, 'description', 'ozon')}
                   />
                 </div>
-                {(isMpFieldLinked(formData.mp_field_links, 'sku', 'ozon') ||
-                  isMpFieldLinked(formData.mp_field_links, 'country', 'ozon') ||
-                  isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ozon')) && (
-                  <div className="col-12">
-                    <div className="mp-linked-dims-preview">
-                      {isMpFieldLinked(formData.mp_field_links, 'sku', 'ozon') && (
-                        <span>
-                          <span className="text-muted">Артикул:</span> {formData.sku || '—'}
-                        </span>
-                      )}
-                      {isMpFieldLinked(formData.mp_field_links, 'country', 'ozon') && (
-                        <span>
-                          <span className="text-muted">Страна:</span> {formData.country_of_origin || '—'}
-                        </span>
-                      )}
-                      {isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ozon') && (() => {
-                        const d = convertDimensionsForMarketplace('ozon', formData);
-                        return (
-                          <span>
-                            <span className="text-muted">Габариты (мм/г):</span>{' '}
-                            {[d.length, d.width, d.height].every((x) => x != null)
-                              ? `${d.length}×${d.width}×${d.height} ${d.lengthUnit}`
-                              : '—'}
-                            {d.weight != null ? `, ${d.weight} ${d.weightUnit}` : ''}
-                          </span>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                )}
+                <div className="col-12">
+                  <MpSkuCountryDimsEditor
+                    mp="ozon"
+                    formData={formData}
+                    onSkuChange={(v) => handleMpSkuMetaChange('ozon', v)}
+                    onCountryChange={(v) => handleMpCountryMetaChange('ozon', v)}
+                    onDimChange={(key, v) => handleMpDimMetaChange('ozon', key, v)}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -4568,43 +4921,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     </ul>
                   </div>
                 )}
-                <div style={{ marginTop: '12px', borderTop: '1px solid rgba(0,91,255,0.2)', paddingTop: '12px' }}>
-                  <button
-                    type="button"
-                    onClick={() => setOzonShowAllFields((v) => !v)}
-                    style={{ fontSize: '12px', color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                  >
-                    {ozonShowAllFields ? 'Свернуть все поля' : 'Все поля (сырой ответ API)'}
-                  </button>
-                  {ozonShowAllFields && ozonFetchedProduct && (
-                    <div style={{ marginTop: '8px', maxHeight: '320px', overflow: 'auto', fontSize: '11px', fontFamily: 'monospace' }}>
-                      {Object.entries(ozonFetchedProduct).map(([key, value]) => {
-                        let display = value;
-                        if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-                          try {
-                            display = JSON.stringify(value, null, 2);
-                          } catch (_) {
-                            display = String(value);
-                          }
-                        } else if (Array.isArray(value)) {
-                          try {
-                            display = JSON.stringify(value, null, 2);
-                          } catch (_) {
-                            display = String(value);
-                          }
-                        } else {
-                          display = value == null ? '—' : String(value);
-                        }
-                        return (
-                          <div key={key} style={{ marginBottom: '6px', wordBreak: 'break-all' }}>
-                            <span style={{ color: 'var(--muted)', marginRight: '6px' }}>{key}:</span>
-                            <span style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <MpApiResponseDump
+                  data={ozonFetchedProduct}
+                  open={ozonShowAllFields}
+                  onToggle={() => setOzonShowAllFields((v) => !v)}
+                  label="сырой ответ API Ozon"
+                />
               </div>
             </div>
             );
@@ -4822,8 +5144,8 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Текст карточки Wildberries</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
-                Поля только для WB (не совпадают с вкладкой «Основное»). nmId и vendorCode — в блоке «Связь с маркетплейсом» выше.
-                После «Обновить данные с WB» значения подставляются сюда автоматически.
+                Поля только для WB — всегда можно править. nmId и vendorCode — в блоке «Связь с маркетплейсом» выше.
+                Связь с «Основным» синхронизирует значения; отправка — кнопка выше.
               </p>
               {wbFetchedProduct && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 14px', fontSize: '12px', marginBottom: '12px' }}>
@@ -4843,120 +5165,78 @@ export const ProductForm = React.forwardRef(function ProductForm({
                   <label className="form-label" htmlFor="wb-tab-name-wb">
                     Название (WB)
                     {isMpFieldLinked(formData.mp_field_links, 'name', 'wb') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
                     ) : null}
                   </label>
                   <input
                     id="wb-tab-name-wb"
                     type="text"
                     className={mpFieldClass('form-control form-control-sm', 'mp_wb_name')}
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'name', 'wb')
-                        ? formData.name
-                        : formData.mp_wb_name
+                    value={formData.mp_wb_name}
+                    onChange={(e) =>
+                      handleMpCardFieldChange('mp_wb_name', 'name', 'name', 'wb', e.target.value)
                     }
-                    onChange={(e) => handleChange('mp_wb_name', e.target.value)}
-                    disabled={isMpFieldLinked(formData.mp_field_links, 'name', 'wb')}
                   />
                 </div>
                 <div className="col-md-6">
                   <label className="form-label" htmlFor="wb-tab-brand-wb">
                     Бренд (WB)
                     {isMpFieldLinked(formData.mp_field_links, 'brand', 'wb') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
                     ) : null}
                   </label>
                   <input
                     id="wb-tab-brand-wb"
                     type="text"
                     className={mpFieldClass('form-control form-control-sm', 'mp_wb_brand')}
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'brand', 'wb')
-                        ? formData.brand
-                        : formData.mp_wb_brand
+                    value={formData.mp_wb_brand}
+                    onChange={(e) =>
+                      handleMpCardFieldChange('mp_wb_brand', 'brand', 'brand', 'wb', e.target.value)
                     }
-                    onChange={(e) => handleChange('mp_wb_brand', e.target.value)}
                     placeholder="Текст для карточки WB"
-                    disabled={isMpFieldLinked(formData.mp_field_links, 'brand', 'wb')}
                   />
                 </div>
                 <div className="col-12">
                   <label className="form-label" htmlFor="wb-tab-description">
                     Описание (WB)
                     {isMpFieldLinked(formData.mp_field_links, 'description', 'wb') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
                     ) : null}
                   </label>
                   <textarea
                     id="wb-tab-description"
                     className={mpFieldClass('form-control form-control-sm', 'mp_wb_description')}
                     rows={5}
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'description', 'wb')
-                        ? formData.description
-                        : formData.mp_wb_description
+                    value={formData.mp_wb_description}
+                    onChange={(e) =>
+                      handleMpCardFieldChange(
+                        'mp_wb_description',
+                        'description',
+                        'description',
+                        'wb',
+                        e.target.value
+                      )
                     }
-                    onChange={(e) => handleChange('mp_wb_description', e.target.value)}
                     placeholder="Описание для Wildberries"
-                    disabled={isMpFieldLinked(formData.mp_field_links, 'description', 'wb')}
                   />
                 </div>
-                {(isMpFieldLinked(formData.mp_field_links, 'sku', 'wb') ||
-                  isMpFieldLinked(formData.mp_field_links, 'country', 'wb') ||
-                  isMpFieldLinked(formData.mp_field_links, 'dimensions', 'wb')) && (
-                  <div className="col-12">
-                    <div className="mp-linked-dims-preview">
-                      {isMpFieldLinked(formData.mp_field_links, 'sku', 'wb') && (
-                        <span>
-                          <span className="text-muted">vendorCode:</span> {formData.sku || '—'}
-                        </span>
-                      )}
-                      {isMpFieldLinked(formData.mp_field_links, 'country', 'wb') && (
-                        <span>
-                          <span className="text-muted">Страна:</span> {formData.country_of_origin || '—'}
-                        </span>
-                      )}
-                      {isMpFieldLinked(formData.mp_field_links, 'dimensions', 'wb') && (() => {
-                        const d = convertDimensionsForMarketplace('wb', formData);
-                        return (
-                          <span>
-                            <span className="text-muted">Габариты (см/г):</span>{' '}
-                            {[d.length, d.width, d.height].every((x) => x != null)
-                              ? `${d.length}×${d.width}×${d.height} ${d.lengthUnit}`
-                              : '—'}
-                            {d.weight != null ? `, ${d.weight} ${d.weightUnit}` : ''}
-                          </span>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                )}
+                <div className="col-12">
+                  <MpSkuCountryDimsEditor
+                    mp="wb"
+                    formData={formData}
+                    onSkuChange={(v) => handleMpSkuMetaChange('wb', v)}
+                    onCountryChange={(v) => handleMpCountryMetaChange('wb', v)}
+                    onDimChange={(key, v) => handleMpDimMetaChange('wb', key, v)}
+                  />
+                </div>
               </div>
               {wbFetchedProduct && (
-                <div className="mt-2 pt-2 border-top">
-                  <button type="button" className="btn btn-link p-0" onClick={() => setWbShowAllFields((v) => !v)}>
-                    {wbShowAllFields ? 'Свернуть сырой ответ API' : 'Сырой ответ API WB'}
-                  </button>
-                  {wbShowAllFields && (
-                    <div style={{ marginTop: '8px', maxHeight: '280px', overflow: 'auto', fontSize: '11px', fontFamily: 'monospace' }}>
-                      {Object.entries(wbFetchedProduct).map(([key, value]) => {
-                        let display = value;
-                        try {
-                          if (value !== null && typeof value === 'object') display = JSON.stringify(value, null, 2);
-                          else display = value == null ? '—' : String(value);
-                        } catch (_) {
-                          display = value == null ? '—' : String(value);
-                        }
-                        return (
-                          <div key={key} style={{ marginBottom: '6px', wordBreak: 'break-all' }}>
-                            <span style={{ color: 'var(--muted)', marginRight: '6px' }}>{key}:</span>
-                            <span style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <MpApiResponseDump
+                  data={wbFetchedProduct}
+                  open={wbShowAllFields}
+                  onToggle={() => setWbShowAllFields((v) => !v)}
+                  label="сырой ответ API WB"
+                />
               )}
             </div>
           </div>
@@ -5119,22 +5399,38 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Габариты, вес и страна (Яндекс.Маркет)</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 12 }}>
-                Единый редактируемый блок. Габариты — см / кг (в ERP пишутся мм / г). Страна производства подтягивается с оффера Маркета.
+                Габариты — см / кг.
+                {isMpFieldLinked(formData.mp_field_links, 'dimensions', 'ym')
+                  ? ' Связь с «Основным» включена: правки меняют и ERP (мм / г). Другие МП не затрагиваются напрямую.'
+                  : ' Связь выключена: только Яндекс (ym_draft). «Основное» и другие МП не меняются.'}
               </p>
               <div className="row g-3 mb-3">
                 <div className="col-12 col-md-6">
                   <label className="form-label" htmlFor="ym-tab-country">
                     Страна производства
                     {isMpFieldLinked(formData.mp_field_links, 'country', 'ym') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
-                    ) : null}
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
+                    ) : (
+                      <span className="mp-field-linked-hint"> · только Яндекс</span>
+                    )}
                   </label>
                   <input
                     id="ym-tab-country"
                     type="text"
                     className="form-control form-control-sm"
-                    value={formData.country_of_origin}
-                    onChange={(e) => handleChange('country_of_origin', e.target.value)}
+                    value={
+                      isMpFieldLinked(formData.mp_field_links, 'country', 'ym')
+                        ? formData.country_of_origin
+                        : getYmDraftCountry(formData)
+                    }
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (isMpFieldLinked(formData.mp_field_links, 'country', 'ym')) {
+                        handleChange('country_of_origin', v);
+                      } else {
+                        setFormData((prev) => withYmDraftCountry(prev, v));
+                      }
+                    }}
                     placeholder="Например, Китай"
                     list="ym-country-of-origin-list"
                   />
@@ -5166,6 +5462,12 @@ export const ProductForm = React.forwardRef(function ProductForm({
                 {ymFetchedProduct.marketSku ? (
                   <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>marketSku:</span>{ymFetchedProduct.marketSku}</div>
                 ) : null}
+                {ymFetchedProduct.marketCategoryId != null ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>marketCategoryId:</span>{String(ymFetchedProduct.marketCategoryId)}</div>
+                ) : null}
+                {ymFetchedProduct.vendor ? (
+                  <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>vendor:</span>{ymFetchedProduct.vendor}</div>
+                ) : null}
                 {ymFetchedProduct.name ? (
                   <div><span style={{ color: 'var(--muted)', marginRight: '6px' }}>Название:</span>{ymFetchedProduct.name}</div>
                 ) : null}
@@ -5178,38 +5480,44 @@ export const ProductForm = React.forwardRef(function ProductForm({
                     {ymFetchedProduct.manufacturerCountries.map((c) => String(c || '').trim()).filter(Boolean).join(', ')}
                   </div>
                 ) : null}
+                {Array.isArray(ymFetchedProduct.barcodes) && ymFetchedProduct.barcodes.length > 0 ? (
+                  <div>
+                    <span style={{ color: 'var(--muted)', marginRight: '6px' }}>barcodes:</span>
+                    {ymFetchedProduct.barcodes.map((b) => String(b || '').trim()).filter(Boolean).join(', ')}
+                  </div>
+                ) : null}
                 {Array.isArray(ymFetchedProduct.parameterValues) && ymFetchedProduct.parameterValues.length > 0 ? (
                   <div>
                     <div style={{ fontSize: '11px', color: 'var(--muted)', marginBottom: 4 }}>
-                      Характеристики карточки (без дублей габаритов/страны/артикула производителя)
+                      Характеристики карточки ({ymFetchedProduct.parameterValues.length} шт., ниже — полный JSON)
                     </div>
-                    <ul style={{ margin: 0, paddingLeft: 18, maxHeight: 140, overflow: 'auto' }}>
-                      {ymFetchedProduct.parameterValues
-                        .filter((pv) => {
-                          const pname = pv?.parameterName ?? pv?.name ?? pv?.label ?? null;
-                          return !isYmParamDuplicatingDedicatedField(pname);
-                        })
-                        .slice(0, 20)
-                        .map((pv, i) => {
-                          const pid = pv?.parameterId ?? pv?.id ?? '—';
-                          const pname = pv?.parameterName ?? pv?.name ?? null;
-                          const val = pv?.value ?? pv?.valueId ?? pv?.optionId ?? '—';
-                          return (
-                            <li key={`${pid}-${i}`}>
-                              <span style={{ color: 'var(--muted)' }}>
-                                {pname ? `${pname} (#${pid})` : `#${pid}`}:
-                              </span>{' '}
-                              {String(val)}
-                            </li>
-                          );
-                        })}
+                    <ul style={{ margin: 0, paddingLeft: 18, maxHeight: 160, overflow: 'auto' }}>
+                      {ymFetchedProduct.parameterValues.map((pv, i) => {
+                        const pid = pv?.parameterId ?? pv?.id ?? '—';
+                        const pname = pv?.parameterName ?? pv?.name ?? null;
+                        const val = pv?.value ?? pv?.valueId ?? pv?.optionId ?? '—';
+                        return (
+                          <li key={`${pid}-${i}`}>
+                            <span style={{ color: 'var(--muted)' }}>
+                              {pname ? `${pname} (#${pid})` : `#${pid}`}:
+                            </span>{' '}
+                            {String(val)}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 ) : (
                   <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
-                    Категорийные характеристики не пришли (проверьте заполнение карточки в кабинете YM).
+                    Категорийные характеристики не пришли (parameterValues пуст). Смотрите raw.offerCard / raw.mapping в JSON ниже.
                   </div>
                 )}
+                <MpApiResponseDump
+                  data={ymFetchedProduct}
+                  open={ymShowAllFields}
+                  onToggle={() => setYmShowAllFields((v) => !v)}
+                  label="сырой ответ API YM (включая raw.mapping и raw.offerCard)"
+                />
               </div>
             </div>
           )}
@@ -5226,56 +5534,52 @@ export const ProductForm = React.forwardRef(function ProductForm({
             <div className="card-header">Название и описание для Яндекс.Маркета</div>
             <div className="card-body">
               <p style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '12px' }}>
-                Отдельно от вкладки «Основное». В Excel — колонки «Название (Яндекс)» и «Описание (Яндекс)» в блоке YM.
+                Отдельно от «Основного» — всегда можно править. Связь синхронизирует с Основным;
+                «Сохранить и отправить» выгружает поля вкладки YM в кабинет.
               </p>
               <div className="row g-3">
                 <div className="col-12">
                   <label className="form-label" htmlFor="ym-tab-name">
                     Название (Яндекс)
                     {isMpFieldLinked(formData.mp_field_links, 'name', 'ym') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
                     ) : null}
                   </label>
                   <input
                     id="ym-tab-name"
                     type="text"
                     className={mpFieldClass('form-control form-control-sm', 'mp_ym_name')}
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'name', 'ym')
-                        ? formData.name
-                        : formData.mp_ym_name
+                    value={formData.mp_ym_name}
+                    onChange={(e) =>
+                      handleMpCardFieldChange('mp_ym_name', 'name', 'name', 'ym', e.target.value)
                     }
-                    onChange={(e) => handleChange('mp_ym_name', e.target.value)}
-                    disabled={isMpFieldLinked(formData.mp_field_links, 'name', 'ym')}
                   />
                 </div>
                 <div className="col-12">
                   <label className="form-label" htmlFor="ym-tab-description">
                     Описание (Яндекс)
                     {isMpFieldLinked(formData.mp_field_links, 'description', 'ym') ? (
-                      <span className="mp-field-linked-hint"> · связано с Основным</span>
+                      <span className="mp-field-linked-hint"> · синхрон с Основным</span>
                     ) : null}
                   </label>
                   <textarea
                     id="ym-tab-description"
                     className={mpFieldClass('form-control form-control-sm', 'mp_ym_description')}
                     rows={5}
-                    value={
-                      isMpFieldLinked(formData.mp_field_links, 'description', 'ym')
-                        ? formData.description
-                        : formData.mp_ym_description
+                    value={formData.mp_ym_description}
+                    onChange={(e) =>
+                      handleMpCardFieldChange(
+                        'mp_ym_description',
+                        'description',
+                        'description',
+                        'ym',
+                        e.target.value
+                      )
                     }
-                    onChange={(e) => handleChange('mp_ym_description', e.target.value)}
                     placeholder="Описание для Яндекс.Маркета"
-                    disabled={isMpFieldLinked(formData.mp_field_links, 'description', 'ym')}
                   />
                   <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '6px' }}>
-                    Символов:{' '}
-                    {String(
-                      (isMpFieldLinked(formData.mp_field_links, 'description', 'ym')
-                        ? formData.description
-                        : formData.mp_ym_description) || ''
-                    ).length}
+                    Символов: {String(formData.mp_ym_description || '').length}
                   </div>
                 </div>
                 {isMpFieldLinked(formData.mp_field_links, 'sku', 'ym') && (

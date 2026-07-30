@@ -25,12 +25,12 @@ export const MP_FIELD_LINK_TOGGLES = [
 ];
 
 export const MP_FIELD_LINK_TITLES = {
-  name: 'Связать название с карточкой маркетплейса',
-  sku: 'Связать артикул с артикулом продавца на маркетплейсе',
-  description: 'Связать описание с карточкой маркетплейса',
-  brand: 'Связать бренд с карточкой маркетплейса',
-  country: 'Связать страну производства с карточкой маркетплейса',
-  dimensions: 'Связать вес и габариты с карточкой маркетплейса (с пересчётом единиц)',
+  name: 'Связать с вкладкой «Основное» (не с другими МП)',
+  sku: 'Связать с артикулом на «Основном» (не с другими МП)',
+  description: 'Связать с описанием на «Основном» (не с другими МП)',
+  brand: 'Связать с брендом на «Основном» (не с другими МП)',
+  country: 'Связать со страной на «Основном» (не с другими МП)',
+  dimensions: 'Связать вес/габариты с «Основным» (не с другими МП; единицы пересчитываются)',
 };
 
 /** @returns {Record<string, string[]>} */
@@ -183,6 +183,99 @@ export function ymWeightDimensionsToErp(wd) {
   return Object.keys(out).length ? out : null;
 }
 
+/** ERP мм/г → YM weightDimensions (см / кг). */
+export function erpDimsToYmWeightDimensions({ length, width, height, weight } = {}) {
+  const L = mmToCm(length);
+  const W = mmToCm(width);
+  const H = mmToCm(height);
+  const Wt = gramsToKg(weight);
+  if (L == null || W == null || H == null) return null;
+  return {
+    length: L,
+    width: W,
+    height: H,
+    ...(Wt != null ? { weight: Wt } : {}),
+  };
+}
+
+/** Достать weightDimensions из ym_draft формы/товара. */
+export function getYmDraftWeightDimensions(formOrProduct) {
+  const draft = formOrProduct?.ym_draft;
+  if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return null;
+  const wd = draft.weightDimensions;
+  return wd && typeof wd === 'object' ? wd : null;
+}
+
+/** Страна для YM без связи с «Основным» — ym_draft.manufacturerCountries. */
+export function getYmDraftCountry(formOrProduct) {
+  const draft = formOrProduct?.ym_draft;
+  if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return '';
+  const list = draft.manufacturerCountries;
+  if (Array.isArray(list)) {
+    return list.map((c) => String(c || '').trim()).find(Boolean) || '';
+  }
+  if (list != null && String(list).trim()) return String(list).trim();
+  return '';
+}
+
+export function withYmDraftCountry(prev, country) {
+  const prevDraft =
+    prev?.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+      ? prev.ym_draft
+      : {};
+  const c = String(country || '').trim();
+  return {
+    ...prev,
+    ym_draft: {
+      ...prevDraft,
+      manufacturerCountries: c ? [c] : [],
+    },
+  };
+}
+
+function parseDraftObj(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const o = JSON.parse(raw);
+      return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+/** ozon_draft / wb_draft / ym_draft */
+export function getMpDraft(formOrProduct, mp) {
+  const code = String(mp || '').toLowerCase();
+  if (code === 'ozon') return parseDraftObj(formOrProduct?.ozon_draft);
+  if (code === 'wb') return parseDraftObj(formOrProduct?.wb_draft);
+  if (code === 'ym') return parseDraftObj(formOrProduct?.ym_draft);
+  return {};
+}
+
+export function getMpDraftCountry(formOrProduct, mp) {
+  const code = String(mp || '').toLowerCase();
+  if (code === 'ym') return getYmDraftCountry(formOrProduct);
+  return String(getMpDraft(formOrProduct, mp).country || '').trim();
+}
+
+/** Габариты МП без связи — в draft.dimensions (всегда мм / г). */
+export function getMpDraftDimensionsMm(formOrProduct, mp) {
+  const d = getMpDraft(formOrProduct, mp).dimensions;
+  if (!d || typeof d !== 'object') return null;
+  return d;
+}
+
+export function withMpDraftPatch(prev, mp, patch) {
+  const code = String(mp || '').toLowerCase();
+  const key = code === 'ozon' ? 'ozon_draft' : code === 'wb' ? 'wb_draft' : code === 'ym' ? 'ym_draft' : null;
+  if (!key) return prev;
+  const prevDraft = parseDraftObj(prev?.[key]);
+  return { ...prev, [key]: { ...prevDraft, ...patch } };
+}
+
 /**
  * Значения габаритов/веса в единицах маркетплейса для отображения.
  * @returns {{ length: number|null, width: number|null, height: number|null, weight: number|null, lengthUnit: string, weightUnit: string }}
@@ -263,6 +356,56 @@ export function applyLinkedMpFieldsFromMain(prev, links, onlyFields = null) {
     }
     if (isMpFieldLinked(normalized, 'sku', 'ym') && !String(prev.sku_ym || '').trim()) {
       next.sku_ym = v;
+    }
+  }
+  if (want('dimensions') && isMpFieldLinked(normalized, 'dimensions', 'ym')) {
+    const wd = erpDimsToYmWeightDimensions(prev);
+    if (wd) {
+      const prevDraft =
+        prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+          ? prev.ym_draft
+          : {};
+      next.ym_draft = { ...prevDraft, weightDimensions: wd };
+    }
+  }
+  if (want('country') && isMpFieldLinked(normalized, 'country', 'ym')) {
+    const c = String(prev.country_of_origin || '').trim();
+    const prevDraft =
+      next.ym_draft && typeof next.ym_draft === 'object' && !Array.isArray(next.ym_draft)
+        ? next.ym_draft
+        : prev.ym_draft && typeof prev.ym_draft === 'object' && !Array.isArray(prev.ym_draft)
+          ? prev.ym_draft
+          : {};
+    next.ym_draft = {
+      ...prevDraft,
+      manufacturerCountries: c ? [c] : [],
+    };
+  }
+  if (want('country')) {
+    const c = String(prev.country_of_origin || '').trim();
+    if (isMpFieldLinked(normalized, 'country', 'ozon')) {
+      const d = parseDraftObj(next.ozon_draft ?? prev.ozon_draft);
+      next.ozon_draft = { ...d, country: c };
+    }
+    if (isMpFieldLinked(normalized, 'country', 'wb')) {
+      const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);
+      next.wb_draft = { ...d, country: c };
+    }
+  }
+  if (want('dimensions')) {
+    const dims = {
+      length: prev.length !== '' && prev.length != null ? Number(prev.length) : null,
+      width: prev.width !== '' && prev.width != null ? Number(prev.width) : null,
+      height: prev.height !== '' && prev.height != null ? Number(prev.height) : null,
+      weight: prev.weight !== '' && prev.weight != null ? Number(prev.weight) : null,
+    };
+    if (isMpFieldLinked(normalized, 'dimensions', 'ozon')) {
+      const d = parseDraftObj(next.ozon_draft ?? prev.ozon_draft);
+      next.ozon_draft = { ...d, dimensions: dims };
+    }
+    if (isMpFieldLinked(normalized, 'dimensions', 'wb')) {
+      const d = parseDraftObj(next.wb_draft ?? prev.wb_draft);
+      next.wb_draft = { ...d, dimensions: dims };
     }
   }
   return next;

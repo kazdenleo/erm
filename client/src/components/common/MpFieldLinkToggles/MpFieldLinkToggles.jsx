@@ -30,8 +30,8 @@ export function MpFieldLinkToggles({ fieldKey, links, onToggle, size = 22 }) {
             color={mp.color}
             title={
               active
-                ? `${baseTitle}: ${mp.title} — связано (те же значения)`
-                : `${baseTitle}: ${mp.title} — не связано`
+                ? `${baseTitle}: ${mp.title} — связано с «Основным»`
+                : `${baseTitle}: ${mp.title} — своё значение (не с другими МП)`
             }
             onToggle={() => onToggle?.(fieldKey, mp.code)}
           >

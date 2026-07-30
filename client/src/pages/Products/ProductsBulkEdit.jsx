@@ -1201,7 +1201,7 @@ export function ProductsBulkEdit() {
         : [];
       const failHint =
         failedItems.length > 0
-          ? ` Примеры ошибок: ${failedItems
+          ? ` Примеры: ${failedItems
               .map((it) => {
                 const err =
                   (it.results || []).find((r) => !r.ok)?.error || 'ошибка';
@@ -1209,9 +1209,14 @@ export function ProductsBulkEdit() {
               })
               .join('; ')}`
           : '';
-      setPullMpMessage(
-        `Обновление из МП: успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}, ошибок: ${data?.failed ?? 0}.${failHint}`
-      );
+      const skippedN = Number(data?.skipped) || 0;
+      const failedN = Number(data?.failed) || 0;
+      const parts = [
+        `успешно ${data?.success ?? 0} из ${data?.total ?? productIds.length}`,
+      ];
+      if (skippedN > 0) parts.push(`без привязки к МП (пропуск): ${skippedN}`);
+      if (failedN > 0) parts.push(`ошибок: ${failedN}`);
+      setPullMpMessage(`Обновление из МП: ${parts.join(', ')}.${failHint}`);
       await loadProducts();
     } catch (e) {
       setPullMpMessage(
