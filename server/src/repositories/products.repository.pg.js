@@ -2456,6 +2456,7 @@ class ProductsRepositoryPG {
           productData.mp_field_links != null && typeof productData.mp_field_links === 'object'
             ? productData.mp_field_links
             : {
+                // Создание без явных связей с формы — как createMpFieldLinks()
                 name: ['ozon', 'wb', 'ym'],
                 sku: ['ozon', 'wb', 'ym'],
                 description: ['ozon', 'wb', 'ym'],

@@ -60,21 +60,21 @@ function isKnownMarketplace(mp) {
   );
 }
 
-/** Связь dimensions↔mp включена (по умолчанию — да, как normalizeMpFieldLinks). */
+/** Связь dimensions↔mp включена (по умолчанию — нет). */
 function isDimensionsLinked(product, mp) {
   const code = String(mp || '').toLowerCase();
   const raw = product?.mp_field_links;
-  if (raw == null || raw === '') return true;
+  if (raw == null || raw === '') return false;
   let obj = raw;
   if (typeof raw === 'string') {
     try {
       obj = JSON.parse(raw);
     } catch {
-      return true;
+      return false;
     }
   }
-  if (!obj || typeof obj !== 'object') return true;
-  if (!Object.prototype.hasOwnProperty.call(obj, 'dimensions')) return true;
+  if (!obj || typeof obj !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(obj, 'dimensions')) return false;
   const v = obj.dimensions;
   if (Array.isArray(v)) {
     return v.map((x) => String(x || '').toLowerCase()).includes(code);

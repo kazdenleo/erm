@@ -8,7 +8,7 @@ export const MP_FIELD_LINK_KEYS = ['name', 'sku', 'description', 'brand', 'count
 
 export const MP_FIELD_LINK_MPS = ['ozon', 'wb', 'ym'];
 
-/** Какие МП поддерживают связь для поля (по умолчанию все включены). */
+/** Какие МП поддерживают связь для поля. */
 export const MP_FIELD_LINK_SUPPORT = {
   name: ['ozon', 'wb', 'ym'],
   sku: ['ozon', 'wb', 'ym'],
@@ -33,8 +33,17 @@ export const MP_FIELD_LINK_TITLES = {
   dimensions: 'Связать вес/габариты с «Основным» (не с другими МП; единицы пересчитываются)',
 };
 
-/** @returns {Record<string, string[]>} */
-export function defaultMpFieldLinks() {
+/** Все связи выкл. — дефолт при чтении без сохранённого mp_field_links. */
+export function emptyMpFieldLinks() {
+  const out = {};
+  for (const key of MP_FIELD_LINK_KEYS) {
+    out[key] = [];
+  }
+  return out;
+}
+
+/** Все поддерживаемые связи вкл. — только при создании новой карточки. */
+export function createMpFieldLinks() {
   const out = {};
   for (const key of MP_FIELD_LINK_KEYS) {
     out[key] = [...(MP_FIELD_LINK_SUPPORT[key] || [])];
@@ -42,12 +51,17 @@ export function defaultMpFieldLinks() {
   return out;
 }
 
+/** @deprecated используйте emptyMpFieldLinks / createMpFieldLinks */
+export function defaultMpFieldLinks() {
+  return emptyMpFieldLinks();
+}
+
 /**
  * @param {unknown} raw
  * @returns {Record<string, string[]>}
  */
 export function normalizeMpFieldLinks(raw) {
-  const defaults = defaultMpFieldLinks();
+  const defaults = emptyMpFieldLinks();
   if (raw == null || raw === '') return defaults;
   let obj = raw;
   if (typeof raw === 'string') {
@@ -63,7 +77,7 @@ export function normalizeMpFieldLinks(raw) {
   for (const key of MP_FIELD_LINK_KEYS) {
     const supported = MP_FIELD_LINK_SUPPORT[key] || [];
     if (!Object.prototype.hasOwnProperty.call(obj, key)) {
-      out[key] = [...supported];
+      out[key] = [];
       continue;
     }
     const v = obj[key];

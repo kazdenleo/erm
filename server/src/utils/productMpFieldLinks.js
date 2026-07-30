@@ -14,7 +14,16 @@ export const MP_FIELD_LINK_SUPPORT = {
   dimensions: ['ozon', 'wb', 'ym'],
 };
 
-export function defaultMpFieldLinks() {
+export function emptyMpFieldLinks() {
+  const out = {};
+  for (const key of MP_FIELD_LINK_KEYS) {
+    out[key] = [];
+  }
+  return out;
+}
+
+/** Все связи вкл. — только при создании новой карточки. */
+export function createMpFieldLinks() {
   const out = {};
   for (const key of MP_FIELD_LINK_KEYS) {
     out[key] = [...(MP_FIELD_LINK_SUPPORT[key] || [])];
@@ -22,8 +31,12 @@ export function defaultMpFieldLinks() {
   return out;
 }
 
+export function defaultMpFieldLinks() {
+  return emptyMpFieldLinks();
+}
+
 export function normalizeMpFieldLinks(raw) {
-  const defaults = defaultMpFieldLinks();
+  const defaults = emptyMpFieldLinks();
   if (raw == null || raw === '') return defaults;
   let obj = raw;
   if (typeof raw === 'string') {
@@ -39,7 +52,7 @@ export function normalizeMpFieldLinks(raw) {
   for (const key of MP_FIELD_LINK_KEYS) {
     const supported = MP_FIELD_LINK_SUPPORT[key] || [];
     if (!Object.prototype.hasOwnProperty.call(obj, key)) {
-      out[key] = [...supported];
+      out[key] = [];
       continue;
     }
     const v = obj[key];
