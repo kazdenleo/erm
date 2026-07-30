@@ -1,5 +1,5 @@
 /**
- * Массовое редактирование товаров: таблица полей + «Заполнить массово» по столбцам.
+ * Массовое редактирование товаров: таблица полей + «Заполнить» по столбцам.
  */
 
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
@@ -1675,7 +1675,7 @@ export function ProductsBulkEdit() {
                       </span>
                     ) : (
                       <button type="button" className="products-bulk-fill-btn" onClick={() => openBulk(col)}>
-                        Заполнить массово
+                        Заполнить
                       </button>
                     )}
                   </th>
